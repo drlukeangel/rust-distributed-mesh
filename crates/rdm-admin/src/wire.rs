@@ -859,7 +859,7 @@ mod tests {
     }
 
     fn terminal() -> Value {
-        json!({ "node": PathName::new("mesh1.node", "1").unwrap(), "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string(), "runtime": runtime_identity(), "exit_code": 0 })
+        json!({ "path": "mesh1.node", "name": "1", "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string(), "runtime": runtime_identity(), "exit_code": 0 })
     }
 
     #[test]

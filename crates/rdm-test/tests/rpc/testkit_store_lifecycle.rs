@@ -47,7 +47,7 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
     assert_eq!(out["outcome"], "Reply", "{out}");
     let r = &out["reply"];
     assert_eq!(r["executing_node"], node["node_id"], "{out}");
-    assert_eq!(r["node"], node["name"], "{out}");
+    assert_eq!((&r["path"], &r["name"]), (&node["path"], &node["name"]), "{out}");
     assert_eq!(r["mesh"], node["mesh"], "{out}");
     assert_eq!(r["incarnation_id"], node["incarnation_id"], "{out}");
     assert_eq!(r["op"], op, "{out}");

@@ -305,7 +305,7 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
     assert!(!fp.path.starts_with("mesh2."), "the fabric-primary is not in mesh2: {fp:?}");
     let p = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
     let p_name = location(&p);
-    let na2 = location(nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["name"] != p["name"]).expect("mesh2's other node-admin"));
+    let na2 = location(nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && (rdm_test::estate::location(&n) != rdm_test::estate::location(&p))).expect("mesh2's other node-admin"));
     let (victim_at, witness_at) = (victim(), witness_node());
     let victim = nodes.iter().find(|n| location(n) == victim_at).cloned().expect("the victim");
     let (victim_id, victim_inc) = (s(&victim["node_id"]), s(&victim["incarnation_id"]));

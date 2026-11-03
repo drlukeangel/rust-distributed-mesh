@@ -60,7 +60,7 @@ async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_f
     let back = estate
         .until_view(&format!("{path:?} re-created with a new node id and ready"), floor * 6 + Duration::from_secs(60), |views| {
             let ns = check(views);
-            ns.into_iter().find(|n| n["name"] == json!(path) && s(&n["node_id"]) != old_id && n["status"] == "ready")
+            ns.into_iter().find(|n| rdm_test::estate::is_location(&n, &path) && s(&n["node_id"]) != old_id && n["status"] == "ready")
         })
         .await;
     let _ = std::process::Command::new("kill").args(["-KILL", &pid.to_string()]).status();

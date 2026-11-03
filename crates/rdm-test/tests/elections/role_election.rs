@@ -54,7 +54,7 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     let primaries = advertised_primaries(&nodes);
     assert_eq!(primaries.keys().map(|c| c.1.as_str()).collect::<Vec<_>>(), ["broker", "compute", "gateway", "node-admin"]);
     let killed_id = primaries[&brokers][0].clone();
-    let killed: rdm_core::PathName = serde_json::from_value(nodes.iter().find(|n| n["node_id"] == killed_id).unwrap()["name"].clone()).expect("the node view carries separate path/name fields");
+    let killed = rdm_test::estate::location(nodes.iter().find(|n| n["node_id"] == killed_id).unwrap());
 
     // The successor, decided from the pre-kill view: the lowest NodeId among the other ready brokers.
     let (succ, succ_id) = nodes

@@ -300,7 +300,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let admitted_m2 = rdm_admin::mesh_delete::Admitted { roster: roster_m2, final_primary: me_m2.clone(), final_runtime: rt_m2, amendments: Vec::new() };
     let HandoffVerdict::Accept(manifest_m2) = handoff_verdict(&facts, &key_m2, &admitted_m2, &manifest_reference(build_id.as_str(), 1, &op_m2, false)) else { panic!("mesh2 handoff accepted") };
     record_completion(&*builds, &key_m2, m1_a1.node_id.as_str(), &manifest_m2).await.unwrap();
-    observed.write().await.nodes.retain(|n| n.name != m2_r1.name);
+    observed.write().await.nodes.retain(|n| n.location() != m2_r1.location());
     observed.write().await.meshes.iter_mut().find(|m| m.name == "mesh2").unwrap().status = ScopeStatus::Dead;
 
     // Step 2: after mesh2's MeshDeleted, re-planning the SAME Build plans DeleteLiveNode(mesh2.node-admin.1)
@@ -321,12 +321,12 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Execute DeleteLiveNode(mesh2.node-admin.1) as fabric-primary: mesh2.node-admin.1 stops, its row is written
     // Deleted by FP as acting primary, and MeshLeft + mesh_left_rows write mesh2 Dead.
     let term_m2_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m2_a1).node_id), build_id: Some(build_id.clone()), attempt: 1, node: m2_a1.clone(), handle: handles[&m2_a1.node_id].clone(), unreached: false }).await.unwrap();
-    observed.write().await.nodes.iter_mut().filter(|n| n.name == m2_a1.name).for_each(|n| {
+    observed.write().await.nodes.iter_mut().filter(|n| n.location() == m2_a1.location()).for_each(|n| {
         n.status = NodeStatus::Leaving;
         n.stopped = true;
     });
     rows_m1.deleted(&m2_a1, &rdm_core::OperationId::node("node.delete", &m2_a1.node_id)).await.unwrap();
-    observed.write().await.nodes.retain(|n| n.name != m2_a1.name);
+    observed.write().await.nodes.retain(|n| n.location() != m2_a1.location());
     let left_m2 = mesh_left_manifest(&manifest_m2, &term_m2_a1).unwrap();
     mesh_left_rows(Some(&rows_m1), &mesh_storage, &Default::default(), &declared, m1_a1.node_id.as_str(), &key_m2, "mesh2", &left_m2.receipts).await.unwrap();
     builds
@@ -383,7 +383,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     { let mut r = mesh_storage.mesh(&id1.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(id1.clone(), "mesh1")); r.state = MeshState::Deleted; mesh_storage.put_mesh(&r).await.unwrap(); }
     rdm_admin::storage::write_mesh(&mesh_storage, None, &rdm_admin::storage::MeshRecord { mesh_id: id1.clone(), name: "mesh1".into(), state: MeshState::Deleted }).await.unwrap().unwrap();
     record_completion(&*builds, &key_m1, m1_a1.node_id.as_str(), &manifest_m1).await.unwrap();
-    observed.write().await.nodes.retain(|n| n.name != m1_r1.name);
+    observed.write().await.nodes.retain(|n| n.location() != m1_r1.location());
     observed.write().await.meshes.iter_mut().find(|m| m.name == "mesh1").unwrap().status = ScopeStatus::Dead;
 
     // Step 3: after mesh1's MeshDeleted, re-planning plans ONLY DeleteFabric (mesh1.node-admin.1 is NOT
@@ -421,7 +421,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.node_id.clone()), "the fabric-primary executes its own final node.delete");
 
     let term_m1_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m1_a1).node_id), build_id: Some(build_id.clone()), attempt: 2, node: m1_a1.clone(), handle: handles[&m1_a1.node_id].clone(), unreached: false }).await.unwrap();
-    observed.write().await.nodes.iter_mut().filter(|n| n.name == m1_a1.name).for_each(|n| {
+    observed.write().await.nodes.iter_mut().filter(|n| n.location() == m1_a1.location()).for_each(|n| {
         n.status = NodeStatus::Leaving;
         n.stopped = true;
     });
@@ -651,7 +651,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         fleet.pids.insert(53_003, m2_a2.node_id.clone());
         let rt_a2 = RuntimeIdentity::of(&h_a2.fact().unwrap());
         let me_a2 = RosterBirth::of(&m2_a2).unwrap();
-        view.write().await.nodes.retain(|n| n.name != m2_a1.name);
+        view.write().await.nodes.retain(|n| n.location() != m2_a1.location());
         view.write().await.nodes.push(m2_a2.clone());
         let rows_a2 = Arc::new(NodeRows::new(m2_a2.location(), m2_a2.node_id.clone(), view.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_a2, std::slice::from_ref(&m2_a2)).await;
@@ -697,7 +697,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
 
         record_completion(&builds, &key_m2, fp.node_id.as_str(), &manifest).await.unwrap();
         let term_a2 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m2_a2).node_id), build_id: Some(build_id.clone()), attempt: 1, node: m2_a2.clone(), handle: h_a2, unreached: false }).await.unwrap();
-        view.write().await.nodes.iter_mut().filter(|n| n.name == m2_a2.name).for_each(|n| {
+        view.write().await.nodes.iter_mut().filter(|n| n.location() == m2_a2.location()).for_each(|n| {
             n.status = NodeStatus::Leaving;
             n.stopped = true;
         });
@@ -955,7 +955,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         .expect("fully crashed leaf mesh3 resolves on its members' deletes");
         assert!(matches!(crashed_m3, UnansweredMeshOutcome::FullyCrashed(_)));
         assert_eq!(owner_resume(&builds.read_build(&build_id).await.unwrap().steps, &op_m3), Ok(OwnerResume::Left));
-        observed.write().await.nodes.retain(|n| n.name != m3_a1.name && n.name != m3_r1.name);
+        observed.write().await.nodes.retain(|n| n.location() != m3_a1.location() && n.location() != m3_r1.location());
         observed.write().await.meshes.iter_mut().find(|m| m.name == "mesh3").unwrap().status = ScopeStatus::Dead;
 
         // Fault 2 (`mesh2` connection-lost: `mesh2.node-admin.1` exited while `mesh2.node.1` is still
@@ -1016,7 +1016,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         fleet.pids.insert(54_099, m2_a2.node_id.clone());
         let rt_a2 = RuntimeIdentity::of(&h_a2.fact().unwrap());
         let me_a2 = RosterBirth::of(&m2_a2).unwrap();
-        observed.write().await.nodes.retain(|n| n.name != m2_a1.name);
+        observed.write().await.nodes.retain(|n| n.location() != m2_a1.location());
         observed.write().await.nodes.push(m2_a2.clone());
         let rows_a2 = Arc::new(NodeRows::new(m2_a2.location(), m2_a2.node_id.clone(), observed.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_a2, std::slice::from_ref(&m2_a2)).await;
@@ -1081,7 +1081,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             })
             .await
             .unwrap();
-        observed.write().await.nodes.iter_mut().filter(|n| n.name == m2_a2.name).for_each(|n| {
+        observed.write().await.nodes.iter_mut().filter(|n| n.location() == m2_a2.location()).for_each(|n| {
             n.status = NodeStatus::Leaving;
             n.stopped = true;
         });
@@ -1090,7 +1090,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         mesh_left_rows(Some(&rows_fp), &mesh_storage, &Default::default(), &declared, fp.node_id.as_str(), &key_m2, "mesh2", &left_m2.receipts)
             .await
             .unwrap();
-        observed.write().await.nodes.retain(|n| n.name != m2_r1.name && n.name != m2_a2.name);
+        observed.write().await.nodes.retain(|n| n.location() != m2_r1.location() && n.location() != m2_a2.location());
         observed.write().await.meshes.iter_mut().find(|m| m.name == "mesh2").unwrap().status = ScopeStatus::Dead;
 
         // Step 3: On the fabric-primary's own mesh (`mesh1`), `role_move` is `None` (no

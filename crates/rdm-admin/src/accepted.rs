@@ -2897,7 +2897,7 @@ mod tests {
         let old = serde_json::json!({
             "fabric": "fabric1",
             "meshes": {"mesh1": {"name": "mesh1", "mesh_id": "meshd0000001", "nodes": [PathName::new("mesh1.node-admin", "1").unwrap()], "spec_by_path": [
-                {"path": PathName::new("mesh1.node-admin", "1").unwrap(), "storage_persistence": {"persistence": "persistent", "disposition": "preserve"}}
+                {"path": "mesh1.node-admin", "name": "1", "storage_persistence": {"persistence": "persistent", "disposition": "preserve"}}
             ]}}
         });
         let error = serde_json::from_value::<FabricTopology>(old).unwrap_err().to_string();

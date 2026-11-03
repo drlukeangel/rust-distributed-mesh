@@ -85,7 +85,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     // 5. Same logical node identity returns.
     assert_eq!(after["node_id"], before["node_id"], "same logical node id");
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "same transport identity (data dir kept)");
-    assert_eq!(after["name"], before["name"]);
+    assert_eq!(crate::estate::location(&after), crate::estate::location(&before));
     assert_eq!(after["deployment_id"].as_str(), Some(deployment_before.as_str()), "the same runtime deployment: nothing was deployed");
     assert_eq!(after["incarnation_id"].as_str(), Some(incarnation_before.as_str()), "the same incarnation: stop then start on the stopped process");
 

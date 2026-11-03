@@ -77,7 +77,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
     me.is_fabric_primary = true;
     let mut held = vec![me];
     held.extend(nodes);
-    held.sort_by(|a, b| a.name.cmp(&b.name));
+    held.sort_by(|a, b| a.location().cmp(&b.location()));
     let mut meshes: Vec<MeshView> = Vec::new();
     for n in &held {
         match meshes.iter_mut().find(|m| m.name == n.mesh) {

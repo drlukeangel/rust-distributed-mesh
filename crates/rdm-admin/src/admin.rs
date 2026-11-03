@@ -3207,7 +3207,7 @@ mod tests {
         let builds = MemoryBuildStateAdapter::new();
         let blocked = node_admin_not_ready(&me, &builds, None).await.expect("blocked while it holds no Build");
         assert_eq!(blocked.kind(), "no-current-build");
-        assert!(blocked.to_string().starts_with(&format!("{me:?}: holds no current Build")), "{blocked}");
+        assert!(blocked.to_string().starts_with(&format!("path {:?}, name {:?}: holds no current Build", me.path, me.name)), "{blocked}");
         let id = crate::build::BuildId::parse("7wy02yhavgde").unwrap();
         let blocked = node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await.expect("blocked while the entry's Build is not held");
         assert_eq!(blocked.need(), crate::fetch_build::Need::BuildFacts(id.clone()), "{blocked}");

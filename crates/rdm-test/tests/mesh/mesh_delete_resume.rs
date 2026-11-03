@@ -270,7 +270,7 @@ pub(crate) fn assert_resumed(run: &Run, next: &PathName, roster: usize) -> Value
     let completion = step("MeshDeleted");
     assert_eq!(completion.len(), 1, "one MeshDeleted completion under {outer}: {build}");
     assert_eq!(completion[0]["output"]["final_primary"]["node"], json!(next), "mesh.deleted names the amended final primary: {}", completion[0]);
-    let receipted = |r: &Value| serde_json::from_value::<PathName>(r["node"].clone()).expect("a receipt names its node's location");
+    let receipted = |r: &Value| rdm_test::estate::location(r);
     let completed: BTreeSet<PathName> = completion[0]["output"]["receipts"].as_array().cloned().unwrap_or_default().iter().map(receipted).collect();
     assert!(completed.contains(&lost.0) && !completed.contains(next), "mesh.deleted covers the lost primary and every other birth but the alive final primary {next:?}: {completed:?}");
     assert_eq!(completion[0]["output"]["receipts"].as_array().map(Vec::len), Some(roster - 1), "{}", completion[0]);

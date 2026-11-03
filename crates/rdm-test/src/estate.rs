@@ -1663,6 +1663,11 @@ pub fn location(node: &Value) -> rdm_core::PathName {
     rdm_core::PathName { path: field("path"), name: field("name") }
 }
 
+/// Whether the node view, record or connection end `v` is at `location`: its `path` and `name` fields.
+pub fn is_location(v: &Value, location: &rdm_core::PathName) -> bool {
+    v["path"] == location.path.as_str() && v["name"] == location.name.as_str()
+}
+
 /// Whether span `sp` names `location` as its node: its separate `node_path` and `node_name` fields.
 pub fn at_location(sp: &Value, location: &rdm_core::PathName) -> bool {
     names_location(sp, "node", location)

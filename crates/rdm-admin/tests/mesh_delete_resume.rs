@@ -2728,7 +2728,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         let delete_root = tracing::info_span!("cell.mesh-primary-delete", build_id = %delete_build.log(), operation = %delete_operation.action, operation_subject = ?delete_operation.subject, operation_step = ?delete_operation.recipe_step, operation_occurrence = ?delete_operation.occurrence);
         let delete_trace_id = trace_id(&delete_root);
         let _in_delete = delete_root.enter();
-        writer_topo.write().await.nodes.iter_mut().filter(|n| n.name == survivor_node.name).for_each(|n| {
+        writer_topo.write().await.nodes.iter_mut().filter(|n| n.location() == survivor_node.location()).for_each(|n| {
             n.status = NodeStatus::Leaving;
             n.stopped = true;
         });

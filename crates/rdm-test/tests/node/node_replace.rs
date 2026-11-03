@@ -54,7 +54,7 @@ fn operations(ops: &[rdm_core::OperationId]) -> String {
 async fn at_most_one_live_birth(estate: &Estate, admins: &[PathName], path: &PathName) {
     for admin in admins {
         let Some(views) = estate.node_views_at(admin).await else { continue };
-        let at: Vec<(String, String)> = Estate::values(&views).iter().filter(|n| n["name"] == json!(path) && live(n)).map(|n| (s(&n["node_id"]), s(&n["status"]))).collect();
+        let at: Vec<(String, String)> = Estate::values(&views).iter().filter(|n| rdm_test::estate::is_location(&n, &path) && live(n)).map(|n| (s(&n["node_id"]), s(&n["status"]))).collect();
         assert!(at.len() <= 1, "the view of {admin:?} holds two live births at {path:?}: {at:?}");
     }
 }
@@ -215,7 +215,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     let mesh_primary = nodes.iter().find(|n| n["mesh"] == mesh && n["type"] == "node-admin" && n["is_primary"] == true).expect("the node's mesh-primary").clone();
     let before = estate.node_value(node_path).await;
     let data_dir = estate.data_dir(node_path).await;
-    let others: Vec<(PathName, String)> = nodes.iter().filter(|n| n["name"] != json!(node_path)).map(|n| (location(n), s(&n["node_id"]))).collect();
+    let others: Vec<(PathName, String)> = nodes.iter().filter(|n| !rdm_test::estate::is_location(&n, &node_path)).map(|n| (location(n), s(&n["node_id"]))).collect();
 
     // The real transport-stop path: the testkit door marks the transport stopped; the process exits through it.
     let builds = estate.build_ids().await;
@@ -315,7 +315,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     assert_eq!(mesh_primary["node_id"], primary["node_id"], "one mesh: its primary holds the fabric-primary role too");
     let before = estate.node_value(node).await;
     let data_dir = estate.data_dir(node).await;
-    let others: Vec<(PathName, String)> = nodes.iter().filter(|n| n["name"] != json!(node)).map(|n| (location(n), s(&n["node_id"]))).collect();
+    let others: Vec<(PathName, String)> = nodes.iter().filter(|n| !rdm_test::estate::is_location(&n, &node)).map(|n| (location(n), s(&n["node_id"]))).collect();
     let builds = estate.build_ids().await;
     estate.kill_node(node).await;
 
@@ -1119,7 +1119,7 @@ async fn a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births() {
     // The successor admin's own view: itself at the path, ready, under its new NodeId.
     let me = estate
         .until_view_at(&node_path, &format!("the successor {node:?} sees itself"), Duration::from_secs(30), |views| {
-            let at: Vec<Value> = Estate::values(views).into_iter().filter(|n| n["name"] == json!(node) && live(n)).collect();
+            let at: Vec<Value> = Estate::values(views).into_iter().filter(|n| rdm_test::estate::is_location(&n, &node) && live(n)).collect();
             assert!(at.len() <= 1, "the successor's view holds two live births at {node:?}: {at:#?}");
             at.into_iter().find(|n| n["node_id"] == after["node_id"] && ready(n))
         })
@@ -1924,7 +1924,7 @@ async fn a_member_whose_data_dir_is_unreadable_records_the_fact_and_holds_recove
     assert_eq!(submits.len(), 1, "no second via-node-recovery span opened while data_dir remains unreadable: {submits:#?}");
 
     let views = estate.node_values().await;
-    let at_name: Vec<&Value> = views.iter().filter(|n| n["name"] == json!(node)).collect();
+    let at_name: Vec<&Value> = views.iter().filter(|n| rdm_test::estate::is_location(&n, &node)).collect();
     assert_eq!(at_name.len(), 1, "still only the held birth at {node:?}: {at_name:#?}");
     assert_eq!(s(&at_name[0]["node_id"]), old_node_id, "no new node_id minted: {at_name:#?}");
     assert_eq!(s(&at_name[0]["data_dir_unreadable"]["path"]), old_dir, "data_dir_unreadable still surfaced: {at_name:#?}");
@@ -2109,8 +2109,8 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
     let mismatched = Binding { sha256: "0".repeat(64), ..binding.clone() };
     let reason = failed_steps(&nodes, vec![Step::Create { mesh: "mesh1".into(), r#type: "node".into(), path: "mesh1.node".into(), name: "8".into(), executable: Some(mismatched) }]).await;
     assert!(reason.contains("rpc-node-fixed") && reason.contains("the binding expects"), "a hash mismatch is refused by name: {reason}");
-    for node in ["mesh1.node.7", "mesh1.node.8"] {
-        assert!(!estate.node_values().await.iter().any(|n| n["name"] == node), "nothing is launched at {node:?}");
+    for node in [Estate::path("mesh1.node", "7"), Estate::path("mesh1.node", "8")] {
+        assert!(!estate.node_values().await.iter().any(|n| rdm_test::estate::is_location(n, &node)), "nothing is launched at {node:?}");
     }
     estate.shutdown().await;
 }
@@ -2140,7 +2140,7 @@ async fn a_superseded_birth_that_comes_back_is_refused_reported_and_killed() {
     while std::time::Instant::now() < until && alive(pid as u64) {
         let views = estate.node_values().await;
         let old_listed: Vec<String> = views.iter().filter(|n| s(&n["node_id"]) == old_id).map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect();
-        let live_at_path: Vec<String> = views.iter().filter(|n| n["name"] == json!(node) && live(n)).map(|n| s(&n["node_id"])).collect();
+        let live_at_path: Vec<String> = views.iter().filter(|n| rdm_test::estate::is_location(&n, &node) && live(n)).map(|n| s(&n["node_id"])).collect();
         samples.push(json!({"t_ms": (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64 - resumed_ns) / 1_000_000, "old_listed": old_listed, "live_at_path": live_at_path, "old_process_alive": alive(pid as u64)}));
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -2199,7 +2199,7 @@ async fn a_re_created_birth_that_comes_back_is_deleted_by_its_path_name_verified
     while std::time::Instant::now() < until && (alive(pid as u64) || decided(&estate.spans()).is_empty()) {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    let live_at_path: Vec<String> = estate.node_values().await.iter().filter(|n| n["name"] == json!(node) && live(n)).map(|n| s(&n["node_id"])).collect();
+    let live_at_path: Vec<String> = estate.node_values().await.iter().filter(|n| rdm_test::estate::is_location(&n, &node) && live(n)).map(|n| s(&n["node_id"])).collect();
     estate.stop().await;
     let spans = estate.spans();
     let decisions = decided(&spans);

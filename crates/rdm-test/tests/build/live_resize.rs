@@ -58,7 +58,7 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], befor
     }
     // A node that survived the step kept its birth (nothing restarted).
     let births = |ns: &[Value]| -> BTreeMap<String, String> {
-        ns.iter().map(|n| (n["name"].to_string(), n["incarnation_id"].as_str().unwrap_or("").to_string())).collect()
+        ns.iter().map(|n| (json!(rdm_test::estate::location(n)).to_string(), n["incarnation_id"].as_str().unwrap_or("").to_string())).collect()
     };
     let (old, new) = (births(before), births(&nodes));
     for (name, birth) in &new {
@@ -80,7 +80,7 @@ fn deletes_are_causal(estate: &Estate, steps: &[Step]) {
             .unwrap_or_else(|| panic!("no span accepted build {}", step.build_id))
             .clone();
         for node in &step.deleted {
-            // A view's name is the node's (path, name) pair, held here as its JSON.
+            // The node's path and name, held here as the JSON of their lookup index key.
             let at: rdm_core::PathName = serde_json::from_str(node).unwrap_or_else(|e| panic!("{node}: not a path and name: {e}"));
             let delete = named(&spans, "rdm.node_admin.node.delete.via-build")
                 .into_iter()

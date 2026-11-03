@@ -564,7 +564,7 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
     let primary = mesh.iter().find(|n| n.is_primary && rdm_core::is_node_admin(&n.r#type)).cloned().expect("node.get names mesh1's primary");
     assert_ne!(primary.location(), path, "the stopped admin is not mesh1's primary");
     let admins: Vec<NodeView> = mesh.iter().filter(|n| n.location() != path && n.r#type == "node-admin").cloned().collect();
-    assert!(admins.iter().any(|n| n.name != primary.name), "an admin that performs no rename: {admins:?}");
+    assert!(admins.iter().any(|n| n.location() != primary.location()), "an admin that performs no rename: {admins:?}");
     let rpc = mesh.iter().find(|n| n.r#type == "node").cloned().expect("the node");
     let pid = estate.pid_of(&path).await;
 
@@ -1039,7 +1039,7 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
     let stopped = frames(nodes.stop(&p.location()).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     // Every admin of the fabric still answering names NA2 mesh2's primary, the fabric-primary included.
-    for admin in before.iter().filter(|n| n.r#type == "node-admin" && n.name != p.name) {
+    for admin in before.iter().filter(|n| n.r#type == "node-admin" && n.location() != p.location()) {
         let view = estate.node_views_at(&admin.location()).await.unwrap_or_else(|| panic!("{:?} answers node.get", admin.name));
         let primary: Vec<PathName> = view.iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).collect();
         assert_eq!(primary, vec![na2.location()], "{:?} names {:?} mesh2's primary once the stop is complete", admin.location(), na2.location());
@@ -1115,7 +1115,7 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
     assert!(reason == "primary-not-updated" && detail.contains(text), "the stop is refused naming mesh2's primary's own refusal: {refused:?}");
     for mesh in ["mesh1", "mesh2"] {
         for now in estate.mesh_node_views(mesh).await {
-            let was = before.iter().find(|n| n.name == now.name).unwrap_or_else(|| panic!("{:?} was there before", now.name));
+            let was = before.iter().find(|n| n.location() == now.location()).unwrap_or_else(|| panic!("{:?} was there before", now.name));
             assert_eq!((&now.incarnation_id, now.is_primary, now.is_fabric_primary), (&was.incarnation_id, was.is_primary, was.is_fabric_primary), "{:?} is untouched", now.name);
         }
     }
@@ -1164,7 +1164,7 @@ async fn a_stop_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_mo
         assert_eq!((reason.as_str(), detail.strip_prefix("last-admin: ")), ("last-admin", Some(q7)), "{action}: {refused:?}");
     }
     for now in estate.mesh_node_views("mesh1").await {
-        let was = before.iter().find(|n| n.name == now.name).unwrap_or_else(|| panic!("{:?} was there before", now.name));
+        let was = before.iter().find(|n| n.location() == now.location()).unwrap_or_else(|| panic!("{:?} was there before", now.name));
         assert_eq!((&now.incarnation_id, now.is_primary, now.is_fabric_primary), (&was.incarnation_id, was.is_primary, was.is_fabric_primary), "{:?} is untouched", now.name);
     }
     estate.stop().await;

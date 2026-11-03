@@ -88,7 +88,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             let indexed = loop {
                 let rows = storage.connections().await.unwrap();
-                if let Some(r) = rows.iter().find(|r| r.kind == ConnectionKind::Direct && r.source.name == me.name && r.destination.name == dest.name && r.recovery.is_some_and(|x| x.attempt_ordinal == ordinal)) {
+                if let Some(r) = rows.iter().find(|r| r.kind == ConnectionKind::Direct && r.source.location() == me.location() && r.destination.location() == dest.location() && r.recovery.is_some_and(|x| x.attempt_ordinal == ordinal)) {
                     break r.clone();
                 }
                 assert!(std::time::Instant::now() < deadline, "attempt {ordinal}'s Direct Failed row never reached the index: {rows:?}");
@@ -105,7 +105,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
         // (a fact is held once its write has landed, so the last attempt's write completes first).
         writer.observations_landed().await;
         let index = storage.connections().await.unwrap();
-        let pair: Vec<&NodeConnection> = index.iter().filter(|r| r.source.name == me.name && r.destination.name == dest.name).collect();
+        let pair: Vec<&NodeConnection> = index.iter().filter(|r| r.source.location() == me.location() && r.destination.location() == dest.location()).collect();
         assert_eq!(pair.iter().filter(|r| r.kind == ConnectionKind::Direct).count(), 1, "{pair:?}");
         assert_eq!(pair.iter().filter(|r| r.kind == ConnectionKind::Proxy).count(), 1, "{pair:?}");
         let direct = pair.iter().find(|r| r.kind == ConnectionKind::Direct).unwrap();

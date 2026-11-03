@@ -1282,7 +1282,7 @@ async fn every_node_serves_through_a_change(test: &str, provider: &str) {
     for (name, (id, _)) in &before {
         let status = &held.iter().rev().find(|l| l["key"] == id.as_str()).unwrap_or_else(|| panic!("{name:?}: its row before the change"))["record"]["status"];
         let own: Vec<&Value> = written.iter().filter(|l| l["key"] == id.as_str()).collect();
-        assert!(own.iter().all(|l| l["record"]["status"] == *status && l["record"]["name"] == json!(name)), "{name:?}: every row written during the change records the same node at its (path, name) with the status {status} its row held before: {own:#?}");
+        assert!(own.iter().all(|l| l["record"]["status"] == *status && rdm_test::estate::is_location(&l["record"], name)), "{name:?}: every row written during the change records the same node at its (path, name) with the status {status} its row held before: {own:#?}");
         let last = own.last().unwrap_or_else(|| panic!("{name:?}: its row records its move: no row of it written during the change"));
         assert_eq!(last["record"]["topology_storage_provider"], TOPOLOGY_STORAGE_TARGET, "{name:?}: its last row records the provider it writes: {last}");
     }

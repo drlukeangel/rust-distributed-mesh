@@ -469,7 +469,7 @@ async fn a_refusal_is_a_refused_fact_on_the_acceptor_and_a_failed_row_on_the_dia
     assert_eq!((facts[0].source.name.clone(), facts[0].reason.as_deref()), (dialer.birth.name.clone(), Some("expired member cert")));
 
     let direct_rows = |peer: &TestPeer| -> Vec<NodeConnection> {
-        peer.sink.history().into_iter().filter(|r| r.kind == CoreConnectionKind::Direct && r.destination.name == acceptor.birth.name && r.alpn == ALPN_A).collect()
+        peer.sink.history().into_iter().filter(|r| r.kind == CoreConnectionKind::Direct && r.destination.location() == acceptor.birth.location() && r.alpn == ALPN_A).collect()
     };
     let rows = direct_rows(&dialer);
     assert_eq!(rows.len(), 1, "the dialer writes one Direct row for the refused dial: {rows:#?}");
@@ -750,7 +750,7 @@ async fn a_dial_that_presents_nothing_within_the_floor_is_no_credential() {
     for r in &refused {
         assert_eq!(r.destination.name, acceptor.birth.name);
         assert_eq!(r.alpn, ALPN_A);
-        assert_eq!(r.source.node_id, [&silent, &stalled, &empty, &garbage].iter().find(|d| d.birth.name == r.source.name).unwrap().birth.node_id);
+        assert_eq!(r.source.node_id, [&silent, &stalled, &empty, &garbage].iter().find(|d| d.birth.location() == r.source.location()).unwrap().birth.node_id);
     }
     acceptor.shutdown().await;
 }
@@ -3203,7 +3203,7 @@ fn an_unknown_key_presenting_a_live_births_name_writes_no_row_and_leaves_that_bi
         // The live connection's fact is the source's own Direct Connected (connections.md §13 G): the live
         // dialer's row; the acceptor writes no row for an admission.
         let (before, connection_before) = (acceptor.sink.history(), live.sink.history());
-        assert!(connection_before.iter().any(|r| r.destination.name == acceptor.birth.name && r.state == ConnectionState::Connected), "the live birth's connection is held: {connection_before:#?}");
+        assert!(connection_before.iter().any(|r| r.destination.location() == acceptor.birth.location() && r.state == ConnectionState::Connected), "the live birth's connection is held: {connection_before:#?}");
         let after = an_unknown_key_dials(&acceptor, rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         assert_eq!(after, before, "no row is written for a key no view names");
         assert_eq!(live.sink.history(), connection_before, "the live birth's connection is unchanged");

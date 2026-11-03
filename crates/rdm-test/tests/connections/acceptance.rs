@@ -201,7 +201,7 @@ fn snapshot(estate: &Estate, node: &PathName) -> Value {
 
 /// The rows of `node`'s raw log toward `to` of `kind` (`Direct` or `Proxy`).
 fn rows<'a>(history: &'a [Value], to: &PathName, kind: &str) -> Vec<&'a Value> {
-    history.iter().filter(|r| r["destination"]["name"] == json!(to) && r["kind"] == kind).collect()
+    history.iter().filter(|r| rdm_test::estate::is_location(&r["destination"], &to) && r["kind"] == kind).collect()
 }
 
 /// `node.connection.delete { Connections(ids) }` of `node`'s exact birth through its mesh-primary.
@@ -259,7 +259,7 @@ async fn one_discovered_proxy_carries_every_later_open_with_no_direct_dial() {
     })
     .await;
     let proxy = &held["own_active_proxies"][0];
-    assert_eq!((proxy["carrier"]["name"].clone(), s(&proxy["carrier"]["incarnation"]), s(&proxy["destination"]["incarnation"])), (json!(&*CARRIER), s(&carrier["incarnation_id"]), s(&dest["incarnation_id"])), "the Proxy names the carrier and both births: {proxy}");
+    assert_eq!((location(&proxy["carrier"]), s(&proxy["carrier"]["incarnation"]), s(&proxy["destination"]["incarnation"])), (CARRIER.clone(), s(&carrier["incarnation_id"]), s(&dest["incarnation_id"])), "the Proxy names the carrier and both births: {proxy}");
 
     // 2. Another consumer's open: through the held Proxy at once.
     let second = stream(&estate, &*SOURCE, &*DEST, "consumer-b");
@@ -269,7 +269,7 @@ async fn one_discovered_proxy_carries_every_later_open_with_no_direct_dial() {
     let history = history(&estate, &SOURCE).await;
     let proxies = rows(&history, &*DEST, "Proxy");
     assert_eq!(proxies.len(), 1, "one Proxy Connected: {proxies:?}");
-    assert_eq!((s(&proxies[0]["state"]), proxies[0]["carrier"]["name"].clone()), ("Connected".to_string(), json!(&*CARRIER)), "{proxies:?}");
+    assert_eq!((s(&proxies[0]["state"]), location(&proxies[0]["carrier"])), ("Connected".to_string(), CARRIER.clone()), "{proxies:?}");
     let failed = rows(&history, &*DEST, "Direct");
     assert!(failed.first().is_some_and(|r| r["state"] == "Failed" && r["recovery"]["attempt_ordinal"] == 1), "the series starts at ordinal 1: {failed:?}");
     assert!(failed.iter().all(|r| r["state"] == "Failed"), "nothing but Failed toward the destination while blocked: {failed:?}");
@@ -345,11 +345,11 @@ async fn a_peer_holds_none_of_a_sources_failed_history_or_its_proxy() {
     assert_eq!(peer_open["kind"].as_str(), Some(format!("proxy via {}", id_at(&estate, &CARRIER).await).as_str()), "the peer's carrier carried it on its own connection: {peer_open}");
     let peer = snapshot(&estate, &*DEST);
     let held: Vec<&Value> = peer["active_directs"].as_array().into_iter().flatten().collect();
-    let foreign: Vec<&&Value> = held.iter().filter(|d| d["source"]["name"] != json!(&*DEST)).collect();
+    let foreign: Vec<&&Value> = held.iter().filter(|d| !rdm_test::estate::is_location(&d["source"], &*DEST)).collect();
     assert!(foreign.is_empty(), "the peer holds no other node's fact, the carrier's connections and the source's failing pair ({failed} failed facts) included: {foreign:?}");
     assert!(held.iter().all(|d| d["kind"] == "Direct" && d["state"] == "Connected"), "the peer holds active Direct facts only: {held:?}");
     let proxies: Vec<&Value> = peer["own_active_proxies"].as_array().into_iter().flatten().collect();
-    assert!(proxies.iter().all(|p| p["source"]["name"] == json!(&*DEST)), "the peer holds its own Proxy and no other node's: {proxies:?}");
+    assert!(proxies.iter().all(|p| rdm_test::estate::is_location(&p["source"], &*DEST)), "the peer holds its own Proxy and no other node's: {proxies:?}");
     estate.stop().await;
 }
 
@@ -395,7 +395,7 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
     // 2. The series' own dial connects at its due time; the deletion is owed and refused.
     let owed = wait_for("the source's due dial connected and its deletion is owed", Duration::from_secs(30), || async {
         let snap = snapshot(&estate, &*SOURCE);
-        let connected = snap["own_latest_directs"].as_array().into_iter().flatten().any(|d| d["destination"]["name"] == json!(&*DEST) && d["state"] == "Connected" && d["alpn"] == failed_row["alpn"]);
+        let connected = snap["own_latest_directs"].as_array().into_iter().flatten().any(|d| rdm_test::estate::is_location(&d["destination"], &*DEST) && d["state"] == "Connected" && d["alpn"] == failed_row["alpn"]);
         (connected && snap["owed"].as_array().map(Vec::len) == Some(1) && snap["fault_refused"].as_u64().unwrap_or(0) >= 1).then_some(snap)
     })
     .await;
@@ -416,7 +416,7 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
 
     // 4. The log, in order: Failed, Direct Connected, Proxy Disconnected(direct-restored).
     let history = history(&estate, &SOURCE).await;
-    let app: Vec<&Value> = history.iter().filter(|r| r["destination"]["name"] == json!(&*DEST) && r["alpn"] == failed_row["alpn"]).collect();
+    let app: Vec<&Value> = history.iter().filter(|r| rdm_test::estate::is_location(&r["destination"], &*DEST) && r["alpn"] == failed_row["alpn"]).collect();
     let at = |pred: &dyn Fn(&Value) -> bool| app.iter().position(|r| pred(r));
     let connected = at(&|r| r["kind"] == "Direct" && r["state"] == "Connected").expect("Direct Connected written");
     let disconnected = at(&|r| r["kind"] == "Proxy" && r["state"] == "Disconnected").expect("Proxy Disconnected written");
@@ -468,7 +468,7 @@ async fn a_carrier_that_lost_its_connection_refuses_by_name_and_the_source_disco
     // (Q169); the drop's line is in the store file before its write lands (the write is then
     // fsynced), so the wait reads the carrier's held projection, never the file.
     wait_for("the carrier holds its Disconnected", Duration::from_secs(15), || async {
-        snapshot(&estate, &*CARRIER)["own_latest_directs"].as_array().into_iter().flatten().any(|d| d["destination"]["name"] == json!(&*DEST) && d["alpn"] == connection["alpn"] && d["state"] == "Disconnected").then_some(())
+        snapshot(&estate, &*CARRIER)["own_latest_directs"].as_array().into_iter().flatten().any(|d| rdm_test::estate::is_location(&d["destination"], &*DEST) && d["alpn"] == connection["alpn"] && d["state"] == "Disconnected").then_some(())
     })
     .await;
     assert_eq!(rows(&history(&estate, &CARRIER).await, &*DEST, "Direct").last().map(|r| r["state"].clone()), Some(serde_json::json!("Disconnected")), "the carrier's Disconnected is its latest Direct row");
@@ -523,7 +523,7 @@ async fn many_failed_attempts_grow_the_raw_log_and_hold_one_direct_and_one_proxy
     let direct = &members[0].1.record;
     assert_eq!((direct["state"].as_str(), direct["recovery"]["attempt_ordinal"].as_u64()), (Some("Failed"), Some(12)), "the Direct member is the latest attempt: {direct}");
     let snap = snapshot(&estate, &*SOURCE);
-    let held: Vec<&Value> = snap["own_latest_directs"].as_array().into_iter().flatten().filter(|d| d["destination"]["name"] == json!(&*DEST) && d["alpn"] == serde_json::json!(control)).collect();
+    let held: Vec<&Value> = snap["own_latest_directs"].as_array().into_iter().flatten().filter(|d| rdm_test::estate::is_location(&d["destination"], &*DEST) && d["alpn"] == serde_json::json!(control)).collect();
     assert_eq!(held.len(), 1, "one latest Direct held for the pair: {snap}");
     assert_eq!(held[0]["recovery"]["attempt_ordinal"], 12, "{snap}");
     estate.stop().await;
@@ -670,7 +670,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     })
     .await;
     assert!(listed(&after, &dest_id).contains(&to_dest), "the connection not named stays open: {after:?}");
-    assert_eq!(drop["source"]["name"], json!(&*SOURCE), "{drop}");
+    assert_eq!(location(&drop["source"]), *SOURCE, "{drop}");
     assert_ne!(s(&drop["id"]), to_carrier, "the drop is a new entry: {drop}");
     let again = connections_delete_ids(&estate, &*SOURCE, &[to_carrier.clone()]).await;
     assert!(matches!(&again, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { closed, not_open, .. } if closed.is_empty() && not_open.iter().any(|c| c.to_string() == to_carrier)), "the same id again is not open: {again:?}");
@@ -736,14 +736,14 @@ async fn an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work
 
     let drops = wait_for("both drops are written", Duration::from_secs(15), || async {
         let h = history(&estate, &SOURCE).await;
-        let d: Vec<Value> = h.iter().filter(|r| r["state"] == "Disconnected" && ((r["kind"] == "Direct" && r["destination"]["name"] == json!(&*CARRIER)) || (r["kind"] == "Proxy" && r["destination"]["name"] == json!(&*DEST)))).cloned().collect();
+        let d: Vec<Value> = h.iter().filter(|r| r["state"] == "Disconnected" && ((r["kind"] == "Direct" && rdm_test::estate::is_location(&r["destination"], &*CARRIER)) || (r["kind"] == "Proxy" && rdm_test::estate::is_location(&r["destination"], &*DEST)))).cloned().collect();
         (d.len() >= 2).then_some(d)
     })
     .await;
     // Status 0x1B still answers; the held projection has taken both drops.
     let after = estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.expect("Status 0x1B still answers while connections are deleted");
     assert!(open(&after).is_empty(), "no connection is open once the drops landed: {after:?} (before: {before:?})");
-    assert!(drops.iter().all(|r| r["source"]["name"] == json!(&*SOURCE)), "every drop under the source's name: {drops:?}");
+    assert!(drops.iter().all(|r| rdm_test::estate::is_location(&r["source"], &*SOURCE)), "every drop under the source's name: {drops:?}");
     let refused = estate.probe(&["snapshot", "--target", &rdm_test::estate::path_target(&SOURCE), "--key", "x"]);
     assert!(s(&refused["refused"]).starts_with("ConnectionsDeleting"), "a new call is refused by name: {refused}");
     estate.stop().await;
@@ -773,7 +773,7 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     let mut deleting = estate.nodes_obj().await.delete_connections(&p.location(), &rdm_core::status::ConnectionScope::All).await.unwrap_or_else(|e| panic!("node.connection.delete of {p_name:?} refused: {e}"));
     let frames = Estate::frames_of(&mut deleting).await;
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "{frames:?}");
-    for admin in views.iter().filter(|n| n.r#type == "node-admin" && n.name != p.name) {
+    for admin in views.iter().filter(|n| n.r#type == "node-admin" && n.location() != p.location()) {
         let view = estate.node_views_at(&admin.location()).await.unwrap_or_else(|| panic!("{:?} answers node.get", admin.name));
         let primary: Vec<PathName> = view.iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).collect();
         assert_eq!(primary, vec![na2_name.clone()], "{:?} names {na2_name:?} mesh2's primary", admin.name);

@@ -16,9 +16,8 @@ use std::sync::Arc;
 
 /// A node row of `mesh` at `ordinal`, its config carrying `note` bytes.
 fn node(mesh: &str, ordinal: usize, note: usize) -> NodeView {
-    let name = serde_json::json!({ "path": format!("{mesh}.node"), "name": ordinal.to_string() });
     let mut n: NodeView = serde_json::from_value(serde_json::json!({
-        "name": name, "type": "node", "mesh": mesh, "node_id": NodeId::mint(), "endpoint_id": null,
+        "path": format!("{mesh}.node"), "name": ordinal.to_string(), "type": "node", "mesh": mesh, "node_id": NodeId::mint(), "endpoint_id": null,
         "incarnation_id": null, "deployment_id": null, "provider": "process", "data_dir": null, "status": "ready",
         "is_primary": false, "is_fabric_primary": false, "admin_api_base": null, "transport_addr": null, "listeners": [],
         "declared": null, "stopped": false, "load": null, "gossip": null, "tags": [], "config": {}, "data_dir_lost": null,
@@ -33,7 +32,7 @@ fn node(mesh: &str, ordinal: usize, note: usize) -> NodeView {
 /// `meshes` meshes of `per` rows each, in the read's stable order (by path.name).
 fn rows(meshes: usize, per: usize, note: usize) -> Vec<NodeView> {
     let mut out: Vec<NodeView> = (1..=meshes).flat_map(|m| (1..=per).map(move |o| node(&format!("mesh{m}"), o, note))).collect();
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.sort_by(|a, b| a.location().cmp(&b.location()));
     out
 }
 

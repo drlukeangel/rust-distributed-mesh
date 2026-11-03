@@ -556,7 +556,7 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
         assert_eq!((got.attempt, got.executor.clone(), got.last_failure.clone(), got.steps.len()), (held.attempt, held.executor.clone(), held.last_failure.clone(), held.steps.len()), "the header and receipts are the log's: {got:#?}");
         let specs: Vec<rdm_core::meta::NodeSpec> = held.topology.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
         assert_eq!(got.nodes, specs, "the topology is every node's create spec");
-        assert!(got.nodes.iter().any(|s| s.path == fp.name), "the Day-0 Build names mesh1.node-admin.1: {:?}", got.nodes);
+        assert!(got.nodes.iter().any(|s| s.location() == fp.location()), "the Day-0 Build names mesh1.node-admin.1: {:?}", got.nodes);
 
         let one = get(Filter::new().eq("current", ["true"])).await.unwrap_or_else(|e| panic!("build.get [current: true]: {e}"));
         assert_eq!(one.iter().map(|b| (b.build_id.clone(), b.current)).collect::<Vec<_>>(), vec![(held.build_id.clone(), true)], "[current: true] is the current Build alone");

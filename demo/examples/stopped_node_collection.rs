@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
 
     finish(&format!("node.stop path {:?}, name {:?}", target.path, target.name), nodes.stop(&target.location()).await?).await?;
     let stopped_rows = nodes.get(&Filter::new().eq("mesh", [target.mesh.clone()])).await?;
-    if let Some(s) = stopped_rows.iter().find(|n| n.name == target.name) {
+    if let Some(s) = stopped_rows.iter().find(|n| n.location() == target.location()) {
         println!(
             "after stop:  path {:?}, name {:?} status={:?} stopped={} inc={:?}",
             s.path, s.name, s.status, s.stopped, s.incarnation_id

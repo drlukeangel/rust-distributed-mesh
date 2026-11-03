@@ -921,7 +921,7 @@ impl RouteRun {
     }
 
     fn node<'a>(nodes: &'a [Value], name: &PathName) -> &'a Value {
-        nodes.iter().find(|n| n["name"] == json!(name)).unwrap_or_else(|| panic!("no node {name:?}"))
+        nodes.iter().find(|n| rdm_test::estate::is_location(&n, &name)).unwrap_or_else(|| panic!("no node {name:?}"))
     }
 
     /// Issue the legs. Same-mesh and cross-mesh exact calls from the controller, the same two carried
@@ -1937,12 +1937,12 @@ impl Run {
         let mut answers = Vec::new();
         for a in &st.admins {
             let v = ask(&f.estate, &location(&a), BuildChange::RemoveNode { node: path.clone() }).await;
-            answers.push(json!({"admin": a["name"], "node_id": a["node_id"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "detail": v["detail"]}));
+            answers.push(json!({"admin": location(&a), "node_id": a["node_id"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "detail": v["detail"]}));
         }
         let t1 = now_ns();
         let writers: Vec<&Value> = answers.iter().filter(|a| a["reply"] != "not-fabric-primary").collect();
         assert_eq!(writers.len(), 1, "`{label}`: exactly one admin accepts a topology write; answers {answers:#?}");
-        assert_eq!(writers[0]["admin"], st.fp["name"], "`{label}`: the admin that validates the write is the fabric-primary the views name: {answers:#?}");
+        assert_eq!(writers[0]["admin"], json!(location(&st.fp)), "`{label}`: the admin that validates the write is the fabric-primary the views name: {answers:#?}");
         assert_eq!(writers[0]["reply"].as_str(), Some("unknown-node"), "`{label}`: the writer refuses the unknown node by name: {answers:#?}");
         for a in answers.iter().filter(|a| a["reply"] == "not-fabric-primary") {
             assert_eq!(&a["fabric_primary"], &st.fp["node_id"], "`{label}`: a non-writer refuses and names the fabric-primary: {a}");
@@ -2007,7 +2007,7 @@ impl Run {
         let until = Instant::now() + Duration::from_secs(120);
         loop {
             let b = build_attempt(&f.estate, st, build_id).await;
-            let stopped = f.estate.node_values_at(&st.fp_name()).await.iter().any(|n| n["name"] == json!(node) && n["stopped"] == true);
+            let stopped = f.estate.node_values_at(&st.fp_name()).await.iter().any(|n| rdm_test::estate::is_location(&n, &node) && n["stopped"] == true);
             if b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= want && stopped {
                 break;
             }
@@ -2225,7 +2225,7 @@ async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathN
         if let Some(nodes) = &nodes {
             if role_ms.is_none() {
                 if let Some(own) = nodes_at(&f.estate, &location(&survivor)).await {
-                    let me = own.iter().find(|n| n["name"] == survivor["name"]);
+                    let me = own.iter().find(|n| (rdm_test::estate::location(&n) == rdm_test::estate::location(&survivor)));
                     if me.is_some_and(|m| m["is_primary"] == true) {
                         role_ms = Some(started.elapsed().as_millis() as u64);
                         progress(&format!("{} holds {mesh}'s role in its own view after {} ms", survivor["name"], role_ms.unwrap()));
@@ -2663,7 +2663,7 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
     restart_via_build(&mut f, &mut a, &st, &location(&incumbent), &format!("C19 {quiet}: the primary restarts and holds no primary role")).await;
     st = a.stable(&mut f, &format!("C19 {quiet}: the restarted primary is Ready"), &both(2), &mut inv).await;
     assert_ne!(st.primary_of(&quiet)["node_id"], incumbent["node_id"], "C19: the admin that filled the restarted primary's role keeps it while it lives, whatever NodeId the restarted one holds");
-    let back = st.admins.iter().find(|n| n["name"] == incumbent["name"]).unwrap_or_else(|| panic!("C19: the restarted admin {} is in the view", incumbent["name"]));
+    let back = st.admins.iter().find(|n| (rdm_test::estate::location(&n) == rdm_test::estate::location(&incumbent))).unwrap_or_else(|| panic!("C19: the restarted admin {} is in the view", incumbent["name"]));
     assert_eq!(back["node_id"], incumbent["node_id"], "C19: the restart keeps the NodeId");
     assert_eq!(back["incarnation_id"], incumbent["incarnation_id"], "C19: the restart keeps the incarnation (node-stop.md, Kept)");
     assert_eq!(back["is_primary"], false, "C19: the restarted admin holds no primary role while the admin that filled it lives");
@@ -3359,7 +3359,7 @@ fn representatives(f: &Formed, st: &Stable) -> Vec<PathName> {
     let admin = st
         .admins
         .iter()
-        .filter(|n| n["name"] != st.fp["name"] && location(n) != Estate::path("mesh1.node-admin", "1"))
+        .filter(|n| (rdm_test::estate::location(&n) != rdm_test::estate::location(&st.fp)) && location(n) != Estate::path("mesh1.node-admin", "1"))
         .map(|n| location(&n))
         .min()
         .expect("a node-admin that is neither the fabric-primary nor the Day-0 admin");
@@ -3559,7 +3559,7 @@ async fn restart_run(cell: &str, shape: Shape) {
     for (i, node) in order.iter().cloned().map(Some).chain(std::iter::once(None)).enumerate() {
         // C3's node-admin: neither the fabric-primary nor the Day-0 admin, read at the moment.
         let node = if let Some(node) = node { node } else {
-            st.admins.iter().filter(|n| n["name"] != st.fp["name"] && location(n) != Estate::path("mesh1.node-admin", "1")).map(|n| location(&n)).min().expect("a node-admin that is neither the fabric-primary nor the Day-0 admin")
+            st.admins.iter().filter(|n| (rdm_test::estate::location(&n) != rdm_test::estate::location(&st.fp)) && location(n) != Estate::path("mesh1.node-admin", "1")).map(|n| location(&n)).min().expect("a node-admin that is neither the fabric-primary nor the Day-0 admin")
         };
         let scenario = ["C6 broker-shaped restart", "C5 gateway-shaped restart", "C7 compute-shaped restart", "C3 node-admin restart"][i];
         let (rec, st2) = restart_representative(&mut f, &mut a, &st, &node, scenario, &mut inv).await;
@@ -3664,7 +3664,7 @@ async fn admin_views_of(a: &mut Run, f: &Formed, name: &PathName) -> Vec<Value> 
 /// A topology write at an admin that is not the fabric-primary is refused by name, naming the
 /// fabric-primary, and executes nothing.
 async fn refused_by_a_non_writer(f: &Formed, a: &mut Run, st: &Stable, path: &PathName, how: Removal) -> Value {
-    let non_writer = st.admins.iter().find(|n| n["name"] != st.fp["name"]).expect("an admin that is not the fabric-primary").clone();
+    let non_writer = st.admins.iter().find(|n| (rdm_test::estate::location(&n) != rdm_test::estate::location(&st.fp))).expect("an admin that is not the fabric-primary").clone();
     let _ = how;
     let v = ask(&f.estate, &location(&non_writer), BuildChange::RemoveNode { node: path.clone() }).await;
     assert_eq!((v["reply"].as_str(), &v["fabric_primary"]), (Some("not-fabric-primary"), &st.fp["node_id"]), "a delete sent to {} is refused naming the fabric-primary: {v}", non_writer["name"]);
@@ -4786,7 +4786,7 @@ fn dial(f: &Formed, holder: &PathName, dest: &PathName) -> Call {
 
 /// `primary`'s latest Direct fact toward the node named `dest`, from its own snapshot.
 fn latest_direct(snap: &Value, dest: &PathName) -> Option<Value> {
-    snap["own_latest_directs"].as_array().into_iter().flatten().find(|d| d["destination"]["name"] == json!(dest)).cloned()
+    snap["own_latest_directs"].as_array().into_iter().flatten().find(|d| rdm_test::estate::is_location(&d["destination"], &dest)).cloned()
 }
 
 /// Wait (a bound that fires is the finding) until `primary`'s latest Direct toward `dest` satisfies `ok`.
@@ -5790,7 +5790,7 @@ async fn control_run(cell: &str, shape: Shape) {
     tokio::time::sleep(window * 2).await;
     let after1 = now_ns();
     let settled: Vec<Value> = f.estate.node_values_at(&st.fp_name()).await.into_iter().filter(|n| n["status"] == "ready").collect();
-    let renewed: BTreeSet<PathName> = formed.iter().filter(|n| settled.iter().any(|m| m["name"] == n["name"] && m["node_id"] != n["node_id"])).map(|n| location(&n)).collect();
+    let renewed: BTreeSet<PathName> = formed.iter().filter(|n| settled.iter().any(|m| (rdm_test::estate::location(&m) == rdm_test::estate::location(&n)) && m["node_id"] != n["node_id"])).map(|n| location(&n)).collect();
     let renewed_ids: Vec<(PathName, String)> = formed.iter().filter(|n| renewed.contains(&location(&n))).map(|n| (location(&n), s(&n["node_id"]))).collect();
     let restarted = settled.iter().find(|n| location(n) == restart_target).cloned().unwrap_or_else(|| panic!("the fabric-primary holds {restart_target:?} ready once the fabric is quiet"));
     events.push(json!({"event": "healed", "victim": vname, "healed_at_ns": healed_at, "quiet_after": [after0, after1], "re_created_after_a_verdict": renewed_ids}));

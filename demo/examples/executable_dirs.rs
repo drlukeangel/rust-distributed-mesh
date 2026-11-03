@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
     let rows = Nodes::new(carrier.clone()).get(&Filter::new()).await?;
     let mut nodes = carrier.build(&based_on).await?.nodes;
     for spec in &mut nodes {
-        if let Some(row) = rows.iter().find(|r| r.name == spec.path && r.incarnation_id.is_some()) {
+        if let Some(row) = rows.iter().find(|r| r.location() == spec.location() && r.incarnation_id.is_some()) {
             spec.tags = row.tags.clone();
             spec.config = row.config.clone();
         }

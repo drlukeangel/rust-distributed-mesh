@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
     .await?;
     let row = recovered
         .iter()
-        .find(|n| n.name == target.name)
+        .find(|n| n.location() == target.location())
         .ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
     println!(
         "recovered: path {:?}, name {:?} {:?}, new node_id {}, incarnation {:?}, inherited data_dir {:?} (same={})",

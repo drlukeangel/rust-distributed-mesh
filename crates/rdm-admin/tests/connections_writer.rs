@@ -987,7 +987,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
         // A first failure toward another destination, then the connection to the destination dropped.
         writer.direct_failed(&resolved(&other), "refused by the cell");
         writer.observations_landed().await;
-        let open = writer.held_routes().await.into_iter().filter(|r| r.destination.name == dest.name).collect::<Vec<_>>();
+        let open = writer.held_routes().await.into_iter().filter(|r| r.destination.location() == dest.location()).collect::<Vec<_>>();
         assert_eq!(open.len(), 1, "the Direct to the destination is held: {open:?}");
         writer.write_drops(&open, "node.connection.delete");
         writer.observations_landed().await;

@@ -487,7 +487,7 @@ impl Estate {
     pub async fn settled_named(&self, names: &std::collections::BTreeSet<PathName>) -> Vec<NodeView> {
         let all = self.node_views().await;
         let have: std::collections::BTreeSet<PathName> = all.iter().map(|n| n.location()).collect();
-        assert!(&have == names && all.iter().all(|n| n.status == NodeStatus::Ready), "the view does not hold the nodes the Build completed: wanted {names:?}, the admin lists {:?}", all.iter().map(|n| format!("{:?}={:?}", n.name, n.status)).collect::<Vec<_>>());
+        assert!(&have == names && all.iter().all(|n| n.status == NodeStatus::Ready), "the view does not hold the nodes the Build completed: wanted {names:?}, the admin lists {:?}", all.iter().map(|n| format!("{:?}={:?}", n.location(), n.status)).collect::<Vec<_>>());
         all
     }
 
@@ -573,7 +573,7 @@ impl Estate {
                     if let Some(v) = check(&views) {
                         return v;
                     }
-                    format!("{:?}", views.iter().map(|n| format!("{:?}={:?}/{}", n.name, n.status, n.node_id)).collect::<Vec<_>>())
+                    format!("{:?}", views.iter().map(|n| format!("{:?}={:?}/{}", n.location(), n.status, n.node_id)).collect::<Vec<_>>())
                 }
                 Err(e) => {
                     self.rehandover().await;
@@ -596,7 +596,7 @@ impl Estate {
                     if let Some(v) = check(&views) {
                         return v;
                     }
-                    format!("{:?}", views.iter().map(|n| format!("{:?}={:?}/{}", n.name, n.status, n.node_id)).collect::<Vec<_>>())
+                    format!("{:?}", views.iter().map(|n| format!("{:?}={:?}/{}", n.location(), n.status, n.node_id)).collect::<Vec<_>>())
                 }
                 None => format!("{admin:?} did not answer mesh.nodes.get for {}", self.fabric_id),
             };

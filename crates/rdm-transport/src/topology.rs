@@ -8744,7 +8744,7 @@ mod tests {
             if at_key.len() == 1 {
                 assert_eq!(view.get_at(by_key.node.node_id.as_str(), now), Some((by_key.clone(), silent)), "the endpoint lookup answers what get answers for its NodeId");
             }
-            let at_name: Vec<&MeshDigest> = all.iter().filter(|x| x.node.name == d.node.name).collect();
+            let at_name: Vec<&MeshDigest> = all.iter().filter(|x| x.node.location() == d.node.location()).collect();
             let (by_name, silent) = view.get_by_path_name_at(&d.node.location(), now).expect("a held birth is found by its (path, name)");
             assert!(at_name.contains(&&by_name), "the (path, name) lookup answers a birth a scan finds at {:?}", d.node.name);
             if at_name.len() == 1 {

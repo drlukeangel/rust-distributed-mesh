@@ -1593,7 +1593,7 @@ fn a_ready_nodes_rename_is_refused_admitting_connections_and_nothing_is_written_
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
-        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == succ.node.node_id && n.name == succ.node.name), "the view keeps the birth at its name");
+        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == succ.node.node_id && n.location() == succ.node.location()), "the view keeps the birth at its name");
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(spans.len(), 1, "{spans:?}");
@@ -1815,7 +1815,7 @@ fn a_stopped_nodes_rename_is_refused_admitting_connections_and_nothing_is_writte
         assert_eq!(reply(&call(&rig, &b["admin2"], &update_name(stopped, "2-old")).await), refused);
         assert_eq!(rig.nodes.record_at(&to).await.unwrap(), None, "nothing is claimed at the new name");
         assert_eq!(rig.nodes.record_at(&stopped.node.location()).await.unwrap(), row, "the row stands at its key as it was");
-        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == stopped.node.node_id && n.name == stopped.node.name), "the view lists the stopped node at its name");
+        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == stopped.node.node_id && n.location() == stopped.node.location()), "the view lists the stopped node at its name");
         assert_eq!(reply(&call(&rig, &b["admin2"], &update_name(stopped, "2-old")).await), refused, "a repeat is refused the same way");
     });
     let spans = cap.spans(NAME_SPAN);
@@ -1878,7 +1878,7 @@ fn a_name_outside_the_grammar_or_the_path_name_shape_is_refused_by_name_and_noth
             assert!(matches!(&refused, StatusReply::RejectedName { reason } if reason.contains(bad)), "{bad}: {refused:?}");
         }
         assert_eq!(rig.nodes.node(&left.node.node_id).await.unwrap().map(|r| r.name), Some(left.node.name.clone()), "the node's record stays at its name");
-        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == left.node.node_id && n.name == left.node.name), "the view keeps the node at its name");
+        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == left.node.node_id && n.location() == left.node.location()), "the view keeps the node at its name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
     });
     let spans = cap.spans(NAME_SPAN);

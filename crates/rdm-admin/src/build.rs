@@ -982,7 +982,7 @@ mod tests {
         let location = PathName::new("unrelated.branch", "north-old").unwrap();
         let refusal = BuildReject::UnknownNode { path: location.path.clone(), name: location.name.clone(), step: Some(2) };
         let value = serde_json::to_value(&refusal).unwrap();
-        assert_eq!(value["node"], serde_json::json!({ "path": "unrelated.branch", "name": "north-old" }));
+        assert_eq!((&value["path"], &value["name"]), (&serde_json::json!("unrelated.branch"), &serde_json::json!("north-old")));
         assert_eq!(serde_json::from_value::<BuildReject>(value).unwrap(), refusal);
         assert!(refusal.to_string().contains("path `unrelated.branch`, name `north-old`"));
 

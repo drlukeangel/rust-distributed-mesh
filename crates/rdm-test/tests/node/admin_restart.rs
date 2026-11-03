@@ -103,7 +103,7 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     let recovered = wait_for(&format!("{primary:?} is {away}'s mesh primary again and a new node stands ready at {successor:?}"), Duration::from_secs(120), || async {
         let nodes = estate.node_values().await;
         let h_ok = nodes.iter().any(|n| s(&n["node_id"]) == primary_birth.0 && n["is_primary"] == true && n["status"] == "ready");
-        let re_born = nodes.iter().find(|n| n["name"] == serde_json::json!(successor) && n["status"] == "ready" && s(&n["node_id"]) != successor_birth.0).cloned();
+        let re_born = nodes.iter().find(|n| rdm_test::estate::is_location(n, &successor) && n["status"] == "ready" && s(&n["node_id"]) != successor_birth.0).cloned();
         if h_ok { re_born } else { None }
     })
     .await;

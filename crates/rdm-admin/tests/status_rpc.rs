@@ -869,10 +869,10 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
         {
             let mut t = rig.door.topology.write().await;
             for n in t.nodes.iter_mut() {
-                if n.name == fp1.node.name {
+                if n.location() == fp1.node.location() {
                     n.is_fabric_primary = false;
                 }
-                if n.name == fp2.node.name {
+                if n.location() == fp2.node.location() {
                     n.is_fabric_primary = true;
                 }
             }
@@ -886,10 +886,10 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
         let rig2 = rig_with(receiver2, &[&fp1, &fp2], BTreeMap::new(), store.clone(), folded, Some(fabric.clone())).await;
         {
             let mut t = rig2.door.topology.write().await;
-            for n in t.nodes.iter_mut().filter(|n| n.name == fp1.node.name) {
+            for n in t.nodes.iter_mut().filter(|n| n.location() == fp1.node.location()) {
                 n.is_fabric_primary = false;
             }
-            for n in t.nodes.iter_mut().filter(|n| n.name == fp2.node.name) {
+            for n in t.nodes.iter_mut().filter(|n| n.location() == fp2.node.location()) {
                 n.is_fabric_primary = true;
             }
         }

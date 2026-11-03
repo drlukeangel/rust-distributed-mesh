@@ -1164,7 +1164,7 @@ impl Driver {
             if n["type"] == "node-admin" || n["is_primary"] != true {
                 return None;
             }
-            let secondary = nodes.iter().any(|o| o["mesh"] == n["mesh"] && o["type"] == n["type"] && o["name"] != n["name"] && o["status"] == "ready");
+            let secondary = nodes.iter().any(|o| o["mesh"] == n["mesh"] && o["type"] == n["type"] && (crate::estate::location(&o) != crate::estate::location(&n)) && o["status"] == "ready");
             (!secondary).then(|| format!("{what}: {:?} holds its node-type primary role and no other {} of {} is ready: node.primary.update has no secondary", location(n), s(&n["type"]), s(&n["mesh"])))
         };
         // A replacement is a delete then a spawn, and a spawn lands at the lowest free ordinal of

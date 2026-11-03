@@ -40,7 +40,7 @@ async fn build(carrier: &BuildCarrier, node: &PathName, change: impl FnOnce(&mut
     let rows = Nodes::new(carrier.clone()).get(&current()).await?;
     let mut nodes = carrier.build(&based_on).await?.nodes;
     for spec in &mut nodes {
-        if let Some(row) = rows.iter().find(|r| r.name == spec.path) {
+        if let Some(row) = rows.iter().find(|r| r.location() == spec.location()) {
             spec.tags = row.tags.clone();
             spec.config = row.config.clone();
         }
