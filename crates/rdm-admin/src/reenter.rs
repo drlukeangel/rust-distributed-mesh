@@ -19,10 +19,12 @@ use rdm_transport::topology::TopologyView;
 use rdm_transport::{CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The most nodes pinged at once.
 pub(crate) const SWEEP_CONCURRENCY: usize = 8;
+/// A node's one deadline in the sweep (node-create.md "A node-admin created into a live mesh" step 4).
+pub(crate) const SWEEP_DEADLINE: Duration = Duration::from_secs(2);
 
 /// One birth of the topology map: what a Ping needs to reach it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,8 +230,10 @@ async fn ping(ctx: &EntryCtx, n: &MapNode) -> Result<(), String> {
         ctx.resolver.apply(r, None);
     }
     let req = rdm_core::ping::PingRequest::Ping { payload: b"entry-sweep".to_vec() };
-    // The default `Send` (Q344): a node not reached within its attempts goes to node recovery.
-    let opts = CallOptions::default();
+    // The page states this call's own bound (node-create.md "A node-admin created into a live mesh" step 4:
+    // "one bounded Ping, once, to every node IN ITS OWN MESH (a 2 s deadline each, at most 8 at once)"):
+    // one attempt of `SWEEP_DEADLINE`.
+    let opts = CallOptions { send: rdm_transport::Send { attempts: 1, time_limit: rdm_transport::TimeLimit(SWEEP_DEADLINE) }, ..CallOptions::default() };
     let (out, _) = ctx.client.call::<rdm_core::ping::Ping>(&NodeTarget::ExactNode(n.node_id.clone()), &req, &opts).await;
     if out.reply().is_some() {
         Ok(())
