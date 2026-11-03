@@ -81,7 +81,7 @@ Build/lifecycle/leadership
 
 Gossip silence, neighbour loss, failed dial, or missing push never shows a node Dead by itself.
 
-Completed Build receipt history is not required to recover current runtime identity and is not replayed merely so a future primary can manage a birth.
+Completed Build step events are not required to recover current runtime identity and is not replayed merely so a future primary can manage a birth.
 
 ---
 
@@ -163,8 +163,8 @@ local Instant         silence and elapsed time                    (receiver-loca
 `operation` is the lifecycle operation's idempotency key (`node.delete:mesh2.node.2`), not a
 deployment pipeline step: one node.delete runs many steps and publishes one `NodeDeleting` and one
 `NodeDeleted`. `(build_id, operation)` is the only operation identity and is carried on
-the operation's Step receipt; no other operation id is minted. Every removal has a Build, and an
-operation without that identity is not a lifecycle op.
+the operation's step event; no other operation id is minted. Every removal is a step, a Build's or a node
+recovery's, and an operation without that identity is not a lifecycle op.
 
 The material topology projection, which `topology_version` orders and the forwarder's delta is
 computed on, is the same normalized view on every node:
@@ -606,7 +606,7 @@ catalog's per-frame fields (§3.1) are the values these attributes carry.
 | `time` | rafka-time of the fact; never an ordering |
 | `data` | the body, the frame's own fields |
 | `datacontenttype` | `application/octet-stream`, always: `data` is postcard bytes; any other value is refused by name |
-| `dataschema` | absent on an `rdm.*` frame; on an app event, the app's own schema name for `data`, carried opaque both ways (an executable replacement's slot); RDM reads it for nothing |
+| `dataschema` | absent on an `rdm.*` frame; on an app event, the app's own schema name for `data`, carried opaque both ways; RDM reads it for nothing |
 | `traceparent`, `tracestate` | the [Distributed Tracing extension](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/distributed-tracing.md): the author's W3C trace context, so the receive spans parent to the author's trace. Observability only: never dispatch, routing or execution; a malformed value is dropped by name and the frame continues, the same rule as the Node RPC context section (Luke, 2026-10-17) |
 
 The receive rules (§3.1) in these terms: for one `(source, subject)`, a higher `sequence` installs,
@@ -734,7 +734,7 @@ A known exact deletion is topology state and a lifecycle event, never a second g
 
 The mesh executor that holds the node.delete publishes `NodeDeleted` (§3.1) on its own mesh
 channel, and carries it in `MeshTopology.deleted` on the backbone, the moment it holds exact provider
-evidence that the runtime is terminal; peer primaries forward it. The operation's Step receipt is
+evidence that the runtime is terminal; peer primaries forward it. The operation's step event is
 written after `NodeDeleted`. The same deletion is then retained in the source Mesh's `MeshTopology.deleted`
 for the deleted retention, so a node that missed the event, joined later or was re-fed after going unheard
 learns it from the next mesh topology, delta, full or top-up.
@@ -794,7 +794,7 @@ A connected node reacts to the event at once. A node that missed it, joined late
 
 The same boundary holds for cross-Mesh topology inside a Mesh (§3.3): a delta that cannot be applied is dropped and the receiver tops up from its own mesh-primary; nothing asks for a replay over gossip.
 
-RuntimeFact is compact bounded current-birth identity state. Do not replace it with replay of every completed `AllocateIdentity`/`DeployRuntime` Build receipt and do not inflate it with arbitrary operational metadata merely because the topology view carries it. Required current runtime metadata may be projected beside the fact in the current Node/birth view. Build gossip already has a bounded frame budget and completed Build history grows without bound.
+RuntimeFact is compact bounded current-birth identity state. Do not replace it with replay of every completed `AllocateIdentity`/`DeployRuntime` step event and do not inflate it with arbitrary operational metadata merely because the topology view carries it. Required current runtime metadata may be projected beside the fact in the current Node/birth view. Build gossip already has a bounded frame budget and completed Build history grows without bound.
 
 ---
 
@@ -936,7 +936,7 @@ an existing mesh keeps that mesh's MeshId.
 
 Held live ordinary members remain reconciliation inputs and are preserved through their current topology + RuntimeFacts/runtime metadata.
 
-A deletion is published by the executor that holds the operation, after its node.delete step's receipt. Running a Build's step does not delete; neither does the node's own `stopped`, a failed RPC, silence or an unheard peer mesh. A lost member is recovered by its mesh-primary ([node recovery](lifecycles/node-recovery.md)): node investigation, then on any verdict but reached one recovery attempt that deletes the unheard node (NodeDeleted from that step) and creates its successor at the same path and name.
+A deletion is published by the executor that holds the operation, after its node.delete step's event. Running a Build's step does not delete; neither does the node's own `stopped`, a failed RPC, silence or an unheard peer mesh. A lost member is recovered by its mesh-primary ([node recovery](lifecycles/node-recovery.md)): node investigation, then on any verdict but reached one recovery that deletes the unheard node (NodeDeleted from that step) and creates its successor at the same path and name.
 
 ---
 
@@ -953,7 +953,7 @@ At minimum:
 8. a held member node investigation re-created is removed from repair targets;
 9. a restarted/joining node-admin cannot become Ready before required topology + the current Build + RuntimeFact/runtime-metadata + provider-domain hydration;
 10. normal joining admin cannot self-Ready around missing hydration; only Day-0/single-admin recovery-root behavior is permitted;
-11. late lower-NodeId admin can learn/adopt current runtimes it did not launch without completed Build receipts;
+11. late lower-NodeId admin can learn/adopt current runtimes it did not launch without completed Build step events;
 12. provider/bootstrap locator production results in exactly one normalized node-published RuntimeFact, not a competing launcher-owned fact;
 13. the current Build comes from durable storage or the JoinNode (op `0x1D`), never from gossip alone;
 14. older Build history is not replayed to recover RuntimeFacts or the accepted topology;
@@ -976,5 +976,5 @@ At minimum:
 31. a forwarder that missed an intermediate source version emits one delta from the version it last published to the one it holds;
 32. a source Mesh whose nodes only heartbeat does not bump `topology_version`, and no delta travels;
 33. `NodeDeleting` is never emitted before the mesh's primary has received its section of the Build (`build.attempt.run`); a multi-mesh Build's second mesh emits its `NodeDeleting` only after the fabric-primary dispatches that mesh's section, never on Build acceptance;
-34. `NodeDeleted` is never emitted without node.delete's step receipt; silence, a failed RPC and an unheard peer never produce it; after it, `ExactNode(old)` is `Gone`, the path has no node until a new birth, and the current topology does not list the node;
+34. `NodeDeleted` is never emitted without node.delete's step event; silence, a failed RPC and an unheard peer never produce it; after it, `ExactNode(old)` is `Gone`, the path has no node until a new birth, and the current topology does not list the node;
 35. unplanned loss produces one `NodeDeleted` for the old identity, after evidence, from the recovery Build's node.delete.
