@@ -29,7 +29,7 @@ use rdm_core::{ConnectionId, IncarnationId};
 fn to_end(n: &NodeView) -> Result<ConnectionEnd> {
     Ok(ConnectionEnd {
         mesh: n.mesh.clone(),
-        kind: n.r#type,
+        r#type: n.r#type.clone(),
         name: n.name.clone(),
         node_id: n.node_id.clone(),
         incarnation: Some(
