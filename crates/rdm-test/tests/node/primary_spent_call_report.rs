@@ -12,9 +12,10 @@
 //! the fabric-primary). The fabric-primary marks the mesh-primary
 //! (`rdm.node_admin.node.update.via-call-failed`, sender the node, outcome `marked`), and its
 //! primary watch investigates it from that mark (`rdm.node_admin.primary.update.via-investigation`,
-//! trigger `call-failed`), before the birth's silence alone would have started it (a floor after the
-//! hold). Must NOT happen: no report, a report to anyone but the fabric-primary, no mark, or the first
-//! investigation of the mesh-primary only once its silence passed the floor.
+//! trigger `call-failed`) once mesh2's aggregate is unheard past the floor (Q335 as amended, D66: with
+//! it heard, the successor that publishes it investigates), by the watch's next pass: at most the floor
+//! plus one gossip interval after the hold. Must NOT happen: no report, a report to anyone but the
+//! fabric-primary, no mark, or an investigation later than that bound.
 use rdm_client::{NodeView, PathName};
 
 use rdm_test::estate::{named, wait_for, Estate, Owner};
@@ -25,7 +26,7 @@ use std::time::Duration;
 
 const TEST: &str = "a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_primary_which_marks_and_investigates_it";
 /// The staleness floor given to every node of the estate: past the ~30 s a call to a held birth takes to
-/// spend its three attempts, so the mark from the spent call comes before the silence one.
+/// spend its three attempts, so the mark is recorded before the mesh's aggregate is unheard past it.
 const FLOOR: Duration = Duration::from_secs(60);
 
 fn owner() -> Owner {
@@ -91,7 +92,11 @@ async fn a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_prim
             .cloned()
     })
     .await;
-    let investigation = wait_for("the fabric-primary's primary watch investigates the marked mesh-primary", FLOOR, || async {
+    // The fabric-primary investigates a peer mesh's primary once that mesh's aggregate is unheard past the
+    // floor (Q335 as amended, D66: with it heard, the successor that publishes it investigates): the mark is
+    // recorded first, and the investigation follows on the watch's next pass past the floor.
+    let bound = FLOOR + rdm_core::cadence::gossip_interval();
+    let investigation = wait_for("the fabric-primary's primary watch investigates the marked mesh-primary", bound, || async {
         named(&estate.spans(), "rdm.node_admin.primary.update.via-investigation")
             .into_iter()
             .filter(|sp| s(&sp["attributes"]["suspect_node_id"]) == mp_id && at(sp) >= held_at)
@@ -112,7 +117,7 @@ async fn a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_prim
     assert_eq!(s(&mark["attributes"]["outcome"]), "marked", "{mark}");
     assert_eq!(s(&investigation["attributes"]["trigger"]), "call-failed", "investigated from the spent call's mark: {investigation}");
     assert!(at(&investigation) >= at(&mark), "the investigation follows the mark");
-    assert!(at(&investigation) < held_at + FLOOR.as_nanos() as u64, "the mark started it, before silence alone would have: hold {held_at}, investigation {}", at(&investigation));
+    assert!(at(&investigation) <= held_at + bound.as_nanos() as u64, "investigated by the watch's next pass once the mesh's aggregate is unheard past the floor (D66): hold {held_at}, investigation {}", at(&investigation));
     for sp in [&report, &mark, &investigation] {
         estate.record_trace_url(sp["trace_id"].as_str().unwrap_or(""));
     }

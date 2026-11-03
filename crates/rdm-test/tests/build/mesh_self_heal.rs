@@ -2,7 +2,7 @@
 
 use rdm_client::NodeStatus;
 use rdm_core::build::BuildPhase;
-use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -61,6 +61,18 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
     assert_eq!(current.phase, BuildPhase::Complete, "the Build stays completed");
     assert!(current.current, "the accepted Build remains the current Build");
 
+    // The recovery records its end when its create returns, after the node it created is ready: the
+    // estate stops only once it has, so the stop never cuts the recovery short.
+    wait_for("mesh2's primary's recovery of its member ends", Duration::from_secs(60), || {
+        let (estate, victim) = (&estate, victim.1.to_string());
+        async move {
+            named(&estate.spans(), "rdm.node_admin.node.update.via-node-recovery")
+                .into_iter()
+                .any(|sp| s(&sp["attributes"]["node_id"]) == victim && !s(&sp["attributes"]["outcome"]).is_empty())
+                .then_some(())
+        }
+    })
+    .await;
     estate.stop().await;
     let spans = estate.spans();
     // The mesh-primary self-heals its own mesh as its own workflow, never a Build or part of one
