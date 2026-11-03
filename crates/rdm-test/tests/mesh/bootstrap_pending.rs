@@ -265,12 +265,12 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
 /// "mesh Pending"): a peer mesh's only node-admin is lost (its runtime killed exactly; its mesh holds no
 /// fabric-primary role) while its member lives. The fabric primary runs node investigation on the lost
 /// mesh-primary and recovers it on the verdict, and the node-admin it re-creates joins the live mesh
-/// under the mesh's EXISTING MeshId, on the same Build. As the mesh's successor primary it adopts the
-/// mesh's held state and republishes its held MeshStatus with its changed_at preserved, after its
-/// checklist. Pending is handed once, to the admin that launched the mesh's first admin: the recovery
-/// admin is never handed Pending. What must NOT happen: a second certain Pending hand-off, any Pending
-/// hand-off after the fault, a republish under a new changed_at or before the checklist completed, a
-/// `degraded` status, a second MeshId for the mesh, or a new Build.
+/// under the mesh's EXISTING MeshId, with no Build. As the mesh's successor primary it adopts the
+/// mesh's held state from the maker's topology and republishes the held MeshStatus with its changed_at
+/// preserved, after its checklist. Pending is handed once, to the admin that launched the mesh's first
+/// admin: the recovery admin is handed no state at all (D65). What must NOT happen: a second certain
+/// Pending hand-off, any state hand-off after the fault, a republish under a new changed_at or before the
+/// checklist completed, a `degraded` status, a second MeshId for the mesh, or a new Build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id() {
     let cell = "recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id";
@@ -315,10 +315,10 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build");
     // The fabric is ready before the estate stops.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    // The hand-off is the launching admin's call to the birth it created, answered on its own clock: the
-    // fabric can be ready before that answer, so the estate stops only once the hand-off is made.
-    rdm_test::estate::wait_for("the successor is handed the mesh's held state", Duration::from_secs(60), || async {
-        named(&estate.spans(), "rdm.node_admin.mesh.update.via-state-handoff").into_iter().chain(named(&estate.spans(), "rdm.node_admin.mesh.update.via-pending-handoff")).find(|sp| sp["attributes"]["mesh"] == lost.as_str() && start(sp) >= fault_ns).map(|_| ())
+    // The successor adopts the mesh's held state on its own clock: the fabric can be ready before it, so
+    // the estate stops only once it has.
+    rdm_test::estate::wait_for("the successor adopts the mesh's held state", Duration::from_secs(60), || async {
+        named(&estate.spans(), "rdm.node_admin.mesh.update.via-held-state-adopted").into_iter().find(|sp| sp["attributes"]["mesh"] == lost.as_str() && rdm_test::estate::at_location(sp, &lost_admin) && start(sp) >= fault_ns).map(|_| ())
     })
     .await;
     // The republish follows the successor's checklist, which completes when every member is heard
@@ -341,6 +341,8 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     assert!(start(certain_handoffs[0]) < fault_ns, "the one certain hand-off is the first birth's, before the fault: {handoffs:?}");
     let pending_after: Vec<&&Value> = handoffs.iter().filter(|h| start(h) >= fault_ns).collect();
     assert!(pending_after.is_empty(), "the recovery admin is never handed Pending: {pending_after:?}");
+    let state_after: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-state-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == lost.as_str() && start(h) >= fault_ns).collect();
+    assert!(state_after.is_empty(), "the recovery admin is handed no state; it adopts the held state (D65): {state_after:?}");
 
     // The decision: the fabric primary's node recovery of the lost mesh-primary, on its node investigation's
     // verdict (Q335).
@@ -370,19 +372,17 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         .map(|sp| (s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])))
         .max_by_key(|(_, at)| at.parse::<u64>().expect("a changed_at_rafka_ms"))
         .expect("the lost mesh published its MeshStatus before the fault");
-    // What the successor was handed: the fabric-primary's held state for the mesh with its changed_at,
-    // the declaration it applied or the MeshStatus it heard, whichever is further (node-create.md "A
+    // What the successor adopted: the mesh's held state, from its maker's topology (node-create.md "A
     // node-admin created into a live mesh" step 4). It is never behind what the lost admin published before the fault.
     let rank = |st: &str| ["pending", "ready", "leaving", "dead"].iter().position(|x| *x == st).unwrap_or(0);
-    let handed = named(&spans, "rdm.node_admin.mesh.update.via-state-handoff")
+    let adopted = named(&spans, "rdm.node_admin.mesh.update.via-held-state-adopted")
         .into_iter()
-        .chain(named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff"))
-        .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && start(sp) >= start(&decision))
-        .map(|sp| (s(&sp["attributes"]["state"]).to_lowercase(), s(&sp["attributes"]["changed_at_rafka_ms"])))
+        .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && rdm_test::estate::at_location(sp, &lost_admin) && start(sp) >= start(&decision))
+        .map(|sp| s(&sp["attributes"]["state"]).to_lowercase())
         .last()
-        .expect("the successor is handed the mesh's held state after the decision");
-    assert!(rank(&handed.0) >= rank(&held.0), "the hand-off is never behind the held MeshStatus {held:?}: {handed:?}");
-    let expected = if handed.1 != "0" { handed.clone() } else { held.clone() };
+        .expect("the successor adopted the mesh's held state after the decision");
+    assert!(rank(&adopted) >= rank(&held.0), "the adopted state is never behind the held MeshStatus {held:?}: {adopted:?}");
+    let expected = held.clone();
     let degraded_sends: Vec<&&Value> = sends.iter().filter(|sp| sp["attributes"]["status"] == "degraded").collect();
     assert!(degraded_sends.is_empty(), "no degraded status is sent: {degraded_sends:?}");
     let republished: Vec<&&Value> = sends
@@ -392,7 +392,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     assert!(!republished.is_empty(), "the successor primary republishes the held MeshStatus (a via-status-send for {scope} after the decision): none");
     for sp in &republished {
         assert_eq!(s(&sp["attributes"]["node"]), s(&recovered["node_id"]), "the mesh's status is its own primary's, the recovered birth at {lost_admin:?}: {sp}");
-        assert_eq!((s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])), expected, "the republish is the held MeshStatus it was handed, changed_at preserved: {sp}");
+        assert_eq!((s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])), expected, "the republish is the held MeshStatus, changed_at preserved: {sp}");
     }
     let checklist_complete = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete")
         .into_iter()
