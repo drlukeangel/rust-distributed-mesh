@@ -14,7 +14,7 @@ you use before writing a cell, and grep `crates/rdm-test/src/` for a helper befo
 |---|---|
 | `crates/rdm-test/src/estate.rs` | the blackbox estate: real `rdm-node-admin` processes started through their launch contract, reached only through public surfaces |
 | `crates/rdm-test/src/typed.rs` | the estate's typed handles on the fabric (`Nodes`, `Meshes`, `Fabrics`, `Builds`) over Node RPC |
-| `crates/rdm-test/src/rig.rs` | the launcher half of a functional fabric: an in-process admin side (a gossip seed, a Node RPC client, the join and topology doors a launched node calls first) |
+| `crates/rdm-test/src/rig.rs` | the launcher half of a functional fabric: an in-process admin side (a gossip seed, a Node RPC client, the `JoinService` and `TopologyService` a launched node calls first) |
 | `crates/rdm-test/src/executables.rs` | where each created path's executable comes from |
 | `crates/rdm-test/src/scenario.rs`, `runner.rs` | declarative scenario files and their runner ([testing-strategy-seed.md](testing-strategy-seed.md)) |
 | `crates/rdm-test/src/soak.rs` | the soak driver: a seeded schedule of legal actions judged on invariants |

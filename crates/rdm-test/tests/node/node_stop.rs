@@ -1300,7 +1300,7 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
 /// CONTRACT (i146 Q39; node-status.md "Status report"; node-primary-update.md steps 5-8): a node's
 /// declaration is owed to the primary of its mesh's primary role, and the role moving is its one
 /// retargeting. In a fabric of two meshes, mesh2's non-primary node is restarted while mesh2's
-/// primary holds the restart's node.started unanswered at its status door (the fault door's
+/// primary holds the restart's node.started unanswered at its `StatusService` (the fault door's
 /// declaration cut): the restart's wait for the node's readiness fails naming the node.started its
 /// primary never took, the node live and its declaration owed. Then mesh2's primary is stopped,
 /// which moves mesh2's role to mesh2's other admin first. The node hears the move: its call to the
@@ -1395,7 +1395,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
 /// §43, "Owed messages: delivery is the runtime's"; step 5 and Q49: whichever of the stopped frame and the
 /// declaration reaches the mesh-primary first is applied, and the other answers `AlreadyApplied`):
 /// mesh2's node is stopped while mesh2's primary holds the node's `Stopped` declaration unanswered at
-/// its status door (the fault door's declaration cut) and holds the stop stream's `stopped` unrecorded
+/// its `StatusService` (the fault door's declaration cut) and holds the stop stream's `stopped` unrecorded
 /// (its event cut), and that primary is then SIGKILLed: the role moves to mesh2's other admin, and the
 /// stopped node, which left its mesh's channel at its transport cut, hears neither the death nor the
 /// move. The stop's receipt and reply never wait for the declaration's answer: the Build's next attempt,

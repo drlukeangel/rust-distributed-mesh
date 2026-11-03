@@ -172,7 +172,7 @@ pub enum Hit {
         /// The deployment the runtime belongs to.
         deployment_id: String,
     },
-    /// A node's declaration at the status door, about to be decided.
+    /// A node's declaration at the `StatusService`, about to be decided.
     ///
     /// Position 9 on the wire.
     Declaration {

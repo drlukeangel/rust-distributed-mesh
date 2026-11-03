@@ -72,7 +72,7 @@ async fn running(r: &Rig, build: &rdm_admin::build::BuildId) {
 
 /// CONTRACT (build.md §1: "The one exception is fabric.delete, which may interrupt the Build in progress
 /// because its target is nothing"; fabric-delete.md "Precondition"): while the initial fabric is pending
-/// and a growth Build's attempt runs, a standalone mesh.delete and node.delete are refused
+/// and a growth Build's section runs, a standalone mesh.delete and node.delete are refused
 /// build-in-progress and fabric.delete is accepted as the next Build, the current one from then on;
 /// beside it a standalone mesh.delete is still refused build-in-progress. What must NOT happen:
 /// fabric.delete refused, or a standalone mesh.delete or node.delete admitted beside a Build in progress.

@@ -297,10 +297,10 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.resolve.via-build-get` | `crates/rdm-admin/src/build_op.rs` | 405 |
 | `rdm.node_admin.build.resolve.via-call` | `crates/rdm-core/src/names.rs` | 181 |
 | `rdm.node_admin.build.resolve.via-records-read` | `crates/rdm-admin/src/build_state.rs` | 1455 |
-| `rdm.node_admin.build.serve.via-attempt-run` | `crates/rdm-admin/src/build_run.rs` | 451 |
 | `rdm.node_admin.build.serve.via-node-rpc` | `crates/rdm-admin/src/build_op.rs` | 146 |
 | `rdm.node_admin.build.serve.via-own-section` | `crates/rdm-admin/src/build_run.rs` | 466 |
 | `rdm.node_admin.build.serve.via-run-turn` | `crates/rdm-admin/src/build_run.rs` | 523 |
+| `rdm.node_admin.build.serve.via-section-run` | `crates/rdm-admin/src/build_run.rs` | 451 |
 | `rdm.node_admin.build.update.via-adoption-failed` | `crates/rdm-admin/src/admin/adoption.rs` | 263 |
 | `rdm.node_admin.build.update.via-dispatched` | `crates/rdm-admin/src/build_drive.rs` | 536 |
 | `rdm.node_admin.build.update.via-drift-held` | `crates/rdm-admin/src/admin/boot.rs` | 3377 |

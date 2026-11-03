@@ -340,7 +340,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
                 // Call 2: join fails after start.
                 CommandAdmission::StartFailed {
                     step: "node.join".into(),
-                    reason: "join door cut".into(),
+                    reason: "join service cut".into(),
                     code: rdm_core::outcome::Code::Unavailable,
                 },
                 // Call 3: StartNode succeeds, then cut while suspended at WaitForNodeReady.
