@@ -297,18 +297,18 @@ impl FabricStates {
         }
     }
 
-    /// Enter `next`. Pending is readable at once: no Build completes on a fabric going back to
-    /// pending. Ready is entered in the order fabric-node-hooks.md states (`on_fabric_ready` "after
-    /// the ready state is set"; a resize's Complete "follows its on_fabric_ready"): the Fabric record
-    /// is written `ready` (the state is set), then `on_fabric_ready` is sent for `ready_of`, the
-    /// accepted Build, its span opened before its task is spawned, and only then is Ready readable to
-    /// the drive (`Records::fabric_state`, read by `Gate::fabric_ready`), so no Build's
-    /// `on_build_ended` is written between the state being set and its `on_fabric_ready`.
+    /// Enter `next`, in the order fabric-node-hooks.md states: the state is set (readable at once, so
+    /// `on_fabric_ready`'s handler reads it), the Fabric record is written, then `on_fabric_ready` is
+    /// sent for `ready_of`, the accepted Build, its span opened before its task is spawned. While a
+    /// Ready's notice is owed no Build completes (`Records::fabric_ready`, read by `Gate::fabric_ready`):
+    /// a resize's Complete "follows its on_fabric_ready".
     async fn enter(&self, change: &mut Change, next: FabricState, me: &PathName, ready_of: Option<&crate::build_state::BuildProjection>) {
         let from = self.env.records.fabric_state();
-        if next != FabricState::Ready {
-            self.env.records.set_fabric_state(next);
+        let notice = next == FabricState::Ready && ready_of.is_some() && !change.notified;
+        if notice {
+            self.env.records.set_fabric_ready_notice_owed(true);
         }
+        self.env.records.set_fabric_state(next);
         self.env.records.set_fabric_blocker(None);
         change.named = None;
         let parent = change.root.clone().unwrap_or_else(tracing::Span::none);
@@ -325,12 +325,10 @@ impl FabricStates {
             Err(e) => span.record("record", "not-written").record("error", e.as_str()),
         };
         span.in_scope(|| tracing::info!("the fabric-primary entered a fabric state"));
-        if next == FabricState::Ready {
-            if let Some(build) = ready_of.filter(|_| !change.notified) {
-                change.notified = true;
-                self.notify_fabric_ready(build, parent, me.clone());
-            }
-            self.env.records.set_fabric_state(FabricState::Ready);
+        if let Some(build) = ready_of.filter(|_| notice) {
+            change.notified = true;
+            self.notify_fabric_ready(build, parent, me.clone());
+            self.env.records.set_fabric_ready_notice_owed(false);
         }
         self.env.records.wake.poke();
     }

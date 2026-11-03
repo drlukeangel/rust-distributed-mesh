@@ -357,6 +357,10 @@ pub struct Records {
     /// the reconcile loop waits on (its pass reads whether the fabric holds ready), apart from the
     /// declarer's wake.
     pub(crate) fabric_state_watch: tokio::sync::watch::Sender<crate::fabric_state::FabricState>,
+    /// The fabric-primary has made Ready readable and not yet sent that Ready's `on_fabric_ready`: no
+    /// Build completes while it is owed (fabric-node-hooks.md: a resize's Complete "follows its
+    /// on_fabric_ready"; [`Self::fabric_ready`]).
+    pub(crate) fabric_ready_notice_owed: std::sync::atomic::AtomicBool,
     /// What keeps the fabric in its state, named (`None`: nothing, or not the fabric-primary).
     pub(crate) fabric_blocker: Mutex<Option<String>>,
     /// The fabric state the fabric-primary last put in a FabricStatus frame. The change enters the
@@ -631,6 +635,22 @@ impl Records {
     /// The fabric state this admin projects.
     pub fn fabric_state(&self) -> crate::fabric_state::FabricState {
         *self.fabric_state.lock().unwrap()
+    }
+
+    /// Whether the fabric holds ready for a Build to complete on: Ready, and that Ready's
+    /// `on_fabric_ready` sent (fabric-node-hooks.md: a resize's Complete follows its on_fabric_ready).
+    pub fn fabric_ready(&self) -> bool {
+        self.fabric_state() == crate::fabric_state::FabricState::Ready && !self.fabric_ready_notice_owed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Hold whether this Ready's `on_fabric_ready` is still to be sent; a change moves the watch the
+    /// reconcile loop waits on.
+    pub(crate) fn set_fabric_ready_notice_owed(&self, owed: bool) {
+        if self.fabric_ready_notice_owed.swap(owed, std::sync::atomic::Ordering::SeqCst) != owed {
+            self.wake.poke();
+            self.fabric_state_watch.send_replace(self.fabric_state());
+            self.inputs_moved();
+        }
     }
 
     /// Hold the fabric state; the view follows at its next projection. A change wakes the declarer and

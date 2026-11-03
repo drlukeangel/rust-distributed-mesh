@@ -127,7 +127,7 @@ impl crate::build_drive::Gate for RoleGate {
     }
 
     fn fabric_ready(&self) -> bool {
-        self.primary_update.records.fabric_state() == crate::fabric_state::FabricState::Ready
+        self.primary_update.records.fabric_ready()
     }
 
     /// The completed lifecycle steps of the Build, taken into the fabric-primary's atlas before the
