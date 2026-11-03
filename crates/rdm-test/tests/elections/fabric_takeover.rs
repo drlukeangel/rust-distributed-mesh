@@ -602,11 +602,11 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
 
 /// CONTRACT (Q156; fabric-recovery.md "Nothing alive": "No node-admin is alive, the fabric's other nodes
 /// alive or not. Nothing inside the fabric brings an admin back: a person or a script launches a
-/// node-admin at the lost fabric-primary's path.name, with no launcher, given the fabric id, its mesh and
+/// node-admin at the lost fabric-primary's path and name, with no launcher, given the fabric id, its mesh and
 /// the store root ... It adopts what the store holds and mints no fabric or mesh id; it is a new birth
-/// with its own node.id ... Before any recovery mutation other than the claim itself, it claims the
-/// fabric-recovery attempt of the current Build for that mesh ... Otherwise the claimed attempt releases
-/// the name, re-creates the birth as itself, adopts rafka-time from live members, and restores it as
+/// with its own node.id ... runs node investigation on the lost birth: reached, or any node-admin
+/// answering before its first mutation, it is refused NameHeld and exits, its adoption recorded failed.
+/// Otherwise it releases the name, re-creates the birth as itself, adopts rafka-time from ... and restores it as
 /// fabric-primary by step 4 once Ready"): a one-mesh fabric's sole node-admin, the
 /// fabric-primary, is killed while its two members serve. A person launches a node-admin at
 /// mesh1.node-admin.1 over a new data dir, handed the fabric id, mesh1, the store root and the custody in its

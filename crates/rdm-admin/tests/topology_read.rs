@@ -563,7 +563,7 @@ fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
 }
 
 fn stored_of(d: &MeshDigest) -> rdm_core::topology::StoredNode {
-    rdm_core::topology::StoredNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(), node_id: d.node.node_id.clone(), name: d.node.location(), endpoint_id: d.node.endpoint_id.clone(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr }
+    rdm_core::topology::StoredNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(), node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.clone(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr }
 }
 
 /// `n` serves the births `rows` as its stored map.

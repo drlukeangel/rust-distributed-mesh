@@ -104,8 +104,8 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         // incarnation | path "mesh1.node" name "1" } | receiver { node_id | incarnation | path "mesh1.node"
         // name "2" } | reason "r". Written by hand from the postcard rules.
         (ReportCallFailed {
-            sender: ReportedBirth { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap() },
-            receiver: ReportedBirth { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "2").unwrap() },
+            sender: ReportedBirth { node_id: node(), incarnation: birth(), path: "mesh1.node".into(), name: "1".into() },
+            receiver: ReportedBirth { node_id: node(), incarnation: birth(), path: "mesh1.node".into(), name: "2".into() },
             reason: "r".into(),
         }, concat!(
             "26",

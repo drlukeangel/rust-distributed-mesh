@@ -703,7 +703,7 @@ mod tests {
     }
 
     /// `id`'s `rdm.build.started`, written by `executor`: the Build is running.
-    async fn claim(builds: &crate::build_state::MemoryBuildStateAdapter, id: &crate::build::BuildId, executor: &rdm_core::framing::Birth) {
+    async fn started(builds: &crate::build_state::MemoryBuildStateAdapter, id: &crate::build::BuildId, executor: &rdm_core::framing::Birth) {
         use crate::build_state::BuildStateAdapter as _;
         let source = crate::events_storage::EventSource { fabric_id: FabricId::parse("fab000000001").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() };
         builds.events().append(&crate::events_storage::Event::build_started(&source, 1, id)).await.unwrap();
@@ -793,7 +793,7 @@ mod tests {
         let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
-        claim(&builds.inner, &id, &fp.birth().unwrap()).await;
+        started(&builds.inner, &id, &fp.birth().unwrap()).await;
         // The fabric-primary alone in its one-mesh fabric, its mesh ready; pending went out.
         let view = projected(vec![fp.clone()]);
         let records = Arc::new(Records::default());
@@ -836,7 +836,7 @@ mod tests {
         let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
-        claim(&builds, &id, &fp.birth().unwrap()).await;
+        started(&builds, &id, &fp.birth().unwrap()).await;
         let view = projected(vec![fp.clone()]);
         let records = Arc::new(Records::default());
         every_mesh_ready(&records, None);
@@ -968,7 +968,7 @@ mod tests {
         let a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
         builds.publish_accepted(&BuildAccepted { build_id: a.clone(), topology: topology(Some("aa")), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
-        claim(&builds, &a, &fp.birth().unwrap()).await;
+        started(&builds, &a, &fp.birth().unwrap()).await;
         let view = projected(vec![fp.clone()]);
         let records = Arc::new(Records::default());
         let states = states_of(&fp, view, builds.clone(), records.clone(), FabricId::mint()).await;
@@ -984,7 +984,7 @@ mod tests {
         assert_eq!(records.fabric_state(), FabricState::Ready, "the same Build read from the store root is no resize: the fabric stays ready");
         let b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
         builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology(Some("bb")), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 2_000 }).await.unwrap();
-        claim(&builds, &b, &fp.birth().unwrap()).await;
+        started(&builds, &b, &fp.birth().unwrap()).await;
         {
             let mut change = states.change.lock().await;
             states.step_ready(&mut change, &states.env.builds.current().await).await;
@@ -1383,7 +1383,7 @@ mod tests {
                 .await
                 .unwrap();
             let (fp, _) = fabric_primary_and_mesh2();
-            claim(&builds, &build_a, &fp.birth().unwrap()).await;
+            started(&builds, &build_a, &fp.birth().unwrap()).await;
             let _ = rdm_core::context::CallContext {
                 traceparent: Some(
                     "00-11111111111111111111111111111111-2222222222222222-01".into(),
@@ -1496,7 +1496,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            claim(&builds, &build_b, &fp.birth().unwrap()).await;
+            started(&builds, &build_b, &fp.birth().unwrap()).await;
             let _ = rdm_core::context::CallContext {
                 traceparent: Some(
                     "00-33333333333333333333333333333333-4444444444444444-01".into(),

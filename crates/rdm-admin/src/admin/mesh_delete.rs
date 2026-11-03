@@ -738,9 +738,9 @@ impl AdminRunner {
     async fn run_leave(self: Arc<Self>, key: MeshDeleteKey, parent: tracing::Span) {
         let span = tracing::info_span!(parent: &parent, "rdm.node_admin.mesh.update.via-leave-members", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), operation = %key.operation.action, operation_subject = ?key.operation.subject, outcome = tracing::field::Empty, handoff_attempt = tracing::field::Empty);
         async {
-            let end = crate::mesh_delete::run_admitted(&self.mesh_delete_runs, &key.mesh_id, |key, owner| {
+            let end = crate::mesh_delete::run_admitted(&self.mesh_delete_runs, &key.mesh_id, |key, _| {
                 let runner = self.clone();
-                async move { runner.leave_members(&key, &owner).await }
+                async move { runner.leave_members(&key).await }
             })
             .await;
             match end {
@@ -769,9 +769,8 @@ impl AdminRunner {
     }
 
     /// Both tiers over the accepted roster, then the one manifest receipt
-    /// ([`crate::mesh_delete::members_exited`]). `owner` is the fabric-primary that sent `DeleteMesh`:
-    /// the Build is read from its committed records (Q292).
-    async fn leave_members(&self, key: &MeshDeleteKey, owner: &crate::mesh_delete::MeshDeleteOwner) -> Result<ExitManifest, String> {
+    /// ([`crate::mesh_delete::members_exited`]); the Build is read from its committed records (Q292).
+    async fn leave_members(&self, key: &MeshDeleteKey) -> Result<ExitManifest, String> {
         let me_name = self.node_id.to_string();
         let view = self.topology.read().await.clone();
         let me = view.own(&self.node_id).cloned().ok_or_else(|| format!("{me_name} holds no view of itself"))?;
@@ -783,7 +782,6 @@ impl AdminRunner {
         // roster amendments the fabric-primary recorded (a primary lost mid-leave) are read from the
         // Build's committed records in storage when this admin has not yet heard them (Q292;
         // [`crate::mesh_delete::leaving_roster`]).
-        let _ = owner;
         // The Build is read from its committed records first, as a section's run reads it (Q292): the
         // leaving primary holds no record of the Build its delete-mesh names until it reads it.
         let facts = self.local.committed_facts(Some(&key.build_id)).await.map_err(|e| format!("{me_name}: the committed records of Build {} could not be read for the leave's roster: {e}", key.build_id))?;

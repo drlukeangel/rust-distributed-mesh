@@ -167,7 +167,7 @@ pub async fn read(
 /// An adoption launch's start: the lost birth it recovers, and, under an in-force fabric.delete, its own
 /// new path and name.
 #[derive(Debug, Clone)]
-pub struct Claimed {
+pub struct AdoptionLaunch {
     /// The lost fabric-primary's birth.
     pub lost: crate::storage::NodeRecord,
     /// Under an in-force fabric.delete (Q159): the launch's own new path and name. `None` for the adoption at
@@ -179,8 +179,8 @@ pub struct Claimed {
 /// Build or part of one, and nothing on the store orders two launches (Q342, no lock); under an in-force
 /// fabric.delete the launch takes the fabric-primary role by one recorded transition and drives the
 /// delete from its events.
-pub fn claim(me: &PathName, a: &Adoptable) -> Claimed {
-    Claimed { lost: a.lost.clone(), under_delete: a.delete.as_ref().map(|_| me.clone()) }
+pub fn start(me: &PathName, a: &Adoptable) -> AdoptionLaunch {
+    AdoptionLaunch { lost: a.lost.clone(), under_delete: a.delete.as_ref().map(|_| me.clone()) }
 }
 
 /// Who answers an adoption launch before its first mutation (fabric-recovery.md "Nothing alive").
@@ -193,11 +193,11 @@ pub trait Answers: Send + Sync {
     async fn admins_answering(&self) -> Result<Vec<NodeId>, String>;
 }
 
-/// The checks before the claimed attempt's first mutation: node investigation of the lost birth, then,
+/// The checks before the launch's first mutation: node investigation of the lost birth, then,
 /// last, whether any node-admin the store records answers. Reached, or an admin answering, refuses
 /// `NameHeld` naming who answered; otherwise the investigation's verdict. One
 /// `rdm.node_admin.fabric.update.via-adoption-check` span.
-pub async fn check(c: &Claimed, answers: &dyn Answers) -> Result<Finding, Refused> {
+pub async fn check(c: &AdoptionLaunch, answers: &dyn Answers) -> Result<Finding, Refused> {
     let span = tracing::info_span!(
         "rdm.node_admin.fabric.update.via-adoption-check",
         lost_node_id = %c.lost.node_id,
@@ -259,7 +259,7 @@ impl std::fmt::Display for Refused {
 
 /// A launch refused by its checks (`refused`): its adoption recorded failed on its span, and nothing is
 /// written. Under an in-force fabric.delete the delete stays in force for the admin that answered.
-pub fn fail(c: &Claimed, refused: &Refused) {
+pub fn fail(c: &AdoptionLaunch, refused: &Refused) {
     tracing::info_span!("rdm.node_admin.build.update.via-adoption-failed", node_id = %c.lost.node_id, reason = %refused.reason, under_delete = c.under_delete.is_some(), outcome = "nothing-written")
         .in_scope(|| tracing::info!("the adoption launch is refused by its checks: it writes nothing"));
 }
@@ -274,7 +274,7 @@ pub async fn take_new_name(me: &PathName, mesh: &str, me_id: &NodeId, nodes: &dy
 /// The launch, `me_id`, releases the lost birth's name and takes it ([`crate::node_rows::take_inherited_name`]:
 /// the lost birth's row written `Deleted`, then this node's claim of the path and name), recorded on the
 /// node records, never on a Build.
-pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows) -> Result<(), String> {
+pub async fn release_name(c: &AdoptionLaunch, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows) -> Result<(), String> {
     crate::node_rows::take_inherited_name(nodes, written, &c.lost, me_id).await.map(|_| ()).map_err(|e| format!("node_id={me_id} claims path={} name={} after lost node_id={}: {e}", c.lost.path, c.lost.name, c.lost.node_id))
 }
 
@@ -509,32 +509,32 @@ mod tests {
             // on the store orders two launches (Q342, no lock).
             let me_1 = NodeId::mint();
             let before = builds_store.read_build(&build_id).await.unwrap();
-            let claimed_1 = claim(&path, &adoptable);
-            let _second = claim(&path, &adoptable);
+            let launched = start(&path, &adoptable);
+            let _second = start(&path, &adoptable);
             let after = builds_store.read_build(&build_id).await.unwrap();
             assert_eq!(after, before, "a launch writes nothing on the Build, and a second launch starts too: nothing on the store orders launches");
 
             // 3. Check refuses NameHeld when an admin answers; fail writes nothing.
             let answering_id = NodeId::mint();
-            let refused = check(&claimed_1, &StubAnswers { finding: Finding::Exited { code: Some(0) }, answering: Ok(vec![answering_id.clone()]) })
+            let refused = check(&launched, &StubAnswers { finding: Finding::Exited { code: Some(0) }, answering: Ok(vec![answering_id.clone()]) })
                 .await
                 .expect_err("answering admin refuses NameHeld");
             assert!(refused.reason.contains("NameHeld"), "{}", refused.reason);
             assert_eq!(refused.answered, Some(answering_id));
-            let unreadable = check(&claimed_1, &StubAnswers { finding: Finding::Exited { code: Some(0) }, answering: Err("injected node-store read failure".into()) })
+            let unreadable = check(&launched, &StubAnswers { finding: Finding::Exited { code: Some(0) }, answering: Err("injected node-store read failure".into()) })
                 .await
                 .expect_err("read failure cannot be mistaken for no live admins");
             assert_eq!(unreadable.answered, None, "an error is not an answering node ID");
             assert!(unreadable.reason.contains("injected node-store read failure"));
-            fail(&claimed_1, &refused);
+            fail(&launched, &refused);
 
             // 4. A launch whose checks pass releases the lost birth's name and takes it.
-            let finding = check(&claimed_1, &StubAnswers { finding: Finding::Exited { code: Some(0) }, answering: Ok(Vec::new()) })
+            let finding = check(&launched, &StubAnswers { finding: Finding::Exited { code: Some(0) }, answering: Ok(Vec::new()) })
                 .await
                 .expect("no admin answering passes check");
             assert_eq!(finding, Finding::Exited { code: Some(0) });
             let written = WrittenRows::default();
-            release_name(&claimed_1, &me_1, &nodes_store, &written).await.expect("release_name marks the lost birth Deleted and claims its path and name for me_1");
+            release_name(&launched, &me_1, &nodes_store, &written).await.expect("release_name marks the lost birth Deleted and claims its path and name for me_1");
             let lost_row = crate::storage::NodesStorage::node(&nodes_store, &lost_id).await.unwrap().expect("the lost birth's record");
             assert_eq!(lost_row.status, crate::model::NodeStatus::Deleted, "the lost birth's record is deleted");
             let unchanged = builds_store.read_build(&build_id).await.unwrap();

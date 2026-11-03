@@ -3719,7 +3719,7 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![m1p.clone(), m2p.clone(), m2a.clone(), own.clone(), other.clone()],
         };
-        let birth = |n: &crate::model::Node| rdm_core::status::ReportedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), name: n.location() };
+        let birth = |n: &crate::model::Node| rdm_core::status::ReportedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), path: n.path.clone(), name: n.name.clone() };
         let report = |n: rdm_core::status::ReportedBirth| StatusRequest::report_call_failed(birth(&m1p), n, "not-sent: Connection(\"connect refused\")");
         let door = mesh_primary_of(&m2p, view.clone());
         let mut later_birth = birth(&own);

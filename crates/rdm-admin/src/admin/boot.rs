@@ -609,8 +609,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // node over its inherited data dir). A new node supersedes no birth (node-stop.md, node-start.md: a stop
     // and its start alone keep the node.id and incarnation). Its bootstrap contacts are the births it last heard,
     // its own Mesh first: hints, any one of which answering is enough.
-    // The fabric-recovery attempt an adoption launch claimed, held until it completes or fails.
-    let mut adoption_claim: Option<Arc<super::adoption::Claimed>> = None;
+    // The adoption launch this admin runs, held until it completes or fails (fabric-recovery.md "Nothing alive").
+    let mut adoption_launch: Option<Arc<super::adoption::AdoptionLaunch>> = None;
     // The adoption launch's own runtime, adopted at its claim (deployment-provider.md §3, the externally
     // started Day-0 adoption): its last step, the publication, runs with the bootstrap's digest below.
     let mut adopted_at_claim: Option<CurrentRuntimeAdoption> = None;
@@ -631,7 +631,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 (Some(_), Some(new)) => new.clone(),
                 _ => lost.location(),
             };
-            adoption_claim = Some(Arc::new(super::adoption::claim(&at, a)));
+            adoption_launch = Some(Arc::new(super::adoption::start(&at, a)));
             // An adoption launch is the externally started Day-0 adoption (deployment-provider.md §3), and no
             // launcher records its runtime: right after its claim it adopts its current runtime and keeps its
             // runtime row on the fabric's store root, its nodes store, so a later adoption launch resolves it
@@ -837,10 +837,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // refuses it NameHeld, the attempt closed through the failure path. Otherwise, as every own-mesh
     // recovery of a node-admin, the lost birth's runtime is terminated on every read but os-stopped, its
     // name released and taken by this birth.
-    if let Some(claimed) = &adoption_claim {
+    if let Some(launch) = &adoption_launch {
         let provider = match &early {
             Some((_, p)) => p.clone(),
-            None => return Err(format!("refusing to start: {}: no deployment provider prepared for the adoption of {} at path {:?}, name {:?}", cfg.data_dir.display(), claimed.lost.node_id, claimed.lost.path, claimed.lost.name)),
+            None => return Err(format!("refusing to start: {}: no deployment provider prepared for the adoption of {} at path {:?}, name {:?}", cfg.data_dir.display(), launch.lost.node_id, launch.lost.path, launch.lost.name)),
         };
         let answers = super::adoption::ProbeAnswers { mesh: cfg.mesh.clone(),
             me_path: name.path.clone(), me_name: name.name.clone(),
@@ -853,18 +853,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             fabric: crate::model::Fabric { id: cfg.fabric_id.clone(), name: cfg.fabric.clone(), status: crate::model::ScopeStatus::Pending, provider: provider.kind() },
             inherited: None,
         };
-        let checked = super::adoption::check(claimed, &answers).instrument(boot.clone()).await;
+        let checked = super::adoption::check(launch, &answers).instrument(boot.clone()).await;
         let released: Result<(), super::adoption::Refused> = match checked {
             Err(refusal) => Err(refusal),
             // Under an in-force fabric.delete (Q159) nothing of the lost birth is released or re-created: the
             // launch claims its own new path and name, the one create a delete admits; the teardown deletes the
             // lost birth with its mesh.
-            Ok(_) if claimed.under_delete.is_some() => super::adoption::take_new_name(&name, &cfg.mesh, &node_id, &*nodes_storage, &caches.nodes)
+            Ok(_) if launch.under_delete.is_some() => super::adoption::take_new_name(&name, &cfg.mesh, &node_id, &*nodes_storage, &caches.nodes)
                 .instrument(boot.clone())
                 .await
                 .map_err(|e| super::adoption::Refused { reason: e, answered: None }),
             Ok(_) => async {
-                let lost = &claimed.lost;
+                let lost = &launch.lost;
                 let own_runtime = nodes_storage.runtime(&lost.node_id, &lost.incarnation_id).await.map_err(storage_err)?;
                 if let Some(handle) = own_runtime.as_ref().and_then(|r| crate::deployment::provider::adopt(&*provider, &r.runtime).ok()) {
                     let mode = crate::deployment::provider::TerminationMode::Graceful { grace: crate::deployment::pipeline::Timeouts::default().stop_grace };
@@ -872,14 +872,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                         .await
                         .map_err(|e| format!("{node_id} cannot terminate the lost birth {} ({}) at path {:?}, name {:?}: {e}", lost.node_id, lost.incarnation_id.as_str(), lost.path, lost.name))?;
                 }
-                super::adoption::release_name(claimed, &node_id, &*nodes_storage, &caches.nodes).await
+                super::adoption::release_name(launch, &node_id, &*nodes_storage, &caches.nodes).await
             }
             .instrument(boot.clone())
             .await
             .map_err(|e| super::adoption::Refused { reason: e, answered: None }),
         };
         if let Err(refusal) = released {
-            super::adoption::fail(claimed, &refusal);
+            super::adoption::fail(launch, &refusal);
             return Err(format!("refusing to start: {refusal}"));
         }
     }
@@ -1113,7 +1113,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     None if own_maker => {
                         let kind = if sole_node_root && inherited.is_none() {
                             "the Day-0 root"
-                        } else if adoption_claim.is_some() {
+                        } else if adoption_launch.is_some() {
                             "the adoption launch"
                         } else {
                             "the admin re-created over its inherited data dir"
@@ -2024,7 +2024,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         for d in held_births(&held_digest_view, &held_fabric, &held_me) {
                                             nodes.insert(
                                                 d.node.node_id.clone(),
-                                                rdm_core::topology::StoredNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(), node_id: d.node.node_id, name: rdm_core::PathName { path: d.node.path.clone(), name: d.node.name.clone() }, endpoint_id: d.node.endpoint_id, incarnation: d.node.incarnation, transport_addr: d.node.transport_addr },
+                                                rdm_core::topology::StoredNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(), node_id: d.node.node_id, path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id, incarnation: d.node.incarnation, transport_addr: d.node.transport_addr },
                                             );
                                         }
                                         // Its durable topology (Q317: Stored is built from "the records the answerer writes and
@@ -2034,7 +2034,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         // digest view holds is listed as heard.
                                         for n in held_ids.nodes.lock().unwrap().values().filter(|n| n.node_id != held_me && !held_digest_view.is_deleted(n.node_id.as_str())) {
                                             let (Some(endpoint_id), Some(incarnation), Some(transport_addr)) = (n.endpoint_id.clone(), n.incarnation_id.clone(), n.transport_addr) else { continue };
-                                            nodes.entry(n.node_id.clone()).or_insert_with(|| rdm_core::topology::StoredNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.location(), endpoint_id, incarnation, transport_addr });
+                                            nodes.entry(n.node_id.clone()).or_insert_with(|| rdm_core::topology::StoredNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id, incarnation, transport_addr });
                                         }
                                         Ok(crate::topology_read::StoredMap { nodes: nodes.into_values().collect(), mesh_ids: ids })
                                     })
@@ -2610,7 +2610,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         cfg.fabric_primary || cfg.adopt.is_some(),
                                                         stop_gate.clone(),
                                                     )
-                                                    .adopted_at_new_path(adoption_claim.as_ref().is_some_and(|c| c.under_delete.is_some())),
+                                                    .adopted_at_new_path(adoption_launch.as_ref().is_some_and(|c| c.under_delete.is_some())),
                                                 );
                                                 {
                                                     let (

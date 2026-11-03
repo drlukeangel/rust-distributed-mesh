@@ -150,7 +150,7 @@ pub(crate) fn map_of_stored(read: &crate::topology_read::TopologyRead) -> Vec<Ma
                 data_dir: None,
                 admin_api_base: None,
                 node_id: n.node_id.clone(),
-                path: n.name.path.clone(), name: n.name.name.clone(),
+                path: n.path.clone(), name: n.name.clone(),
                 endpoint_id: n.endpoint_id.clone(),
                 transport_addr: n.transport_addr,
                 incarnation: n.incarnation.clone(),

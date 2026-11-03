@@ -704,8 +704,17 @@ pub struct ReportedBirth {
     pub node_id: NodeId,
     /// The birth's incarnation.
     pub incarnation: IncarnationId,
-    /// The birth's separate path and name.
-    pub name: crate::PathName,
+    /// The birth's path.
+    pub path: String,
+    /// The birth's name, beside its path.
+    pub name: String,
+}
+
+impl ReportedBirth {
+    /// The birth's `(path, name)` lookup key.
+    pub fn location(&self) -> crate::PathName {
+        crate::PathName { path: self.path.clone(), name: self.name.clone() }
+    }
 }
 
 /// The most a [`StatusRequest::ReportCallFailed`]'s `reason` carries: well within the Status request
@@ -2518,8 +2527,8 @@ mod tests {
                 config: Default::default(), tags: Default::default(),
             } },
             StatusRequest::report_call_failed(
-                ReportedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node", "1").unwrap() },
-                ReportedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node", "2").unwrap() },
+                ReportedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "1".into() },
+                ReportedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "2".into() },
                 "not-sent: Connection(\"connect refused\")",
             ),
             StatusRequest::UpdateStorage { topology_storage_provider: "test-target".into() },

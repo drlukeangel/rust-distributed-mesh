@@ -86,8 +86,8 @@ impl ReportToPrimary {
     /// This birth as a report names it: its `(path, name)` the one the resolver holds for it now (a
     /// renamed node reports under its current name), else the one it was launched at.
     pub fn sender(&self) -> ReportedBirth {
-        let name = self.resolver.resolve(&NodeTarget::ExactNode(self.node_id.clone())).ok().filter(|n| n.incarnation == self.incarnation).map_or_else(|| self.location(), |n| n.location());
-        ReportedBirth { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name }
+        let at = self.resolver.resolve(&NodeTarget::ExactNode(self.node_id.clone())).ok().filter(|n| n.incarnation == self.incarnation).map_or_else(|| self.location(), |n| n.location());
+        ReportedBirth { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), path: at.path, name: at.name }
     }
 
     /// The exact birth this node's view names now as the primary above `receiver`
@@ -114,7 +114,7 @@ impl ReportToPrimary {
         let sender = self.sender();
         let span = tracing::info_span!(
             "rdm.mesh.node.update.via-call-failed-report",
-            node_path = %sender.name.path, node_name = %sender.name.name,
+            node_path = %sender.path, node_name = %sender.name,
             node_id = %sender.node_id,
             receiver_path = %call.receiver.path, receiver_name = %call.receiver.name,
             receiver_node_id = %call.receiver.node_id,
@@ -149,7 +149,8 @@ impl ReportToPrimary {
         };
         tracing::Span::current().record("primary_above", primary.node_id.to_string().as_str());
         let target = NodeTarget::ExactNode(primary.node_id.clone());
-        let receiver = ReportedBirth { node_id: call.receiver.node_id.clone(), incarnation: call.receiver.incarnation.clone(), name: call.receiver.location() };
+        let at = call.receiver.location();
+        let receiver = ReportedBirth { node_id: call.receiver.node_id.clone(), incarnation: call.receiver.incarnation.clone(), path: at.path, name: at.name };
         let req = StatusRequest::report_call_failed(sender, receiver, &call.reason);
         let opts = CallOptions { send: rdm_transport::Send::default(), ..CallOptions::default() };
         match self.client.call::<Status>(&target, &req, &opts).await.0 {

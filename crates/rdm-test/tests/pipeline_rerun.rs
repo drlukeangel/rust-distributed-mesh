@@ -126,6 +126,18 @@ fn runtimes_of(node_id: &NodeId) -> Vec<u32> {
         .collect()
 }
 
+/// Every runtime of `node_id` still running when the cell ends, its assertions failed included, is
+/// killed: a red cell leaves no runtime for the gate's leaked-processes step to find.
+struct Reap(NodeId);
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        for pid in runtimes_of(&self.0) {
+            let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+        }
+    }
+}
+
 async fn killed_then_rerun(kill_at: KillAt) {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
@@ -138,6 +150,7 @@ async fn killed_then_rerun(kill_at: KillAt) {
     let process = Arc::new(ProcessDeploymentProvider::new());
     // The node.id the Build minted for the node, one per cell: a cell beside it never runs a runtime of it.
     let node_id = rdm_core::NodeId::mint();
+    let _reap = Reap(node_id.clone());
     let req = || CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
     // The first run dies at the kill point.

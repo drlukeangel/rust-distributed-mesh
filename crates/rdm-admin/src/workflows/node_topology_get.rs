@@ -228,7 +228,8 @@ mod tests {
                     map.mesh_ids.insert("mesh2".to_string(), m2);
                     map.nodes.push(StoredNode { mesh: "mesh2".into(), r#type: "node-admin".into(),
                         node_id: NodeId::mint(),
-                        name: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
+                        path: "mesh2.node-admin".into(),
+                        name: "1".into(),
                         endpoint_id: EndpointId("ep-mesh2-admin-1".to_string()),
                         incarnation: IncarnationId::mint(),
                         transport_addr: "127.0.0.1:29001".parse().expect("addr"),

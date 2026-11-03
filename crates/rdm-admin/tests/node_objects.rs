@@ -244,7 +244,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
 }
 
 /// The Build door of `mesh1.node-admin.2`, a node-admin of the fabric that does not hold the fabric-primary
-/// role (`mesh1.node-admin.1` holds it): its claim door carries its own birth's node id.
+/// role (`mesh1.node-admin.1` holds it): its Build door carries its own birth's node id.
 async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
     let mut t = mn();
     let fabric_id = t.fabric.id.clone();

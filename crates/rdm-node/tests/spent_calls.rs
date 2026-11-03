@@ -95,8 +95,8 @@ async fn a_nodes_spent_call_is_reported_to_its_mesh_primary_and_a_spent_report_i
     assert_eq!(out.name(), "NotSent", "nothing reached the receiver");
     let got = tokio::time::timeout(Duration::from_secs(30), heard.recv()).await.expect("the report reaches the mesh-primary").unwrap();
     let StatusRequest::ReportCallFailed { sender, receiver: named, reason } = got else { panic!("a report of the spent call: {got:?}") };
-    assert_eq!(sender, ReportedBirth { node_id: me.0.clone(), incarnation: me.1.clone(), name: me.2.clone() }, "the calling birth");
-    assert_eq!(named, ReportedBirth { node_id: receiver.node_id.clone(), incarnation: receiver.incarnation.clone(), name: receiver.location() }, "the exact receiver");
+    assert_eq!(sender, ReportedBirth { node_id: me.0.clone(), incarnation: me.1.clone(), path: me.2.path.clone(), name: me.2.name.clone() }, "the calling birth");
+    assert_eq!(named, ReportedBirth { node_id: receiver.node_id.clone(), incarnation: receiver.incarnation.clone(), path: receiver.location().path, name: receiver.location().name }, "the exact receiver");
     assert!(reason.starts_with("NotSent("), "the call's end by name: {reason}");
     {
         let calls = told.calls.lock().unwrap();
@@ -168,8 +168,8 @@ async fn a_spent_call_to_a_mesh_primary_is_reported_to_the_fabric_primary_and_on
     assert_eq!(tokio::time::timeout(bound, report.send(&to_mesh_primary)).await.expect("the report ends"), ReportEnd::Answered(StatusReply::Applied), "the fabric-primary's answer ends the report");
     let got = tokio::time::timeout(Duration::from_secs(30), heard.recv()).await.expect("the report reaches the fabric-primary").unwrap();
     let StatusRequest::ReportCallFailed { sender, receiver, reason } = got else { panic!("a report of the spent call: {got:?}") };
-    assert_eq!(sender, ReportedBirth { node_id: me.0.clone(), incarnation: me.1.clone(), name: me.2.clone() }, "the calling member");
-    assert_eq!(receiver, ReportedBirth { node_id: mesh_primary.node_id.clone(), incarnation: mesh_primary.incarnation.clone(), name: mesh_primary.location() }, "the exact mesh-primary");
+    assert_eq!(sender, ReportedBirth { node_id: me.0.clone(), incarnation: me.1.clone(), path: me.2.path.clone(), name: me.2.name.clone() }, "the calling member");
+    assert_eq!(receiver, ReportedBirth { node_id: mesh_primary.node_id.clone(), incarnation: mesh_primary.incarnation.clone(), path: mesh_primary.location().path, name: mesh_primary.location().name }, "the exact mesh-primary");
     assert_eq!(reason, "Indeterminate(ReplyDeadline)");
     let to_fabric_primary = SpentCall { receiver: fabric_primary.clone(), reason: "NotSent(Deadline)".into() };
     assert!(matches!(report.send(&to_fabric_primary).await, ReportEnd::NotSent(ref why) if why.contains(fabric_primary.node_id.as_str())), "nothing is above the fabric-primary");

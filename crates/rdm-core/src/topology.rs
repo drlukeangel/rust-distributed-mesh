@@ -61,14 +61,23 @@ pub struct StoredNode {
     pub r#type: String,
     /// The node's minted id.
     pub node_id: NodeId,
-    /// The node's `(path, name)`.
-    pub name: crate::PathName,
+    /// The node's path.
+    pub path: String,
+    /// The node's name, beside its path.
+    pub name: String,
     /// The node's fabric endpoint id.
     pub endpoint_id: EndpointId,
     /// The incarnation the target stored.
     pub incarnation: IncarnationId,
     /// The address the target stored for the node's endpoint.
     pub transport_addr: std::net::SocketAddr,
+}
+
+impl StoredNode {
+    /// The node's `(path, name)` lookup key.
+    pub fn location(&self) -> crate::PathName {
+        crate::PathName { path: self.path.clone(), name: self.name.clone() }
+    }
 }
 
 /// The source version a caller already holds for a mesh: the publisher is the revision, so

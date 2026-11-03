@@ -438,6 +438,25 @@ pub enum Smoke {
 /// `MESH_SPAWN_TYPE` value): one node deployed through every create
 /// step, every receipt present, every step span attributed.
 /// Removes every container and the network of one fabric when dropped, however the test ends.
+/// Every process whose launch names the fabric id it holds (`RDM_FABRIC_ID`), killed when the cell ends,
+/// its assertions failed included: a red cell leaves no runtime for the gate's leaked-processes step.
+pub struct ProcessFabricCleanup(pub String);
+
+impl Drop for ProcessFabricCleanup {
+    fn drop(&mut self) {
+        let needle = format!("{}={}", rdm_core::launch::ENV_FABRIC_ID, self.0);
+        let Ok(dir) = std::fs::read_dir("/proc") else { return };
+        for pid in dir.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok()) {
+            if pid == std::process::id() {
+                continue;
+            }
+            if std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| env.split(|b| *b == 0).any(|kv| kv == needle.as_bytes())) {
+                let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+            }
+        }
+    }
+}
+
 pub struct ContainerFabricCleanup(pub String);
 
 impl Drop for ContainerFabricCleanup {
@@ -462,8 +481,10 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
 
     let fabric_id = FabricId::mint();
     let fabric = format!("fab-{fabric_id}");
-    // A failed smoke leaves nothing running: every container of the fabric and its network go.
+    // A failed smoke leaves nothing running: every container of the fabric and its network go, and
+    // every process runtime launched for this cell's fabric.
     let _cleanup = (spawn_type == "container").then(|| ContainerFabricCleanup(fabric.clone()));
+    let _reap = ProcessFabricCleanup(fabric_id.to_string());
     let policy = FabricPolicy::bootstrap(Some(spawn_type)).expect("a known MESH_SPAWN_TYPE");
     let prepared = match rdm_admin::deployment::prepare(policy, &fabric).await {
         Ok(p) => p,
