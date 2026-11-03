@@ -115,7 +115,9 @@ node `Pending`, and nothing retries until someone acts:
 | Day 0's first node-admin | its start ends `Failed`, and the Day 0 Build is `incomplete` |
 
 For Build-backed work the executor frames the subject's `Pending` on the workflow stream from its
-Status `Pending` reply, as the [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) defines.
+Status `Pending` reply, as the [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) defines, and
+ends its `WaitForNodeReady` step failed from its Status `StartFailed { step: node.pre-node-ready, reason }`
+reply: the node stays `Pending` and its process keeps running.
 
 ### The server side gates too
 
