@@ -52,7 +52,7 @@ nothing matches.
 |---|---|---|---|---|
 | `fabric.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary`, `admin_api_base`, `build_id`, `meshes`, `topology_storage_provider` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | the fabric-primary |
 | `mesh.get` | — | `id`, `name`, `status`, `primary_admin`, `admin_api_base`, `nodes` | meshes, by name | the fabric-primary |
-| `node.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `type`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path.name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from its atlas |
+| `node.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `type`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path` and `name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from its atlas |
 | `node.connection.get` | `node` (id, incarnation), required | `id`, `source`, `destination`, `kind`, `state`, `carrier`, `reason`, `logged_at_ms` | the exact birth's own connections from its connections log | the exact birth |
 
 Written as the pair list the wire carries:
@@ -64,7 +64,7 @@ node.get  [["tags", ["gold", "silver"]]]                         any of
 node.get  [["mesh", ["mesh1"]], ["type", ["gateway"]]]           AND across pairs
 node.get  [["type", ["node-admin"]], ["is_primary", ["true"]]]   every mesh-primary
 node.get  [["id", ["<node id>"]]]                                 "one node"
-node.get  [["path", ["mesh1.broker"]], ["name", ["1"]]]         one node by its path.name (mesh1.broker.1): `path` is
+node.get  [["path", ["mesh1.broker"]], ["name", ["1"]]]         one node by its path and name (mesh1.broker.1): `path` is
                                                                    the part before the last dot, `name` the part after it
 node.get  []                                                      the fabric's topology
 mesh.get [["name", ["mesh1"]]]
@@ -117,7 +117,7 @@ and the `tags` row of [Node properties](../architecture/node-rpc-envelope.md#nod
 | remove labels | `node.tag.delete { All \| [labels] }`: every label or the named ones; a label the node does not carry is reported `NOT_FOUND` for that label |
 | read a node's labels | the `tags` field of its node row (`node.get`) |
 | select nodes by label | `node.get [tags: a, b]` for any of the labels, `[tags: a][tags: b]` for all of them, with `[mesh: m]` for one mesh's |
-| keep labels across a re-birth | nothing to do: tags are inherited with the config at the same path.name on recovery and on replacement |
+| keep labels across a re-birth | nothing to do: tags are inherited with the config at the same path and name on recovery and on replacement |
 
 A label is 1–64 characters of `a-z 0-9 - _ . ~`, with no leading `.`, and a node carries at most 32.
 A label outside that grammar, or one past the 32, is refused by name (`INVALID_ARGUMENT`) and

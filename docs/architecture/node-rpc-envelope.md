@@ -345,7 +345,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [node.mesh.leave](lifecycles/node-mesh-leave.md) | Standalone, [NodeCommand 0x22](#nodecommand-op-0x22-rdm) `LeaveMesh`, exact-node hop only, server-streaming: `CommandAccepted` (leaving), then `MeshLeft { node_id, incarnation, left }` (Terminal); node.stop and node.delete end their live part with it, and inside a stop its `Leaving` and `StopMeshLeft { left }` are Data frames on the stop's stream | node.mesh.left; `BusyHoldingConnections { connections }` while the node holds a connection | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.tickle](lifecycles/node-tickle.md) | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) direct, and the same probe through up to two live peers of the node's mesh on [Forward 0x1A](#forward-op-0x1a-core) | `reached { answer }` or `unreached`; no event, and unreached is never death | `OK` for a served probe; unreached retains its typed delivery code |
 | [node.runtime.inspect](lifecycles/node-runtime-inspect.md) | The deployment provider's inspect of the runtime handle recorded at launch; not a Node RPC | `running`, `os-stopped`, `exited { code }` or `unavailable { reason }`, node investigation's provider verdict; no event | — (typed provider result; no Node RPC) |
-| node.get | [Read 0x23](#read-op-0x23-rdm) `Get { entity: Nodes, filter }`, streamed in `Nodes` frames: every node row the answering admin holds that matches every pair, by path.name; no pair is every node of the fabric, its topology; a pair names any field of the node-properties table by its name, config entries as `config.<key>`; `tags` matches a node carrying the value, repeated for all of; a node's tags, config and cert are fields of its row; node.get is answered by the fabric-primary from shared records: current pair resolution reads the node records by path and name, then the node's record at its node.id (Q323); a record read error is named, never a cached predecessor | the rows, `NodeView`; a stopped node answers `stopped`; no event | `OK`, the empty list when nothing matches; an unknown property, a value the field cannot take or an empty values list `INVALID_ARGUMENT` naming the pair; a row past one frame `RESOURCE_EXHAUSTED` naming it |
+| node.get | [Read 0x23](#read-op-0x23-rdm) `Get { entity: Nodes, filter }`, streamed in `Nodes` frames: every node row the answering admin holds that matches every pair, by path and name; no pair is every node of the fabric, its topology; a pair names any field of the node-properties table by its name, config entries as `config.<key>`; `tags` matches a node carrying the value, repeated for all of; a node's tags, config and cert are fields of its row; node.get is answered by the fabric-primary from shared records: current pair resolution reads the node records by path and name, then the node's record at its node.id (Q323); a record read error is named, never a cached predecessor | the rows, `NodeView`; a stopped node answers `stopped`; no event | `OK`, the empty list when nothing matches; an unknown property, a value the field cannot take or an empty values list `INVALID_ARGUMENT` naming the pair; a row past one frame `RESOURCE_EXHAUSTED` naming it |
 | [node.topology.get](lifecycles/node-topology-get.md) | [GetTopology 0x1E](#topology-op-0x1e-rdm); complete source snapshot read | complete read result; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
 | [node.name.update](lifecycles/node-name-update.md) | Rename, to the node's mesh-primary; frames `UpdateName` and `ApplyNodeName` on [0x1B](#status-op-0x1b-rdm); the node admits no connection | node.name.updated; `NameHeld { by }`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation` | `OK`; NameHeld `ALREADY_EXISTS`, stale `ABORTED`, invalid name `INVALID_ARGUMENT`, other state refusal `FAILED_PRECONDITION` |
 | node.connection.get { node } / [node.connection.delete](lifecycles/node-connections-delete.md) | `node.connection.get { node }` answers the exact birth's own connections from its connections log, the node (id, incarnation) the read's address and the filter over id, destination, kind and state, [Read 0x23](#read-op-0x23-rdm) `GetConnections { node, incarnation, filter }`, streamed in `Connections` frames; `node.connection.delete { scope: All }` or `{ scope: Connections([connection id, …]) }`. `All` is graceful closure of every open connection of the node, each open Direct or Proxy entry of its connections log (gossip neighbours and the Node RPC pool are not connections), with status connections-deleting then connections-deleted and the [order and deadline](lifecycles/node-connections-delete.md#numbered-end-to-end-sequence) of that page; `Connections` closes exactly the named connections, by the minted id of their open entry as node.connection.get returns them; an empty list is refused by name. The endpoint and an active stop stream stay open; each drop is written under the node's current name; the caller sends it to the node's mesh-primary directly on [NodeCommand 0x22](#nodecommand-op-0x22-rdm) `DeleteConnections`, refused by name with `Rejected { reason, detail }`, reason `node-not-live`, `last-admin` or `rejected-connection-scope` for a scope that names nothing the node can cut; the mesh-primary carries it to the exact node on NodeCommand 0x22 | read result / node.connection.deleted, naming every id it closed and every id it did not know or found already closed; for `All`, carrying a `ConnectionsReceipt`: `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }` | call `OK` when served; closed `OK`, not_open `NOT_FOUND`; `All` Deadline `DEADLINE_EXCEEDED` |
@@ -748,7 +748,7 @@ The lifecycle op pairs in States are carried by 0x1B as separate down (command) 
 
 Status remains admissible while connections-deleting. The generic guard MUST NOT reject it before variant-specific direction, authorization, exact-birth and transition checks. `node.connection.delete { scope: All }` is the sole path into connections-deleting. ApplyNodeState is reserved and refused by name: no node status is applied downward ([node-status.md](lifecycles/node-status.md#node-status-change)). ProbeNodeState answers Current, or Blocked { node_id, incarnation, reason, retry_on } while the subject's [pre_node_ready](fabric-node-hooks.md#outcomes-and-the-gate) hook is Blocked: the probe served the exact birth and found an active readiness blocker, answered before any republish so a polled blocked birth republishes nothing. Its `reason` is the hook's own text and `retry_on` the event the hook runs again on. Running and Passed hooks answer Current. NotReady is the [readiness gate's](#node-rpc-readiness-gate) answer and never a hook blocker; the executor's WaitForNodeReady frames `Blocked { WaitForNodeReady, reason }` only from Status Blocked. Declarations and mesh/fabric applies answer Applied or AlreadyApplied. ApplyNodeName, sent down by the node's mesh-primary after it wrote the renamed row ([node.name.update](lifecycles/node-name-update.md)), answers Applied once the node holds and publishes the name, AlreadyApplied for the name it already holds, and `BusyHoldingConnections { connections }` naming each connection it still holds. ConnectionsDeleting is a refusal, never the success of node.connection.delete. Idempotency is the natural key `(node_id, incarnation, state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name.
 
-Nothing inside the mesh checks who sent a frame or call. `RejectedNotPrimary` says the receiver is not the primary for the call: `ReceiverNotPrimary { needed }` when the receiver is not the primary the declaration needs, and `SubjectUnknown` when the receiver does not hold the subject at all; a primary that refuses a status declaration's caller birth `SubjectUnknown` then decides that birth by its path.name and its atlas ([node investigation](lifecycles/node-investigation.md), Q207). `RequestNotHandled { request }` means the receiver's Status door has no handler for the named request. It is decided by dispatch alone, without checking node kind, primary or sender, and performs no operation. The receiver emits `rdm.node.status.reject.via-request-not-handled` with `request` and `node`. A handler that exists may still return its defined result, including a genuine writer redirect. `SenderNotSubject` and `Unauthorized` keep their codec positions and a mesh receiver never sends them; a caller-side `PeerUnresolved` likewise.
+Nothing inside the mesh checks who sent a frame or call. `RejectedNotPrimary` says the receiver is not the primary for the call: `ReceiverNotPrimary { needed }` when the receiver is not the primary the declaration needs, and `SubjectUnknown` when the receiver does not hold the subject at all; a primary that refuses a status declaration's caller birth `SubjectUnknown` then decides that birth by its path and name and its atlas ([node investigation](lifecycles/node-investigation.md), Q207). `RequestNotHandled { request }` means the receiver's Status door has no handler for the named request. It is decided by dispatch alone, without checking node kind, primary or sender, and performs no operation. The receiver emits `rdm.node.status.reject.via-request-not-handled` with `request` and `node`. A handler that exists may still return its defined result, including a genuine writer redirect. `SenderNotSubject` and `Unauthorized` keep their codec positions and a mesh receiver never sends them; a caller-side `PeerUnresolved` likewise.
 
 ```rust
 pub enum NodeState {
@@ -1102,7 +1102,8 @@ its path and runtime fact. Its complete fields are the shared topology types bel
 ```rust
 pub struct MeshNode {
     pub node_id: NodeId,
-    pub name: PathName,
+    pub path: String,
+    pub name: String,
     pub r#type: String,
     pub endpoint_id: EndpointId,
     pub transport_addr: std::net::SocketAddr,
@@ -1338,7 +1339,7 @@ pub enum ReadReply {
 ```
 
 The stream is Started, then the data frames `Nodes`, `Meshes`, `Fabrics` or `Connections`, then End. The answer is
-the read's every matching row, captured once in its stable order (by path.name, by name), from the
+the read's every matching row, captured once in its stable order (by path and name, by name), from the
 selected shared records as [query.md](query.md) states, or carried to the primary that holds it (Q224,
 Q243) on this same op; it is never bounded as one frame. The rows are packed in order into data frames
 that each fit the frame ceiling, by the one packer the Build facts and topology snapshots share. A row
@@ -1477,7 +1478,7 @@ pub enum BuildChange {
     Stop { node: PathName },
     Start { node: PathName },
     Recover { node: PathName, node_id: NodeId, incarnation: IncarnationId },
-    // A caller birth a primary refused and decided by its path.name and the atlas to delete
+    // A caller birth a primary refused and decided by its path and name and the atlas to delete
     // (a deleted birth heard again among them), reported by that primary; the fabric-primary
     // terminates its runtime (lifecycles/node-investigation.md, Q207).
     Terminate { node: PathName, node_id: NodeId, incarnation: IncarnationId },
@@ -1523,7 +1524,7 @@ pub struct StepReceipt {
     pub attempt: u32,
     /// A Build step key: an opaque string, op then colon then target, as in
     /// `node.create:mesh1.node.1`. The dots before the colon do not collide with the dotted
-    /// path.name after it.
+    /// path and name after it.
     pub operation: String,
     pub step: String,
     pub result: StepResult,
@@ -1624,7 +1625,7 @@ or `Failed { step, reason, code }`, the Build carrier's terminal (R-BI4), when i
 used for a step that ended. The commander fails the step on that variant, retaining the code and never selecting it from the reason's text, and
 claims the attempt at the claim door before it commands.
 
-There is no take-over op. A fabric-primary unheard past the staleness floor is [fabric recovery](lifecycles/fabric-recovery.md)'s: the node-admin at its path.name is re-created and is mesh-primary and fabric-primary again when Ready; nobody takes the role meanwhile (Q122).
+There is no take-over op. A fabric-primary unheard past the staleness floor is [fabric recovery](lifecycles/fabric-recovery.md)'s: the node-admin at its path and name is re-created and is mesh-primary and fabric-primary again when Ready; nobody takes the role meanwhile (Q122).
 
 Lost replies: the successor keeps serving PrimaryUpdate and Status after the row. An identical retry
 answers the same PrimaryUpdated before any revision check. A different payload for the same operation is

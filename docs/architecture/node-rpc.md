@@ -107,7 +107,7 @@ Node RPC never chooses a role/replica/fallback and never turns failed reachabili
 
 ## 4. Identity and freshness facts
 
-A node's `path.name`, minted id (NodeId), incarnation (IncarnationId) and `endpoint_id` (EndpointId) are defined in [node-identity-and-state.md §2](node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids); FabricId is never EndpointId ([node-identity-and-state.md §2.8](node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it)). The runtime adds two pool facts:
+A node's `path` and `name`, minted id (NodeId), incarnation (IncarnationId) and `endpoint_id` (EndpointId) are defined in [node-identity-and-state.md §2](node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids); FabricId is never EndpointId ([node-identity-and-state.md §2.8](node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it)). The runtime adds two pool facts:
 
 | fact | meaning |
 |---|---|
@@ -119,7 +119,7 @@ The connection pool key is §20's.
 ### 4.1 Exact targets
 
 ~~~text
-CurrentPath(path.name)
+CurrentPath(path, name)
     -> current exact birth at that logical slot
 
 ExactNode(NodeId)

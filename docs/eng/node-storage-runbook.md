@@ -15,7 +15,7 @@ The contract is in these pages; this runbook only gathers them:
 
 ## The rules
 
-- **Persistence belongs to the path.name, not to a birth.** Persistent storage survives stop,
+- **Persistence belongs to the path and name, not to a birth.** Persistent storage survives stop,
   start and restart, and a new node created over an inherited data dir keeps it. Ephemeral storage
   is fresh for every new node (deployment-provider.md §4).
 - **The path's config decides it, explicitly.** Every accepted Build carries each node's
@@ -32,12 +32,12 @@ The contract is in these pages; this runbook only gathers them:
 | Operation | node.id, incarnation | Data dir | Endpoint key | `pre_node_ready` |
 |---|---|---|---|---|
 | `node.stop` then `node.start` | same | same | same | runs again, `start_kind = AfterStop` |
-| node recovery, verdict `exited` (a re-birth) | new; same path.name | the old one, inherited | the old one, loaded from it | `FirstStart`, `inherited = true` |
-| node recovery, any other verdict but `os-stopped` | new; same path.name | newly allocated | newly minted | `FirstStart`, `inherited = false` |
-| node recovery, the old data dir absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors | new; same path.name | newly allocated beside the old path; `data-dir-lost { path, since }` recorded | newly minted (the old one is never re-minted) | `FirstStart`, `inherited = false` |
+| node recovery, verdict `exited` (a re-birth) | new; same path and name | the old one, inherited | the old one, loaded from it | `FirstStart`, `inherited = true` |
+| node recovery, any other verdict but `os-stopped` | new; same path and name | newly allocated | newly minted | `FirstStart`, `inherited = false` |
+| node recovery, the old data dir absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors | new; same path and name | newly allocated beside the old path; `data-dir-lost { path, since }` recorded | newly minted (the old one is never re-minted) | `FirstStart`, `inherited = false` |
 | node recovery, the old data dir present but `node-key` unreadable | none yet | none: `data-dir-unreadable { path, cause }` recorded and the recovery held until the key reads | none | runs only once the key reads, `inherited = true` |
-| executable replacement (node.replace), `Persistent` path | new; same path.name | the predecessor's, inherited | the predecessor's | `FirstStart`, `inherited = true` |
-| executable replacement, `Ephemeral` path | new; same path.name | newly allocated | newly minted | `FirstStart`, `inherited = false` |
+| executable replacement (node.replace), `Persistent` path | new; same path and name | the predecessor's, inherited | the predecessor's | `FirstStart`, `inherited = true` |
+| executable replacement, `Ephemeral` path | new; same path and name | newly allocated | newly minted | `FirstStart`, `inherited = false` |
 | `node.delete` | released | kept on disk, with its key; a later spec at the path may inherit it | kept | none |
 
 A move of the data itself to another layout or place during a replacement is Rafka's own step,
@@ -64,12 +64,12 @@ with its own commit boundary (node-replace.md, "Data transfer").
 | `rdm.node_admin.deployment.update.via-step` with `step=PrepareStorage` | the data dir prepared for a create: fresh, or inherited and inspected |
 | `rdm.mesh.node.update.via-pre-node-ready-attempt`, field `inherited` | what the hook was told |
 | `node.get` on the birth | `data-dir-lost` or `data-dir-unreadable` when either stands ([provider runbook](provider-runbook.md)) |
-| the birth's row | a new node.id and incarnation at the same path.name after a re-birth; the same ones after a restart |
+| the birth's row | a new node.id and incarnation at the same path and name after a re-birth; the same ones after a restart |
 
 ## Checking a broker restart
 
 1. Confirm which operation ran. A `node.stop` followed by `node.start` keeps the node.id and incarnation. A re-birth at
-   the same path.name shows new ones.
+   the same path and name shows new ones.
 2. For a restart: the process never exited, and the data dir and port are unchanged. If the broker's
    data is missing afterwards, the broker's own stop and start released or rewrote it. RDM did not
    touch the disk.

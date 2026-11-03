@@ -50,7 +50,7 @@ Read which step's span is the last one recorded for the `build_id`.
 
 | last recorded | waiting on | what to do |
 |---|---|---|
-| some meshes' `via-block`, not every mesh's | a mesh-primary whose in-flight commands have not completed, or a mesh-primary that does not reply | read that mesh's in-flight commands; a mesh-primary that does not reply is a lost node, and node investigation re-creates it at its `path.name` as an attempt of the change's own Build ([node investigation](../../architecture/lifecycles/node-investigation.md)). Nothing to do but read |
+| some meshes' `via-block`, not every mesh's | a mesh-primary whose in-flight commands have not completed, or a mesh-primary that does not reply | read that mesh's in-flight commands; a mesh-primary that does not reply is a lost node, and node investigation re-creates it at its `path` and `name` as an attempt of the change's own Build ([node investigation](../../architecture/lifecycles/node-investigation.md)). Nothing to do but read |
 | every `via-block`, no `via-storage-copy` | the copy cannot open a provider | see [An unavailable provider](#an-unavailable-provider) |
 | `via-storage-copy` ending `indeterminate` (`cause` names the store's error), repeated | a provider that does not answer during the copy | see [An unavailable provider](#an-unavailable-provider) |
 | `via-storage-copy` ending `failed` (`cause` names the provider and its error), once | a provider that answered the copy with a named error: it refused, or holds what this build does not recognise | the change fails before its switch: see [An unavailable provider](#an-unavailable-provider) |
@@ -107,7 +107,7 @@ answer never decides it.
 
 | who restarts | what happens | cell |
 |---|---|---|
-| a role node, killed while its mesh-primary is blocked | node recovery re-creates it at its `path.name` over the same data dir once its mesh-primary issues commands again; the new birth is launched on, and writes only, the provider the `commit` record decided | `topology_storage_state_survives_role_node_restart` (both a switched change and one failed before its switch), `a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read` |
+| a role node, killed while its mesh-primary is blocked | node recovery re-creates it at its `path` and `name` over the same data dir once its mesh-primary issues commands again; the new birth is launched on, and writes only, the provider the `commit` record decided | `topology_storage_state_survives_role_node_restart` (both a switched change and one failed before its switch), `a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read` |
 | the fabric-primary | a successor fabric-primary resumes the change's Build; its switch step first reads the `commit` record (`via-storage-switch` `outcome = found`, or a copy that appends only the lines the new provider lacks, then the insert) | none |
 | a node-admin started again on its own data dir with no launcher | it opens the provider its own row in its data dir names, whatever its environment names; the own row records the provider at the birth's boot and again at each move, before the move answers | `a_restart_without_a_launcher_writes_the_provider_its_own_row_names` |
 | nothing alive: the adoption launch ([fabric recovery, Nothing alive](../../architecture/lifecycles/fabric-recovery.md#nothing-alive)) | on an inherited data dir, the adoption launch opens the provider its own row names; on a data dir holding no own row, the one its environment names | none |
@@ -188,7 +188,7 @@ Cells: `a_previous_provider_remains_unchanged_after_cutover`,
 In `mesh.unblock` a mesh-primary moves each node of its mesh with `StorageStep` (node command op
 `0x22`). A node that will not move, because it refuses its move by name (it cannot open the provider,
 `via-storage-move` `outcome = refused`, `reason`), refuses it `rejected-stale-change`, or leaves it
-unanswered past the staleness floor, is re-created at its `path.name` on the provider the change
+unanswered past the staleness floor, is re-created at its `path` and `name` on the provider the change
 decided: node.delete then node.create, steps of the mesh-primary's `mesh.unblock` attempt of the
 change's own Build (lead decision D1). The mesh-primary replies `unblocked` once every node of its mesh
 moved or was re-created.

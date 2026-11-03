@@ -16,7 +16,7 @@ A node's own storage is its data dir (`RDM_DATA_DIR`): `node-key`, `ca-secret`, 
 there and never reads the application's. `storage_persistence` is a typed property of the node's
 create spec, carried on the accepted Build's `NodeSpec` and the node's row, and is three states:
 
-| `storage_persistence` | across the node's births (stop, start, re-creation at the same `path.name`) | once the node is gone |
+| `storage_persistence` | across the node's births (stop, start, re-creation at the same `path` and `name`) | once the node is gone |
 |---|---|---|
 | `ephemeral` | fresh storage for every new node; nothing is inherited | nothing kept, so nothing to dispose of |
 | `persistent { disposition: preserve }` | survives; a node created over the inherited data dir keeps it | kept |
@@ -30,8 +30,8 @@ the three that mean something ([deployment-provider.md §4](deployment-provider.
 
 Rules:
 
-- **Persistence belongs to the logical `path.name`, not its incarnation.** A node recovered or
-  replaced at the same `path.name` with `persistent` storage inherits the predecessor's data dir and
+- **Persistence belongs to the logical `path` and `name`, not its incarnation.** A node recovered or
+  replaced at the same `path` and `name` with `persistent` storage inherits the predecessor's data dir and
   endpoint key; with `ephemeral` it is given a fresh one. `RDM_INHERITED_DATA_DIR` tells the birth
   which, surfaced to `before_ready` as `inherited` ([deployment-provider.md §4](deployment-provider.md),
   [node-recovery.md](lifecycles/node-recovery.md), [node-replace.md](lifecycles/node-replace.md)).
@@ -39,7 +39,7 @@ Rules:
   release action; `release` is a statement to the application, which removes the storage by its own
   work or leaves it.
 - **A lost or broken data dir is told apart by the error, never guessed.** Gone, the directory absent
-  past `RDM_DATA_DIR_GONE_FLOORS` staleness floors, is recovered at the same `path.name` over a fresh
+  past `RDM_DATA_DIR_GONE_FLOORS` staleness floors, is recovered at the same `path` and `name` over a fresh
   data dir and recorded `data-dir-lost`; broken, the directory present with `node-key` missing or
   unreadable, holds the recovery and is recorded `data-dir-unreadable` (R-FM2,
   [deployment-provider.md §4](deployment-provider.md)).

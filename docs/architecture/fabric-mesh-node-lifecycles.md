@@ -24,7 +24,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | [Build deployment](build-deployment.md) | what a Build deploys: the executable each node runs, named per node at create, recorded on the row, re-hashed at the launch, replaced only by re-birth, recovered from the row, read from the rows |
 | [Deployment provider](deployment-provider.md) | the deployment provider and its environment policy, the DeploymentPipeline, the RuntimeFact contract, current runtime metadata and the exact runtime handle |
 | [Fabric primary](fabric-primary.md) | the fabric-primary: the mesh roster from the accepted Build, takeover as hydration, the complete-view gate, fabric identity hydration, the event-distinction table |
-| [Node identity and state](node-identity-and-state.md) | node identity (ids, endpoint_id, path.name, incarnation, prefixes), node/mesh/fabric rows and their writers, the NodeState liveness enum, the hydration roster, local eviction, the stopped-node collector |
+| [Node identity and state](node-identity-and-state.md) | node identity (ids, endpoint_id, path and name, incarnation, prefixes), node/mesh/fabric rows and their writers, the NodeState liveness enum, the hydration roster, local eviction, the stopped-node collector |
 | [Connections](connections.md) | connections, routes, reach and reroute |
 | [Storage](storage.md) | the two things called storage: `storage_persistence`, a node's own data dir across its births and once it is gone, and `topology_storage_provider`, the backend RDM's five record stores are written to and how a fabric changes it live |
 | [Telemetry](telemetry.md) | span export, and how one W3C trace crosses processes: Node RPC calls and workflows, gossip frames, a launch, data-plane connections, the fabric's change; where a trace starts; what is joined by identity |
@@ -87,7 +87,7 @@ Callers use the [typed node and Build objects](node-rpc-envelope.md#typed-object
 | [node.mesh.leave](lifecycles/node-mesh-leave.md) (primitive) | A node leaving its channels after its connections are deleted, `leaving` then `node.mesh.left`; the step stop and delete end with |
 | [node.tickle](lifecycles/node-tickle.md) (primitive) | The reach ladder on an exact birth: direct, then both via-peer kicks at once; `reached` or `unreached`, never dead; run by node investigation and the primary-update successor ladder |
 | [node.runtime.inspect](lifecycles/node-runtime-inspect.md) (primitive) | The provider's answer about the exact runtime handle; node investigation's first step after the index read, run by it, delete, mesh.delete and fabric.delete |
-| [node investigation](lifecycles/node-investigation.md) (primitive) | The one verdict on one exact birth: the by-destination connections index read, node.runtime.inspect, node.tickle direct and via those peers; reached is commanded back through node.mesh.join, any other verdict is re-created at the same path.name with a new node.id |
+| [node investigation](lifecycles/node-investigation.md) (primitive) | The one verdict on one exact birth: the by-destination connections index read, node.runtime.inspect, node.tickle direct and via those peers; reached is commanded back through node.mesh.join, any other verdict is re-created at the same path and name with a new node.id |
 | [node.stop](lifecycles/node-stop.md) | Taking a node out of traffic while its process stays alive |
 | [node.delete](lifecycles/node-delete.md) | Removing a node and releasing its identity |
 | [node.connection.delete](lifecycles/node-connections-delete.md) | Closing a node's connections while its process keeps running: all of them gracefully, or exactly the named ones |
@@ -129,10 +129,10 @@ reconciliation. Operation names render mechanically from the typed object:
 
 ```text
 node.create:<path.name>
-node.stop:<path.name>
-node.start:<path.name>
-node.delete:<path.name>
-node.connection.delete:<path.name>
+node.stop:<node_id>
+node.start:<node_id>
+node.delete:<node_id>
+node.connection.delete:<node_id>
 ```
 
 A typed call has one canonical name, noun.verb, and a command completes as noun.verb in the past tense: node.create completes as node.created, node.connection.delete as node.connection.deleted. The Rust request and reply variants (`NodeRequest::Create`, `NodeReply::Created`), the Build step key (`noun.verb:<path.name>`, an opaque string, see [the Build schema](node-rpc-envelope.md#build-schema)) and the span (`rdm.<component>.<noun>.<verb>.via-...`) are rendered from it mechanically and are never named by hand.

@@ -67,7 +67,7 @@ sequenceDiagram
 ## Running node reconnect
 
 A running node that loses its connections for a while reconnects as the same exact birth:
-same node.id, incarnation, endpoint key and path.name. Only its reachability changes.
+same node.id, incarnation, endpoint key and path and name. Only its reachability changes.
 Reconnect is not an op. It opens no Build and emits no join receipt.
 
 1. The node reuses its bound endpoint, its OS-assigned port and its held topology; no port

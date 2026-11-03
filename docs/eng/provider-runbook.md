@@ -3,7 +3,7 @@
 When a member goes silent, its mesh-primary asks the deployment provider about the member's exact
 runtime: the process or container recorded at launch. Any verdict but `reached` recovers the member at
 once ([node-recovery.md](../architecture/lifecycles/node-recovery.md) step 3, Q111): `TerminateRuntime`
-first when the runtime runs, then a new birth at the same `path.name`, over the inherited data dir when
+first when the runtime runs, then a new birth at the same `path` and `name`, over the inherited data dir when
 the runtime exited and a newly allocated one otherwise. When it exited, the recovery can leave one of two
 durable facts on the member's birth:
 
@@ -31,7 +31,7 @@ The contract is in these pages; this runbook only reads them for the person on c
   `dead` or `pending-reconnect`, which only means "unheard". The fact on the birth says why.
 - **Searching Jaeger.**
   - The spans named below are the mesh-primary's.
-  - Filter on the span name, then on `node` (the member's `path.name`) or `node_id`.
+  - Filter on the span name, then on `node` (the member's `path` and `name`) or `node_id`.
   - `inspector` and `recorder` name the admin that inspected or recorded.
 - **Cadence.** All the windows below count in staleness floors (`RDM_STALENESS_MS`, default 30 s):
 
@@ -56,7 +56,7 @@ The contract is in these pages; this runbook only reads them for the person on c
 absent: `NotFound` on the directory itself. A gone directory is decided from that filesystem error,
 never guessed.
 
-**`node.get`.** The birth carries `data_dir_lost: { path, since }`. The fact is indexed by `path.name`:
+**`node.get`.** The birth carries `data_dir_lost: { path, since }`. The fact is indexed by `path` and `name`:
 a member recovered over a fresh dir still lists the loss it was recovered over.
 
 **Jaeger.**
@@ -67,7 +67,7 @@ a member recovered over a fresh dir still lists the loss it was recovered over.
 - The new birth starts with `inherited = false` (`RDM_INHERITED_DATA_DIR=0` in its environment).
 
 **What RDM does.** It waits `RDM_DATA_DIR_GONE_FLOORS` floors, to ride out a remount, then recovers the
-member at the same `path.name`:
+member at the same `path` and `name`:
 - over a newly allocated `data_dir` beside the old path;
 - with a newly minted endpoint key (the old key is never minted again);
 - with `pre_node_ready` told `inherited = false`.

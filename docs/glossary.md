@@ -38,17 +38,18 @@ Every term below links to the architecture pages that define it.
   The node row's minted 60-bit, 12-character lowercase Crockford id. It names one node instance on
   public interfaces, logs, and wire responses, is never derived from `endpoint_id`, and is never
   reissued.
-- **`path.name` (`PathName`)** ([Node identity and state](architecture/node-identity-and-state.md)):
-  The node's logical slot in the fabric, formed from `path` and `name` (`<mesh>.<type>.<name>` by
-  convention). Durable references to a node and Build step keys name the node by `path.name`, while
-  a replacement or recovery at that `path.name` mints a new `node.id` or `incarnation`.
+- **`path` and `name`** ([Node identity and state](architecture/node-identity-and-state.md)):
+  Two of the node's properties, its logical slot in the fabric (`<mesh>.<type>` and a free-text name by
+  convention), two separate fields, never joined. Durable references to a node and Build step keys name it
+  by its `node.id`; `path` and `name` together are only the lookup index's key. A recovery or re-birth at
+  that `path` and `name` mints a new `node.id`.
 - **`endpoint_id` (`EndpointId`)** ([Node identity and state](architecture/node-identity-and-state.md)):
   The node's iroh ed25519 public key (64 hex characters) used by the transport to dial and
   authenticate peers. It is routing-only and is never stored as an application reference or exposed
   as a node's public identity.
 - **incarnation (`IncarnationId`)** ([Node identity and state](architecture/node-identity-and-state.md)):
   The minted Crockford id of one runtime birth of a node. A stop and start keeps the same
-  `node.id` and `incarnation`; a recovery or a re-birth at the same `path.name` mints a new `node.id`
+  `node.id` and `incarnation`; a recovery or a re-birth at the same `path` and `name` mints a new `node.id`
   and a new `incarnation`.
 - **birth** ([Node identity and state](architecture/node-identity-and-state.md)): One exact runtime
   instance of a node, identified by `(mesh, node.id, incarnation)`.
@@ -188,7 +189,7 @@ Every term below links to the architecture pages that define it.
 - **`storage_persistence` and `topology_storage_provider`** ([Storage](architecture/storage.md)):
   The two storage properties in RDM. `storage_persistence` (`ephemeral`,
   `persistent { disposition: preserve }` or `persistent { disposition: release }`) governs whether a node's own data directory survives across births at
-  the same `path.name`; `topology_storage_provider` governs which backend RDM's five record stores
+  the same `path` and `name`; `topology_storage_provider` governs which backend RDM's five record stores
   (`fabric`, `mesh`, `nodes`, `connections`, `builds`) write to.
 - **node investigation (`node.tickle`, `node.runtime.inspect`)**
   ([node investigation](architecture/lifecycles/node-investigation.md),
@@ -203,10 +204,10 @@ Every term below links to the architecture pages that define it.
   `reached` means the exact birth answered `node.tickle` (with no command left unanswered past the
   staleness floor) and is commanded back via [`node.mesh.join`](architecture/lifecycles/node-mesh-join.md);
   any other verdict comes from [`node.runtime.inspect`](architecture/lifecycles/node-runtime-inspect.md)
-  and re-creates the node at the same `path.name` with a new `node.id` (over the inherited data dir
+  and re-creates the node at the same `path` and `name` with a new `node.id` (over the inherited data dir
   when `exited`, or a newly allocated data dir otherwise).
 - **adoption launch** ([Fabric recovery](architecture/lifecycles/fabric-recovery.md#nothing-alive),
   [Node-admin lifecycle](architecture/node-admin-lifecycle.md)): A `node-admin` a person or a script
-  starts at the lost `fabric-primary`'s `path.name`, with `RDM_FABRIC_ID`, `RDM_MESH` and
+  starts at the lost `fabric-primary`'s `path` and `name`, with `RDM_FABRIC_ID`, `RDM_MESH` and
   `RDM_STORE_DIR` and no launcher, when no `node-admin` is alive. It mints its own `node.id` and no
   fabric or mesh id, and its claim of the fabric-recovery attempt is its first recovery write.

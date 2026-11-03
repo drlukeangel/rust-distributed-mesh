@@ -116,7 +116,7 @@ Output:
 ```text
 replace mesh-wcy2e6-2.broker.3 onto rshape-example: {"attempt":1,"build_id":"npb95jwte51k"}
 replace mesh-wcy2e6-2.compute.1 onto rshape-example: {"attempt":1,"build_id":"g5e04pz1wbzt"}
-the example's lines (target rshape) are in each node's stderr.log under target/demo-estate-20261029T103315/<path.name>-<node id>/
+the example's lines (target rshape) are in each node's stderr.log under target/demo-estate-20261029T103315/<node id>/
 ```
 
 Inspect the [Build](architecture/build.md) that replaced `mesh-wcy2e6-2.broker.3` (`npb95jwte51k`),

@@ -69,10 +69,10 @@ From outside a test binary, `rdm-rpc-probe` makes one call over real Node RPC gi
 node-admin's birth line (`crates/rdm-test/src/bin/rdm_rpc_probe.rs`, module doc):
 
 ```text
-rdm-rpc-probe --admin-birth <birth> get|put|delete|cas --target exact:<node_id>|path:<path.name> --key <k> …
+rdm-rpc-probe --admin-birth <birth> get|put|delete|cas --target exact:<node_id>|path:<path and name> --key <k> …
 rdm-rpc-probe --admin-birth <birth> topology --target … [--mesh <name>] [--since …]
 rdm-rpc-probe --admin-birth <birth> fabric-delete --target path:<the entry admin>
-rdm-rpc-probe --admin-birth <birth> node-delete   --target path:<path.name>
+rdm-rpc-probe --admin-birth <birth> node-delete   --target path:<path and name>
 ```
 
 It prints one JSON line, `{"outcome": "Reply"|"NotSent"|"Unserved"|"Indeterminate", …}`.

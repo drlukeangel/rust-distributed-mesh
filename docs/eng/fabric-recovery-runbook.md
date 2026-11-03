@@ -1,9 +1,9 @@
-# Runbook: launching a node-admin at the lost fabric-primary's path.name
+# Runbook: launching a node-admin at the lost fabric-primary's path and name
 
 When no node-admin of the fabric is alive, nothing inside the fabric brings one back. This happens to a
 one-mesh fabric (Rafka's SN shape: one node-admin, `mesh1.node-admin.1`, which is the fabric-primary and
 mesh1's primary) the moment that node-admin dies, even while the mesh's other nodes keep serving. A
-person or a script launches one `rdm-node-admin` at the lost fabric-primary's path.name: the adoption
+person or a script launches one `rdm-node-admin` at the lost fabric-primary's path and name: the adoption
 launch. The launch takes back the fabric-primary role and the mesh-primary role, and the fabric heals
 the rest by itself.
 
@@ -29,8 +29,8 @@ The end-to-end cell is
   and an adoption launch is refused by name (Q159).
 - **Find the fabric id.** It is the name of the fabric's directory under the store root
   (`<RDM_STORE_DIR>/<fabric id>`), and the bootstrap admin's `RDM_FABRIC_ID`.
-- **Find the lost fabric-primary's path.name.** In a one-mesh fabric it is `mesh1.node-admin.1`. The store's
-  node rows record it; a launch at any other path.name is refused by name.
+- **Find the lost fabric-primary's path and name.** In a one-mesh fabric it is `mesh1.node-admin.1`. The store's
+  node rows record it; a launch at any other path and name is refused by name.
 
 ## The launch
 
@@ -38,9 +38,9 @@ Start the consumer's node-admin executable (the one the Day-0 admin ran), with n
 
 | Variable | Value |
 |---|---|
-| `RDM_NODE_NAME` | the lost fabric-primary's path.name, e.g. `mesh1.node-admin.1` |
+| `RDM_NODE_NAME` | the lost fabric-primary's path and name, e.g. `mesh1.node-admin.1` |
 | `RDM_FABRIC_ID` | the fabric's id |
-| `RDM_MESH` | that path.name's mesh, e.g. `mesh1` |
+| `RDM_MESH` | that path and name's mesh, e.g. `mesh1` |
 | `RDM_STORE_DIR` | the fabric's store root, the same one the Day-0 admin was given |
 | `RDM_DATA_DIR` | the lost fabric-primary's data dir when it is still on disk; otherwise a new directory |
 | the fabric root and CA | read from an inherited `RDM_DATA_DIR` (`ca-secret`, `fabric-ca`); with a new data dir, set `RDM_CA_SECRET`, `RDM_FABRIC_CA_KEY`, `RDM_ISSUING_KEY` and `RDM_ISSUING_CERT` (the cell's `test_certs::custody_of`) |
@@ -70,7 +70,7 @@ Nothing more is commanded. In order:
    so start one launch at a time.
 3. **Installs the recorded primaries** (Q149) and runs node investigation on the lost birth. If the
    lost birth is reached, or any node-admin answers, the launch is refused `NameHeld` and exits.
-4. **Releases the lost birth's name** and re-creates the birth as itself: same path.name, new node.id
+4. **Releases the lost birth's name** and re-creates the birth as itself: same path and name, new node.id
    and incarnation, and its own member cert as its own maker.
 5. **Joins the live nodes** and adopts rafka-time from them. With no other node alive, its own clock is
    rafka-time.
@@ -80,7 +80,7 @@ Nothing more is commanded. In order:
    - A node that kept serving keeps its birth (node.id and incarnation) and stays
      ready. It is never re-created.
    - A node that is gone is recovered through node recovery, never waited for: node.delete of the
-     exited birth, then node.create at the same path.name with a new node.id, over the inherited
+     exited birth, then node.create at the same path and name with a new node.id, over the inherited
      data dir when the provider found the runtime exited.
    - An old process on an inherited data dir that comes back is refused at admission, and its
      runtime is terminated.
@@ -104,7 +104,7 @@ Each refusal is a line on stderr naming the input; nothing is written to the sto
 | Cause | Fix |
 |---|---|
 | the store root holds no Fabric record of `RDM_FABRIC_ID` | the wrong store root or fabric id |
-| `RDM_MESH` differs from `RDM_NODE_NAME`'s mesh, or the path.name is not a node-admin's | name the lost fabric-primary |
+| `RDM_MESH` differs from `RDM_NODE_NAME`'s mesh, or the path and name is not a node-admin's | name the lost fabric-primary |
 | `MESH_SPAWN_TYPE` differs from the Fabric record's provider | unset it |
 | no root (`RDM_CA_SECRET` or a `ca-secret` in the data dir) | hand the custody, or point `RDM_DATA_DIR` at the lost fabric-primary's data dir |
 | `RDM_DATA_DIR` is another birth's data dir | an inherited data dir must be the lost birth's own |

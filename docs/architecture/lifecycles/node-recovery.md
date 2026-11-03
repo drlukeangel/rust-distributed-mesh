@@ -8,7 +8,7 @@ and name and a new node.id. It is never a Build or part of one (Q342). The mesh-
 whatever their type: it tracks them, runs the investigation and runs the recovery. The app takes part only through the start hook of the new node.
 Recovery is not a caller op. (A mesh none of whose node-admins can be reached is this page's case
 with no successor named: the fabric-primary investigates the lost mesh-primary and re-creates it at
-its path.name, Q335.)
+its path and name, Q335.)
 
 ## Operation summary
 
@@ -19,8 +19,8 @@ its path.name, Q335.)
 | Investigation | [node investigation](node-investigation.md): the by-destination connections index, node.runtime.inspect, node.tickle direct and via peers; one verdict |
 | Trigger | The verdict (Q111). Reached: commanded back through node.mesh.join. Any other verdict: re-created. Nothing waits on the provider's `Exited` |
 | Execution | The mesh-primary runs the recovery itself and records each step on the node record; the investigation's verdict is its `rdm.node.investigated` event ([build.md §5](../build.md#5-buildstateadapter)). It is never a Build: no build.create, no Build record, nothing claimed. Work on one node is serialized at its mesh-primary: a recovery and any other step on that node (a node command, a Build's step) run one after the other, and a Build in flight elsewhere in the mesh neither holds it nor is held by it. A lost mesh-primary is investigated and recovered by the successor its election names, as any member of its mesh, its own workflow; the fabric-primary investigates and recovers it only when no successor takes the role (Q335) |
-| Steps | node.delete of the unheard instance, node.create at the same path.name, keyed on the target birth `(node.id, incarnation)` |
-| Retained | path.name, placement and storage (from the node record), config and tags (inherited from the deleted row) and the executable (seeded from the deleted row: a recovered node runs the bin its row records, never the recovering admin's) ; a row written before the executable field decodes with none, and node recovery of that birth is refused by name: the topology's entry is the target, not what the birth ran; the repair is a request naming that path's executable, the ordinary replacement ([build-deployment.md](../build-deployment.md)); the inherited data dir and endpoint key when the verdict is `exited` |
+| Steps | node.delete of the unheard instance, node.create at the same path and name, keyed on the target birth `(node.id, incarnation)` |
+| Retained | path and name, placement and storage (from the node record), config and tags (inherited from the deleted row) and the executable (seeded from the deleted row: a recovered node runs the bin its row records, never the recovering admin's) ; a row written before the executable field decodes with none, and node recovery of that birth is refused by name: the topology's entry is the target, not what the birth ran; the repair is a request naming that path's executable, the ordinary replacement ([build-deployment.md](../build-deployment.md)); the inherited data dir and endpoint key when the verdict is `exited` |
 | New | node.id, incarnation, OS-assigned port, exact runtime; a newly allocated data dir and endpoint key on any verdict but `exited`, and when the inherited data dir is absent (`R-FM2`) |
 | App part | The new node's start runs [`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) with start_kind FirstStart and `inherited = true` over a kept data dir, or `inherited = false` over a newly allocated one, then its [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) notice after node.started |
 | Lineage | No supersedes: recovery creates a new node.id ([node identity](../node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids)) |
@@ -64,7 +64,7 @@ backoff doubling from the gossip interval to the staleness floor.
    once. Nothing holds, nothing is inspected again, and nothing waits for the provider's `Exited`
    (Q110, Q111). A birth that comes back once its verdict is not `reached`, during its replacement's birth or after it, is a deleted birth: every view refuses
    its Digest by name ([gossip.md receiver rules](../gossip.md#31-frame-catalog)), and its mesh-primary
-   decides it by its path.name and its atlas ([node investigation](node-investigation.md), Q207): its
+   decides it by its path and name and its atlas ([node investigation](node-investigation.md), Q207): its
    recovery or its re-created birth is there, so the primary whose atlas decided it terminates its runtime.
 
 ## Numbered end-to-end sequence
@@ -83,11 +83,11 @@ backoff doubling from the gossip interval to the staleness floor.
    a superseded birth stays on the host; a runtime already removed terminates as done (Q145). A
    terminate the provider refuses ends the recovery failed at `TerminateRuntime` by name, recorded on the
    node record; the next tick after its backoff decides again.
-3. [node.create](node-create.md) at the same path.name, its spec naming the old data dir when the
+3. [node.create](node-create.md) at the same path and name, its spec naming the old data dir when the
    verdict was `exited` (or a newly allocated data dir otherwise, and when the old data dir is absent,
    `R-FM2`): it loads the endpoint key from the kept data dir (or mints a new endpoint key in the fresh
    data dir) and binds port 0, with a new node.id, incarnation and port. Its config is seeded from the
-   deleted row at that path.name.
+   deleted row at that path and name.
 4. Create runs the whole [start](node-start.md#end-to-end-sequence) with FirstStart and
    `inherited = true` over the kept data dir (or `inherited = false` over a newly allocated one), and
    ends node.created.
@@ -99,7 +99,7 @@ mesh-primary tick: PendingReconnect → node investigation → verdict
   reached:    node.mesh.join (commanded back)
   otherwise:  the mesh-primary runs the recovery
                 node.delete(unheard instance) → node.deleted   (TerminateRuntime first; no stop frames)
-                node.create(same path.name; inherited data dir when exited) → every FirstStart event, node.started, node.created
+                node.create(same path and name; inherited data dir when exited) → every FirstStart event, node.started, node.created
 ```
 
 Delete blocks the old instance before the new join, so a late old digest cannot return the retained
@@ -119,7 +119,7 @@ sequenceDiagram
     M->>N: tickle (direct, then via peers), unless the inspect gave the verdict
     Note over M: reached: node.mesh.join; otherwise the recovery, the mesh-primary's own
     Note over M: node.delete → node.deleted (TerminateRuntime first)
-    Note over M: node.create, same path.name (inherited data dir when exited)
+    Note over M: node.create, same path and name (inherited data dir when exited)
     Note over M: each step recorded on the node record; node.started, node.created
 ```
 
@@ -146,7 +146,7 @@ directory, `EIO`, `EACCES`, or decode failure) is **broken**:
   `RDM_DATA_DIR_GONE_FLOORS` staleness floors (default 2 = 60 s at the 30 s floor, to ride out a
   remount), the mesh-primary records `data-dir-lost { path, since }` durably on that birth
   (`rdm.node_admin.node.update.via-data-dir-lost`, surfaced on `node.get` and never as a gossip
-  `MemberStatus`), and the recovery creates the node at the same `path.name` over a newly
+  `MemberStatus`), and the recovery creates the node at the same `path` and `name` over a newly
   allocated `data_dir` beside the old path with a newly minted endpoint key (the old key is never
   re-minted) and `pre_node_ready` with `inherited = false`. On any verdict but `exited` the data dir is
   newly allocated without the wait ([node investigation](node-investigation.md)); for a lost mesh's

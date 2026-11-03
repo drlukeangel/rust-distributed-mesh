@@ -16,7 +16,7 @@ one writer of its mesh's rows ([node-identity-and-state.md §2.7](../node-identi
 records it as `is_primary` on the node's row, and as `is_fabric_primary` on a node-admin's own row for the
 fabric-primary. **The write records the role; it does not grant it.** The mesh-primary and the
 fabric-primary move together and are never separated. A fabric-primary unheard past the staleness floor
-is not succeeded: [fabric recovery](fabric-recovery.md) re-creates it at its path.name (Q122). Under
+is not succeeded: [fabric recovery](fabric-recovery.md) re-creates it at its path and name (Q122). Under
 mesh.delete the fabric-primary hands over to another mesh first
 ([below](#the-fabric-primary-nodefabric-primaryupdate)). No other record of who is primary exists: no
 primary row, no move log, nothing to fold.
@@ -129,7 +129,7 @@ and recording it are separate for every type.
   workflow that commanded it (the stop or delete of that node) fails by name with that reason.
   The exceptions that skip the update: the delete of a mesh's only node, and the delete of a type's only
   node in its mesh, whether the node leaves the topology (a removal) or is re-created at the same
-  `path.name` (node recovery, an executable replacement); the type has no primary until the election names
+  `path` and `name` (node recovery, an executable replacement); the type has no primary until the election names
   the new birth Ready. A mesh's sole `broker` cannot be stopped until a second
   broker is Ready. No row and no vacancy inferred from a stop.
 - **No other mesh-primary for the fabric-primary:** the fabric arm's own refusal,

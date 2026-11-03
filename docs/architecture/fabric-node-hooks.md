@@ -58,7 +58,7 @@ the process's data-dir inheritance is an independent fact supplied by its spec.
 
 ### What the context carries
 
-- the exact birth: node id, incarnation and path.name;
+- the exact birth: node id, incarnation and path and name;
 - `start_kind`: FirstStart for create, AfterStop for a process rejoining, after a stop or when it
   is heard again after its mesh-primary held it `PendingReconnect`;
 - whether the spec supplies an inherited data dir; start_kind alone does not decide it;

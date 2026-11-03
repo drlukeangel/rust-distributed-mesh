@@ -108,7 +108,7 @@ sequenceDiagram
 
 ## A node-admin created into a live mesh
 
-A node-admin that [node recovery](node-recovery.md) re-creates into a mesh that lost its node-admins (Q335: the fabric-primary's node investigation of the lost mesh-primary, then recovery at its path.name) joins that mesh under the mesh's own MeshId and never mints another.
+A node-admin that [node recovery](node-recovery.md) re-creates into a mesh that lost its node-admins (Q335: the fabric-primary's node investigation of the lost mesh-primary, then recovery at its path and name) joins that mesh under the mesh's own MeshId and never mints another.
 It is the fabric-primary's own workflow, never a Build or part of one (Q342). (A
 lost member of a mesh with a live mesh-primary is the same [node recovery](node-recovery.md), driven by that
 mesh-primary.) Op schemas are the envelope's: [JoinNode](../node-rpc-envelope.md#join-op-0x1d-rdm),

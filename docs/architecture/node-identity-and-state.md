@@ -2,7 +2,7 @@
 
 [Lifecycle index](fabric-mesh-node-lifecycles.md) · [States](lifecycles/states.md) · [Op contracts](node-rpc-envelope.md#the-op-ledger)
 
-This page owns node identity (the minted id, `endpoint_id`, `path.name`, incarnation and the
+This page owns node identity (the minted id, `endpoint_id`, `path` and `name`, incarnation and the
 display prefixes), the node, mesh and fabric rows and who writes each, the `NodeState` liveness
 enum, the hydration roster, local eviction and the stopped-node collector. Lifecycle states and
 check-ins are [States](lifecycles/states.md#states); each workflow is its page in the
@@ -56,13 +56,13 @@ minted id. THE FABRIC IS ALL MESHES**, so the endpoint identity is globally uniq
 mesh-unique. A mesh is the named group of nodes a node belongs to; `mesh_id` is the mesh's own id
 and is never a node's. The id IS the minted id (the short Crockford id), one thing with one name;
 nothing is ever derived from the `endpoint_id`. Only the id is shown on public interfaces (REST, wire,
-logs), and it does not change on restart; anything that refers to a node durably stores its `path.name` (§2.2).
+logs), and it does not change on restart; anything that refers to a node durably stores its `path` and `name` (§2.2).
 The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that same `id`.
 
 | id | what it is | uniqueness | who sees it |
 |---|---|---|---|
 | **`endpoint_id`** | the node's iroh key (ed25519 public key, hex) — its identity on the FABRIC, the thing a dial resolves to. A FIELD of the node record | globally unique across every mesh | **THE TRANSPORT ONLY.** Never on a public interface — not a REST body, not a wire response, not an audit row, not a log line or span attribute NAMING a node (§9 rule 4). The one exception is a span whose SUBJECT is the routing key itself — a dial's target, the handshake, the identity load/mint before an id exists to log — never a narrative "which node did this" field. Exposing the routing id outside those is a security breach |
-| **`path`, `name`** | path is the node location in the tree and name is its name; they are separate stored fields, never concatenated or parsed as one identifier; the name has no dot, and both are free text the caller chooses at node.create (`<mesh>.<type>.<name>` by convention, a name, never an ordinal); the node's type is its own field, `type` (§2), never read from the path | unique per (path, name), checked against the node records by their writer | what topic placement and `replica.targets` store (§2.2); a Build step key names its target by it (`node.create:<path.name>`) |
+| **`path`, `name`** | path is the node location in the tree and name is its name; they are separate stored fields, never concatenated or parsed as one identifier; the name has no dot, and both are free text the caller chooses at node.create (`<mesh>.<type>.<name>` by convention, a name, never an ordinal); the node's type is its own field, `type` (§2), never read from the path | unique per (path, name), checked against the node records by their writer | what topic placement and `replica.targets` store (§2.2); a Build step key names its target by it (`node.create:<node_id>`) |
 | **`id` — the node's minted id** | the node row's own id — minted once, 60 bits, 12 Crockford characters, bare internally | globally unique, by the same property every minted id in the platform has | **the PUBLIC, STORED and AUDIT identity.** It names one node instance: what the audit log names a node by (§2.4) and what REST and the wire render for a node. Its external form renders the type prefix from `type`; a client only ever names a BROKER, so **`brk_<crockford>` is the only form a client sees** |
 
 - **One minter, no second form.** The id is `mint_id()` like every other entity's — no short form,
@@ -72,14 +72,14 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   change when the identity changes, and a node's public name must not move because its key did.
 - **`endpoint_id` is ROUTING-ONLY.** Gossip digests, the topology projection, the mesh handshake and
   the dial itself key on it — nothing stored on behalf of an application does. A stored reference
-  to a node (Rafka's replica sets and placement among them) carries the node's `path.name`, and a
-  dial resolves `path.name` → `endpoint_id` at DIAL time (§2.2), never from a stored copy. A stored
+  to a node (Rafka's replica sets and placement among them) carries the node's `path` and `name`, and a
+  dial resolves `path` and `name` → `endpoint_id` at DIAL time (§2.2), never from a stored copy. A stored
   64-hex `endpoint_id` is refused by name.
 - **The id names one node INSTANCE and is never reissued.** A stop or a start keeps the id,
   incarnation, endpoint and port; a new bin is a new node with a fresh id (the replace steps), and so
   is a node that replaces another or is added (§2.3).
 - **A node PROCESS has an incarnation.** The `Node` row carries `incarnation_id`, an opaque id minted by the
-  one minter at node.create, naming the exact runtime that serves the node's id and `path.name`. It stays the
+  one minter at node.create, naming the exact runtime that serves the node's id and `path` and `name`. It stays the
   same through stop and start (the process never exits) and ends at delete; recover and replace create
   a new node with its own. The process reads it once at boot (`RDM_INCARNATION_ID`, written by node-admin at launch). A reader
   compares incarnations for EQUALITY only: it is not a counter, and it is not the writer incarnation that refuses stale writes
@@ -92,12 +92,12 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   declares its own on the Fabric (`types`), each overriding `node`'s defaults (`storage_persistence`,
   `executable`); a node naming an undeclared type is refused by name at node.create, and neither of
   RDM's two can be declared again.
-- **A node's `path.name` is what placement references.** Nodes use the same
-  `path.name` mechanism as every entity: the path and the name are free text set at node.create;
-  nothing is derived from either. A single node is created, for example, as `mesh1.broker.north`. A node advertises its `path.name`, its `endpoint_id` and its minted
-  id; the last two change, the `path.name` does not. An application that stores a node reference
-  stores the `path.name`, so a new `endpoint_id` or minted id has no effect on it.
-  A re-attach or a growth changes nothing: the nodes are created at the same `path.name`s, and the
+- **A node's `path` and `name` are what placement references.** Nodes use the same
+  `path` and `name` mechanism as every entity: the path and the name are free text set at node.create;
+  nothing is derived from either. A single node is created, for example, as `mesh1.broker.north`. A node advertises its `path` and `name`, its `endpoint_id` and its minted
+  id; the last two change, the `path` and `name` do not. An application that stores a node reference
+  stores the `path` and `name`, so a new `endpoint_id` or minted id has no effect on it.
+  A re-attach or a growth changes nothing: the nodes are created at the same paths and names, and the
   routes to the new nodes materialize with no update to any topic. There are two renames, both
   node.name.update under its [rename precondition](lifecycles/node-name-update.md), always of a live node whose
   connections are deleted and which has left its mesh: a replace's predecessor to `<name>-old`, and a rollback's
@@ -113,26 +113,26 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
 The prefix renders from `type` over ONE 12-character id space, human-readable by node type: `brk_` = broker, `adm_` = node admin,
 `gtw_` = gateway, `cmp_` = compute. A Build id is the bare 12-character Crockford60 on the wire, in every store row and in every page example, and renders `bid_xxxx-xxxx-xxxx` (`BuildId::log()`) in log lines and span fields only; nothing parses or stores that form.
 
-### 2.2 The node `path.name` is what a reference STORES — the `endpoint_id` is resolved at dial time
+### 2.2 The node's `path` and `name` are what a reference STORES — the `endpoint_id` is resolved at dial time
 
 An application names nodes in its own configuration, so a logical stored reference carries separate `path` and `name` fields (for example `mesh1.broker` and `1`). Exact-instance references carry node ID and, where execution targets a process, incarnation. Neither form stores an endpoint key.
 
-- **Every dial resolves `path.name` → the node → its `endpoint_id` from the `topology-nodes`
+- **Every dial resolves `path` and `name` → the node → its `endpoint_id` from the `topology-nodes`
   projection** (§2.6), which every node already holds in memory when it routes. The
-  projection carries a `path.name` index, so a node whose `endpoint_id` moved (§2.3), or a `path.name` a
+  projection carries a `path` and `name` index, so a node whose `endpoint_id` moved (§2.3), or a `path` and `name` a
   new node now holds (§2.3), is reached without a single config changing.
 - **The node owns its name**: it is the owner of the name it publishes, and what it publishes is the row's name. A
   node writes its own properties; its mesh-primary writes lifecycle facts (§2.5).
 - **A 64-hex `endpoint_id` or a minted node id in a stored reference is a defect** and is refused
   by name at the reader.
-- **The stored `path.name` does not change on a RESTART, a RE-ATTACH, a GROWTH or a REPLACE** (§2.3): a re-attached or grown node is created at its `path.name`; a replaced predecessor, live and
-  out of its mesh, is renamed `<name>-old` at its unchanged path and stopped, and its successor is created at the `path.name`: a re-birth. No stored
+- **The stored `path` and `name` do not change on a RESTART, a RE-ATTACH, a GROWTH or a REPLACE** (§2.3): a re-attached or grown node is created at its `path` and `name`; a replaced predecessor, live and
+  out of its mesh, is renamed `<name>-old` at its unchanged path and stopped, and its successor is created at the `path` and `name`: a re-birth. No stored
   reference to it is ever rewritten.
 
-### 2.3 A new node is a new id — a REPLACE takes the old node's `path.name`, an ADD takes its own
+### 2.3 A new node is a new id — a REPLACE takes the old node's `path` and `name`, an ADD takes its own
 
 A node's id follows the INSTANCE, so every replacement is traceable, and every stored reference
-follows the `path.name` (§2.2), so nothing stored changes when a node is replaced.
+follows the `path` and `name` (§2.2), so nothing stored changes when a node is replaced.
 
 | path | node ids |
 |---|---|
@@ -140,13 +140,13 @@ follows the `path.name` (§2.2), so nothing stored changes when a node is replac
 | golden attach, restage | fresh for a node that is replaced; the same for a node that is not |
 | golden attach or restage + expansion | as above, plus a fresh id for each new node |
 
-| a new node that… | its id | its `path.name` | the node it relieves | placement |
+| a new node that… | its id | its `path` and `name` | the node it relieves | placement |
 |---|---|---|---|---|
 | REPLACES a node in the topology | fresh | created at `mesh1.broker.1` once the predecessor released it | out of its mesh, renamed `name = 1-old` at `path = mesh1.broker` then stopped, or deleted | stays as it is |
 | is ADDED | fresh | its own next one (`mesh1.broker.4`) | none | an application refers to it only by an explicit change of its own configuration |
 
 - **A replace is [node replace](lifecycles/node-replace.md).** Insert-and-fail on each of its
-  renames means two nodes never hold one `path.name`.
+  renames means two nodes never hold one `path` and `name`.
 - **Node certs:** [fabric-certs.md](fabric-certs.md).
 - **node.delete releases the node's identity and name; its row stays.** The node's mesh-primary
   writes Deleted lifecycle state, which frees the pair. The predecessor's own properties
@@ -283,7 +283,7 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
   named: a store's audit topic is `<store>.adt_<mesh id>` in every fabric, one mesh or ten.
 - **Its name is `mesh<#>`, its position in the shape**: node-admin's own mesh
   takes `RDM_MESH` (`mesh1` when unset), and a mesh a Build creates takes the Build's `mesh_name`. The name is never derived from the mesh's
-  channel. It is the first segment of every member's path.name (`mesh1.broker.1`, §2.2). The mesh's
+  channel. It is the first segment of every member's path and name (`mesh1.broker.1`, §2.2). The mesh's
   own path is opaque (§2).
 - **The mesh's primary node-admin writes its row at creation.** The
   mesh's first node-admin is its primary (the only candidate of its election),
@@ -349,7 +349,7 @@ node in one mesh is a fabric of one mesh.
   fabric-primary's `FabricStatus` frame. Which node-admin is fabric-primary is the election's result, recorded as
   `is_fabric_primary` on that node-admin's own row, never on this one. It carries no pointer to a Build: the current Build is read from the Builds newest first ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)).
 - **Its id is minted** (bare Crockford internally, displayed `fab_xxxx-xxxx-xxxx`). Its path is `""`, the root every
-  mesh and node sits under, so its path.name is its name. A row that names the fabric it belongs to carries that id in
+  mesh and node sits under, so its name is its whole location. A row that names the fabric it belongs to carries that id in
   a field named `fabric`; `endpoint_id` is a node's routing key (§2) and never names a fabric.
 - **The first node-admin creates it.** The node-admin that is both mesh-primary and fabric-primary, `is_primary` and `is_fabric_primary` (the
   first node of the first mesh), mints the fabric and its mesh together and holds both in memory; the sequence is
@@ -524,7 +524,7 @@ counted ([gossip.md §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-
 | **Stopped** | the mesh-primary's `NodeStopped` overlay, from node.stop's `node.stopped` | on receipt |
 | **Stale** (observer) | unheard past the staleness floor (local receive-time, clock-skew-safe): held, not current | the staleness floor |
 | **Deleted** | the executor's `NodeDeleting`, then `NodeDeleted` after the provider's inspect answer | on receipt |
-| **Re-born** | the same `path.name` under a new node.id ([node recovery](lifecycles/node-recovery.md)): the predecessor is deleted by node recovery, so the projection holds one entry per `path.name` | on receipt |
+| **Re-born** | the same `path` and `name` under a new node.id ([node recovery](lifecycles/node-recovery.md)): the predecessor is deleted by node recovery, so the projection holds one entry per `path` and `name` | on receipt |
 
 The "Stale" row above is **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license a destructive recovery. A retained Gone deletion is produced only by canonical exact deletion proof, published as `NodeDeleted` by the Mesh executor that holds the operation and retained in `MeshTopology.deleted`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.
 

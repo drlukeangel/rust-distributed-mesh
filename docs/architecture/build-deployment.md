@@ -9,7 +9,7 @@ deploys: the executable each node runs, from the request to the row and back out
 ## 1. The rule
 
 A node's executable is an input of node.create and of nothing else. The birth runs it for its whole
-life. A new executable is a new birth at the same `path.name` (Q157).
+life. A new executable is a new birth at the same `path` and `name` (Q157).
 
 ## 2. From the request to the row
 
@@ -47,7 +47,7 @@ with its guards: a type's non-primary members before its primary, the primary's 
 node.primary.update, the fabric-primary's move ending the caller's stream `FabricPrimaryMoved` and the
 caller resubmitting the same build_id, a type's only node replaced with no update (node-primary-update.md
 "No-successor cases"), and a mesh whose only node-admin is to be replaced first given a second node-admin
-at a new `path.name` of that type on the new executable, Ready and mesh-primary, which stays. A path under node recovery is
+at a new `path` and `name` of that type on the new executable, Ready and mesh-primary, which stays. A path under node recovery is
 replaced after that recovery's attempt completes, never in the same attempt. The successor's storage follows its create spec's `storage`: `Persistent` inherits the
 predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one; its config and tags are its
 Build entry's, written at its claim, never the predecessor's (node-replace.md "Properties"); a storage or placement change in the same request is the
@@ -60,7 +60,7 @@ back to pending completes only after its own ready state is set (states.md).
 A heal is node investigation's verdict first (node-investigation.md). `reached`: the birth is commanded
 back through node.mesh.join, the same process on the same executable; nothing is created and nothing
 about its executable is read or written. A stop and a start keep the process and the executable
-(node-stop.md "Kept"). Any other verdict re-creates the birth at its `path.name`, and that create
+(node-stop.md "Kept"). Any other verdict re-creates the birth at its `path` and `name`, and that create
 names no executable on its step, so it takes the row's (node-recovery.md "Retained"), never the
 recovering admin's and never the topology's next entry. A heal never upgrades; a pending replacement
 follows as its own step. A row written before the field

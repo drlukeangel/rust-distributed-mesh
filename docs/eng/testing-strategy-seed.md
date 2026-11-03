@@ -50,7 +50,7 @@ assert:
 | `UnknownProvider` | `provider` is not `process` or `container` |
 | `UnknownShape` | `shape` is not `SN`, `MN` or `MM` |
 | `ShapeMismatch` | the meshes are below the shape's floor: SN is 1 mesh of 1 node-admin and 1 node; MN is 1 mesh of 2 node-admins and 3 nodes; MM is two MN meshes |
-| `UnknownTarget` | an operation or assertion targets a `path.name` that is not `<mesh>.rpc.<n>` of a declared mesh |
+| `UnknownTarget` | an operation or assertion targets a `path` and `name` that is not `<mesh>.rpc.<n>` of a declared mesh |
 | `AmbiguousGet` | a `get` does not say exactly one of `equals` or `absent: true` |
 
 The parser's own cells are in `scenario.rs`'s `mod tests`.
@@ -83,7 +83,7 @@ In a cell: `crates/rdm-test/tests/node/restart_canary_seed.rs` parses the file w
 
 ### Writing a scenario
 
-- Declare the shape at or above its floor; name every target by its `path.name`.
+- Declare the shape at or above its floor; name every target by its `path` and `name`.
 - Put each operation's expected result in an `assert` `get`, with `equals` or `absent: true`.
 - A run is replayable: `rdm_test::replay` holds the manifest that runs one scenario again exactly
   (ownership, seed, source, shapes, fault schedule and the ordered typed outcomes) and refuses a

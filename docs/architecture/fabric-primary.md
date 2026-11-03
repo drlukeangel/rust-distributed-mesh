@@ -76,7 +76,7 @@ Fabric/Mesh control has four distinct planes.
 ```text
 ACCEPTED TOPOLOGY
     the current Build (the Builds read newest first) -> the accepted topology
-    Fabric -> Mesh -> exact logical node path.names
+    Fabric -> Mesh -> exact logical node paths and names
 
 DURABLE LIFECYCLE TRUTH
     system.ops.meshes

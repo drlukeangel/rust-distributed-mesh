@@ -73,7 +73,7 @@ Not election inputs:
 ~~~text
 ready_since
 wall clock / creation time
-path.name / ordinal
+path and name / ordinal
 MeshId
 FabricId
 EndpointId
@@ -89,7 +89,7 @@ Build attempt
 Restart of the same logical node preserves NodeId. Permanent logical replacement mints a new NodeId, so
 replacement does not inherit election rank. One exception, [fabric recovery](lifecycles/fabric-recovery.md)
 (Q122): while it restores the fabric-primary, no other node becomes fabric-primary or node-admin primary
-of that mesh; the fabric-primary stays assigned to the recovery target's path.name, and when the node
+of that mesh; the fabric-primary stays assigned to the recovery target's path and name, and when the node
 re-created there is Ready the workflow restores it as mesh-primary and fabric-primary. The
 recovery supplies the target; nothing about a lower id or a matching name displaces a primary
 anywhere else.
@@ -142,7 +142,7 @@ nothing else moves it. Unheard past the staleness floor, nobody takes it: the lo
 node-admin of its mesh, or when the mesh has none the lowest Ready mesh-primary on the
 backbone on [node investigation](lifecycles/node-investigation.md)'s verdict (Q335), runs
 [fabric recovery](lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives),
-the one mechanism in either case (Q122): the node-admin at the fabric-primary's path.name is re-created
+the one mechanism in either case (Q122): the node-admin at the fabric-primary's path and name is re-created
 and is mesh-primary and fabric-primary again when it is Ready.
 
 Only the elected fabric-primary may accept a Fabric topology change. The election chooses **who may
@@ -159,7 +159,7 @@ defines **what topology is accepted**.
 [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate)
 moves the fabric-primary while the incumbent mesh's node-admins remain alive; its selection is this page's
 election, with the departing mesh excluded under mesh.delete, or the successor the fabric-primary names
-(the node at the path.name that lost it, returned or re-created, §4.3). The next-revision row is the
+(the node at the path and name that lost it, returned or re-created, §4.3). The next-revision row is the
 election's input: under mesh.delete the incumbent stays mesh-primary and is fabric-primary no more. The
 hand-over needs no incumbent-mesh death, infers nothing from silence and turns no announcement into a
 fact.
@@ -182,7 +182,7 @@ For every primary:
 - silence past the staleness floor supersedes it (§4.1, §4.3); nothing is terminated on silence. What
   became of the unheard node is [node investigation](lifecycles/node-recovery.md)'s verdict (Q111): reached,
   it is commanded back as a member through node.mesh.join; anything else, it is re-created at its
-  path.name with a new node.id (Q110), and an old birth that comes back is refused at admission and its
+  path and name with a new node.id (Q110), and an old birth that comes back is refused at admission and its
   runtime terminated;
 - a primary that hands over gives the primary to the lowest Ready NodeId of its type in its
   mesh;
@@ -298,7 +298,7 @@ vacant (handed over, unheard past the floor, or no record)
        -> one elected primary
 the node-admin type of a mesh whose unheard mesh-primary was also the fabric-primary (Q122)
        -> no node-admin is elected: the lowest Ready one runs fabric recovery instead;
-          the fabric-primary stays assigned to the target's path.name, and the workflow restores the
+          the fabric-primary stays assigned to the target's path and name, and the workflow restores the
           node re-created there as mesh-primary and fabric-primary when it is Ready;
           the mesh's other types elect as above
 ~~~

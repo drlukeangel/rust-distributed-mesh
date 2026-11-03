@@ -14,7 +14,7 @@ every member cert it signed, stay valid to their own expiry, so nothing is cut a
 |---|---|
 | Runner | The fabric-primary, which holds the fabric root |
 | Target | One mesh; every node-admin of it, exact births, in the view |
-| Steps | Mint the issuing cert, then [node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other admin as a command forwarded through the mesh-primary; the step keys are `mesh.issuer.renew:<mesh>` and `node.issuer.update:<path.name>` |
+| Steps | Mint the issuing cert, then [node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other admin as a command forwarded through the mesh-primary; the step keys are `mesh.issuer.renew:<mesh>` and `node.issuer.update:<node_id>` |
 | Order | The mesh-primary first (the fabric-primary's own mesh: installed in-process, with no call, spanned `via-installed`), then the others; a member renewal due in the window is signed with the new key once its own admin holds it |
 | Receipt | On each admin's `IssuerUpdated` its mesh-primary writes its signing cert issue date and expiry on the admin's record (its own at its install); the workflow is complete when every admin in the view holds the new dates |
 | Never | A member cert re-issued by this workflow (that is [node.cert.renew](node-cert-renew.md)'s on its own schedule), the root rotated (a fabric re-birth), a status set, a frame published |
@@ -53,7 +53,7 @@ sequenceDiagram
 
 An admin that refuses the material by name (another mesh, a CA no root in its set verifies, an issuing
 cert the CA does not verify) ends the
-workflow `Failed { step: node.issuer.update:<path.name>, reason }`; the next tick runs it again from
+workflow `Failed { step: node.issuer.update:<node_id>, reason }`; the next tick runs it again from
 the rows. A successor fabric-primary reads the node-admin rows and continues the schedule from them.
 
 ## Observability contract

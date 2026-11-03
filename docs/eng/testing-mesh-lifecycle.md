@@ -59,7 +59,7 @@ fabric policy; a Build never names a provider (CLAUDE.md env table). The estate'
 |---|---|---|
 | `node.stop` then `node.start` | the same process, node id and incarnation; readiness only after every start gate passes again | [node-stop.md](../architecture/lifecycles/node-stop.md), [node-start.md](../architecture/lifecycles/node-start.md) |
 | a node-admin started again on its data dir (`estate.restart_admin(data_dir)`) | its identity, read back from the data dir | [node-admin-lifecycle.md](../architecture/node-admin-lifecycle.md) |
-| a killed node, recovered by its mesh-primary | the same `path.name`, re-born with a new node id | [node-recovery.md](../architecture/lifecycles/node-recovery.md) |
+| a killed node, recovered by its mesh-primary | the same `path` and `name`, re-born with a new node id | [node-recovery.md](../architecture/lifecycles/node-recovery.md) |
 | a node deleted | nothing: delete releases its identity and name; its storage stays | [node-delete.md](../architecture/lifecycles/node-delete.md) |
 
 `node.restart` is removed (Q183): a node is stopped then started, or re-born (CLAUDE.md

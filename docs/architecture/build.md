@@ -125,11 +125,11 @@ submitted change
     -> reconcile B'.topology
 ~~~
 
-The accepted topology names the exact path.names that should exist, grouped by mesh. Counts may remain product-facing resize input, but the compiler resolves a count change to exact paths before the Build is persisted.
+The accepted topology names the exact paths and names that should exist, grouped by mesh. Counts may remain product-facing resize input, but the compiler resolves a count change to exact paths before the Build is persisted.
 
-Each node's create spec carries the executable the node runs ([build-deployment.md](build-deployment.md)); a request creates a node by naming its `path.name` and its properties, the compiler holds the executable on the path's entry before the Build is persisted, and a created path with none is refused by name. Counts are the product's door's vocabulary, expanded into named paths before the typed call; RDM mints a `path.name` only for a create it originates itself.
+Each node's create spec carries the executable the node runs ([build-deployment.md](build-deployment.md)); a request creates a node by naming its `path` and `name` and its properties, the compiler holds the executable on the path's entry before the Build is persisted, and a created path with none is refused by name. Counts are the product's door's vocabulary, expanded into named paths before the typed call; RDM mints a `path` and `name` only for a create it originates itself.
 
-**The create spec is the node's properties, flat (Q166).** A node entry names its `path.name` and the
+**The create spec is the node's properties, flat (Q166).** A node entry names its `path` and `name` and the
 node's own properties under the [node properties](node-rpc-envelope.md#node-properties) names:
 `executable`, `storage`, `placement`, `tags` and `config`. There is no nested configuration type;
 `config` is the application's map and nothing else (RDM never reads it).
@@ -140,7 +140,7 @@ records and applies every property that differs, each by its own operation. It d
 | What differs | Applied as |
 |---|---|
 | a path added / removed | `node.create` / `node.delete`: a resize |
-| `executable` | the node's replacement: a new birth at the same `path.name` ([build-deployment.md §3](build-deployment.md#3-changing-a-nodes-executable)) |
+| `executable` | the node's replacement: a new birth at the same `path` and `name` ([build-deployment.md §3](build-deployment.md#3-changing-a-nodes-executable)) |
 | `config` | in place, as a caller's `node.config.update` applies a map: the row first, then the node. The Build's map supersedes the node's current one, whoever set it: every write is a PUT, and the submitter reads the node's current config (`node.get`) before it composes (Q236) |
 | `tags` | in place: the node's tag rows |
 | `storage`, `placement` | onto the row, effective at the node's next birth; with an executable change they ride that re-birth (Q157) |
@@ -176,7 +176,7 @@ Every change to the topology is its own Build, submitted through build.create wi
 
 A node command and a repair carry the exact birth they act on (node id and incarnation), which refuses a stale birth by name. They never change the Build.
 
-Every execution attempt re-reads the accepted topology and current realized/observed state and computes remaining work. Completed step receipts prevent repeating already-satisfied work; a Build never resumes from a mutable instruction pointer. A step receipt is `(build_id, attempt, operation, step)` with its output; the exact birth it acted on is the attempt's fenced action. Each workflow's `AttemptOpened` starts a run; a resume after the executor is lost (R-BI4) continues that run; a receipt is reused only within its run. A later attempt of the same run replays a held Complete receipt for the same operation and step. A receipt of an earlier run at the same path.name satisfies nothing for a later run: a second recovery at the same name opens its own run and runs its own steps.
+Every execution attempt re-reads the accepted topology and current realized/observed state and computes remaining work. Completed step receipts prevent repeating already-satisfied work; a Build never resumes from a mutable instruction pointer. A step receipt is `(build_id, attempt, operation, step)` with its output; the exact birth it acted on is the attempt's fenced action. Each workflow's `AttemptOpened` starts a run; a resume after the executor is lost (R-BI4) continues that run; a receipt is reused only within its run. A later attempt of the same run replays a held Complete receipt for the same operation and step. A receipt of an earlier run at the same path and name satisfies nothing for a later run: a second recovery at the same name opens its own run and runs its own steps.
 
 Forbidden:
 

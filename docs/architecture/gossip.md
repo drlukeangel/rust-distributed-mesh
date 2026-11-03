@@ -247,7 +247,8 @@ LifecycleOp {
     operation: String,
     node_id: NodeId,
     incarnation: IncarnationId,
-    name: PathName,
+    path: String,
+    name: String,
     mesh: String,
     event_at_rafka_ms: u64,
 }
@@ -939,7 +940,7 @@ an existing mesh keeps that mesh's MeshId.
 
 Held live ordinary members remain reconciliation inputs and are preserved through their current topology + RuntimeFacts/runtime metadata.
 
-A deletion is published by the executor that holds the operation, after its node.delete step's receipt. Holding a claim does not delete; neither does the node's own `stopped`, a failed RPC, silence or an unheard peer mesh. A lost member is recovered by its mesh-primary ([node recovery](lifecycles/node-recovery.md)): node investigation, then on any verdict but reached one recovery attempt that deletes the unheard node (NodeDeleted from that step) and creates its successor at the same path.name.
+A deletion is published by the executor that holds the operation, after its node.delete step's receipt. Holding a claim does not delete; neither does the node's own `stopped`, a failed RPC, silence or an unheard peer mesh. A lost member is recovered by its mesh-primary ([node recovery](lifecycles/node-recovery.md)): node investigation, then on any verdict but reached one recovery attempt that deletes the unheard node (NodeDeleted from that step) and creates its successor at the same path and name.
 
 ---
 

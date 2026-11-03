@@ -10,7 +10,7 @@ lifecycle pages ([fabric-mesh-node-lifecycles.md](../architecture/fabric-mesh-no
 
 ## 1. Which node-admin
 
-An estate's cell starts at its **entry** node-admin (`Estate::admin`, a `path.name`): first the
+An estate's cell starts at its **entry** node-admin (`Estate::admin`, a `path` and `name`): first the
 Day-0 admin the estate started, the fabric-primary of a new fabric
 ([fabric-create.md](../architecture/lifecycles/fabric-create.md)). Reads answer from that admin's
 view; a Build call the entry does not own follows the redirect to the fabric-primary

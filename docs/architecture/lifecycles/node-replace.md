@@ -18,7 +18,7 @@ A Build provides durable resumable execution, not automatic rollback.
 | Immutable exe | New bin/budgets require this new node, never a start of the stopped one |
 | Properties | The successor's own part of its record starts from its Build entry's config and tags; its claim, in its mesh-primary's part, retains the exact immutable launch snapshot (a Build's config is the whole map, a PUT: an entry naming no ports names none until the node's own update, so no row carries the predecessor's dead ports). Tags remain in the subject's own part of its record; a current-pair lookup selects the successor's ID, not the predecessor's properties. A later attempt of the same Build never writes the entry over a later node or caller update, which stands until the next Build. Nothing is copied from the predecessor ([node properties](../node-rpc-envelope.md#node-properties)) |
 | Data transfer | Rafka's own step; preserve its declared move/copy and commit boundary |
-| Name ownership | [The node owns its name](../node-identity-and-state.md#22-the-node-pathname-is-what-placement-stores--the-endpoint_id-is-resolved-at-dial-time) |
+| Name ownership | [The node owns its name](../node-identity-and-state.md#22-the-nodes-path-and-name-are-what-a-reference-stores--the-endpoint_id-is-resolved-at-dial-time) |
 | Name change | [node.name.update](node-name-update.md): claim, row first, node second, only under its rename precondition |
 | Rollback | Explicit Rafka steps while the predecessor is stopped as `<name>-old` at the same path and its data remains available |
 

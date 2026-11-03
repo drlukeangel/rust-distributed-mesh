@@ -37,7 +37,7 @@ what kind of test it is.
 
 **Rule 1.3: no banned vocabulary.** CLAUDE.md's vocabulary bans hold in every name: a cell, a
 file, a module and a helper. Words with a page meaning keep that meaning: a node is stopped then
-started, or re-born at the same `path.name` with a new node id; connections are deleted; the
+started, or re-born at the same `path` and `name` with a new node id; connections are deleted; the
 primaries are the fabric-primary, the mesh-primary and the node-type primary (CLAUDE.md
 "Vocabulary"). The name check (§4) refuses the `RETIRED` subset in identifiers a diff adds; the
 rest of the list is the reviewer's to refuse.
@@ -139,7 +139,7 @@ python3 scripts/test_name_check.py               # the check's own tests
 - A span a cell asserts is named by its literal, the name the code emits
   (`rdm_test::estate::named(&spans, "rdm.node_rpc.request.serve.via-direct")`); never build a span
   name from parts.
-- A node is named in a cell by its `path.name` (`mesh1.node.1`, `mesh1.node-admin.2`) or its node id;
+- A node is named in a cell by its `path` and `name` (`mesh1.node.1`, `mesh1.node-admin.2`) or its node id;
   `id`, `index` and `name` are three things, and `key` is none of them (CLAUDE.md "Vocabulary").
 - An estate's root is named for its cell: `rdm_test::estate::estate_root(test)` makes
   `i143-<test>-<pid>-<n>` under the temporary directory, so two runs never share a root.

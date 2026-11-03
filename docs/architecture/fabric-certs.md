@@ -21,7 +21,7 @@ passes in and what the cert means outward, to clients and other systems. The who
 |---|---|---|
 | fabric root | every node-admin, from the app at bootstrap (`CertChoice::Ca`) or minted on day 0; the trust anchor every verifier holds | the fabric CA, nothing else |
 | fabric CA `CaCert { ca_pub, expiry_ms }` | every node-admin, kept as `fabric-ca` beside its data dir; minted under the root by the bootstrap admin, the fabric-primary, on day 0 (`fabric.ca.create`, step 1 of fabric.create) and rotated internally (`fabric.ca.renew`) | each mesh's issuing cert |
-| mesh issuing cert `IssuingCert { mesh, issuer_pub, issued_ms, expiry_ms }` | that mesh's node-admins, in memory | member certs whose path.name is in that mesh |
+| mesh issuing cert `IssuingCert { mesh, issuer_pub, issued_ms, expiry_ms }` | that mesh's node-admins, in memory | member certs whose path is in that mesh |
 | member cert `SignedCert { cert: NodeCert { name, mesh, node_id, incarnation, endpoint, issued_ms, expiry_ms }, sig, issuer: SignedIssuingCert }` | the birth it was issued to | nothing |
 
 A cert's issue date (`issued_ms`, X.509's notBefore) is signed with the rest and records its issuance
@@ -43,7 +43,7 @@ refuses at the first failure:
 2. `CaExpired`: the CA cert has expired;
 3. `IssuerBadSignature`: the CA does not verify the issuing cert;
 4. `IssuerExpired`: the issuing cert has expired;
-5. `IssuerMeshMismatch`: the first segment of the member's path.name is not the issuer's mesh;
+5. `IssuerMeshMismatch`: the first segment of the member's path is not the issuer's mesh;
 6. `BadSignature`: the issuing key does not verify the member cert;
 7. `Expired`: the member cert has expired.
 

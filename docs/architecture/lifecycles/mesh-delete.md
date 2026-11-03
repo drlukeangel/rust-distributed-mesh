@@ -24,7 +24,7 @@ executor, deletes it afterwards.
 | Rows | Each member's row deleted (its node.delete); the mesh row deleted at mesh.deleted, written by the mesh-primary |
 | After | The mesh-primary keeps publishing its mesh topology until a separate node.delete, with the fabric-primary as executor, deletes it; its final mesh topology, the mesh deleted and itself deleting, is its last gossip, and the fabric-primary publishes nothing for the mesh or that admin (R-RX4) |
 | Identity | A mesh's deleted and a node's deleted release names as [States](states.md) states; a mesh created again under the same name takes its names over the deleted mesh and node rows |
-| Build step key | `mesh.delete:<mesh_id>`; each member's step is its own `node.delete:<path.name>` |
+| Build step key | `mesh.delete:<mesh_id>`; each member's step is its own `node.delete:<node_id>` |
 | Forbidden evidence | Silence, a closed endpoint, a failed call or a timeout never shows a member exited |
 
 ## Numbered end-to-end sequence
@@ -251,6 +251,6 @@ Failed steps and stream certainty follow the
 |---|---|---|---|
 | mesh.delete Build | fabric-primary | build.create, build.attempt.run; claim for the mesh-primary | Build, attempt, `mesh.delete:<mesh_id>` |
 | Fabric-primary change | fabric-primary | [node.fabric-primary.update](node-primary-update.md#observability-contract) when the mesh-primary is the fabric-primary | same trace |
-| Member delete | mesh-primary and each member | [node.delete](node-delete.md#observability-contract) per member; exact Exited receipt | outer operation plus `node.delete:<path.name>` |
+| Member delete | mesh-primary and each member | [node.delete](node-delete.md#observability-contract) per member; exact Exited receipt | outer operation plus `node.delete:<node_id>` |
 | mesh.deleted | mesh-primary | manifest validated by the fabric-primary; mesh row deleted; mesh topology carries the mesh deleted | outer operation; complete roster |
 | Mesh-primary delete | fabric-primary | node.delete with the fabric-primary as executor; exact Exited; row deleted | its own Build and trace |
