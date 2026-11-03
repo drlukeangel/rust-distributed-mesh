@@ -86,7 +86,7 @@ For a carrier of your own, the helpers are `rdm_transport::current_traceparent()
 never panics (`telemetry.rs`).
 
 **Where no parent edge exists, identity joins the traces.** Every Build-backed span carries
-`build_id` and, where it applies, `attempt`, `operation`, `step`, `node_id` and `incarnation`
+`build_id` and, where it applies, `mesh`, `operation`, `step`, `node_id` and `incarnation`
 (telemetry.md §2). The fabric's change, a timer's pass and a call that arrives without context
 start roots of their own (telemetry.md §4), joined by those fields.
 
@@ -223,7 +223,7 @@ word forced onto it (observability-conventions.md, "No verb-laundering").
    is `rdm.node_rpc.stream.serve.via-terminal`, a child of its serve span
    (node-rpc-envelope.md §Runtime spans).
 6. **Build-backed spans carry the Build's identity:** `build_id` and, where it applies,
-   `attempt`, `operation`, `step`, `node_id` and `incarnation` (telemetry.md §2;
+   `mesh`, `operation`, `step`, `node_id` and `incarnation` (telemetry.md §2;
    node-rpc-envelope.md §Runtime spans).
 7. **No banned word in any segment.** CLAUDE.md's vocabulary bans hold in a span name as in any
    identifier: connections are `delete`d (`connections-deleting`), never drained; a primary is

@@ -32,11 +32,12 @@ Readiness is three separate scopes, none a substitute for another
 |---|---|---|
 | node | starting → pending → ready → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted | its mesh-primary, on the node's `node.started` report after every start gate, `pre_node_ready` among them |
 | mesh | pending → ready → deleting → deleted | the fabric-primary decides on the mesh-primary's report that every planned birth is ready; the mesh-primary records it |
-| fabric | pending → ready | the fabric-primary, once every mesh the accepted Build names is ready and the attempt is claimed |
+| fabric | pending → ready | the fabric-primary, once every mesh the accepted Build names is ready |
 
 - There is exactly one readiness mechanism: the start's gates and the `node.started` report.
-  Nothing times out into ready; a failed hook fails the start by name, a blocked one answers
-  `Blocked` until its retry event (node-identity-and-state.md §5).
+  Nothing times out into ready. A hook that answers `Pending` holds the node pending and is called
+  again under the hook's one `Send`; `Failed`, or its attempts spent, fails the start by name
+  ([fabric-node-hooks.md](../architecture/fabric-node-hooks.md), Q350).
 - `degraded` on a fabric or mesh is a health marker, not a lifecycle status (states.md).
 - The views carry it: `FabricView`, `MeshView` and `NodeView`, with `ScopeStatus` and
   `NodeStatus` (`crates/rdm-client/src/lib.rs`).
@@ -72,8 +73,9 @@ A count expands this way: a grow takes the lowest free ordinal of
 the type, a shrink drops the highest ordinal that is not the type's primary
 (`crates/rdm-test/src/executables.rs`, module doc).
 
-The submit answers a `BuildStream`: the cell reads it to its terminal frame. `Builds::get(id)`
-reattaches to a Build's receipts, `Builds::delete(id)` deletes its history
+The submit answers a `BuildStream`: the cell reads it to its terminal frame, the Build's end
+(`complete`, `incomplete` or `failed`). `Builds::get(filter)` reads Builds, each with its step
+events; `Builds::delete(id)` deletes its history
 (`crates/rdm-client/src/objects.rs`). From outside a test binary,
 `rdm-scenario <scenario.yaml>` brings a declared shape up through a Build
 ([testing-strategy-seed.md](testing-strategy-seed.md)).
@@ -123,7 +125,7 @@ The fabric-primary is never aimed at by the demo admin UI's Chaos tab
 
 ## 7. Where the executables come from
 
-- Every created node's executable is the one its Build names, recorded on the row at the claim and
+- Every created node's executable is the one its Build names, recorded on the row at its create and
   re-hashed at the launch; a Build never names a provider
   ([build-deployment.md](../architecture/build-deployment.md); CLAUDE.md, `MESH_SPAWN_TYPE`).
 - `RDM_EXECUTABLE_DIRS` lists the absolute host directories a Build's executables may come from;

@@ -65,8 +65,8 @@ Nothing more is commanded. In order:
 1. **Reads the store with nothing written.** The store root must hold the Fabric record with its
    provider, the mesh row, a fabric-primary at `RDM_NODE_NAME` and a current Build. It mints no fabric
    id and no mesh id.
-2. **Claims nothing.** The adoption is fabric recovery, the primary's own workflow, never a Build: it
-   opens no attempt and writes no in-flight row, and nothing on the store orders two adoption launches,
+2. **Opens no Build.** The adoption is fabric recovery, the primary's own workflow, never a Build: it
+   writes no Build and no in-flight row, and nothing on the store orders two adoption launches,
    so start one launch at a time.
 3. **Installs the recorded primaries** (Q149) and runs node investigation on the lost birth. If the
    lost birth is reached, or any node-admin answers, the launch is refused `NameHeld` and exits.
@@ -90,7 +90,8 @@ Nothing more is commanded. In order:
 
 | Span | What it shows |
 |---|---|
-| `rdm.node_admin.fabric.update.via-adoption-claim` | under an in-force fabric.delete only: the claim of the delete's next attempt; `outcome=won` and `lost_node_id` = the lost birth |
+| `rdm.node_admin.fabric.update.via-adoption-check` | the checks before anything is written: `lost_node_id` = the lost birth, `verdict` its node investigation's, `answered` a node-admin that answered, `under_delete` whether a fabric.delete is in force |
+| `rdm.node_admin.build.update.via-adoption-failed` | a launch refused by its checks, `reason` naming why, `outcome=nothing-written` |
 | `rdm.node_admin.node.delete.via-node-row` with the lost `node_id` | the lost birth's name released, after its node investigation |
 | `rdm.mesh.entry.update.via-rafka-time-adopted` with `source=pull` | rafka-time adopted from a live node |
 | `rdm.node_rpc.status.update.via-declare-own` from the mesh's other nodes | each serving node stays ready |
