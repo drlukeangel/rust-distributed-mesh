@@ -62,7 +62,7 @@ backoff doubling from the gossip interval to the staleness floor.
    commanded start that stops at a step leaves the birth off its channels, Pending, for the next
    command. Any other verdict (`running`, `os-stopped`, `exited`, `unproven`): the recovery below, at
    once. Nothing holds, nothing is inspected again, and nothing waits for the provider's `Exited`
-   (Q110, Q111). A birth that comes back once its verdict is not `reached`, during its replacement's birth or after it, is a deleted birth: every view refuses
+   (Q110, Q111). A birth that comes back once its verdict is not `reached`, during its successor's creation or after it, is a deleted birth: every view refuses
    its Digest by name ([gossip.md receiver rules](../gossip.md#31-frame-catalog)), and its mesh-primary
    decides it by its path and name and its atlas ([node investigation](node-investigation.md), Q207): its
    recovery or its re-created birth is there, so the primary whose atlas decided it terminates its runtime.

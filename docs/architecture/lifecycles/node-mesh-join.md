@@ -24,7 +24,7 @@ Those pages link here and restate nothing.
 | Commander | Inside a start: the workflow itself. Standalone: the node's mesh-primary, after a tickle that reached the exact birth or a node.name.update the live node applied; the fabric-primary for a mesh-primary. Commands go down |
 | Executor | The node itself: it makes the report and joins the mesh |
 | Entry | The exact `(node.id, incarnation)` with its endpoint bound; its full `MeshDigest` for the report |
-| Report | `JoinNode { digest }` to the accepting primary: an ordinary node's mesh-primary; a node-admin birth's maker; the fabric-primary while the mesh has no primary. Not forwardable. The primary verifies exact birth, deployment, path, mesh and name, installs the reported address, completes the deployment's waits, and answers `Joined` with its control snapshot, or refuses by field name |
+| Report | `JoinNode { digest }` to the node-admin it reports to: an ordinary node's mesh-primary; a node-admin's maker; the fabric-primary while the mesh has no primary. Not forwardable. The primary verifies exact birth, deployment, path, mesh and name, installs the reported address, completes the deployment's waits, and answers `Joined` with its control snapshot, or refuses by field name |
 | Mesh | Join `f(FabricId, MeshId)`; a node-admin also joins the backbone. A mesh with no live listener is created again under its own MeshId by this first listener |
 | Order | Report accepted first, then the mesh; the handed name, rafka-time and cert installed before anything is published |
 | Progress | `joining` from the report until the mesh holds, and the backbone too for a node-admin; the node publishes nothing in that state |
@@ -38,7 +38,7 @@ Those pages link here and restate nothing.
 
 1. The node holds its bound endpoint; port 0 was bound at launch, or the stopped process still
    holds its port. Nothing predicts or reserves a port.
-2. `joining`: the node calls `JoinNode { digest }` on its accepting primary. It serves calls on
+2. `joining`: the node calls `JoinNode { digest }` on the node-admin it reports to. It serves calls on
    its bound endpoint while the report is outstanding, under the
    [Node RPC readiness gate](../node-rpc-envelope.md#node-rpc-readiness-gate).
 3. The primary verifies the digest against the deployment it recorded: exact birth, deployment
@@ -159,7 +159,7 @@ The primary's unary reply, `Joined` with its answer decoded (on the wire `answer
         "provider": "process",
         "fabric": { "fabric_id": "fab4m8n2p6q1", "name": "lab" },
         "shutdown": null,
-        "build": { "build_id": "3f9a1c7e5b2d", "attempt": 1 },
+        "build": { "build_id": "3f9a1c7e5b2d" },
         "rafka_time_ms": 1718290000042,
         "member_cert": "<cert bytes, opaque to RDM>",
         "name": "mesh1.node.1",
@@ -226,7 +226,7 @@ one entry of `digests` ([example](../gossip.md#examples)). A stopped node that r
 
 ```mermaid
 sequenceDiagram
-    participant M as Mesh-primary, the accepting primary (a node-admin birth reports to its maker)
+    participant M as Mesh-primary, the node-admin it reports to (a node-admin reports to its maker)
     participant N as Node
     opt standalone, after a tickle reached the node off its mesh
         M->>N: JoinMesh on 0x1B
@@ -276,7 +276,7 @@ Failures and stream certainty follow the
 | Report sent | node | `rdm.node.mesh.update.via-joining` | mesh, mesh_id, primary, operation |
 | Report served | primary | `rdm.node_rpc.request.serve.via-direct`, then `rdm.node_admin.node.update.via-join`; a mismatch `rdm.node_admin.node.reject.via-join-mismatch` naming the field | exact birth, field |
 | Mesh joined | node | `rdm.node.mesh.update.via-joined`, once per mesh the node is now on: its own mesh, and the backbone for a node-admin | mesh, mesh_id, which (`own` or `backbone`) |
-| Completion | node, commander | the `node.mesh.joined` frame or the `MeshJoined` reply | operation, build, attempt |
+| Completion | node, commander | the `node.mesh.joined` frame or the `MeshJoined` reply | operation, build |
 
 The report call and its serve carry the runtime causal edge; trace propagation follows the
 [runtime spans](../node-rpc-envelope.md#runtime-spans).
