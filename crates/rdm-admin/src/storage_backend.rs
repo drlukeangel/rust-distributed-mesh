@@ -10,7 +10,7 @@
 
 use crate::build_state::LocalBuildLog;
 use crate::events_storage::EventsStorage;
-use crate::fabric_handover::FinishWrites;
+use crate::primary_update::FinishWrites;
 use crate::fabric_storage::FabricStorage;
 use crate::model::{FabricId, IncarnationId, NodeId, PathName, ProviderKind};
 use crate::storage::{ConnectionsStorage, MeshStorage, NodeRecord, NodesStorage};

@@ -56,7 +56,7 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
     use rdm_core::PrimaryRole;
     use rdm_admin::accepted::{AcceptedStore, FabricTopology};
     use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
-    use rdm_admin::fabric_handover::update_operation;
+    use rdm_admin::primary_update::update_operation;
     use rdm_admin::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeStatus, ProviderKind, ScopeStatus};
     use rdm_admin::topology::Topology;
     use rdm_core::build::{Build, BuildReply, Disposition};

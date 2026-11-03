@@ -9,9 +9,9 @@ pub(crate) struct RoleGate {
     /// The control plane whose R-D1 reader (how long a peer mesh has gone unheard past the staleness
     /// floor) the admin installs once its digest view runs: read when asked, as the Build door reads it.
     pub(crate) control: Arc<ControlPlane>,
-    /// The 0x21 door node.primary.update is commanded and run through, which holds what each update
-    /// was answered and said (`HandoverDoor::memo`).
-    pub(crate) handover: Arc<crate::fabric_handover::HandoverDoor>,
+    /// node.primary.update at this admin (op 0x21), commanded and run through it, which holds what each update
+    /// was answered and said (`PrimaryUpdate::memo`).
+    pub(crate) primary_update: Arc<crate::primary_update::PrimaryUpdate>,
     /// Projects the digest view into the view now, so a Mesh record read deleted is in the view the plan
     /// reads next.
     pub(crate) project: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>,
@@ -39,16 +39,16 @@ impl crate::build_drive::Gate for RoleGate {
     /// one call when it is both ("Both primaries": the successor becomes both).
     async fn update_primaries(&self, m: &crate::executor::RoleMove, build_id: &crate::build::BuildId, operation: &rdm_core::OperationId) -> Result<(), crate::build_drive::RoleMoveEnd> {
         use crate::election::Moving;
-        use crate::fabric_handover::update_operation;
+        use crate::primary_update::update_operation;
         use rdm_core::PrimaryRole;
-        let door = &self.handover;
-        if m.primary.node_id != door.node_id {
+        let primary_update = &self.primary_update;
+        if m.primary.node_id != primary_update.node_id {
             // A mesh-primary, commanded directly; any other type's primary, commanded through its
             // mesh-primary (this admin itself when it is that mesh-primary).
             if m.mesh_role || m.node_type_role {
                 let role = if m.node_type_role { PrimaryRole::NodePrimary(m.primary.r#type.clone()) } else { PrimaryRole::MeshPrimary };
                 let update = update_operation(role, operation);
-                door.command_update_primary(&m.primary, build_id.as_str(), &update).await?;
+                primary_update.command_update_primary(&m.primary, build_id.as_str(), &update).await?;
             }
             return Ok(());
         }
@@ -62,16 +62,16 @@ impl crate::build_drive::Gate for RoleGate {
             (false, false) => return Ok(()),
         };
         let update = update_operation(role, operation);
-        door.update_own_primaries(moving, build_id.as_str(), &update, m.successor.as_ref()).await?;
+        primary_update.update_own_primaries(moving, build_id.as_str(), &update, m.successor.as_ref()).await?;
         Ok(())
     }
 
     async fn primaries_updated(&self, updates: &[crate::build_drive::PrecedingUpdate], build_id: &crate::build::BuildId) -> Result<(), String> {
         for u in updates {
-            if u.primary.is_none() && u.mesh == self.handover.topology_view.mesh_name() {
+            if u.primary.is_none() && u.mesh == self.primary_update.topology_view.mesh_name() {
                 continue;
             }
-            self.handover.row_acknowledged(&u.mesh, &u.operation, u.primary.as_ref(), build_id.as_str()).await?;
+            self.primary_update.row_acknowledged(&u.mesh, &u.operation, u.primary.as_ref(), build_id.as_str()).await?;
         }
         Ok(())
     }
@@ -79,13 +79,13 @@ impl crate::build_drive::Gate for RoleGate {
     /// What the node rows record of each member's executable (build-deployment.md §3), read from this
     /// admin's nodes.storage, every mesh's rows on the fabric's shared root.
     async fn mesh_rows(&self) -> Result<Vec<crate::storage::MeshRecord>, String> {
-        self.meshes.meshes().await.map_err(|e| format!("{}: the Mesh rows could not be read: {e}", self.handover.node_id))
+        self.meshes.meshes().await.map_err(|e| format!("{}: the Mesh rows could not be read: {e}", self.primary_update.node_id))
     }
 
     /// The node records of `ids`, read through the reader (query.md §1): the births a fabric.delete's
     /// begun node.deletes act on once the view has let them go.
     async fn node_rows(&self, ids: &[rdm_core::NodeId]) -> Result<Vec<crate::storage::NodeRow>, String> {
-        let records = self.control.current_records().ok_or_else(|| format!("{}: this admin holds no node records to read", self.handover.node_id))?;
+        let records = self.control.current_records().ok_or_else(|| format!("{}: this admin holds no node records to read", self.primary_update.node_id))?;
         crate::atlas::subject_rows(&records, ids.iter()).await
     }
 
@@ -102,7 +102,7 @@ impl crate::build_drive::Gate for RoleGate {
         let mut deleted = std::collections::HashSet::new();
         for id in observed.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead).filter_map(|m| m.id.as_ref()) {
             if self.meshes.mesh(id).await.map_err(|e| format!("the Mesh record of {id} could not be read: {e}"))?.is_some_and(|r| r.is_deleted()) {
-                self.handover.records.hold_mesh_deleted(id);
+                self.primary_update.records.hold_mesh_deleted(id);
                 deleted.insert(id.clone());
             }
         }
@@ -121,7 +121,7 @@ impl crate::build_drive::Gate for RoleGate {
     }
 
     fn fabric_ready(&self) -> bool {
-        self.handover.records.fabric_state() == crate::fabric_state::FabricState::Ready
+        self.primary_update.records.fabric_state() == crate::fabric_state::FabricState::Ready
     }
 
     /// The completed lifecycle steps of the Build, taken into the fabric-primary's atlas before the

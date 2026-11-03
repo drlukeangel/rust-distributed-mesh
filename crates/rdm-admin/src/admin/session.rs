@@ -120,7 +120,7 @@ pub struct TopologyObserver {
     /// declared states.
     pub status_door: crate::status_rpc::StatusDoorSlot,
     /// This admin's 0x21 door, once it holds a view: node.primary.update goes through it.
-    pub handover: crate::fabric_handover::HandoverSlot,
+    pub primary_update: crate::primary_update::PrimaryUpdateSlot,
     /// The births a command never reached for a reachability reason, marked `PendingReconnect` at
     /// once for the mesh primary's tick (node-tickle.md step 1).
     pub unreachable: crate::offline::UnreachableMarks,

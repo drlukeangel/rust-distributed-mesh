@@ -981,7 +981,7 @@ async fn after_the_row(refusal: Option<&str>) -> (Rig, Arc<DriveEnv>, Arc<Acknow
     let r = rig_for(view_after_the_row(), move |t: &rdm_admin::topology::Topology| crate::removed(t, &[rdm_core::PathName { path: "mesh1.node-admin".into(), name: "2".into() }]), |ran, _| ran).await;
     let primary = r.birth("mesh1.node-admin", "2").await;
     let op = rdm_core::OperationId::node("node.delete", &primary.node_id);
-    let row = PrecedingUpdate { mesh: "mesh1".into(), operation: rdm_admin::fabric_handover::update_operation(rdm_core::PrimaryRole::MeshPrimary, &op), primary: Some(rdm_core::OperationSubject::Birth { node_id: primary.node_id, incarnation: primary.incarnation }) };
+    let row = PrecedingUpdate { mesh: "mesh1".into(), operation: rdm_admin::primary_update::update_operation(rdm_core::PrimaryRole::MeshPrimary, &op), primary: Some(rdm_core::OperationSubject::Birth { node_id: primary.node_id, incarnation: primary.incarnation }) };
     let gate = Arc::new(Acknowledges { inner: r.switch.clone(), rows: vec![row.clone()], dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()), refusal: refusal.map(str::to_string) });
     let e = &r.env;
     let env = env_with(&e, Some(gate.clone()), None);
@@ -1038,7 +1038,7 @@ fn view_primary_of_both() -> Topology {
 }
 
 /// The primary's own node.primary.update refused before its row, as the door refuses it with no
-/// successor (`fabric_handover::update_primary` step 2: nothing said, cut off or written): the view is
+/// successor (`primary_update::update_primary` step 2: nothing said, cut off or written): the view is
 /// left as it is and the refusal is named as the admin's gate names a refused reply.
 struct RefusedUpdate {
     inner: Arc<Switch>,
@@ -1096,7 +1096,7 @@ impl Gate for RefusedUpdate {
 /// refusal: nothing is dispatched or run and the view still names `mesh1.node-admin.1` the primary of
 /// both roles. No cut-off and no row is the refusing gate's own record here (it wrote nothing); the
 /// door's refusal writing neither is
-/// `fabric_handover::a_transfer_with_no_successor_is_refused_with_q7s_exact_texts_and_nothing_moves`.
+/// `primary_update::a_transfer_with_no_successor_is_refused_with_q7s_exact_texts_and_nothing_moves`.
 /// Must NOT happen: the drive idle on a refusal, the update asked again, or the delete dispatched.
 #[tokio::test(start_paused = true)]
 async fn a_primarys_own_update_refused_before_the_row_ends_its_section_by_name_and_nothing_moves() {

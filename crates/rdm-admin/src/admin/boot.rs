@@ -763,7 +763,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let join_slot: crate::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let topology_slot: crate::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     let build_slot: crate::build_op::BuildSlot = Arc::new(std::sync::OnceLock::new());
-    let handover_slot: crate::fabric_handover::HandoverSlot = Arc::new(std::sync::OnceLock::new());
+    let primary_update_slot: crate::primary_update::PrimaryUpdateSlot = Arc::new(std::sync::OnceLock::new());
     // This admin's view, once built: the Build log's target reads fabric recovery from it (Q122).
     let view_slot: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<Topology>>>> = Arc::new(std::sync::OnceLock::new());
     // The process's one Node RPC client is made before the server: core Forward is one direct inner
@@ -780,7 +780,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // Closed until the Status authority is filled and its view holds this admin (it decides from
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let rpc_builder = crate::build_op::serve(crate::fabric_handover::serve(crate::read_op::serve(crate::topology_read::serve(rpc_server(connections.clone(), node_rpc.client.clone(), status_door.clone(), join_slot.clone()), topology_slot.clone()), status_door.clone()), handover_slot.clone()), build_slot.clone());
+    let rpc_builder = crate::build_op::serve(crate::primary_update::serve(crate::read_op::serve(crate::topology_read::serve(rpc_server(connections.clone(), node_rpc.client.clone(), status_door.clone(), join_slot.clone()), topology_slot.clone()), status_door.clone()), primary_update_slot.clone()), build_slot.clone());
     // The app's own ops (each behind the gate of its hook), before the catalog is built.
     let rpc_builder = match wiring.serve_app.take() {
         Some(serve_app) => serve_app(rpc_builder),
@@ -1671,7 +1671,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // RDM's own transition pipeline: no application hook is registered on it; the
                             // application's work enters through the Fabric and node hooks (build.md §9, Q177).
                             let hooks = HookRegistry::new().build().map_err(|e| format!("{e:?}"))?;
-                            let handover = Arc::new(crate::fabric_handover::HandoverDoor {
+                            let primary_update = Arc::new(crate::primary_update::PrimaryUpdate {
                                 fabric: cfg.fabric.clone(),
                                 me_path: name.path.clone(), me_name: name.name.clone(),
                                 node_id: node_id.clone(),
@@ -1689,7 +1689,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 finish_writes: finish_writes.clone(),
                                 looker: crate::primary_watch::Looker { me_path: name.path.clone(), me_name: name.name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()) },
                             });
-                            let _ = handover_slot.set(handover.clone());
+                            let _ = primary_update_slot.set(primary_update.clone());
                             // The drives of the Builds this admin drives (`build_drive`): its executor ends its own
                             // runtime only once its own node.delete's callers read their terminal.
                             let drives = Arc::new(crate::build_drive::Drives::default());
@@ -1705,7 +1705,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 fabric_storage: fabric_storage.clone(),
                                 provider: provider_dyn.clone(),
                                 joins: joins.clone(),
-                                observer: Arc::new(TopologyObserver { digest_view: digest_view.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), status_door: status_door.clone(), handover: handover_slot.clone(), unreachable: records.unreachable.clone() }),
+                                observer: Arc::new(TopologyObserver { digest_view: digest_view.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), status_door: status_door.clone(), primary_update: primary_update_slot.clone(), unreachable: records.unreachable.clone() }),
                                 records: records.clone(),
                                 builds: builds_dyn.clone(),
                                 local: journal.clone(),
@@ -1731,7 +1731,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 }),
                                 leaves: Arc::new(crate::mesh_delete::MeshDeleteView::default()),
                                 mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),
-                                handover: handover.clone(),
+                                primary_update: primary_update.clone(),
                                 issuer: issuer.clone(),
                                 node_work: Default::default(),
                                 repairs_stopped: Default::default(),
@@ -1787,7 +1787,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     builds: builds_dyn.clone(),
                                     birth: rdm_core::framing::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() },
                                     dispatcher: Arc::new(crate::build_op::RpcDispatcher { me_path: name.path.clone(), me_name: name.name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone(), send: rdm_transport::Send::default() }),
-                                    gate: Arc::new(RoleGate { builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone(), meshes: mesh_storage.clone(), fabric_states: states_slot.clone() }),
+                                    gate: Arc::new(RoleGate { builds: builds.clone(), control: control.clone(), primary_update: primary_update.clone(), project: refresh_view.clone(), meshes: mesh_storage.clone(), fabric_states: states_slot.clone() }),
                                     notices: build_notices.clone(),
                                     turns: stop_gate.clone(),
                                 });
@@ -2604,7 +2604,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             ),
                                                         },
                                                         recovery.clone(),
-                                                        handover_slot.clone(),
+                                                        primary_update_slot.clone(),
                                                         cfg.fabric_primary || cfg.adopt.is_some(),
                                                         stop_gate.clone(),
                                                     )

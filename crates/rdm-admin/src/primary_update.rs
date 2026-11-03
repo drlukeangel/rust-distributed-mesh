@@ -90,7 +90,7 @@ impl UpdateMemo {
 
 /// Every side of node.primary.update on one node-admin: the primary's update, the successor's
 /// install, the commander's command and its resume.
-pub struct HandoverDoor {
+pub struct PrimaryUpdate {
     /// The fabric's name.
     pub fabric: String,
     /// This admin's path.
@@ -132,7 +132,7 @@ pub struct HandoverDoor {
     pub looker: crate::primary_watch::Looker,
 }
 
-impl HandoverDoor {
+impl PrimaryUpdate {
     /// The `(path, name)` lookup index key of me_path and me_name.
     pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
@@ -156,7 +156,7 @@ fn refused(side: &'static str, reason: &'static str, detail: &str, operation: &r
         .in_scope(|| tracing::info!("node.primary.update was refused"));
 }
 
-impl HandoverDoor {
+impl PrimaryUpdate {
     fn held_name(&self) -> PathName {
         self.digest_view.held_path_name().unwrap_or_else(|| self.me())
     }
@@ -702,18 +702,18 @@ impl HandoverDoor {
 
 pub use rdm_node::member_handover::{serve_member, MemberDoor, MemberSlot};
 
-/// The door a running admin fills once it holds a view.
-pub type HandoverSlot = Arc<OnceLock<Arc<HandoverDoor>>>;
+/// Where a running admin sets its [`PrimaryUpdate`] once it holds a view.
+pub type PrimaryUpdateSlot = Arc<OnceLock<Arc<PrimaryUpdate>>>;
 
 /// Serve node.primary.update on this admin. Until `slot` is filled a call is `NotReady`.
-pub fn serve(b: ServerBuilder, slot: HandoverSlot) -> ServerBuilder {
+pub fn serve(b: ServerBuilder, slot: PrimaryUpdateSlot) -> ServerBuilder {
     b.serve::<NodePrimaryUpdate, _, _>(OpOwner::Product("rdm".into()), move |_peer: PeerContext, req: Request| {
         let slot = slot.clone();
         async move {
-            let Some(door) = slot.get().cloned() else {
+            let Some(primary_update) = slot.get().cloned() else {
                 return Ok(rdm_core::reply::handover::not_ready("this admin holds no view yet".into()));
             };
-            Ok(door.serve(req).await)
+            Ok(primary_update.serve(req).await)
         }
     })
 }
@@ -802,7 +802,7 @@ mod tests {
             heard_again: Default::default(),
             connections: None,
         };
-        let door = HandoverDoor {
+        let primary_update = PrimaryUpdate {
             fabric: "fab".into(),
             me_path: me.path.clone(), me_name: me.name.clone(),
             node_id: node_id.clone(),
@@ -841,14 +841,14 @@ mod tests {
         let mut to_node = Node::allocated(me.clone(), "mesh2", "node-admin");
         to_node.node_id = node_id.clone();
         assert!(matches!(
-            door.take_under_delete(&lost_fp, 2, &to_node).await,
+            primary_update.take_under_delete(&lost_fp, 2, &to_node).await,
             Err(Reply::NotReady { .. })
         ));
 
         // 2. With a valid incarnation, `take_under_delete` installs both `FabricPrimary` (at `target.revision + 1`)
         //    and `mesh1`'s `NodeAdmin` primary (at `mesh_revision`) onto `to_node`.
         to_node.incarnation_id = Some(incarnation.clone());
-        let entries = door.take_under_delete(&lost_fp, 2, &to_node).await.expect("take_under_delete succeeds");
+        let entries = primary_update.take_under_delete(&lost_fp, 2, &to_node).await.expect("take_under_delete succeeds");
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0, FABRIC);
         assert_eq!(entries[0].3, 4);
@@ -861,7 +861,7 @@ mod tests {
 
         // 3. If a newer revision is already held, `take_under_delete` refuses `NotReady` all-or-none.
         assert!(matches!(
-            door.take_under_delete(&lost_fp, 1, &to_node).await,
+            primary_update.take_under_delete(&lost_fp, 1, &to_node).await,
             Err(Reply::NotReady { .. })
         ));
         ep.close().await;

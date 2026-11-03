@@ -314,7 +314,7 @@ mod container_unsupported;
 mod current_build;
 mod declared_types;
 #[cfg(feature = "file-backend")]
-mod fabric_handover;
+mod primary_update;
 mod fabric_delete_admission;
 mod status_rpc;
 mod executor_redecide;

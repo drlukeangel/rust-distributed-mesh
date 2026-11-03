@@ -1,5 +1,5 @@
 //! Fabric-primary takeover and complete-view recomputation (`docs/architecture/fabric-primary.md:208`,
-//! §8–§9, §11; `rdm_admin::fabric_handover`): a successor fabric-primary hydrates the immutable Fabric
+//! §8–§9, §11; `rdm_admin::primary_update`): a successor fabric-primary hydrates the immutable Fabric
 //! identity, the current Build's required Mesh set, and the complete Mesh-status view before publishing
 //! the Fabric lifecycle state, without minting a new Build.
 //!

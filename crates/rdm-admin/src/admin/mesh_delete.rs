@@ -2,7 +2,7 @@
 //!
 //! The owner's side ([`AdminRunner::delete_mesh`]) is the fabric-primary: it owns the outer
 //! workflow `mesh.delete:<mesh_id>` once the fabric-primary role is outside the deleting mesh (the
-//! confirmed fabric-primary handover, `fabric_handover`). It captures the accepted roster and the
+//! confirmed node.fabric-primary.update, `primary_update`). It captures the accepted roster and the
 //! final primary's provider access (refusing before anything is dismantled when it has none),
 //! publishes `mesh-leaving`, sends `DeleteMesh`, waits for the validated `MeshDeleted` handoff
 //! (mesh.deleted) and records its completion receipt: the mesh.delete ends there, the final primary
@@ -106,8 +106,8 @@ impl AdminRunner {
         // the fabric-primary's own mesh, the fabric-primary role stays put so mesh.delete skips its
         // node.fabric-primary.update step (lifecycles/fabric-delete.md step 1).
         if !build.topology.meshes.is_empty() || mesh != self.template.launcher.mesh.as_str() {
-            let fabric_update = crate::fabric_handover::update_operation(rdm_core::PrimaryRole::FabricPrimary, outer);
-            self.handover.fabric_primary_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer:?} is refused before {mesh} is dismantled: {e}"))?;
+            let fabric_update = crate::primary_update::update_operation(rdm_core::PrimaryRole::FabricPrimary, outer);
+            self.primary_update.fabric_primary_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer:?} is refused before {mesh} is dismantled: {e}"))?;
         }
         // The workflow is handed to a live primary. A primary that is not live keeps its role (R-EL1)
         // but cannot take the workflow: it goes to the lost-final-primary path below, which deletes it
@@ -1099,7 +1099,7 @@ mod tests {
         }));
         let adapter = Arc::new(MemoryBuildStateAdapter::new());
         let steps = Arc::new(crate::build_run::FramedBuilds::stepping(adapter.clone(), &fabric_id, &node_id, "mesh1"));
-        let handover = Arc::new(crate::fabric_handover::HandoverDoor {
+        let primary_update = Arc::new(crate::primary_update::PrimaryUpdate {
             fabric: "fab".into(),
             me_path: me.path.clone(), me_name: me.name.clone(),
             node_id: node_id.clone(),
@@ -1184,7 +1184,7 @@ mod tests {
                 client: Some(node_rpc.client.clone()),
                 commands: Arc::default(),
                 status_door: Arc::default(),
-                handover: Arc::default(),
+                primary_update: Arc::default(),
                 unreachable: records.unreachable.clone(),
             }),
             records: records.clone(),
@@ -1216,7 +1216,7 @@ mod tests {
             }),
             leaves: Arc::new(crate::mesh_delete::MeshDeleteView::default()),
             mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),
-            handover,
+            primary_update,
             issuer: Arc::new(crate::certs::CertIssuer::no_certs(time)),
             node_work: Default::default(),
             repairs_stopped: Default::default(),

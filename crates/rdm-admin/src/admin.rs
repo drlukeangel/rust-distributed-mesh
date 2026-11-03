@@ -583,7 +583,7 @@ mod tests {
         let mut node = Node::allocated(d.node.location(), d.node.mesh.clone(), &d.node.r#type);
         node.node_id = d.node.node_id.clone();
         node.incarnation_id = Some(d.node.incarnation.clone());
-        let observer = TopologyObserver { digest_view, client: None, commands: Arc::default(), status_door: Arc::default(), handover: Arc::default(), unreachable: Arc::default() };
+        let observer = TopologyObserver { digest_view, client: None, commands: Arc::default(), status_door: Arc::default(), primary_update: Arc::default(), unreachable: Arc::default() };
         assert_eq!(crate::deployment::pipeline::NodeObserver::ready(&observer, &node).await, Ok(()));
     }
 

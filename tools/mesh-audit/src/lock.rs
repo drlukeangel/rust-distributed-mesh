@@ -261,7 +261,7 @@ pub const TOPOLOGY_CELLS: &str = "crates/rdm-core/tests/topology_wire.rs";
 /// The Build floor read (Q292): a starting or role-taking admin reads the committed records from storage.
 pub const FETCH_BUILD: &str = "crates/rdm-admin/src/fetch_build.rs";
 /// node.primary.update (`PrimaryUpdate` / `UpdatePrimary`, 0x21): the primary calls its successor with the election's result, the successor installs it and answers `PrimaryUpdated`; its door and the cells that prove its postcard shape.
-pub const HANDOVER_SOURCE: &str = "crates/rdm-admin/src/fabric_handover.rs";
+pub const PRIMARY_UPDATE_SOURCE: &str = "crates/rdm-admin/src/primary_update.rs";
 pub const HANDOVER_CELLS: &str = "crates/rdm-core/tests/handover_wire.rs";
 
 pub const PIPELINE: &str = "crates/rdm-admin/src/deployment/pipeline.rs";
@@ -776,7 +776,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             // A starting or role-taking admin reads the Build's committed records from storage and
             // absorbs them whole (Q292; op 0x1F reserved): `committed_facts`, `absorb_build`.
             require(root, FETCH_BUILD, &["committed_facts", "absorb_build", "rdm.node_admin.build.update.via-read-committed"], ratchet, &mut out);
-            require(root, HANDOVER_SOURCE, &["rdm.node_admin.primary.update.via-primary-updated", "rdm.node_admin.primary.reject.via-primary-update", "call_successor"], ratchet, &mut out);
+            require(root, PRIMARY_UPDATE_SOURCE, &["rdm.node_admin.primary.update.via-primary-updated", "rdm.node_admin.primary.reject.via-primary-update", "call_successor"], ratchet, &mut out);
             require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_two_variant_wire_schema", "fn replies_match_the_frozen_thirteen_variant_wire_schema"], ratchet, &mut out);
             require(root, PRIMARY_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);

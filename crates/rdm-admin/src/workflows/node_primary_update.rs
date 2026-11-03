@@ -4,7 +4,7 @@
 //! the writes it has issued, then calls its successor, which installs itself.
 
 pub use crate::election::{elect, Candidate, ElectionLog, Incumbency, Moving};
-pub use crate::fabric_handover::{
-    update_operation, FinishWrites, HandoverDoor, ProjectView,
+pub use crate::primary_update::{
+    update_operation, FinishWrites, PrimaryUpdate, ProjectView,
     UpdateLocks, UpdateMemo,
 };

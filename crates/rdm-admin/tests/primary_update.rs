@@ -14,7 +14,7 @@ use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, PrimaryRole, Primary};
 use rdm_transport::topology::{Backbone, TopologyView};
 use rdm_admin::admin::Records;
 use rdm_admin::election::{resolve_with, Incumbency};
-use rdm_admin::fabric_handover::{update_operation, HandoverDoor, HandoverSlot, Moving, ProjectView};
+use rdm_admin::primary_update::{update_operation, PrimaryUpdate, PrimaryUpdateSlot, Moving, ProjectView};
 use rdm_admin::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::fabric_storage::MemoryFabricStorage;
@@ -124,7 +124,7 @@ fn view(nodes: Vec<Node>) -> Topology {
 }
 
 struct Admin {
-    door: Arc<HandoverDoor>,
+    primary_update: Arc<PrimaryUpdate>,
     client: Arc<NodeRpcClient>,
     resolver: Arc<StaticResolver>,
     resolved: ResolvedNode,
@@ -135,9 +135,9 @@ struct Admin {
     finishes: Arc<std::sync::atomic::AtomicUsize>,
     /// Holds the finish open while `false`: a write still issued when the primary finishes its writes.
     writes_finish: tokio::sync::watch::Sender<bool>,
-    /// A door set here fills the admin's handover slot (op `0x21`, `NotReady` while empty) as its
+    /// A `PrimaryUpdate` set here fills the admin's slot (op `0x21`, `NotReady` while empty) as its
     /// server answers node investigation's probe.
-    ready_on_ping: Arc<OnceLock<Arc<HandoverDoor>>>,
+    ready_on_ping: Arc<OnceLock<Arc<PrimaryUpdate>>>,
     _router: Router,
 }
 
@@ -161,10 +161,10 @@ impl DeploymentProvider for Inspected {
         ProviderKind::Process
     }
     fn control_domain(&self) -> String {
-        "fabric-handover".into()
+        "primary-update".into()
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-        Err(DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: "a fabric_handover cell births nothing".into() })
+        Err(DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: "a primary_update cell births nothing".into() })
     }
     async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
@@ -194,11 +194,11 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
     let backbone = Backbone::join(&gossip, &ep, &topology_view, mesh, rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() }, vec![]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
-    let slot: HandoverSlot = Arc::new(OnceLock::new());
+    let slot: PrimaryUpdateSlot = Arc::new(OnceLock::new());
     // node investigation's probe, `ProbeNodeState` of this exact birth on 0x1B (node-tickle.md "Probe"),
-    // answered `Current` by the live birth. A door left in `ready_on_ping` fills the handover slot as the
-    // probe is answered: an admin whose door held no view at one call and holds it by the next.
-    let ready_on_ping: Arc<OnceLock<Arc<HandoverDoor>>> = Arc::new(OnceLock::new());
+    // answered `Current` by the live birth. A `PrimaryUpdate` left in `ready_on_ping` fills the slot as the
+    // probe is answered: an admin whose `PrimaryUpdate` held no view at one call and holds it by the next.
+    let ready_on_ping: Arc<OnceLock<Arc<PrimaryUpdate>>> = Arc::new(OnceLock::new());
     let pinged = {
         let (slot, ready) = (slot.clone(), ready_on_ping.clone());
         let (probe_slot, probe_ready, me, born) = (slot.clone(), ready_on_ping.clone(), node_id.clone(), incarnation.clone());
@@ -206,8 +206,8 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
             .serve::<Ping, _, _>(OpOwner::Core, move |_peer: rdm_transport::PeerContext, req: PingRequest| {
                 let (slot, ready) = (slot.clone(), ready.clone());
                 async move {
-                    if let Some(door) = ready.get() {
-                        let _ = slot.set(door.clone());
+                    if let Some(primary_update) = ready.get() {
+                        let _ = slot.set(primary_update.clone());
                     }
                     let PingRequest::Ping { payload } = req;
                     Ok(PingReply::Pong { payload })
@@ -218,8 +218,8 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
                 async move {
                     Ok(match req {
                         rdm_core::status::StatusRequest::ProbeNodeState { node_id, incarnation } if node_id == me && incarnation == born => {
-                            if let Some(door) = ready.get() {
-                                let _ = slot.set(door.clone());
+                            if let Some(primary_update) = ready.get() {
+                                let _ = slot.set(primary_update.clone());
                             }
                             rdm_core::status::StatusReply::Current { node_id, incarnation, state: rdm_core::status::NodeState::Ready }
                         }
@@ -228,7 +228,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
                 }
             })
     };
-    let server = rdm_admin::fabric_handover::serve(pinged, slot.clone()).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog is built");
+    let server = rdm_admin::primary_update::serve(pinged, slot.clone()).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { mesh: mesh.into(), r#type: "node-admin".into(), node_id: node_id.clone(), path: path.path.clone(), name: path.name.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
@@ -256,7 +256,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
     };
     let (provider, nodes) = (Arc::new(Inspected::default()), Arc::new(MemoryNodesStorage::default()));
     let looker = rdm_admin::primary_watch::Looker { me_path: path.path.clone(), me_name: path.name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: client.clone(), provider: provider.clone(), nodes: Some(nodes.clone()), heard_again: Default::default(), connections: None };
-    let door = Arc::new(HandoverDoor {
+    let primary_update = Arc::new(PrimaryUpdate {
         fabric: "fabric1".into(),
         me_path: path.path.clone(), me_name: path.name.clone(),
         node_id: node_id.clone(),
@@ -284,9 +284,9 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
         looker,
     });
     if fill_slot {
-        let _ = slot.set(door.clone());
+        let _ = slot.set(primary_update.clone());
     }
-    Admin { door, client, resolver, resolved, status, finishes, writes_finish, ready_on_ping, _router: router }
+    Admin { primary_update, client, resolver, resolved, status, finishes, writes_finish, ready_on_ping, _router: router }
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
@@ -325,7 +325,7 @@ async fn send(from: &Admin, to: &Admin, req: Request) -> Reply {
 
 /// The primary record `primary` holds for `role` in `a`'s view (the election's input).
 async fn primary_at(a: &Admin, role: PrimaryRole, primary: &Primary) {
-    a.door.topology_view.primaries().take(role, primary);
+    a.primary_update.topology_view.primaries().take(role, primary);
 }
 
 /// The (side, reason, detail) of every refusal span of the primitive.
@@ -334,18 +334,18 @@ fn refusals(spans: &Spans) -> Vec<(String, String, String)> {
 }
 
 /// A captured cell leaves its spans whether it passed or panicked: every line of [`Spans::lines`]
-/// goes to `$TMPDIR/i143-testkit/fabric_handover/<cell>.<pid>.spans.txt`, so a red reads from its own
+/// goes to `$TMPDIR/i143-testkit/primary_update/<cell>.<pid>.spans.txt`, so a red reads from its own
 /// spans and never from a rerun.
 struct SpanFile(Spans);
 
 impl Drop for SpanFile {
     fn drop(&mut self) {
         let cell = std::thread::current().name().unwrap_or("unnamed").replace("::", "__");
-        let dir = std::env::temp_dir().join("i143-testkit/fabric_handover");
+        let dir = std::env::temp_dir().join("i143-testkit/primary_update");
         let path = dir.join(format!("{cell}.{}.spans.txt", std::process::id()));
         let lines = self.0.lines();
         let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, lines.join("\n")));
-        eprintln!("fabric_handover: the cell's {} spans -> {} (write: {written:?})", lines.len(), path.display());
+        eprintln!("primary_update: the cell's {} spans -> {} (write: {written:?})", lines.len(), path.display());
     }
 }
 
@@ -406,7 +406,7 @@ impl TraceCapture {
     /// dropped when the story ends. Returns the root's trace id and what the story returned.
     fn story<F: std::future::Future>(&self, root: &'static str, f: F) -> (String, F::Output) {
         self.run(async {
-            let root = tracing::info_span!("rdm.test.fabric_handover", cell = root);
+            let root = tracing::info_span!("rdm.test.primary_update", cell = root);
             let traceparent = rdm_transport::traceparent_of(&root).expect("the cell's root span has a trace context");
             let trace_id = traceparent.split('-').nth(1).expect("a traceparent names its trace").to_string();
             (trace_id, tracing::Instrument::instrument(f, root).await)
@@ -428,7 +428,7 @@ impl TraceCapture {
 }
 
 /// A traced cell leaves its trace whether it passed or panicked: every span its capture holds
-/// (name, trace, attributes) goes to `$TMPDIR/i143-testkit/fabric_handover/<cell>.<pid>.spans.json`,
+/// (name, trace, attributes) goes to `$TMPDIR/i143-testkit/primary_update/<cell>.<pid>.spans.json`,
 /// so a red reads from its own spans and never from a rerun.
 impl Drop for TraceCapture {
     fn drop(&mut self) {
@@ -444,10 +444,10 @@ impl Drop for TraceCapture {
             })
             .collect();
         let cell = std::thread::current().name().unwrap_or("unnamed").replace("::", "__");
-        let dir = std::env::temp_dir().join("i143-testkit/fabric_handover");
+        let dir = std::env::temp_dir().join("i143-testkit/primary_update");
         let path = dir.join(format!("{cell}.{}.spans.json", std::process::id()));
         let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(&spans).unwrap()));
-        eprintln!("fabric_handover: the cell's {} spans -> {} (flush: {flushed:?}, write: {written:?})", spans.len(), path.display());
+        eprintln!("primary_update: the cell's {} spans -> {} (flush: {flushed:?}, write: {written:?})", spans.len(), path.display());
     }
 }
 
@@ -476,11 +476,11 @@ async fn primaries_fabric(fp: FabricPrimary) -> Primaries {
     primaries_fabric_over(fp, true).await
 }
 
-/// The roles fabric whose N holds no view at the first call it is made (its door `NotReady`) and holds
+/// The roles fabric whose N holds no view at the first call it is made (its 0x21 answers `NotReady`) and holds
 /// it from its first answered probe on.
 async fn fabric_n_ready_on_probe(fp: FabricPrimary) -> Primaries {
     let f = primaries_fabric_over(fp, false).await;
-    let _ = f.n.ready_on_ping.set(f.n.door.clone());
+    let _ = f.n.ready_on_ping.set(f.n.primary_update.clone());
     f
 }
 
@@ -502,7 +502,7 @@ async fn primaries_fabric_over(fp: FabricPrimary, n_ready: bool) -> Primaries {
         FabricPrimary::X => primary_of(&x, 7),
     };
     for a in [&p, &n, &m, &x] {
-        *a.door.topology.write().await = view(nodes.clone());
+        *a.primary_update.topology.write().await = view(nodes.clone());
         for b in [&p, &n, &m, &x] {
             a.resolver.insert(b.resolved.clone());
         }
@@ -514,9 +514,9 @@ async fn primaries_fabric_over(fp: FabricPrimary, n_ready: bool) -> Primaries {
 }
 
 /// A member node of a node type that is not node-admin, serving the 0x21 door every such node mounts
-/// (`fabric_handover::serve_member`).
+/// (`primary_update::serve_member`).
 struct Member {
-    door: Arc<rdm_admin::fabric_handover::MemberDoor>,
+    door: Arc<rdm_admin::primary_update::MemberDoor>,
     resolved: ResolvedNode,
     resolver: Arc<StaticResolver>,
     fabric: FabricId,
@@ -532,12 +532,12 @@ async fn member(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_i
     let topology_view = TopologyView::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time), vec![], &[]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
-    let slot: rdm_admin::fabric_handover::MemberSlot = Arc::new(OnceLock::new());
-    let server = rdm_admin::fabric_handover::serve_member(ServerBuilder::new(), slot.clone()).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog is built");
+    let slot: rdm_admin::primary_update::MemberSlot = Arc::new(OnceLock::new());
+    let server = rdm_admin::primary_update::serve_member(ServerBuilder::new(), slot.clone()).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { mesh: mesh.into(), r#type: "node".into(), node_id: node_id.clone(), path: path.path.clone(), name: path.name.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
-    let door = Arc::new(rdm_admin::fabric_handover::MemberDoor::new(path.clone(), "node", node_id, incarnation, topology_view, client));
+    let door = Arc::new(rdm_admin::primary_update::MemberDoor::new(path.clone(), "node", node_id, incarnation, topology_view, client));
     let _ = slot.set(door.clone());
     Member { door, resolved, resolver, fabric: fabric.clone(), _router: router }
 }
@@ -615,7 +615,7 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
     nodes.extend(b2.iter().map(|b| member_node(b, false)));
     let resolved: Vec<ResolvedNode> = [p.resolved.clone(), x.resolved.clone(), b1.resolved.clone()].into_iter().chain(b2.iter().map(|b| b.resolved.clone())).collect();
     for a in [&p, &x] {
-        *a.door.topology.write().await = view(nodes.clone());
+        *a.primary_update.topology.write().await = view(nodes.clone());
         for r in &resolved {
             a.resolver.insert(r.clone());
         }
@@ -641,7 +641,7 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
 
 /// The node at `name` in `a`'s view.
 async fn node_at(a: &Admin, name: &rdm_core::PathName) -> Node {
-    a.door.topology.read().await.births().find(|n| &n.location() == name).cloned().unwrap_or_else(|| panic!("{name:?} is in the view"))
+    a.primary_update.topology.read().await.births().find(|n| &n.location() == name).cloned().unwrap_or_else(|| panic!("{name:?} is in the view"))
 }
 
 /// CONTRACT (node-primary-update.md steps 2-4 and "Both primaries": "When the mesh-primary is also the
@@ -659,28 +659,28 @@ async fn node_at(a: &Admin, name: &rdm_core::PathName) -> Node {
 /// P naming itself after the answer, or a record of anyone's but the successor's.
 #[test]
 fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_and_is_both_primaries() {
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
         let f = primaries_fabric(FabricPrimary::P).await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
-        let revisions = f.p.door.update_own_primaries(Moving::BothRoles, "b1", &op, None).await.expect("both primaries move");
+        let revisions = f.p.primary_update.update_own_primaries(Moving::BothRoles, "b1", &op, None).await.expect("both primaries move");
         assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4), entry("fabric", &f.p.resolved, &f.n.resolved, 8)]);
         for a in [&f.p, &f.n] {
-            assert_eq!(a.door.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "{:?}", a.resolved.name);
-            assert_eq!(a.door.topology_view.primaries().fabric(), Some(primary_of(&f.n, 8)), "{:?}", a.resolved.name);
+            assert_eq!(a.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "{:?}", a.resolved.name);
+            assert_eq!(a.primary_update.topology_view.primaries().fabric(), Some(primary_of(&f.n, 8)), "{:?}", a.resolved.name);
         }
-        let pv = f.p.door.topology.read().await.clone();
+        let pv = f.p.primary_update.topology.read().await.clone();
         assert_eq!(pv.node_type_primary("mesh1", "node-admin").map(|n| n.node_id.clone()).as_ref(), Some(&f.n.resolved.node_id), "P's view names N mesh-primary");
         assert_eq!(fabric_primary_of(&pv).as_ref(), Some(&f.n.resolved.node_id), "P's view names N fabric-primary");
         let mut d = digest_of(&f.n.resolved, &FabricId::mint());
-        f.n.door.digest_view.recorded_primaries(&mut d);
+        f.n.primary_update.digest_view.recorded_primaries(&mut d);
         assert_eq!((d.is_primary, d.is_fabric_primary), (Some(4), Some(8)), "N's next digest carries both at their revisions");
         let (finished, installed) = (spans.position(WRITES_FINISHED).expect("P finished its writes"), spans.position(UPDATED).expect("N installed"));
         assert!(finished < installed, "P finished its writes before N installed: {:?}", spans.names());
         assert_eq!(f.p.finished(), 1);
-        assert_eq!(f.m.door.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "M, which nobody called, takes the change from N's digest");
+        assert_eq!(f.m.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "M, which nobody called, takes the change from N's digest");
         assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
         let _ = &f.x;
     });
@@ -696,21 +696,21 @@ fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_a
 /// primary, or a 0x21 call made for it.
 #[test]
 fn an_update_named_for_a_node_that_was_never_primary_is_no_update_and_calls_no_one() {
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
         let f = primaries_fabric(FabricPrimary::X).await;
         let m_name: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node-admin", "3").unwrap();
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.m.resolved.node_id));
-        assert_eq!(f.x.door.row_acknowledged("mesh1", &op, Some(&rdm_core::OperationSubject::Birth { node_id: f.m.resolved.node_id.clone(), incarnation: f.m.resolved.incarnation.clone() }), "b1").await, Ok(false), "M was never primary: no update to acknowledge");
+        assert_eq!(f.x.primary_update.row_acknowledged("mesh1", &op, Some(&rdm_core::OperationSubject::Birth { node_id: f.m.resolved.node_id.clone(), incarnation: f.m.resolved.incarnation.clone() }), "b1").await, Ok(false), "M was never primary: no update to acknowledge");
         let calls = |spans: &Spans| spans.named(CALL).into_iter().filter(|c| c["op"] == "33").count();
         assert_eq!(calls(&spans), 0, "no 0x21 call for a node that was never primary");
         // P's update to N happened: X holds N at 4, P replaced.
         primary_at(&f.x, PrimaryRole::MeshPrimary, &primary_of(&f.n, 4)).await;
         let p_name: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let p_op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
-        assert_eq!(f.x.door.row_acknowledged("mesh1", &p_op, Some(&rdm_core::OperationSubject::Birth { node_id: f.p.resolved.node_id.clone(), incarnation: f.p.resolved.incarnation.clone() }), "b1").await, Ok(true), "P's update to N is acknowledged on N's node.primary.updated");
+        assert_eq!(f.x.primary_update.row_acknowledged("mesh1", &p_op, Some(&rdm_core::OperationSubject::Birth { node_id: f.p.resolved.node_id.clone(), incarnation: f.p.resolved.incarnation.clone() }), "b1").await, Ok(true), "P's update to N is acknowledged on N's node.primary.updated");
         assert_eq!(calls(&spans), 1, "one 0x21 call, to N");
         let _ = &f.m;
     });
@@ -726,18 +726,18 @@ fn an_update_named_for_a_node_that_was_never_primary_is_no_update_and_calls_no_o
 /// mesh1 at 4; the fabric-primary stays X at 7. One command span at X, sent to P.
 #[test]
 fn the_fabric_primary_commands_a_mesh_primarys_update_and_installs_the_successors_answer() {
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
         let f = primaries_fabric(FabricPrimary::X).await;
         let p = node_at(&f.x, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
-        let revisions = f.x.door.command_update_primary(&p, "b1", &op).await.expect("the command answers node.primary.updated");
+        let revisions = f.x.primary_update.command_update_primary(&p, "b1", &op).await.expect("the command answers node.primary.updated");
         assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)]);
         for a in [&f.x, &f.p, &f.n] {
-            assert_eq!(a.door.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "{:?}", a.resolved.name);
-            assert_eq!(a.door.topology_view.primaries().fabric(), Some(primary_of(&f.x, 7)), "{:?}: the fabric-primary stays X", a.resolved.name);
+            assert_eq!(a.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "{:?}", a.resolved.name);
+            assert_eq!(a.primary_update.topology_view.primaries().fabric(), Some(primary_of(&f.x, 7)), "{:?}: the fabric-primary stays X", a.resolved.name);
         }
         let commands = spans.named(COMMAND);
         assert_eq!(commands.iter().map(|c| (c["to"].clone(), c["outcome"].clone())).collect::<Vec<_>>(), vec![(f.p.resolved.node_id.to_string(), "updated".to_string())], "{commands:?}");
@@ -751,7 +751,7 @@ fn the_fabric_primary_commands_a_mesh_primarys_update_and_installs_the_successor
 /// operation is refused by name and installs nothing.
 #[test]
 fn an_identical_retry_is_answered_as_the_first_and_another_payload_for_the_operation_is_refused() {
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     let spans = cap.spans.clone();
     cap.run(async {
         let f = primaries_fabric(FabricPrimary::X).await;
@@ -761,7 +761,7 @@ fn an_identical_retry_is_answered_as_the_first_and_another_payload_for_the_opera
         assert_eq!(first, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] });
         assert_eq!(send(&f.p, &f.n, call(4)).await, first, "an identical retry answers the same");
         assert_eq!(send(&f.p, &f.n, call(5)).await, Reply::RejectedConflictingPayload { operation: op.clone() });
-        assert_eq!(f.n.door.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "the conflicting payload installs nothing");
+        assert_eq!(f.n.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "the conflicting payload installs nothing");
         assert_eq!(spans.named(UPDATED).len(), 1, "one install");
         let _ = (&f.m, &f.x);
     });
@@ -773,14 +773,14 @@ fn an_identical_retry_is_answered_as_the_first_and_another_payload_for_the_opera
 /// it carries and answers node.primary.updated; nothing is refused.
 #[test]
 fn a_primary_update_call_is_never_refused_for_the_birth_it_names() {
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     let spans = cap.spans.clone();
     cap.run(async {
         let f = primaries_fabric(FabricPrimary::X).await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
         let r = send(&f.p, &f.m, Request::PrimaryUpdate { primaries: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)], build_id: "b1".into(), operation: op.clone() }).await;
         assert_eq!(r, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] });
-        assert_eq!(f.m.door.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)));
+        assert_eq!(f.m.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)));
         assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
         let _ = &f.x;
     });
@@ -794,7 +794,7 @@ async fn lone_fabric(x_status: NodeStatus) -> (Admin, Admin) {
     let x = admin(&fabric_id, "mesh2", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "000000000005", true, status).await;
     let nodes = vec![node_of(&p, NodeStatus::Ready, true), node_of(&x, x_status, false)];
     for a in [&p, &x] {
-        *a.door.topology.write().await = view(nodes.clone());
+        *a.primary_update.topology.write().await = view(nodes.clone());
         for b in [&p, &x] {
             a.resolver.insert(b.resolved.clone());
         }
@@ -816,17 +816,17 @@ async fn lone_fabric(x_status: NodeStatus) -> (Admin, Admin) {
 #[test]
 fn an_update_with_no_successor_fails_by_its_exact_text_and_nothing_moves() {
     use rdm_admin::build_drive::RoleMoveEnd;
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     cap.run(async {
         let (p, x) = lone_fabric(NodeStatus::Pending).await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &p.resolved.node_id));
-        let mesh = p.door.update_own_primaries(Moving::MeshRole, "b1", &op, None).await;
+        let mesh = p.primary_update.update_own_primaries(Moving::MeshRole, "b1", &op, None).await;
         assert!(matches!(&mesh, Err(RoleMoveEnd::Failed { step, reason, .. }) if step == "primary-update" && reason == "cannot transfer: no secondary of type node-admin in mesh mesh1"), "{mesh:?}");
         let op = update_operation(PrimaryRole::FabricPrimary, &rdm_core::OperationId::node("node.stop", &p.resolved.node_id));
-        let fabric = p.door.update_own_primaries(Moving::FabricRoleOutside, "b1", &op, None).await;
+        let fabric = p.primary_update.update_own_primaries(Moving::FabricRoleOutside, "b1", &op, None).await;
         assert!(matches!(&fabric, Err(RoleMoveEnd::Failed { reason, .. }) if reason == "cannot transfer fabric-primary: no other node-admin Ready in mesh mesh1, no other mesh-primary Ready"), "{fabric:?}");
         assert_eq!(p.finished(), 0, "no writes finished for a refused update");
-        assert_eq!((p.door.topology_view.primaries().mesh("mesh1"), p.door.topology_view.primaries().fabric()), (Some(primary_of(&p, 3)), Some(primary_of(&p, 7))), "P stays both");
+        assert_eq!((p.primary_update.topology_view.primaries().mesh("mesh1"), p.primary_update.topology_view.primaries().fabric()), (Some(primary_of(&p, 3)), Some(primary_of(&p, 7))), "P stays both");
         let _ = &x;
     });
 }
@@ -839,18 +839,18 @@ fn an_update_with_no_successor_fails_by_its_exact_text_and_nothing_moves() {
 /// the fabric-primary no node-admin of mesh1.
 #[test]
 fn the_fabric_primary_moved_outside_its_mesh_leaves_its_old_primary_mesh_primary() {
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     cap.run(async {
         let (p, x) = lone_fabric(NodeStatus::Ready).await;
-        let op = update_operation(PrimaryRole::FabricPrimary, &rdm_core::OperationId::new("mesh.delete", rdm_core::OperationSubject::Mesh(p.door.topology_view.mesh_id().clone())));
-        assert!(p.door.fabric_primary_updated("mesh1", &op).await.is_err(), "before the update the fabric-primary is of mesh1");
-        let revisions = p.door.update_own_primaries(Moving::FabricRoleOutside, "b1", &op, None).await.expect("the fabric-primary moves to mesh2");
+        let op = update_operation(PrimaryRole::FabricPrimary, &rdm_core::OperationId::new("mesh.delete", rdm_core::OperationSubject::Mesh(p.primary_update.topology_view.mesh_id().clone())));
+        assert!(p.primary_update.fabric_primary_updated("mesh1", &op).await.is_err(), "before the update the fabric-primary is of mesh1");
+        let revisions = p.primary_update.update_own_primaries(Moving::FabricRoleOutside, "b1", &op, None).await.expect("the fabric-primary moves to mesh2");
         assert_eq!(revisions, vec![entry("fabric", &p.resolved, &x.resolved, 8)]);
         for a in [&p, &x] {
-            assert_eq!(a.door.topology_view.primaries().fabric(), Some(primary_of(&x, 8)), "{:?}", a.resolved.name);
-            assert_eq!(a.door.topology_view.primaries().mesh("mesh1"), Some(primary_of(&p, 3)), "{:?}: P stays mesh1's mesh-primary", a.resolved.name);
+            assert_eq!(a.primary_update.topology_view.primaries().fabric(), Some(primary_of(&x, 8)), "{:?}", a.resolved.name);
+            assert_eq!(a.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&p, 3)), "{:?}: P stays mesh1's mesh-primary", a.resolved.name);
         }
-        p.door.fabric_primary_updated("mesh1", &op).await.expect("the fabric-primary is no node-admin of mesh1 any more");
+        p.primary_update.fabric_primary_updated("mesh1", &op).await.expect("the fabric-primary is no node-admin of mesh1 any more");
     });
 }
 
@@ -860,18 +860,18 @@ fn the_fabric_primary_moved_outside_its_mesh_leaves_its_old_primary_mesh_primary
 /// "1. The caller holds the node's id and incarnation and a reason to ask: ... a successor that has not answered."
 /// CONTRACT (node-primary-update.md failure contract: "The call fails by name, and node investigation on
 /// the successor's exact birth decides (Q111): a `reached` verdict makes the identical call again"): N holds no view
-/// at P's first call (its door answers `NotReady`); node investigation reaches N's exact birth, and the
+/// at P's first call (its 0x21 answers `NotReady`); node investigation reaches N's exact birth, and the
 /// call made again is answered node.primary.updated. One investigation span, verdict `reached`, retry
 /// `primary-updated`.
 #[test]
 fn a_successor_that_does_not_answer_is_investigated_and_reached_the_call_is_made_again() {
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
         let f = fabric_n_ready_on_probe(FabricPrimary::P).await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
-        let revisions = f.p.door.update_own_primaries(Moving::BothRoles, "b1", &op, None).await.expect("the call made again is answered");
+        let revisions = f.p.primary_update.update_own_primaries(Moving::BothRoles, "b1", &op, None).await.expect("the call made again is answered");
         assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4), entry("fabric", &f.p.resolved, &f.n.resolved, 8)]);
         let looked = spans.named(INVESTIGATION);
         assert_eq!(looked.iter().map(|l| (l["verdict"].clone(), l["retry"].clone())).collect::<Vec<_>>(), vec![("reached".to_string(), "primary-updated".to_string())], "{looked:?}");
@@ -887,16 +887,16 @@ fn a_successor_that_does_not_answer_is_investigated_and_reached_the_call_is_made
 #[test]
 fn an_update_whose_successor_is_unheard_fails_by_name_with_the_investigations_verdict() {
     use rdm_admin::build_drive::RoleMoveEnd;
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
         let f = primaries_fabric(FabricPrimary::P).await;
         let _ = f.n._router.shutdown().await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
-        let r = f.p.door.update_own_primaries(Moving::BothRoles, "b1", &op, None).await;
+        let r = f.p.primary_update.update_own_primaries(Moving::BothRoles, "b1", &op, None).await;
         assert!(matches!(&r, Err(RoleMoveEnd::Failed { step, reason, .. }) if step == "primary-update" && reason.starts_with(&format!("the successor is unheard after the update: {}", f.n.resolved.node_id))), "{r:?}");
-        assert_eq!(f.p.door.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "nothing was answered, so nothing was installed at P");
+        assert_eq!(f.p.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "nothing was answered, so nothing was installed at P");
         assert_eq!(spans.named(INVESTIGATION).len(), 1);
         let _ = (&f.m, &f.x);
     });
@@ -911,16 +911,16 @@ fn an_update_whose_successor_is_unheard_fails_by_name_with_the_investigations_ve
 /// primary has no mesh rows, and B2's row is recorded from its digest.
 #[test]
 fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_found_and_the_primary_calls_it() {
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
         let f = type_fabric(true).await;
         let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
-        let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", &op).await.expect("mesh1's node primary moves");
+        let revisions = f.p.primary_update.update_node_type_primary(&b1, None, "b1", &op).await.expect("mesh1's node primary moves");
         assert_eq!(revisions, vec![entry("node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.p.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
+        assert_eq!(f.p.primary_update.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
         assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
         assert_eq!(f.b2().door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B2 installed itself");
         assert_eq!(f.p.finished(), 0, "the mesh-primary finished no writes for another type's update");
@@ -936,12 +936,12 @@ fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_fo
 /// secondary (the land-gate red at 1918053cb, memory_estate).
 #[test]
 fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_one_its_mesh_primary_named() {
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     cap.run(async {
         let f = type_fabric_heard(true, false).await;
         let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
-        let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", &op).await.expect("the hand-over completes on the successor P named");
+        let revisions = f.p.primary_update.update_node_type_primary(&b1, None, "b1", &op).await.expect("the hand-over completes on the successor P named");
         assert_eq!(revisions, vec![entry("node", &f.b1.resolved, &f.b2().resolved, 3)]);
         assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
         let bare = f.b1.door.serve(Request::UpdatePrimary { r#type: "node".into(), build_id: "b1".into(), operation: update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b2.as_ref().unwrap().resolved.node_id)), successor: None }).await;
@@ -956,16 +956,16 @@ fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_o
 /// node primary: its command goes to P, mesh1's mesh-primary, which commands B1. X installs B2's answer.
 #[test]
 fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
         let f = type_fabric(true).await;
         let b1 = node_at(&f.x, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
-        let revisions = f.x.door.command_update_primary(&b1, "b1", &op).await.expect("the command answers");
+        let revisions = f.x.primary_update.command_update_primary(&b1, "b1", &op).await.expect("the command answers");
         assert_eq!(revisions, vec![entry("node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.x.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
+        assert_eq!(f.x.primary_update.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
         let commands = spans.named(COMMAND);
         assert_eq!(commands.iter().map(|c| c["to"].clone()).collect::<Vec<_>>(), vec![f.p.resolved.node_id.to_string()], "X's command goes to mesh1's mesh-primary: {commands:?}");
     });
@@ -976,14 +976,14 @@ fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
 /// B1. P's command of its update fails by that text before B1 is commanded; B1 stays the node primary.
 #[test]
 fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() {
-    let cap = trace_capture("fabric-handover");
+    let cap = trace_capture("primary-update");
     cap.run(async {
         let f = type_fabric(false).await;
         let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
-        let r = f.p.door.update_node_type_primary(&b1, None, "b1", &op).await;
+        let r = f.p.primary_update.update_node_type_primary(&b1, None, "b1", &op).await;
         assert!(matches!(&r, Err(Reply::Failed { reason, .. }) if reason == "cannot transfer: no secondary of type node in mesh mesh1"), "{r:?}");
-        assert_eq!(f.p.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "B1 stays the node primary");
+        assert_eq!(f.p.primary_update.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "B1 stays the node primary");
         let _ = &f.x;
     });
 }
@@ -1004,7 +1004,7 @@ fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() 
 fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
     use rdm_admin::build_drive::RoleMoveEnd;
 
-    let cap = trace_capture("fabric-handover-step-faults");
+    let cap = trace_capture("primary-update-step-faults");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
@@ -1014,7 +1014,7 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
         f.p.writes_finish.send_replace(false);
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
         tokio::select! {
-            res = f.p.door.update_own_primaries(Moving::MeshRole, "b-fault", &op, None) => {
+            res = f.p.primary_update.update_own_primaries(Moving::MeshRole, "b-fault", &op, None) => {
                 panic!("update must wait on issued writes before calling successor, got {res:?}");
             }
             _ = async {
@@ -1033,7 +1033,7 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
         let p_at_x = node_at(&f.x, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
         let revisions = f
             .x
-            .door
+            .primary_update
             .command_update_primary(&p_at_x, "b-fault", &op)
             .await
             .expect("commanded update recovers via node investigation retry when N is reached");
@@ -1092,7 +1092,7 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
         // Dead in N's view) after M's router is shut down -> N investigates M, finds M unheard, and
         // answers X with `Failed { step, reason }` on op `0x21`.
         {
-            let mut tv = f.n.door.topology.write().await;
+            let mut tv = f.n.primary_update.topology.write().await;
             for node in &mut tv.nodes {
                 if node.node_id == f.p.resolved.node_id {
                     node.status = NodeStatus::Dead;
@@ -1107,7 +1107,7 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
         let op2 = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.n.resolved.node_id));
         let err = f
             .x
-            .door
+            .primary_update
             .command_update_primary(&n_at_x, "b-fault", &op2)
             .await
             .expect_err("commanded update must fail when successor M is killed and unheard");
@@ -1142,7 +1142,7 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
 fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_and_records_observability_spans() {
     use rdm_admin::build_drive::RoleMoveEnd;
 
-    let cap = trace_capture("fabric-handover-conformance");
+    let cap = trace_capture("primary-update-conformance");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
@@ -1152,7 +1152,7 @@ fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_
         let (lone_p, _lone_x) = lone_fabric(NodeStatus::Pending).await;
         let refused_op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.connection.delete", &lone_p.resolved.node_id));
         let refused = lone_p
-            .door
+            .primary_update
             .update_own_primaries(Moving::MeshRole, "b-conformance", &refused_op, None)
             .await;
         assert!(
@@ -1165,7 +1165,7 @@ fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_
             "refused before the row must fail the step by name: {refused:?}"
         );
         assert_eq!(
-            lone_p.door.topology_view.primaries().mesh("mesh1"),
+            lone_p.primary_update.topology_view.primaries().mesh("mesh1"),
             Some(primary_of(&lone_p, 3)),
             "nothing changed when refused before the row"
         );
@@ -1186,7 +1186,7 @@ fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.delete", &f.p.resolved.node_id));
         let revisions = f
             .p
-            .door
+            .primary_update
             .update_own_primaries(Moving::BothRoles, "b-conformance", &op, None)
             .await
             .expect("fabric-primary and mesh-primary move to lowest Ready node-admin in own mesh");
@@ -1205,15 +1205,15 @@ fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_
         // gossip delivery nor P's survival.
         let _ = f.p._router.shutdown().await;
         assert_eq!(
-            f.n.door.topology_view.primaries().mesh("mesh1"),
+            f.n.primary_update.topology_view.primaries().mesh("mesh1"),
             Some(primary_of(&f.n, 4))
         );
         assert_eq!(
-            f.n.door.topology_view.primaries().fabric(),
+            f.n.primary_update.topology_view.primaries().fabric(),
             Some(primary_of(&f.n, 8))
         );
         let mut digest = digest_of(&f.n.resolved, &FabricId::mint());
-        f.n.door.digest_view.recorded_primaries(&mut digest);
+        f.n.primary_update.digest_view.recorded_primaries(&mut digest);
         assert_eq!(
             (digest.is_primary, digest.is_fabric_primary),
             (Some(4), Some(8)),

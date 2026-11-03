@@ -205,14 +205,14 @@ impl PrimaryCommandDoor {
     /// Answers the mesh-primary the update named its successor, when it moved that role.
     async fn move_roles(&self, m: &crate::executor::RoleMove, operation: &rdm_core::OperationId) -> Result<Option<NodeId>, crate::build_drive::RoleMoveEnd> {
         use crate::election::Moving;
-        use crate::fabric_handover::update_operation;
+        use crate::primary_update::update_operation;
         use rdm_core::PrimaryRole;
-        let door = &self.runner.handover;
+        let primary_update = &self.runner.primary_update;
         let build = rdm_core::LifecycleOp::NO_BUILD;
-        if m.primary.node_id != door.node_id {
+        if m.primary.node_id != primary_update.node_id {
             if m.mesh_role || m.node_type_role {
                 let role = if m.node_type_role { PrimaryRole::of_type(&m.primary.r#type) } else { PrimaryRole::MeshPrimary };
-                return Ok(mesh_successor(&door.command_update_primary(&m.primary, build, &update_operation(role, operation)).await?));
+                return Ok(mesh_successor(&primary_update.command_update_primary(&m.primary, build, &update_operation(role, operation)).await?));
             }
             return Ok(None);
         }
@@ -222,7 +222,7 @@ impl PrimaryCommandDoor {
             (false, true) => (Moving::FabricRoleOutside, PrimaryRole::FabricPrimary),
             (false, false) => return Ok(None),
         };
-        Ok(mesh_successor(&door.update_own_primaries(moving, build, &update_operation(role, operation), m.successor.as_ref()).await?))
+        Ok(mesh_successor(&primary_update.update_own_primaries(moving, build, &update_operation(role, operation), m.successor.as_ref()).await?))
     }
 
     /// The caller's command `req` on the node-admin `node_id`, its roles moved, sent on to its mesh

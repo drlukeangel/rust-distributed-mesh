@@ -116,7 +116,7 @@ pub struct PrecedingUpdate {
 
 /// The node.primary.update operations that precede `op` (node-primary-update.md, "Commander").
 pub fn preceding_updates(op: &BuildOperation) -> Vec<PrecedingUpdate> {
-    use crate::fabric_handover::update_operation;
+    use crate::primary_update::update_operation;
     use rdm_core::PrimaryRole;
     let key = op.key();
     match op {

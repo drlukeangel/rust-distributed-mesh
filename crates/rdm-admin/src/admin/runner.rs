@@ -103,8 +103,8 @@ pub struct AdminRunner {
     /// mesh of fabric.delete, lifecycles/fabric-delete.md step 1) commands that mesh's delete here, in
     /// process, as a Node RPC client reaches no endpoint of its own.
     pub mesh_deleter: crate::mesh_delete::MeshDeleterSlot,
-    /// The fabric-primary handover: this admin's initiator, doors and recorded operations.
-    pub handover: Arc<crate::fabric_handover::HandoverDoor>,
+    /// node.primary.update and node.fabric-primary.update on op `0x21` at this admin: its primary, successor and commander sides and the updates it answered.
+    pub primary_update: Arc<crate::primary_update::PrimaryUpdate>,
     /// The signer this admin issues a new mesh's first admin's issuing material with.
     pub issuer: Arc<crate::certs::CertIssuer>,
     /// Each node's work turn at this primary ([`Self::node_work`]): a node command, a repair and a
@@ -2065,7 +2065,7 @@ mod tests {
             nodes: vec![admin_node],
         }));
         let adapter = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        let handover = Arc::new(crate::fabric_handover::HandoverDoor {
+        let primary_update = Arc::new(crate::primary_update::PrimaryUpdate {
             fabric: "fab".into(),
             me_path: me.path.clone(), me_name: me.name.clone(),
             node_id: node_id.clone(),
@@ -2129,7 +2129,7 @@ mod tests {
                 client: Some(node_rpc.client.clone()),
                 commands: Arc::default(),
                 status_door: Arc::default(),
-                handover: Arc::default(),
+                primary_update: Arc::default(),
                 unreachable: records.unreachable.clone(),
             }),
             records,
@@ -2158,7 +2158,7 @@ mod tests {
             }),
             leaves: Arc::new(crate::mesh_delete::MeshDeleteView::default()),
             mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),
-            handover,
+            primary_update,
             issuer: Arc::new(crate::certs::CertIssuer::no_certs(time)),
             node_work: Default::default(),
             repairs_stopped: Default::default(),

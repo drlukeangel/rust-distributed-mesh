@@ -127,8 +127,8 @@ pub struct FabricRecoveryDoor {
     pub looker: crate::primary_watch::Looker,
     /// Node recovery's submit of the re-create.
     pub recovery: crate::admin::RecoverySubmitter,
-    /// node.primary.update's door: the restore's call.
-    pub handover: crate::fabric_handover::HandoverSlot,
+    /// node.primary.update at this admin (`PrimaryUpdate`): the restore's call.
+    pub primary_update: crate::primary_update::PrimaryUpdateSlot,
     /// Whether a person launched this admin on the fabric-primary's data dir to recover the fabric
     /// (`RDM_FABRIC_PRIMARY`; fabric-recovery.md: "It starts when a person or a script launches one
     /// node-admin on the fabric-primary's data dir"): at the fabric-primary's path and name with no admin to
@@ -158,8 +158,8 @@ impl FabricRecoveryDoor {
 impl FabricRecoveryDoor {
     /// A door for the admin these name.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(me: PathName, me_id: NodeId, me_incarnation: crate::model::IncarnationId, topology: Arc<tokio::sync::RwLock<Topology>>, digest_view: DigestView, records: Arc<crate::admin::Records>, looker: crate::primary_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot, launched_to_recover: bool, gate: crate::stop_gate::StopGate) -> Self {
-        Self { me_path: me.path.clone(), me_name: me.name.clone(), me_id, me_incarnation, topology, digest_view, records, looker, recovery, handover, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None), asked: Mutex::new(None), verdict: Mutex::new(None), gate }
+    pub fn new(me: PathName, me_id: NodeId, me_incarnation: crate::model::IncarnationId, topology: Arc<tokio::sync::RwLock<Topology>>, digest_view: DigestView, records: Arc<crate::admin::Records>, looker: crate::primary_watch::Looker, recovery: crate::admin::RecoverySubmitter, primary_update: crate::primary_update::PrimaryUpdateSlot, launched_to_recover: bool, gate: crate::stop_gate::StopGate) -> Self {
+        Self { me_path: me.path.clone(), me_name: me.name.clone(), me_id, me_incarnation, topology, digest_view, records, looker, recovery, primary_update, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None), asked: Mutex::new(None), verdict: Mutex::new(None), gate }
     }
 
     /// This door's admin is the adoption launch under an in-force fabric.delete, at its own new path and name
@@ -437,9 +437,9 @@ impl FabricRecoveryDoor {
         let installed = if me.mesh == target.mesh {
             self.restore(target, &me).await
         } else {
-            match self.handover.get().cloned() {
+            match self.primary_update.get().cloned() {
                 Some(h) => h.take_under_delete(target, mesh_revision, &me).await,
-                None => Err(rdm_core::reply::handover::not_ready("this admin's node.primary.update door is not built yet".into())),
+                None => Err(rdm_core::reply::handover::not_ready("this admin's node.primary.update is not served yet".into())),
             }
         };
         match installed {
@@ -476,10 +476,10 @@ impl FabricRecoveryDoor {
     /// Restore `node`, Ready at the target's path and name, as mesh-primary and fabric-primary
     /// (fabric-recovery.md step 4): node.primary.update's call on it, each record at its next revision.
     async fn restore(&self, target: &Primary, node: &Node) -> Result<Vec<rdm_node::member_handover::Entry>, rdm_core::handover::NodePrimaryUpdateReply> {
-        let door = self.handover.get().cloned().ok_or_else(|| rdm_core::reply::handover::not_ready("this admin's node.primary.update door is not built yet".into()))?;
+        let primary_update = self.primary_update.get().cloned().ok_or_else(|| rdm_core::reply::handover::not_ready("this admin's node.primary.update is not served yet".into()))?;
         let primaries = self.digest_view.primaries.clone();
         let mesh_record = primaries.mesh(&target.mesh);
-        door.restore(target, mesh_record.as_ref(), node).await
+        primary_update.restore(target, mesh_record.as_ref(), node).await
     }
 }
 

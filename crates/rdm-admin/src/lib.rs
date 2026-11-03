@@ -57,7 +57,7 @@ pub mod build_drive;
 pub mod build_op;
 pub mod build_run;
 pub mod read_op;
-pub mod fabric_handover;
+pub mod primary_update;
 pub mod fabric_recovery;
 pub mod fetch_build;
 #[cfg(feature = "file-backend")]
