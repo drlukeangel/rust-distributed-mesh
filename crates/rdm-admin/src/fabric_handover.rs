@@ -169,16 +169,24 @@ impl HandoverDoor {
         HandoverBirth { mesh: self.topology_view.mesh_name().to_string(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }
     }
 
-    /// The mesh this admin's view gives the birth `b`, else this admin's own.
-    async fn mesh_of(&self) -> impl Fn(&Birth) -> String {
+    /// The mesh of each successor `entries` names: the one this admin's view gives it; for a mesh's or a
+    /// node type's record, whose successor is of its predecessor's mesh (node-primary-update.md), the
+    /// predecessor's while the view does not hold the successor (a birth just started that its gossip
+    /// has not brought back); else this admin's own.
+    async fn mesh_of(&self, entries: &[Entry]) -> impl Fn(&Birth) -> String {
         let view = self.topology.read().await.clone();
         let own = self.topology_view.mesh_name().to_string();
-        move |b: &Birth| view.births().find(|n| n.node_id == b.node_id).map(|n| n.mesh.clone()).unwrap_or_else(|| own.clone())
+        let held = |id: &NodeId| view.births().find(|n| n.node_id == *id).map(|n| n.mesh.clone());
+        let meshes: std::collections::HashMap<NodeId, String> = entries
+            .iter()
+            .filter_map(|(r#type, primary, successor, _)| held(&successor.node_id).or_else(|| (r#type != FABRIC).then(|| held(&primary.node_id)).flatten()).map(|m| (successor.node_id.clone(), m)))
+            .collect();
+        move |b: &Birth| meshes.get(&b.node_id).cloned().unwrap_or_else(|| own.clone())
     }
 
     /// Install the entries an answer named, under the decision lock, and project the view from them.
     async fn take(&self, entries: &[Entry]) -> &'static str {
-        let mesh_of = self.mesh_of().await;
+        let mesh_of = self.mesh_of(entries).await;
         let outcome = {
             let _decisions = self.decisions.clone().lock_owned().await;
             install(self.topology_view.primaries(), entries, mesh_of)
