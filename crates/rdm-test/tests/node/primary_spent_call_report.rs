@@ -12,10 +12,12 @@
 //! the fabric-primary). The fabric-primary marks the mesh-primary
 //! (`rdm.node_admin.node.update.via-call-failed`, sender the node, outcome `marked`), and its
 //! primary watch investigates it from that mark (`rdm.node_admin.primary.update.via-investigation`,
-//! trigger `call-failed`) once mesh2's aggregate is unheard past the floor (Q335 as amended, D66: with
-//! it heard, the successor that publishes it investigates), by the watch's next pass: at most the floor
-//! plus one gossip interval after the hold. Must NOT happen: no report, a report to anyone but the
-//! fabric-primary, no mark, or an investigation later than that bound.
+//! trigger `call-failed`) once mesh2's aggregate is unheard for twice the floor (Q335 as amended, D66: with
+//! it heard, the successor that publishes it investigates; Q349: the floor after the election is the
+//! mesh's own node-admin's to act in), by the watch's next pass: no earlier than twice the floor less one
+//! backbone interval after the hold (the aggregate's last receipt precedes the hold by at most that), at
+//! most twice the floor plus one gossip interval after it. Must NOT happen: no report, a report to anyone
+//! but the fabric-primary, no mark, or an investigation outside that window.
 use rdm_client::{NodeView, PathName};
 
 use rdm_test::estate::{named, wait_for, Estate, Owner};
@@ -92,10 +94,11 @@ async fn a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_prim
             .cloned()
     })
     .await;
-    // The fabric-primary investigates a peer mesh's primary once that mesh's aggregate is unheard past the
-    // floor (Q335 as amended, D66: with it heard, the successor that publishes it investigates): the mark is
-    // recorded first, and the investigation follows on the watch's next pass past the floor.
-    let bound = FLOOR + rdm_core::cadence::gossip_interval();
+    // The fabric-primary investigates a peer mesh's primary once that mesh's aggregate is unheard for twice
+    // the floor (Q335 as amended, D66, Q349): the mark is recorded first, and the investigation follows on
+    // the watch's next pass past twice the floor.
+    let bound = FLOOR * 2 + rdm_core::cadence::gossip_interval();
+    let earliest = FLOOR * 2 - rdm_core::cadence::backbone_gossip_interval();
     let investigation = wait_for("the fabric-primary's primary watch investigates the marked mesh-primary", bound, || async {
         named(&estate.spans(), "rdm.node_admin.primary.update.via-investigation")
             .into_iter()
@@ -117,7 +120,8 @@ async fn a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_prim
     assert_eq!(s(&mark["attributes"]["outcome"]), "marked", "{mark}");
     assert_eq!(s(&investigation["attributes"]["trigger"]), "call-failed", "investigated from the spent call's mark: {investigation}");
     assert!(at(&investigation) >= at(&mark), "the investigation follows the mark");
-    assert!(at(&investigation) <= held_at + bound.as_nanos() as u64, "investigated by the watch's next pass once the mesh's aggregate is unheard past the floor (D66): hold {held_at}, investigation {}", at(&investigation));
+    assert!(at(&investigation) >= held_at + earliest.as_nanos() as u64, "not investigated before the mesh's aggregate is unheard for twice the floor (Q349): hold {held_at}, investigation {}", at(&investigation));
+    assert!(at(&investigation) <= held_at + bound.as_nanos() as u64, "investigated by the watch's next pass once the mesh's aggregate is unheard for twice the floor (D66, Q349): hold {held_at}, investigation {}", at(&investigation));
     for sp in [&report, &mark, &investigation] {
         estate.record_trace_url(sp["trace_id"].as_str().unwrap_or(""));
     }
