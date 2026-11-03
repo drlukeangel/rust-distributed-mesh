@@ -5,7 +5,7 @@ This page owns the Node RPC runtime, how one invocation executes: the resolver, 
 
 **Crates:** RDM `rdm-transport` (the runtime) and `rdm-core` (descriptor, framing and outcome vocabulary).
 
-**Companion architecture:** [`connections.md`](connections.md) owns Direct/Proxy/Failed connection facts, effective node-to-node reachability, the protocol carrier-policy hook and direct reconnect reconciliation; [`lifecycles/states.md`](lifecycles/states.md) owns node states and the primaries, and [`node-identity-and-state.md`](node-identity-and-state.md) node identity and topology; trust between mesh nodes is [`fabric-certs.md`](fabric-certs.md#on-a-connection).
+**Companion architecture:** [`connections.md`](connections.md) owns Direct/Proxy/Failed connection facts, effective node-to-node reachability and the protocol carrier-policy hook; [`lifecycles/states.md`](lifecycles/states.md) owns node states and the primaries, and [`node-identity-and-state.md`](node-identity-and-state.md) node identity and topology; trust between mesh nodes is [`fabric-certs.md`](fabric-certs.md#on-a-connection).
 
 ---
 
@@ -85,7 +85,7 @@ process running state
     -> one long-lived NodeRpcClient
 ~~~
 
-Node-admin readiness Ping, control calls, testkit-store calls, Forward inner calls and ordinary RPC-node callers reuse that process client and resolver.
+Node-admin readiness Ping, control calls, testkit-store calls, Forward inner calls and ordinary node callers reuse that process client and resolver.
 
 The process-scoped LiveNodeResolver is the only topology model Node RPC reads.
 
@@ -126,7 +126,7 @@ ExactNode(NodeId)
     -> that exact logical identity only
 ~~~
 
-CurrentPath intentionally follows replacement. ExactNode never does.
+CurrentPath intentionally follows whichever node holds the path and name. ExactNode never does.
 
 ### 4.2 Live resolver contract
 
@@ -163,7 +163,7 @@ The layers are deliberately three, not two:
 | layer | owns |
 |---|---|
 | domain state machine | semantic destination, leg order, retries, next leg |
-| `connections` / RDM Mesh EF | Direct / Proxy-via-carrier / unreachable answer for that destination; Proxy validity and reconnect |
+| `connections` / RDM Mesh EF | Direct / Proxy-via-carrier / unreachable answer for that destination; Proxy validity |
 | `rdm-transport` | execution and certainty for the selected direct or one-hop carried invocation |
 
 `rafka-reach-reroute` adapts Rafka's callers to the middle layer and owns no route truth.
@@ -1040,10 +1040,11 @@ by the caller once its owner can recover it. Tiny ack frames are never themselve
 ack is repaired by the original being resent and acked again. A named refusal ends the request's
 retry; its response is retransmitted until acked like any response. Every frame of a streaming op
 carries stream identity and sequence (§11), and a reconnect never delivers an old admission after the
-terminal frame. Every directed Node RPC protocol rides this; gossip stays best-effort. Above it,
-unchanged: the Build's resubmit by `build_id` and the application connections reconnect scheduler
-([connections.md §9](connections.md#9-direct-reconnect-is-owned-by-every-node)); a resend uses
-ordinary dialing and never depends on the application connections log.
+terminal frame. Every directed Node RPC protocol rides this; gossip stays best-effort. `Send` is the only retry: no
+workflow, connection or Build resends on its own (Q344, Q348). A lost Direct connection is dialled on
+`Send`, and when its attempts are spent the dial ends to the application by name and
+`on_call_failed` is called ([connections.md §9](connections.md#9-direct-reconnect-is-owned-by-every-node));
+a resend uses ordinary dialing and never depends on the application connections log.
 
 ---
 

@@ -3,7 +3,7 @@
 **Status:** ARCHITECTURE, design of record for the fleet-wide node-to-node connections subsystem.
 
 This document owns connection facts, their durable log and indexes, the active routing projection,
-proxy/carrier routes, and the per-node direct-reconnect reconciler. It is generic across gateway,
+proxy/carrier routes, and how a source returns to Direct. It is generic across gateway,
 broker, compute and node-admin nodes, and is the target generic connection/reachability substrate for
 Node RPC/RDM. Broker replica routing is one consumer; it does not own this subsystem.
 
@@ -13,7 +13,7 @@ routing; this subsystem decides HOW the source node reaches that already-chosen 
 
 This ruling is explicit mesh-change permission for **#2722** within the scope defined here: the
 `NodeConnection` durable-format move, Direct/Proxy connection kinds, Failed state, the latest-per-kind
-indexes and virtual topics, the active connection projection, and the source-owned reconnect reconciler
+indexes and virtual topics, the active connection projection, and the source's return to Direct
 in node-base. It authorizes no unrelated gossip, topology, lifecycle, forwarding, or transport change.
 
 ---
@@ -132,7 +132,7 @@ one whole append-only row (§3); an accept writes nothing (R-CN1).
 |---|---|---|
 | Dial | `rdm.node.connection.create.via-dial` opens (destination, alpn, cert_expires_at), a root linked to the opener's span; the present frame carries the opener's trace (or the dial's when the opener carries none) | — |
 | Admitted | the dial ends `outcome = connected`; it writes `Direct Connected` | `rdm.node.connection.serve.via-admitted` (source, destination, connection, alpn, cert_expires_at, clock), in the caller's trace; no row |
-| Refused | the dial ends `outcome = refused` with the `reason`; it writes `Direct Failed`, reason `refused: <reason>`, so its reconnect series continues from it (§9.1) | `rdm.node.connection.reject.via-refused` (the same, plus `reason`); it writes `Refused` naming the reason |
+| Refused | the dial ends `outcome = refused` with the `reason`; it writes `Direct Failed`, reason `refused: <reason>` (§9.3) | `rdm.node.connection.reject.via-refused` (the same, plus `reason`); it writes `Refused` naming the reason |
 | Through a carrier | The opener's `rdm.node.connection.create.via-tunnel` carries `cert_expires_at`; the carrier dials the destination. After the destination's `admitted` comes back through the carrier (§7), the opener writes `Proxy Connected` naming the carrier. | the destination serves or refuses as above |
 | Ended | `Disconnected` when the connection closes or is deleted (node.connection.delete); a tunnel's end is spanned `rdm.node.connection.delete.via-tunnel-ended` and writes no second row | — |
 
@@ -166,10 +166,6 @@ NodeConnection {
     carrier
     carrier_node_id
     carrier_incarnation_id
-
-    // Direct Failed only
-    recovery_round
-    attempt_ordinal
 
     reason
     event_time
@@ -243,8 +239,7 @@ Direct -> Connected
 Proxy  -> Disconnected(reason=direct-restored)
 ```
 
-Raw-log retention is therefore not part of reconnect correctness. The latest Direct row a source writes
-carries the recovery round, attempt ordinal and time its next due time is computed from (§9.3).
+Raw-log retention is therefore not part of reconnect correctness: no dial reads a row (§9).
 
 ### 3.1 Declared indexes
 
@@ -317,7 +312,7 @@ my latest Direct facts
 my active Proxy overrides
 ```
 
-The owning source's reconnect reconciler takes its latest Failed Direct from what it holds (§9.3). No node
+The owning source holds its latest Failed Direct itself, from its own write (§9.3). No node
 reads it back from the store, and it is not gossiped to any other node.
 
 ---
@@ -352,10 +347,10 @@ else:
     Direct
 ```
 
-A latest Failed Direct is the one state a reconnect series stands on (§9.1), and the series owns its retry.
-Any other non-active Direct has no series: none ever observed, a closed connection (Disconnected, as
+A latest Failed Direct records the last dial whose `Send` was spent; nothing is scheduled from it (§9).
+Any other non-active Direct is none ever observed, a closed connection (Disconnected, as
 `node.connection.delete` writes at every node.stop), or an acceptor's Refused. A new call
-dials it (§7), and a failed dial writes the first Failed of a series.
+dials it (§7), and a dial whose attempts are spent writes its Failed (§9.3).
 
 This precedence provides ordered cutback. When a direct connection returns, traffic stays on the working
 Proxy until `Proxy Disconnected(reason=direct-restored)` lands. Only then does Direct become effective.
@@ -415,8 +410,7 @@ gw2 -> brk2 Direct Active
 
 Sequence:
 
-1. `gw1` writes a `Direct Failed` event for `gw1 -> brk2` with a new recovery round and
-   `attempt_ordinal=1`.
+1. `gw1` writes a `Direct Failed` event for `gw1 -> brk2` naming the dial's reason.
 2. It asks the candidates of §6 in their order; the first whose own Direct to the destination is Active
    answers.
 3. It proxies the invocation once through that carrier.
@@ -475,18 +469,14 @@ A reply timeout after request commit is not proxy-health evidence and does not i
 
 ## 9. Direct reconnect is owned by every node
 
-Every node runs the same reconnect mechanism internally in `rdm-node`. Node-admin does not monitor
-Proxy routes and does not send reconnect commands.
+Every node restores its own Direct connections in `rdm-node`. Node-admin does not monitor Proxy routes
+and sends no reconnect commands. No connection retries on its own: every dial is a call on `Send`
+([Node RPC §43](node-rpc.md#43-send-delivery-is-the-runtimes); Q344, Q348), and nothing schedules a
+dial from a stored row.
 
-This is deliberately **not** a normal platform `Job` entity. It is a local reconciler whose work is derived
-from the Direct facts the node writes and holds; it reads none back from `ops.nodes.connections`.
-
-Why: the source node already owns its connection observations, owns its Direct/Proxy rows, has the transport
-context needed to dial, and is the only process that can repair its own source-to-destination connection.
-Routing local transport repair through node-admin would centralize an N-by-N reachability problem and add a
-control hop to state the source already knows.
-
-Target module, exact filename may differ:
+Why: the source node already owns its connection observations, owns its Direct/Proxy rows, has the
+transport context needed to dial, and is the only process that can repair its own source-to-destination
+connection.
 
 ```text
 crates/rdm-node/src/connection_reconnect.rs
@@ -494,82 +484,38 @@ crates/rdm-node/src/connection_reconnect.rs
 
 It contains no topic, broker-replication, Kafka, org, or node-admin orchestration semantics.
 
-### 9.1 Reconnect obligation
+### 9.1 A lost Direct
 
-A reconnect series exists when the latest Direct record for this source and destination is Failed for the
-current destination incarnation and no newer Direct Connected supersedes it.
+When a Direct connection is lost, the application's next open dials Direct on `Send`. If no Direct is
+made within its attempts, the open's carriers answer (§6, §7) and a Proxy may be shown. When no route is
+found and the attempts are spent, the dial ends to the application by name and `on_call_failed` is
+called ([fabric-node-hooks.md](fabric-node-hooks.md#on_call_failed)); the application opens again if it
+wants.
 
-An active Proxy commonly accompanies that state, but recovery does not depend on the Proxy continuing to
-exist. If the carrier disappears, restoring Direct is still desirable.
+### 9.2 Back to Direct
 
-### 9.2 Recovery round
+While a Proxy is held, an open uses it (§5, §7 step 6). The source returns to Direct when:
 
-A new independent direct-failure incident starts a new `recovery_round`.
+- **the destination dials the source.** A connection accepted from the destination's exact birth while a
+  Proxy to it is active is the trigger (§10, §13 G): the source makes one Direct dial on `Send`, one per
+  `(destination, destination_incarnation, alpn)` and one at a time on the node; an accept arriving
+  while that dial runs joins it and never starts a second, a dial toward a birth the view no longer
+  holds is dropped undialled, and a dial whose attempts are spent ends: only the next accept starts
+  another;
+- **the Proxy is invalidated** (§8): the next open dials Direct first.
 
-```text
-E1: Failed 1 -> Failed 2 -> Failed 3 -> Direct Connected
-...
-E2: Failed 1
-```
+### 9.3 One dial
 
-E2 does not inherit E1's ordinal.
-
-### 9.3 Durable backoff
-
-Every failed reconnect attempt appends a new `Direct Failed` event with:
-
-```text
-recovery_round = E
-attempt_ordinal = N + 1
-event_time      = T
-reason          = exact transport refusal/failure
-```
-
-That row replaces the Direct member in the compacted `(source,destination,Direct)` index.
-
-The next due time is computed deterministically from the latest Failed record the source holds:
-
-```text
-next_due = event_time
-         + reconnect_backoff(attempt_ordinal)
-         + deterministic_jitter(source, destination, attempt_ordinal)
-```
-
-A restart closes every connection the node held, and the restarted node reads no row back (Q227): it
-holds no reconnect series, and its next failed dial toward a destination is a new series at attempt 1.
-
-The exact constants are implementation policy and must be tested, but the schedule is bounded, exponentially
-backed off, jittered, and may continue at its maximum interval while the destination incarnation remains
-relevant.
-
-### 9.4 One scheduler per node
-
-Node-base runs one scheduler/reconciler per node process, with at most one pending direct-reconnect item per:
-
-```text
-(destination, destination_incarnation, alpn)
-```
-
-It is not one sleeping task per topic or request. Broker topics sharing the same destination and protocol all
-benefit from the same node-to-node connection state; a reconnect on one ALPN never touches another's rows.
-
-Two paths arm that one reconciler and that one pending item: the destination falling due under its durable
-Failed rows (§9.5), and a connection accepted from the destination, which is a recovery trigger (§10, §13 G).
-An accept arriving while an item is pending coalesces into it; it never creates a second attempt and never
-skips the backoff the durable rows set.
-
-### 9.5 One reconnect attempt
-
-When a destination becomes due:
-
-1. Verify its `Node.incarnation_id` still matches the Failed record.
-2. Verify no Direct Connected already supersedes the obligation.
-3. Perform one direct dial on `Send` ([Node RPC §43](node-rpc.md#43-send-delivery-is-the-runtimes)): a dial that sent nothing is made again within its attempts.
-4. On failure, append the next Direct Failed event and reschedule from that durable row.
+1. Verify the destination's `Node.incarnation_id` is the one the dial names.
+2. Verify no Direct Connected already holds for it.
+3. Dial on `Send`: a dial that sent nothing is made again within its attempts.
+4. A dial whose attempts are spent writes one `Direct Failed` row, from its last attempt, with the
+   transport's reason: one dial is one row.
 5. On success, normal pooled-connection machinery emits Direct Connected. The reconnect module does not
    invent a parallel success fact.
 
-Failed attempts change no global liveness state and never ask node-admin to replace/remove the destination.
+A failed dial changes no global liveness state and never asks node-admin to remove the destination. A
+restart closes every connection, and the restarted node reads no row back (Q227).
 
 ---
 
@@ -580,7 +526,7 @@ Direct recovery is event-driven at truth transition, regardless of why the direc
 A Direct Connected may come from:
 
 ```text
-the reconnect reconciler's dial
+the accept-triggered Direct dial (§9.2)
 normal transport activity
 another permitted direct-connection establishment path
 ```
@@ -660,11 +606,10 @@ state
 reason
 ```
 
-Proxy transitions additionally identify the carrier. Reconnect attempts identify the recovery round and
-attempt ordinal. An admission verdict is spanned `rdm.node.connection.serve.via-admitted` or
+Proxy transitions additionally identify the carrier. An admission verdict is spanned `rdm.node.connection.serve.via-admitted` or
 `rdm.node.connection.reject.via-refused` with the named reason, on the acceptor.
 
-The reconnect attempt span is owned by node-base and records whether it:
+The accept-triggered Direct dial's span (§9.2) is owned by node-base and records whether it:
 
 ```text
 connected
@@ -709,15 +654,15 @@ restart gw1. The restarted gw1 holds no Direct and no Proxy and reads none back;
 Direct and, on NotSent, shows its carrier again (§7). Forbidden: a route over a Proxy the restarted birth
 did not show.
 
-### C. A restart starts reconnect backoff fresh
+### C. A restart holds no Failed Direct
 
-Write `Direct Failed(E1, attempt=N, event_time=T)`, restart the source, and assert the restarted source holds
-no reconnect obligation from it and its next failure toward the destination starts a new series at attempt 1.
+Write `Direct Failed`, restart the source, and assert the restarted source holds no Failed Direct and
+its next dial toward the destination is a fresh call on `Send`.
 Forbidden: the restarted source reading the row back.
 
 ### D. Index stays bounded
 
-Generate many failed reconnect attempts for one pair. Assert the raw log contains the history while the
+Generate many failed dials for one pair. Assert the raw log contains the history while the
 current indexes contain at most one Direct member and one Proxy member for that source/destination pair.
 
 ### E. Failed/Dead records stay with their source
@@ -773,8 +718,8 @@ Switch effective reachability Direct -> Proxy -> Direct without changing the sem
 
 ## 14. Ownership and RDM target
 
-RDM owns the generic Direct/Proxy connection model, incarnation-bound reachability, reconnect
-reconciliation and the protocol carrier-policy hook (`rdm-transport/src/connections.rs`,
+RDM owns the generic Direct/Proxy connection model, incarnation-bound reachability, the return
+to Direct and the protocol carrier-policy hook (`rdm-transport/src/connections.rs`,
 `rdm-node/src/connection_reconnect.rs`). An application owns its protocol descriptors and its carrier
 policy; Rafka's, and where its copies lived before i148, are Rafka's pages.
 
@@ -794,9 +739,9 @@ policy; Rafka's, and where its copies lived before i148, are Rafka's pages.
 10. A valid active Proxy overrides Direct until the Proxy is durably deleted.
 11. Every node owns repair of its own direct connections in node-base.
 12. Node-admin does not schedule or command local direct reconnect attempts.
-13. Reconnect is an internal durable reconciler, not a normal platform Job entity.
-14. The latest Direct Failed row a source holds is sufficient to compute its retry round, ordinal and next due time.
-15. A restart closes every connection the node held; the restarted node reads no row back and its reconnect backoff starts fresh (Q227).
+13. No connection retries on its own: every dial is a call on `Send` (Q344, Q348).
+14. A Direct Failed row records the last dial whose attempts were spent; nothing is scheduled from it.
+15. A restart closes every connection the node held; the restarted node reads no row back (Q227).
 16. Only the source's own Direct Connected creates the proxy-delete obligation; an accepted inbound connection from the destination is a recovery trigger (§13 G).
 17. Failed proxy-delete writes are retried; routing safely remains on Proxy until the delete lands.
 18. Destination and carrier process incarnations make stale route evidence refusable by name.
