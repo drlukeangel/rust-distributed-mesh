@@ -27,8 +27,8 @@
 //!    - `rdm.mesh.node.update.via-build-floor`: the type's Build floor, on every start (a node-admin
 //!      reads the Build's committed records it is missing from storage, Q292; a node owes none).
 //!      It reads no topology;
-//!    - `rdm.mesh.node.update.via-topology-taken`: then one `GetTopology` from the authority that
-//!      answered the join, the final startup read, with no conditional source version (`since: None`):
+//!    - `rdm.mesh.node.update.via-topology-taken`: then one `GetTopology` from the node's own current
+//!      mesh-primary (after a stop, the one whose call commanded the start), the final startup read, with no conditional source version (`since: None`):
 //!      installed per mesh only from a complete snapshot, and the rafka-time of the same reply adopted
 //!      after the install. No second topology request is made to refresh rafka-time.
 //! 5. `rdm.mesh.node.update.via-ready` (step 5): the type's node.started report.
@@ -92,8 +92,8 @@ pub enum Joining {
 /// the start goes.
 #[derive(Clone, Debug)]
 pub struct JoinThrough {
-    /// Where the join went and the topology read goes: the launcher's birth
-    /// at a first start; after a stop, the endpoint and path of the call whose join was answered.
+    /// Where the join went: the launcher's birth at a first start; after a stop, the endpoint and
+    /// path of the call whose join was answered, which the topology read goes to as well.
     pub target: NodeTarget,
     /// The admin's endpoint key.
     pub endpoint: iroh::PublicKey,
@@ -146,9 +146,9 @@ pub async fn reached_back(node: &str, client: &NodeRpcClient, key: &iroh::Public
     }
 }
 
-/// `read` made to the admin a start's reads go to (node-start.md steps 2 and 4): the authority the
-/// join reached (`through`), or, after a stop, the admin whose call commanded the start last
-/// (`commander`), reached back over that call. A later call's commander replaces the one a read is
+/// `read` made to the admin a start after a stop reads from (node-start.md steps 2 and 4): the
+/// mesh-primary whose call commanded the start last (`commander`), reached back over that call, from
+/// the one whose join was answered (`through`). A later call's commander replaces the one a read is
 /// under way to: that read is dropped and made again to the later one, so a commander lost after
 /// the join holds no read past the call that replaced it. The answer and who gave it; a failure
 /// names whom the read went to.
@@ -183,6 +183,20 @@ where
                 tracing::info!(node, from = %key.fmt_short(), "a later call commanded the start: the read under way is made again to that admin");
             }
         }
+    }
+}
+
+/// Whom a first start's one topology read goes to (node-topology-get.md, "exact member → own
+/// mesh-primary"): its mesh's primary role, `NodeTarget::Primary { mesh }`, which the client resolves
+/// again on each attempt of the read's `Send`; while the node holds no primary record of its mesh (a new
+/// mesh's first node-admin), the fabric-primary, as its join went (node-mesh-join.md, "the
+/// fabric-primary while the mesh has no primary"). With whom the step names as its server.
+fn own_mesh_primary(topology_view: &TopologyView) -> (NodeTarget, String) {
+    let mesh = topology_view.mesh_name().to_string();
+    match topology_view.digest_view.mesh_primary(&mesh) {
+        Err(rdm_transport::topology::NoMeshPrimary::NoPrimaryRecord { .. }) => (NodeTarget::Primary { mesh: None }, format!("the fabric-primary ({mesh} holds no primary record)")),
+        Ok(d) => (NodeTarget::Primary { mesh: Some(mesh.clone()) }, format!("the mesh-primary of {mesh} ({})", d.node.node_id)),
+        Err(_) => (NodeTarget::Primary { mesh: Some(mesh.clone()) }, format!("the mesh-primary of {mesh}")),
     }
 }
 
@@ -465,16 +479,28 @@ impl AfterTheHook {
         let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-build-floor", node_path = %path.path, node_name = %name, node_id = %node_id, owed = tracing::field::Empty, blockers = tracing::field::Empty, outcome = tracing::field::Empty);
         after.floor(&step).instrument(step.clone()).await;
         drop(step);
-        // Then the topology, once, from the authority that answered the join: the final startup read,
-        // with no conditional source version, and the rafka-time of the same reply adopted after its
-        // install. With no authority, the rafka-time this start adopted is kept.
+        // Then the topology, once, the final startup read, with no conditional source version, and the
+        // rafka-time of the same reply adopted after its install (node-start.md step 4): from the node's
+        // own current mesh-primary (node-topology-get.md, "exact member → own mesh-primary"). After a
+        // stop that is the mesh-primary whose call commanded the start, reached back over its call
+        // (node-start.md "Admission" and step 2); at a first start the mesh's primary role, resolved on
+        // each attempt of the read's Send, never the admin that answered the join once it no longer
+        // holds the role. With no authority, the rafka-time this start adopted is kept.
         if let Some((t, label)) = &through {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-taken", node_path = %path.path, node_name = %name, node_id = %node_id, launcher = %label, served_by = tracing::field::Empty, rafka_time = tracing::field::Empty);
             after.before_topology_read(&t.node_id).instrument(step.clone()).await;
-            let (read, who) = match at_commander(&name, &client, t, commander.as_mut(), |target| {
+            let read = |target: NodeTarget| {
                 let (client, topology_view, mesh) = (&client, &topology_view, topology_view.mesh_name());
                 async move { crate::topology_read::get_topology(client, &target, mesh, topology_view, None, None).await }
-            }).instrument(step.clone()).await {
+            };
+            let taken = match commander.as_mut() {
+                Some(commander) => at_commander(&name, &client, t, Some(commander), read).instrument(step.clone()).await,
+                None => {
+                    let (target, who) = own_mesh_primary(&topology_view);
+                    read(target).instrument(step.clone()).await.map(|r| (r, who.clone())).map_err(|e| (e.to_string(), who))
+                }
+            };
+            let (read, who) = match taken {
                 Ok(read) => read,
                 Err((e, who)) => return Err((StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {who}: {e}") }, after)),
             };
