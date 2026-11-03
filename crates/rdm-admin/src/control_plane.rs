@@ -442,7 +442,7 @@ impl ControlPlane {
                     crate::build::BuildOperation::StopNode { node, .. } => (node, "stop"),
                     _ => return None,
                 };
-                last_admin(node, action, &observed)
+                last_admin(node, action, &observed, observed.node(&self.me).map(|n| n.mesh.as_str()).unwrap_or_default())
             }) {
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
@@ -578,7 +578,7 @@ impl ControlPlane {
                     rdm_core::build::Step::DeleteConnections { .. } => Some("node.connection.delete"),
                     _ => None,
                 };
-                if let Some(reject) = step_action.and_then(|a| last_admin(node, a, &t)) {
+                if let Some(reject) = step_action.and_then(|a| last_admin(node, a, &t, t.node(&self.me).map(|n| n.mesh.as_str()).unwrap_or_default())) {
                     outer.in_scope(|| reject_span(route, &reject));
                     return Err(Refusal::Reject(reject));
                 }
@@ -648,7 +648,7 @@ impl ControlPlane {
                 }
                 // A primary's role moves by node.primary.update to another node-admin of its mesh;
                 // with none, the update has no other node of its type and the delete is refused (R-MT1).
-                if let Some(reject) = last_admin(&path, ActionKind::Delete.name(), &t) {
+                if let Some(reject) = last_admin(&path, ActionKind::Delete.name(), &t, t.node(&self.me).map(|n| n.mesh.as_str()).unwrap_or_default()) {
                     outer.in_scope(|| reject_span(route, &reject));
                     return Err(Refusal::Reject(reject));
                 }
@@ -722,7 +722,8 @@ impl ControlPlane {
             return Err(refuse("node-not-live", format!("node {node_id} at path {:?}, name {:?} is {:?}: {reason}", path.path, path.name, n.status)));
         }
         if kind != ActionKind::Start {
-            if let Some(reject) = last_admin(&path, kind.name(), &t) {
+            let own_mesh = t.nodes.iter().find(|n| Some(&n.node_id) == me.as_ref()).map(|n| n.mesh.clone()).unwrap_or_default();
+            if let Some(reject) = last_admin(&path, kind.name(), &t, &own_mesh) {
                 reject_span("node-command", &reject);
                 return Err(refuse(reject.reason(), reject.to_string()));
             }
@@ -830,7 +831,10 @@ impl ActionKind {
 /// pre-check runs (`election::commanded_successor`), so nothing is admitted and no attempt opens. A
 /// node of any other type that holds its node-type primary role is refused [`BuildReject::NoSecondary`] when no
 /// other node of its type in its mesh can take the role (`election::commanded_node_type_successor`, Q7).
-fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject> {
+/// `own_mesh` is the mesh of the admin deciding: the mesh-primary of another mesh is the writer of its
+/// own mesh's records and pre-checks its successor from its own view (node-primary-update.md step 2;
+/// D64), so this admin sends the command down and decides nothing for it from its projection.
+fn last_admin(node: &PathName, action: &str, t: &Topology, own_mesh: &str) -> Option<BuildReject> {
     let target = t.node(node)?;
     // The primary of any other node type: its mesh-primary's node.primary.update needs another node
     // of its type (Q7); the delete of a type's only node in its mesh skips the update, whether the node
@@ -850,6 +854,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     let mesh_role = t.node_type_primary(&target.mesh, "node-admin").is_some_and(|p| p.node_id == target.node_id);
     let moving = match (mesh_role, fabric_role) {
         (true, true) => crate::election::Moving::BothRoles,
+        (true, false) if target.mesh != own_mesh => return None,
         (true, false) => crate::election::Moving::MeshRole,
         _ => return None,
     };
@@ -1155,21 +1160,21 @@ mod tests {
         let other = stop(PathName::new("mesh1.node", "2").unwrap());
         assert_eq!(crate::executor::role_move(&other, &t), None, "a node that holds no primary role moves none");
         assert_eq!(crate::executor::executor_for(&other, &t), Some(t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().node_id.clone()), "its mesh's primary executes it");
-        assert!(last_admin(&PathName::new("mesh1.node", "1").unwrap(), "stop", &t).is_none(), "mesh1's rpc primary has a secondary: admitted");
+        assert!(last_admin(&PathName::new("mesh1.node", "1").unwrap(), "stop", &t, "mesh1").is_none(), "mesh1's rpc primary has a secondary: admitted");
         for action in ["stop"] {
-            match last_admin(&PathName::new("mesh2.node", "1").unwrap(), action, &t) {
+            match last_admin(&PathName::new("mesh2.node", "1").unwrap(), action, &t, "mesh1") {
                 Some(reject) => assert_eq!((reject.reason(), reject.to_string().as_str()), ("no-secondary", "cannot transfer: no secondary of type node in mesh mesh2"), "{action}"),
                 None => panic!("{action} of mesh2's sole node is refused by name"),
             }
         }
         let delete_sole = crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh2".into(), r#type: "node".into(), node: PathName::new("mesh2.node", "1").unwrap(), exited: None, birth: None };
-        assert!(last_admin(&PathName::new("mesh2.node", "1").unwrap(), "delete", &t).is_none(), "deleting the sole member of a non-admin node type skips node.primary.update");
+        assert!(last_admin(&PathName::new("mesh2.node", "1").unwrap(), "delete", &t, "mesh1").is_none(), "deleting the sole member of a non-admin node type skips node.primary.update");
         assert_eq!(crate::executor::role_move(&delete_sole, &t), None, "deleting the sole member of a non-admin node type moves no role");
         // R5 (Luke 2026-10-24, arm (a); node-primary-update.md "No-successor cases": "the delete of a
         // type's only node in its mesh, whether the node leaves the topology (a removal) or is re-created
         // at the same `(path, name)`"): the replace's Delete step and the node.delete route of a
         // type's only node skip the update as a removal does, refused `no-secondary` at no step.
-        assert!(last_admin(&PathName::new("mesh2.node", "1").unwrap(), "delete", &t).is_none(), "the delete of a type's only node skips node.primary.update: {:?}", last_admin(&PathName::new("mesh2.node", "1").unwrap(), "delete", &t));
+        assert!(last_admin(&PathName::new("mesh2.node", "1").unwrap(), "delete", &t, "mesh1").is_none(), "the delete of a type's only node skips node.primary.update: {:?}", last_admin(&PathName::new("mesh2.node", "1").unwrap(), "delete", &t, "mesh1"));
         let delete_step = crate::build::BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: Some(0), mesh: "mesh2".into(), r#type: "node".into(), step: rdm_core::build::Step::Delete { node: PathName::new("mesh2.node", "1").unwrap() }, birth: None, entry: None };
         assert_eq!(crate::executor::role_move(&delete_step, &t), None, "the Build's delete of a type's only node moves no primary");
     }
@@ -1179,9 +1184,11 @@ mod tests {
     /// update"; mesh-delete.md step 7: "A separate node.delete deletes the mesh-primary"): mesh1's final
     /// primary, the only node a mesh.delete left in mesh1 and still its mesh-primary, is deleted through
     /// the node.delete route (`delete`) and through a desired-state delete (`delete`) with no
-    /// node.primary.update and no refusal. A stop of that node is refused with Q7's text, and so is the
-    /// delete of mesh2's primary while mesh2 still holds another node and no other node-admin. What must
-    /// NOT happen: the node.delete mesh-delete.md step 7 names refused `last-admin`.
+    /// node.primary.update and no refusal. A stop of that node, decided by the fabric-primary of mesh2, is
+    /// sent down, since mesh1's primary pre-checks its own successor (node-primary-update.md step 2; D64);
+    /// the delete of mesh2's primary, the fabric-primary itself, while mesh2 still holds another node and
+    /// no other node-admin, is refused with Q7's text. What must NOT happen: the node.delete
+    /// mesh-delete.md step 7 names refused `last-admin`.
     #[test]
     fn the_delete_of_a_meshs_only_node_skips_the_update_on_every_delete_route() {
         let t = Topology {
@@ -1194,13 +1201,16 @@ mod tests {
         };
         let only: PathName = PathName::new("mesh1.node-admin", "1").unwrap();
         for action in ["delete"] {
-            assert!(last_admin(&only, action, &t).is_none(), "{action} of mesh1's only node skips the update: {:?}", last_admin(&only, action, &t));
+            assert!(last_admin(&only, action, &t, "mesh2").is_none(), "{action} of mesh1's only node skips the update: {:?}", last_admin(&only, action, &t, "mesh2"));
         }
-        let refusal = |path: PathName, action: &str| match last_admin(&path, action, &t) {
+        let refusal = |path: PathName, action: &str| match last_admin(&path, action, &t, "mesh2") {
             Some(BuildReject::LastAdmin { refusal, .. }) => refusal,
             other => panic!("{action} of {path:?} is refused last-admin: {other:?}"),
         };
-        assert_eq!(refusal(PathName::new("mesh1.node-admin", "1").unwrap(), "stop"), "cannot transfer: no secondary of type node-admin in mesh mesh1");
+        // The fabric-primary (mesh2's) sends a stop of mesh1's primary down: mesh1's primary, the writer of
+        // its mesh's records, pre-checks its successor over its own view and refuses by name
+        // (node-primary-update.md step 2; D64). The fabric-primary decides nothing for it from its projection.
+        assert!(last_admin(&PathName::new("mesh1.node-admin", "1").unwrap(), "stop", &t, "mesh2").is_none(), "the stop of another mesh's primary is that primary's own pre-check");
         assert!(crate::executor::role_move(&crate::build::BuildOperation::StopNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node: only.clone(), node_id: t.node(&only).unwrap().node_id.clone(), from_incarnation: t.node(&only).unwrap().incarnation_id.clone().unwrap() }, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
         assert_eq!(crate::executor::role_move(&crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node: only, exited: None, birth: None }, &t), None, "the delete of mesh1's only node skips the role move");
         assert_eq!(refusal(PathName::new("mesh2.node-admin", "1").unwrap(), "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
@@ -1228,13 +1238,13 @@ mod tests {
         };
         let fp: PathName = PathName::new("mesh2.node-admin", "1").unwrap();
         for action in ["delete"] {
-            assert!(last_admin(&fp, action, &t).is_none(), "{action}: mesh1's Ready primary takes the fabric-primary role: {:?}", last_admin(&fp, action, &t));
+            assert!(last_admin(&fp, action, &t, "mesh2").is_none(), "{action}: mesh1's Ready primary takes the fabric-primary role: {:?}", last_admin(&fp, action, &t, "mesh2"));
         }
         for n in t.nodes.iter_mut().filter(|n| n.name == PathName::new("mesh1.node-admin", "1").unwrap()) {
             n.status = NodeStatus::Pending;
         }
         for action in ["delete"] {
-            match last_admin(&fp, action, &t) {
+            match last_admin(&fp, action, &t, "mesh2") {
                 Some(BuildReject::LastAdmin { refusal, .. }) => assert_eq!(refusal, "cannot transfer fabric-primary: no other node-admin Ready in mesh mesh2, no other mesh-primary Ready", "{action}"),
                 other => panic!("{action}: no other mesh-primary is Ready: refused last-admin: {other:?}"),
             }

@@ -42,8 +42,8 @@ and its successor and "the mesh-primary" for the commander, the announcer and th
 the same, command, then the successor becomes primary and announces, then the record. Becoming primary
 and recording it are separate for every type.
 
-1. The primary is commanded from above, as a step of the Build that stops, deletes, replaces or
-   runs `node.connection.delete { scope: All }` on it.
+1. The primary is commanded from above, by the node command that stops it or runs
+   `node.connection.delete { scope: All }` on it, or as a step of the Build that deletes it.
 2. The writer pre-checks from its own view: the election over the nodes of that type in the mesh with the
    primary excluded names a Ready successor. If it names none, the step is refused by name and
    nothing has changed, no row ([no-successor cases](#no-successor-cases)).

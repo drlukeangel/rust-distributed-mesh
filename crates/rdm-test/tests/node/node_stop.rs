@@ -1095,21 +1095,24 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
 
 /// CONTRACT (the approved proposal Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12:
 /// "`node.primary.update` commanded for a node type with no other node of that type in the mesh is refused
-/// by name, `cannot transfer: no secondary of type <type> in mesh <mesh>`"): mesh2 has one
-/// node-admin and a node. `node.stop` of mesh2.node-admin.1 is refused `last-admin` with exactly
-/// `cannot transfer: no secondary of type node-admin in mesh mesh2`, under
-/// `rdm.node_admin.build.reject.via-last-admin`. No node.primary.update is commanded or run, and every
-/// node keeps its birth and its primaries.
+/// by name, `cannot transfer: no secondary of type <type> in mesh <mesh>`"; node-primary-update.md step 2:
+/// "The writer pre-checks from its own view ... If it names none, the step is refused by name and nothing
+/// has changed, no row"; D64): mesh2 has one node-admin and a node. The fabric-primary runs `node.stop`
+/// of mesh2.node-admin.1 and commands its node.primary.update first, deciding nothing from its projection;
+/// mesh2's primary pre-checks over its own view and refuses it by name
+/// (`rdm.node_admin.primary.reject.via-primary-update`, `cannot transfer: no secondary of type node-admin in
+/// mesh mesh2`), and the stop is refused `primary-not-updated` naming that text before the stop is sent.
+/// No successor installs itself, no stop is recorded, and every node keeps its birth and its primaries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_by_name() {
     let test = "a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_by_name";
     let (mut estate, before) = two_meshes(test, 1).await;
     let nodes = estate.nodes_obj().await;
     let target: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
+    let text = "cannot transfer: no secondary of type node-admin in mesh mesh2";
     let refused = nodes.stop(&target).await.err().expect("the stop is refused");
     let rdm_client::CallEnd::Rejected { reason, detail } = &refused else { panic!("the stop ends Rejected: {refused:?}") };
-    // The typed carrier names the reason before the refusal's own text (build_stream.rs).
-    assert_eq!((reason.as_str(), detail.strip_prefix("last-admin: ")), ("last-admin", Some("cannot transfer: no secondary of type node-admin in mesh mesh2")), "{refused:?}");
+    assert!(reason == "primary-not-updated" && detail.contains(text), "the stop is refused naming mesh2's primary's own refusal: {refused:?}");
     for mesh in ["mesh1", "mesh2"] {
         for now in estate.mesh_node_views(mesh).await {
             let was = before.iter().find(|n| n.name == now.name).unwrap_or_else(|| panic!("{:?} was there before", now.name));
@@ -1118,10 +1121,11 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
     }
     estate.stop().await;
     let spans = estate.spans();
-    let rejected: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().filter(|sp| attr(sp, "detail") == "cannot transfer: no secondary of type node-admin in mesh mesh2").collect();
-    assert_eq!(rejected.len(), 1, "{rejected:#?}");
-    assert!(named(&spans, "rdm.node_admin.primary.update.via-command").is_empty(), "no node.primary.update was commanded");
-    assert!(named(&spans, "rdm.node_admin.primary.update.via-update-primary").is_empty(), "no primary ran node.primary.update");
+    let rejected: Vec<&Value> = named(&spans, "rdm.node_admin.primary.reject.via-primary-update").into_iter().filter(|sp| attr(sp, "detail") == text).collect();
+    assert_eq!(rejected.len(), 1, "mesh2's primary refused the update by name once, over its own view: {rejected:#?}");
+    assert!(named(&spans, "rdm.node_admin.build.reject.via-last-admin").is_empty(), "the fabric-primary decided nothing for mesh2's primary from its projection (D64)");
+    assert!(named(&spans, "rdm.node_admin.primary.update.via-primary-updated").is_empty(), "no successor installed itself");
+    assert!(named(&spans, "rdm.node_admin.node.update.via-node-stopped").is_empty(), "no stop was recorded");
     estate.record_trace_url(rejected[0]["trace_id"].as_str().unwrap_or(""));
 }
 
