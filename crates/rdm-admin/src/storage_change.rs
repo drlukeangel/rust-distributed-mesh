@@ -273,9 +273,6 @@ pub struct StorageChanges {
     pub wiring: OnceLock<Wiring>,
     /// This mesh-primary's node recovery, set once it holds it.
     pub recreate: OnceLock<Recreate>,
-    /// The paths this mesh-primary's node recovery re-creates in its `mesh.unblock`: their operations run
-    /// while the mesh is blocked, since the unblock waits on them.
-    recreating: std::sync::Mutex<std::collections::BTreeSet<PathName>>,
     running: std::sync::Mutex<Option<Running>>,
 }
 
@@ -307,13 +304,7 @@ impl MeshCommand {
 impl StorageChanges {
     /// The storage changes of the admin `node_id` writing through `handle`.
     pub fn new(handle: Arc<crate::storage_backend::TopologyStorageHandle>, providers: crate::storage_backend::TopologyStorageProviders, fabric_id: crate::model::FabricId, node_id: NodeId) -> Self {
-        Self { handle, providers, fabric_id, node_id, aggregate: OnceLock::new(), wiring: OnceLock::new(), recreate: OnceLock::new(), recreating: Default::default(), running: std::sync::Mutex::new(None) }
-    }
-
-    /// Whether this mesh-primary's node recovery re-creates the node at `path` in its `mesh.unblock`
-    /// (storage.md §2 step 4): an operation on it runs while the mesh is blocked.
-    pub fn recreating(&self, path: &PathName) -> bool {
-        self.recreating.lock().unwrap().contains(path)
+        Self { handle, providers, fabric_id, node_id, aggregate: OnceLock::new(), wiring: OnceLock::new(), recreate: OnceLock::new(), running: std::sync::Mutex::new(None) }
     }
 
     /// The change this fabric-primary runs now, when one is in progress.
@@ -444,10 +435,11 @@ impl StorageChanges {
     /// A fabric-primary that takes the role (or starts holding it) resumes a change its predecessor
     /// started (storage.md §2: "Whoever resumes the change learns the decision only from that record"):
     /// the storage changes' events on the provider it writes, the newest change with no
-    /// `rdm.storage.ended` event resumed from its first step; each step is idempotent.
+    /// `rdm.storage.ended` event resumed from its first step; each step is idempotent. Its caller holds
+    /// the fabric-primary record naming this admin ([`keep_resumed`]).
     pub async fn resume(self: &Arc<Self>) {
         let Ok(door) = self.door() else { return };
-        if !door.topology.read().await.is_fabric_primary(&self.node_id) || self.in_progress().is_some() {
+        if self.in_progress().is_some() {
             return;
         }
         let read = match self.handle.events().of_storage_changes().await {
@@ -840,9 +832,7 @@ impl StorageChanges {
                 match self.recreate.get().cloned() {
                     Some(recreate) => {
                         use tracing::Instrument as _;
-                        self.recreating.lock().unwrap().insert(path.clone());
                         recreate(birth.clone()).instrument(span.clone()).await;
-                        self.recreating.lock().unwrap().remove(path);
                         span.record("outcome", "recovery-submitted");
                         recreated.push(birth.node_id);
                         continue;
@@ -888,12 +878,15 @@ impl StorageChanges {
 }
 
 /// Keep a fabric-primary's storage change resumed: each time the primary records change, and once at
-/// the start, an admin that holds the fabric-primary role resumes a change its predecessor started and
-/// did not end ([`StorageChanges::resume`]).
+/// the start, an admin the fabric-primary record names resumes a change its predecessor started and
+/// did not end ([`StorageChanges::resume`]). It reads the record it is woken by: the view rebuilt from
+/// that record later would miss the change that woke it.
 pub async fn keep_resumed(changes: Arc<StorageChanges>, primaries: rdm_transport::topology::PrimaryView) {
     let mut changed = primaries.subscribe();
     loop {
-        changes.resume().await;
+        if primaries.fabric().is_some_and(|p| p.node_id == changes.node_id) {
+            changes.resume().await;
+        }
         if changed.changed().await.is_err() {
             return;
         }

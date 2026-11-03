@@ -1413,11 +1413,17 @@ impl AdminRunner {
             }
         }
         // A mesh-primary that replied `blocked` to a storage change runs no operation until it is
-        // unblocked: an operation issues commands (storage.md §2 step 1). Its node recovery's re-create of
-        // a node that will not move runs inside its `mesh.unblock`, which waits on it (step 4).
-        let recreating = op.node().is_some_and(|node| self.storage_changes.recreating(node));
-        if let (Some(status_door), false) = (self.observer.status_door.get(), recreating) {
-            status_door.commands.admitted().await;
+        // unblocked: an operation issues commands and writes rows (storage.md §2 step 1). A node
+        // recovery's operation (a mesh's lane runs no other while a change is in progress: no Build runs
+        // beside one) runs once its `mesh.unblock` has moved it onto the provider the change decided: the
+        // recovery re-creates a node that will not move, or a lost one, before the mesh-primary replies
+        // `unblocked`, which waits on it (step 4).
+        if let Some(status_door) = self.observer.status_door.get() {
+            if lane.is_some() {
+                status_door.commands.rows_released().await;
+            } else {
+                status_door.commands.admitted().await;
+            }
         }
         let ended: Result<(), crate::executor::RunEnd> = match op {
             BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor_birth(), self.node_id.as_str(), build_id, attempt, op).await.map_err(Into::into),
