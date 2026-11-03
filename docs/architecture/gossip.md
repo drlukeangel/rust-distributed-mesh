@@ -241,13 +241,14 @@ Reserved17              { hook: StateHook, forwarded_by: Option<String> }, // re
 Reserved18              { hook: StateHook, forwarded_by: Option<String> }, // reserved (Q174): never published
 
 LifecycleOp {
+    type: String,
     build_id: String,
     attempt: u32,
     operation: String,
     node_id: NodeId,
     incarnation: IncarnationId,
     name: PathName,
-    type: String,
+    mesh: String,
     event_at_rafka_ms: u64,
 }
 ```
