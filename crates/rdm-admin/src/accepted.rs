@@ -1571,7 +1571,10 @@ fn plan_with(
         if !mesh_exists(name) {
             ops.push(BuildOperation::CreateMesh { mesh: name.clone(), mesh_id: m.mesh_id.clone() });
         }
-        for p in &m.nodes {
+        // A mesh's node-admins are planned first, then its other nodes, each in path order.
+        let mut order: Vec<&PathName> = m.nodes.iter().collect();
+        order.sort_by_key(|p| !m.spec(p).is_some_and(|s| rdm_core::is_node_admin(&s.r#type)));
+        for p in order {
             // A path whose birth the view holds live is satisfied; any other path is planned and the
             // create pipeline's target decides against the world (a running runtime at the path is
             // held, never replaced: `AdminRunner::revise_predecessor`).
@@ -1780,7 +1783,9 @@ mod tests {
     }
 
     fn paths(m: &MeshTopology) -> Vec<PathName> {
-        m.nodes.iter().cloned().collect()
+        let mut all: Vec<PathName> = m.nodes.iter().cloned().collect();
+        all.sort_by_key(|p| !m.spec(p).is_some_and(|s| rdm_core::is_node_admin(&s.r#type)));
+        all
     }
 
     fn counts(name: &str, a: u32, r: u32) -> MeshDesired {
@@ -2721,7 +2726,7 @@ mod tests {
         assert_eq!(m.nodes.len(), 5);
         assert_eq!(m.spec_by_path.len(), 5);
         let preserve = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve };
-        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.broker", "2").unwrap()).unwrap().storage_persistence, preserve);
+        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.broker", "2").unwrap()).unwrap().storage_persistence, StoragePersistence::Ephemeral, "an undeclared type's storage is `node`'s");
         assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().storage_persistence, preserve);
         assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.gateway", "1").unwrap()).unwrap().storage_persistence, StoragePersistence::Ephemeral);
         assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).unwrap().storage_persistence, StoragePersistence::Ephemeral);
@@ -2840,7 +2845,7 @@ mod tests {
         let mut live_again = after_delete.clone();
         live_again.nodes.push(successor.clone());
         let mut on_entry = recorded.clone();
-        on_entry.insert(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), r#type: successor.r#type.clone(), config: Some(Default::default()), tags: None, storage_persistence: None, node_id: successor.node_id.clone(), sha256: Some("b-node_admin".into()) });
+        on_entry.insert(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), r#type: successor.r#type.clone(), config: Some(Default::default()), tags: None, storage_persistence: None, node_id: successor.node_id.clone(), sha256: Some("b-node-admin".into()) });
         assert_eq!(replacement_plan(&next, &live_again, &on_entry, receipts.clone()), all[2..].to_vec(), "a live successor on its entry is the member");
         // Its create receipted: never replaced again, whatever its row reads.
         let mut done = receipts;
@@ -2909,7 +2914,7 @@ mod tests {
         let next = on_entries(&t(&[("mesh1", 2, 1)]), "b");
         let row = |tag: Option<&str>, r#type: &str| RecordedRow { mesh: "mesh1".into(), r#type: if rdm_core::is_node_admin(&r#type) { "node-admin".to_string() } else { "node".to_string() }, config: None, tags: None, storage_persistence: None, node_id: NodeId::mint(), sha256: tag.map(|t| format!("{t}-{}", r#type)) };
         let mut recorded: Recorded = [(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), row(Some("b"), "node-admin")), (rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), row(None, "node-admin")), (rdm_core::PathName::new("mesh1.node", "1").unwrap(), row(Some("a"), "node"))].into();
-        assert_eq!(paths_owed_replacement(&next, &recorded).iter().cloned().collect::<Vec<_>>(), [PathName::new("mesh1.node-admin", "2").unwrap(), PathName::new("mesh1.node", "1").unwrap()]);
+        assert_eq!(paths_owed_replacement(&next, &recorded).iter().cloned().collect::<Vec<_>>(), [PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh1.node-admin", "2").unwrap()]);
         recorded.insert(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), row(Some("b"), "node-admin"));
         recorded.insert(rdm_core::PathName::new("mesh1.node", "1").unwrap(), row(Some("b"), "node"));
         assert_eq!(paths_owed_replacement(&next, &recorded), Vec::<PathName>::new());

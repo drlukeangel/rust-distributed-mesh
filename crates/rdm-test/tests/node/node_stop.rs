@@ -409,7 +409,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     peers.learn(&mesh);
     let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
-    let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
+    let primary = mesh.iter().find(|n| n.is_primary && rdm_core::is_node_admin(&n.r#type)).cloned().expect("node.get names mesh1's primary");
     let others: Vec<&NodeView> = mesh.iter().filter(|n| n.name != path).collect();
     let pid = estate.pid_of(&node_at()).await;
 
@@ -478,7 +478,7 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
     let path: PathName = node_at();
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
-    let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
+    let primary = mesh.iter().find(|n| n.is_primary && rdm_core::is_node_admin(&n.r#type)).cloned().expect("node.get names mesh1's primary");
     let pid = estate.pid_of(&node_at()).await;
 
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
@@ -558,7 +558,7 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     peers.learn(&mesh);
     let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
-    let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
+    let primary = mesh.iter().find(|n| n.is_primary && rdm_core::is_node_admin(&n.r#type)).cloned().expect("node.get names mesh1's primary");
     assert_ne!(primary.name, path, "the stopped admin is not mesh1's primary");
     let admins: Vec<NodeView> = mesh.iter().filter(|n| n.name != path && n.r#type == "node-admin").cloned().collect();
     assert!(admins.iter().any(|n| n.name != primary.name), "an admin that performs no rename: {admins:?}");

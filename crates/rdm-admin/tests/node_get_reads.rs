@@ -217,7 +217,7 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
         async move { names(answer(view, status, planned, f).await) }
     };
 
-    assert_eq!(get(Filter::new()).await, [path("mesh1.node-admin", "1"), path("mesh1.broker", "1"), path("mesh1.gateway", "1"), path("mesh2.gateway", "1")], "no pair: every node, by (path, name)");
+    assert_eq!(get(Filter::new()).await, [path("mesh1.broker", "1"), path("mesh1.gateway", "1"), path("mesh1.node-admin", "1"), path("mesh2.gateway", "1")], "no pair: every node, by (path, name)");
     assert_eq!(get(Filter::new().eq("config.zone", ["eu-1"])).await, [path("mesh1.broker", "1"), path("mesh1.gateway", "1")], "[config.zone: eu-1]");
     assert_eq!(get(Filter::new().eq("tags", ["gold"]).eq("tags", ["ssd"])).await, [path("mesh1.gateway", "1")], "[tags: gold] [tags: ssd]: all of");
     assert_eq!(get(Filter::new().eq("tags", ["gold", "silver"])).await, [path("mesh1.broker", "1"), path("mesh1.gateway", "1"), path("mesh2.gateway", "1")], "[tags: gold, silver]: any of");
@@ -427,7 +427,7 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
     use rdm_core::views::NodeStatus as Read;
     assert_eq!(status_of(&view, &records, &rpc.node_id).await, (Read::Ready, false), "a stop the node has not acknowledged moves its row nowhere: ready");
     let ready: Vec<PathName> = answer(&view, &records, &Ok(BTreeMap::new()), Filter::new().eq("status", ["ready"])).await.into_iter().map(|n| n.name.clone()).collect();
-    assert_eq!(ready, [path("mesh1.node-admin", "1"), path("mesh1.node", "1")], "[status: ready] matches the birth whose stop is unacknowledged, never mesh2's pending record");
+    assert_eq!(ready, [path("mesh1.node", "1"), path("mesh1.node-admin", "1")], "[status: ready] matches the birth whose stop is unacknowledged, never mesh2's pending record");
     // Another mesh's record is read under its current writer as every record is (query.md §1): the
     // state it took answers, never the view's.
     assert_eq!(status_of(&view, &records, &peer.node_id).await, (Read::Pending, false), "mesh2's birth: the pending its current record holds, not the view's ready");

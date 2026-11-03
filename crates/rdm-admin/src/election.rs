@@ -594,7 +594,7 @@ mod tests {
         resolve(&mut nodes);
         let mut p = primaries(&nodes);
         p.sort();
-        assert_eq!(p, [PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh2.node", "2").unwrap(), PathName::new("mesh3.node-admin", "2").unwrap()]);
+        assert_eq!(p, [PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh2.node", "2").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh3.node-admin", "2").unwrap()]);
         assert_eq!(fabric(&nodes), [PathName::new("mesh3.node-admin", "2").unwrap()], "the lowest mesh-primary NodeId holds the fabric");
     }
 

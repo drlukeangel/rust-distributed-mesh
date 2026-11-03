@@ -121,7 +121,7 @@ impl AdminConfig {
         let launch = if get(rdm_core::launch::ENV_NODE_ID).is_some() { Some(Launch::from_env(&get)?) } else { None };
         if let Some(launch) = &launch {
             if !rdm_core::is_node_admin(&launch.r#type) {
-                return Err(format!("{} names {}: this executable serves node_admin", rdm_core::launch::ENV_NODE_TYPE, launch.r#type));
+                return Err(format!("{} names {}: this executable serves node-admin", rdm_core::launch::ENV_NODE_TYPE, launch.r#type));
             }
         }
         let adopt = match &launch {
@@ -259,7 +259,7 @@ fn adoption_from_env(get: &impl Fn(&str) -> Option<String>) -> Result<Option<Pat
     let path = given(ENV_NODE_PATH).ok_or_else(|| format!("{ENV_NODE_PATH} is required for {adoption}"))?;
     let name = PathName::new(path, name).map_err(|e| format!("{ENV_NODE_PATH}/{ENV_NODE_NAME}: {e}"))?;
     if given(ENV_NODE_TYPE).is_some_and(|r#type| !rdm_core::is_node_admin(&r#type)) {
-        return Err(format!("{ENV_NODE_TYPE}: {adoption} requires node_admin"));
+        return Err(format!("{ENV_NODE_TYPE}: {adoption} requires node-admin"));
     }
     if given(ENV_FABRIC_ID).is_none() {
         return Err(format!("{ENV_FABRIC_ID} is required: {adoption} at {name:?} names the fabric it adopts, whose store root holds it; it mints none"));
@@ -875,7 +875,7 @@ mod tests {
         // Refused when RDM_NODE_KIND names another kind: the kind is explicit, never read off the path.
         let rpc = "node";
         let err = AdminConfig::from_env(env_of(&[&at[..], &[("RDM_NODE_TYPE", rpc), ("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")]].concat())).unwrap_err();
-        assert!(err.contains("requires node_admin"), "{err}");
+        assert!(err.contains("requires node-admin"), "{err}");
 
         // Refused when RDM_FABRIC_ID is missing.
         let err = AdminConfig::from_env(with(&[("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")])).unwrap_err();

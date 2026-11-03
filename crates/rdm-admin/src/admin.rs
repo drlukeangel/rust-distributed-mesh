@@ -3239,7 +3239,7 @@ mod tests {
         ]);
         let mut primaries: Vec<PathName> = t.nodes.iter().filter(|n| n.is_primary).map(|n| n.name.clone()).collect();
         primaries.sort();
-        assert_eq!(primaries, [PathName::new("mesh1.node-admin", "2").unwrap(), PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh2.node", "2").unwrap()], "a pending member is never primary");
+        assert_eq!(primaries, [PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node-admin", "2").unwrap(), PathName::new("mesh2.node", "2").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap()], "a pending member is never primary");
         assert_eq!(t.fabric_primary().map(|n| n.name.clone()), Some(PathName::new("mesh2.node-admin", "1").unwrap()), "not the lowest-named mesh");
         assert!(t.violations().is_empty(), "{:?}", t.violations());
         assert_eq!(t.mesh_view("mesh2").unwrap().id, Some(mesh_id("mesh2")));
@@ -3256,7 +3256,7 @@ mod tests {
         for t in [a, b] {
             let mut primaries: Vec<PathName> = t.nodes.iter().filter(|n| n.is_primary).map(|n| n.name.clone()).collect();
             primaries.sort();
-            assert_eq!(primaries, [PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node", "3").unwrap()]);
+            assert_eq!(primaries, [PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node-admin", "1").unwrap()]);
         }
     }
 
@@ -4274,7 +4274,7 @@ mod tests {
         let mut wrong_kind = launched.clone();
         wrong_kind.insert(rdm_core::launch::ENV_NODE_TYPE.into(), "node".into());
         let error = AdminConfig::from_env(|k| wrong_kind.get(k).cloned()).unwrap_err();
-        assert_eq!(error, "RDM_NODE_KIND names rpc_node: this executable serves node_admin");
+        assert_eq!(error, "RDM_NODE_TYPE names node: this executable serves node-admin");
         let launched = AdminConfig::from_env(|k| launched.get(k).cloned()).unwrap();
         assert_eq!((&launched.node_id, launched.launch.as_ref().map(|l| &l.node_id)), (&given, Some(&given)), "a launched admin runs as its launch's RDM_NODE_ID");
     }

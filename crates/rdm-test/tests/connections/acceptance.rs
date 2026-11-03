@@ -207,7 +207,7 @@ fn rows<'a>(history: &'a [Value], to: &PathName, kind: &str) -> Vec<&'a Value> {
 /// `node.connection.delete { Connections(ids) }` of `node`'s exact birth through its mesh-primary.
 async fn connections_delete_ids(estate: &Estate, node: &PathName, ids: &[String]) -> rdm_core::status::StatusReply {
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
-    let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
+    let primary = mesh.iter().find(|n| n.is_primary && rdm_core::is_node_admin(&n.r#type)).cloned().expect("node.get names mesh1's primary");
     let target = mesh.iter().find(|n| n.name == *node).cloned().unwrap_or_else(|| panic!("no {node:?} in mesh1"));
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(target.node_id.clone()), node_id: target.node_id.clone(), incarnation: target.incarnation_id.clone().expect("a live birth") };
     let ids = ids.iter().map(|i| rdm_core::ConnectionId::parse(i).unwrap_or_else(|e| panic!("{i} is not a connection id: {e:?}"))).collect();
@@ -686,7 +686,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
 /// The mesh1 primary's node id.
 async fn mesh_primary(estate: &Estate) -> rdm_core::NodeId {
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
-    mesh.iter().find(|n| n.is_primary).map(|n| n.node_id.clone()).expect("node.get names mesh1's primary")
+    mesh.iter().find(|n| n.is_primary && rdm_core::is_node_admin(&n.r#type)).map(|n| n.node_id.clone()).expect("node.get names mesh1's primary")
 }
 
 /// `node`'s exact birth.

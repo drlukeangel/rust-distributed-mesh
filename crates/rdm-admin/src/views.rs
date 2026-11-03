@@ -365,7 +365,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
     reply
 }
 
-/// A filter's pairs as a span names them: `(mesh, [mesh1]) (kind, [gateway])`.
+/// A filter's pairs as a span names them: `(mesh, [mesh1]) (type, [gateway])`.
 pub fn pairs(filter: &Filter) -> String {
     filter.pairs.iter().map(|(p, v)| format!("({p}, [{}])", v.join(", "))).collect::<Vec<_>>().join(" ")
 }

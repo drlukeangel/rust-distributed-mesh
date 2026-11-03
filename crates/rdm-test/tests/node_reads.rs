@@ -230,7 +230,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
     let at = |f: &std::collections::BTreeMap<String, String>, k: &str, v: &str| f.get(k).map(String::as_str) == Some(v);
     assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "read", "node.get") && at(f, "properties", "") && at(f, "nodes", "1")), "node.get [] served");
     assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "id") && at(f, "nodes", "0")), "node.get [id: unheld] served, matching nothing");
-    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "mesh,kind") && at(f, "pairs", "(mesh, [mesh1]) (kind, [gateway])") && at(f, "nodes", "0")), "node.get [mesh: mesh1] [type: gateway] served, matching nothing");
+    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "mesh,type") && at(f, "pairs", "(mesh, [mesh1]) (type, [gateway])") && at(f, "nodes", "0")), "node.get [mesh: mesh1] [type: gateway] served, matching nothing");
     assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "mesh") && at(f, "pairs", "(mesh, [mesh9])") && at(f, "nodes", "0")), "node.get [mesh: mesh9] served, matching nothing");
     assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "outcome", "rejected-filter") && f.get("detail").is_some_and(|d| d.contains("(zone, [eu-1])"))), "node.get [zone: eu-1] refused naming the pair");
     assert!(served("rdm.node_admin.mesh.serve.via-get", &|f| at(f, "properties", "name") && at(f, "meshes", "1")), "mesh.get [name: mesh1] served");
@@ -482,9 +482,9 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         assert_eq!(ids(&connections), own, "exactly the connections the node holds: {connections:#?}");
         let to_admin = connections.connections.iter().find(|c| c.destination == admin.launcher.node_id.as_str()).unwrap_or_else(|| panic!("the node's route to its admin is listed: {connections:#?}"));
         assert_eq!((to_admin.source.as_str(), to_admin.kind.as_str(), to_admin.state.as_str()), (launch.node_id.as_str(), "direct", "connected"));
-        let direct = reads.get(&birth, &Filter::new().eq("destination", [admin.launcher.node_id.to_string()]).eq("type", ["direct"])).await.unwrap_or_else(|e| panic!("node.connection.get [destination] [kind] of {name:?}: {e}"));
+        let direct = reads.get(&birth, &Filter::new().eq("destination", [admin.launcher.node_id.to_string()]).eq("kind", ["direct"])).await.unwrap_or_else(|e| panic!("node.connection.get [destination] [kind] of {name:?}: {e}"));
         assert_eq!(ids(&direct), [to_admin.id.clone()].into(), "[destination: mesh1.node-admin.1] [kind: direct] is the route to its admin: {direct:#?}");
-        assert!(reads.get(&birth, &Filter::new().eq("type", ["proxy"])).await.unwrap_or_else(|e| panic!("node.connection.get [kind: proxy]: {e}")).connections.is_empty(), "the node holds no proxy");
+        assert!(reads.get(&birth, &Filter::new().eq("kind", ["proxy"])).await.unwrap_or_else(|e| panic!("node.connection.get [kind: proxy]: {e}")).connections.is_empty(), "the node holds no proxy");
         match reads.get(&birth, &Filter::new().eq("state", ["open"])).await {
             Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains("(state, [open])"), "refused naming the pair: {reason}: {detail}"),
             other => panic!("a state no connection takes is refused by name, not {other:?}"),

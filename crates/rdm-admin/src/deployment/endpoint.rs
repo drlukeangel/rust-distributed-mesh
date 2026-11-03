@@ -310,7 +310,7 @@ mod tests {
             (vec![declared("gateway", &["a,b"])], "`a,b` of gateway is refused"),
             (vec![declared("gateway", &[""])], "`` of gateway is refused"),
             (vec![declared("gateway", &["kafka"]), declared("gateway", &["rest"])], "the listeners of gateway are declared twice"),
-            (vec![declared("node-admin", &["control"])], "listeners are declared on node_admin"),
+            (vec![declared("node-admin", &["control"])], "listeners are declared on node-admin"),
         ] {
             let e = ListenerNames::read(&decl).unwrap_err();
             assert!(e.starts_with("refusing to start") && e.contains(says), "{says}: {e}");
