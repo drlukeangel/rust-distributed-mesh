@@ -503,10 +503,11 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
 /// `TerminateRuntime`, its row written deleted, its name released, or a recovery opened for its birth by
 /// the isolated admin.
 ///
-/// The isolated admin is kept to its provider read by the testkit's claimed-attempt cut on the
+/// The isolated admin is kept to its provider read by the testkit's provider-terminate cut on the
 /// fabric-primary: mesh1's primary, the fabric-primary itself, reaches it through no peer, reads its
-/// runtime `running` and recovers it at once (node-recovery.md step 3, Q111), and its claim of that
-/// attempt is held before its dispatch, so the isolated admin is not re-created while the cut holds. Its
+/// runtime `running` and recovers it at once (node-recovery.md step 3, Q111), its own workflow (Q342), and
+/// the provider refuses that recovery's terminate of the isolated admin's runtime, so the isolated admin
+/// is not re-created while the cut holds. Its
 /// own ladder on the fabric-primary may ask peers its view still holds ready in the cut's first floor,
 /// each bounded by the call's deadline (node-tickle.md "Probe").
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -535,9 +536,11 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
     let now_ns = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
-    // The first attempt claimed after the cut, the isolated admin's recovery, is held before its dispatch.
+    // The fabric-primary's recovery of the isolated admin cannot terminate its runtime: the provider
+    // refuses it by name, so the isolated admin runs on through the cut.
     let fp_door = Door::at(&estate, fp).await;
-    fp_door.arm("isolated-admin-recovery", json!({"kind": "claimed-attempt"})).await;
+    let victim_pid = estate.pid_of(&victim).await;
+    fp_door.arm("isolated-admin-recovery", json!({"kind": "provider-terminate", "pid": victim_pid})).await;
     let cut = match Partition::isolate(&udp_ports(&nodes, &[victim.clone()])) {
         Ok(p) => p,
         Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {

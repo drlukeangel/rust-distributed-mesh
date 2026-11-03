@@ -1743,16 +1743,16 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
 /// CONTRACT (node-rpc.md §35: "Handlers already running ... may finish ... In-flight work finishes under
 /// node.connection.delete's own rules; its receipt is ... `Deadline { last_in_flight, closed, held }` at its
 /// bound (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`)"; CLAUDE.md, that env var: the bound "on a signal stop alike:
-/// how long in-flight handlers may finish before the node leaves"): the fabric-primary serves mesh2's
-/// primary's claim of the attempt of a Build that adds a node to mesh2 (a repair is no Build's attempt,
-/// Q342), and the testkit's claimed-attempt cut holds that claim, so the call it serves never ends. The fabric-primary receives
-/// SIGTERM. It leaves by its own signal stop within the bound's steps: its connections delete ends at the
+/// how long in-flight handlers may finish before the node leaves"): the fabric-primary serves a caller's
+/// build.create of a Build that adds a node to mesh2, and the testkit's receipt cut at mesh2's primary
+/// holds that create's first step event, so mesh2's section and the build.create the fabric-primary serves
+/// never end. The fabric-primary receives SIGTERM. It leaves by its own signal stop within the bound's steps: its connections delete ends at the
 /// bound, its leave waits for the unsettled call at most the bound, names it, and closes, and its
 /// `via-signal` span is written as the process ends. Must NOT happen: the process held past its bound by the
 /// call it serves, ended only by the estate's kill with no `via-signal` written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_primary_serving_a_held_claim_leaves_on_its_signal_within_the_bound() {
-    let test = "a_fabric_primary_serving_a_held_claim_leaves_on_its_signal_within_the_bound";
+async fn a_fabric_primary_serving_a_held_build_create_leaves_on_its_signal_within_the_bound() {
+    let test = "a_fabric_primary_serving_a_held_build_create_leaves_on_its_signal_within_the_bound";
     let fp = Estate::path("mesh1.node-admin", "1");
     let bound = Duration::from_millis(3000);
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
@@ -1762,26 +1762,27 @@ async fn a_fabric_primary_serving_a_held_claim_leaves_on_its_signal_within_the_b
     estate.settles_to(&shape, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let fp_pid = estate.bootstrap_pid().expect("the Day-0 admin is the fabric-primary and the estate holds its pid") as u64;
-    let fp_door = Door::at(&estate, &fp).await;
+    let mesh2_door = Door::at(&estate, &Estate::path("mesh2.node-admin", "1")).await;
     let id_of = |rows: &[Value], at: &PathName| rows.iter().find(|n| rdm_test::estate::location(n) == *at).map(|n| s(&n["node_id"])).expect("a settled row");
     let rows = estate.node_values().await;
-    let (fp_id, mesh2_primary_id) = (id_of(&rows, &fp), id_of(&rows, &Estate::path("mesh2.node-admin", "1")));
-    fp_door.arm("held-claim", serde_json::json!({"kind": "claimed-attempt"})).await;
-    // A Build adds a node to mesh2; mesh2's primary's claim of its attempt is held at the fabric-primary.
+    let fp_id = id_of(&rows, &fp);
+    mesh2_door.arm("held-create", serde_json::json!({"kind": "receipt", "step": "AllocateIdentity", "operation": "node.create"})).await;
+    // A Build adds a node to mesh2; its create's first step event is held at mesh2's primary, so the
+    // caller's build.create the fabric-primary serves stays open. The caller's stream is kept open with it.
     let request = estate.create_node_request("mesh2", "node").await;
     let nodes = estate.nodes_obj().await;
     let create = tokio::spawn(async move { nodes.create(vec![request]).await.map(|_| ()) });
-    let claimed = fp_door.wait_held("held-claim").await;
-    create.abort();
-    assert_eq!(s(&claimed["hit"]["executor"]["node_id"]), mesh2_primary_id, "the held claim is mesh2's primary's, served by the fabric-primary: {claimed}");
+    let held = mesh2_door.wait_held("held-create").await;
+    assert_eq!(s(&held["hit"]["operation"]["action"]), "node.create", "the held step is the create's, inside the build.create the fabric-primary serves: {held}");
     let signalled = std::time::Instant::now();
     assert!(std::process::Command::new("kill").args(["-TERM", &fp_pid.to_string()]).status().unwrap().success(), "kill -TERM {fp_pid}");
     // The estate is the Day-0 admin's parent and reaps it only at its stop: an ended process is a zombie (`Z`).
     let ended = |pid: u64| std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |st| st.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z')));
     // The connections delete's bound, the declarations' bound and the leave's bound, and the steps between.
     let within = bound * 3 + Duration::from_secs(8);
-    wait_for(&format!("{fp:?} ends by its own signal stop within {within:?} while the claim it serves is held"), within, || async { ended(fp_pid).then_some(()) }).await;
+    wait_for(&format!("{fp:?} ends by its own signal stop within {within:?} while the build.create it serves is held"), within, || async { ended(fp_pid).then_some(()) }).await;
     let ended_in = signalled.elapsed();
+    create.abort();
     let killed = estate.stop().await;
     assert!(!killed.contains(&(fp_pid as u32)), "{fp:?} left by its own stop, not the estate's kill: {killed:?}");
     let spans = estate.spans();

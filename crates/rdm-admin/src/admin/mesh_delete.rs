@@ -680,10 +680,8 @@ impl AdminRunner {
             }
         };
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build, operation: operation.clone() };
-        // A delete-mesh of an attempt the Build has moved past, as this admin's fold of the Build holds it,
-        // is a superseded writer's call (fabric-recovery.md step 4, Q160: a returning fabric-primary's Build
-        // calls are refused): it is refused by name against the attempt held, as an earlier attempt of a
-        // workflow held is, and nothing is admitted. A fold that has not reached the carried attempt refuses nothing.
+        // The leave's owner: the caller reached back over its call, else the fabric-primary the view
+        // names ([`crate::mesh_delete::leave_owner`]). The command is admitted on its key alone, whoever sent it.
         let me_str = self.node_id.to_string();
         let call = match peer {
             Some(key) => crate::workflows::node_start::reached_back(&me_str, &self.node_rpc.client, &key).await.ok().map(|target| crate::mesh_delete::MeshDeleteOwner { target, name: sender.map(|n| n.node_id.to_string()).unwrap_or_else(|| format!("the admin at endpoint {}", key.fmt_short())) }),

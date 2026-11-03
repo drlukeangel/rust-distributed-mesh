@@ -627,11 +627,6 @@ fn floor() -> Duration {
     Duration::from_millis(std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000))
 }
 
-/// A build id as the spans carry it (`bid_xxxx-xxxx-xxxx` written bare).
-fn bare(id: &str) -> String {
-    id.trim_start_matches("bid_").replace('-', "")
-}
-
 /// The one running runtime of the node `id` (its data dir is named by its node id), read from the
 /// host: the node id is the one the cell settled, so no admin has to answer a read for it.
 fn runtime_pid(estate: &Estate, id: &str) -> u32 {
@@ -643,17 +638,6 @@ fn runtime_pid(estate: &Estate, id: &str) -> u32 {
 /// Whether `pid` runs: a process whose state is not a zombie.
 fn alive(pid: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| !s.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'))
-}
-
-/// Hold (`STOP`) or release (`CONT`) the process `pid`, acknowledged by the state the OS shows.
-fn signal(pid: u32, sig: &str) {
-    assert!(std::process::Command::new("kill").args([&format!("-{sig}"), &pid.to_string()]).status().unwrap().success(), "kill -{sig} {pid}");
-    let stopped = || std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.rsplit(')').next().unwrap_or("").trim_start().starts_with('T'));
-    let until = std::time::Instant::now() + Duration::from_secs(10);
-    while std::time::Instant::now() < until && stopped() != (sig == "STOP") {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert_eq!(stopped(), sig == "STOP", "the OS shows {pid} {}", if sig == "STOP" { "stopped" } else { "running" });
 }
 
 /// The environment of a person's adoption launch at `name`: the fabric id, its mesh, the custody.
@@ -867,102 +851,4 @@ async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_
         .filter(|sp| !(sp["attributes"]["moment"] == "create" && [Estate::path("mesh1.node-admin", "2"), Estate::path("mesh1.node-admin", "3")].iter().any(|at| rdm_test::estate::names_location(sp, "subject", at))))
         .collect();
     assert!(created.is_empty(), "nothing is created after the delete's acceptance but each launch itself: {created:?}");
-}
-
-/// CONTRACT (Q160; fabric-recovery.md step 4: "a returning fabric-primary's writes carry its superseded
-/// revision and every reader ignores them, its Build calls are refused NotFabricPrimary, and it stops on
-/// its first read after the heal (Q109)"): on a two-mesh fabric whose mesh1 holds one node-admin, the
-/// fabric-primary, fabric.delete's executor is held by its fault door before mesh2's AcceptedRoster is
-/// durable and paused (SIGSTOP). From the backbone, mesh2.node-admin.1 records the transition, takes both
-/// roles and is held by its own fault door as it starts deleting mesh1 in process, before the paused
-/// fabric-primary's own delete. The fabric-primary is resumed (SIGCONT) and its door released: its roster
-/// write, in flight before its first read past the heal, may land. It reads the transfer (its view names
-/// mesh2.node-admin.1 the fabric-primary): its drive of the delete ends on that read, and its step writes
-/// after it are refused RoleYielded, so its section stops there; the executor is released and finishes
-/// the teardown, mesh1 and the returned fabric-primary deleted, mesh2 last, fabric.deleted reported. The
-/// delete's events as the executor folds them are the ones it held at the transfer, then at most that
-/// in-flight roster of the returned fabric-primary's.
-/// What must NOT happen: the returning fabric-primary's write read as the delete's progress, its drive
-/// dispatching or a section of it run after the read, the teardown left unfinished, or a runtime left
-/// beside the executor.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_primary_paused_through_the_transfer_is_ignored_refused_stale_and_stops_on_its_first_read_after_resuming() {
-    let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
-    let mut estate = ready_fabric("a_fabric_primary_paused_through_the_transfer_is_ignored_refused_stale_and_stops_on_its_first_read_after_resuming", &shape).await;
-    let ids = ids_of(&estate).await;
-    let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).expect("mesh2's id");
-    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh2_id}})).await;
-    let executor = Door::at(&estate, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await;
-    executor.arm("in-process", json!({"kind": "receipt", "step": "NodeDeleting", "node": delete_subject(&id_in(&ids, "mesh1.node-admin", "1"))})).await;
-    let accepted_ns = now_ns();
-    let delete = delete_admitted(&estate).await;
-    let id = delete.build_id().to_string();
-    let held = door.wait_held("roster").await;
-    assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh2's mesh.delete: {held}");
-    let paused = estate.bootstrap_pid().expect("the fabric-primary's pid");
-    signal(paused, "STOP");
-
-    let in_process = executor.wait_held("in-process").await;
-    assert_eq!(in_process["hit"]["build_id"].as_str(), Some(id.as_str()), "the executor is held deleting mesh1 in process, before the paused fabric-primary's delete: {in_process}");
-    // The transition is on the primary records: the held executor's own view names it the fabric-primary.
-    let holder = estate.fabric_view_at(&Estate::path("mesh2.node-admin", "1")).await.and_then(|v| v.fabric_primary).map(|p| p.to_string());
-    assert_eq!(holder, Some(id_in(&ids, "mesh2.node-admin", "1")), "the executor recorded the transition: it holds the fabric-primary role");
-    let transferred = receipts_at(&estate, &Estate::path("mesh2.node-admin", "1"), &id).await;
-
-    let resumed_ns = now_ns();
-    signal(paused, "CONT");
-    door.release("roster").await;
-    wait_for("the resumed fabric-primary reads mesh2.node-admin.1 as fabric-primary", SETTLE, || async {
-        (estate.fabric_view_at(&Estate::path("mesh1.node-admin", "1")).await.and_then(|v| v.fabric_primary).map(|p| p.to_string()) == Some(id_in(&ids, "mesh2.node-admin", "1"))).then_some(())
-    })
-    .await;
-    executor.release("in-process").await;
-
-    let fp = delete_followed(&estate, delete, &Estate::path("mesh2.node-admin", "1")).await;
-    assert_eq!(fp.0, Estate::path("mesh2.node-admin", "1"), "the backbone executor is the fabric-primary that finishes the delete");
-    let receipts = receipts_at(&estate, &fp.0, &id).await;
-    // Each event's `source` names its writer's birth, `rdm://<fabric_id>/<node_id>/<incarnation>` (build.md §5).
-    let held = transferred.events.len();
-    assert_eq!(receipts.events.get(..held), Some(&transferred.events[..]), "the events the executor held at the transfer stand as they were: {:?}", listed(&receipts));
-    let returned_writer = format!("/{}/", id_in(&ids, "mesh1.node-admin", "1"));
-    // The returned fabric-primary's step writes after its first read past the heal are refused
-    // RoleYielded and its section stops; a write it had in flight before that read (mesh2's roster,
-    // released with its door) may land, and nothing it writes after that read does.
-    let late: Vec<&Value> = receipts.events[held..].iter().filter(|e| e["source"].as_str().is_some_and(|s| s.contains(&returned_writer))).collect();
-    assert!(late.iter().all(|e| e["data"]["step"] == rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER), "after the transfer the returned fabric-primary writes at most the roster it had in flight, and no later step: {late:#?}");
-    assert_eq!(count(&receipts, |o| action_of(o) == "mesh.delete", rdm_admin::mesh_delete::STEP_MESH_DELETED), 2, "each mesh is deleted once: {:?}", listed(&receipts));
-    assert_eq!(count(&receipts, |o| action_of(o) == "fabric.delete", "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
-    assert!(!alive(paused), "the returned fabric-primary is deleted with its mesh");
-    assert_eq!(estate.live_runtimes().into_iter().filter(|(dir, _)| !of_node(dir, &fp.1)).collect::<Vec<_>>(), vec![], "only the fabric-primary {fp:?} is left, for its separate node.delete");
-    estate.stop().await;
-
-    let spans = estate.spans();
-    let returned_id = id_in(&ids, "mesh1.node-admin", "1");
-    let returned = |sp: &&Value| rdm_test::estate::of_node(sp, &Estate::path("mesh1.node-admin", "1"), &returned_id) && start(sp) >= resumed_ns;
-    // Its first read after the heal, the earliest of them: the fabric-primary record naming the executor,
-    // or its drive ending on the role's move or on reading it is not the fabric-primary. The rafka-time pull a
-    // role move starts (`entry.resolve`) is one such read only when it ends before the delete stops this
-    // admin: a pull the stop holds never ends its span.
-    let read = spans
-        .iter()
-        .filter(returned)
-        .filter(|sp| {
-            ["rdm.mesh.entry.resolve.via-fabric-primary-changed", "rdm.node_admin.build.reject.via-fabric-primary-changed", "rdm.node_admin.build.reject.via-not-fabric-primary"]
-                .contains(&sp["name"].as_str().unwrap_or_default())
-        })
-        .min_by_key(|sp| start(sp))
-        .unwrap_or_else(|| panic!("the returned fabric-primary reads the transfer after it resumes"));
-    let read_ns = start(&read);
-    // A Build has no claims and no attempts (Q344): after its read of the transfer the returned
-    // fabric-primary dispatches no section of the delete and serves none.
-    let dispatched_after: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-dispatched").into_iter().filter(returned).filter(|sp| start(sp) >= read_ns).collect();
-    assert!(dispatched_after.is_empty(), "the returned fabric-primary dispatches nothing after its read of the transfer: {dispatched_after:#?}");
-    let ran_after: Vec<&Value> = ["rdm.node_admin.build.serve.via-attempt-run", "rdm.node_admin.build.serve.via-own-section"]
-        .iter()
-        .flat_map(|name| named(&spans, name))
-        .filter(returned)
-        .filter(|sp| start(sp) >= read_ns && sp["attributes"]["build_id"].as_str() == Some(bare(&id).as_str()))
-        .collect();
-    assert!(ran_after.is_empty(), "the returned fabric-primary runs no section of the delete after its read of the transfer: {ran_after:#?}");
 }

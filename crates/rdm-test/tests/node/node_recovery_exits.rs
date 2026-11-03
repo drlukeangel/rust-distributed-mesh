@@ -930,7 +930,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
 /// waiting for the stopped fabric-primary, or it running again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_its_successor() {
-    let (estate, build) = fabric_of(
+    let (mut estate, build) = fabric_of(
         "a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_its_successor",
         &[("mesh1", 2, 1), ("mesh2", 1, 2)],
         Duration::from_secs(90),
@@ -957,6 +957,9 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
         })
         .await;
     assert_eq!(stopped["incarnation_id"], fp["incarnation_id"], "the stopped fabric-primary is the same birth, stopped: {stopped}");
+    // A stopped node answers only the Status family (node-rpc.md §16, the ConnectionsDeleting guard): the
+    // Build reads go to the fabric-primary now, its successor.
+    estate.enter(&successor_name).await;
 
     // With the fabric-primary stopped, a member of mesh2 exits.
     let node = &Estate::path("mesh2.node", "1");
