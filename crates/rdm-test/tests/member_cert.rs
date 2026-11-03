@@ -250,3 +250,59 @@ fn a_node_admits_on_the_root_set_its_launch_carries() {
         }
     })
 }
+
+// @feature: node-lifecycle
+/// CONTRACT (Q344: one `Send { attempts, TimeLimit }` on every call, data-plane dials included): a
+/// direct dial whose first attempt sends nothing (the dialer's direct dial to its peer is blocked) is
+/// made again after the schedule's delay and connects on its second attempt: one
+/// `via-attempt-not-sent` span for attempt 1, then `via-attempt-connected` for attempt 2. Must NOT
+/// happen: the dial ending `NotSent` after its first attempt, or a third attempt.
+#[test]
+fn a_direct_dial_that_sent_nothing_connects_on_its_second_attempt() {
+    use rdm_transport::NodeResolver as _;
+    let cap = crate::common::capture("a_direct_dial_that_sent_nothing_connects_on_its_second_attempt");
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let alpn = rdm_transport::connections::Alpn { name: b"dial-on-send/1".to_vec(), proxy: false, carriers: vec!["node".to_string()] };
+        let fabric = FabricId::mint();
+        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(PRIMARY_REFERENCE_MS), root_choice()).await;
+        let (acceptor, a_dir) = alpn_birth(&admin, &fabric, rdm_core::PathName::new("mesh1.node", "1").unwrap(), vec![test_root_public()], &alpn).await;
+        let (dialer, d_dir) = alpn_birth(&admin, &fabric, rdm_core::PathName::new("mesh1.node", "2").unwrap(), vec![test_root_public()], &alpn).await;
+        let dialing = dialer.data_connections_for_testkit();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while dialer.node_rpc.resolver.resolve(&rdm_transport::NodeTarget::ExactNode(acceptor.digest.node.node_id.clone())).is_err() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the dialer resolves its peer");
+
+        let to = birth_of(&acceptor);
+        let peer = to.node_id.to_string();
+        dialing.block_direct_dial(&to.node_id, &alpn.name);
+        let dial = tokio::spawn({
+            let (dialing, to, name) = (dialing.clone(), to.clone(), alpn.name.clone());
+            async move { dialing.probe_direct(&to, &name).await }
+        });
+        let first = |f: &std::collections::BTreeMap<String, String>| f.get("destination") == Some(&peer) && f.get("attempt").map(String::as_str) == Some("1");
+        tokio::time::timeout(Duration::from_secs(30), spans.recorded("rdm.node.connection.open.via-attempt-not-sent", first))
+            .await
+            .expect("the first attempt sends nothing and is spanned");
+        dialing.unblock_direct_dial(&to.node_id, &alpn.name);
+        let connected = tokio::time::timeout(Duration::from_secs(30), dial).await.expect("the dial ends").expect("the dial task");
+        assert!(connected.is_ok(), "the dial connects on its second attempt: {:?}", connected.err());
+        let second = |f: &std::collections::BTreeMap<String, String>| f.get("destination") == Some(&peer) && f.get("attempt").map(String::as_str) == Some("2");
+        tokio::time::timeout(Duration::from_secs(5), spans.recorded("rdm.node.connection.open.via-attempt-connected", second))
+            .await
+            .expect("the second attempt's connect is spanned");
+        let not_sent = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.node.connection.open.via-attempt-not-sent" && f.get("destination") == Some(&peer)).count();
+        assert_eq!(not_sent, 1, "exactly one attempt sent nothing");
+
+        for n in [acceptor, dialer] {
+            n.stop().await;
+        }
+        for d in [a_dir, d_dir] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    })
+}

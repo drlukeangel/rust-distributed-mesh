@@ -28,7 +28,7 @@ use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::admission::Limits;
 use rdm_transport::stream::{ReplyStream, StreamFailure, StreamItem};
 use rdm_transport::{
-    Send, CallOptions, CarriedIdentity, Decode, Delivery, DeliveryStats, NodeRpcClient, NodeRpcServer, NodeTarget, Pacing, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder,
+    CallOptions, CarriedIdentity, Decode, Delivery, DeliveryStats, NodeRpcClient, NodeRpcServer, NodeTarget, Pacing, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder,
     ServerStats, StaticResolver,
 };
 use std::fmt::Debug;

@@ -107,8 +107,8 @@ fn superseded(out: &RpcOutcome<PingReply>) -> bool {
     matches!(out, RpcOutcome::RejectedStale(_)) && out.proves_not_dispatched()
 }
 
-/// A reply budget the `slow` and `hang` handlers outlast.
-const REPLY_BUDGET: Send = rdm_transport::Send { attempts: 3, time_limit: rdm_transport::TimeLimit(Duration::from_millis(200)) };
+/// A `Send` whose time limit the `slow` and `hang` handlers outlast.
+const REPLY_SEND: rdm_transport::Send = rdm_transport::Send { attempts: 3, time_limit: rdm_transport::TimeLimit(Duration::from_millis(200)) };
 
 fn spans() -> crate::common::Spans {
     crate::common::spans_exporter()
@@ -217,7 +217,7 @@ async fn three_reply_deadlines_leave_the_pooled_connection_in_place_and_reused()
     assert!(out.reply().is_some(), "{out:?}");
     let caller = tracing::info_span!("test.caller");
     let trace = caller.context().span().span_context().trace_id().to_string();
-    let opts = CallOptions { send: REPLY_BUDGET, ..Default::default() };
+    let opts = CallOptions { send: REPLY_SEND, ..Default::default() };
     let (late, (next_out, next)) = tracing::Instrument::instrument(
         async {
             let mut late = Vec::new();
@@ -354,7 +354,7 @@ async fn three_reply_deadlines_report_nothing_broken_to_the_connections_writer()
     let (r, told) = observed_rig(n.resolved.clone()).await;
     let (out, first) = r.ping().await;
     assert!(out.reply().is_some(), "{out:?}");
-    let opts = CallOptions { send: REPLY_BUDGET, ..Default::default() };
+    let opts = CallOptions { send: REPLY_SEND, ..Default::default() };
     for i in 0..3 {
         let (out, ev) = r.client.call::<Ping>(&r.target, &echo(b"hang"), &opts).await;
         assert!(matches!(&out, RpcOutcome::Indeterminate(x) if *x.reason() == IndeterminateReason::ReplyDeadline), "call {i}: {out:?}");

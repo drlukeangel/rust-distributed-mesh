@@ -632,9 +632,10 @@ impl ConnectionsRegistry {
         self.inner.slots.lock().unwrap().contains_key(alpn)
     }
 
-    /// Perform one bounded direct transport connection attempt on `alpn` toward `destination`
-    /// (`connections.md` §9.5 step 3). On success, `Direct Connected` is recorded through the
-    /// sink; on failure, the series' next `Direct Failed` row is recorded through the sink.
+    /// A direct transport connection dial on `alpn` toward `destination` (`connections.md` §9.5
+    /// step 3), on the default `Send` (Q344): a dial that sent nothing is made again within its
+    /// attempts. On success, `Direct Connected` is recorded through the sink; on each failed
+    /// attempt, the series' next `Direct Failed` row is recorded through the sink.
     pub async fn probe_direct(&self, destination: &Birth, alpn: &[u8]) -> Result<Connection, ConnectError> {
         if self.inner.deleted.load(Ordering::SeqCst) {
             return Err(ConnectError::Deleted);
@@ -656,7 +657,7 @@ impl ConnectionsRegistry {
         let trace = Trace::of(&caller_span, Trace::default());
         let own = self.inner.sink.own_birth();
         let conn = dialer
-            .open_direct(&own, destination, &caller_span, trace)
+            .on_send(destination, || dialer.open_direct(&own, destination, &caller_span, trace.clone()))
             .await?;
         if let Some(entry) = self.inner.active.lock().unwrap().get_mut(conn.id()) {
             entry._keep_alive = Some(conn.inner.clone());
@@ -1470,13 +1471,58 @@ impl Acceptor {
 }
 
 impl Dialer {
-    /// Open a connection to the exact `destination` birth on this ALPN.
+    /// Open a connection to the exact `destination` birth on this ALPN, on the default `Send`
+    /// (Q344): an open that sent nothing to the destination is made again within its attempts.
     pub async fn open(&self, destination: &Birth) -> Result<Connection, ConnectError> {
-        if self.registry.inner.deleted.load(Ordering::SeqCst) {
-            return Err(ConnectError::Deleted);
-        }
         let caller_span = tracing::Span::current();
         let trace = Trace::of(&caller_span, Trace::default());
+        self.on_send(destination, || self.open_once(destination, &caller_span, trace.clone())).await
+    }
+
+    /// One dial on `Send::default()` (Q344, node-rpc.md §43's schedule): `dial` is made, and made
+    /// again after the schedule's delay while it ends having sent nothing to the destination
+    /// (`NotSent`, or no route after a Direct dial that sent nothing) and attempts are left. A
+    /// refusal, a wrong incarnation or this birth's connections deleted ends it at once.
+    async fn on_send<F, Fut>(&self, destination: &Birth, mut dial: F) -> Result<Connection, ConnectError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<Connection, ConnectError>>,
+    {
+        let allowed = u32::from(crate::client::Send::default().attempts.max(1));
+        let pacing = crate::delivery::Pacing::from_cadences();
+        let mut attempt = 1u32;
+        loop {
+            if self.registry.inner.deleted.load(Ordering::SeqCst) {
+                return Err(ConnectError::Deleted);
+            }
+            let ended = dial().await;
+            let reason = match &ended {
+                Err(ConnectError::NotSent { reason }) | Err(ConnectError::NoActiveRoute { direct: Some(reason) }) => reason.clone(),
+                _ => {
+                    if attempt > 1 && ended.is_ok() {
+                        tracing::info_span!("rdm.node.connection.open.via-attempt-connected", destination = %destination.node_id, alpn = %String::from_utf8_lossy(&self.alpn.name), attempt, allowed)
+                            .in_scope(|| tracing::info!("the dial connected on a later attempt"));
+                    }
+                    return ended;
+                }
+            };
+            if attempt >= allowed {
+                tracing::info_span!("rdm.node.connection.open.via-attempts-spent", destination = %destination.node_id, alpn = %String::from_utf8_lossy(&self.alpn.name), attempt, allowed, reason = %reason)
+                    .in_scope(|| tracing::info!("the dial's attempts are spent: nothing was sent to the destination"));
+                return ended;
+            }
+            let after = pacing.after(attempt);
+            tracing::info_span!("rdm.node.connection.open.via-attempt-not-sent", destination = %destination.node_id, alpn = %String::from_utf8_lossy(&self.alpn.name), attempt, allowed, reason = %reason, next_after_ms = after.as_millis() as u64)
+                .in_scope(|| tracing::info!("the dial sent nothing: it is made again after the schedule's delay"));
+            tokio::time::sleep(after).await;
+            attempt += 1;
+        }
+    }
+
+    /// One attempt of [`Self::open`]: the route the held connections name, the Direct dial, then
+    /// each carrier in the spread order.
+    async fn open_once(&self, destination: &Birth, caller_span: &tracing::Span, trace: Trace) -> Result<Connection, ConnectError> {
+        let caller_span = caller_span.clone();
         // A cold discovery's cost runs from the open's start to its Proxy Connected (connections.md §12).
         let begun = std::time::Instant::now();
         let own = self.registry.inner.sink.own_birth();

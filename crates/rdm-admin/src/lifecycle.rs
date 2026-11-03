@@ -146,8 +146,6 @@ pub struct LifecycleHookSpec {
     pub applies_when: ShapePredicate,
     /// A failed blocking hook prevents the commit.
     pub blocking: bool,
-    /// Attempts per transition run before the hook counts as failed.
-    pub max_attempts: u32,
 }
 
 /// What a hook sees.
@@ -161,8 +159,6 @@ pub struct HookContext {
     pub key: TransitionKey,
     /// The phase the hook runs at.
     pub phase: HookPhase,
-    /// Which attempt of the hook this is.
-    pub attempt: u32,
 }
 
 /// Work a hook does for one transition.
@@ -194,8 +190,6 @@ pub struct HookReceipt {
     pub hook_id: String,
     /// The phase.
     pub phase: HookPhase,
-    /// The attempt.
-    pub attempt: u32,
     /// How the run ended.
     pub outcome: HookOutcome,
 }
@@ -226,15 +220,12 @@ impl ReceiptLog for MemoryReceiptLog {
 pub enum RegistryError {
     /// Two hooks share an id.
     DuplicateHook(String),
-    /// A hook allows zero attempts.
-    ZeroAttempts(String),
 }
 
 impl fmt::Display for RegistryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateHook(h) => write!(f, "hook `{h}` registered twice"),
-            Self::ZeroAttempts(h) => write!(f, "hook `{h}` allows zero attempts"),
         }
     }
 }
@@ -264,9 +255,6 @@ impl HookRegistry {
         for (s, _) in &self.hooks {
             if !ids.insert(s.hook_id.clone()) {
                 errors.push(RegistryError::DuplicateHook(s.hook_id.clone()));
-            }
-            if s.max_attempts == 0 {
-                errors.push(RegistryError::ZeroAttempts(s.hook_id.clone()));
             }
         }
         if errors.is_empty() {
@@ -355,52 +343,28 @@ impl LifecycleTransitionPipeline {
         let done = self.receipts.receipts(&t.transition_id);
         for (spec, hook) in self.hooks.for_phase(t.key, phase, t.shape) {
             if done.iter().any(|r| r.hook_id == spec.hook_id && r.outcome == HookOutcome::Complete) {
-                continue; // a retry reuses the receipt
+                continue; // a later run of the transition reuses the receipt
             }
-            let prior = done.iter().filter(|r| r.hook_id == spec.hook_id).map(|r| r.attempt).max().unwrap_or(0);
-            let mut last_err = String::new();
-            let mut ok = false;
-            for n in 1..=spec.max_attempts {
-                let attempt = prior + n;
-                let ctx = HookContext {
-                    transition_id: t.transition_id.clone(),
-                    target: t.target.clone(),
-                    key: t.key,
-                    phase,
-                    attempt,
-                };
-                let span = tracing::info_span!(
-                    "rdm.node_admin.lifecycle_hook.update.via-transition",
-                    hook_id = %spec.hook_id,
-                    phase = phase.as_str(),
-                    transition_id = %t.transition_id,
-                    blocking = spec.blocking,
-                    attempt,
-                    outcome = tracing::field::Empty,
-                );
-                let r = hook.run(&ctx).instrument(span.clone()).await;
-                let outcome = match &r {
-                    Ok(()) => HookOutcome::Complete,
-                    Err(e) => HookOutcome::Failed { reason: e.clone() },
-                };
-                span.record("outcome", if r.is_ok() { "complete" } else { "failed" });
-                self.receipts.append(HookReceipt {
-                    transition_id: t.transition_id.clone(),
-                    hook_id: spec.hook_id.clone(),
-                    phase,
-                    attempt,
-                    outcome,
-                });
-                match r {
-                    Ok(()) => {
-                        ok = true;
-                        break;
-                    }
-                    Err(e) => last_err = e,
-                }
-            }
-            if !ok && spec.blocking {
-                return Err((spec.hook_id.clone(), last_err));
+            // One run per transition run (Q344: no retry beside `Send`): a failed hook's end is the
+            // transition's.
+            let ctx = HookContext { transition_id: t.transition_id.clone(), target: t.target.clone(), key: t.key, phase };
+            let span = tracing::info_span!(
+                "rdm.node_admin.lifecycle_hook.update.via-transition",
+                hook_id = %spec.hook_id,
+                phase = phase.as_str(),
+                transition_id = %t.transition_id,
+                blocking = spec.blocking,
+                outcome = tracing::field::Empty,
+            );
+            let r = hook.run(&ctx).instrument(span.clone()).await;
+            let outcome = match &r {
+                Ok(()) => HookOutcome::Complete,
+                Err(e) => HookOutcome::Failed { reason: e.clone() },
+            };
+            span.record("outcome", if r.is_ok() { "complete" } else { "failed" });
+            self.receipts.append(HookReceipt { transition_id: t.transition_id.clone(), hook_id: spec.hook_id.clone(), phase, outcome });
+            if let (Err(e), true) = (r, spec.blocking) {
+                return Err((spec.hook_id.clone(), e));
             }
         }
         Ok(())
@@ -477,7 +441,7 @@ mod tests {
     }
 
     fn spec(id: &str, key: TransitionKey, phase: HookPhase, blocking: bool) -> LifecycleHookSpec {
-        LifecycleHookSpec { hook_id: id.into(), transition: key, phase, applies_when: ShapePredicate::Always, blocking, max_attempts: 1 }
+        LifecycleHookSpec { hook_id: id.into(), transition: key, phase, applies_when: ShapePredicate::Always, blocking }
     }
 
     fn run<'a>(key: TransitionKey, shape: &'a ShapeFacts) -> Transition<'a> {
@@ -527,7 +491,7 @@ mod tests {
         assert_eq!(first.runs.load(Ordering::SeqCst), 1, "the completed hook's receipt was reused");
         assert_eq!(second.runs.load(Ordering::SeqCst), 2);
         let last = receipts.receipts(&Transition::id_for(READY, "fabric1")).last().cloned().unwrap();
-        assert_eq!((last.hook_id.as_str(), last.attempt, last.outcome), ("app-bootstrap", 2, HookOutcome::Complete));
+        assert_eq!((last.hook_id.as_str(), last.outcome), ("app-bootstrap", HookOutcome::Complete));
     }
 
     #[tokio::test]
@@ -618,35 +582,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_policy_allows_bounded_attempts_within_one_run() {
+    /// CONTRACT (Q344: no retry beside `Send`): a blocking hook that fails runs once in a transition
+    /// run, and its failure is the transition's: nothing commits.
+    async fn a_failed_hook_runs_once_per_transition_run() {
         let log = Arc::new(Mutex::new(vec![]));
         let flaky = probe("flaky", &log, 2);
-        let mut s = spec("flaky", READY, HookPhase::BeforeEligibility, true);
-        s.max_attempts = 3;
+        let s = spec("flaky", READY, HookPhase::BeforeEligibility, true);
         let p = LifecycleTransitionPipeline::new(HookRegistry::new().register(s, flaky.clone()).build().unwrap(), Arc::new(MemoryReceiptLog::default()));
         let shape = ShapeFacts { desired_meshes: 1 };
-        assert_eq!(p.transition(run(READY, &shape), || Ok(()), || ()).await, TransitionResult::Committed);
-        assert_eq!(flaky.runs.load(Ordering::SeqCst), 3);
+        assert_ne!(p.transition(run(READY, &shape), || Ok(()), || ()).await, TransitionResult::Committed);
+        assert_eq!(flaky.runs.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn the_registry_refuses_bad_registrations_by_name() {
         let log = Arc::new(Mutex::new(vec![]));
-        let mut zero = spec("z", READY, HookPhase::BeforeEligibility, true);
-        zero.max_attempts = 0;
         let errs = HookRegistry::new()
             .register(spec("a", READY, HookPhase::BeforeEligibility, true), probe("a", &log, 0))
             .register(spec("a", READY, HookPhase::AfterTransition, true), probe("a", &log, 0))
-            .register(zero, probe("z", &log, 0))
             .build()
             .err()
             .unwrap();
-        assert_eq!(
-            errs,
-            vec![
-                RegistryError::DuplicateHook("a".into()),
-                RegistryError::ZeroAttempts("z".into()),
-            ]
-        );
+        assert_eq!(errs, vec![RegistryError::DuplicateHook("a".into())]);
     }
 }

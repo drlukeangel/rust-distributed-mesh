@@ -562,7 +562,7 @@ mod tests {
         go.notify_one();
         // A loopback frame arrives in milliseconds; the bound only names what arrived if it never does.
         let mut got = Vec::new();
-        let read = tokio::time::timeout(Duration::from_secs(10), async {
+        let read = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(f) = stream.next().await {
                 got.push(f);
             }

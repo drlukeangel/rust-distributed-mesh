@@ -56,7 +56,6 @@ fn pipeline(log: &Arc<Mutex<Vec<&'static str>>>) -> LifecycleTransitionPipeline 
         phase: HookPhase::AfterEligibilityBeforeCommit,
         applies_when: pred,
         blocking: true,
-        max_attempts: 1,
     };
     let hooks = HookRegistry::new()
         .register(spec("every-shape", ShapePredicate::Always), Arc::new(Log("every-shape", log.clone())))

@@ -116,7 +116,7 @@ fn renewed_by(view: &Topology, me: &NodeId) -> Vec<Node> {
         for n in view.births().filter(|n| n.mesh == m.name) {
             let is_primary = primary.as_ref() == Some(&n.node_id);
             let mine = (holds_mesh && n.node_id != *me) || (fabric_primary && (is_primary || n.node_id == *me));
-            if mine && n.incarnation_id.is_some() {
+            if mine && n.incarnation_id.is_some() && n.status.is_live() {
                 out.push(n.clone());
             }
         }
@@ -192,6 +192,9 @@ pub struct Renewals {
     own_roots: std::sync::OnceLock<OwnRoots>,
     /// The births that answered a root set of the rotation, by birth and the phase the set belongs to.
     roots_acked: Mutex<BTreeSet<String>>,
+    /// This admin's unreached marks (node-recovery.md step 1): a birth whose call ended with its `Send`
+    /// spent is marked, and is sent no renewal while its mark holds (Q344); set once at start.
+    marks: std::sync::OnceLock<crate::offline::UnreachableMarks>,
 }
 
 impl Renewals {
@@ -202,7 +205,17 @@ impl Renewals {
 impl Renewals {
     /// The renewal ticks of the admin `me`.
     pub fn new(me: PathName, node_id: NodeId, issuer: Arc<CertIssuer>, nodes_storage: Arc<dyn NodesStorage>, caches: crate::record_cache::Caches, client: Arc<NodeRpcClient>, install_own: InstallOwn) -> Arc<Self> {
-        Arc::new(Self { me_path: me.path.clone(), me_name: me.name.clone(), node_id, issuer, nodes_storage, caches, client, install_own, in_flight: Mutex::default(), updating: Mutex::default(), issued: Mutex::default(), signing: Mutex::default(), ca_due: Mutex::default(), fabric: std::sync::OnceLock::new(), own_roots: std::sync::OnceLock::new(), roots_acked: Mutex::default() })
+        Arc::new(Self { me_path: me.path.clone(), me_name: me.name.clone(), node_id, issuer, nodes_storage, caches, client, install_own, in_flight: Mutex::default(), updating: Mutex::default(), issued: Mutex::default(), signing: Mutex::default(), ca_due: Mutex::default(), fabric: std::sync::OnceLock::new(), own_roots: std::sync::OnceLock::new(), roots_acked: Mutex::default(), marks: std::sync::OnceLock::new() })
+    }
+
+    /// The unreached marks a renewal reads: a birth marked is sent nothing until its mark ends.
+    pub fn set_marks(&self, marks: crate::offline::UnreachableMarks) {
+        let _ = self.marks.set(marks);
+    }
+
+    /// Whether this exact birth is marked unreached here.
+    fn marked(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+        self.marks.get().is_some_and(|m| m.lock().unwrap().get(node_id).is_some_and(|mark| &mark.incarnation == incarnation))
     }
 
     /// Where the CA row is written: the fabric store and the fabric's id, set once.
@@ -254,6 +267,11 @@ pub async fn renew_members(r: &Arc<Renewals>, view: &Topology) {
     let Some(now) = r.issuer.now_ms() else { return };
     for n in renewed_by(view, &r.node_id) {
         let Some(incarnation) = n.incarnation_id.clone() else { continue };
+        // A birth whose renewal call ended with its `Send` spent is marked (node-recovery.md step 1):
+        // node recovery owns it, and it is sent nothing until its mark ends (Q344).
+        if r.marked(&n.node_id, &incarnation) {
+            continue;
+        }
         let held = match r.dates(view, &n, &incarnation).await {
             Ok(Some(d)) => d,
             Ok(None) => continue,
@@ -263,7 +281,7 @@ pub async fn renew_members(r: &Arc<Renewals>, view: &Topology) {
                 continue;
             }
         };
-        // Past its renew point and before its expiry: renewed again each tick until it answers.
+        // Past its renew point and before its expiry: renewed on this tick, one call on `Send` (Q344).
         if now < held.renew_at || now >= held.expires_at {
             continue;
         }
@@ -508,7 +526,8 @@ async fn renew_ca(r: &Renewals, view: &Topology, now: u64) {
 /// `distributed`, a new fabric CA signed by the new root, every mesh's issuer due under it (row
 /// `ca-rotated`); `ca-rotated`, once every live birth's member cert chains to the new root, the new
 /// root alone to every live birth (row `updated` on the last receipt, the old secret destroyed here as
-/// on every admin). A birth not answered is sent again on the next tick; a birth born mid-rotation is
+/// on every admin). A birth whose call ends unanswered is marked unheard (node-recovery.md step 1) and
+/// is sent nothing while the view holds it so; a birth born mid-rotation is
 /// sent the set its phase holds. One span per phase move, `rdm.node_admin.root.update.via-caller`.
 async fn rotate_roots(r: &Arc<Renewals>, view: &Topology) {
     use rdm_core::status::RootsPhase;

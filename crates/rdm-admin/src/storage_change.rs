@@ -16,7 +16,7 @@
 //!    moves itself and its nodes to the provider the `rdm.storage.committed` event decided (each node's
 //!    storage handle replaced, node command op 0x22 `StorageStep`), replies `unblocked` and issues
 //!    commands again. A node that will not move (it refuses its move by name, a `rejected-stale-change`
-//!    included, or leaves it unanswered past the staleness floor: Q182) is re-created on the decided
+//!    included, or leaves its call unanswered with its `Send` spent: Q344) is re-created on the decided
 //!    provider by its mesh-primary's node recovery, never part of the change.
 //!
 //! A change that fails before its switch fails only once no `rdm.storage.committed` event is read, its
@@ -660,13 +660,27 @@ impl StorageChanges {
         }
     }
 
-    /// `command` to `mesh`'s mesh-primary, the birth the view names now, sent again on a backoff until
-    /// it answers its terminal (`blocked` or `unblocked`). This fabric-primary's own mesh is served
-    /// in-process.
+    /// `command` to `mesh`'s mesh-primary, the birth the view names now, one call on the default
+    /// `Send` (Q344) per turn until it answers its terminal (`blocked` or `unblocked`). Another turn is
+    /// taken on a domain answer only, after the schedule's delay: a reply other than the terminal, or
+    /// a view that names no mesh-primary yet. A call that ended unanswered is never made again to that
+    /// birth: it is a lost node, investigated and re-created by its own workflow (storage.md "A
+    /// mesh-primary that does not reply `blocked` or `unblocked` is a lost node"), and the command
+    /// goes to the birth the view names next. This fabric-primary's own mesh is served in-process.
     async fn command_mesh(&self, door: &Arc<StatusDoor>, change: &StorageChange, mesh: &str, command: MeshCommand) {
-        let mut backoff = Duration::from_millis(250);
+        let pacing = rdm_transport::Pacing::from_cadences();
+        let mut turn = 0u32;
+        let mut unanswered: Option<(NodeId, Option<rdm_core::IncarnationId>)> = None;
         loop {
+            turn = turn.saturating_add(1);
+            let mut called = false;
             let primary = door.topology.read().await.node_type_primary(mesh, "node-admin").cloned();
+            if let (Some(p), Some(lost)) = (&primary, &unanswered) {
+                if (&p.node_id, &p.incarnation_id) == (&lost.0, &lost.1) {
+                    tokio::time::sleep(pacing.after(turn)).await;
+                    continue;
+                }
+            }
             let span = tracing::info_span!("rdm.node_admin.storage.update.via-mesh-command", change_id = %change.change_id, mesh = %mesh, command = command.name(), mesh_primary = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty);
             let reply = match &primary {
                 None => Err(format!("the view names no mesh-primary of {mesh} yet")),
@@ -676,6 +690,7 @@ impl StorageChanges {
                 }),
                 Some(p) => match (p.incarnation_id.clone(), door.configs.get()) {
                     (Some(incarnation), Some(configs)) => {
+                        called = true;
                         let request = match command {
                             MeshCommand::Block => NodeCommandRequest::BlockMesh { node_id: p.node_id.clone(), incarnation, change_id: change.change_id.clone(), from: change.from.clone(), to: change.to.clone() },
                             MeshCommand::Unblock => NodeCommandRequest::UnblockMesh { node_id: p.node_id.clone(), incarnation, change_id: change.change_id.clone(), from: change.from.clone(), to: change.to.clone() },
@@ -703,11 +718,13 @@ impl StorageChanges {
                 }
                 Err(e) => {
                     span.record("outcome", "no-answer").record("reason", e.as_str());
+                    if let (true, Some(p)) = (called, &primary) {
+                        unanswered = Some((p.node_id.clone(), p.incarnation_id.clone()));
+                    }
                 }
             }
             drop(span);
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(Duration::from_secs(5));
+            tokio::time::sleep(pacing.after(turn)).await;
         }
     }
 
@@ -787,17 +804,16 @@ impl StorageChanges {
 
     /// Carry the move onto `provider` to the birth at `path` until the birth the view holds there moves
     /// (storage.md §2 step 4). A birth that refuses its move by name (a `rejected-stale-change` of this
-    /// change included), or leaves it unanswered past the staleness floor (Q182), will not move: it is
+    /// change included), or leaves its call unanswered with its `Send` spent (Q344), will not move: it is
     /// re-created by this mesh-primary's node recovery, and the move is carried to the new birth. No
     /// timer ends it.
     async fn move_until(&self, door: &StatusDoor, topology: &Arc<RwLock<Topology>>, change_id: &ChangeId, mesh: &str, path: &PathName, provider: &str) -> PathEnd {
-        let floor = rdm_transport::topology::staleness_floor();
-        let mut backoff = Duration::from_millis(250);
+        let pacing = rdm_transport::Pacing::from_cadences();
+        let mut turn = 0u32;
         // The births re-created at the path: the view may still hold one a moment after its re-create.
         let mut recreated: Vec<NodeId> = Vec::new();
-        // The birth whose move went unanswered, since the send of its first unanswered move.
-        let mut unanswered: Option<(NodeId, tokio::time::Instant)> = None;
         loop {
+            turn = turn.saturating_add(1);
             let birth = topology.read().await.node(path).cloned();
             let lost = match birth {
                 // No birth held there: nothing to move, or the re-created birth not in the view yet.
@@ -807,20 +823,14 @@ impl StorageChanges {
                 Some(birth) => match birth.incarnation_id.clone() {
                     None => None,
                     Some(incarnation) => {
-                        let sent = tokio::time::Instant::now();
                         match door.carry_storage_step(&birth.node_id, &incarnation, change_id, provider).await {
                             Carried::Stepped(_) => return if recreated.is_empty() { PathEnd::Moved } else { PathEnd::Recreated },
                             // A refusal of an older change (storage.md §2): a refusal, never a move.
                             Carried::Stale(held) => Some((birth, format!("rejected-stale-change: it acted on storage change {held}"))),
                             Carried::Refused(why) => Some((birth, format!("refused: {why}"))),
-                            Carried::Unanswered(why) => {
-                                let since = match unanswered {
-                                    Some((ref id, since)) if *id == birth.node_id => since,
-                                    _ => sent,
-                                };
-                                unanswered = Some((birth.node_id.clone(), since));
-                                (tokio::time::Instant::now().saturating_duration_since(since) >= floor).then(|| (birth, format!("unanswered past the staleness floor: {why}")))
-                            }
+                            // Its call on `Send` ended with its attempts spent (Q344): the end is the
+                            // birth's, never sent again.
+                            Carried::Unanswered(why) => Some((birth, format!("unanswered: {why}"))),
                             Carried::NotDone(_) => None,
                         }
                     }
@@ -842,8 +852,7 @@ impl StorageChanges {
                     }
                 }
             }
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(Duration::from_secs(2));
+            tokio::time::sleep(pacing.after(turn)).await;
         }
     }
 

@@ -3000,6 +3000,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }),
                                         );
                                         renewals.set_fabric(fabric_storage.clone(), cfg.fabric_id.clone());
+                                        renewals.set_marks(records.unreachable.clone());
                                         {
                                             // The fabric-primary's own node.roots.update, in process: the set installed on its own birth, the
                                             // root's secret it rides with kept as the door keeps it (fabric-ca-renew.md).

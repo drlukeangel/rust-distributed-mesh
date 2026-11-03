@@ -391,8 +391,8 @@ pub async fn run(w: Watch) {
 
 /// The fabric-primary's recovery of a lost mesh-primary no successor takes the role of, its mesh with no
 /// node-admin left (node-recovery.md step 3, Q335), submitted at once and owed until it runs: a submit
-/// that ends without the recovery is made again
-/// after a delay that doubles, once per silence. The silence the verdict was read in lasts while this
+/// that ends without the recovery (a refusal by name, or the recovery Build's own end) is made again
+/// after the schedule's next delay (node-rpc.md §43), once per silence. The silence the verdict was read in lasts while this
 /// admin's view holds the exact birth silent (`PendingReconnect` or `Dead`: the mark never replaces a
 /// lifecycle state the mesh-primary recorded, `stopped` among them), this admin is the fabric-primary,
 /// and the view has not heard the
@@ -405,15 +405,17 @@ where
     S: FnMut() -> F,
     F: std::future::Future<Output = Result<(), String>>,
 {
-    let mut backoff = rdm_transport::topology::gossip_interval();
-    let ceiling = rdm_transport::topology::staleness_floor() * 4;
+    // The submit is the recovery's Build, run in process: it ends by a named refusal or the Build's own
+    // end, a domain answer, never by no reply. Its turns wait on the one schedule (node-rpc.md §43).
+    let pacing = rdm_transport::Pacing::from_cadences();
+    let mut turn = 0u32;
     loop {
         match submit().await {
             Ok(()) => break,
             Err(e) => tracing::info!(node_path = %node.path, node_name = %node.name, error = %e, "the recovery submit of an unheard mesh-primary ended without the recovery"),
         }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(ceiling);
+        turn = turn.saturating_add(1);
+        tokio::time::sleep(pacing.after(turn)).await;
         let t = topology.read().await;
         let silent = t.births().any(|n| n.node_id == node.node_id && n.incarnation_id == node.incarnation_id && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead));
         if !silent || !t.is_fabric_primary(me_id) || heard_since(digest_view, node, since) {
