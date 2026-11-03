@@ -187,17 +187,14 @@ where
 }
 
 /// Whom a first start's one topology read goes to (node-topology-get.md, "exact member → own
-/// mesh-primary"): its mesh's primary role, `NodeTarget::Primary { mesh }`, which the client resolves
-/// again on each attempt of the read's `Send`; while the node holds no primary record of its mesh (a new
-/// mesh's first node-admin), the fabric-primary, as its join went (node-mesh-join.md, "the
-/// fabric-primary while the mesh has no primary"). With whom the step names as its server.
-fn own_mesh_primary(topology_view: &TopologyView) -> (NodeTarget, String) {
-    let mesh = topology_view.mesh_name().to_string();
-    match topology_view.digest_view.mesh_primary(&mesh) {
-        Err(rdm_transport::topology::NoMeshPrimary::NoPrimaryRecord { .. }) => (NodeTarget::Primary { mesh: None }, format!("the fabric-primary ({mesh} holds no primary record)")),
-        Ok(d) => (NodeTarget::Primary { mesh: Some(mesh.clone()) }, format!("the mesh-primary of {mesh} ({})", d.node.node_id)),
-        Err(_) => (NodeTarget::Primary { mesh: Some(mesh.clone()) }, format!("the mesh-primary of {mesh}")),
-    }
+/// mesh-primary"): the exact birth of its mesh's current primary as its topology view names it (the
+/// birth a top-up reads from, `TopologyView::mesh_primary`), with whom the step names as its server;
+/// `None` while the view names none, before the read itself hands the node its primary records
+/// (`topology_read::get_topology`, `learn_primaries`), when the read goes to the admin that answered
+/// the join.
+fn own_mesh_primary(topology_view: &TopologyView) -> Option<(NodeTarget, String)> {
+    let d = topology_view.mesh_primary().ok()?;
+    Some((NodeTarget::ExactNode(d.node.node_id.clone()), d.node.node_id.to_string()))
 }
 
 /// Starts the task a node-admin's first-start hook runs in, behind the admin's own task gate.
@@ -483,9 +480,10 @@ impl AfterTheHook {
         // rafka-time of the same reply adopted after its install (node-start.md step 4): from the node's
         // own current mesh-primary (node-topology-get.md, "exact member → own mesh-primary"). After a
         // stop that is the mesh-primary whose call commanded the start, reached back over its call
-        // (node-start.md "Admission" and step 2); at a first start the mesh's primary role, resolved on
-        // each attempt of the read's Send, never the admin that answered the join once it no longer
-        // holds the role. With no authority, the rafka-time this start adopted is kept.
+        // (node-start.md "Admission" and step 2); at a first start the mesh's current primary its
+        // topology view names, never the admin that answered the join once another holds the role, and
+        // that admin only while the view names none. With no authority, the rafka-time this start
+        // adopted is kept.
         if let Some((t, label)) = &through {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-taken", node_path = %path.path, node_name = %name, node_id = %node_id, launcher = %label, served_by = tracing::field::Empty, rafka_time = tracing::field::Empty);
             after.before_topology_read(&t.node_id).instrument(step.clone()).await;
@@ -493,12 +491,9 @@ impl AfterTheHook {
                 let (client, topology_view, mesh) = (&client, &topology_view, topology_view.mesh_name());
                 async move { crate::topology_read::get_topology(client, &target, mesh, topology_view, None, None).await }
             };
-            let taken = match commander.as_mut() {
-                Some(commander) => at_commander(&name, &client, t, Some(commander), read).instrument(step.clone()).await,
-                None => {
-                    let (target, who) = own_mesh_primary(&topology_view);
-                    read(target).instrument(step.clone()).await.map(|r| (r, who.clone())).map_err(|e| (e.to_string(), who))
-                }
+            let taken = match (commander.as_mut(), own_mesh_primary(&topology_view)) {
+                (None, Some((target, who))) => read(target).instrument(step.clone()).await.map(|r| (r, who.clone())).map_err(|e| (e.to_string(), who)),
+                (commander, _) => at_commander(&name, &client, t, commander, read).instrument(step.clone()).await,
             };
             let (read, who) = match taken {
                 Ok(read) => read,
