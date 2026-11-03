@@ -13,7 +13,7 @@
 #   scripts/demo-estate.sh up     [<root dir>]   bring it up; prints the UI's URL; the root holds the logs,
 #                                                evidence and store
 #   scripts/demo-estate.sh stream [<root dir>]   the data-plane proof: five `demo/echo` streams, four across
-#                                                the meshes, through the originate door (rdm-rpc-probe stream)
+#                                                the meshes, through the originate service (rdm-rpc-probe stream)
 #   scripts/demo-estate.sh example [<root dir>]  the consumer guide's compiled example (demo/src/consumer_example.rs):
 #                                                <mesh 2>.broker.3 and <mesh 2>.compute.1 deleted, then a node of
 #                                                each type created on $BIN/rshape-example; the compute submits an operation to a broker
