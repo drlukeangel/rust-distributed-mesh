@@ -64,11 +64,11 @@ Allowed customer seams are:
 - product authorization and the hooks of [Fabric and node hooks](fabric-node-hooks.md).
 
 RDM retains Build compilation/reconciliation, the leadership election,
-executor selection, generic lifecycle eligibility/commit/receipts, readiness roots, recovery,
+executor selection, generic lifecycle eligibility/commit/step events, readiness roots, recovery,
 exact-runtime adoption/a sign the node is dead, provider-domain execution and connection mechanics.
 Customer seams supply policy or facts; they MUST NOT substitute a second implementation of
 those algorithms. Hooks are registered before the registry is built, idempotent and bounded, and report
-failure through the lifecycle receipt path. A hook requesting exact synchronous execution
+failure through the step's `rdm.build.step` event. A hook requesting exact synchronous execution
 of gateway-owned application behavior uses a typed Rafka Op on the exact gateway rather than
 importing the gateway implementation. Durable asynchronous job/event contracts and explicitly
 authorized read projections are valid under the same owner boundary.
@@ -208,7 +208,7 @@ The writer is the current fabric-primary from [fabric-node-lifecycle-elections.m
 - the current Build is found by reading the Builds last in, first out: the first one that is in progress or completed, by its events (§5). In progress, it is the Build being driven, and it is resumed; completed, it is the known state. An incomplete or failed Build is skipped: it is never current, nothing resumes it on its own, and a caller resubmits it by its build_id, whose run skips every step whose event ended `complete`;
 - every node-admin reads the current Build from `builds.storage`; the Fabric row carries no pointer to it;
 - a leadership change does not change it;
-- later runtime loss is reconciled against it.
+- later runtime loss is node recovery's, the primary's own workflow, never the Build's (Q342).
 
 Persisted copies are not writers: several node-admins may each hold the same Fabric and Build facts for recovery, and only the current fabric-primary, as the election names it, may accept the next topology mutation.
 
@@ -320,8 +320,8 @@ pub trait BuildStateAdapter: Send + Sync {
     fn held_name(&self) -> Option<PathName>;
     /// Write a step's `rdm.build.step` event, as the run's writer; only a run's step log writes one.
     async fn write_step(&self, step: &StepWrite) -> Result<(), BuildStateError>;
-    /// The step in flight is blocked for `reason`: live progress, never durable.
-    async fn note_blocked(&self, build_id: &BuildId, operation: &OperationId, step: &str, reason: &str);
+    /// The step in flight is pending for `reason` (its node's `pre_node_ready` answered `Pending`): live progress, never durable.
+    async fn note_pending(&self, build_id: &BuildId, operation: &OperationId, step: &str, reason: &str);
 }
 
 #[async_trait]
