@@ -657,7 +657,7 @@ impl ConnectionsRegistry {
         let trace = Trace::of(&caller_span, Trace::default());
         let own = self.inner.sink.own_birth();
         let conn = dialer
-            .on_send(destination, || dialer.open_direct(&own, destination, &caller_span, trace.clone()))
+            .on_send(destination, |last| dialer.open_direct(&own, destination, &caller_span, trace.clone(), last))
             .await?;
         if let Some(entry) = self.inner.active.lock().unwrap().get_mut(conn.id()) {
             entry._keep_alive = Some(conn.inner.clone());
@@ -1471,21 +1471,23 @@ impl Acceptor {
 }
 
 impl Dialer {
-    /// Open a connection to the exact `destination` birth on this ALPN, on the default `Send`
-    /// (Q344): an open that sent nothing to the destination is made again within its attempts.
+    /// Open a connection to the exact `destination` birth on this ALPN: the route the held
+    /// connections name, the Direct dial on the default `Send` (Q344), then each carrier in the
+    /// spread order.
     pub async fn open(&self, destination: &Birth) -> Result<Connection, ConnectError> {
         let caller_span = tracing::Span::current();
         let trace = Trace::of(&caller_span, Trace::default());
-        self.on_send(destination, || self.open_once(destination, &caller_span, trace.clone())).await
+        self.open_on_route(destination, &caller_span, trace).await
     }
 
-    /// One dial on `Send::default()` (Q344, node-rpc.md §43's schedule): `dial` is made, and made
-    /// again after the schedule's delay while it ends having sent nothing to the destination
-    /// (`NotSent`, or no route after a Direct dial that sent nothing) and attempts are left. A
+    /// One Direct dial on `Send::default()` (Q344, node-rpc.md §43's schedule): `dial` is made, and
+    /// made again after the schedule's delay while it ends `NotSent` (nothing reached the
+    /// destination) and attempts are left; `dial` is told whether its attempt is the last, the one
+    /// whose failure the series' Direct Failed row records (connections.md §9.1: one row per dial). A
     /// refusal, a wrong incarnation or this birth's connections deleted ends it at once.
     async fn on_send<F, Fut>(&self, destination: &Birth, mut dial: F) -> Result<Connection, ConnectError>
     where
-        F: FnMut() -> Fut,
+        F: FnMut(bool) -> Fut,
         Fut: std::future::Future<Output = Result<Connection, ConnectError>>,
     {
         let allowed = u32::from(crate::client::Send::default().attempts.max(1));
@@ -1495,9 +1497,9 @@ impl Dialer {
             if self.registry.inner.deleted.load(Ordering::SeqCst) {
                 return Err(ConnectError::Deleted);
             }
-            let ended = dial().await;
+            let ended = dial(attempt >= allowed).await;
             let reason = match &ended {
-                Err(ConnectError::NotSent { reason }) | Err(ConnectError::NoActiveRoute { direct: Some(reason) }) => reason.clone(),
+                Err(ConnectError::NotSent { reason }) => reason.clone(),
                 _ => {
                     if attempt > 1 && ended.is_ok() {
                         tracing::info_span!("rdm.node.connection.open.via-attempt-connected", destination = %destination.node_id, alpn = %String::from_utf8_lossy(&self.alpn.name), attempt, allowed)
@@ -1519,9 +1521,9 @@ impl Dialer {
         }
     }
 
-    /// One attempt of [`Self::open`]: the route the held connections name, the Direct dial, then
+    /// [`Self::open`] under `caller_span`: the route the held connections name, the Direct dial, then
     /// each carrier in the spread order.
-    async fn open_once(&self, destination: &Birth, caller_span: &tracing::Span, trace: Trace) -> Result<Connection, ConnectError> {
+    async fn open_on_route(&self, destination: &Birth, caller_span: &tracing::Span, trace: Trace) -> Result<Connection, ConnectError> {
         let caller_span = caller_span.clone();
         // A cold discovery's cost runs from the open's start to its Proxy Connected (connections.md §12).
         let begun = std::time::Instant::now();
@@ -1574,7 +1576,7 @@ impl Dialer {
         }
 
         match self
-            .open_direct(&own, destination, &caller_span, trace.clone())
+            .on_send(destination, |last| self.open_direct(&own, destination, &caller_span, trace.clone(), last))
             .await
         {
             Ok(conn) => Ok(conn),
@@ -1622,6 +1624,7 @@ impl Dialer {
         destination: &Birth,
         caller_span: &tracing::Span,
         trace: Trace,
+        last: bool,
     ) -> Result<Connection, ConnectError> {
         #[cfg(feature = "testkit-gossip")]
         if self
@@ -1637,7 +1640,9 @@ impl Dialer {
                 destination.node_id,
                 String::from_utf8_lossy(&self.alpn.name)
             );
-            self.record_direct_failure(own, destination, &reason, caller_span);
+            if last {
+                self.record_direct_failure(own, destination, &reason, caller_span);
+            }
             return Err(ConnectError::NotSent { reason });
         }
         let resolved = match self
@@ -1648,7 +1653,9 @@ impl Dialer {
             Ok(r) => r,
             Err(e) => {
                 let reason = format!("{e:?}");
-                self.record_direct_failure(own, destination, &reason, caller_span);
+                if last {
+                    self.record_direct_failure(own, destination, &reason, caller_span);
+                }
                 return Err(ConnectError::NotSent { reason });
             }
         };
@@ -1659,7 +1666,9 @@ impl Dialer {
         let (quic_conn, mut ctrl_send, mut ctrl_recv, dial) = match self.dial(destination, addr, presented_at, caller_span).await {
             Ok(dialled) => dialled,
             Err(reason) => {
-                self.record_direct_failure(own, destination, &reason, caller_span);
+                if last {
+                    self.record_direct_failure(own, destination, &reason, caller_span);
+                }
                 return Err(ConnectError::NotSent { reason });
             }
         };
@@ -1674,7 +1683,9 @@ impl Dialer {
 
         if let Err(reason) = write_control_msg(&mut ctrl_send, &present).await {
             dial.ended(&reason);
-            self.record_direct_failure(own, destination, &reason, caller_span);
+            if last {
+                self.record_direct_failure(own, destination, &reason, caller_span);
+            }
             return Err(ConnectError::NotSent { reason });
         }
 
@@ -1688,18 +1699,24 @@ impl Dialer {
             Ok(Ok(None)) => {
                 let reason = "acceptor closed control stream before verdict".to_string();
                 dial.ended(&reason);
-                self.record_direct_failure(own, destination, &reason, caller_span);
+                if last {
+                    self.record_direct_failure(own, destination, &reason, caller_span);
+                }
                 return Err(ConnectError::NotSent { reason });
             }
             Ok(Err(reason)) => {
                 dial.ended(&reason);
-                self.record_direct_failure(own, destination, &reason, caller_span);
+                if last {
+                    self.record_direct_failure(own, destination, &reason, caller_span);
+                }
                 return Err(ConnectError::NotSent { reason });
             }
             Err(_) => {
                 let reason = "timed out waiting for admission verdict".to_string();
                 dial.ended(&reason);
-                self.record_direct_failure(own, destination, &reason, caller_span);
+                if last {
+                    self.record_direct_failure(own, destination, &reason, caller_span);
+                }
                 return Err(ConnectError::NotSent { reason });
             }
         };
@@ -1728,7 +1745,9 @@ impl Dialer {
         };
         if let Err(reason) = write_control_msg(&mut ctrl_send, &intent).await {
             dial.ended(&reason);
-            self.record_direct_failure(own, destination, &reason, caller_span);
+            if last {
+                self.record_direct_failure(own, destination, &reason, caller_span);
+            }
             return Err(ConnectError::NotSent { reason });
         }
 
@@ -1737,18 +1756,24 @@ impl Dialer {
             Ok(Ok(None)) => {
                 let reason = "acceptor closed control stream before intent answer".to_string();
                 dial.ended(&reason);
-                self.record_direct_failure(own, destination, &reason, caller_span);
+                if last {
+                    self.record_direct_failure(own, destination, &reason, caller_span);
+                }
                 return Err(ConnectError::NotSent { reason });
             }
             Ok(Err(reason)) => {
                 dial.ended(&reason);
-                self.record_direct_failure(own, destination, &reason, caller_span);
+                if last {
+                    self.record_direct_failure(own, destination, &reason, caller_span);
+                }
                 return Err(ConnectError::NotSent { reason });
             }
             Err(_) => {
                 let reason = "timed out waiting for intent answer".to_string();
                 dial.ended(&reason);
-                self.record_direct_failure(own, destination, &reason, caller_span);
+                if last {
+                    self.record_direct_failure(own, destination, &reason, caller_span);
+                }
                 return Err(ConnectError::NotSent { reason });
             }
         };
