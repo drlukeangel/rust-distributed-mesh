@@ -70,7 +70,7 @@ async fn estate(test: &str) -> Estate {
         .await
         .unwrap_or_else(|e| panic!("the demo's binding set is refused: {e}"));
     estate
-        .reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("gateway", 2), ("broker", 1)])] })
+        .resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("gateway", 2), ("broker", 1)])] })
         .await;
     for node in [broker(), gateway(), carrier()] {
         estate.until_node(&node, &format!("{node:?} ready"), SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;

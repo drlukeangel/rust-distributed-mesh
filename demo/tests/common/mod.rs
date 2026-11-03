@@ -45,7 +45,7 @@ pub async fn estate(feature: &str, test: &str, shape: &[(&str, u32)]) -> Estate 
     let estate = Estate::bootstrap_on(owner, "fabric1", "mesh1", &binding_set(&candidate), &candidate, &["gateway", "broker", "compute"])
         .await
         .unwrap_or_else(|e| panic!("the demo's binding set is refused: {e}"));
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", shape.iter().copied())] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", shape.iter().copied())] }).await;
     for (kind, count) in shape {
         for ordinal in 1..=*count {
             ready(&estate, &PathName::numbered("mesh1", *kind, ordinal)).await;

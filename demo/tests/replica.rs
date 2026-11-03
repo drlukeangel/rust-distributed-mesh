@@ -105,7 +105,7 @@ fn the_gateway_produces_at_the_broker_primary_and_follows_its_election_with_no_a
     tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap().block_on(async {
         let candidate = candidate();
         let estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&candidate), &candidate, &["gateway", "broker"]).await.unwrap_or_else(|e| panic!("the demo's binding set is refused: {e}"));
-        estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("gateway", 1), ("broker", 2)])] }).await;
+        estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("gateway", 1), ("broker", 2)])] }).await;
         let [first_broker, second_broker] = brokers();
         for node in [gateway(), first_broker, second_broker] {
             ready(&estate, &node).await;
