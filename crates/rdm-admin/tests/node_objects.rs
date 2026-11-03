@@ -606,8 +606,8 @@ fn a_create_whose_node_answers_pending_streams_its_reason_once() {
 /// Build ends `incomplete`"; the executor "ends its `WaitForNodeReady` step failed from its Status
 /// `StartFailed { step: node.pre-node-ready, reason }` reply"): a create whose node has joined and
 /// whose start ended Failed at its hook (its hook's attempts spent answering `Pending`) fails
-/// `WaitForNodeReady` at once with the hook's last reason, long before the step's own bound, and the
-/// stream ends `Failed` at `node.create` naming it. Must NOT happen: the step waiting out its bound,
+/// `WaitForNodeReady` at once with the hook's last reason, long before the step's own bound: the node
+/// joined, and the stream ends `Failed` at the node's start naming it. Must NOT happen: the step waiting out its bound,
 /// `node.created` or `Complete`, or the reason lost.
 #[test]
 fn a_create_whose_nodes_start_ended_failed_at_its_hook_fails_its_ready_step_with_the_hooks_reason() {
@@ -630,10 +630,11 @@ fn a_create_whose_nodes_start_ended_failed_at_its_hook_fails_its_ready_step_with
     });
     assert!(end.is_none(), "a failed step ends the stream with its terminal frame: {end:?}");
     let reason = match frames.last() {
-        Some(Frame::Failed { step: NodeStep::Create, reason }) => reason.clone(),
-        other => panic!("the stream ends Failed at node.create, not {other:?}; frames {frames:?}"),
+        Some(Frame::Failed { step: NodeStep::Start, reason }) => reason.clone(),
+        other => panic!("the stream ends Failed at the node's start, not {other:?}; frames {frames:?}"),
     };
-    assert!(reason.contains("rows still not published") && reason.contains("node.pre-node-ready"), "the failure carries the hook's last reason and its step: {reason}");
+    assert!(reason.contains("WaitForNodeReady") && reason.contains("rows still not published") && reason.contains("node.pre-node-ready"), "the failure names the ready wait, the hook's last reason and its step: {reason}");
+    assert!(frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Joined))), "the node joined before its start failed: {frames:?}");
     assert!(took < Duration::from_secs(15), "the step ends on the StartFailed answer, not on its 30 s bound: {took:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Created) | Frame::Complete)), "nothing downstream of the failed start is emitted: {frames:?}");
 }
