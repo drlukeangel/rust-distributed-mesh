@@ -253,7 +253,7 @@ impl FabricStates {
                 change.tracked_build = None;
                 change.notified = false;
                 change.root = None;
-                self.enter(change, FabricState::Pending, me).await;
+                self.enter(change, FabricState::Pending, me, None).await;
                 true
             }
             Some(_) => false,
@@ -297,9 +297,18 @@ impl FabricStates {
         }
     }
 
-    async fn enter(&self, change: &mut Change, next: FabricState, me: &PathName) {
+    /// Enter `next`. Pending is readable at once: no Build completes on a fabric going back to
+    /// pending. Ready is entered in the order fabric-node-hooks.md states (`on_fabric_ready` "after
+    /// the ready state is set"; a resize's Complete "follows its on_fabric_ready"): the Fabric record
+    /// is written `ready` (the state is set), then `on_fabric_ready` is sent for `ready_of`, the
+    /// accepted Build, its span opened before its task is spawned, and only then is Ready readable to
+    /// the drive (`Records::fabric_state`, read by `Gate::fabric_ready`), so no Build's
+    /// `on_build_ended` is written between the state being set and its `on_fabric_ready`.
+    async fn enter(&self, change: &mut Change, next: FabricState, me: &PathName, ready_of: Option<&crate::build_state::BuildProjection>) {
         let from = self.env.records.fabric_state();
-        self.env.records.set_fabric_state(next);
+        if next != FabricState::Ready {
+            self.env.records.set_fabric_state(next);
+        }
         self.env.records.set_fabric_blocker(None);
         change.named = None;
         let parent = change.root.clone().unwrap_or_else(tracing::Span::none);
@@ -316,6 +325,13 @@ impl FabricStates {
             Err(e) => span.record("record", "not-written").record("error", e.as_str()),
         };
         span.in_scope(|| tracing::info!("the fabric-primary entered a fabric state"));
+        if next == FabricState::Ready {
+            if let Some(build) = ready_of.filter(|_| !change.notified) {
+                change.notified = true;
+                self.notify_fabric_ready(build, parent, me.clone());
+            }
+            self.env.records.set_fabric_state(FabricState::Ready);
+        }
         self.env.records.wake.poke();
     }
 
@@ -376,12 +392,8 @@ impl FabricStates {
         change.named = None;
         tracing::info_span!(parent: &root, "rdm.node_admin.fabric.update.via-every-mesh-ready", node_path = %me.path, node_name = %me.name, build_id = %build.build_id.log(), "otel.kind" = "internal")
             .in_scope(|| tracing::info!("every mesh is ready: the fabric is ready"));
-        change.root = Some(root.clone());
-        self.enter(change, FabricState::Ready, &me).await;
-        if !change.notified {
-            change.notified = true;
-            self.notify_fabric_ready(build, root, me);
-        }
+        change.root = Some(root);
+        self.enter(change, FabricState::Ready, &me, Some(build)).await;
         change.root = None;
     }
 
@@ -406,12 +418,12 @@ impl FabricStates {
     }
 
     /// The one notice to the application: the fabric is ready (Q175, `on_fabric_ready`). It is
-    /// fire and forget and gates nothing.
+    /// fire and forget and gates nothing. Its span is opened here, before its task is spawned.
     fn notify_fabric_ready(&self, build: &crate::build_state::BuildProjection, parent: tracing::Span, me: PathName) {
         let hook = self.env.hooks.on_fabric_ready.clone();
         let (fabric_id, build_id) = (self.env.fabric_id.clone(), build.build_id.clone());
+        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-on-fabric-ready", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), bound = hook.is_some(), "otel.kind" = "internal");
         tokio::spawn(async move {
-            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-on-fabric-ready", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), bound = hook.is_some(), "otel.kind" = "internal");
             async {
                 let Some(hook) = hook else {
                     tracing::info!("no on_fabric_ready hook is registered");
