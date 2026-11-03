@@ -3,7 +3,7 @@
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [Op contracts](../node-rpc-envelope.md#the-op-ledger)
 
 This page owns the fabric, mesh and node lifecycle states, who sets each, setting a state and
-its checklist, the one routing rule, stopped nodes, and resize and executable replacement. Each workflow's sequence
+its checklist, the one routing rule, stopped nodes, and resize and a new executable. Each workflow's sequence
 lives on its own page; op fields and enums live only in the
 [envelope](../node-rpc-envelope.md#status-op-0x1b-rdm); how a state travels to peers is
 [gossip](../gossip.md#31-frame-catalog).
@@ -33,11 +33,11 @@ Neither a Build nor the rectifier ever declares the fabric ready.
 | node stopping | the node's mesh-primary | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |
 | node stopped | the node's mesh-primary | the matching stopped frame on the stop call's stream |
 | node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's admission at its mesh-primary, published as NodeDeleting |
-| node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's step receipt |
+| node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's step event |
 | mesh Pending | the node-admin that launched the mesh's first admin | one ApplyMeshState(Pending) sent after the launched birth answers Ping, waiting at most 20 s for that reachability (RDM's `apply_mesh_state` in `rdm-admin`) |
 | mesh ready | the fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and the state is durable at that write; the declaration stays owed until then and is answered `Applied` again if repeated (Q144). The write that first puts it on the record calls [`on_mesh_ready`](../fabric-node-hooks.md#on_mesh_ready) | its mesh-primary's report that every planned birth is ready |
 | mesh deleting | the mesh-primary | the fabric-primary's DeleteMesh admission (mesh.deleting) |
-| mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete receipts; never an op |
+| mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete step events; never an op |
 | fabric ready | the fabric-primary | every mesh the accepted Build names ready; the fabric-primary then calls [`on_fabric_ready`](../fabric-node-hooks.md#on_fabric_ready) |
 
 start and stop are workflows the node runs, and each primitive is one command: the node's acknowledgement of a command sets its "ing" state (starting, stopping, connections-deleting, leaving), its completion sets the "ed" state (ready, stopped, connections-deleted, left), and each is the row's one status, never a second field. delete is the mesh-primary's workflow: no delete command reaches the node; the mesh-primary writes deleting from the delete's admission, composes the node's stop, whose frames move the row as above, terminates the exact runtime and writes deleted from the receipt. A query answers the state the row last took from the node's frame or the mesh-primary's receipt; a command the node has not acknowledged moves the row nowhere. Where no node can report, the mesh-primary writes the state itself: a create's starting from the launch, and an exited node's deleting and deleted from the admission and the step's outcome.
@@ -163,10 +163,10 @@ are separate facts.
   counts a check-in once per (state, birth) and answers a repeat `AlreadyApplied`.
 - A primary counts only check-ins that arrive after it receives this state's command.
 
-## Resize and executable replacement
+## Resize and a new executable
 
 A node's `config` and `tags` change by its own commands ([node.config.update](node-config-update.md), node.tags.create and node.tags.delete), never by a Build ([build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine), Q342), and the fabric stays ready.
 
-A resize, a Create or a Delete, puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build stays in progress, never Complete. A new executable is a new node with a new NodeId and incarnation, a Build that adds it ([build-deployment.md](../build-deployment.md)); a stop and a start retain the same process and executable. The mesh cannot report ready, and the fabric cannot change, until the Build's last planned birth is ready.
+A resize, a Create or a Delete, puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build stays in progress, never Complete. A new executable is a new node with a new NodeId and incarnation, a Build that adds it ([build-deployment.md](../build-deployment.md)); a stop and a start retain the same process and executable. The mesh cannot report ready, and the fabric cannot change, until the Build's last planned node is ready.
 
 See [the fabric's ready](#the-fabrics-ready) and [mesh.delete](mesh-delete.md).

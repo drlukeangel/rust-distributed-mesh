@@ -127,7 +127,7 @@ struct Change {
     root: Option<tracing::Span>,
     notified: bool,
     /// The accepted topology the fabric changes under: a Build that changes it (a resize or an executable
-    /// replacement) puts the fabric back to pending (states.md, "Resize and executable replacement").
+    /// replacement) puts the fabric back to pending (states.md, "Resize and a new executable").
     tracked: Option<FabricTopology>,
     /// The Build whose topology `tracked` is. One Build's topology never changes: an admin that held the
     /// Build as heard on gossip (no executables) and reads it from the store root once fabric-primary
@@ -270,7 +270,7 @@ impl FabricStates {
         }
     }
 
-    /// A Build this fabric-primary has just accepted (states.md, Resize and executable replacement: "A resize or an executable replacement puts
+    /// A Build this fabric-primary has just accepted (states.md, Resize and a new executable: "A resize or an executable replacement puts
     /// the fabric back to pending"): when the current Build's topology is not the one the fabric changes
     /// under, the fabric is back to pending now, inside the acceptance and before its door answers, and
     /// the status loop is woken to send the state at once. No read after the answer pairs the accepted
@@ -943,7 +943,7 @@ mod tests {
         assert_eq!(blockers, [format!("node_id={rpc2}(not-ready)")], "the birth that is not stopped and not ready still blocks, the stopped one is not named");
     }
 
-    /// CONTRACT (states.md, Resize and executable replacement: a Build that changes the accepted topology
+    /// CONTRACT (states.md, Resize and a new executable: a Build that changes the accepted topology
     /// puts the fabric back to pending; a primary change or a stop "leaves the topology unchanged"): an
     /// admin that held the current Build as heard on gossip (no executables) and, fabric-primary now, reads
     /// it from the store root (executables named) holds two copies of one Build's topology. The fabric

@@ -256,7 +256,7 @@ async fn followed(estate: &Estate, stream: BuildStream, what: &str, within: Dura
     tokio::time::timeout(within, estate.follow(stream)).await.unwrap_or_else(|_| panic!("{what}: no Complete within {within:?}"))
 }
 
-/// CONTRACT (Q154; states.md "Resize and executable replacement": "Its Build is Complete only when the fabric is
+/// CONTRACT (Q154; states.md "Resize and a new executable": "Its Build is Complete only when the fabric is
 /// ready again from this Build's own change, as fabric.create's is"; build.md §10: "A Build
 /// that put the fabric back to pending completes when its ready state is set, not with its
 /// last step"; fabric-node-hooks.md: "A node never reaches Ready while its hook has not returned

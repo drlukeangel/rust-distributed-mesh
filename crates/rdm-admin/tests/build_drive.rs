@@ -1388,7 +1388,7 @@ impl Gate for FabricChange {
     }
 }
 
-/// CONTRACT (Q154; states.md "Resize and executable replacement": "Its Build is Complete only when the fabric is
+/// CONTRACT (Q154; states.md "Resize and a new executable": "Its Build is Complete only when the fabric is
 /// ready again from this Build's own change ... while the fabric changes, the Build reports
 /// Blocked naming the change, never Complete"; build.md §1: every accepted Build is reconciled, "Every
 /// execution attempt re-reads the accepted topology and current realized/observed state and computes
@@ -1431,7 +1431,7 @@ async fn a_build_with_nothing_to_execute_is_started_and_complete_once_the_fabric
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran: {:?}", r.ran.0.lock().unwrap());
 }
 
-/// CONTRACT (states.md "Resize and executable replacement": "Its Build is Complete only when the fabric is
+/// CONTRACT (states.md "Resize and a new executable": "Its Build is Complete only when the fabric is
 /// ready again from this Build's own change, as fabric.create's is"; fabric-create.md, Completion:
 /// "`fabric.created` when the fabric is ready"): the Day-0 Build (fabric.create's: the bootstrap admin
 /// alone, no change submitted) is started and holds its end while the fabric is pending. Its

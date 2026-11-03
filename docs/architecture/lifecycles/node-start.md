@@ -21,7 +21,7 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
 
 1. A stopped process remains the same exact
    runtime and keeps its endpoint/port; it does not start a new process or load a new executable.
-2. Run [node.mesh.join](node-mesh-join.md): `JoinNode` on the accepting primary, the answer's name, cert
+2. Run [node.mesh.join](node-mesh-join.md): `JoinNode` on its node-admin, the answer's name, cert
    and rafka-time installed, the mesh channel joined (and the backbone, a node-admin), `node.mesh.joined`. FirstStart makes it the process's first
    outbound call; AfterStop rejoins the same `(node.id, incarnation)` over the endpoint and path of
    the call that commanded it, and learns who answered from the answer. Emit
@@ -40,7 +40,7 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
 3. Run [pre_node_ready](../fabric-node-hooks.md#pre_node_ready) with the
    start kind and inherited-data-dir indication. The app subscribes its kind topics
    through the joined channel and reads no topology snapshot as a prerequisite.
-   Ready waits for the hook; its Ok, Blocked and Failed outcomes, the Blocked probe
+   Ready waits for the hook; its `Ok`, `Pending` and `Failed` answers under the hook's `Send`, the `Pending` probe
    answer and cancellation follow [Outcomes and the gate](../fabric-node-hooks.md#outcomes-and-the-gate).
 4. Satisfy the required Build floor after the hook. Read committed facts from Build storage
    only when the node is below the primary's floor: the current Build when no pointer is known,
@@ -54,7 +54,7 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    Preserve retained own properties. Do not fetch topology before
    the Build-floor check and do not issue a second topology request just to refresh time.
 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot nor a
-   Blocked hook permits it. That frame is the node's report: the mesh-primary sets
+   `Pending` hook permits it. That frame is the node's report: the mesh-primary sets
    Ready on that exact birth through the [node status](node-status.md) apply,
    not a caller op. The node also declares Ready to its mesh-primary as an owed message, as it declares
    Stopped (Q36, Q87); frame and declaration apply once (Q49). A typed

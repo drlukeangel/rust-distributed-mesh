@@ -865,7 +865,7 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     estate.record_trace_url(reconciles[0]["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (states.md:16, Q240; "Resize and executable replacement"): a stopped birth holds neither its
+/// CONTRACT (states.md:16, Q240; "Resize and a new executable"): a stopped birth holds neither its
 /// mesh's ready nor the fabric's checklist. mesh1 {1 node-admin, 1 node} and mesh2 {1 node-admin,
 /// 2 nodes}, ready; `node.stop` of mesh2's node that is not its node-type primary completes;
 /// then a resize grows mesh2 to 3 nodes. The resize Build ends Complete, the fabric-primary's change

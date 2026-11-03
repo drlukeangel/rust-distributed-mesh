@@ -70,7 +70,7 @@ pub struct ControlPlane {
     pub build_submitted: Arc<Notify>,
     /// The fabric's change told of a Build this admin accepted, before the door answers it: a resize, a
     /// Create or a Delete, puts the fabric back to pending inside the acceptance (states.md,
-    /// Resize and executable replacement), and the
+    /// Resize and a new executable), and the
     /// view this admin answers from holds it. Set once by the admin that owns the change.
     pub resize: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
     /// The rafka-time this admin stamps its Builds with.

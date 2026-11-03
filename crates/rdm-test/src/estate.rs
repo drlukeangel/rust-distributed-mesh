@@ -809,7 +809,7 @@ impl Estate {
         // The estate started the Day-0 Build by starting its admin, so it follows that Build to its
         // Complete before a cell submits anything: a cell's first build.create is never refused for a
         // Build in progress it did not start. The Day-0 Build is Complete only from its own
-        // ready (states.md "Resize and executable replacement": "as fabric.create's is").
+        // ready (states.md "Resize and a new executable": "as fabric.create's is").
         let day_zero = day_zero.unwrap_or_else(|| panic!("the bootstrap admin {:?} holds fabric {} and no current Build: its Day-0 Build is accepted before it serves", estate.admin, estate.fabric_id));
         let id = rdm_client::BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names the current Build {day_zero}, not a Build id: {e}"));
         let mut stream = estate.carrier().await.resubmit(&id).await.unwrap_or_else(|e| panic!("the bootstrap admin does not stream its Day-0 Build {id}: {e}"));

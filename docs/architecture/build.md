@@ -481,7 +481,7 @@ Application work enters a lifecycle only through [Fabric and node hooks](fabric-
 
 SN/MN/MM are minimum test rungs, not caps. Lifecycle eligibility should usually derive from the accepted Build rather than hard-coded `if shape == MM` branches.
 
-The Fabric leaves `pending` when every Mesh the accepted Build names is ready (every planned member ready), and only then ([States](lifecycles/states.md#states), Q174). A Build that put the fabric back to pending completes when its ready state is set, not with its last step ([States](lifecycles/states.md#resize-and-executable-replacement)).
+The Fabric leaves `pending` when every Mesh the accepted Build names is ready (every planned member ready), and only then ([States](lifecycles/states.md#states), Q174). A Build that put the fabric back to pending completes when its ready state is set, not with its last step ([States](lifecycles/states.md#resize-and-a-new-executable)).
 
 For a node-admin's `Pending -> Ready` transition, required generic hydration includes:
 

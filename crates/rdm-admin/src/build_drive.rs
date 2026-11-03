@@ -1032,7 +1032,7 @@ impl DriveEnv {
             }
             if ops.is_empty() {
                 // A Build that changes the fabric is Complete only once the fabric's ready state is set
-                // from its change (Q154; states.md "Resize and executable replacement").
+                // from its change (Q154; states.md "Resize and a new executable").
                 if changes_the_fabric(&p) && !self.gate.fabric_ready() {
                     let why = format!("path {me_path:?}, name {me_name:?}: every operation of Build {id} is done, and the Build is Complete only once the fabric's ready state is set", me_path = &me.path, me_name = &me.name);
                     self.blocked(drive, &rdm_core::OperationId::unscoped("fabric.change"), "fabric-change", &why);

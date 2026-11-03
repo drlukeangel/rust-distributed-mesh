@@ -1914,7 +1914,7 @@ mod tests {
         assert_eq!(status("mesh2"), ScopeStatus::Ready, "every node of mesh2 is ready");
     }
 
-    /// CONTRACT (states.md, "Resize and executable replacement"): the nodes a mesh is counted over are the accepted
+    /// CONTRACT (states.md, "Resize and a new executable"): the nodes a mesh is counted over are the accepted
     /// Build's planned births. A planned birth the view has not heard keeps its mesh `pending`, and a
     /// mesh planned and not yet created is not listed. Must NOT happen: a mesh ready because
     /// the births that happen to be heard are ready.
