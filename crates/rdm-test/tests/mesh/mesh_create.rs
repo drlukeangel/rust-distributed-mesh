@@ -11,8 +11,9 @@
 //!
 //! "Who executed" is read from each Build's step events (each event's `source` is its writer's
 //! birth, build.md §5) and from the evidence: every `node.create.via-build` /
-//! `node.delete.via-build` span sits under the section span (`build.serve.via-attempt-run`, or
-//! `build.serve.via-own-section` on the fabric-primary's own mesh) of the expected admin.
+//! `node.delete.via-build` span sits under the run of its section (`build.update.via-reconcile`,
+//! naming its `executor_node_id`) at the expected admin, whether the section came by
+//! `build.attempt.run` or is the fabric-primary's own.
 
 use crate::build_log;
 use rdm_core::{NodeId, PathName};
@@ -66,21 +67,19 @@ fn operation<'a>(spans: &'a [Value], span_name: &str, node: &PathName, build_id:
         .unwrap_or_else(|| panic!("no {span_name} for {node:?} under {build_id}"))
 }
 
-/// The node id of the admin whose section ran `span_name` for `node` under `build_id`: the section span
-/// above the operation, its admin by path and name among `nodes`.
-fn executed_by(spans: &[Value], span_name: &str, node: &PathName, build_id: &str, nodes: &[Value]) -> String {
+/// The node id of the admin whose section ran `span_name` for `node` under `build_id`: the section's
+/// run above the operation (`build.update.via-reconcile`), which names its executor's node id.
+fn executed_by(spans: &[Value], span_name: &str, node: &PathName, build_id: &str) -> String {
     let op = named(spans, span_name)
         .into_iter()
         .find(|s| actor_is(s, node) && s["attributes"]["build_id"] == build_id)
         .unwrap_or_else(|| panic!("no {span_name} for {node:?} under {build_id}"))
         .clone();
-    let section = ["rdm.node_admin.build.serve.via-attempt-run", "rdm.node_admin.build.serve.via-own-section"]
-        .iter()
-        .flat_map(|name| named(spans, name))
+    let section = named(spans, "rdm.node_admin.build.update.via-reconcile")
+        .into_iter()
         .find(|r| r["attributes"]["build_id"] == build_id && descends_from(spans, &op, r))
-        .unwrap_or_else(|| panic!("{node:?}: no section of {build_id} above its operation"));
-    let at = location(section["attributes"]["node_path"].as_str().unwrap_or_default(), section["attributes"]["node_name"].as_str().unwrap_or_default());
-    nodes.iter().find(|n| n["path"] == at.path.as_str() && n["name"] == at.name.as_str()).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("the section's admin {at:?} is in the view"))
+        .unwrap_or_else(|| panic!("{node:?}: no section run of {build_id} above its operation {op}"));
+    s(&section["attributes"]["executor_node_id"])
 }
 
 /// The node id of the writer of `build`'s last step event (the Build view's JSON): each event's
@@ -158,15 +157,15 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     // test is not the creator's role. The second admin is created by mesh2's own primary, which at
     // that moment is the only admin mesh2 has (node-admin-lifecycle.md 4.3).
     let op = operation(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "1"), &create);
-    let creator = executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "1"), &create, &nodes);
+    let creator = executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "1"), &create);
     assert_eq!(fabric_primary_seen_by(&spans, &creator, op), creator, "mesh2.node-admin.1: created by the admin holding the fabric-primary role when it ran");
-    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "2"), &create, &nodes), s(&first_admin["node_id"]), "mesh2.node-admin.2: created by mesh2's own primary");
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "2"), &create), s(&first_admin["node_id"]), "mesh2.node-admin.2: created by mesh2's own primary");
     for name in ["1", "2", "3"] {
         let r = location("mesh2.node", name);
-        assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &r, &create, &nodes), mesh2_primary, "{r:?}: mesh2's primary creates its members");
+        assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &r, &create), mesh2_primary, "{r:?}: mesh2's primary creates its members");
     }
-    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node", "4"), &grow, &nodes), mesh2_primary);
-    assert_eq!(executed_by(&spans, "rdm.node_admin.node.delete.via-build", &location("mesh2.node", "4"), &shrink, &nodes), mesh2_primary);
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node", "4"), &grow), mesh2_primary);
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.delete.via-build", &location("mesh2.node", "4"), &shrink), mesh2_primary);
     // The Pending hand-off (e4.s11): once mesh2's first admin is born, the fabric primary applies
     // MeshStatus::Pending at that exact birth, and only then does the shape proceed. Evidence names
     // the sender's birth, the target's birth, the exact mesh identity and the applied state.

@@ -1230,6 +1230,11 @@ impl Run<'_> {
     pub(crate) fn is_done(&self, step: &str) -> bool {
         self.done.contains_key(step)
     }
+
+    /// Whether `step`'s event ended `complete` and its value was given from what is durable.
+    fn holds(&self, step: &str) -> bool {
+        self.done.get(step).is_some_and(|v| v.as_ref().is_some_and(|v| !v.is_null()))
+    }
 }
 
 /// The exact birth an event's `source` names (`rdm://<fabric_id>/<node_id>/<incarnation>`).
@@ -1510,35 +1515,61 @@ impl DeploymentPipeline<'_> {
         }
     }
 
-    /// The values the create's completed steps hand on, read from what is durable (D67): the birth its
-    /// node record names (AllocateIdentity), the runtime its durable runtime row names (DeployRuntime),
-    /// and the endpoint key its data dir holds (PrepareStorage). A value with no durable source is not
-    /// given, and its step runs again.
+    /// The values the create's completed steps hand on, read from what is durable (D67), whoever wrote
+    /// the steps' events (a mesh's new mesh-primary runs on from them):
+    /// - AllocateIdentity: the birth the node record's allocation names for this operation, else its
+    ///   newest birth;
+    /// - PrepareStorage: the endpoint key the birth's data dir holds;
+    /// - DeployRuntime through MakeRuntimeFactAvailableToBirth: the birth's exact runtime, as its
+    ///   durable runtime row names it (written at its join's admission), else as its data dir's runtime
+    ///   record (`runtime.json`, written by MakeRuntimeFactAvailableToBirth) names the deployment the
+    ///   allocation minted;
+    /// - WaitForBind: the transport address and listeners the birth bound, as it wrote them on its own
+    ///   part of its record at its join (`NodeProperties`);
+    /// - PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata: the runtime with its data dir.
+    ///
+    /// A value with no durable source is not given, and its step runs again, with every step after it.
     async fn give_create_values(&self, run: &mut Run<'_>, req: &CreateRequest) {
         if !run.is_done(CreateStep::AllocateIdentity.name()) {
             return;
         }
         let Some(rows) = self.sink.node_rows() else { return };
         let Ok(Some(row)) = rows.written().known_row(&**rows.storage(), &req.node_id).await else { return };
-        let Some(birth) = row.newest_birth() else { return };
-        let runtime = self.joins.durable_report(&req.node_id, &birth.incarnation_id).await.ok().flatten();
-        let deployment_id = match (&row.allocated, &runtime) {
-            (Some(a), _) if a.incarnation == birth.incarnation_id => Some(a.deployment_id.clone()),
-            (_, Some(r)) => DeploymentId::parse(&r.runtime.deployment_id).ok(),
-            _ => None,
+        let allocated = row.allocated.as_ref().filter(|a| a.operation == run.operation && a.build_id.as_ref() == req.build_id.as_ref());
+        let Some(incarnation) = allocated.map(|a| a.incarnation.clone()).or_else(|| row.newest_birth().map(|b| b.incarnation_id.clone())) else { return };
+        let minted = row.allocated.as_ref().filter(|a| a.incarnation == incarnation).map(|a| a.deployment_id.clone());
+        let runtime_row = self.joins.durable_report(&req.node_id, &incarnation).await.ok().flatten();
+        let data_dir = runtime_row.as_ref().and_then(|r| r.data_dir.as_deref()).map(PathBuf::from).or_else(|| req.data_dir.clone()).unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &req.node_id));
+        let fact = match (runtime_row, &minted) {
+            (Some(r), _) => Some(r.runtime),
+            (None, Some(minted)) => {
+                let dir = data_dir.clone();
+                let record = crate::blocking::blocking_io(move || RuntimeFact::read_record(&dir)).await.and_then(Result::ok);
+                record.filter(|f| f.deployment_id == minted.as_str())
+            }
+            (None, None) => None,
         };
-        let Some(deployment_id) = deployment_id else { return };
-        run.given(CreateStep::AllocateIdentity.name(), &Identity { node_id: req.node_id.clone(), incarnation: birth.incarnation_id.clone(), supersedes: None, deployment_id });
-        let data_dir = req.data_dir.clone().unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &req.node_id));
+        let Some(deployment_id) = minted.or_else(|| fact.as_ref().and_then(|f| DeploymentId::parse(&f.deployment_id).ok())) else { return };
+        run.given(CreateStep::AllocateIdentity.name(), &Identity { node_id: req.node_id.clone(), incarnation: incarnation.clone(), supersedes: None, deployment_id });
         if run.is_done(CreateStep::PrepareStorage.name()) {
             let dir = data_dir.clone();
             if let Ok(key) = crate::blocking::blocking_io(move || load_transport_key(&dir)).await {
                 run.given(CreateStep::PrepareStorage.name(), &key);
             }
         }
-        if let Some(handle) = runtime.as_ref().and_then(|r| super::provider::adopt(self.provider, &r.runtime).ok()) {
-            run.given(CreateStep::DeployRuntime.name(), &handle);
+        let Some(fact) = fact else { return };
+        let Ok(handle) = super::provider::adopt(self.provider, &fact) else { return };
+        run.given(CreateStep::DeployRuntime.name(), &handle);
+        for step in [CreateStep::RegisterExactRuntimeHandle, CreateStep::ResolveProviderControlDomain, CreateStep::MakeRuntimeFactAvailableToBirth] {
+            run.given(step.name(), &RuntimeEvidence::of(&fact));
         }
+        if run.is_done(CreateStep::WaitForBind.name()) {
+            let bound = rows.storage().properties(&req.node_id).await.ok().flatten().filter(|p| p.birth.node_id == req.node_id && p.birth.incarnation_id == incarnation);
+            if let Some(transport) = bound.as_ref().and_then(|p| p.transport_addr) {
+                run.given(CreateStep::WaitForBind.name(), &Bound { transport, listeners: bound.map(|p| p.listeners).unwrap_or_default() });
+            }
+        }
+        run.given(CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), &RuntimeEvidence { data_dir: Some(data_dir.display().to_string()), ..RuntimeEvidence::of(&fact) });
     }
 
     /// A runtime launched by an executor that is not this one and never joined this one (`recorded`:
@@ -1897,8 +1928,13 @@ impl DeploymentPipeline<'_> {
                 self.0.end(&self.1, &self.2);
             }
         }
-        let _forget = Forget(self.joins, id.node_id.clone(), build_log(req.build_id.as_ref()));
+        // A run that holds the birth's bound addresses and its admitted join from what is durable (an
+        // earlier run's, another executor's included) waits for no report: it registers nothing, so
+        // its end leaves no deployment that never heard its birth.
+        let joined_before = run.reusing && run.holds(CreateStep::WaitForBind.name()) && run.is_done(CreateStep::WaitForMeshJoin.name());
+        let _forget = (!joined_before).then(|| Forget(self.joins, id.node_id.clone(), build_log(req.build_id.as_ref())));
         let reported = match handle.fact() {
+            Some(_) if joined_before => None,
             Some(runtime) => Some(self.joins.expect(Deployed { mesh: req.mesh.clone(), r#type: req.r#type.clone(),
                 path: req.path.clone(), name: req.name.clone(),
                 node_id: id.node_id.clone(),
