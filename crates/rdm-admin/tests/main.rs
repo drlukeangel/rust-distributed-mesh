@@ -259,6 +259,7 @@ mod connections_writer;
 mod container_proof;
 mod container_unsupported;
 mod current_build;
+mod declared_types;
 #[cfg(feature = "file-backend")]
 mod fabric_handover;
 mod fabric_delete_admission;

@@ -866,15 +866,11 @@ impl AdminRunner {
     pub(crate) async fn create_over(&self, builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, read_exited: bool, executable: Option<&rdm_core::binding::Binding>, requested: Option<(&CreateRequest, crate::node_rows::RowFor)>) -> Result<(), crate::executor::RunEnd> {
         let (exited, _) = self.exited_birth("node.create", node, from).await?;
         let (mesh, r#type) = requested.map(|(req, _)| (req.mesh.clone(), req.r#type.clone())).unwrap_or_else(|| (exited.mesh.clone(), exited.r#type.clone()));
-        // A node-admin created into a mesh with no other live node-admin is that mesh's first admin, as
-        // every node.create of one is: it takes the mesh's issuing material and the fabric primary's
-        // Pending hand-off before it is asked to be Ready (e4.s11; node-create.md "A node-admin
-        // created into a live mesh").
-        // A recovery re-creates a node-admin only for a mesh with no live node-admin left to recover it
-        // (node-recovery.md "Execution", Q335): an admin of that mesh this view still holds unheard is
-        // not live, and the re-created admin, which finds none live either, waits for the hand-off.
-        let first_admin = self.topology.read().await.first_admin_of(node, &mesh, &r#type);
-        let pre_node_ready = if first_admin { Some(self.mesh_state_hook(&mesh, self.held_mesh_state(&mesh))?) } else { None };
+        // A node-admin a recovery re-creates into its live mesh is handed no state: it installs the
+        // maker's complete topology snapshots, is mesh-primary under the election and, as the mesh's
+        // successor primary, adopts the mesh's held state (node-create.md "A node-admin created into a
+        // live mesh" steps 2 and 4; D65).
+        let pre_node_ready = None;
         // A recovery's create names no executable: the launch runs the one the exited birth's row records,
         // on both arms (node-recovery.md "Retained": never the recovering admin's): the new node's config
         // and executable are seeded from that Deleted row by the create's name claim (`NodeRows::claim`),
