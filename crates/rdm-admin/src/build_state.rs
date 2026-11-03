@@ -2723,7 +2723,7 @@ mod tests {
         let first = step("b1", 1, rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&location)));
         let mut variants = vec![first.clone()];
         let mut changed = first.clone();
-        changed.operation.recipe_step = Some(2);
+        changed.operation.step = Some(2);
         variants.push(changed);
         let mut changed = first.clone();
         changed.step = "Complete".into();

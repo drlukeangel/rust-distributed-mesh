@@ -145,7 +145,7 @@ impl RecoverySubmitter {
                 incarnation_id = %incarnation,
                 submitter = %self.me_id,
                 announced,
-                operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step,
+                operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
                 build_id = %build_id,
                 attempt,
                 verdict = verdict_name(&outcome),

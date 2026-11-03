@@ -621,7 +621,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     // The replace's steps, each keyed by its action and its position in the accepted steps.
     let step_keys = ["node.connection.delete", "node.mesh.leave", "node.update", "node.stop", "node.create", "node.delete"];
     for (i, action) in step_keys.iter().enumerate() {
-        assert!(resume.completed.iter().any(|(op, step)| op.action == *action && op.recipe_step == Some(i as u32 + 1) && step == "Complete"), "build.get holds the Complete receipt of step {} ({action}): {resume:?}", i + 1);
+        assert!(resume.completed.iter().any(|(op, step)| op.action == *action && op.step == Some(i as u32 + 1) && step == "Complete"), "build.get holds the Complete receipt of step {} ({action}): {resume:?}", i + 1);
     }
     // Step 3: P issues no write once it finished its issued writes: it decides no claim after.
     let late: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &p) && at_ns(sp) > sp_end(&finished) && matches!(attr(sp, "outcome").as_str(), "won" | "lost" | "not-open")).collect();

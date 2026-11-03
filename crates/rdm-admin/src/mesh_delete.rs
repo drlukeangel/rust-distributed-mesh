@@ -580,7 +580,7 @@ where
     if &last(own)? == me && predecessors_deleted {
         let amendments = chain.len();
         if amendments > 0 {
-            tracing::info_span!("rdm.node_admin.mesh.resolve.via-own-build-facts", operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, me = %named(me), first_primary = %named(&first), amendments)
+            tracing::info_span!("rdm.node_admin.mesh.resolve.via-own-build-facts", operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, me = %named(me), first_primary = %named(&first), amendments)
                 .in_scope(|| tracing::info!("this admin's own Build facts hold the amendment that names it final primary: it runs the roster captured once plus every amendment, reading the owner for nothing"));
         }
         return Ok((amended_roster(roster, own, operation)?, Vec::new()));
@@ -589,7 +589,7 @@ where
     let all: Vec<BuildStepReceipt> = own.iter().cloned().chain(known.iter().cloned()).collect();
     let final_primary = last(&all)?;
     let amendments = amendment_chain(&first, &all, operation)?.len();
-    tracing::info_span!("rdm.node_admin.mesh.resolve.via-owner-build-facts", operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, me = %named(me), final_primary = %named(&final_primary), amendments, owner_receipts = known.len())
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-owner-build-facts", operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, me = %named(me), final_primary = %named(&final_primary), amendments, owner_receipts = known.len())
         .in_scope(|| tracing::info!("this admin's own Build facts do not name it final primary, or do not hold every predecessor's finished delete: the owner's Build facts are read for the amendments and the receipts"));
     if &final_primary != me {
         return Err(format!("{operation:?}: {} is not the final primary: the owner's Build facts name {} after {amendments} amendment(s), so no member is stopped", named(me), named(&final_primary)));
@@ -1219,11 +1219,11 @@ pub fn workflow_order(held: &MeshDeleteKey, offered: &MeshDeleteKey) -> Workflow
 pub fn refuse_workflow(call: &'static str, held: &MeshDeleteKey, offered: &MeshDeleteKey) -> StatusReply {
     let (h, o) = (held.identity(), offered.identity());
     if workflow_order(held, offered) == WorkflowOrder::Earlier {
-        tracing::info_span!("rdm.node_admin.mesh.reject.via-stale-workflow", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation.action, held_operation_subject = ?h.operation.subject, held_operation_step = ?h.operation.recipe_step, held_operation_occurrence = ?h.operation.occurrence, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation.action, operation_subject = ?o.operation.subject, operation_step = ?o.operation.recipe_step, operation_occurrence = ?o.operation.occurrence)
+        tracing::info_span!("rdm.node_admin.mesh.reject.via-stale-workflow", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation.action, held_operation_subject = ?h.operation.subject, held_operation_step = ?h.operation.step, held_operation_occurrence = ?h.operation.occurrence, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation.action, operation_subject = ?o.operation.subject, operation_step = ?o.operation.step, operation_occurrence = ?o.operation.occurrence)
             .in_scope(|| tracing::info!("the call names an earlier attempt of the workflow held for the mesh: it is refused by name and nothing is admitted"));
         rdm_core::reply::status::rejected_stale_workflow(h, o)
     } else {
-        tracing::info_span!("rdm.node_admin.mesh.reject.via-conflicting-workflow", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation.action, held_operation_subject = ?h.operation.subject, held_operation_step = ?h.operation.recipe_step, held_operation_occurrence = ?h.operation.occurrence, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation.action, operation_subject = ?o.operation.subject, operation_step = ?o.operation.recipe_step, operation_occurrence = ?o.operation.occurrence)
+        tracing::info_span!("rdm.node_admin.mesh.reject.via-conflicting-workflow", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation.action, held_operation_subject = ?h.operation.subject, held_operation_step = ?h.operation.step, held_operation_occurrence = ?h.operation.occurrence, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation.action, operation_subject = ?o.operation.subject, operation_step = ?o.operation.step, operation_occurrence = ?o.operation.occurrence)
             .in_scope(|| tracing::info!("the call names a workflow of the mesh that is not the one held nor an attempt it admits: it is refused by name and nothing is admitted"));
         rdm_core::reply::status::rejected_conflicting_workflow(h, o)
     }
@@ -1846,7 +1846,7 @@ mod tests {
         assert_eq!(serde_json::from_value::<ManifestReference>(serde_json::to_value(&reference).unwrap()).unwrap(), reference);
         assert!(serde_json::from_value::<ManifestReference>(serde_json::json!("build/2/mesh.delete:mesh/other-members-exited")).is_err());
         let mut changed = reference.clone();
-        changed.operation.recipe_step = Some(1);
+        changed.operation.step = Some(1);
         assert_eq!(recorded_attempt(&changed, &key), None);
         changed = reference.clone(); changed.attempt = 4;
         assert_eq!(recorded_attempt(&changed, &key), None);

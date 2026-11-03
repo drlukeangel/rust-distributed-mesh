@@ -643,7 +643,7 @@ impl BuildExecutor {
         span.record("incomplete", reason.as_str());
         let me = self.executor.clone();
         let to = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone()).unwrap_or(me.node_id);
-        tracing::info!(operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().recipe_step, reason = %reason, to = %to, "the operation ended incomplete: its receipts stand, the attempt is handed to the fabric-primary and the Build stays in progress");
+        tracing::info!(operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().step, reason = %reason, to = %to, "the operation ended incomplete: its receipts stand, the attempt is handed to the fabric-primary and the Build stays in progress");
         self.hand_off(builds, build, attempt, ran, to).await
     }
 
@@ -659,7 +659,7 @@ impl BuildExecutor {
         span.record("incomplete", reason.as_str());
         let me = self.executor.clone();
         let to = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone()).unwrap_or(me.node_id);
-        tracing::info_span!("rdm.node_admin.build.update.via-create-failed", build_id = %build.build_id.log(), attempt, operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().recipe_step, reason = %reason, to = %to)
+        tracing::info_span!("rdm.node_admin.build.update.via-create-failed", build_id = %build.build_id.log(), attempt, operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().step, reason = %reason, to = %to)
             .in_scope(|| tracing::info!("a create of the fabric lane ended failed: the attempt is handed back and the next attempt creates it again; the Build stays in progress"));
         self.hand_off(builds, build, attempt, ran, to).await
     }
@@ -676,7 +676,7 @@ impl BuildExecutor {
         span.record("incomplete", reason.as_str());
         let me = self.executor.clone();
         let to = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone()).unwrap_or(me.node_id);
-        tracing::info_span!("rdm.node_admin.build.update.via-interrupted", build_id = %build.build_id.log(), attempt, delete_build_id = %delete.log(), operation = %next.key().action, operation_subject = ?next.key().subject, operation_step = ?next.key().recipe_step, failed = failed.unwrap_or(""), to = %to)
+        tracing::info_span!("rdm.node_admin.build.update.via-interrupted", build_id = %build.build_id.log(), attempt, delete_build_id = %delete.log(), operation = %next.key().action, operation_subject = ?next.key().subject, operation_step = ?next.key().step, failed = failed.unwrap_or(""), to = %to)
             .in_scope(|| match failed {
                 None => tracing::info!("a fabric.delete accepted after this Build interrupts it: the next operation is not opened and the attempt is handed to the fabric-primary"),
                 Some(_) => tracing::info!("a fabric.delete accepted after this Build interrupts it: the operation admitted before it failed within its bound, and the attempt is handed to the fabric-primary"),

@@ -66,7 +66,7 @@ fn named_identities(span: &Value) -> (String, WorkflowFields, WorkflowFields) {
 }
 
 fn workflow_fields(k: &MeshDeleteKey) -> WorkflowFields {
-    (k.build_id.to_string(), k.attempt.to_string(), (k.operation.action.clone(), format!("{:?}", k.operation.subject), format!("{:?}", k.operation.recipe_step), format!("{:?}", k.operation.occurrence)))
+    (k.build_id.to_string(), k.attempt.to_string(), (k.operation.action.clone(), format!("{:?}", k.operation.subject), format!("{:?}", k.operation.step), format!("{:?}", k.operation.occurrence)))
 }
 
 /// CONTRACT (node-rpc-envelope.md, "Mesh delete command pair"): the leaving mesh-primary holds the

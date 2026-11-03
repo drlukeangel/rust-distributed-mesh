@@ -207,7 +207,7 @@ pub(crate) fn node_deleted_receipt(held: Option<&rdm_core::LifecycleOp>, offered
             operation_subject = ?offered.operation.subject,
             build_id = %offered.build_id,
             attempt = offered.attempt,
-            operation = %offered.operation.action, recipe_step = ?offered.operation.recipe_step,
+            operation = %offered.operation.action, operation_step = ?offered.operation.step,
             node_id = %offered.node_id,
             incarnation_id = %offered.incarnation,
             outcome = "ignored",
@@ -238,7 +238,7 @@ fn duplicate_lifecycle(frame: &str, op: &rdm_core::LifecycleOp) {
     tracing::info_span!(
         "rdm.mesh.topology.update.via-duplicate",
         frame,
-        build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject, recipe_step = ?op.operation.recipe_step, node_id = %op.node_id, incarnation_id = %op.incarnation,
+        build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject, operation_step = ?op.operation.step, node_id = %op.node_id, incarnation_id = %op.incarnation,
         outcome = "ignored",
     ).in_scope(|| tracing::info!("the lifecycle operation identity is already held or seen: ignored"));
 }

@@ -1287,7 +1287,7 @@ impl DriveEnv {
             op.key(),
             mesh = mesh, target_path = &node.path, target_name = &node.name, me_path = &me.path, me_name = &me.name);
         if drive.stall_is_new(StallKey::UnheardMesh { mesh: mesh.to_owned(), operation: op.key() }) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id.log(), attempt, node_path = %me.path, node_name = %me.name, operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().recipe_step, target_path = %node.path, target_name = %node.name, mesh = %mesh, unheard_ms)
+            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id.log(), attempt, node_path = %me.path, node_name = %me.name, operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().step, target_path = %node.path, target_name = %node.name, mesh = %mesh, unheard_ms)
                 .in_scope(|| tracing::info!("the drive claims and dispatches nothing for a node of a peer mesh held unheard"));
         }
         DriveEnd::Stalled(why)
@@ -1767,7 +1767,7 @@ impl DriveEnv {
         }
         let asked: Vec<PrecedingUpdate> = updates.into_iter().map(|(_, u)| u).collect();
         let why = self.gate.primaries_updated(&asked, &drive.build_id, attempt).await.err()?;
-        let names = asked.iter().map(|u| format!("action {}, subject {:?}, step {:?} under mesh {}", u.operation.action, u.operation.subject, u.operation.recipe_step, u.mesh)).collect::<Vec<_>>().join(", ");
+        let names = asked.iter().map(|u| format!("action {}, subject {:?}, step {:?} under mesh {}", u.operation.action, u.operation.subject, u.operation.step, u.mesh)).collect::<Vec<_>>().join(", ");
         let why = format!("path {me_path:?}, name {me_name:?}: attempt {attempt} of Build {} dispatches nothing until node.primary.updated is acknowledged for the update that precedes it (one of {names}): {why}", drive.build_id, me_path = &me.path, me_name = &me.name);
         Some(self.stalled(me, drive, why))
     }
@@ -1942,7 +1942,7 @@ impl DriveEnv {
                 if lead.is_none() {
                     if let Some(op @ crate::build::BuildOperation::ShutdownMesh { mesh, .. }) = ops.first() {
                         if drive.stall_is_new(StallKey::NoOwner { operation: op.key() }) {
-                            tracing::info_span!("rdm.node_admin.build.reject.via-no-owner-outside-mesh", build_id = %id.log(), operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().recipe_step, mesh = %mesh)
+                            tracing::info_span!("rdm.node_admin.build.reject.via-no-owner-outside-mesh", build_id = %id.log(), operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().step, mesh = %mesh)
                                 .in_scope(|| tracing::info!("no ready admin primary exists outside the leaving mesh: nothing owns its shutdown, and the mesh is not dismantled"));
                         }
                     }
@@ -2085,7 +2085,7 @@ impl DriveEnv {
                 span.in_scope(|| tracing::info!(error = %e, "the failed step's receipt could not be written"));
             }
         }
-        let reason = match &f.operation { None => f.reason.clone(), Some(operation) => format!("action {}, subject {:?}, step {:?}: {}", operation.action, operation.subject, operation.recipe_step, f.reason) };
+        let reason = match &f.operation { None => f.reason.clone(), Some(operation) => format!("action {}, subject {:?}, step {:?}: {}", operation.action, operation.subject, operation.step, f.reason) };
         let verdict = BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason, code: f.code } };
         if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
             return self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: the Failed verdict of attempt {attempt} of Build {id} (mesh {mesh}'s section failed {:?} twice running) could not be written: {e}", f.key(), me_path = &me.path, me_name = &me.name));
@@ -2148,7 +2148,7 @@ impl DriveEnv {
                             }
                             if let Some(r) = receipt.as_deref().and_then(|b| serde_json::from_slice::<BuildStepReceipt>(b).ok()) {
                                 if let Err(e) = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, mesh: Some(mesh.clone()), ..r }).await {
-                                    tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, step = %step, "a reported step receipt could not be written: a later attempt runs the step again");
+                                    tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step = %step, "a reported step receipt could not be written: a later attempt runs the step again");
                                 }
                             }
                             stream.accepted().await;
@@ -2169,7 +2169,7 @@ impl DriveEnv {
                                 let _ = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, operation: operation.clone(), step: step.clone(), outcome: StepOutcome::Failed { reason: reason.clone(), code }, output: None, executor: None, mesh: Some(mesh.clone()) }).await;
                                 failed_step = Some((operation.clone(), step, reason.clone()));
                             }
-                            break AttemptOutcome::Failed { reason: format!("action {}, subject {:?}, step {:?}: {reason}", operation.action, operation.subject, operation.recipe_step), code };
+                            break AttemptOutcome::Failed { reason: format!("action {}, subject {:?}, step {:?}: {reason}", operation.action, operation.subject, operation.step), code };
                         }
                         InnerItem::Frame(other) => break AttemptOutcome::Failed { reason: format!("{executor}'s section ended {}", other.name()), code: rdm_core::outcome::Code::Unavailable },
                         InnerItem::Ended | InnerItem::Broke(_) => match self.departure.exited_or_os_stopped(executor).await {
@@ -2297,7 +2297,7 @@ impl DriveEnv {
             }
             let failed = crate::build_state::BuildStepReceipt { build_id: receipt.build_id.clone(), attempt: receipt.attempt, operation: operation.clone(), step: step.clone(), outcome: crate::build_state::StepOutcome::Failed { reason: reason.clone(), code }, output: None, executor: None, mesh: None };
             if let Err(e) = self.builds.append_step_receipt(&failed).await {
-                tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, step = %step, "the failed step's reported receipt could not be written");
+                tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step = %step, "the failed step's reported receipt could not be written");
             }
         }
         if let Err(e) = self.builds.append_attempt_receipt(&receipt).await {
@@ -2314,7 +2314,7 @@ impl DriveEnv {
         let r = match serde_json::from_slice::<crate::build_state::BuildStepReceipt>(bytes) {
             Ok(r) => r,
             Err(e) => {
-                tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, step, "a reported step receipt does not decode: a later attempt runs the step again");
+                tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step, "a reported step receipt does not decode: a later attempt runs the step again");
                 return false;
             }
         };
@@ -2334,7 +2334,7 @@ impl DriveEnv {
             return false;
         }
         if let Err(e) = self.builds.append_step_receipt(&r).await {
-            tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, step, "a reported step receipt could not be written: a later attempt runs the step again");
+            tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step, "a reported step receipt could not be written: a later attempt runs the step again");
             return false;
         }
         true

@@ -1297,7 +1297,7 @@ impl DeploymentPipeline<'_> {
                     BuildStateError::UnknownBuild(_) => format!("{executor}: this node holds no fact of Build {build_id}, so {operation:?} (attempt {attempt}, node path {node_path:?}, name {node_name:?}) has no log to run from: {e}", node_path = &node.path, node_name = &node.name),
                     _ => format!("{executor}: Build {build_id} cannot be read for {operation:?} (attempt {attempt}, node path {node_path:?}, name {node_name:?}): {e}", node_path = &node.path, node_name = &node.name),
                 };
-                tracing::info_span!("rdm.node_admin.deployment.reject.via-build-unreadable", build_id = %build_id.log(), attempt, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, node_path = %node.path, node_name = %node.name, detail = %reason)
+                tracing::info_span!("rdm.node_admin.deployment.reject.via-build-unreadable", build_id = %build_id.log(), attempt, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, node_path = %node.path, node_name = %node.name, detail = %reason)
                     .in_scope(|| tracing::info!("the Build cannot be read: the run stops before its first step"));
                 return Err(PipelineError { step: "ReadBuild", reason , code: rdm_core::outcome::Code::FailedPrecondition });
             }
@@ -1547,7 +1547,7 @@ impl DeploymentPipeline<'_> {
             // delete retains (build.md §1, Q179): the teardown's roster, read from the node rows, holds
             // the birth, and its node.delete ends the runtime this create launched.
             if let Some(delete) = self.interrupting_delete(req.build_id.as_ref()).await {
-                tracing::info_span!("rdm.node_admin.node.update.via-row-kept", node_path = %req.path, node_name = %req.name, subject_id = %node_id, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, delete_build_id = %delete.log(), failed_step = e.step, "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.node.update.via-row-kept", node_path = %req.path, node_name = %req.name, subject_id = %node_id, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, delete_build_id = %delete.log(), failed_step = e.step, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("the create failed under a fabric.delete: its row stays for the teardown, which deletes the birth it launched"));
                 return r;
             }

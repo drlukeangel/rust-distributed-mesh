@@ -152,7 +152,7 @@ fn births(b: &HandoverBirth) -> String {
 /// The refusal span of node.primary.update at `side` (`primary`, `successor`, `commander`, `winner`),
 /// with `reason` and its detail.
 fn refused(side: &'static str, reason: &'static str, detail: &str, operation: &rdm_core::OperationId) {
-    tracing::info_span!("rdm.node_admin.primary.reject.via-primary-update", side, reason, detail, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step)
+    tracing::info_span!("rdm.node_admin.primary.reject.via-primary-update", side, reason, detail, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step)
         .in_scope(|| tracing::info!("node.primary.update was refused"));
 }
 
@@ -210,7 +210,7 @@ impl HandoverDoor {
             return r;
         }
         // The span covers the install: its start is the moment the successor begins to install.
-        let span = tracing::info_span!("rdm.node_admin.primary.update.via-primary-updated", node_path = %self.held_name().path, node_name = %self.held_name().name, fabric = %self.fabric, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, build_id = %build_id, run, primaries = %entries_named(&primaries), outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-primary-updated", node_path = %self.held_name().path, node_name = %self.held_name().name, fabric = %self.fabric, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, build_id = %build_id, run, primaries = %entries_named(&primaries), outcome = tracing::field::Empty);
         let outcome = self.take(&primaries).instrument(span.clone()).await;
         span.record("outcome", outcome);
         span.in_scope(|| tracing::info!("the successor installed the election's result the call carries and answers node.primary.updated"));
@@ -275,7 +275,7 @@ impl HandoverDoor {
     /// the successor unheard after the update. An identical repeat is answered as the first was.
     pub async fn update_primary(&self, moving: Moving, _expected: Option<u64>, build_id: &str, run: u32, operation: &rdm_core::OperationId, named: Option<&PathName>) -> Result<Vec<Entry>, Reply> {
         let me = self.held_name();
-        let span = tracing::info_span!("rdm.node_admin.primary.update.via-update-primary", node_path = %me.path, node_name = %me.name, moving = moving.name(), build_id, run, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, successor = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-update-primary", node_path = %me.path, node_name = %me.name, moving = moving.name(), build_id, run, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, successor = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty);
         let r = self.update_primary_in(moving, build_id, run, operation, named).instrument(span.clone()).await;
         match &r {
             Ok(_) => {
@@ -363,7 +363,7 @@ impl HandoverDoor {
         // Step 3: the primary finishes the writes it has issued; from the successor's answer it writes the
         // mesh's rows no more.
         (self.finish_writes)().await;
-        tracing::info_span!("rdm.node_admin.primary.update.via-issued-writes-finished", node_path = %me_name.path, node_name = %me_name.name, fabric = %self.fabric, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, build_id, run, primary = %births(&me), successor = %births(&to))
+        tracing::info_span!("rdm.node_admin.primary.update.via-issued-writes-finished", node_path = %me_name.path, node_name = %me_name.name, fabric = %self.fabric, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, build_id, run, primary = %births(&me), successor = %births(&to))
             .in_scope(|| tracing::info!("the primary finished the writes it issued before its call"));
         // Step 4: the call on the successor's exact birth.
         let revisions = self.call_and_look(&to_node, &entries, build_id, run, operation).await?;
@@ -382,7 +382,7 @@ impl HandoverDoor {
         let view = self.topology.read().await.clone();
         let finding = self.looker.look(&view, successor).await;
         let verdict = finding.name();
-        let span = tracing::info_span!("rdm.node_admin.primary.resolve.via-successor-investigation", node_path = %self.held_name().path, node_name = %self.held_name().name, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, successor_path = %successor.path, successor_name = %successor.name, call = %how, verdict, detail = %finding.detail(), retry = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.resolve.via-successor-investigation", node_path = %self.held_name().path, node_name = %self.held_name().name, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, successor_path = %successor.path, successor_name = %successor.name, call = %how, verdict, detail = %finding.detail(), retry = tracing::field::Empty);
         if matches!(finding, crate::primary_watch::Finding::Reached { .. }) {
             match call_successor(&self.client, &successor.node_id, entries, build_id, run, operation).await {
                 Ok(revisions) => {
@@ -482,7 +482,7 @@ impl HandoverDoor {
     /// leaves the step incomplete, and the next attempt sends the identical command.
     pub async fn command_update_primary(&self, primary: &crate::model::Node, build_id: &str, run: u32, operation: &rdm_core::OperationId) -> Result<Vec<Entry>, crate::build_drive::RoleMoveEnd> {
         let me = self.held_name();
-        let span = tracing::info_span!("rdm.node_admin.primary.update.via-command", node_path = %me.path, node_name = %me.name, primary_path = %primary.path, primary_name = %primary.name, primary_node_id = %primary.node_id, "type" = primary.r#type, to = tracing::field::Empty, build_id, run, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, outcome = tracing::field::Empty, detail = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-command", node_path = %me.path, node_name = %me.name, primary_path = %primary.path, primary_name = %primary.name, primary_node_id = %primary.node_id, "type" = primary.r#type, to = tracing::field::Empty, build_id, run, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, outcome = tracing::field::Empty, detail = tracing::field::Empty);
         let r = self.command_update_primary_in(primary, build_id, run, operation).instrument(span.clone()).await;
         match &r {
             Ok(revisions) => {
@@ -585,12 +585,12 @@ impl HandoverDoor {
         let me = self.held_name();
         let view = self.topology.read().await.clone();
         let Some(node) = named.and_then(|subject| view.node_subject(subject)).cloned() else {
-            tracing::info_span!("rdm.node_admin.primary.update.via-acknowledged", node_path = %me.path, node_name = %me.name, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, build_id, run, primary_subject = ?named, outcome = "no-node")
+            tracing::info_span!("rdm.node_admin.primary.update.via-acknowledged", node_path = %me.path, node_name = %me.name, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, build_id, run, primary_subject = ?named, outcome = "no-node")
                 .in_scope(|| tracing::info!("the view holds no node at the name the update names: no primary there, no update owed"));
             return Ok(false);
         };
         let Some(hb) = birth_of(&node) else { return Err(format!("path {me_path:?}, name {me_name:?}: {} has no known birth", node.node_id, me_path = &me.path, me_name = &me.name)) };
-        let span = tracing::info_span!("rdm.node_admin.primary.update.via-acknowledged", node_path = %me.path, node_name = %me.name, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, build_id, run, primary = %births(&hb), outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-acknowledged", node_path = %me.path, node_name = %me.name, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, build_id, run, primary = %births(&hb), outcome = tracing::field::Empty);
         match self.discovered(&hb, &node.r#type, build_id, run, operation).instrument(span.clone()).await? {
             Some(_) => {
                 self.memo.acknowledge(build_id, run, operation, false);
@@ -612,7 +612,7 @@ impl HandoverDoor {
         match self.topology_view.primaries().fabric() {
             Some(h) if h.mesh == departing => Err(format!("path {me_path:?}, name {me_name:?}: the fabric-primary is {h}, a node-admin of the departing mesh {departing}: node.fabric-primary.update {operation:?} has not moved it", me_path = &me.path, me_name = &me.name)),
             held => {
-                tracing::info_span!("rdm.node_admin.primary.update.via-fabric-primary-left", node_path = %me.path, node_name = %me.name, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, departing, fabric_primary = %held.map(|h| h.to_string()).unwrap_or_default())
+                tracing::info_span!("rdm.node_admin.primary.update.via-fabric-primary-left", node_path = %me.path, node_name = %me.name, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, departing, fabric_primary = %held.map(|h| h.to_string()).unwrap_or_default())
                     .in_scope(|| tracing::info!("the fabric-primary is no node-admin of the departing mesh"));
                 Ok(())
             }
@@ -636,7 +636,7 @@ impl HandoverDoor {
     /// node.primary.updated, installed here. The successor's row is recorded from its digest (step 5).
     pub async fn update_node_type_primary(&self, primary: &crate::model::Node, _expected: Option<u64>, build_id: &str, run: u32, operation: &rdm_core::OperationId) -> Result<Vec<Entry>, Reply> {
         let me = self.held_name();
-        let span = tracing::info_span!("rdm.node_admin.primary.update.via-command-member", node_path = %me.path, node_name = %me.name, primary_path = %primary.path, primary_name = %primary.name, "type" = primary.r#type, build_id, run, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, outcome = tracing::field::Empty, detail = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-command-member", node_path = %me.path, node_name = %me.name, primary_path = %primary.path, primary_name = %primary.name, "type" = primary.r#type, build_id, run, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, outcome = tracing::field::Empty, detail = tracing::field::Empty);
         let r = self.update_node_type_primary_in(primary, build_id, run, operation).instrument(span.clone()).await;
         match &r {
             Ok(revisions) => {

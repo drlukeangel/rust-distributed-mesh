@@ -581,7 +581,7 @@ impl WorkflowStream {
                         return Some(Err(self.broke(CallEnd::UnrecognisedReceipt { operation, step })));
                     };
                     if !self.delivered.insert((operation.clone(), step.clone())) {
-                        self.span.in_scope(|| tracing::info!(attempt, operation = %operation.action, operation_subject = ?operation.subject, recipe_step = ?operation.recipe_step, step = %step, "a later attempt completed a step whose event this stream delivered: one event per step"));
+                        self.span.in_scope(|| tracing::info!(attempt, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step = %step, "a later attempt completed a step whose event this stream delivered: one event per step"));
                         continue;
                     }
                     let mut events = row.events.iter().copied();
@@ -593,7 +593,7 @@ impl WorkflowStream {
                     if attempt < accepted.attempt {
                         continue;
                     }
-                    self.span.in_scope(|| tracing::info!(operation = %operation.action, operation_subject = ?operation.subject, recipe_step = ?operation.recipe_step, step = %step, reason = %reason, "the step in flight is blocked"));
+                    self.span.in_scope(|| tracing::info!(operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step = %step, reason = %reason, "the step in flight is blocked"));
                     return Some(Ok(Frame::Blocked { operation, step, reason }));
                 }
                 BuildFrame::Complete { .. } => return Some(Ok(self.deliver(Frame::Complete))),

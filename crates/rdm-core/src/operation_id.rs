@@ -58,8 +58,8 @@ pub struct OperationId {
     pub action: String,
     /// Its admitted subject; absent for an operation with no subject.
     pub subject: Option<OperationSubject>,
-    /// Original accepted recipe position, numbered from one; never the remaining-step index.
-    pub recipe_step: Option<u32>,
+    /// The operation's position among its Build's steps, numbered from one; never the remaining-step index.
+    pub step: Option<u32>,
     /// A standalone command cycle, minted once and retained across transport retries.
     pub occurrence: Option<crate::OperationOccurrenceId>,
 }
@@ -67,7 +67,7 @@ pub struct OperationId {
 impl OperationId {
     /// An operation on an explicit subject.
     pub fn new(action: impl Into<String>, subject: OperationSubject) -> Self {
-        Self { action: action.into(), subject: Some(subject), recipe_step: None, occurrence: None }
+        Self { action: action.into(), subject: Some(subject), step: None, occurrence: None }
     }
 
     /// An operation on an already admitted node ID.
@@ -90,9 +90,9 @@ impl OperationId {
         self
     }
 
-    /// Preserve the accepted recipe position through allocation, commands and replay.
+    /// Preserve the step position through allocation, commands and replay.
     pub fn at_step(mut self, step: Option<u32>) -> Self {
-        self.recipe_step = step;
+        self.step = step;
         self
     }
 
@@ -100,14 +100,14 @@ impl OperationId {
     /// its own action and exact node ID, while retaining the admitted step position.
     pub fn command(&self, action: &str, node_id: &NodeId) -> Self {
         if self.action == action { return self.clone(); }
-        let mut command = Self::node(action, node_id).at_step(self.recipe_step);
+        let mut command = Self::node(action, node_id).at_step(self.step);
         command.occurrence = self.occurrence.clone();
         command
     }
 
     /// An operation without a subject. This does not parse an encoded reference.
     pub fn unscoped(action: impl Into<String>) -> Self {
-        Self { action: action.into(), subject: None, recipe_step: None, occurrence: None }
+        Self { action: action.into(), subject: None, step: None, occurrence: None }
     }
 
     /// The node the operation acts on, when it acts on one: its subject's node.id, a primary update's
@@ -169,7 +169,7 @@ impl PartialOrd for OperationSubject {
 mod tests {
     use super::*;
 
-    /// CONTRACT: a primary update retains role, preceding action, subject and recipe position.
+    /// CONTRACT: a primary update retains role, preceding action, subject and step position.
     // @feature: node-records
     #[test]
     fn primary_update_retains_structured_predecessor_and_role() {

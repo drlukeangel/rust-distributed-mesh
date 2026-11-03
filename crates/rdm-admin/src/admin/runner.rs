@@ -1899,7 +1899,7 @@ pub(super) async fn receipted_exit(builds: &dyn BuildStateAdapter, build_id: Opt
     record.incarnation_id = Some(from.incarnation.clone());
     record.deployment_id = Some(deployment_id.clone());
     record.data_dir = t.data_dir.clone();
-    tracing::info_span!("rdm.node_admin.node.resolve.via-receipted-exit", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), build_id = %build_id.log(), operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step)
+    tracing::info_span!("rdm.node_admin.node.resolve.via-receipted-exit", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), build_id = %build_id.log(), operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step)
         .in_scope(|| tracing::info!("the birth's runtime is not resolved here and its delete holds the TerminateRuntime receipt: the delete resumes from its receipts"));
     Some((record, DeploymentHandle { deployment_id, provider, pid: None, start: None, container: None, domain: None }))
 }

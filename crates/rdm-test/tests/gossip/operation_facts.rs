@@ -102,7 +102,7 @@ fn node_deleted_repeat_is_ignored_by_its_operation_and_exact_birth() {
     assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-duplicate"
         && s["attributes"]["frame"] == "node-deleted" && s["attributes"]["build_id"] == op.build_id && s["attributes"]["attempt"] == op.attempt.to_string()
         && s["attributes"]["operation"] == op.operation.action && s["attributes"]["operation_subject"] == format!("{:?}", op.operation.subject)
-        && s["attributes"]["recipe_step"] == format!("{:?}", op.operation.recipe_step)
+        && s["attributes"]["operation_step"] == format!("{:?}", op.operation.step)
         && s["attributes"]["node_id"] == op.node_id.as_str() && s["attributes"]["incarnation_id"] == op.incarnation.as_str()
         && s["attributes"]["outcome"] == "ignored").count(), 1, "the framework must name the ignored exact operation fact");
 }

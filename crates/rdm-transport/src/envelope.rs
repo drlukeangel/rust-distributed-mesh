@@ -102,7 +102,7 @@ fn escaped(s: impl ToString) -> String {
 fn path(parts: &[String]) -> String { parts.iter().map(escaped).collect::<Vec<_>>().join("/") }
 fn birth_parts(b: &Birth) -> Vec<String> { vec![b.fabric.to_string(), b.node.to_string(), b.incarnation.to_string()] }
 fn operation_parts(operation: &rdm_core::OperationId) -> Vec<String> {
-    vec![operation.action.clone(), operation.recipe_step.map(|step| step.to_string()).unwrap_or_default(), operation.occurrence.as_ref().map(ToString::to_string).unwrap_or_default()]
+    vec![operation.action.clone(), operation.step.map(|step| step.to_string()).unwrap_or_default(), operation.occurrence.as_ref().map(ToString::to_string).unwrap_or_default()]
 }
 fn operation(op: &rdm_core::LifecycleOp) -> Vec<String> {
     let mut parts = vec![op.build_id.clone(), op.attempt.to_string()];

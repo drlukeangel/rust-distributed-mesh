@@ -37,7 +37,7 @@ use crate::storage::NodeRow;
 struct Stamp {
     time: u64,
     build_id: String,
-    recipe_step: Option<u32>,
+    step: Option<u32>,
     attempt: u32,
 }
 
@@ -340,7 +340,7 @@ impl Taken {
 fn take_effect(held: &mut Held, rows: &[NodeRow], p: &BuildProjection, s: &crate::build_state::BuildStepReceipt) -> Option<&'static str> {
     let lifecycle = lifecycle_of(&s.operation)?;
     let birth = birth_of_step(rows, p, s)?;
-    let stamp = Stamp { time: p.time, build_id: p.build_id.to_string(), recipe_step: s.operation.recipe_step, attempt: s.attempt };
+    let stamp = Stamp { time: p.time, build_id: p.build_id.to_string(), step: s.operation.step, attempt: s.attempt };
     if held.effects.get(&birth).is_none_or(|e| e.stamp < stamp) {
         held.effects.insert(birth, Effect { lifecycle, stamp });
     }
@@ -678,7 +678,7 @@ impl Atlas {
         })?;
         let lifecycle = if op.state == rdm_core::status::NodeState::Stopped { Lifecycle::Stopped } else { Lifecycle::Started };
         // A node command belongs to no Build (Q342): its effect is the record's, read from no Build.
-        Some(Effect { lifecycle, stamp: Stamp { time: 0, build_id: rdm_core::LifecycleOp::NO_BUILD.into(), recipe_step: op.operation.operation.recipe_step, attempt: rdm_core::LifecycleOp::NO_ATTEMPT } })
+        Some(Effect { lifecycle, stamp: Stamp { time: 0, build_id: rdm_core::LifecycleOp::NO_BUILD.into(), step: op.operation.operation.step, attempt: rdm_core::LifecycleOp::NO_ATTEMPT } })
     }
 
     /// The atlas row of `path`: the birth the current-pair lookup names (query.md §1: the pair's name
@@ -776,7 +776,7 @@ impl crate::control_plane::ControlPlane {
     /// executed it; a create's record read once at its path. One
     /// `rdm.node_admin.fabric.update.via-atlas-receipt` span.
     pub(crate) async fn take_streamed_receipt(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, operation: &rdm_core::OperationId) {
-        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), attempt, operation = %operation.action, operation_subject = ?operation.subject, recipe_step = ?operation.recipe_step, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), attempt, operation = %operation.action, operation_subject = ?operation.subject, step = ?operation.step, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
         let p = match builds.read_build(build_id).await {
             Ok(p) => p,
             Err(e) => {
@@ -875,7 +875,7 @@ mod tests {
         let second = NodeId::mint();
         atlas.held.lock().unwrap().effects.insert(Birth { node_id: first.clone(), incarnation: incarnation.clone() }, Effect {
             lifecycle: Lifecycle::Deleted,
-            stamp: Stamp { time: 1, build_id: "fixture".into(), recipe_step: None, attempt: 1 },
+            stamp: Stamp { time: 1, build_id: "fixture".into(), step: None, attempt: 1 },
         });
         assert!(atlas.holds_deleted_by_delete(&first, &incarnation, None));
         assert!(!atlas.holds_deleted_by_delete(&second, &incarnation, None));
@@ -904,7 +904,7 @@ mod tests {
 
     #[test]
     fn lifecycle_order_keeps_original_step_ahead_of_attempt_retry() {
-        let stamp = |recipe_step, attempt| Stamp { time: 1, build_id: "same-build".into(), recipe_step: Some(recipe_step), attempt };
+        let stamp = |step, attempt| Stamp { time: 1, build_id: "same-build".into(), step: Some(step), attempt };
         assert!(stamp(2, 1) > stamp(1, 9));
         assert!(stamp(2, 2) > stamp(2, 1));
     }

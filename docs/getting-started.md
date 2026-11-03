@@ -141,7 +141,7 @@ Output (abbreviated to the first and last steps):
       "operation": {
         "action": "node.create",
         "occurrence": null,
-        "recipe_step": null,
+        "step": null,
         "subject": {
           "Node": "y5x68fhg404e"
         }
@@ -153,7 +153,7 @@ Output (abbreviated to the first and last steps):
       "operation": {
         "action": "node.create",
         "occurrence": null,
-        "recipe_step": null,
+        "step": null,
         "subject": {
           "Node": "y5x68fhg404e"
         }

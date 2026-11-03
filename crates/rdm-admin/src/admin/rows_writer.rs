@@ -391,7 +391,7 @@ pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::stor
         mesh_id = %mesh_id,
         build_id = %build_id.log(),
         attempt,
-        operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step,
+        operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
         outcome = tracing::field::Empty,
         detail = tracing::field::Empty,
         "otel.kind" = "internal",

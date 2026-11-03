@@ -983,7 +983,7 @@ impl StatusDoor {
         let me_name = self.held_name_in(&view);
         let span = tracing::info_span!(
             "rdm.node_admin.node.remove.via-mesh-leave",
-            node_path = %me_name.path, node_name = %me_name.name, subject_id = %node_id, subject = tracing::field::Empty, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step,
+            node_path = %me_name.path, node_name = %me_name.name, subject_id = %node_id, subject = tracing::field::Empty, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
             left = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
         );
         let end = async {
@@ -1074,7 +1074,7 @@ impl StatusDoor {
                     }
                 }
                 let position = frames.position();
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-command-frame", recorder_node_id = %self.node_id, node_path = %subject.path, node_name = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, frame = frame.name(), invocation_id = tracing::field::Empty, seq = tracing::field::Empty, code = NodeCommand::classify_reply(&frame).code().name(), detail = NodeCommand::reply_detail(&frame), outcome = tracing::field::Empty);
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-command-frame", recorder_node_id = %self.node_id, node_path = %subject.path, node_name = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, frame = frame.name(), invocation_id = tracing::field::Empty, seq = tracing::field::Empty, code = NodeCommand::classify_reply(&frame).code().name(), detail = NodeCommand::reply_detail(&frame), outcome = tracing::field::Empty);
                 if let Some((invocation, seq)) = position { span.record("invocation_id", invocation.to_string()).record("seq", seq); }
                 span.in_scope(|| tracing::info!("the mesh-primary recorded the node's command frame before acknowledging its recovery"));
                 frames.accepted().await;
@@ -3072,7 +3072,7 @@ mod tests {
         let mut other = effect.clone(); other.node_id = NodeId::mint(); variants.push(other);
         let mut other = effect.clone(); other.incarnation_id = IncarnationId::mint(); variants.push(other);
         let mut other = effect.clone(); other.operation.operation.occurrence = Some(rdm_core::OperationOccurrenceId::mint()); variants.push(other);
-        let mut other = effect.clone(); other.operation.operation.recipe_step = Some(4); variants.push(other);
+        let mut other = effect.clone(); other.operation.operation.step = Some(4); variants.push(other);
         let mut other = effect.clone(); other.operation.operation.action = "node.delete".into(); variants.push(other);
         let mut other = effect.clone(); other.operation.operation.subject = Some(rdm_core::OperationSubject::Node(NodeId::mint())); variants.push(other);
         assert!(variants.iter().all(|other| other.key() != effect.key()));

@@ -85,8 +85,8 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
     let mut digest = node.join_digest();
     digest.status = MemberStatus::Pending;
     let joining = match &report_parent {
-        Some(parent) => tracing::info_span!(parent: parent, "rdm.node.mesh.update.via-joining", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step),
-        None => tracing::info_span!("rdm.node.mesh.update.via-joining", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step),
+        Some(parent) => tracing::info_span!(parent: parent, "rdm.node.mesh.update.via-joining", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step),
+        None => tracing::info_span!("rdm.node.mesh.update.via-joining", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step),
     };
     let (answer, through) = join(&name, client, to, &digest, &node.join_types(), &node.join_listeners()).instrument(joining).await?;
     drop(report_parent);

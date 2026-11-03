@@ -574,7 +574,7 @@ impl NodeRows {
             node_path = %me.path, node_name = %me.name,
             subject_path = %name.path, subject_name = %name.name,
             node_id = %node_id,
-            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step,
+            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
             moment = "create",
             awaiting = "writer-check",
             awaited = tracing::field::Empty,
@@ -651,7 +651,7 @@ impl NodeRows {
     /// `None`. Nothing is written. A read that fails is named.
     /// Beside the answer, the row the read returned (`None`: none stands at `name`), whatever it holds.
     pub async fn allocation_at(&self, name: &PathName, build_id: Option<&crate::build::BuildId>, operation: &rdm_core::OperationId) -> Result<(Option<(NodeId, Allocation)>, Option<NodeRow>), String> {
-        let row = record_at(&*self.storage, name).await.map_err(|e| format!("{}: the record at path {name_path:?}, name {name_name:?} could not be read for action {action}, subject {operation_subject:?}, step {operation_step:?} (Build {build}): {e}", self.me_id, name_path = &name.path, name_name = &name.name, action = &operation.action, operation_subject = &operation.subject, operation_step = operation.recipe_step, build = crate::deployment::pipeline::build_log(build_id)))?;
+        let row = record_at(&*self.storage, name).await.map_err(|e| format!("{}: the record at path {name_path:?}, name {name_name:?} could not be read for action {action}, subject {operation_subject:?}, step {operation_step:?} (Build {build}): {e}", self.me_id, name_path = &name.path, name_name = &name.name, action = &operation.action, operation_subject = &operation.subject, operation_step = operation.step, build = crate::deployment::pipeline::build_log(build_id)))?;
         let written = row.clone().filter(|r| r.status != NodeStatus::Deleted).and_then(|r| r.allocated.filter(|a| a.build_id.as_ref() == build_id && a.operation == *operation).map(|a| (r.node_id, a)));
         Ok((written, row))
     }
@@ -666,7 +666,7 @@ impl NodeRows {
             node_path = %me.path, node_name = %me.name,
             subject_path = %name.path, subject_name = %name.name,
             node_id = %node_id,
-            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step,
+            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
             why,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
@@ -765,7 +765,7 @@ impl NodeRows {
             "rdm.node_admin.node.delete.via-node-row",
             node_path = %me.path, node_name = %me.name,
             subject_path = %name.path, subject_name = %name.name,
-            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step,
+            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
             node_id = %node_id,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
@@ -1252,7 +1252,7 @@ pub async fn take_inherited_name(storage: &dyn NodesStorage, written: &WrittenRo
             "rdm.node_admin.node.delete.via-node-row",
             node_path = %me.path, node_name = %me.name,
             subject_path = %name.path, subject_name = %name.name,
-            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step,
+            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
             node_id = %p.node_id,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
@@ -1319,7 +1319,7 @@ async fn create_own_row(parent: Option<&tracing::Span>, storage: &dyn NodesStora
             node_path = %name.path, node_name = %name.name,
             subject_path = %name.path, subject_name = %name.name,
             node_id = %node_id,
-            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step,
+            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
             moment = "create",
             awaiting = "read-previous-row",
             awaited = tracing::field::Empty,
@@ -1335,7 +1335,7 @@ async fn create_own_row(parent: Option<&tracing::Span>, storage: &dyn NodesStora
             node_path = %name.path, node_name = %name.name,
             subject_path = %name.path, subject_name = %name.name,
             node_id = %node_id,
-            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step,
+            operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
             moment = "create",
             awaiting = "read-previous-row",
             awaited = tracing::field::Empty,
