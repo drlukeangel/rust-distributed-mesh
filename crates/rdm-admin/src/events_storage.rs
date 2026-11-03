@@ -613,6 +613,9 @@ impl EventsStorage for AppendedEvents {
     async fn of_node(&self, _: &NodeId) -> Result<Vec<Event>, StorageError> {
         Ok(Vec::new())
     }
+    async fn of_storage_changes(&self) -> Result<Vec<Event>, StorageError> {
+        Ok(self.0.lock().unwrap().iter().filter(|e| e.is_storage()).cloned().collect())
+    }
 }
 
 #[cfg(test)]
