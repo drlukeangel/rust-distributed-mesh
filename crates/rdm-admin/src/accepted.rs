@@ -801,11 +801,17 @@ fn plan_with(
     // Each delete carries the exact birth it acts on (build.md §4.4): the one its Build pinned at
     // acceptance, else, for a birth that became surplus after it (runtime drift: a failed create's node),
     // the birth this fabric-primary's view holds as it opens the drift attempt. The executing
-    // mesh-primary verifies it before any effect either way.
+    // mesh-primary verifies it before any effect either way. A delete whose `Complete` this Build holds is
+    // never planned again (build.md §1), whatever a view still holds: the fabric-primary's own delete
+    // after fabric.deleted is run by the birth it deletes, whose view keeps itself.
     for p in extra {
         let birth = topology.pinned.iter().find(|(at, _)| *at == p).map(|(_, b)| b.clone()).or_else(|| observed.node(&p).and_then(crate::build::PinnedBirth::of));
         if let Some(birth) = birth {
-            ops.push(BuildOperation::DeleteLiveNode { r#type: birth.r#type.clone(), mesh: birth.mesh.clone(), path: p.path.clone(), name: p.name.clone(), exited: None, birth: Some(birth) });
+            let op = BuildOperation::DeleteLiveNode { r#type: birth.r#type.clone(), mesh: birth.mesh.clone(), path: p.path.clone(), name: p.name.clone(), exited: None, birth: Some(birth) };
+            let key = op.key();
+            if !steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete) {
+                ops.push(op);
+            }
         }
     }
     // A deleted mesh (its row deleted at mesh.deleted) is done: its mesh.delete ended, and its last
