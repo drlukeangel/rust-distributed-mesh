@@ -611,7 +611,7 @@ mod tests {
         let submit = || {
             let heard = heard.clone();
             async move {
-                // Refused: an attempt still holds the mesh. The birth answers its tickle and rejoins
+                // Refused: a Build in progress holds the mesh. The birth answers its tickle and rejoins
                 // after the refusal: its digest arrives.
                 if calls_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                     assert!(digest_view_ref.record(heard), "the view takes the birth's digest");

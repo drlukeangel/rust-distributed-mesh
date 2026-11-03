@@ -712,7 +712,7 @@ fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_a
 /// CONTRACT (node-primary-update.md failure contract, "Discovery is not installation": "The resuming
 /// executor installs from the election locally and obtains the successor's `node.primary.updated` ...
 /// before it commands the departing primary's destructive step"): only a departing primary's update is
-/// acknowledged. M (`mesh1.node-admin.3`) was never mesh1's primary: X, resuming an attempt whose node.stop
+/// acknowledged. M (`mesh1.node-admin.3`) was never mesh1's primary: X, resuming a run whose node.stop
 /// acts on M, finds no update to acknowledge and makes no call. Once P's update to N happened (P
 /// replaced by N at 4 in X's view), the same read of the update named for P obtains N's
 /// node.primary.updated on a call. Must NOT happen: a node that was never primary read as a deleted

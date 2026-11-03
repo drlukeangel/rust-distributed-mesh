@@ -77,7 +77,7 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
     let spans = estate.spans();
     // The mesh-primary self-heals its own mesh as its own workflow, never a Build or part of one
     // (node-recovery.md "Execution"; Q342): its recovery submit, then the delete and the create of the
-    // exact birth under it, and no attempt of any Build reconciles the recovery.
+    // exact birth under it, and no Build reconciles the recovery.
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
         .filter(|sp| s(&sp["attributes"]["node_id"]) == victim.1.as_str())
@@ -94,6 +94,6 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
         );
     }
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|sp| s(&sp["attributes"]["executor"]) == executor.to_string() && s(&sp["attributes"]["lane"]) == "mesh2").collect();
-    assert!(reconciles.is_empty(), "no attempt of any Build reconciles the recovery: {reconciles:#?}");
+    assert!(reconciles.is_empty(), "no Build reconciles the recovery: {reconciles:#?}");
     estate.record_trace_url(&s(&recovery["trace_id"]));
 }

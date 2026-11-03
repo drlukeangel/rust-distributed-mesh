@@ -29,7 +29,7 @@ pub struct MeshTopology {
     pub name: String,
     /// The mesh's id (node-identity-and-state.md §2.7, "Who mints it"): minted once, when the mesh
     /// enters the accepted topology, and carried by every Build after it, never reissued. Every run of
-    /// the mesh's `create-mesh` operation, by any executor and any attempt, claims the mesh's name with
+    /// the mesh's `create-mesh` operation, by any executor, claims the mesh's name with
     /// it; a mesh removed and created again enters the topology anew with a new id (R-MN1).
     pub mesh_id: MeshId,
     /// Every node the mesh should have, by `(path, name)`.
@@ -648,8 +648,6 @@ fn plan_with(
     // delete skips the stop by name); a birth that is only silent is never deleted for its silence. A
     // node leaving under another operation is that operation's. A mesh the topology no longer names is deleted whole
     // (every member, dead or live, by the delete pipeline), never member by member.
-    // A surplus birth's deletion is its own attempt (no action): an attempt that carries an action
-    // repairs exactly its birth.
     // A Build that failed stops at its step; nothing is ever reverted, and going back is a Build of the
     // former topology (Q345).
     // A birth the fabric-primary's atlas holds a create of this Build at is not surplus: a recipe's
@@ -661,7 +659,7 @@ fn plan_with(
     extra.sort();
     // Each delete carries the exact birth it acts on (build.md §4.4): the one its Build pinned at
     // acceptance, else, for a birth that became surplus after it (runtime drift: a failed create's node),
-    // the birth this fabric-primary's view holds as it opens the drift attempt. The executing
+    // the birth this fabric-primary's view holds as it plans. The executing
     // mesh-primary verifies it before any effect either way. A delete whose `Complete` this Build holds is
     // never planned again (build.md §1), whatever a view still holds: the fabric-primary's own delete
     // after fabric.deleted is run by the birth it deletes, whose view keeps itself.
@@ -680,8 +678,8 @@ fn plan_with(
     let mut gone: Vec<&String> = observed.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead || open_deletes.contains(&m.name)).map(|m| &m.name).filter(|m| !topology.meshes.contains_key(*m)).collect();
     gone.sort();
     for m in gone {
-        // A mesh whose id no member has stated has no operation key: it is named, and the Build
-        // stays open until a member states the id (the next attempt re-plans).
+        // A mesh whose id no member has stated has no operation key: it is named on the span and not
+        // planned.
         match crate::build::shutdown_mesh(observed, m) {
             Ok(op) => ops.push(op),
             Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-mesh-id-unknown", mesh = %m).in_scope(|| tracing::info!(error = %e, "the mesh's shutdown is not planned")),
@@ -1067,8 +1065,8 @@ mod tests {
     /// world (reached: held, its `Complete` receipted; unreached: deleted and created again). Once the
     /// Build's receipts hold that create's `Complete`, the plan is the other path's delete alone, and
     /// the settled topology plans nothing. Must NOT happen: `node.create` at the stopped path planned
-    /// again after its `Complete` (#3233: every attempt of the delete Build planned it, its check held
-    /// the stopped birth and the next attempt planned it again, 850 times).
+    /// again after its `Complete` (#3233: every plan of the delete Build named it, its check held the
+    /// stopped birth and the next plan named it again, 850 times).
     #[test]
     fn a_stopped_births_create_is_planned_once_and_never_again_once_its_complete_is_receipted() {
         let mut o = mn();

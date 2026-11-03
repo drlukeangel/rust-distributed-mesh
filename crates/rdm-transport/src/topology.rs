@@ -4691,12 +4691,11 @@ impl DigestView {
     }
 
     /// The removal overlays (`NodeDeleting`) the Build facts ended, closed: an overlay is keyed by its
-    /// attempt (gossip.md: `(kind, build_id, attempt, operation)`, riding `MeshTopology.in_flight` while
-    /// the operation is claimed and has no completed receipt), so it closes when its attempt's verdict
-    /// is terminal or its Build is forgotten (`forgotten`). `by_verdict` names each removal whose own
-    /// attempt, in its own lane, has a terminal verdict, by the overlay's key, `attempt-failed` or
-    /// `attempt-converged`: the Build facts know which lane a removal's attempt is numbered in, and
-    /// one attempt number names one attempt per lane. A copy of a closed overlay opens nothing again.
+    /// operation (gossip.md: `(build_id, operation)` is the only operation identity; the overlay rides
+    /// `MeshTopology.in_flight` while the operation has not completed), so it closes when its
+    /// operation's verdict is terminal or its Build is forgotten (`forgotten`). `by_verdict` names each
+    /// removal whose operation has a terminal verdict, by the overlay's key, with the verdict's name. A
+    /// copy of a closed overlay opens nothing again.
     /// Stops are not removals: their own facts end them.
     pub fn deletions_from_facts(&self, by_verdict: &std::collections::BTreeMap<(String, rdm_core::OperationId), &'static str>, forgotten: &BTreeSet<String>) {
         let mut cleared = Vec::new();

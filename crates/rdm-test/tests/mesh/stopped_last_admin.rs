@@ -64,7 +64,7 @@ fn alive(pid: u64) -> bool {
 }
 
 /// What a mesh1 delete run to its end leaves to read: the last admin, the mesh.delete's Build and
-/// its last admin's node.delete's (an attempt of the accepted Build), what a peer's resolver answers
+/// its last admin's node.delete's (a step of the accepted Build), what a peer's resolver answers
 /// for the last admin's birth after the delete, and every span.
 struct Deleted {
     last: PathName,
@@ -165,7 +165,6 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
         .unwrap_or_else(|| panic!("TerminateRuntime's parent is a pipeline span of its trace: {obs}"));
     assert_eq!(pipeline["attributes"]["node_path"], last.path);
     assert_eq!(pipeline["attributes"]["node_name"], last.name);
-    assert_eq!(pipeline["attributes"]["attempt"], obs["attributes"]["attempt"]);
     assert_eq!(pipeline["attributes"]["build_id"], obs["attributes"]["build_id"]);
 
     // The stopped node's own legs: its stop's cut, then nothing said by it on any channel, no

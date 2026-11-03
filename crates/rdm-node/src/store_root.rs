@@ -27,8 +27,7 @@
 //! naming its path and the value found; nothing is migrated.
 //!
 //! Every write reaches the root from its store's open: the fabric-primary's Fabric and Mesh rows, the
-//! mesh-primaries' Node and Mesh rows, every node's connection rows, the Build facts and the meshes'
-//! attempt claims (Q171).
+//! mesh-primaries' Node and Mesh rows, every node's connection rows and the Build facts.
 
 use crate::model::{FabricId, IncarnationId};
 use crate::storage_error::StorageError;

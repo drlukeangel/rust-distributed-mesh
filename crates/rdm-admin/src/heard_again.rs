@@ -168,7 +168,7 @@ async fn command_mesh_join(
     // once at reservation: every resend of this one request carries it unchanged. The birth's
     // ready declaration carries the operation, and an operation row survives every cycle
     // begin with no state in its key (`NodeOperationRow::key`): a second command back in one Build
-    // attempt under the first one's operation would have its ready answered AlreadyApplied from the
+    // under the first one's operation would have its ready answered AlreadyApplied from the
     // first join's row, and the birth would stay Pending.
     let operation = rdm_core::OperationId::new("node.mesh.join", rdm_core::OperationSubject::Birth { node_id: node.node_id.clone(), incarnation: incarnation.clone() })
         .in_occurrence(rdm_core::OperationOccurrenceId::mint());

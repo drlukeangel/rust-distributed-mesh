@@ -1104,7 +1104,7 @@ mod writer {
     /// `DeployRuntime` with A's deployment. Must NOT happen: B minting a new birth whose row
     /// is refused `name-held` by A's birth that never launched, run after run (gate
     /// gate-gates-e6s4-d7fcc329 node_replace: "name-held: mesh2.node.1 is held by node nrsm925mnyf8",
-    /// 200 attempts, the path never recreated).
+    /// 200 runs, the path never recreated).
     #[test]
     fn a_create_whose_executor_is_lost_after_its_first_row_is_continued_under_that_rows_identity_by_an_executor_that_never_heard_its_receipts() {
         use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter};
@@ -1884,8 +1884,8 @@ fn node_update_of_type_and_an_invalid_type_are_refused_by_name() {
     assert!(contract_msg.contains("type") && contract_msg.contains("node.update"), "{contract_msg}");
 }
 
-/// CONTRACT (build.md: an os-stopped executor that resumes after the next attempt is written "is a
-/// deleted birth whose writes every reader refuses"; Q109: "a row that does not follow the fold is
+/// CONTRACT (node-recovery.md step 3: "A birth that comes back once its verdict is not `reached`,
+/// during its successor's creation or after it, is a deleted birth"; Q109: "a row that does not follow the fold is
 /// ignored by every reader, refused by no storage", "the row's key names its writer's birth";
 /// storage-whole-records.md: no write reads storage first): a birth that writes its own record (a
 /// mesh-primary writes its own row) is held suspended while its mesh's writer `mesh1.node-admin.2` writes

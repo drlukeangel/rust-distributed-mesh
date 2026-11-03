@@ -180,8 +180,7 @@ pub(crate) fn lost_birth_name(digest_view: &DigestView, lost: &rdm_core::handove
 pub enum Woken {
     /// The loop's first pass, as it starts.
     First,
-    /// A Build accepted, an attempt opened, or a mesh's drift attempt ended on this admin
-    /// (`ControlPlane::build_submitted`).
+    /// A Build accepted on this admin (`ControlPlane::build_submitted`).
     Submitted,
     /// The installed view changed (`Records::subscribe_view`): births, status, primaries,
     /// verdicts, deleted meshes, the fabric-primary.
@@ -267,7 +266,7 @@ impl ReconcileWake {
 
 
 /// What an entry answer hands this admin of Fabric control: the Fabric identity, the answering
-/// admin's current Build with its attempt (the floor this admin's copy of that Build must reach), and
+/// admin's current Build (the floor this admin's copy of that Build must reach), and
 /// its own mesh's held lifecycle state ([`adopt_held_mesh_state`]). The first entry and every repeat of
 /// it take them through here.
 pub(crate) async fn take_entry_control(answer: &crate::wire::JoinAnswer, accepted: &AcceptedStore, entry_floor: &Mutex<Option<crate::build::BuildId>>, records: &Records, mesh: &str, mesh_id: &MeshId) {

@@ -134,7 +134,7 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 /// `build.get [id]` of the
 /// create's Build answers it Complete with its step receipts. Through all of it the admin
 /// writes nothing of its own to disk:
-/// its data dir holds no store (no `nodes/`, no `attempt-context/`), and every file under the fabric's
+/// its data dir holds no store (no `nodes/`), and every file under the fabric's
 /// store dir is the node's own `connections/` rows. Must NOT happen: a row of the admin's
 /// fabric, mesh, node, status or Build state on the file store.
 #[test]
@@ -204,7 +204,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
     // The admin's own durable state never reached a file: its data dir holds no store, and the store
     // dir holds the node's own connection facts only (its lines of the root's connections.jsonl,
     // the root its store opened, with the root's layout marker).
-    for store in ["nodes", "attempt-context"] {
+    for store in ["nodes"] {
         assert!(!data_dir.join(store).exists(), "the memory admin wrote {store}/ in its data dir {}", data_dir.display());
     }
     let stray: Vec<PathBuf> = files_under(&store_dir).into_iter().filter(|f| !f.ends_with(rdm_admin::store_root::CONNECTIONS_FILE) && !f.ends_with(rdm_admin::store_root::LAYOUT)).collect();

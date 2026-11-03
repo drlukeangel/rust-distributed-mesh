@@ -9,9 +9,9 @@
 //! key's old address) and completes `WaitForBind` and `WaitForMeshJoin` from the node's own report
 //! (node-create.md step 5: from the validated report, never from gossip). Once the create that
 //! registered the deployment ends, the report stays this admin's record of the admitted birth, so
-//! the same deployment's next registration (the Build's next attempt) is handed it. A disagreement is
+//! the same deployment's next registration (a later run of its Build) is handed it. A disagreement is
 //! refused by name with both values. A join for a birth whose create ended without hearing it is
-//! refused as `DeploymentAbandoned`, naming the Build, the attempt and the exact birth: this admin
+//! refused as `DeploymentAbandoned`, naming the Build and the exact birth: this admin
 //! is the birth's accepting primary and never answers `NotPrimary` about itself.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
@@ -176,7 +176,7 @@ pub struct Abandoned {
 const ABANDONED_KEPT: usize = 256;
 
 /// A create's deployment whose birth reported and whose create ended: the admitted birth's validated
-/// report, kept for the same deployment's next registration (its Build's next attempt completes
+/// report, kept for the same deployment's next registration (a later run of its Build completes
 /// `WaitForMeshJoin` from it, never from gossip). Never a held deployment (a restart's, a heard-again's):
 /// each of those waits for its own commanded join's report.
 #[derive(Debug, Clone)]
@@ -273,7 +273,7 @@ impl Joins {
         rx
     }
 
-    /// The create of `node_id`'s deployment (`build_id`, `attempt`) ended: stop holding it. A create's
+    /// The create of `node_id`'s deployment (`build_id`) ended: stop holding it. A create's
     /// deployment that heard its birth is kept as the admitted birth's report, handed to the same
     /// deployment's next registration (a held deployment's report ends with it); one that never heard
     /// its birth is remembered as abandoned, so a late `JoinNode` is refused by name.
@@ -739,10 +739,10 @@ mod tests {
     /// WaitForMeshJoin from the validated report, never from gossip"; [`Joins::expect`]: "A
     /// registration of the same deployment keeps what it already heard"): once the create that
     /// registered a deployment ends, the report its birth made stays the authority's record of the
-    /// admitted birth, and the same deployment's next registration (the next attempt of its Build)
+    /// admitted birth, and the same deployment's next registration (a later run of its Build)
     /// is handed that report; the ended create holds the deployment no more, and another deployment
     /// of the node (its restart, held) is handed nothing. Must NOT happen: the report dropped with
-    /// the create, so the Build's next attempt waits for a JoinNode the admitted birth never sends
+    /// the create, so a later run of the Build waits for a JoinNode the admitted birth never sends
     /// again.
     /// CONTRACT (Q87: a birth with a lifecycle command of its authority in flight is that command's,
     /// never commanded back; node-create.md step 3: the create composes the whole node.start): a node

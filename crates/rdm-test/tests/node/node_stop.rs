@@ -781,16 +781,16 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
 /// operation is never planned again): in mesh2, a peer mesh of the fabric-primary mesh1.node-admin.1,
 /// `node.stop` of mesh2.node.1, then `node.delete` of another node of mesh2 (the Build that removes
 /// its path). The delete Build plans that path's delete and at most once the stopped path's create, whose
-/// check reaches the stopped birth, holds it and receipts the create `Complete`; no attempt plans it
-/// again and the attempts are bounded; the delete's operation completes and its path is listed no more;
+/// check reaches the stopped birth, holds it and receipts the create `Complete`; no plan names it
+/// again and the plans are bounded; the delete's operation completes and its path is listed no more;
 /// the stopped birth is still listed stopped, the same birth and the same live process. The Build then
 /// ends Complete: the stopped birth holds neither its mesh's ready nor the fabric's checklist
 /// (states.md:16, Q240), so the fabric's change reaches ready (flame b7f9ecec2fec32f356d022f98bdfb374
 /// is this cell's shape before Q240: Blocked on the change naming the stopped birth `not-ready`).
 ///
-/// Must NOT happen (#3233, 141's estate): every attempt of the delete Build planning `node.create` at
-/// the stopped path, its check holding the stopped birth and the next attempt planning the create again,
-/// the Build never ending (1198 attempts in 240 s).
+/// Must NOT happen (#3233, 141's estate): every plan of the delete Build naming `node.create` at
+/// the stopped path, its check holding the stopped birth and the next plan naming the create again,
+/// the Build never ending (1198 plans in 240 s).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_create_at_most_once() {
     let test = "a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_create_at_most_once";
@@ -820,7 +820,7 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     let mut stream = nodes.delete(vec![other_id.clone()]).await.expect("the delete was accepted");
     let build_id = stream.accepted().expect("the call opened a Build").build_id.to_string();
     // Read until the Build ends, bounded and without a panic: a Build that does not end is asserted below
-    // from its spans, which name the operations every attempt planned.
+    // from its spans, which name the operations every plan named.
     let mut deleted = Vec::new();
     let deadline = tokio::time::Instant::now() + SETTLE;
     while let Ok(Some(f)) = tokio::time::timeout_at(deadline, stream.next()).await {
@@ -1056,7 +1056,7 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
     // The stop ran after NA2 answered, run by NA2 as mesh2's primary: the node command handed on to it.
     let stop_run = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| at_location(sp, &na2.location()) && attr(sp, "subject_id") == p_id).unwrap_or_else(|| panic!("NA2 ran the stop"));
     assert!(end_ns(&cmd) <= start_ns(stop_run), "the fabric-primary installed NA2's answer before it handed the stop on");
-    // The stop belongs to no Build: its steps run under no build_id and attempt.
+    // The stop belongs to no Build: its steps run under no build_id.
     let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &p.location()) && attr(sp, "build_id") == rdm_core::LifecycleOp::NO_BUILD.to_string()).collect();
     assert!(steps.iter().any(|sp| attr(sp, "step") == "StopNode"), "the stop's steps are read: {steps:#?}");
     assert!(steps.iter().all(|sp| start_ns(sp) >= end_ns(&installed_at_na2)), "no stop step ran before NA2 answered: {steps:#?}");
@@ -1398,10 +1398,10 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
 /// its `StatusService` (the fault service's declaration cut) and holds the stop stream's `stopped` unrecorded
 /// (its event cut), and that primary is then SIGKILLed: the role moves to mesh2's other admin, and the
 /// stopped node, which left its mesh's channel at its transport cut, hears neither the death nor the
-/// move. The stop's receipt and reply never wait for the declaration's answer: the Build's next attempt,
-/// run by the new primary, sends the stop again, the birth admits it from its stopped cycle, the Build
-/// completes and the node reads stopped. Must NOT happen: the birth held in Stopping on its owed
-/// declaration, the next attempt's stop never admitted (release run 5 at 7e13f37e, rshape-authority
+/// move. The stop's receipt and reply never wait for the declaration's answer: the caller sends its
+/// node.stop again to the new primary (a node command, never a Build, Q342), the birth admits it from
+/// its stopped cycle and the node reads stopped. Must NOT happen: the birth held in Stopping on its owed
+/// declaration, the stop sent again never admitted (release run 5 at 7e13f37e, rshape-authority
 /// recovery: AwaitNodeLeft "stop-node was not admitted", DEADLINE_EXCEEDED).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admitted_again_and_completes() {
@@ -1442,7 +1442,7 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
             .filter(|sp| at_location(sp, &node) && attr(sp, "step") == "AwaitNodeLeft" && attr(sp, "code") == "DEADLINE_EXCEEDED")
             .cloned()
             .collect();
-        assert!(unadmitted.is_empty(), "the next attempt's stop of {node_s:?} was never admitted: the birth held its stop in Stopping on its owed declaration: {unadmitted:#?}");
+        assert!(unadmitted.is_empty(), "the stop of {node_s:?} sent again was never admitted: the birth held its stop in Stopping on its owed declaration: {unadmitted:#?}");
         let v = view_of(&estate.nodes_obj().await, &node).await;
         if v.stopped {
             assert_eq!((v.status, &v.node_id, &v.incarnation_id), (NodeStatus::Stopped, &before.node_id, &before.incarnation_id), "the same birth, stopped: {v:?}");
@@ -1458,11 +1458,11 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
 
     estate.stop().await;
     let spans = estate.spans();
-    // The birth owed its Stopped declaration naming its stop, and its stop step ran again under the next attempt.
+    // The birth owed its Stopped declaration naming its stop, and its stop step ran again under the stop sent again.
     let operation = "node.stop".to_string();
     let owed: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-owed-on-stop").into_iter().filter(|sp| attr(sp, "node") == node_id && attr(sp, "operation") == operation).collect();
     assert_eq!(owed.len(), 1, "the birth owed its Stopped declaration once, naming its stop, and did not wait on it: {owed:#?}");
-    let steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &node) && attr(sp, "step") == "StopNode").map(|sp| format!("{} attempt {}", attr(sp, "outcome"), attr(sp, "attempt"))).collect();
+    let steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &node) && attr(sp, "step") == "StopNode").map(|sp| attr(sp, "outcome")).collect();
     assert!(steps.iter().any(|s| s.starts_with("complete")), "a stop step of {node_s:?} completed: {steps:?}");
     estate.record_trace_url(&s(&owed[0]["trace_id"]));
     println!("{node_s:?} stopped; its stop steps: {steps:?}");

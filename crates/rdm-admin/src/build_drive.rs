@@ -11,10 +11,11 @@
 //!    no mesh-primary) and dispatches every other mesh's section to that mesh's primary with
 //!    `build.section.run`, each after its `rdm.build.dispatched` event, all at once (Q250), passing
 //!    each section's frames into the Build's [`Drive`];
-//! 4. a step that ends `failed { reason }` ends the Build: `rdm.build.ended` `failed`, and the
-//!    application's `on_build_ended`; nothing left ends it `complete` the same way. A section lost
-//!    with its mesh-primary leaves the Build in progress: the next pass sends it to the mesh's new
-//!    primary, which runs the steps its mesh owes (elections §4.1).
+//! 4. a section that ends short (a step `failed { reason }`, or its mesh-primary lost mid-section)
+//!    ends its mesh's part of the run, never the Build (Q346): nothing more of that mesh is
+//!    dispatched, the other sections run on, and once no section is left to run the Build ends
+//!    `incomplete`: `rdm.build.ended` and the application's `on_build_ended`. A run whose every
+//!    section finished ends `complete` the same way.
 //!
 //! Callers (`build.create`) read the [`Drive`]'s frames; a cut caller cancels nothing, because the
 //! drive is its own task and the caller is a view of its frames. A successor fabric-primary resumes

@@ -280,9 +280,9 @@ pub type FabricReadyNotice = Arc<dyn Fn(FabricReadyCtx) -> Pin<Box<dyn Future<Ou
 /// record (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
 pub type MeshReadyNotice = Arc<dyn Fn(MeshReadyCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-/// `on_build_started`: the notice the fabric-primary calls once the claim of a Build's first attempt,
-/// or of the attempt that reopens an ended Build, is recorded
-/// (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
+/// `on_build_started`: the notice the fabric-primary calls each time it writes a Build's
+/// `rdm.build.started` event, at acceptance or when a caller's resubmission runs a failed or
+/// incomplete Build again (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
 pub type BuildStartedNotice = Arc<dyn Fn(BuildStartedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// `on_build_ended`: the notice the fabric-primary calls once a Build's `Complete` or `Failed` is

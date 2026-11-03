@@ -87,11 +87,11 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         admin.observer.resolver.insert(resolved.clone());
         let target = NodeTarget::ExactNode(born.node.node_id.clone());
         let (node_id, incarnation) = (born.node.node_id.clone(), born.node.incarnation.clone());
-        let stop = |attempt: u32, incarnation: &IncarnationId| StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
+        let stop = |incarnation: &IncarnationId| StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
 
         // The admin the node knows stops it: the node stops, and hears no digest from now on.
-        let stopped = call(&admin.observer.client, &target, &stop(1, &incarnation)).await;
+        let stopped = call(&admin.observer.client, &target, &stop(&incarnation)).await;
         assert!(matches!(stopped, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{stopped:?}");
 
         // An admin the stopped node never heard of: a fresh endpoint key, in no digest the node holds.
@@ -103,13 +103,13 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         let stranger = NodeRpcClient::new(rdm_transport::endpoint::bind(stranger_key, "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
 
         // Its stop naming the exact birth is answered as the known admin's was: stopping a stopped birth is done.
-        assert_eq!(call(&stranger, &target, &stop(2, &incarnation)).await, stopped, "a stopped endpoint answers anyone who reaches it");
+        assert_eq!(call(&stranger, &target, &stop(&incarnation)).await, stopped, "a stopped endpoint answers anyone who reaches it");
         // Its probe is answered for the subject: stopped.
         assert!(matches!(call(&stranger, &target, &probe).await, StatusReply::CurrentStopped { .. }), "the probe is decided for the subject, not the caller");
 
         // The exact birth the request names is checked: another birth of the node is refused naming the one held.
         let stale = IncarnationId::mint();
-        assert_eq!(call(&stranger, &target, &stop(3, &stale)).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() });
+        assert_eq!(call(&stranger, &target, &stop(&stale)).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() });
         // The node id the request names is never a reason to refuse: the birth the call reached answers it.
         let another = StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "9").unwrap())) };
         let reply = call(&stranger, &NodeTarget::ExactNode(node_id.clone()), &another).await;

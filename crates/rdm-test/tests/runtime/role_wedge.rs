@@ -65,7 +65,7 @@ async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_f
         .await;
     let _ = std::process::Command::new("kill").args(["-KILL", &pid.to_string()]).status();
     estate.artifact("recreated.json", &json!({"target": target, "back": back}));
-    assert_eq!(estate.accepted_build_id().await, build_id, "the accepted Build is unchanged: recovery is an attempt of it");
+    assert_eq!(estate.accepted_build_id().await, build_id, "the accepted Build is unchanged: recovery is no part of it (Q342)");
     estate.stop().await;
 
     let spans = estate.spans();

@@ -17,8 +17,8 @@ pub(crate) fn incumbency_of(digest_view: &DigestView, _records: &Records) -> cra
 /// election's result this admin installed, judged by [`crate::primary_watch::fabric_primary_record`] against the births proven gone (the
 /// lost set every election takes, [`incumbency_of`]) and named from the digests `digest_view` holds.
 ///
-/// While the fabric-primary is unavailable, the fabric recovery workflow's executor writes that attempt's
-/// Build records (build.md §5.3, Q122): for it, the record naming the lost birth is open, naming no
+/// While the fabric-primary is unavailable, the fabric recovery workflow's executor writes the mesh and
+/// node records its own operations require (fabric-recovery.md, Q122): for it, the record naming the lost birth is open, naming no
 /// primary. `view` is this admin's view once it is built.
 pub(crate) fn fabric_primary_source(digest_view: &DigestView, records: &Arc<Records>, me: (NodeId, IncarnationId), _me_name: &PathName, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::fabric_builds::PrimarySource {
     let changed = Some(digest_view.primaries.subscribe());
@@ -37,7 +37,8 @@ pub(crate) fn fabric_primary_source(digest_view: &DigestView, records: &Arc<Reco
 /// Whether this birth reads the Build records now ([`crate::build_state::LocalBuildLog::read_records_while`];
 /// Q227: "only FP reads the builds"): its node ID for diagnostics while the fabric-primary record `digest_view`
 /// holds names this exact birth, or while fabric recovery names it the executor that restores the
-/// fabric-primary in its place (build.md §5.3, Q122: it writes that attempt's Build records), or, for an
+/// fabric-primary in its place (fabric-recovery.md, Q122: it writes the mesh and node records its own
+/// operations require), or, for an
 /// admin started with no launcher (`unlaunched`: Day 0, a start again from its own data dir, an adoption
 /// launch; Q227's first or re-born fabric-primary), while that record names no birth or a birth proven
 /// gone; `None` otherwise, and the admin answers from what reached it. `view` is this admin's view once
@@ -725,8 +726,8 @@ mod tests {
         assert!(topology.violations().is_empty(), "{:?}", topology.violations());
     }
 
-    /// CONTRACT: docs/architecture/build.md:453
-    /// "One writer per key: the fabric-primary writes the Fabric record and every topology attempt's Build facts"
+    /// CONTRACT: docs/architecture/build.md §5.3
+    /// "The fabric-primary writes the Fabric record, each Build once, and the Build-level events."
     /// CONTRACT: docs/architecture/node-identity-and-state.md:149
     /// "node.delete releases the node's identity and name; its row stays. The node's mesh-primary writes
     /// the row with status deleted, keeping the record and its config; the deleted row releases..."

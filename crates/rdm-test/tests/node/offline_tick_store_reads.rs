@@ -4,8 +4,8 @@
 //! §4.1; node-recovery.md "Detection and the verdict" step 2: "Only the mesh-primary acts"), so only it
 //! watches the births a durable runtime row alone names. It reads its mesh's runtime rows once, as it
 //! takes the role, and holds them while it keeps it: a row written later names a birth its own executor
-//! launched (build.md §5.3: the launching admin writes a birth's runtime row; node-recovery.md: every
-//! attempt in a mesh with a running mesh-primary is that mesh-primary's to run), which its view holds.
+//! launched (build.md §5.3: the launching admin writes a birth's runtime row; node-recovery.md "Execution":
+//! "The mesh-primary runs the recovery itself"), which its view holds.
 //! An admin that is not its mesh's primary reads no runtime row on any tick.
 
 use rdm_admin::admin::{start_on, AdminConfig, Running};

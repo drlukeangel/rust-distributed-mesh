@@ -87,8 +87,8 @@ async fn plane_unbound(builds: Arc<MemoryBuildStateAdapter>, t: Topology, me: &P
     cp
 }
 
-/// The accepted topology: every node, the stopped ones included (a stop is an attempt of the
-/// accepted Build and leaves its topology as it is).
+/// The accepted topology: every node, the stopped ones included (a stop is a node command, never a
+/// Build or part of one, and leaves the topology as it is).
 fn desired(t: &Topology) -> FabricTopology {
     let mut live = t.clone();
     for n in live.nodes.iter_mut() {
@@ -148,7 +148,7 @@ async fn a_node_stopped_past_the_ttl_is_collected_by_one_ordinary_delete_build()
     let swept = cp.sweep_stopped(Some(TTL)).await;
     let Swept::Submitted { path: node_path, name: node_name, build_id } = swept else { panic!("one node.delete Build is accepted for the expired stopped node: {swept:?}") }; let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
     assert_eq!(*node, old.0);
-    assert_ne!(build_id, b0, "a new topology Build, never an attempt of the settled one");
+    assert_ne!(build_id, b0, "a new topology Build, never a resubmit of the settled one");
     let p = builds.read_build(&build_id).await.unwrap();
     assert_eq!(p.change, BuildChange::Delete { meshes: Vec::new(), node_ids: vec![old.1.clone()] }, "the ordinary node.delete Build");
     assert!(!p.topology.contains(&old.0) && p.topology.contains(&young.0), "only the expired node leaves the topology: {:?}", p.topology);

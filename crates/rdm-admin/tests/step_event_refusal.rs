@@ -207,14 +207,14 @@ async fn a_step_whose_step_event_is_refused_fails_by_name_and_the_run_stops() {
 }
 
 /// CONTRACT (CLAUDE.md "an error state carries every non-leaking detail": "Never written" and "could
-/// not be read" are different errors, and neither is an empty answer; node-recovery.md "Failure and
-/// receipts": a run hands on the decisions its earlier attempts made): a standalone node.connection.delete of a Build
+/// not be read" are different errors, and neither is an empty answer; build.md §1: "A step whose
+/// `rdm.build.step` event ended `complete` is not run again"): a standalone node.connection.delete of a Build
 /// whose journal cannot be read fails the run at its start by name, the error naming the node, the
 /// Build, the operation and the read failure, under a
 /// `rdm.node_admin.deployment.reject.via-build-unreadable` span, and no step runs or writes a step event.
 /// A Build this node holds no fact of is refused the same way, its own error. Must NOT happen: the
 /// unreadable Build taken for one with no earlier step events, so that the run goes on from its first
-/// step and decides afresh what an earlier attempt had already decided.
+/// step and decides afresh what an earlier run had already decided.
 #[tokio::test]
 async fn a_run_whose_build_cannot_be_read_fails_by_name_before_any_step() {
     let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };

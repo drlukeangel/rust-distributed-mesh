@@ -389,8 +389,7 @@ impl AdminRunner {
         self.pipeline_with(template, &*self.builds)
     }
 
-    /// [`Self::pipeline`] writing its receipts to and reading its Build from `builds` (an attempt's
-    /// lane, [`crate::build_run::LaneBuilds`]).
+    /// [`Self::pipeline`] writing its receipts to and reading its Build from `builds`.
     pub(crate) fn pipeline_with<'a>(&'a self, template: &'a LaunchTemplate, builds: &'a dyn BuildStateAdapter) -> DeploymentPipeline<'a> {
         DeploymentPipeline {
             provider: &*self.provider,
@@ -876,7 +875,7 @@ impl AdminRunner {
     /// instance before the new join"): right before the new runtime is launched,
     /// inside its `DeployRuntime` step ([`crate::deployment::pipeline::BeforeLaunch`]). Whichever
     /// executor runs the create targets, so an executor lost after the delete's Complete leaves
-    /// nothing untargeted; a rerun that reuses a runtime an earlier attempt launched (it was targeted
+    /// nothing untargeted; a rerun that reuses a runtime an earlier run launched (it was targeted
     /// before that launch) cuts none of that runtime's paths.
     /// `read_exited`: whether the delete of `from` read the old runtime exited at its `TerminateRuntime`
     /// (node-recovery.md step 2), from that delete's own receipt.
@@ -1349,7 +1348,6 @@ impl OperationRunner for AdminRunner {
             Some(rdm_core::OperationSubject::Birth { node_id, .. } | rdm_core::OperationSubject::Node(node_id)) => Some(self.node_work(&node_id).await),
             _ => None,
         };
-        // A Build's operation carries the constant attempt (D44).
         let r = self.run_op(build_id, op).await;
         self.refresh_view().await;
         r
@@ -1741,7 +1739,7 @@ async fn hashed_binding(r#type: &str, executable: &std::path::Path, provider: Pr
 }
 
 /// The exact birth `from` at `node` whose node.delete in `build_id` already holds its `TerminateRuntime`
-/// receipt naming that birth (the provider's exited verdict, recorded by an earlier attempt's executor), when
+/// receipt naming that birth (the provider's exited verdict, recorded by an earlier run's executor), when
 /// this admin cannot resolve its runtime: its record, and a handle of the receipted runtime that locates
 /// nothing. The delete resumes from its events (mesh-delete.md "Resume after the primary's loss" step 3:
 /// "Completed member receipts stand"; `DeploymentPipeline::begin` reuses every step whose event ended

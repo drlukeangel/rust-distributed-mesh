@@ -228,7 +228,7 @@ impl FabricStates {
 
     /// A resize, a Create or a Delete, puts the fabric back to pending: the accepted Build's topology is no longer
     /// the one the fabric changes under, so the fabric is ready again only when every mesh of the new
-    /// topology is. A new attempt of the same Build changes no topology and moves nothing here.
+    /// topology is. A resubmit of the same Build changes no topology and moves nothing here.
     /// Returns whether the fabric was put back; the move waits until the state it leaves went out.
     async fn resized(&self, change: &mut Change, build: &crate::build_state::BuildProjection, me: &PathName) -> bool {
         match &change.tracked {

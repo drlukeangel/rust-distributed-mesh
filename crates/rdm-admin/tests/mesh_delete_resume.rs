@@ -471,7 +471,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     eprintln!("trace {trace_id}: rdm.node_admin.node.delete.via-node-row node_id={} outcome=row-deleted config_from=writer-record (retained receipt)", exiting.node_id);
 }
 
-/// CONTRACT: an incomplete tier is refused by name, never awaited. Attempt 1 leaves the ordinary
+/// CONTRACT: an incomplete tier is refused by name, never awaited. Run 1 leaves the ordinary
 /// tier incomplete (one ordinary node exits, the other's exit cannot be proven; the node-admin tier
 /// never starts), so the leaving primary records no exit manifest. The fabric-primary's verdict on
 /// the handoff over the sender's Build facts (as the wire carries them) refuses it
@@ -559,8 +559,8 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
     assert!(refused.iter().any(|s| s["attributes"]["without_exit"].as_str().is_some_and(|w| w.contains(failing.node_id.as_str()) && w.contains(other_admin.node_id.as_str()))), "{refused:?}");
 }
 
-/// CONTRACT: mesh.delete ends at mesh.deleted (mesh-delete.md steps 5-7; R-MD1 items 2-3). Attempt
-/// 1 runs to the validated handoff: both sides record the roster, the member workflows record the
+/// CONTRACT: mesh.delete ends at mesh.deleted (mesh-delete.md steps 5-7; R-MD1 items 2-3). Run
+/// 1 goes to the validated handoff: both sides record the roster, the member workflows record the
 /// exit manifest, the owner's verdict accepts it and records the `MeshDeleted` completion over every
 /// birth but the final primary, which nothing stops. A resumed owner reads that receipt and calls
 /// nothing (`OwnerResume::Deleted`); a repeated handoff of the same final birth is `AlreadyApplied`
@@ -980,7 +980,7 @@ fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_topology_
 /// handed a record naming exactly that birth (separate path/name, node id, incarnation), its exact Exited
 /// receipt is in the manifest, and its row, read from the mesh's own rows before the tiers run, is
 /// written Deleted with its config kept by its node.delete's NodeDeleted step. Must NOT happen: the tier refused "this view holds no record
-/// of the accepted birth" (no_survivor, created path `mesh2.node-admin`, name `2`, attempts 2 and 3), or a Deleted row
+/// of the accepted birth" (no_survivor, created path `mesh2.node-admin`, name `2`, runs 2 and 3), or a Deleted row
 /// written with a config the writer never read.
 #[test]
 fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_is_written_deleted() {
@@ -1327,7 +1327,7 @@ fn run_paused<F: std::future::Future>(cap: &Capture, f: F) -> F::Output {
 /// final primary lost (mesh-delete.md, "Resume after the primary's loss"): the run ends
 /// incomplete, naming the lost final primary, its receipts standing for the next run, which
 /// resumes. A view change that names no loss keeps the wait open. Must NOT happen: the wait running on
-/// to a timer (`MESH_DELETED_WAIT`) after the loss is in, the 120 s attempt 1 of the leave stems
+/// to a timer (`MESH_DELETED_WAIT`) after the loss is in, the 120 s run 1 of the leave stems
 /// (trace b84c9abc66ec8a8cee045c1e871514cb).
 #[test]
 fn the_owners_wait_ends_when_the_final_primary_is_lost_never_on_a_timer() {

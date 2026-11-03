@@ -342,7 +342,7 @@ pub struct CaView {
 /// The fabric-primary's atlas (`fabric.atlas.get`; docs/plans/proposal/fabric-atlas.md):
 /// one row for every node the current Build's topology names, in `(path, name)` order. Each row's birth
 /// is the one its node row names current, and its lifecycle is what the ops left it: the
-/// fabric-primary's own (what it accepted and the receipts its attempts returned) and the effects the
+/// fabric-primary's own (what it accepted and the step events its runs returned) and the effects the
 /// node row records of any admin's op. Gossip is context only (`observed`) and decides nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AtlasView {
@@ -372,8 +372,8 @@ pub struct AtlasNodeView {
     pub status: NodeStatus,
     /// A stopped birth with a live process (a completed node.stop), waiting for a start or a delete.
     pub stopped: bool,
-    /// The operation key (`node.stop:mesh2.node.1`) of the command accepted on the node whose attempt
-    /// has not completed; `None` once its receipts are in.
+    /// The operation key (`node.stop:mesh2.node.1`) of the command accepted on the node that has not
+    /// completed; `None` once it completes.
     pub accepted: Option<crate::OperationId>,
     /// Context only: the status the answering admin's gossip view holds for the same birth, when it
     /// holds it. Never read by acceptance.

@@ -245,16 +245,16 @@ pub struct Followed {
 /// reattachment": "`build.get [id: build_id]` for the events, then the outer stream again, resuming from
 /// the events").
 pub struct Reattached {
-    /// The step events `build.get` read, every attempt's, in order.
+    /// The step events `build.get` read, every run's, in order.
     pub events: Vec<serde_json::Value>,
-    /// The outer stream, opened again from the current attempt the step events name.
+    /// The outer stream, opened again, resuming from the step events.
     pub stream: BuildStream,
 }
 
-/// Follow `stream` to its terminal (build.md: "a live run is reattached, never re-claimed"; i146 Q22:
+/// Follow `stream` to its terminal (build.md: "A live run is reattached, never re-run"; i146 Q22:
 /// the reattach after a stream op's connection closes is the owner's). A stream that breaks
 /// before its terminal (its connection closed: `Indeterminate`), ends without one, or ends
-/// `FabricPrimaryMoved` is reattached through `reattach` by its `build_id` from the attempt it carried: the
+/// `FabricPrimaryMoved` is reattached through `reattach` by its `build_id`: the
 /// step events it reads are kept as step frames, each completed step once, then the stream it opens again
 /// is read on, a step it replays kept once. The terminal is `Complete`, `Incomplete`, `Failed`, `Got` or `Deleted`.
 /// `Err` is a reattachment refused or not made, named: nothing here waits or tries again on its own.

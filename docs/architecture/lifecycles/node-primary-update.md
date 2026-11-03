@@ -108,7 +108,7 @@ and recording it are separate for every type.
   election; the successor's digest carries its role, and the mesh-primary (the successor itself for the
   `node-admin` type) records it. Completion needs neither gossip delivery nor the old primary's
   survival.
-- **Discovery is not installation.** A later attempt that reads the record has discovered the update, not
+- **Discovery is not installation.** A later run that reads the record has discovered the update, not
   installed it. The commander obtains the primary's `node.primary.updated { node_id }` before the departing primary's destructive step is commanded; it installs nothing itself. A successor node investigation found unheard is handled above.
 - The workflow continues only after the result is installed and acknowledged: `node.primary.updated`
   answered to the resuming executor's call, never a read alone.

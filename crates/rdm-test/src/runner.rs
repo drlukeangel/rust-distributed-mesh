@@ -124,7 +124,8 @@ fn semantic(out: &Value) -> (String, Value) {
 
 /// Run `scenario` once under `faults`, recording typed outcomes in order: the replay manifest of
 /// the run. The Build, the operations, the restarts and the final proof reads all go through
-/// public surfaces (node-admin Build, the probe); a restart is a Build attempt of the rectifier.
+/// public surfaces (node-admin Build, the probe); a restart is the rectifier's node.stop then
+/// node.start, node commands that belong to no Build (Q342).
 pub async fn run_replayable(
     scenario: &Scenario,
     provider: Option<&str>,

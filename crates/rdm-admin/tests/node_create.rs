@@ -880,7 +880,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         };
 
         // 1. Cut after claiming the name at PrepareStorage before DeployRuntime:
-        //    When the provider proves the claimed allocation was NeverLaunched, the next attempt
+        //    When the provider proves the claimed allocation was NeverLaunched, the next run
         //    continues the exact allocated identity (node_id, incarnation, deployment_id).
         let cut_path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let pre_node_id = NodeId::mint();
@@ -894,7 +894,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         };
         rows.create_row(&cut_path, "mesh1", "node", &pre_node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&cut_path)), Some(&allocated), None, rdm_admin::node_rows::RowFor::Create)
         .await
-        .expect("cut attempt claims the name with its allocated identity");
+        .expect("the cut run claims the name with its allocated identity");
 
         let template_exec1 = make_template(41001);
         let pipeline = DeploymentPipeline {
@@ -923,7 +923,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         assert_eq!(created_cut.node.deployment_id, Some(pre_deployment));
 
         // 2. Lost reply at WaitForBind, then Kill (Exited) at WaitForBind, then Kill at WaitForNodeReady,
-        //    then SIGSTOP (OsStopped) across attempts and resume to Complete:
+        //    then SIGSTOP (OsStopped) across runs and resume to Complete:
         let fault_path: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
 
         let lost_bind_build = accepted_case(&builds).await;
@@ -987,9 +987,9 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         assert!(kill_ready_err.reason.contains("runtime exited"));
 
         let os_build = accepted_case(&builds).await;
-        // 2d. SIGSTOP (OsStopped) then resume across an interrupted attempt:
-        //     Attempt 4 launches a fresh birth, completes through WaitForMeshJoin, and is cut short
-        //     during WaitForNodeReady while the runtime is held OsStopped; attempt 5 inspects the
+        // 2d. SIGSTOP (OsStopped) then resume across an interrupted run:
+        //     Run 4 launches a fresh birth, completes through WaitForMeshJoin, and is cut short
+        //     during WaitForNodeReady while the runtime is held OsStopped; run 5 inspects the
         //     handle as OsStopped (alive), keeps the exact same birth without spawning a second runtime,
         //     and completes once resumed and ready.
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Running;
@@ -1005,9 +1005,9 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         };
         tokio::select! {
             _ = entered => {}
-            res = pipeline.create(&req4) => panic!("attempt 4 must be cut at WaitForNodeReady before completing: {:?}", res.map(|c| c.node.node_id)),
+            res = pipeline.create(&req4) => panic!("run 4 must be cut at WaitForNodeReady before completing: {:?}", res.map(|c| c.node.node_id)),
         }
-        let spawns_after_attempt4 = *provider.spawn_calls.lock().unwrap();
+        let spawns_after_run4 = *provider.spawn_calls.lock().unwrap();
         let proj4 = builds.read_build(&os_build).await.unwrap();
         assert!(
             proj4.steps.iter().any(|r| {
@@ -1015,10 +1015,10 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
                     && r.step == CreateStep::WaitForMeshJoin.name()
                     && r.outcome == StepOutcome::Complete
             }),
-            "attempt 4 completed through WaitForMeshJoin before being cut short"
+            "run 4 completed through WaitForMeshJoin before being cut short"
         );
 
-        // Now the OS holds the runtime OsStopped at attempt 5's start, then resumes it so Ready succeeds.
+        // Now the OS holds the runtime OsStopped at run 5's start, then resumes it so Ready succeeds.
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::OsStopped;
         *observer.ready_ok.lock().unwrap() = true;
         let resumed_created = pipeline
@@ -1031,11 +1031,11 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
                 entry: None,
             })
             .await
-            .expect("OsStopped runtime is kept alive across attempts and completes once resumed");
+            .expect("OsStopped runtime is kept alive across runs and completes once resumed");
         assert_eq!(
             *provider.spawn_calls.lock().unwrap(),
-            spawns_after_attempt4,
-            "an OsStopped runtime must never be spawned over by the next attempt"
+            spawns_after_run4,
+            "an OsStopped runtime must never be spawned over by the next run"
         );
         assert_eq!(resumed_created.node.location(), fault_path);
     });

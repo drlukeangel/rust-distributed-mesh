@@ -141,7 +141,7 @@ async fn a_successor_manages_births_it_never_launched() {
     let location_of = |sp: &Value| PathName::new(sp["attributes"]["node_path"].as_str().expect("step path"), sp["attributes"]["node_name"].as_str().expect("step name")).unwrap();
     let steps_before = |wait: &Value| -> Vec<Value> {
         let (node, build) = (location_of(wait), wait["attributes"]["build_id"].clone());
-        steps_of(&node, &|sp| sp["attributes"]["build_id"] == build && sp["attributes"]["attempt"] == wait["attributes"]["attempt"] && sp["trace_id"] == wait["trace_id"] && sp["parent_span_id"] == wait["parent_span_id"] && ns(sp, "end_unix_nano") <= ns(wait, "start_unix_nano"))
+        steps_of(&node, &|sp| sp["attributes"]["build_id"] == build && sp["trace_id"] == wait["trace_id"] && sp["parent_span_id"] == wait["parent_span_id"] && ns(sp, "end_unix_nano") <= ns(wait, "start_unix_nano"))
     };
     let (restarts, launches): (Vec<&Value>, Vec<&Value>) =
         launched.iter().filter(|w| location_of(w) != PathName::new("mesh1.node-admin", "1").unwrap()).partition(|w| steps_before(w).iter().any(|sp| sp["attributes"]["step"] == "StartNode"));

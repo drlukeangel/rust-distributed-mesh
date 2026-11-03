@@ -23,7 +23,6 @@
 //! - `a_copy_preserves_current_values_across_writer_changes`
 //! - `a_copy_refuses_a_destination_hole_without_replaying_stale_state`
 //! - `a_copy_resumes_after_a_lost_answer_without_duplicate_records`
-//! - `a_provider_change_preserves_held_names_and_attempts`
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -175,9 +174,9 @@ impl History {
 
         let b = log(&root, BUILDS_FILE).await;
         b.append(&fp1, "build-record", "build-record/1", &format!("{build}/accepted"), &json!({"seq": 1, "fact": "accepted"})).await.unwrap();
-        b.append(&fp1, "build-record", "build-record/1", &format!("{build}/opened/1"), &json!({"seq": 2, "fact": "opened", "attempt": 1})).await.unwrap();
-        b.append(&fp2, "build-record", "build-record/1", &format!("{build}/opened/1"), &json!({"seq": 3, "fact": "opened", "attempt": 1})).await.unwrap();
-        b.append(&fp2, "build-record", "build-record/1", &format!("{build}/opened/2"), &json!({"seq": 4, "fact": "opened", "attempt": 2})).await.unwrap();
+        b.append(&fp1, "build-record", "build-record/1", &format!("{build}/started/1"), &json!({"seq": 2, "fact": "started"})).await.unwrap();
+        b.append(&fp2, "build-record", "build-record/1", &format!("{build}/started/1"), &json!({"seq": 3, "fact": "started"})).await.unwrap();
+        b.append(&fp2, "build-record", "build-record/1", &format!("{build}/started/2"), &json!({"seq": 4, "fact": "started"})).await.unwrap();
 
         // Each event is its own line, its `id` the event's, by its one writer (build.md §5).
         let e = log(&root, EVENTS_FILE).await;
@@ -238,7 +237,7 @@ fn a_copy_preserves_current_values_across_writer_changes() {
         for l in store_log::read_file(&dest_root.join(BUILDS_FILE)).unwrap() {
             first_per_key.entry(l.subject().to_string()).or_insert(l.data.clone());
         }
-        assert!(first_per_key.iter().filter(|(k, _)| k.ends_with("/opened/1")).all(|(_, r)| r["seq"] == 2), "the first Build fact line per subject is the first writer's: {first_per_key:?}");
+        assert!(first_per_key.iter().filter(|(k, _)| k.ends_with("/started/1")).all(|(_, r)| r["seq"] == 2), "the first Build fact line per subject is the first writer's: {first_per_key:?}");
 
         let resumed = log(&dest_root, CONNECTIONS_FILE).await;
         resumed.append(&h.live, "node-connection", "node-connection/2", "live--gone--00--Direct", &json!({"source": "mesh1.node.3", "state": "Disconnected"})).await.unwrap();

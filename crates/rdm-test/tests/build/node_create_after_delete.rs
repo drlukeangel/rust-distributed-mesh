@@ -23,15 +23,15 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-/// CONTRACT (build.md "Every execution attempt re-reads the accepted topology and current
-/// realized/observed state and computes remaining work"; node-delete.md, node-create.md): the
+/// CONTRACT (build.md §1: "Every run of a Build reads its topology and the records and computes the
+/// remaining work"; node-delete.md, node-create.md): the
 /// realized state a Build plans from counts a birth the previous Build deleted as gone from the
 /// moment its deletion completed (the `NodeDeleted` receipt, the exited verdict), whether or not the
 /// planner's gossip view has dropped it yet. A node.delete of a node completes; a node.create of
 /// a node in the same mesh is accepted at once, inside the window before the fabric-primary's
 /// view drops the deleted birth. The create plans the birth at the lowest free ordinal, the deleted
 /// path, and the path is born once as a new node.id, ready. What must NOT happen: the
-/// create's attempt reconciled with no operation and the Build complete with nothing born, a second
+/// create's run reconciled with no operation and the Build complete with nothing born, a second
 /// birth at the path, or the deleted node.id back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_create_accepted_inside_a_deletions_window_births_the_path_once() {
@@ -67,7 +67,7 @@ async fn a_create_accepted_inside_a_deletions_window_births_the_path_once() {
     assert!(!reconciles.is_empty(), "the create Build {create} was reconciled (reconciles seen: {all_ids:?})");
     assert!(
         reconciles.iter().any(|sp| !matches!(s(&sp["attributes"]["operations"]).as_str(), "" | "[]")),
-        "the create Build {create} planned the birth at {path:?} (an attempt with an operation), not `converged` with none while the view still held the deleted birth of delete {delete}: {reconciles:?}"
+        "the create Build {create} planned the birth at {path:?} (a run with an operation), not `converged` with none while the view still held the deleted birth of delete {delete}: {reconciles:?}"
     );
     let creates = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| sp["attributes"]["node_path"] == path.path && sp["attributes"]["node_name"] == path.name && s(&sp["attributes"]["build_id"]) == create).count();
     assert_eq!(creates, 1, "{path:?} is born once by the create Build {create}");

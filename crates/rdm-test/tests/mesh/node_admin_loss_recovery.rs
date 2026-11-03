@@ -77,8 +77,8 @@ async fn hand_fabric_primary_over(estate: &mut Estate, former: &PathName) -> Pat
 /// recovery (node-create.md step 5): the new mesh-primary's investigation, then the provider's exact
 /// exited verdict, then one recovery, its own workflow (node.delete of the exited instance with no
 /// RPC to it, node.create at the same path and name); a missing Ping reply is the trigger, never the
-/// proof. The second admin is recovered by the NEW mesh primary. The current Build stays current, at
-/// its attempt. What must NOT happen: a new MeshId or Build id or Build attempt, a state handed to the
+/// proof. The second admin is recovered by the NEW mesh primary. The current Build stays current, with
+/// no new start. What must NOT happen: a new MeshId or Build id or a start of the current Build, a state handed to the
 /// joining node-admin, a surviving member re-created, a member that answered recovered, the fabric
 /// primary recovering the second admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -101,7 +101,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     let window_victim = Estate::path(&format!("{lost}.node"), "3");
     let survivors: Vec<PathName> = (1..=2).map(|i| Estate::path(&format!("{lost}.node"), &i.to_string())).collect();
     assert_eq!(estate.accepted_build_id().await, accepted, "the accepted Build names the topology");
-    let attempt_before = estate.starts_of_build(&accepted).await;
+    let starts_before = estate.starts_of_build(&accepted).await;
     let lost_primary_id = before.iter().find(|n| n["mesh"] == lost && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("the lost mesh's primary");
     let lost_births: BTreeMap<PathName, String> = births(&before).into_iter().filter(|(n, _)| n.path == format!("{lost}.node-admin") || *n == window_victim).collect();
     // A runtime's data dir is named by its birth's node id.
@@ -145,7 +145,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     .await;
     let after = values(&estate.settled_views(&shape).await);
     assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build: the current build_id is unchanged");
-    assert_eq!(estate.starts_of_build(&accepted).await, attempt_before, "no attempt of the current Build runs a repair (Q342)");
+    assert_eq!(estate.starts_of_build(&accepted).await, starts_before, "no start of the current Build runs a repair (Q342)");
     assert_eq!(estate.mesh_view(lost).await.id.expect("the lost mesh still has its id").to_string(), lost_mesh_id, "{lost} recovered under its own MeshId");
     let (old, new) = (births(&before), births(&after));
     for (name, inc) in &old {
@@ -273,7 +273,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         "mesh_id": lost_mesh_id,
         "mesh_name": lost,
         "accepted_build_id": accepted,
-        "attempt_before": attempt_before,
+        "starts_before": starts_before,
         "fabric_primary": fabric_primary,
         "killed": killed,
         "recovery_admin": recovery_admin,

@@ -16,8 +16,8 @@ use tokio::sync::RwLock;
 /// How a run of one operation ended short of complete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunEnd {
-    /// The operation's own logic ended it with a named failure. The attempt ends `Failed`, and a
-    /// Build whose attempt ended so is failed: the current-Build read skips it and a caller
+    /// The operation's own logic ended it with a named failure. Its section ends failed, never the
+    /// Build (Q346): the Build ends `incomplete`, the current-Build read skips it and a caller
     /// resubmits it (R-BI3, R-BI4).
     Failed {
         /// Explanation of the failure.
@@ -26,9 +26,9 @@ pub enum RunEnd {
         code: rdm_core::outcome::Code,
     },
     /// A participant of the operation was lost, or the proof its resume needs is not in yet: the
-    /// operation is incomplete and its receipts stand. The attempt ends handed back to the
-    /// fabric-primary, no terminal verdict is recorded, the Build stays in progress and the next
-    /// attempt resumes from the receipts (R-BI4; mesh-delete.md, "Failure and receipts").
+    /// operation is incomplete and its receipts stand. Its section ends incomplete, no terminal
+    /// verdict of the operation is recorded, and a resubmit of the Build resumes it from the receipts
+    /// (Q346; R-BI4; mesh-delete.md, "Failure and receipts").
     Incomplete(String),
 }
 
@@ -187,7 +187,7 @@ pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
     if held.is_empty() {
         format!("{:?}: mesh {} has no primary node-admin and no fabric primary is named in this view", op.key(), mesh)
     } else {
-        format!("{:?}: mesh {} has no primary node-admin, and its node-admin(s) {} are not proven gone: the fabric primary does not act on the mesh; the attempt waits for the mesh's own role", op.key(), mesh, held.join(", "))
+        format!("{:?}: mesh {} has no primary node-admin, and its node-admin(s) {} are not proven gone: the fabric primary does not act on the mesh; the operation waits for the mesh's own role", op.key(), mesh, held.join(", "))
     }
 }
 
@@ -208,10 +208,11 @@ pub fn node_admin_recoverer(node: &PathName, mesh: &str, t: &Topology) -> Option
 }
 
 /// The admin that runs the recovery of an unheard mesh-primary, the birth `node_id` at `node`, and
-/// writes its mesh's rows (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs
-/// it ... after the election has named the new mesh-primary"; "Execution": "the mesh-primary claims it
-/// ... the mesh-primary runs it"; node-identity-and-state.md: "The fabric-primary writes a row only as
-/// acting primary of a mesh with no primary"), decided once, at the attempt's claim, from view `t`, the
+/// writes its mesh's rows (node-recovery.md step 2: "For a lost mesh-primary the successor its election
+/// names runs it as for any member ... the fabric-primary runs it ... only when the mesh's aggregate stays
+/// unheard for twice the staleness floor"; "Execution": "The mesh-primary runs the recovery itself";
+/// node-identity-and-state.md: "The fabric-primary writes a row only as acting primary of a mesh with no
+/// primary"), decided once, as the recovery starts, from view `t`, the
 /// view its rows are written against: the mesh-primary the view names in the unheard birth's place,
 /// read from the election and not from liveness, as `mesh_executor` reads it; the fabric-primary,
 /// the acting primary, while the mesh holds no other node-admin the election can name, none Ready

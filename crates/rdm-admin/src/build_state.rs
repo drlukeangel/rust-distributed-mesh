@@ -606,9 +606,8 @@ struct FactLog {
 /// A derivation over the Build facts, run before any reader sees the facts a writer adds
 /// ([`LocalBuildLog::derive_on_every_fact`]): `derive` over the facts of the Builds it reads, never
 /// the whole log. It reads the Builds the new facts belong to, the current Build, and the Builds
-/// `held` names (those whose derived state its caller still holds). Only the current Build carries
-/// open attempts (build.md: a second topology change is refused while the current Build reconciles,
-/// and every stop, start, recovery and drift is an attempt of the current Build), so an
+/// `held` names (those whose derived state its caller still holds). Only the current Build runs
+/// (build.md: a second topology change is refused while the current Build is in progress), so an
 /// adapter that keeps no log in memory serves it with per-Build reads.
 #[derive(Clone)]
 pub struct FactDerivation {
@@ -1121,7 +1120,6 @@ pub struct FileJournal {
     seen: Arc<Mutex<std::collections::HashSet<crate::store_log::EventId>>>,
     /// The `seq` the next record is written at: past every record read or written.
     next_seq: std::sync::atomic::AtomicU64,
-    /// `<own data dir>/attempt-context/`: each attempt's context, local to this admin.
     /// The events store the Builds' events are in.
     events: Arc<dyn EventsStorage>,
     root_dir: PathBuf,

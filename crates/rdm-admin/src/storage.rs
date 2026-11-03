@@ -412,7 +412,7 @@ mod tests {
     /// The same script over any nodes store: the facts of one birth, each written from the record its
     /// writer holds, all stand on the record a fresh reader loads whole (storage-whole-records.md,
     /// cells: "two facts of one birth both stand on the record across a reload"): a late `Pending`
-    /// beside `Ready`, two attempts' operation effects, a silence mark and a primary revision;
+    /// beside `Ready`, two operations' effects, a silence mark and a primary revision;
     /// the birth's cert dates are its last.
     async fn facts_of_one_birth_all_stand(first: &dyn NodesStorage, reopened: &dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Box<dyn NodesStorage>> + Send>>) {
         let (node_id, incarnation_id, name): (NodeId, IncarnationId, PathName) = (NodeId::mint(), IncarnationId::mint(), rdm_core::PathName::new("mesh1.node", "1").unwrap());
@@ -448,7 +448,7 @@ mod tests {
     /// on the record across a reload ... on the memory and file backends"): every fact of a birth is
     /// kept by its full identity inside its node's record, so no later or delayed write erases an
     /// independent fact; the file backend's record survives a reopen by another writer. What must NOT
-    /// happen: a late Pending replacing Ready, one attempt's effect erasing another's, a fact
+    /// happen: a late Pending replacing Ready, one operation's effect erasing another's, a fact
     /// lost on the reload.
     #[tokio::test]
     async fn the_facts_of_one_birth_all_stand_on_its_record_across_a_reload_on_either_backend() {

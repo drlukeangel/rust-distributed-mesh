@@ -1907,7 +1907,7 @@ impl StatusService {
             }
         };
         let mut accepted = false;
-        // Whether this stream carried the start's NodeJoined: a start an earlier attempt completed is
+        // Whether this stream carried the start's NodeJoined: a start an earlier run completed is
         // answered without one (`AlreadyApplied`, node_self.rs `Cycle::Live`).
         let mut joined = false;
         let mut closure = None;
@@ -1987,7 +1987,7 @@ impl StatusService {
                     Some(match closure.clone() { Some(receipt) => A::Stopped { receipt }, None => A::Indeterminate { code: Code::Internal, reason: "NodeStopped without StopConnectionsDeleted".into() } })
                 }
                 R::NodeStarted if start => {
-                    // A start an earlier attempt of the same Build completed, reissued by this one, is
+                    // A start an earlier run of the same Build completed, reissued by this one, is
                     // answered NodeStarted with no NodeJoined: the birth joined when that start ran, at
                     // its executor then, which may never have published the clear. A mesh-primary whose
                     // overlay holds that exact birth stopped takes the answer as the join it did not see:

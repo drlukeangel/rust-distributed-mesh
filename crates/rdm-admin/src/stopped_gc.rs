@@ -190,8 +190,6 @@ pub enum Swept {
     },
 }
 
-/// Whether an attempt's targeted action acts on the birth `incarnation`: the one birth a delete is
-/// targeted to.
 impl crate::control_plane::ControlPlane {
     /// This admin's view as it is now.
     async fn view(&self) -> crate::topology::Topology {

@@ -105,7 +105,7 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
     let mut deleting = estate.nodes_obj().await.delete_connections(&node, &rdm_core::status::ConnectionScope::All).await.unwrap_or_else(|e| panic!("the mesh-primary refused node.connection.delete of {node:?}: {e}"));
     let frames = Estate::frames_of(&mut deleting).await;
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
-    // A node command belongs to no Build: its steps run under no build_id and attempt.
+    // A node command belongs to no Build: its steps run under no build_id.
     let birth_build = rdm_core::LifecycleOp::NO_BUILD;
     estate.stop().await;
     let spans = estate.spans();

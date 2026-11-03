@@ -76,7 +76,7 @@ Two words for a call through a middle node, one per plane:
   `Forwarded { inner }`); the fabric-primary hands a mesh its section of a Build
   (`build.section.run`, 0x20) and the mesh-primary executes it on the mesh's nodes (commands go
   down). Nothing is kept by the forwarder: no connection, no id, no row. A mesh-primary healing
-  its own mesh from the topology it holds (R-BI7) forwards nothing; it is its own attempt.
+  its own mesh from the topology it holds (R-BI7) forwards nothing; it is its own workflow.
 - **Proxy** is the data plane's. A node that cannot open a direct path for traffic shows a
   two-hop path through one exact carrier and keeps it as a connection of its own: the `Proxy`
   kind below, with its minted id, listed, deleted by name, deleted by this subsystem. The

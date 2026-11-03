@@ -514,7 +514,7 @@ impl PrimaryUpdate {
     /// node command, never waiting on gossip; every other node learns it from gossip. What the update
     /// preceded goes to the node's mesh-primary as it stands now, read from the atlas. A `Failed` answer fails the
     /// step on the variant, never on its text; a command that does not answer leaves the step
-    /// incomplete, and the next attempt sends the identical command.
+    /// incomplete: the drive stalls, and its next run sends the identical command.
     pub async fn command_update_primary(&self, primary: &crate::model::Node, build_id: &str, operation: &rdm_core::OperationId) -> Result<NodeId, crate::build_drive::RoleMoveEnd> {
         let me = self.held_name();
         let span = tracing::info_span!("rdm.node_admin.primary.update.via-command", node_path = %me.path, node_name = %me.name, primary_path = %primary.path, primary_name = %primary.name, primary_node_id = %primary.node_id, "type" = primary.r#type, to = tracing::field::Empty, build_id, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, outcome = tracing::field::Empty, detail = tracing::field::Empty);
@@ -571,7 +571,7 @@ impl PrimaryUpdate {
             Ok(Reply::PrimaryUpdated { node_id }) => Ok(node_id),
             Ok(Reply::Failed { step, reason, code }) => Err(RoleMoveEnd::Failed { step, reason, code }),
             Ok(refusal) => Err(RoleMoveEnd::Refused(format!("{} refused node.primary.update of {}: {} ({refusal:?})", to.node_id, primary.node_id, refusal.name()))),
-            Err(why) => Err(RoleMoveEnd::Incomplete(format!("path {me_path:?}, name {me_name:?}: node.primary.update {operation:?} of {} is uncertain and the step is incomplete; a later attempt sends the identical command: {why}", primary.node_id, me_path = &me.path, me_name = &me.name))),
+            Err(why) => Err(RoleMoveEnd::Incomplete(format!("path {me_path:?}, name {me_name:?}: node.primary.update {operation:?} of {} is uncertain and the step is incomplete; the drive's next run sends the identical command: {why}", primary.node_id, me_path = &me.path, me_name = &me.name))),
         }
     }
 

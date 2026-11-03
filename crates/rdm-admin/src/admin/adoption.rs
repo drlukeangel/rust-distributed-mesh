@@ -38,8 +38,8 @@ pub struct Adoptable {
     pub mesh: crate::storage::MeshRecord,
     /// The lost fabric-primary's birth at the launch's path and name, as its node row records it.
     pub lost: crate::storage::NodeRecord,
-    /// The fabric.delete in force (Q159): the launch is then at a new path and name and claims the delete's
-    /// next attempt. `None` when no fabric.delete is in force.
+    /// The fabric.delete in force (Q159): the launch is then at a new path and name and drives the
+    /// delete from its events. `None` when no fabric.delete is in force.
     pub delete: Option<BuildProjection>,
 }
 
@@ -505,7 +505,7 @@ mod tests {
             assert_eq!(adoptable.lost.node_id, lost_id);
             assert_eq!(adoptable.lost.incarnation_id, lost_inc);
 
-            // 2. The adoption is fabric recovery, never a Build's attempt: its start writes nothing, and nothing
+            // 2. The adoption is fabric recovery, never a Build or part of one: its start writes nothing, and nothing
             // on the store orders two launches (Q342, no lock).
             let me_1 = NodeId::mint();
             let before = builds_store.read_build(&build_id).await.unwrap();

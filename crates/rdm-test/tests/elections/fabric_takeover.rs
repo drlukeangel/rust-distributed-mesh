@@ -611,10 +611,10 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
 /// fabric-primary by step 4 once Ready"): a one-mesh fabric's sole node-admin, the
 /// fabric-primary, is killed while its two members serve. A person launches a node-admin at
 /// mesh1.node-admin.1 over a new data dir, handed the fabric id, mesh1, the store root and the custody in its
-/// environment. It claims the attempt before it writes anything else, releases the lost birth's name,
+/// environment. Its start writes nothing (Q342, no lock); it releases the lost birth's name,
 /// takes it under a new node.id, joins the members, adopts rafka-time from one of them and is the
-/// fabric-primary and mesh1's primary; its attempt closed, it then grows mesh1 by a Build. Must NOT happen: a second fabric (a new fabric or mesh id on the
-/// store), a write of the lost birth's row before the claim, a member re-created, or a member declaring
+/// fabric-primary and mesh1's primary; its launch complete at Ready, it then grows mesh1 by a Build. Must NOT happen: a second fabric (a new fabric or mesh id on the
+/// store), a write of the lost birth's row at its start, a member re-created, or a member declaring
 /// anything but ready after the loss.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_its_path_name_that_becomes_fabric_primary() {
@@ -661,7 +661,7 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
         assert!(after.iter().any(|n| location(&n) == *name && s(&n["incarnation_id"]) == *inc && n["status"] == "ready"), "{name:?} keeps its birth {inc}, ready: {after:#?}");
     }
     assert_eq!(estate.mesh_view("mesh1").await.id.map(|i| i.to_string()), mesh_id, "mesh1 keeps its MeshId");
-    // The adoption's attempt closed at its Ready: the adopted fabric-primary runs the next Build on mesh1.
+    // The adoption launch completed at its Ready: the adopted fabric-primary runs the next Build on mesh1.
     let grown = [("mesh1", 1, 3)];
     estate.resize_shape("fabric1", &grown).await;
     estate.settles_to(&grown, Duration::from_secs(120)).await;

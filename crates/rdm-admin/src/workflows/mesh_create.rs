@@ -75,11 +75,11 @@ mod tests {
     /// docs/architecture/lifecycles/mesh-create.md:19 "Name | mesh<#> by default, the Build's mesh_name; the first node-admin, as the mesh's primary, claims it at (path, name), unique within its path; held by a different MeshId answers NameHeld"
     /// docs/architecture/lifecycles/mesh-create.md:20 "Executor / maker | The fabric-primary: it is the maker of the mesh's first node-admin and writes the mesh's rows until the mesh has a primary (R-OW1)"
     /// docs/architecture/lifecycles/mesh-create.md:21 "Channel | f(FabricId, MeshId), created by its first listener, the node-admin"
-    /// docs/architecture/lifecycles/mesh-create.md:22 "Members | The first node-admin only. The mesh's other nodes are created afterwards by that node-admin as mesh-primary, under the same accepted Build's attempts"
+    /// docs/architecture/lifecycles/mesh-create.md:22 "Members | The first node-admin only. The mesh's other nodes are created afterwards by that node-admin as mesh-primary, in its mesh's section of the same accepted Build"
     /// docs/architecture/lifecycles/mesh-create.md:24 "Rows | The mesh row, written by the mesh-primary at creation; the node row, written by the fabric-primary until the mesh has a primary, then by the mesh-primary"
     /// docs/architecture/lifecycles/mesh-create.md:25 "Completion | The node-admin's node.created; the mesh is in the topology from acceptance and in traffic from ready"
     /// docs/architecture/lifecycles/mesh-create.md:26 "Not this | A node-admin created into a mesh that already exists and lost its node-admins is node recovery (node create): same MeshId, same Build, no mesh create"
-    /// docs/architecture/lifecycles/mesh-create.md:30-32 "1. A topology Build is accepted whose complete topology names a mesh the current topology does not have ({mesh1} -> {mesh1, mesh2}). Acceptance mints mesh2's MeshId; every later Build carries it. The Build is in progress until its attempts realize the topology."
+    /// docs/architecture/lifecycles/mesh-create.md:30-32 "1. A topology Build is accepted whose complete topology names a mesh the current topology does not have ({mesh1} -> {mesh1, mesh2}). Acceptance mints mesh2's MeshId; every later Build carries it. The Build is in progress until its steps realize the topology."
     /// docs/architecture/lifecycles/mesh-create.md:65-66 "The decision in step 1 is taken from the accepted topology, never from the presence of a channel. A mesh that exists in the topology and has no reachable node-admin is not this arm."
     /// docs/architecture/lifecycles/mesh-create.md:175-179 "A refused name claim (NameHeld by another MeshId) fails the create step by name and nothing is launched ... A mesh whose first node-admin exits after creation is not re-created: it is a live mesh that lost its node-admins and node recovery gives it one under the same MeshId."
     /// docs/architecture/lifecycles/mesh-create.md:186 "| Acceptance | fabric-primary | rdm.node_admin.build.create.via-accepted; the MeshId in the accepted topology | Build id |"
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(
             build_proj.state,
             BuildState::Pending,
-            "the Build is in progress until its attempts realize the topology"
+            "the Build is in progress until its steps realize the topology"
         );
         let mesh2_top = build_proj
             .topology
@@ -439,13 +439,13 @@ mod tests {
     }
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-create.md:23 "Mesh states | pending, set by the node-admin that launched the mesh's first admin, one ApplyMeshState(Pending) after the launched birth answers Ping; ready, set by the fabric-primary on its mesh-primary's report that every planned birth is ready (States)"
-    /// docs/architecture/lifecycles/mesh-create.md:33-39 "2. The fabric-primary claims the attempt and executes node.create of mesh2's first node-admin itself: the mesh has no primary, so the fabric-primary is maker and executor. It records the deployment, prepares the data dir and seed, and launches the executable in the Create start mode (node-admin lifecycle §3). mesh.issuer.create: at the mesh's acceptance the fabric-primary mints mesh2's issuing cert, signed by the root, and writes it into the first admin's launch environment (RDM_ISSUING_KEY, RDM_ISSUING_CERT; fabric certs)."
+    /// docs/architecture/lifecycles/mesh-create.md:33-39 "2. The fabric-primary executes node.create of mesh2's first node-admin itself: the mesh has no primary, so the fabric-primary is maker and executor. It records the deployment, prepares the data dir and seed, and launches the executable in the Create start mode (node-admin lifecycle §3). mesh.issuer.create: at the mesh's acceptance the fabric-primary mints mesh2's issuing cert, signed by the root, and writes it into the first admin's launch environment (RDM_ISSUING_KEY, RDM_ISSUING_CERT; fabric certs)."
     /// docs/architecture/lifecycles/mesh-create.md:40-41 "3. The node-admin binds port 0 and runs node.mesh.join: its report goes to its maker, the fabric-primary. The answer hands it the fabric identity, rafka-time, its cert, its name and config."
     /// docs/architecture/lifecycles/mesh-create.md:42-43 "4. The node-admin creates mesh2's channel, f(FabricId, MeshId), as its first listener, and joins the node-admin backbone."
     /// docs/architecture/lifecycles/mesh-create.md:44-46 "5. The fabric-primary sends one bounded Ping to the launched birth and, on the answer, applies the mesh's first state, ApplyMeshState(Pending), within 20 s of the launch (States, the mesh Pending row)."
     /// docs/architecture/lifecycles/mesh-create.md:47-51 "6. The rest of the node-admin's start runs: the pre_node_ready hook, the topology read on its maker, the Build floor, rafka-time last, node.started, then its on_node_ready notice. The fabric-primary, as writer of a mesh with no primary, sets the node-admin's Ready."
     /// docs/architecture/lifecycles/mesh-create.md:52-56 "7. The election names the node-admin mesh2's mesh-primary: the only candidate. As mesh-primary it claims the mesh's name, writes the mesh row and records is_primary on its own row, which its Digest carries, publishes its mesh's status pending as MeshStatus, and becomes the writer of mesh2's rows. node.created ends the step."
-    /// docs/architecture/lifecycles/mesh-create.md:57-58 "8. The mesh-primary creates mesh2's other nodes as attempts of the same Build, at once: a create that fails stops none of the others (Q245)."
+    /// docs/architecture/lifecycles/mesh-create.md:57-58 "8. The mesh-primary creates mesh2's other nodes as steps of the same Build, at once: a create that fails stops none of the others (Q245)."
     /// docs/architecture/lifecycles/mesh-create.md:61-63 "Once that state is newly on the mesh's record the mesh-primary calls on_mesh_ready once, a notice that gates nothing (rdm.node_admin.mesh.update.via-on-mesh-ready)."
     /// docs/architecture/lifecycles/mesh-create.md:100-102 "A repeat of the same apply answers AlreadyApplied; an apply that names a mesh the receiver does not hold answers RejectedStaleMesh { held }; a state the mesh cannot move to answers RejectedInvalidMeshTransition { current }."
     /// docs/architecture/lifecycles/mesh-create.md:187-190 "Observability contract: Create (node.create's spans as maker and executor), Join (node.mesh.join), Mesh Pending (the Ping, then ApplyMeshState(Pending)'s call span), PrimaryRole and name (rdm.mesh.election.resolve.via-recompute; the name claim; the mesh row write)"

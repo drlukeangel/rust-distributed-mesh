@@ -40,8 +40,8 @@
 //! validated report of exactly that birth, carrying that fact and data dir
 //! (node-create.md step 5), never from gossip.
 //!
-//! Re-runs reconcile forward. A step whose receipt in an earlier attempt of
-//! the same Build is `Complete` is reused from the decision that receipt
+//! Re-runs reconcile forward. A step whose event in an earlier run of the
+//! same Build ended `complete` is reused from the decision that event
 //! carries, never decided again, until the first step that has to run; from
 //! there every step runs. `DeployRuntime` first looks for the runtime its
 //! deployment id already started, so a crash between spawning and the
@@ -498,9 +498,8 @@ impl RuntimeEvidence {
     }
 }
 
-/// The prerequisites of [`READY_PREREQUISITES`] that `receipts` holds no
-/// `Complete` receipt for: of `operation`, from the runs after its last
-/// ended attempt ([`crate::build_state::operation_reuse_boundary`]), up to and including `attempt`.
+/// The prerequisites of [`READY_PREREQUISITES`] whose step of `operation` has
+/// no event in `p` that ended `complete`.
 pub(crate) fn ready_prerequisites_missing(p: &crate::build_state::BuildProjection, operation: &rdm_core::OperationId) -> Vec<&'static str> {
     let op = operation.to_string();
     READY_PREREQUISITES.iter().map(|s| s.name()).filter(|s| !p.completed(&op, s)).collect()
@@ -728,7 +727,7 @@ impl RuntimeIdentity {
     }
 }
 
-/// The identity a directed command carries: the Build, the attempt and the command's operation.
+/// The identity a directed command carries: the Build and the command's operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandContext {
     /// The Build the operation belongs to.
@@ -911,7 +910,7 @@ impl CreateRequest {
 pub(crate) type PreNodeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<rdm_core::status::MeshState, String>> + Send>> + Send + Sync>;
 
 /// Work a create awaits inside its `DeployRuntime` step right before it launches the new runtime,
-/// and only then: a step an earlier attempt receipted (its runtime still runs and is reused) and a
+/// and only then: a step an earlier run completed (its runtime still runs and is reused) and a
 /// runtime the provider finds this deployment already started run none of it. A create over an
 /// exited birth's data dir targets that birth here (node-recovery.md "Delete blocks the old instance
 /// before the new join"): the target is done before the new runtime exists and never once it does.
@@ -1236,7 +1235,7 @@ impl DeploymentPipeline<'_> {
     /// runs on from them.
     ///
     /// A Build this node cannot read fails the run by name, before any step: an unreadable Build is
-    /// never a Build with no earlier receipts, whose run would decide afresh what an earlier attempt
+    /// never a Build with no earlier receipts, whose run would decide afresh what an earlier run
     /// already decided. A Build this node holds no fact of is its own error.
     async fn begin<'r>(&self, build_id: Option<&'r BuildId>, node: &'r PathName, operation: rdm_core::OperationId) -> Result<Run<'r>, PipelineError> {
         // A run that belongs to no Build has no earlier receipts to hand on and reads none.
@@ -1485,7 +1484,7 @@ impl DeploymentPipeline<'_> {
 
     async fn create_to_ready_body(&self, run: &mut Run<'_>, req: &CreateRequest, row_for: crate::node_rows::RowFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         // The birth this create wrote a row for: a step after that write that fails withdraws it, so the
-        // next attempt's fresh birth is not refused by this one's row (lifecycles/node-create.md step 1).
+        // next run's fresh birth is not refused by this one's row (lifecycles/node-create.md step 1).
         let mut written: Option<NodeId> = None;
         let operation = run.operation.clone();
         let r = self.create_to_ready_written(run, req, row_for, pre_node_ready, before_launch, &mut written).await;
@@ -1601,7 +1600,7 @@ impl DeploymentPipeline<'_> {
             .terminate(stranded, TerminationMode::Graceful { grace: self.timeouts.stop_grace }, super::deadline::Deadline::stop(self.timeouts.stop_grace))
             .instrument(span)
             .await
-            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("path {:?}, name {:?}: the earlier attempt's runtime was launched by another executor and never joined; stopping it failed: {e}", &req.path, &req.name) , code: rdm_core::outcome::Code::FailedPrecondition })
+            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("path {:?}, name {:?}: the earlier run's runtime was launched by another executor and never joined; stopping it failed: {e}", &req.path, &req.name) , code: rdm_core::outcome::Code::FailedPrecondition })
     }
 
     /// The identity an earlier run of this operation wrote `req.node`'s row with, for a run that holds
@@ -1614,7 +1613,7 @@ impl DeploymentPipeline<'_> {
     ///   run continues the birth under the same identity (its row is that birth's,
     ///   `RowCreated::HeldByNode`);
     /// - the provider proves it was launched and has exited ([`Found::Exited`]), as the receipt arm's
-    ///   "the earlier attempt's runtime is gone": its row is withdrawn (that birth's key only) and
+    ///   "the earlier run's runtime is gone": its row is withdrawn (that birth's key only) and
     ///   the birth is decided afresh (`None`);
     /// - one runs and the birth has not joined membership: the lost executor launched it, and the
     ///   lost-executor rule ([`Self::stop_lost_launch`]) stops it through its exact handle, its row
@@ -1718,8 +1717,8 @@ impl DeploymentPipeline<'_> {
                 None => false,
             };
             if !alive {
-                tracing::info!(node_path = %req.path, node_name = %req.name, "the earlier attempt's runtime is gone: a fresh birth");
-                self.withdraw_earlier(run, req, "the earlier attempt's runtime is gone: a fresh birth is created at the name").await;
+                tracing::info!(node_path = %req.path, node_name = %req.name, "the earlier run's runtime is gone: a fresh birth");
+                self.withdraw_earlier(run, req, "the earlier run's runtime is gone: a fresh birth is created at the name").await;
                 run.done.clear();
             } else if recorded_by_another(&run, CreateStep::DeployRuntime) && !run.done.contains_key(CreateStep::WaitForMeshJoin.name()) {
                 // Launched by an executor that is not this one and never joined: its only seed is
@@ -1729,7 +1728,7 @@ impl DeploymentPipeline<'_> {
                 let stranded = earlier.expect("alive implies a decoded handle");
                 let recorded = run.owner.get(CreateStep::DeployRuntime.name()).and_then(|o| o.as_ref());
                 self.stop_lost_launch(req, &stranded, recorded).await?;
-                self.withdraw_earlier(run, req, "the earlier attempt's runtime was launched by another executor and never joined: a fresh birth is created at the name").await;
+                self.withdraw_earlier(run, req, "the earlier run's runtime was launched by another executor and never joined: a fresh birth is created at the name").await;
                 run.done.clear();
             }
         }
@@ -2054,7 +2053,7 @@ impl DeploymentPipeline<'_> {
             .await?;
         // The validated report of this exact birth, the one the accepting authority admitted
         // (node-create.md step 5): never a digest gossip carried. On a run that reused WaitForBind's
-        // receipt the report is the one this admin kept when the earlier attempt ended (`Joins::end`)
+        // receipt the report is the one this admin kept when the earlier run ended (`Joins::end`)
         // or, this process having restarted since, the one kept durable at admission.
         let published = Publication { runtime: Some(fact.clone()), data_dir: node.data_dir.clone() };
         self.step_with(run, CreateStep::WaitForMeshJoin.name(), async {
@@ -2236,8 +2235,8 @@ impl DeploymentPipeline<'_> {
                 let admission = self.observer.send_command(node, NodeCommand::Start, &ctx).await;
                 match &admission {
                     CommandAdmission::Started {} => Ok(()),
-                    // The reissue of the start that already brought this birth back (a later attempt
-                    // of the same Build, after its executor was lost): its node.joined and node.started
+                    // The reissue of the start that already brought this birth back (a later run of
+                    // the same Build, after its executor was lost): its node.joined and node.started
                     // were taken when it ran; taking node.joined again would set the birth back to
                     // Pending with no node.started to follow. Readiness is read next, as for any start.
                     CommandAdmission::AlreadyAdmitted {} => Ok(()),
@@ -2262,9 +2261,8 @@ impl DeploymentPipeline<'_> {
         Ok(())
     }
 
-    /// The `Complete` receipt of a standalone connections delete or start (a stop's commits its lifecycle op). It commits no output: the attempt it
-    /// belongs to carried the action targeted to the exact birth (its `Opened` fact,
-    /// `BuildProjection::attempt_actions`), so a later attempt's plan reads it as that birth's and
+    /// The `Complete` receipt of a standalone connections delete or start (a stop's commits its lifecycle op). It commits no output: its
+    /// operation carries the exact birth it targets, so a later plan reads it as that birth's and
     /// plans nothing more for it.
     async fn complete(&self, run: &mut Run<'_>) -> Result<(), PipelineError> {
         self.step(run, DeleteStep::Complete.name(), async { Ok(()) }).await
@@ -2361,8 +2359,7 @@ impl DeploymentPipeline<'_> {
         let mut run = self.begin(req.build_id.as_ref(), name, req.operation.clone()).await?;
         let mut node = req.node.clone();
         let handle = &req.handle;
-        // The pre-notice: this executor's journal holds its Claim for the attempt (it runs nothing
-        // before that) and now records this operation; every node hears the node is being removed
+        // The pre-notice: this executor now records this operation; every node hears the node is being removed
         // and stops routing to it, while it stays found.
         let op = LifecycleOp { r#type: req.node.r#type.clone(), mesh: node.mesh.clone(),
             build_id: build_log(req.build_id.as_ref()),
@@ -2495,8 +2492,8 @@ impl DeploymentPipeline<'_> {
         .instrument(span))
     }
 
-    /// The command identity for `cmd` on `node` in this run: the Build, the attempt and the
-    /// structured operation (`node.connection.delete` / `node.stop`) with its explicit node ID.
+    /// The command identity for `cmd` on `node` in this run: the Build and the structured
+    /// operation (`node.connection.delete` / `node.stop`) with its explicit node ID.
     fn command_context(&self, run: &Run<'_>, cmd: crate::node_commands::NodeCommand, node: &Node) -> CommandContext {
         let action = match cmd {
             crate::node_commands::NodeCommand::DeleteConnections => "node.connection.delete",

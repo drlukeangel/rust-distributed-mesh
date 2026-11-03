@@ -162,9 +162,9 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         assert!(after.digest_seq > seq_at_stop, "its digest sequence continued across the cycle");
         assert!(!running.own.is_stopped(), "the birth is live again");
         assert_eq!(running.topology_view.config(), Some(stopped_map), "the application keeps its acknowledged map through rejoin");
-        // The same start reissued by a later attempt of its Build (a successor executor whose
+        // The same start reissued by a later run of its Build (a successor executor whose
         // predecessor was lost after the node started) settles as AlreadyApplied: the command is
-        // keyed by its build and operation, not its attempt (node-rpc-envelope.md: "Reissuing a
+        // keyed by its operation (node-rpc-envelope.md: "Reissuing a
         // naturally idempotent uncertain step can settle it"). Another command's start of this live
         // node, another occurrence of its operation (a command's identity is its operation, Q342), is
         // still refused naming its state.

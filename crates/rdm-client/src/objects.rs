@@ -479,8 +479,8 @@ impl Fabrics {
 
     /// `fabric.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): the fabric-primary's
     /// atlas, one row per node of the current Build's topology: the birth its node row names
-    /// current, its lifecycle as the ops left it, and the operation accepted on it whose attempt has
-    /// not completed. `fabric.get` is unchanged by it.
+    /// current, its lifecycle as the ops left it, and the operation accepted on it that has not
+    /// completed. `fabric.get` is unchanged by it.
     pub async fn atlas_get(&self) -> Result<AtlasView, CallEnd> {
         let span = FabricOp::AtlasGet.span();
         let target = self.carrier.target().clone();
@@ -600,7 +600,7 @@ impl Builds {
     }
 
     /// `build.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
-    /// of `filter` (`id`, `current`, `phase`, `attempt`, `executor`), newest first, each whole: header,
+    /// of `filter` (`id`, `current`, `phase`), newest first, each whole: header,
     /// topology (`nodes`) and step events (`steps`), the current one marked. `[id: x]` is one Build, the
     /// empty list when the fabric-primary holds none of that id; `[current: true]` the current Build.
     pub async fn get(&self, filter: &Filter) -> Result<Vec<Build>, CallEnd> {

@@ -233,7 +233,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
 
 /// CONTRACT (node-mesh-join.md step 10, Q97, Q99: one Pending per accepted join report, per join and
 /// not per birth): a birth held past the floor and released is commanded back and ready again; held
-/// and released a second time in the same Build attempt, it is commanded back again and is ready
+/// and released a second time in the same Build, it is commanded back again and is ready
 /// again. Each command back is its own command: the second join's ready declaration is
 /// applied, never answered AlreadyApplied from the first join's, so the birth never stays Pending
 /// after its second return. What must NOT happen: the birth left Pending after its second return.

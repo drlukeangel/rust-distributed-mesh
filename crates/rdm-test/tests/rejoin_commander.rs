@@ -286,7 +286,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
             transport_addr: born.node.transport_addr,
         });
         let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7f0xhg20h9hv".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
-        let start = |attempt: u32| StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7f0xhg20h9hv".into(), operation: rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
+        let start = || StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7f0xhg20h9hv".into(), operation: rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         let left = call(&lost, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the stop is answered Stopped: {left:?}");
@@ -294,7 +294,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
         // The lost commander's start: its `JoinService` answers no join, and once the start's first join
         // attempt reached it, its endpoint closes.
         let lost_short = lost_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
-        let first_req = start(2);
+        let first_req = start();
         let first_req = match first_req {
             StatusRequest::StartNode { node_id, incarnation, build_id, operation } => rdm_core::node_command::NodeCommandRequest::StartNode { node_id, incarnation, operation },
             _ => unreachable!("the first command is a start"),
@@ -312,7 +312,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
 
             // The successor commands the start while the first is under way.
             successor.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
-            let started = call(&successor, &target, &start(3)).await;
+            let started = call(&successor, &target, &start()).await;
             assert_eq!(started, StatusReply::Started, "the successor's start is answered Started: the start joined the successor over the successor's own call");
             tokio::time::timeout(NEVER, async {
                 while !matches!(call(&successor, &target, &probe).await, StatusReply::Current { state: NodeState::Ready, .. }) {
@@ -461,7 +461,7 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
             transport_addr: born.node.transport_addr,
         });
         let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bq0z8f2kq3e1".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
-        let start = |attempt: u32| StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bq0z8f2kq3e1".into(), operation: rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
+        let start = || StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bq0z8f2kq3e1".into(), operation: rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         assert!(matches!(call(&lost, &target, &stop).await, StatusReply::Stopped { .. }), "the lost commander's stop is answered Stopped");
 
@@ -470,7 +470,7 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
         pre_node_ready.set_mode(Mode::Pause { started: hook_started.clone(), resume: hook_resume.clone(), outcome: HookOutcome::Ok });
         lost.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
         // The lost commander's own call breaks with its endpoint: what it ends in is not this cell's.
-        let first_req = match start(2) {
+        let first_req = match start() {
             StatusRequest::StartNode { node_id, incarnation, build_id, operation } => rdm_core::node_command::NodeCommandRequest::StartNode { node_id, incarnation, operation },
             _ => unreachable!("the first command is a start"),
         };
@@ -480,7 +480,7 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
             lost.observer.client.endpoint().close().await;
             // The later commander commands the start while it is under way; its hook then passes.
             successor.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
-            let later = async { call(&successor, &target, &start(3)).await };
+            let later = async { call(&successor, &target, &start()).await };
             let release = async {
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 hook_resume.notify_one();

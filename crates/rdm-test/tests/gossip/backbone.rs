@@ -229,7 +229,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     }
 
     // The killed primary is recovered at its path by the fabric-primary (node-recovery.md step 3, Q111),
-    // an attempt that holds the fabric's lane until it completes: step 4 starts once it has.
+    // its own workflow (Q342): step 4 starts once it has completed.
     estate
         .until_view(&format!("{old_name} is recovered as a new node"), rdm_transport::topology::staleness_floor() * 4 + Duration::from_secs(60), |views| {
             Estate::values(views).iter().any(|n| location(n) == location(&old) && s(&n["node_id"]) != old_id && n["status"] == "ready").then_some(())

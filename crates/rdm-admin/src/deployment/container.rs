@@ -816,7 +816,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         // `docker run -d` answers the immutable id: the runtime's identity,
         // not the (reusable) name.
         // Past the deadline the run's outcome is unknown (Q304): never a launch that did not happen;
-        // the next attempt's find resolves this exact launch before anything is launched again.
+        // the next run's find resolves this exact launch before anything is launched again.
         let deployment = spec.deployment_id.to_string();
         let id = self
             .docker_text(&argv, deadline, On { deployment: Some(deployment.as_str()), env: Some(&client_env), ..On::default() })

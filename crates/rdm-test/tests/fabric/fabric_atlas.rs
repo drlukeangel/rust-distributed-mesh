@@ -10,8 +10,8 @@ use serde_json::{json, Value};
 /// What the cells read of the atlas: `fabric.atlas.get` through the client's own call,
 /// `Fabrics::atlas_get()` (Q167's read naming; `fabric.get` is unchanged), one row per node the
 /// fabric-primary holds, with its birth, its status and whether it is stopped, as the node view names
-/// them, and the operation of the command accepted on it that has not yet completed (none once its
-/// attempt's receipts are in).
+/// them, and the operation of the command accepted on it that has not yet completed (none once it
+/// completes).
 async fn atlas(estate: &Estate, why: &str) -> AtlasView {
     estate.fabrics_obj().await.atlas_get().await.unwrap_or_else(|e| panic!("{why}: {e}"))
 }

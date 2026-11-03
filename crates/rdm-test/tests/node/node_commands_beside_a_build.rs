@@ -87,7 +87,7 @@ async fn held_build(test: &str) -> (Estate, rdm_client::BuildCarrier, BuildStrea
 /// node-stop.md, node-start.md): while a caller's Build is held in progress, a stop of a ready node
 /// answers its connections delete and `stopped` and ends `Complete`, then a start answers `joined`,
 /// `started` and ends `Complete`. Neither is refused build-in-progress, neither writes a Build, and the
-/// held Build's record is the one it was: its id, its attempt and its reason unchanged.
+/// held Build's record is the one it was: its id, its phase and its events unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_and_a_start_run_while_a_build_is_held_and_write_no_build() {
     let test = "a_stop_and_a_start_run_while_a_build_is_held_and_write_no_build";

@@ -50,7 +50,7 @@ pub enum OperationSubject {
 }
 
 /// The existing operation key carried as fields, never a joined node identifier.
-/// Enclosing records retain their existing Build, attempt and execution scope.
+/// Enclosing records retain their existing Build and execution scope.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationId {

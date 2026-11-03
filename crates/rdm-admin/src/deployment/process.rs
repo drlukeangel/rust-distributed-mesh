@@ -534,7 +534,7 @@ impl DeploymentProvider for ProcessDeploymentProvider {
 
     /// The data dir, logs, records and the fork run on the blocking pool (`blocking::blocking_io`).
     /// Past `deadline` the spawn's outcome is unknown: the blocking work finishes on its thread, and
-    /// the next attempt's `find` resolves the exact launch.
+    /// the next run's `find` resolves the exact launch.
     async fn spawn(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         let (owned, children, exits, failpoints) = (spec.clone(), self.children.clone(), self.exits.clone(), self.failpoints.clone());
         let (pid, start) = deadline

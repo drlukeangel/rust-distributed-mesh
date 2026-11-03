@@ -2,7 +2,7 @@
 //! mesh-control-plane.md §1): the Build's id, the counts a request may state, the idempotent
 //! operations a plan is made of, and the refusals by name. The accepted topology and its planner
 //! are [`crate::accepted`]: a submitted change compiles once into the complete topology a Build
-//! carries, and every attempt plans `topology − observed` from it, so an operation already
+//! carries, and every plan of it is `topology − observed`, so an operation already
 //! satisfied is not replayed and a re-run of an operation is the same operation.
 
 use crate::model::{IncarnationId, NodeId, PathName};
@@ -95,8 +95,8 @@ pub enum BuildOperation {
         /// The mesh to create.
         mesh: String,
         /// The mesh's id, minted once when the mesh entered the accepted topology
-        /// ([`crate::accepted::MeshTopology::mesh_id`]): every run of the operation, by any executor
-        /// and any attempt, claims the mesh's name with it, so a re-run finds the mesh's own row.
+        /// ([`crate::accepted::MeshTopology::mesh_id`]): every run of the operation, by any executor,
+        /// claims the mesh's name with it, so a re-run finds the mesh's own row.
         mesh_id: rdm_core::MeshId,
     },
     /// Create a node at `node` (node-create.md).

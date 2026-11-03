@@ -8,13 +8,12 @@
 //! the length decoded and the complete payload read within the protocol ceiling: the frame is
 //! complete, and the bytes after it are the stream's next frames (the caller's acks). A request
 //! the sender reset or ended before its frame was complete never dispatches. The client's side of the same table is
-//! [`crate::outcome`]; [`replay_verdict`] is the rule that no mutating
-//! `Indeterminate` is silently replayed.
+//! [`crate::outcome`].
 
 use crate::catalog::Catalog;
 use crate::codes::ResetCode;
 use crate::framing::{parse_request_length, parse_request_target, RequestHead, RequestHeader};
-use crate::outcome::{MalformedKind, RpcOutcome};
+use crate::outcome::MalformedKind;
 
 /// What the server does with a request direction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,38 +161,13 @@ impl<'c> RequestAssembly<'c> {
     }
 }
 
-/// Whether the caller's state machine is allowed to issue the same mutation
-/// again as a new attempt. Node RPC itself never retries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplayVerdict {
-    /// The call produced a reply: there is nothing to replay.
-    Answered,
-    /// Provably never dispatched: a new attempt cannot double-apply.
-    SafeToRetry,
-    /// May have executed. A mutation must be reconciled by the domain
-    /// (read back, target, idempotency key) — never silently re-sent.
-    MustNotReplay,
-    /// A read may be repeated.
-    ReadMayRepeat,
-}
-
-/// Whether `outcome` of a call that `mutating` may be sent again as a new attempt.
-pub fn replay_verdict<R>(outcome: &RpcOutcome<R>, mutating: bool) -> ReplayVerdict {
-    match outcome {
-        RpcOutcome::Reply(_) => ReplayVerdict::Answered,
-        RpcOutcome::NotSent(_) | RpcOutcome::Unserved(_) | RpcOutcome::RejectedStale(_) => ReplayVerdict::SafeToRetry,
-        RpcOutcome::Indeterminate(_) if mutating => ReplayVerdict::MustNotReplay,
-        RpcOutcome::Indeterminate(_) => ReplayVerdict::ReadMayRepeat,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::catalog::{CatalogBuilder, CatalogEntry, Shape, OpOwner};
     use crate::ping::{Ping, PingReply, PingRequest};
     use crate::framing::{encode_request, encode_varint, Target};
-    use crate::outcome::{IndeterminateReason, NotSentReason, PreCommit, ReplyKind, RequestFinished};
+    use crate::outcome::{IndeterminateReason, NotSentReason, PreCommit, ReplyKind, RequestFinished, RpcOutcome};
     use crate::protocol::{DecodeFailure, NodeProtocol};
 
     fn catalog() -> Catalog {
@@ -343,14 +317,13 @@ mod tests {
     }
 
     /// CONTRACT (R-UC1a): `RejectedStale` is the caller's own verdict, its resolver no longer naming
-    /// the birth it dialled, before the request went: never dispatched, safe to retry. A `425` after
+    /// the birth it dialled, before the request went: never dispatched. A `425` after
     /// commit proves nothing (no receiver sends it) and is `Indeterminate`.
     #[test]
     fn a_stale_target_is_the_callers_verdict_before_the_request_and_a_425_after_commit_proves_nothing() {
         let early: RpcOutcome<PingReply> = PreCommit::begin(0x01).stale_before_finish(&a_request().target);
         assert!(matches!(&early, RpcOutcome::RejectedStale(s) if s.target_node_id() == "n1"), "{early:?}");
         assert!(early.proves_not_dispatched());
-        assert_eq!(replay_verdict(&early, true), ReplayVerdict::SafeToRetry);
         let late = committed().reset::<PingReply>(425);
         assert!(matches!(&late, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::Reset(425)), "{late:?}");
     }
@@ -365,17 +338,5 @@ mod tests {
             committed().reply::<Ping>(&unknown),
             RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::UnsupportedReplyVariant
         ));
-    }
-
-    #[test]
-    fn no_mutating_indeterminate_is_silently_replayed() {
-        let ind: RpcOutcome<PingReply> = committed().indeterminate(IndeterminateReason::ReplyDeadline);
-        assert_eq!(replay_verdict(&ind, true), ReplayVerdict::MustNotReplay);
-        assert_eq!(replay_verdict(&ind, false), ReplayVerdict::ReadMayRepeat);
-        let ns: RpcOutcome<PingReply> = PreCommit::begin(0x01).not_sent(NotSentReason::Deadline);
-        assert_eq!(replay_verdict(&ns, true), ReplayVerdict::SafeToRetry);
-        assert_eq!(replay_verdict(&committed().reset::<PingReply>(421), true), ReplayVerdict::SafeToRetry);
-        let bytes = Ping::encode_reply(&Ping::busy("x".into())).unwrap();
-        assert_eq!(replay_verdict(&committed().reply::<Ping>(&bytes), true), ReplayVerdict::Answered);
     }
 }

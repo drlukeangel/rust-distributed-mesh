@@ -588,7 +588,7 @@ impl ActionKind {
 /// ... the workflow that commanded it ... fails by name with that reason. The one exception is
 /// R-MT1's: the delete of a mesh's only node skips the update"), or, for that delete, when the fabric
 /// role it holds has no other mesh-primary to go to (C2 step 3): the same search the holder's
-/// pre-check runs (`election::commanded_successor`), so nothing is admitted and no attempt opens. A
+/// pre-check runs (`election::commanded_successor`), so nothing is admitted and nothing runs. A
 /// node of any other type that holds its node-type primary role is refused [`BuildReject::NoSecondary`] when no
 /// other node of its type in its mesh can take the role (`election::commanded_node_type_successor`, Q7).
 /// `own_mesh` is the mesh of the admin deciding: the mesh-primary of another mesh is the writer of its

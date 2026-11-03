@@ -351,7 +351,7 @@ async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_
     let successor = stores(&root, &IncarnationId::mint()).await;
     let held = folded(&*successor.nodes, &*successor.meshes, &*successor.fabric, "mesh1").await;
     assert_eq!(held.node(&node_id, &incarnation), None, "only the current cycle's state was cleared");
-    assert_eq!(held.operations.len(), 2, "both attempts are still applied");
+    assert_eq!(held.operations.len(), 2, "both operations' effects are still applied");
     assert_eq!(held.operations.get(&row.key()), Some(&row));
     assert_eq!(held.operations.get(&next.key()), Some(&next));
     // Forgetting the exact birth lets its effects go with it.

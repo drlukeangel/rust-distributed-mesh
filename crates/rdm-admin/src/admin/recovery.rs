@@ -21,8 +21,8 @@ pub(crate) struct RecoverySubmitter {
     /// This admin's runner, once built: it runs the recovery and the terminate of a deleted birth
     /// heard again, the primary's own workflow (Q342).
     pub runner: Arc<std::sync::OnceLock<Arc<super::runner::AdminRunner>>>,
-    /// This admin's `BuildService`: fabric recovery under an in-force fabric.delete claims the delete's next
-    /// attempt through its control plane (fabric-recovery.md step 4, Q155); a fabric.delete is a Build.
+    /// This admin's `BuildService`: fabric recovery under an in-force fabric.delete continues the delete
+    /// through its control plane (fabric-recovery.md step 3, Q155); a fabric.delete is a Build.
     pub build_service: crate::build_op::BuildSlot,
     /// This admin's Node RPC client; none in a rig that runs no Node RPC.
     pub client: Option<Arc<rdm_transport::NodeRpcClient>>,
@@ -378,7 +378,7 @@ pub(crate) type WrittenSilence = HashMap<NodeId, (Option<IncarnationId>, Option<
 /// (fabric-node-lifecycle-elections.md §4.1; node-recovery.md step 2: "Only the mesh-primary acts"), so
 /// only it reads them: once, at the first tick that finds this admin its mesh's primary, and held while it
 /// keeps the role. A row written after that read is a launch in a mesh whose mesh-primary runs every
-/// attempt (node-recovery.md "Execution"), and the launching admin writes it (build.md §5.3): this
+/// launch (node-recovery.md "Execution"), and the launching admin writes it (build.md §5.3): this
 /// admin's own executor, whose records put the birth in its view. An admin that is not its mesh's primary
 /// holds none and reads none; the role lost, the rows go, and a later tenure reads them again. A read
 /// that is refused holds none, so the next tick reads again.

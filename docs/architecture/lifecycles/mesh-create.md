@@ -19,7 +19,7 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
 | Name | `mesh<#>` by default, the Build's `mesh_name`; unique within its path, checked by the fabric-primary against its records at the Build's acceptance; held by another mesh answers `NameHeld` |
 | Executor / maker | The fabric-primary: it is the maker of the mesh's first node-admin and writes the mesh's rows until the mesh has a primary (R-OW1) |
 | Channel | `f(FabricId, MeshId)`, created by its first listener, the node-admin |
-| Members | The first node-admin only. The mesh's other nodes are created afterwards by that node-admin as mesh-primary, under the same accepted Build's attempts |
+| Members | The first node-admin only. The mesh's other nodes are created afterwards by that node-admin as mesh-primary, in its mesh's section of the same accepted Build |
 | Mesh states | `pending`, set by the node-admin that launched the mesh's first admin, one `ApplyMeshState(Pending)` after the launched birth answers Ping; `ready`, set by the fabric-primary on its mesh-primary's report that every planned birth is ready ([States](states.md)) |
 | Rows | The mesh row, written by the mesh-primary at creation; the node row, written by the fabric-primary until the mesh has a primary, then by the mesh-primary |
 | Completion | The node-admin's `node.created`; the mesh is in the topology from acceptance and in traffic from `ready` |

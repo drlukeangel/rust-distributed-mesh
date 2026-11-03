@@ -508,7 +508,7 @@ impl Estate {
 
     /// The view once the fabric has recovered to `meshes` after a fault: every `(mesh, node_admin, rpc_node)`
     /// node type holds exactly its count of nodes, every one ready. No stream announces it: the
-    /// recovery is the rectifier's (a later attempt of the accepted Build, or a person's admin on a former
+    /// recovery is the rectifier's (the primary's own node recovery, Q342, or a person's admin on a former
     /// role's data dir), where no call is held open. `within` bounds the wait and a view that does not settle
     /// is named.
     pub async fn settles_to(&self, meshes: &[(&str, u32, u32)], within: std::time::Duration) -> Vec<NodeView> {
@@ -890,8 +890,8 @@ impl Estate {
         frames
     }
 
-    /// A workflow stream to its `Complete`; a failed step is a defect of the cell, named. The Build and
-    /// attempt the call opened; `None` for a node command (node.stop, node.start), which belongs to no
+    /// A workflow stream to its `Complete`; a failed step is a defect of the cell, named. The Build the
+    /// call opened; `None` for a node command (node.stop, node.start), which belongs to no
     /// Build (Q342).
     pub async fn complete(stream: &mut WorkflowStream) -> Option<Accepted> {
         let accepted = stream.accepted().cloned();
@@ -940,7 +940,7 @@ impl Estate {
     }
 
     /// A workflow call accepted, awaited to its `Complete`: a refusal is a defect of the cell and `what`
-    /// names the call. The Build and attempt it opened; `None` for a node command.
+    /// names the call. The Build it opened; `None` for a node command.
     pub async fn workflow(what: &str, call: Result<WorkflowStream, CallEnd>) -> Option<Accepted> {
         let mut stream = call.unwrap_or_else(|end| panic!("{what} was refused: {end}"));
         Self::complete(&mut stream).await

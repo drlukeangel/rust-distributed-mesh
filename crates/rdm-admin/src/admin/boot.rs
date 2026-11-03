@@ -422,8 +422,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // the same admin started again holds the same values: the value never changes while the fabric runs.
     declared_secrets.keep(&cfg.data_dir).map_err(|e| format!("refusing to start: {e}"))?;
     let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), topology_storage_provider = %cfg.topology_storage_provider, fabric_id = tracing::field::Empty, inherited_root = tracing::field::Empty, writes_to = tracing::field::Empty, mesh_id = tracing::field::Empty, error = tracing::field::Empty);
-    // The node-admin storage boundaries: its own row, the runtimes it started, its Build journal and
-    // attempt contexts in its own data dir; the fabric, mesh, nodes, connections and status stores
+    // The node-admin storage boundaries: its own row, the runtimes it started and its Build journal in
+    // its own data dir; the fabric, mesh, nodes, connections and status stores
     // under the fabric's shared store root (R14). An admin that finds its own row in nodes.storage was
     // started on an inherited root: fabric recovery, a new node with a new node.id and incarnation over
     // the inherited data dir, at the same path and name, in the same Mesh and Fabric, holding the same Builds
@@ -839,7 +839,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     }
     // The adoption launch's checks after its claim and before its first other mutation (Q156): node
     // investigation of the lost birth, then whether any node-admin the store records answers. An answer
-    // refuses it NameHeld, the attempt closed through the failure path. Otherwise, as every own-mesh
+    // refuses it NameHeld, the launch ended through the failure path. Otherwise, as every own-mesh
     // recovery of a node-admin, the lost birth's runtime is terminated on every read but os-stopped, its
     // name released and taken by this birth.
     if let Some(launch) = &adoption_launch {
@@ -1253,7 +1253,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // A launched admin's provider policy is its launcher's entry answer's.
                             let policy = match joined {
                                 Some(answer) => {
-                                    // Fetch the current Build from the launching admin, and record the attempt floor its
+                                    // Fetch the current Build from the launching admin, and record the Build floor its
                                     // answer names; without them this admin is not started. The Build it names is read from
                                     // the store root (Q292, node.start's Build-floor step after the hook).
                                     take_entry_control(&answer, &accepted, &entry_floor, &records, &cfg.mesh, &mesh_id).await;
@@ -2195,7 +2195,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (digest, digest_view, provider, topology_view) = (digest.clone(), digest_view.clone(), provider_dyn.clone(), topology_view.clone());
                                         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
                                         let rafka_time_at_apply = rafka_time.clone();
-                                        // The adoption launch's attempt completes once it is Ready (Q156).
+                                        // The adoption launch completes once it is Ready (Q156).
                                         let (hydrated, start_progress, entering_gate) = (builds_dyn.clone(), progress.clone(), entering.clone());
                                         // A launched admin's Ready names the current Build its log holds, reading no store (Q227).
                                         let held_log = cfg.launch.is_some().then(|| journal.clone());
@@ -2948,8 +2948,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
 
                                     // The open lifecycle overlays, derived from the Build facts inside each append to this admin's
                                     // log (its own appends and the records it reads from the store root alike), before the append
-                                    // returns: a hold opens with its pre-event's receipt and closes with its operation's `Complete`
-                                    // or its attempt's `Converged`, and no reader of the log sees that fact while the view still
+                                    // returns: a hold opens with its pre-event's receipt and closes with its operation's `Complete`,
+                                    // and no reader of the log sees that fact while the view still
                                     // holds the hold (a log on a plane other admins write converges at the derivation instead:
                                     // `LocalBuildLog::derive_on_every_fact`). A successor primary publishes the same overlays from the same facts. Derived
                                     // once over the facts held before the hierarchy's first turn, then on every fact.

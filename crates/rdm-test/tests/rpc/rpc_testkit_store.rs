@@ -127,7 +127,7 @@ async fn the_testkit_store_survives_a_restart_and_never_a_recovery_or_a_new_node
     assert_eq!(inherited["reply"]["result"], json!({"found": false}), "the recovered node's store is empty: nothing is inherited (Q359): {inherited}");
 
     // The recovery ends with its create of the node now holding the path: work on one node is serialized
-    // at its mesh-primary, so the Delete below waits for no Build attempt.
+    // at its mesh-primary, so the Delete below waits for no Build.
 
     // 4. A new node at the path does not inherit it: its data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());

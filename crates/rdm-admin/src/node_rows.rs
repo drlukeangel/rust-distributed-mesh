@@ -66,8 +66,8 @@ pub struct NodeRows {
     /// holding at a create. A later row of the node takes its config from here, never from a record
     /// that does not carry it.
     written: Arc<WrittenRows>,
-    /// Fabric recovery in a view: its executor writes the rows its own attempt's operations require
-    /// while the target mesh has no mesh-primary (build.md §5.3, Q122).
+    /// Fabric recovery in a view: its executor writes the rows its own workflow's operations require
+    /// while the target mesh has no mesh-primary (fabric-recovery.md, Q122).
     fabric_recovery: Option<crate::fabric_recovery::Reader>,
     /// The meshes whose writing this admin took with a view install, whose records it fills from
     /// storage before it writes any of them (storage-whole-records.md: the cache is filled whenever
@@ -410,7 +410,7 @@ pub enum RowCreated {
         /// The node whose previous row seeded its config, if one did.
         seeded_from: Option<NodeId>,
     },
-    /// The node already holds the row at the name (a restart, or a row written by an earlier attempt
+    /// The node already holds the row at the name (a restart, or a row written by an earlier run
     /// of the same create): nothing is written, and the row stays its own.
     HeldByNode(NodeRow),
 }
@@ -945,8 +945,9 @@ pub(crate) fn re_created(records: &[NodeRow]) -> HashMap<crate::storage::BirthRe
 
 /// The records a reader of a mesh's node records folds from `records`, the versions a read of storage
 /// answered (Q109: "every reader folds the stored rows the same way, and a row that does not follow the
-/// fold is ignored by every reader, refused by no storage"; build.md: an os-stopped executor that
-/// resumes after the next attempt is claimed "is a deleted birth whose writes every reader refuses"):
+/// fold is ignored by every reader, refused by no storage"; node-recovery.md step 3: "A birth that comes
+/// back once its verdict is not `reached`, during its successor's creation or after it, is a deleted
+/// birth"):
 /// a node's record whose version was written by its own birth after another record named that birth
 /// its predecessor (the birth re-created at its path and name) is ignored, one
 /// `rdm.node_admin.node.reject.via-deleted-birth` span naming it. The record of a re-created birth

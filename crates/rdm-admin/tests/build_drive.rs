@@ -1353,8 +1353,8 @@ fn a_renamed_admin_drives_runs_and_spans_under_its_held_name_never_its_boot_name
     }
 }
 
-/// CONTRACT (mesh-delete.md: the mesh row goes Dead at mesh.deleted and Dead is final; build.md §1: each
-/// attempt computes the remaining work from the accepted topology, the records and its receipts; Luke
+/// CONTRACT (mesh-delete.md: the mesh row goes Dead at mesh.deleted and Dead is final; build.md §1: "Every
+/// run of a Build reads its topology and the records and computes the remaining work"; Luke
 /// 2026-10-24: the plan reads mesh death from the Mesh record and the receipts, never from a view that has
 /// not caught up): mesh3 was deleted by an earlier Build, its Mesh record Dead, and this fabric-primary's
 /// view has not heard its Dead yet (it shows mesh3 Ready, its final primary still a member). A
@@ -1392,9 +1392,8 @@ impl Gate for FabricChange {
 /// CONTRACT (Q154; states.md "Resize and a new executable": "Its Build is Complete only when the fabric is
 /// ready again from this Build's own change ... while the fabric changes, the Build stays in
 /// progress, never Complete"; node-rpc-envelope.md: Pending's "only source is the subject's Status
-/// `Pending` reply"; build.md §1: every accepted Build is reconciled, "Every
-/// execution attempt re-reads the accepted topology and current realized/observed state and computes
-/// remaining work"): a Build whose topology put the fabric back to pending and whose work the view
+/// `Pending` reply"; build.md §1: "Every
+/// run of a Build reads its topology and the records and computes the remaining work"): a Build whose topology put the fabric back to pending and whose work the view
 /// already holds (nothing left to execute) is started, runs nothing, frames no `Pending`
 /// (no subject answered one) and is never Complete while the fabric changes, and is Complete once the fabric holds ready. Must NOT
 /// happen: the Build never started, or Complete while the fabric changes.

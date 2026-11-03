@@ -113,7 +113,7 @@ pub struct Turn {
 
 impl Turn {
     /// A turn of `task` begun under this one, at once, whether the gate is stopped or not: for work
-    /// this turn starts on a task of its own and waits on (a drive pass's own run of the attempt it
+    /// this turn starts on a task of its own and waits on (a drive pass's own run of the section it
     /// dispatched), which would otherwise wait at the gate for the turn that waits on it. This turn
     /// was past its wait point, so the stop's quiesce has not resolved; it waits for the new turn as
     /// for every other, until the work drops it. It is of this turn's Build, when this turn is one's.

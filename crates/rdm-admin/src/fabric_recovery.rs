@@ -3,15 +3,14 @@
 //! taken by nobody: the lowest Ready node-admin of its mesh, or when the mesh has none the
 //! lowest Ready mesh-primary on the backbone, runs one workflow, started at the mark on either arm. It takes no primary role. The primary watch's node investigation decides what becomes of the lost birth (Q111, Q337):
 //! reached, it is commanded back through node.mesh.join; any other verdict, node recovery re-creates the
-//! node-admin at its path and name, an attempt of the current Build that names the lost birth, except from the
+//! node-admin at its path and name, naming the lost birth, the primary's own workflow (Q342), except from the
 //! backbone on `running`, where the report stands and nothing is written (Q153). When the node
 //! at that path and name is Ready the workflow restores it as mesh-primary and fabric-primary
 //! (node.primary.update's call on it): the node installs both roles, acknowledges, and records them on
 //! its own row; the workflow completes on the acknowledgement.
 //! Under an in-force fabric.delete it re-creates and restores nothing: the executor holds the
 //! fabric-primary's roles to the end and continues the delete (step 4, Q155). It takes the fabric-primary
-//! role and the lost mesh's mesh-primary role by one winning claim of the delete's next attempt and one
-//! recorded transition at the next revision, keeping its own mesh's, from its own mesh or from the
+//! role and the lost mesh's mesh-primary role by one recorded transition at the next revision, keeping its own mesh's, from its own mesh or from the
 //! backbone alike (Q160).
 //!
 //! Every fact the workflow acts on is read again from the view, the records and the Build on each pass:
@@ -102,7 +101,7 @@ pub fn reader(digest_view: DigestView, records: Arc<crate::admin::Records>) -> R
 }
 
 /// Whether `me` runs fabric recovery of `mesh` in `t` while the mesh has no mesh-primary: the writer of
-/// the mesh and node records the attempt's own operations require (build.md §5.3, Q122).
+/// the mesh and node records the workflow's own operations require (fabric-recovery.md, Q122).
 pub fn executes_for(read: Option<&Reader>, t: &Topology, me: &crate::storage::BirthRef, mesh: &str) -> bool {
     read.and_then(|r| r(t)).is_some_and(|fr| fr.target.mesh == mesh && fr.executor.as_ref().is_some_and(|e| e.node_id == me.node_id && e.incarnation == me.incarnation_id)) && t.node_type_primary(mesh, "node-admin").is_none()
 }
@@ -492,8 +491,8 @@ mod tests {
     /// CONTRACT (docs/architecture/lifecycles/fabric-recovery.md:45-47: "1. **Unheard past the staleness
     /// floor.** Every admin marks the fabric-primary `PendingReconnect` at the floor (node recovery step 1).
     /// Silence is the trigger; no provider verdict stands between the mark and the row."
-    /// docs/architecture/lifecycles/fabric-recovery.md:48-50: "2. **Fabric recovery starts.** The executor
-    /// names itself by the four questions on its own view, opens the attempt and broadcasts it. Any other
+    /// docs/architecture/lifecycles/fabric-recovery.md:45-47: "2. **Fabric recovery starts.** The executor
+    /// names itself by the four questions on its own view, starts the workflow and broadcasts it. Any other
     /// admin that notices tells it; it acts only when its own view agrees; repeats answer `AlreadyApplied`."):
     /// while the fabric-primary record names a heard Ready primary, `of` returns `None`. Once silence marks
     /// the fabric-primary `PendingReconnect` (no provider verdict required), `of` names the lowest Ready

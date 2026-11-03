@@ -1,14 +1,14 @@
-//! A birth admits a command once per natural key, never per attempt or commander
+//! A birth admits a command once per natural key, never per send or commander
 //! (node-rpc-envelope.md, "Status": "Idempotency is the natural key `(node_id, incarnation,
 //! state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name";
 //! "Completed steps are not rerun. Settle an idempotent uncertain step by its natural key and
 //! `AlreadyApplied`"). A start's key is `(node_id, incarnation, Pending)`.
 //!
-//! One admin side commands the birth under several attempts of one Build: each attempt is its own
-//! open command at the admin, matched by its attempt, so a completion carrying
-//! another attempt resolves nothing. A natural key holds no commander, so a second physical
-//! node-admin adds nothing the attempts do not already prove. A fabric checklist is scoped to the
-//! accepted Build and attempt (node-rpc-envelope.md, "Fabric status command pairs") and its command comes
+//! One admin side sends the birth the same command more than once, as a resubmitted Build reissues
+//! it: each send is the same natural key, never a command of its own. A natural key holds no
+//! commander, so a second physical node-admin adds nothing the repeated sends do not already prove. A
+//! fabric checklist is scoped to the accepted Build (node-rpc-envelope.md, "Fabric status command
+//! pairs") and its command comes
 //! from whichever node-admin holds the mesh's primary role: its cell moves the role between two
 //! admin sides.
 //!
@@ -168,15 +168,15 @@ impl Birth {
         held
     }
 
-    fn command_key(&self, attempt: u32, operation: rdm_core::OperationId) -> CommandKey {
+    fn command_key(&self, operation: rdm_core::OperationId) -> CommandKey {
         CommandKey { operation, node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone() }
     }
 
-    fn stop(&self, attempt: u32) -> StatusRequest {
+    fn stop(&self) -> StatusRequest {
         StatusRequest::StopNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), operation: rdm_core::OperationId::node("node.stop", &self.launch.node_id) }
     }
 
-    fn start(&self, attempt: u32) -> StatusRequest {
+    fn start(&self) -> StatusRequest {
         StatusRequest::StartNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), operation: rdm_core::OperationId::node("node.start", &self.launch.node_id) }
     }
 }
@@ -185,14 +185,14 @@ fn spans_named(spans: &crate::common::Spans, name: &str) -> Vec<std::collections
     spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, _, f)| f.clone()).collect()
 }
 
-/// CONTRACT: a `StartNode` that reaches a stopped birth while another attempt's start of it is under
+/// CONTRACT: a `StartNode` that reaches a stopped birth while another start of it is under
 /// way (its hook still running) is the same natural key: it runs no rejoin of its own and answers
 /// that start's outcome, `Started`, once it ends; the birth is ready afterwards. What must NOT
 /// happen: a second rejoin of one birth, or the second start's own failure path (Leaving, the
 /// connections deleted, the transport cut) tearing down the start under way.
 #[test]
-fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcome() {
-    let cell = "a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcome";
+fn a_start_sent_again_while_one_is_under_way_joins_it_and_answers_its_outcome() {
+    let cell = "a_start_sent_again_while_one_is_under_way_joins_it_and_answers_its_outcome";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -201,32 +201,32 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
         }
         let pre_node_ready = TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok));
         let birth = std::sync::Arc::new(Birth::up_pre_node_ready("start-natural-key", Some(pre_node_ready.clone())).await);
-        let stopped = birth.call(&birth.stop(1)).await;
+        let stopped = birth.call(&birth.stop()).await;
         assert!(matches!(stopped, StatusReply::Stopped { .. }), "{stopped:?}");
 
-        // Attempt 2's start runs until its hook, which holds until the cell lets it go.
+        // The first start runs until its hook, which holds until the cell lets it go.
         let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
         pre_node_ready.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
         birth.admin.deployed(&birth.launch, &birth.key);
         let first = {
             let birth = birth.clone();
-            tokio::spawn(async move { birth.call(&birth.start(2)).await })
+            tokio::spawn(async move { birth.call(&birth.start()).await })
         };
         started.notified().await;
 
-        // Attempt 3 asks for the same start while it is under way.
+        // A second send asks for the same start while it is under way.
         let second = {
             let birth = birth.clone();
-            tokio::spawn(async move { birth.call(&birth.start(3)).await })
+            tokio::spawn(async move { birth.call(&birth.start()).await })
         };
         tokio::time::timeout(Duration::from_secs(20), spans.recorded("rdm.node_admin.status.update.via-start-node", |f| f.get("joined").map(String::as_str) == Some("true")))
             .await
-            .expect("attempt 3's StartNode joins the start under way instead of running one of its own");
+            .expect("the second StartNode joins the start under way instead of running one of its own");
         pre_node_ready.set_mode(Mode::Fixed(HookOutcome::Ok));
         resume.notify_one();
 
-        assert_eq!(first.await.unwrap(), StatusReply::Started, "attempt 2's start completes");
-        assert_eq!(second.await.unwrap(), StatusReply::Started, "attempt 3 answers the outcome of the start it joined");
+        assert_eq!(first.await.unwrap(), StatusReply::Started, "the first start completes");
+        assert_eq!(second.await.unwrap(), StatusReply::Started, "the second send answers the outcome of the start it joined");
         birth.status_heard(MemberStatus::Ready).await;
         let rejoins = spans_named(&spans, "rdm.mesh.node.update.via-start");
         assert_eq!(rejoins.len(), 1, "one rejoin of the birth: {rejoins:?}");
@@ -294,7 +294,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopp
         }
         let pre_node_ready = TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok));
         let birth = std::sync::Arc::new(Birth::up_pre_node_ready("stop-during-start", Some(pre_node_ready.clone())).await);
-        let stopped = birth.call(&birth.stop(1)).await;
+        let stopped = birth.call(&birth.stop()).await;
         assert!(matches!(stopped, StatusReply::Stopped { .. }), "{stopped:?}");
 
         // The start runs until its hook, which holds until the cell lets it go.
@@ -303,12 +303,12 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopp
         birth.admin.deployed(&birth.launch, &birth.key);
         let start = {
             let birth = birth.clone();
-            tokio::spawn(async move { birth.call(&birth.start(2)).await })
+            tokio::spawn(async move { birth.call(&birth.start()).await })
         };
         started.notified().await;
 
         // A stop of the birth while its start is under way.
-        let during = birth.call(&birth.stop(3)).await;
+        let during = birth.call(&birth.stop()).await;
         assert!(
             matches!(&during, StatusReply::NotReady { reason } if reason.contains("start is under way")),
             "a StopNode while the start is under way is refused naming the start, never answered with the stopped cycle's receipt: {during:?}"
@@ -320,7 +320,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopp
         birth.status_heard(MemberStatus::Ready).await;
 
         // The started birth's stop is a stop of its own cycle.
-        let after = birth.call(&birth.stop(4)).await;
+        let after = birth.call(&birth.stop()).await;
         assert!(matches!(after, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "the started birth is stopped afresh: {after:?}");
         assert!(birth.running.own.is_stopped(), "the stop that answered Stopped left the birth stopped");
         assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-stop-node").len(), 2, "one stop per cycle: the first cycle's and the started birth's");

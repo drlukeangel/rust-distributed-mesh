@@ -2,7 +2,7 @@
 //!
 //! Every node-admin's Build journal is the fabric's Build journal on the shared store root (build.md
 //! §5.3, R-BI6): each fact the fabric-primary commits is one record there (Q118: it writes every
-//! Build record, a mesh's drift attempts' among them). The fabric-primary takes the records at its
+//! Build record). The fabric-primary takes the records at its
 //! take and reads them from then on; an executor, a starting admin and an admin taking a primary role
 //! read the named Build's committed records fresh (Q292, `committed_facts`). A successor therefore
 //! continues a Build from the store root, never from the executing admin's disk or process.
@@ -22,9 +22,8 @@ use std::sync::Arc;
 /// behind this admin's primary records.
 pub struct FabricBuildStateAdapter {
     local: Arc<dyn LocalBuildLog>,
-    /// The decision gate every fabric-primary mutation passes (ruling R-A2), a mesh's drift attempt's
-    /// open and claim among them: the fabric-primary writes every Build record (Q118), so a
-    /// mesh-primary that is not the fabric-primary reports its drift up and writes none.
+    /// The decision gate every fabric-primary mutation passes (ruling R-A2): the fabric-primary writes
+    /// every Build record (Q118), and a mesh-primary that is not the fabric-primary writes none.
     gate: DecisionGate,
     location_view: rdm_transport::topology::LocationView,
 }
@@ -129,7 +128,7 @@ impl FabricBuildStateAdapter {
     /// Whether this admin's Build log still decides anything: refused by name once the committed
     /// primary record names another live birth, else the primary the open record names. The
     /// fabric-primary's drive passes this before every dispatch; it holds the gate only for the
-    /// check, because an attempt lasts as long as its steps and the target is kept.
+    /// check, because a run lasts as long as its steps and the target is kept.
     pub async fn target_check(&self) -> Result<Option<rdm_core::NodeId>, BuildStateError> {
         self.gate.enter_naming().await.map(|(_, primary)| primary)
     }

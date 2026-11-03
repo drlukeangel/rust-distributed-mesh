@@ -15,12 +15,12 @@
 //!    the current Build when it is back: it reads the Build facts written while it was stopped and
 //!    holds the newest in progress or completed (R-BI3: no pointer names the current Build).
 //! 7. A member killed (its exact runtime exited) is node recovery (node-recovery.md): its
-//!    mesh-primary proves the exit and opens the recovery itself, the next attempt of its mesh's lane
-//!    of the same Build (R-BI7), once: node.delete of the exited birth, then node.create at the same
-//!    path and name with a new node.id over the inherited data dir and endpoint key. The current Build
-//!    stays the same; the attempt converges; the fabric lane gains no attempt; the fabric-primary opens no drift
-//!    attempt for the member.
-//! 8. A stop and a start change no topology: each is an attempt of the accepted Build, under the same id.
+//!    mesh-primary proves the exit and runs the recovery itself, its own workflow and never a Build
+//!    (R-BI7, Q342), once: node.delete of the exited birth, then node.create at the same path and name
+//!    with a new node.id over the inherited data dir and endpoint key. The current Build and its record
+//!    stay what they were, and no Build runs the recovery.
+//! 8. A stop and a start change no topology: each is a node command of the primary above the node,
+//!    never a Build or part of one (Q342).
 
 use crate::build_log;
 use rdm_core::{NodeId, OperationId, PathName};
@@ -153,7 +153,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     // the acceptance is written, so the admin is back as soon as the `BuildService` answers. A stop held on to the
     // Build's later progress outlasts the floor on a slow host, and then the stopped birth is node
     // investigation's (node-investigation.md: an `os-stopped` verdict re-creates it at its path and name,
-    // and the fabric-primary terminates the birth that comes back, an attempt of the fabric lane).
+    // and a birth that comes back is a deleted birth, node-recovery.md step 3).
     signal(stopped, "-STOP");
     let r4_stream = estate.submit(&BuildSpec::Fabric(fabric_of(&[("mesh1", 3, 4)]))).await;
     let r4 = r4_stream.build_id().to_string();
@@ -184,7 +184,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     estate.settled_views(&[("mesh1", 3, 4)]).await;
     assert_eq!(current_build(&estate).await, r4, "recovery writes no Build");
     assert_eq!(estate.build_ids().await, builds, "recovery opens no Build");
-    assert_eq!(build_log::build_value(&estate, &r4).await, before, "the current Build's record is what it was: a recovery is no attempt of it");
+    assert_eq!(build_log::build_value(&estate, &r4).await, before, "the current Build's record is what it was: a recovery is no part of it");
     assert_ne!(back["node_id"], lost["node_id"], "a lost birth's path gets a new logical node");
     assert_ne!(back["endpoint_id"], lost["endpoint_id"], "a new endpoint_id (Q358)");
 
@@ -225,7 +225,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
         assert_eq!(child["trace_id"], submit["trace_id"], "{child}");
     }
     let ran = named(&spans, "rdm.node_admin.build.update.via-reconcile");
-    assert!(ran.iter().all(|sp| sp["attributes"]["reason"] != "recovery"), "no attempt of any Build ran the recovery: {ran:?}");
+    assert!(ran.iter().all(|sp| sp["attributes"]["reason"] != "recovery"), "no Build ran the recovery: {ran:?}");
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == lost["node_id"]).collect();
     assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], lost["incarnation_id"], "named by the exact exited birth");
@@ -233,7 +233,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     // 8: the stop ran as a node command of the primary above the node, never a Build or part of one (Q342).
     let stop_command = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| sp["attributes"]["command"] == "stop-node" && sp["attributes"]["subject_id"] == restarted_from["node_id"] && sp["attributes"]["outcome"] == "node-stopped").cloned();
     assert!(stop_command.is_some(), "the stop's node command span at the primary above mesh1.node.1");
-    assert!(ran.iter().all(|sp| sp["attributes"]["reason"] != "stop"), "no attempt of any Build ran the stop: {ran:?}");
+    assert!(ran.iter().all(|sp| sp["attributes"]["reason"] != "stop"), "no Build ran the stop: {ran:?}");
     // 4 and 6: the fabric-primary writes each Build once; the late admin committed Ready holding the
     // current Build, and the paused admin caught up to the Build written while it was stopped.
     let moved = named(&spans, "rdm.node_admin.build.create.via-accepted");

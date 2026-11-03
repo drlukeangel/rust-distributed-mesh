@@ -842,7 +842,7 @@ impl NodeSelf {
         self.serve_lifecycle_command_in(commander, spare, None, req, frames).await
     }
 
-    /// [`Self::serve_lifecycle_command`], with `run`: the Build and attempt of this birth's own run that
+    /// [`Self::serve_lifecycle_command`], with `run`: the Build of this birth's own run that
     /// commands it in process ([`Self::serve_node_command_of_run`]), named by the command's lifecycle op.
     async fn serve_lifecycle_command_in(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, run: Option<&str>, req: &NodeCommandRequest, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         // The command's identity is its operation, keyed on the node.id (Q342): it belongs to no Build.

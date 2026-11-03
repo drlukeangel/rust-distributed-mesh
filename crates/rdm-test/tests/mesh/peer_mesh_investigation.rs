@@ -216,7 +216,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     let mesh2_id = estate.mesh_view("mesh2").await.id.expect("mesh2 has its id").to_string();
     estate.enter(&fp).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    let attempt_before = estate.starts_of_build(&accepted).await;
+    let starts_before = estate.starts_of_build(&accepted).await;
     let (floor, gossip) = (rdm_transport::topology::staleness_floor(), rdm_transport::topology::gossip_interval());
     let fault_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.kill_pid(runtime_of(&estate, &lost_id));
@@ -227,7 +227,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     .await;
     wait_for("the fabric is ready", floor + gossip * 2, || async { estate.fabric_view_at(&fp).await.filter(|f| status_word(f.status) == "ready").map(|_| ()) }).await;
     let mesh2_after = estate.mesh_view("mesh2").await;
-    let attempt_after = estate.starts_of_build(&accepted).await;
+    let starts_after = estate.starts_of_build(&accepted).await;
     let stop_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop().await;
     let spans = estate.spans();
@@ -246,7 +246,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     let degraded: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "status") == "degraded").collect();
     assert!(degraded.is_empty(), "no degraded status is sent: {degraded:#?}");
     assert_eq!(mesh2_after.id.map(|id| id.to_string()), Some(mesh2_id.clone()), "mesh2 keeps its MeshId");
-    assert_eq!(attempt_after, attempt_before, "the recovery is the fabric-primary's own workflow, never a Build attempt (Q342): {attempt_before} -> {attempt_after}");
+    assert_eq!(starts_after, starts_before, "the recovery is the fabric-primary's own workflow, never a run of a Build (Q342): {starts_before} -> {starts_after}");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "lost": lost, "lost_node_id": lost_id, "recreated_node_id": recreated["node_id"], "finding": attr(look, "finding"), "trace_id": look["trace_id"], "mesh_id": mesh2_id}));
 }
 

@@ -197,7 +197,7 @@ product_id!(
 );
 product_id!(
     /// A Build's identity (build.md §3): minted once when the Build is accepted, carried by every
-    /// attempt, claim and receipt of it. Ordered only so a set of Builds has a stable iteration.
+    /// record and event of it. Ordered only so a set of Builds has a stable iteration.
     BuildId, "build id", PartialOrd, Ord
 );
 product_id!(

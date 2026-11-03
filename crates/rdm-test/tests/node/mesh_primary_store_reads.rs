@@ -142,8 +142,8 @@ fn recorded(store: &Path, calls: &Calls) -> TopologyStorageProviders {
 /// records from the store once: its writer's fill as it took the mesh, which its atlas holds too.
 /// mesh1.node-admin.2, no primary, made no write to the nodes store and read no runtime row at its start;
 /// its runtime row is its launcher's write, at its join. Must NOT happen: a second listing of the
-/// mesh's records by its writer (the writer's copy filled twice, the atlas filled from the store, an
-/// attempt's completion filling a mesh this admin writes); a runtime row written by an admin that did
+/// mesh's records by its writer (the writer's copy filled twice, the atlas filled from the store, a
+/// step's completion filling a mesh this admin writes); a runtime row written by an admin that did
 /// not launch the birth; a read of every runtime row at an admin's start.
 #[test]
 fn a_mesh_primary_lists_its_meshs_records_once_and_an_admin_that_is_no_primary_writes_no_runtime_row() {

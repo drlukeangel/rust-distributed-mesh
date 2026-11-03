@@ -60,7 +60,7 @@ pub struct SigningCertDates {
 
 /// One birth's facts on its node's record (storage-whole-records.md, "The objects"), each kept by its
 /// full identity so no fact erases another: one declared entry per state (a late Pending never removes
-/// Ready; the reader takes the greatest), one effect per (build_id, attempt, operation).
+/// Ready; the reader takes the greatest), one effect per operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BirthFacts {
     /// The birth.
@@ -118,8 +118,8 @@ impl BirthFacts {
         self.declared.iter().next_back().copied()
     }
 
-    /// Keep the effect `state` of `operation`, once per (build_id, attempt, operation): an effect
-    /// already held for that identity stands.
+    /// Keep the effect `state` of `operation`, once per operation: an effect already held for that
+    /// operation stands.
     pub fn apply_operation(&mut self, operation: &rdm_core::status::DeclaredOperation, state: NodeState) {
         if !self.operations.iter().any(|o| o.operation == *operation) {
             self.operations.push(NodeOperation { operation: operation.clone(), state });
@@ -203,7 +203,7 @@ pub struct NodeRow {
     /// precedes everything prepared or launched for the birth): the claim row only. The claim is the
     /// one write of the create that outlives a lost executor (its Build receipts are in that
     /// executor's own journal, build.md §5.2), so the identity the claim was made with is durable in
-    /// it, and a later attempt of the same operation of the same Build that never heard the
+    /// it, and a later run of the same operation of the same Build that never heard the
     /// `AllocateIdentity` receipt continues under that identity: its claim is the same birth's
     /// (`rdm_admin::node_rows::RowCreated::HeldByNode`). Every later row of the node is written after its
     /// launch and carries none; a row written before allocations existed carries none.
@@ -237,8 +237,7 @@ pub struct NodeRow {
     /// written it on carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh_id: Option<MeshId>,
-    /// The exact birth this node replaced, written at its create from the recovery attempt that named
-    /// it.
+    /// The exact birth this node replaced, written at its create from the recovery that named it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predecessor: Option<BirthRef>,
     /// The node's `storage_persistence` as its create spec names it (storage.md §1; Q166, build.md §1:
@@ -271,7 +270,7 @@ impl NodeRow {
 
 /// The identity a create's `AllocateIdentity` decided for the birth its claim names (beside the
 /// row's `node_id`), and the operation of the Build that decided it: keyed by `(build_id,
-/// operation)`, never by attempt, because every attempt of the operation continues the same birth.
+/// operation)`, because every run of the operation continues the same birth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Allocation {
     /// The exact predecessor admitted for this create, independent of successor ownership.

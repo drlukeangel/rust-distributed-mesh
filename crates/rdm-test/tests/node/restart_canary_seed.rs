@@ -178,11 +178,11 @@ async fn restart_refused(estate: &Estate, node: &rdm_core::PathName) -> CallEnd 
 }
 
 /// CONTRACT: a restart's node.stop naming a path the Build does not hold is refused `unknown-node` and
-/// opens no attempt; the accepted Build's attempt count is what it was.
+/// writes no event of the accepted Build: its phase and events are what they were.
 #[tokio::test(flavor = "multi_thread")]
-async fn restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt() {
+async fn restart_of_an_unknown_node_is_refused_by_name_and_writes_no_build_event() {
     require_provider("process");
-    let cell = "restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt";
+    let cell = "restart_of_an_unknown_node_is_refused_by_name_and_writes_no_build_event";
     let (estate, mut stream) = estate_with_build_in_flight(cell).await;
     let build = stream.build_id().clone();
     Estate::until_complete(&mut stream).await;

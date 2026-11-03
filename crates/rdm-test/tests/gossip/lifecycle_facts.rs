@@ -33,7 +33,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: rdm_core::BuildId::mint().to_string(), operation: rdm_core::OperationId::node(format!("node.{command}"), &subject_id), node_id: subject_id, incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: sender_id.clone() };
         // The publisher that takes the role after it: another birth, which re-publishes the operation its
-        // predecessor published under the same identity (a resumed attempt replays its receipted step).
+        // predecessor published under the same identity (a resubmitted Build replays its completed step).
         let successor = PublisherId { incarnation: IncarnationId::mint(), node_id: successor_id };
         sender.set_author(&publisher, None);
         receiver.digest_view.record(MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(), node_id: op.node_id.clone(), path: op.path.clone(), name: op.name.clone(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None });

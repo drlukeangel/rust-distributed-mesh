@@ -41,7 +41,7 @@ pub async fn investigate_path(path: &PathName, prev: Option<Node>, probe: &dyn P
     };
     let incarnation = prev.incarnation_id.clone().map(|i| i.to_string()).unwrap_or_default();
     // The plan was made on an older view: the path's birth is live here now (heard again as the
-    // attempt ran). It keeps the path; a create over it is a duplicate.
+    // run went on). It keeps the path; a create over it is a duplicate.
     if prev.status.is_live() {
         tracing::info_span!("rdm.node_admin.deployment.delete.via-path-investigation", node_path = %path.path, node_name = %path.name, node_id = %prev.node_id, incarnation = %incarnation, outcome = "predecessor-live")
             .in_scope(|| tracing::info!("the view holds a live birth at this path: it stays, never created over"));

@@ -4,8 +4,8 @@
 //! acceptance record is the durable intent; once written, the interrupted Build opens no further
 //! operation and is never resumed. Operations already admitted at an executor finish or fail within
 //! their bounds, their launch evidence retained; a checklist the fabric-primary drives itself ends at the
-//! acceptance; when every open attempt of the interrupted Build has ended its run receives `Failed`
-//! naming the delete, and the teardown runs mesh by mesh. While a Build is in progress fabric.delete is
+//! acceptance; when every step of the interrupted Build in flight has ended, that Build ends
+//! `incomplete`, each section it did not finish naming the delete, and the teardown runs mesh by mesh. While a Build is in progress fabric.delete is
 //! admitted, while a standalone mesh.delete or node.delete is refused build-in-progress
 //! (lifecycles/fabric-delete.md "Precondition").
 //!
@@ -244,7 +244,7 @@ fn torn_down(receipts: &rdm_client::Build, meshes: usize, mesh2_primary: &str) {
 /// `pre_node_ready` never passes, puts the fabric back to pending and keeps it there; mesh1.node.1 is
 /// launched and held when the delete is accepted, and its create fails within its bound under it. A standalone mesh.delete of mesh1 and node.delete of
 /// mesh1.node-admin.1 are refused build-in-progress naming that Build; fabric.delete is admitted, and a second
-/// fabric.delete answers the same Build. The held Build reads `Failed` naming the delete; the teardown
+/// fabric.delete answers the same Build. The held Build reads `incomplete` naming the delete; the teardown
 /// deletes mesh1, the held node with it, reports fabric.deleted, and leaves no runtime the fabric
 /// launched running; the fabric is never made ready after the acceptance. What must NOT
 /// happen: the stalled fabric left undeletable, the fabric made ready for the delete, or a runtime left
@@ -305,8 +305,8 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
 }
 
 /// CONTRACT (build.md §1: "Operations already admitted at an executor finish or fail within their
-/// existing bounds and their launch evidence is retained ... When every open attempt of the interrupted
-/// Build has ended, its run receives `Failed { step, reason }` naming the delete"): on a fabric the Day-0
+/// existing bounds and their launch evidence is retained ... When every step of the interrupted Build in
+/// flight has ended, that Build ends `incomplete`, each section it did not finish naming the delete"): on a fabric the Day-0
 /// Build brought to ready (the Day-0 Build launches no node, and no other Build is accepted
 /// before its ready), a Build growing mesh1 by two nodes is held by the fabric-primary's
 /// fault service inside the launch of the first, and fabric.delete is accepted. The second node's create
@@ -364,7 +364,7 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
 /// fabric-primary's growth of mesh1 is held by its fault service inside mesh1.node.2's launch, fabric.delete
 /// is accepted, and once mesh1.node-admin.2's log holds the acceptance the fabric-primary is killed. Fabric
 /// recovery's executor, mesh1.node-admin.2, holds the fabric-primary's roles and reads the delete as current:
-/// the growth's attempt ends once its executor's exit is read and reads `Failed` naming the delete,
+/// the growth's run ends once its executor's exit is read and reads `incomplete` naming the delete,
 /// mesh1.node.2's create is never run again, and its launched runtime, a birth of mesh1's roster by its
 /// claim, is deleted with the fabric under its own node.delete receipt (fabric-delete.md "Receipts"),
 /// or, when it ended on its own before the roster was captured, is proven exited by the provider's find

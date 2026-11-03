@@ -705,8 +705,8 @@ mod tests {
     use rdm_core::meta::NodeSpec;
     use std::collections::{BTreeMap, BTreeSet};
 
-    /// CONTRACT: docs/architecture/build.md:453
-    /// "One writer per key: the fabric-primary writes the Fabric record and every topology attempt's Build facts"
+    /// CONTRACT: docs/architecture/build.md §5.3
+    /// "The fabric-primary writes the Fabric record, each Build once, and the Build-level events."
     #[tokio::test]
     async fn refusal_reply_and_with_entries_translate_refusals_and_populate_plan_entry_specs() {
         // 1. `refusal_reply` maps each control-plane `Refusal` variant to its typed `BuildReply`.

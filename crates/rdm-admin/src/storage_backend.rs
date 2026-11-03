@@ -70,7 +70,7 @@ pub struct StorageBoundaries {
     pub root_runtimes: Option<Arc<dyn NodesStorage>>,
     /// `connections.storage`: the admin's own connections rows, by its `(path, name)`.
     pub connections: OpenConnections,
-    /// The Build journal: the Build facts, and each attempt's context.
+    /// The Build journal: the Build facts.
     pub builds: Arc<dyn LocalBuildLog>,
     /// `events.storage`: what happened while executing each Build, and each node's investigations
     /// (build.md §5).
@@ -98,8 +98,8 @@ pub trait StorageBackend: Send + Sync {
     async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError>;
     /// Opens the six boundaries of `scope`.
     async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String>;
-    /// Delete the topology storage of the Fabric `fabric_id`: its six stores and the admin's own row and
-    /// Build attempt contexts in `data_dir`. Persistence only: the admin's boot decides when (Q200). A
+    /// Delete the topology storage of the Fabric `fabric_id`: its six stores and the admin's own row in
+    /// `data_dir`. Persistence only: the admin's boot decides when (Q200). A
     /// backend that deletes nothing refuses by name.
     async fn delete_fabric(&self, data_dir: &Path, fabric_id: &FabricId) -> Result<(), String> {
         let _ = (data_dir, fabric_id);
@@ -1102,8 +1102,8 @@ mod tests {
     }
 
     /// CONTRACT (node-recovery.md: recovery retains the inherited data dir and creates a new node.id
-    /// and incarnation; R-FM2 `inherited = true`): on the file backend, the runtime rows and attempt
-    /// contexts an admin wrote are its data dir's, read back by the admin re-born at the same
+    /// and incarnation; R-FM2 `inherited = true`): on the file backend, the runtime rows an admin
+    /// wrote are its data dir's, read back by the admin re-born at the same
     /// path and name over that data dir, so it still holds the handles of the runtimes it must inspect and
     /// terminate; another admin's data dir reads none. Must NOT happen: a re-birth losing them because
     /// they were keyed by the birth that wrote them. Rafka's backend runs the same script.

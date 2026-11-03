@@ -9,14 +9,14 @@
 //!   lifecycle record at its node id, read through the reader, never a copy held here;
 //!   a recovery's or a re-create's new birth included);
 //! - an operation accepted on a node and not yet complete is written at its acceptance;
-//! - a completed lifecycle operation is written from the receipts the fabric-primary's own attempts
+//! - a completed lifecycle operation is written from the step events the fabric-primary's own runs
 //!   returned (directly, or streamed up `build.section.run` for a peer mesh), before the caller is
 //!   answered `Complete`;
 //! - the effects a node row records of any admin's op (a mesh-primary's self-healing included), each
-//!   ordered against the fabric-primary's own by its Build's acceptance and its attempt.
+//!   ordered against the fabric-primary's own by its Build's acceptance and its step's place.
 //!
 //! Nothing moves backward: an effect is taken only over an older one (the Build's acceptance stamp,
-//! then its attempt). Gossip is context (`observed`) and decides nothing.
+//! then its step's place in the Build's events). Gossip is context (`observed`) and decides nothing.
 //!
 //! It holds no node record (query.md §1: "Node rows and property maps are not copied into an atlas to
 //! serve `node.get` or acceptance"): every record it decides on is read through the reader
@@ -31,7 +31,7 @@ use crate::model::{IncarnationId, NodeId, NodeStatus, PathName};
 use crate::topology::Topology;
 use crate::storage::NodeRow;
 
-/// Effect order: Build admission, original step position, then attempt within that step.
+/// Effect order: Build admission, then the step's place in its Build's events.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Stamp {
     time: u64,
@@ -207,7 +207,7 @@ pub(crate) struct AtlasRow {
     pub(crate) stopped: bool,
     /// Live for acceptance: created, and not stopped or deleted by an op since.
     pub(crate) live: bool,
-    /// The operation accepted on the node whose attempt has not ended.
+    /// The operation accepted on the node that has not ended.
     pub(crate) accepted: Option<rdm_core::OperationId>,
     /// Context only: the gossip view's status of the same birth.
     pub(crate) observed: Option<NodeStatus>,

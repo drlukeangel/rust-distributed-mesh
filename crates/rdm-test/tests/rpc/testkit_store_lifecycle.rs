@@ -6,8 +6,8 @@
 //! The testkit testkit store (op 0x70) on a real estate, driven only through the `node` objects and
 //! `rdm-rpc-probe` over real Node RPC: a restart is a Build the rectifier executes and keeps the
 //! node.id and the incarnation (node-restart.md: stop then start on the stopped process); the new
-//! birth is node recovery (node-recovery.md), the mesh-primary's answer to the runtime's death (an
-//! attempt of the accepted Build, reason recovery, a new node.id at the same (path, name)).
+//! birth is node recovery (node-recovery.md), the mesh-primary's answer to the runtime's death (its
+//! own workflow, never a Build, Q342: a new node.id at the same (path, name)).
 
 use rdm_test::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
@@ -77,8 +77,8 @@ fn birth(n: &Value) -> Value {
 /// fabric-primary (Node RPC -> reconcile -> node.update.via-build), is stop then start on the stopped
 /// process: it keeps its NodeId, incarnation and data dir and serves the value written before it, the
 /// Put and the Get after the restart each naming the executing birth exactly as the node-admin view
-/// holds it. A holder of its type's role has the role moved first, in the request's attempt, and is
-/// restarted in the attempt claimed after that one's hand-off (node-stop.md, PrimaryRole holder). What must
+/// holds it. A holder of its type's role has the role moved first and is then restarted (node-stop.md:
+/// "A target that is a primary hands over first by node.primary.update"). What must
 /// NOT happen: the restarted node answering absent, or the restart reaching the node other than
 /// through the Build it was accepted as.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -96,7 +96,7 @@ async fn testkit_store_node_restarts_preserves_same_node_store() {
     landed_on(&before, &first, "get");
     assert_eq!(before["reply"]["result"], json!({"found": true, "value": "before-restart"}), "presence control: {before}");
 
-    // Whether the restarted node holds its type's role: then the request's attempt moves the role first.
+    // Whether the restarted node holds its type's role: then the role is moved first.
     let is_primary = view(&estate, &node()).await["is_primary"] == true;
     // The restart: node.stop then node.start (Q183).
     // Node commands of the primary above the node, never a Build or part of one (Q342).
@@ -120,9 +120,8 @@ async fn testkit_store_node_restarts_preserves_same_node_store() {
     let kept_span = at(&restarted["incarnation_id"], "get", "value").expect("the restarted birth served the kept value");
     // The stop ran as the Build its node.stop call was accepted as: the call, then the rectifier's
     // node update of this path under the same Build. A stop of its type's primary moves the role
-    // first (node-stop.md, PrimaryRole holder): the request's attempt carries the node.primary.update and
-    // ends handed-off, and the stop runs in the attempt the fabric-primary claims next
-    // (node-rpc-envelope.md: "Hand-off is the fabric-primary's next claim and call").
+    // first (node-stop.md: "A target that is a primary hands over first by node.primary.update"), and
+    // the stop runs after it.
     let node_id = s(&first["node_id"]);
     let command = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| sp["attributes"]["command"] == "stop-node" && s(&sp["attributes"]["subject_id"]) == node_id && sp["attributes"]["outcome"] == "node-stopped").cloned().expect("the stop's node command span at the primary above the node");
     let update = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| at_node(sp, &node()) && sp["attributes"]["step"] == "StopNode" && descends_from(&spans, sp, &command)).cloned().expect("the stop's StopNode step under its node command");

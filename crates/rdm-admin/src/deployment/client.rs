@@ -6,7 +6,7 @@
 //! reap awaited at most [`CLEANUP_BOUND`] and owned after that, and the failure is
 //! [`Failure::Deadline`]: the client wait ended, which proves nothing of the daemon's side. A caller
 //! that drops the call ends the client the same way (`kill_on_drop`), and its span says it was
-//! cancelled. Nothing here retries: the owning workflow's next attempt is the retry.
+//! cancelled. Nothing here retries: the failure is the owning workflow's to read.
 //!
 //! One span per invocation, `rdm.node_admin.deployment.update.via-provider-command`: operation,
 //! deployment, exact container when known, control domain, deadline (`unbounded` for the provider's
