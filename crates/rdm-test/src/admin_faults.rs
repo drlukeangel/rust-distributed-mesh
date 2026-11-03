@@ -539,8 +539,8 @@ impl BuildStateAdapter for FaultedBuilds {
         self.faults.hold(Probe::Receipt { step: w.step.clone(), operation: w.operation.clone(), build_id: w.build_id.to_string(), failed, at }).await;
         self.inner.write_step(w).await
     }
-    async fn note_blocked(&self, build_id: &BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
-        self.inner.note_blocked(build_id, operation, step, reason).await
+    async fn note_pending(&self, build_id: &BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
+        self.inner.note_pending(build_id, operation, step, reason).await
     }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await

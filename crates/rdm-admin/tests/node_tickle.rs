@@ -77,7 +77,7 @@ fn ready_node(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Node {
 /// "Target: One node, by `(node.id, incarnation)`; every probe names the same pair, and only that pair's answer counts"
 /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:27
 /// "Probe: `ProbeNodeState { node_id, incarnation }` on 0x1B, a bounded call with a deadline; the node
-///  answers `Current { state }`, `CurrentStopped` or `Blocked { reason, retry_on }`"
+///  answers `Current { state }`, `CurrentStopped` or `Pending { reason }`"
 /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:28
 /// "Ladder: Direct first. On failure, the same probe carried by Forward through up to two eligible
 ///  live peers of the node's mesh, both at once; one failed peer probe does not cancel the other"
@@ -114,8 +114,8 @@ fn ready_node(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Node {
 /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:71
 /// "`{ \"Current\": { \"node_id\": \"k8pag1qx95gw\", \"incarnation\": \"0000000000000008\", \"state\": \"Ready\" } }`"
 /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:74
-/// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node held at its hook answers
-///  `Blocked { node_id, incarnation, reason, retry_on }`. All three are `reached`."
+/// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node whose hook answered `Pending` answers
+///  `Pending { node_id, incarnation, reason }`. All three are `reached`."
 /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:77
 /// "The same probe carried through a peer, op `0x1A` (26): the inner bytes are the probe above, the
 ///  peer makes one direct inner call and chooses no other target"
@@ -124,7 +124,7 @@ fn ready_node(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Node {
 ///  when the carrier could not reach it. The tickle has no gossip of its own: the caller publishes
 ///  nothing for a probe, an answer or a failure. The probed node re-publishes its presence on the
 ///  channel it is on, the check-in it owes its primary, and answers its current state; while its
-///  `pre_node_ready` hook is Blocked it answers `Blocked` and re-publishes nothing."
+///  `pre_node_ready` hook answered `Pending` it answers `Pending` and re-publishes nothing."
 /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:138
 /// "The primitive has no failure of its own: `unreached` is a result, not an error, and it is never
 ///  recorded as the node's death."

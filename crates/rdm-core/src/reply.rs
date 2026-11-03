@@ -98,8 +98,10 @@ pub fn request_not_handled(request: String) -> StatusReply { StatusReply::Reques
 pub fn bounded_config_row_refused(node: &str, reason: &str) -> StatusReply { StatusReply::config_row_refused(node, reason) }
 /// Construct the bounded config-not-applied outcome.
 pub fn bounded_config_not_applied(node: &str, answered: &str, reason: &str) -> StatusReply { StatusReply::config_not_applied(node, answered, reason) }
-/// Construct the bounded blocked outcome.
-pub fn bounded_blocked(node_id: NodeId, incarnation: IncarnationId, reason: &str, retry_on: RetryOn) -> StatusReply { StatusReply::blocked(node_id, incarnation, reason, retry_on) }
+/// Construct the bounded pending outcome: a probe's answer while the node's hook answered `Pending`.
+pub fn bounded_pending(node_id: NodeId, incarnation: IncarnationId, reason: &str) -> StatusReply { StatusReply::pending(node_id, incarnation, reason) }
+/// Construct the bounded start-failed outcome: a probe's answer once the node's start ended Failed.
+pub fn bounded_start_failed(step: &str, reason: &str) -> StatusReply { StatusReply::start_failed(step, reason) }
 /// Construct the bounded rejected-tags outcome.
 pub fn bounded_rejected_tags(reason: &str) -> StatusReply { StatusReply::rejected_tags(reason) }
 /// Construct the bounded rejected-filter outcome (Q167 R-RD2).

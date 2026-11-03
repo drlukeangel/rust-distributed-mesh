@@ -61,8 +61,8 @@ async fn main() -> Result<()> {
                     println!("  step #{step_count} (mesh {mesh}): {operation} -> {step} {result:?}");
                 }
             }
-            BuildFrame::Blocked { mesh, operation, step, reason } => {
-                println!("  blocked (mesh {mesh}): {operation}/{step} ({reason})");
+            BuildFrame::Pending { mesh, operation, step, reason } => {
+                println!("  pending (mesh {mesh}): {operation}/{step} ({reason})");
             }
             BuildFrame::Complete => {
                 println!("fabric.delete Build {build_id} Complete ({step_count} step frames)");

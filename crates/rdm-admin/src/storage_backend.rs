@@ -636,8 +636,8 @@ impl crate::build_state::BuildStateAdapter for Through {
         let w = self.write();
         w.boundaries.builds.forget(build_id).await
     }
-    async fn note_blocked(&self, build_id: &crate::build::BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
-        self.read().stores().boundaries.builds.note_blocked(build_id, operation, step, reason).await
+    async fn note_pending(&self, build_id: &crate::build::BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
+        self.read().stores().boundaries.builds.note_pending(build_id, operation, step, reason).await
     }
     async fn write_step(&self, step: &crate::build_state::StepWrite) -> Result<(), crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.write_step(step).await

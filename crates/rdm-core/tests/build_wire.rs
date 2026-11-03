@@ -57,7 +57,7 @@ fn replies_match_the_frozen_twenty_seven_variant_wire_schema() {
         (Started { build_id: b(), disposition: Disposition::Reattached }, "00 01 62 04"),
         (Step { build_id: b(), mesh: s("m"), operation: s("o"), step: s("s"), result: StepResult::Complete }, "01 01 62 01 6d 01 6f 01 73 00"),
         (Step { build_id: b(), mesh: s("m"), operation: s("o"), step: s("s"), result: StepResult::Failed { reason: s("r"), code: rdm_core::outcome::Code::FailedPrecondition } }, "01 01 62 01 6d 01 6f 01 73 01 01 72 09"),
-        (Blocked { build_id: b(), mesh: s("m"), operation: s("o"), step: s("s"), reason: s("r") }, "02 01 62 01 6d 01 6f 01 73 01 72"),
+        (Pending { build_id: b(), mesh: s("m"), operation: s("o"), step: s("s"), reason: s("r") }, "02 01 62 01 6d 01 6f 01 73 01 72"),
         (Complete { build_id: b() }, "03 01 62"),
         // the Build could not start (Q346): build_id | reason | code
         (Failed { build_id: b(), reason: s("r"), code: rdm_core::outcome::Code::FailedPrecondition }, "04 01 62 01 72 09"),
@@ -109,7 +109,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     assert_eq!(Build::frame_kind(&Started { build_id: "b".into(), disposition: Disposition::Created }), FrameKind::Started);
     for data in [
         Step { build_id: "b".into(), mesh: "m".into(), operation: "o".into(), step: "s".into(), result: StepResult::Complete },
-        Blocked { build_id: "b".into(), mesh: "m".into(), operation: "o".into(), step: "s".into(), reason: "r".into() },
+        Pending { build_id: "b".into(), mesh: "m".into(), operation: "o".into(), step: "s".into(), reason: "r".into() },
         Events { build_id: "b".into(), chunk_index: 0, chunk_count: 1, events: vec![] },
         Topology { build_id: "b".into(), chunk_index: 0, chunk_count: 1, nodes: vec![] },
         // build.get's Build header closes one Build of several: data, never the read's terminal.

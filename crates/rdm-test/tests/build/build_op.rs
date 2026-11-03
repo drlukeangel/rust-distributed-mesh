@@ -178,7 +178,7 @@ async fn a_delete_over_the_build_family_is_one_call_that_pushes_every_step_frame
     assert_eq!(frames.first(), Some(&Frame::Started { build_id: accepted.build_id.clone(), }));
     assert_eq!(frames.last(), Some(&Frame::Complete), "the stream ends with its terminal frame: {frames:?}");
     assert_eq!(events(&frames), DELETE_EVENTS, "every step event, once, in order: {frames:?}");
-    assert!(!frames.iter().any(|f| matches!(f, Frame::Failed { .. } | Frame::Blocked { .. })), "{frames:?}");
+    assert!(!frames.iter().any(|f| matches!(f, Frame::Failed { .. } | Frame::Pending { .. })), "{frames:?}");
     assert_eq!(stream.disposition(), Some(StartDisposition::Created));
 
     estate.stop().await;
@@ -478,48 +478,46 @@ impl Caller {
     }
 }
 
-/// The next `Blocked` frame of `stream`. A terminal frame or a broken stream before it is a defect of
+/// The next `Pending` frame of `stream`. A terminal frame or a broken stream before it is a defect of
 /// the cell; frames before it are returned beside it.
-async fn next_blocked(stream: &mut BuildStream) -> (Vec<BuildFrame>, (String, String, String)) {
+async fn next_pending(stream: &mut BuildStream) -> (Vec<BuildFrame>, (String, String, String)) {
     let mut before = Vec::new();
     loop {
         let frame = tokio::time::timeout(Duration::from_secs(90), stream.next()).await.expect("a frame within the bound").expect("the stream goes on").expect("the stream does not break");
         match frame {
-            BuildFrame::Blocked { step, reason, operation, .. } => return (before, (step, reason, operation)),
-            BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::Incomplete { .. } => panic!("the Build ended before the Blocked frame: {frame:?} after {before:?}"),
+            BuildFrame::Pending { step, reason, operation, .. } => return (before, (step, reason, operation)),
+            BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::Incomplete { .. } => panic!("the Build ended before the Pending frame: {frame:?} after {before:?}"),
             other => before.push(other),
         }
     }
 }
 
-/// Whether `frame` is a Blocked frame of a step in flight: the Build's own Blocked naming the fabric's
-/// change, which a Build that put the fabric back to pending reports once its operations are done
-/// (Q154; states.md "Resize and a new executable"), is no birth's.
-fn birth_blocked(frame: &BuildFrame) -> bool {
-    matches!(frame, BuildFrame::Blocked { step, .. } if step != "fabric-change")
+/// Whether `frame` is a Pending frame of a step in flight: its only source is a subject's Status
+/// `Pending` (node-rpc-envelope.md, Build "Frames").
+fn birth_pending(frame: &BuildFrame) -> bool {
+    matches!(frame, BuildFrame::Pending { step, .. })
 }
 
 /// How many attempts of `node`'s knob hook (`rdm_test::pre_node_ready_probe::KnobPreNodeReady`)
-/// ended blocked for `reason`.
+/// answered `Pending` for `reason`.
 fn knob_attempts(knob: &std::path::Path, node: &rdm_core::PathName, reason: &str) -> usize {
-    std::fs::read_to_string(rdm_test::location_knob_file(knob, node).with_extension("attempts")).unwrap_or_default().lines().filter(|l| *l == format!("blocked {reason}")).count()
+    std::fs::read_to_string(rdm_test::location_knob_file(knob, node).with_extension("attempts")).unwrap_or_default().lines().filter(|l| *l == format!("pending {reason}")).count()
 }
 
-/// CONTRACT (node-start.md step 3; node-rpc-envelope.md frame table, Blocked "emitted on a new
-/// blocker or reason change, never on a timer"): a birth whose `pre_node_ready` is Blocked
-/// answers its executor's `ProbeNodeState` with Status `Blocked { node_id, incarnation, reason,
-/// retry_on }`, and the Build stream carries `Blocked { WaitForNodeReady, reason }` once per reason. The hook here runs again
-/// every time its authority addresses it, so it is blocked again for the same reason many times;
-/// none of those reruns frames anything. A changed reason frames once more; when the hook passes the
-/// birth is Ready, the step completes and the Build is `Complete` with no further Blocked. The Builds
-/// that birthed the shape, whose births register no hook (plain Pending until Ready, a node-admin's
-/// door answering `NotReady` until its authority is filled), frame no Blocked: a `NotReady` is the
-/// door not serving yet and never a blocker. What must NOT happen: a Blocked frame for a plain
-/// Pending birth or a door's `NotReady`, a repeat for an unchanged reason, or a Blocked frame after
-/// the hook passed.
+/// CONTRACT (fabric-node-hooks.md "Outcomes and the gate"; node-rpc-envelope.md frame table, Pending
+/// "emitted when its reason changes"): a node whose `pre_node_ready` answers `Pending` answers its
+/// executor's `ProbeNodeState` with Status `Pending { node_id, incarnation, reason }`, and the Build
+/// stream carries `Pending { WaitForNodeReady, reason }` once per reason. The hook runs again on its
+/// `Send`, so it answers Pending for the same reason many times; none of those reruns frames anything.
+/// A changed reason frames once more; when the hook passes the node is Ready, the step completes and
+/// the Build is `Complete` with no further Pending. The Builds that birthed the shape, whose nodes
+/// register no hook (plain Pending until Ready, a node-admin's door answering `NotReady` until its
+/// authority is filled), frame no Pending: a `NotReady` is the door not serving yet and never a hook's
+/// answer. What must NOT happen: a Pending frame for a plain Pending node or a door's `NotReady`, a
+/// repeat for an unchanged reason, or a Pending frame after the hook passed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_the_hook_passes() {
-    let test = "a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_the_hook_passes";
+async fn a_pending_node_is_framed_once_per_reason_and_its_build_completes_when_the_hook_passes() {
+    let test = "a_pending_node_is_framed_once_per_reason_and_its_build_completes_when_the_hook_passes";
     const SHAPE1: [(&str, u32, u32); 1] = [("mesh1", 2, 1)];
     let blocked = rdm_core::PathName::new("mesh1.node", "2").unwrap();
     const A: &str = "the rows of orders are not yet published";
@@ -527,50 +525,118 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let caller = Caller::of(&estate).await;
     let (carrier, shape_frames) = born_framed(&estate, &caller, &SHAPE1).await;
-    assert!(!shape_frames.iter().any(birth_blocked), "births with no hook are plain Pending until Ready and frame no Blocked: {shape_frames:?}");
+    assert!(!shape_frames.iter().any(birth_pending), "nodes with no hook are plain Pending until Ready and frame no Pending: {shape_frames:?}");
 
-    // The next birth's hook is blocked for A from its first attempt.
+    // The next node's hook answers Pending for A from its first attempt.
     let knob = rdm_test::pre_node_ready_knob_dir(&estate.root);
     rdm_test::write_pre_node_ready_knob(&estate.root, &blocked, A).unwrap();
     let grown = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", 2)])] };
     let mut stream = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.expect("the fabric-primary accepts the grown shape");
-    let (before_a, (step, reason, operation)) = next_blocked(&mut stream).await;
-    assert_eq!(step, "WaitForNodeReady", "the blocked step: {reason}");
-    // The frame's operation is the birth's create, keyed by the node.id the Build record minted for it
-    // (D58); its reason names the birth by node id, the hook's reason and its retry event.
-    assert!(reason.contains(": pre_node_ready is blocked: ") && reason.contains(A) && reason.contains("primary-addressed"), "the frame names the birth, the hook's reason and its retry event: {reason}");
+    let (before_a, (step, reason, operation)) = next_pending(&mut stream).await;
+    assert_eq!(step, "WaitForNodeReady", "the pending step: {reason}");
+    // The frame's operation is the node's create, keyed by the node.id the Build record minted for it
+    // (D58); its reason names the node by node id and the hook's reason.
+    assert!(reason.contains(": pre_node_ready answered Pending: ") && reason.contains(A), "the frame names the node and the hook's reason: {reason}");
     let blocked_id = reason.split(':').next().expect("the reason opens with the birth's node id").to_string();
     assert_eq!(operation, format!("node.create:{blocked_id}"), "the frame names the birth's create by the node.id it runs with: {operation:?}");
-    assert!(!before_a.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })));
+    assert!(!before_a.iter().any(|f| matches!(f, BuildFrame::Pending { .. })));
 
-    // Reruns blocked for the same reason: the executor's probes address the birth, so its hook runs
-    // again on each; wait until it has been blocked for A three more times.
-    wait_for("three more attempts blocked for A", Duration::from_secs(60), || async { (knob_attempts(&knob, &blocked, A) >= 4).then_some(()) }).await;
+    // Reruns pending for the same reason: the hook runs again on its Send; wait until it has
+    // answered Pending for A three more times.
+    wait_for("three more attempts pending for A", Duration::from_secs(60), || async { (knob_attempts(&knob, &blocked, A) >= 4).then_some(()) }).await;
     rdm_test::write_pre_node_ready_knob(&estate.root, &blocked, B).unwrap();
-    let (before_b, (step_b, reason_b, _)) = next_blocked(&mut stream).await;
+    let (before_b, (step_b, reason_b, _)) = next_pending(&mut stream).await;
     assert_eq!(step_b, "WaitForNodeReady");
-    assert!(reason_b.contains(B) && !reason_b.contains(A), "the next Blocked frame is the changed reason, never A again: {reason_b}");
+    assert!(reason_b.contains(B) && !reason_b.contains(A), "the next Pending frame is the changed reason, never A again: {reason_b}");
     assert!(!before_b.iter().any(|f| matches!(f, BuildFrame::Step { step, .. } if step == "WaitForNodeReady")), "the step is still in flight: {before_b:?}");
 
-    wait_for("an attempt blocked for B", Duration::from_secs(60), || async { (knob_attempts(&knob, &blocked, B) >= 2).then_some(()) }).await;
+    wait_for("an attempt pending for B", Duration::from_secs(60), || async { (knob_attempts(&knob, &blocked, B) >= 2).then_some(()) }).await;
     rdm_test::write_pre_node_ready_knob(&estate.root, &blocked, "pass").unwrap();
     let rest = until_complete(&mut stream).await;
-    assert!(!rest.iter().any(birth_blocked), "nothing of the birth is framed Blocked once the hook passed: {rest:?}");
+    assert!(!rest.iter().any(birth_pending), "nothing of the node is framed Pending once the hook passed: {rest:?}");
     assert!(rest.iter().any(|f| matches!(f, BuildFrame::Step { step, .. } if step == "WaitForNodeReady")), "WaitForNodeReady completed: {rest:?}");
     let a_reruns = knob_attempts(&knob, &blocked, A);
 
     estate.stop().await;
     let spans = estate.spans();
-    // The flame: the blocked birth's probe answers, each naming its blocker.
+    // The flame: the pending node's probe answers, each naming the hook's reason.
     // The node's own probe answers name it by node id.
-    let probes: Vec<&Value> = spans_named(&spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == blocked_id && s(&sp["attributes"]["state"]) == "blocked").collect();
-    assert!(probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(A)) && probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(B)), "the birth answered both blockers Blocked");
-    assert!(probes.iter().all(|sp| s(&sp["attributes"]["retry_on"]) == "primary-addressed"), "every Blocked answer names the hook's retry event");
-    estate.artifact("blocked-probes", &json!({ "a_reruns": a_reruns, "blocked_probe_answers": probes.len() }));
+    let probes: Vec<&Value> = spans_named(&spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == blocked_id && s(&sp["attributes"]["state"]) == "pending").collect();
+    assert!(probes.iter().any(|sp| s(&sp["attributes"]["reason"]).contains(A)) && probes.iter().any(|sp| s(&sp["attributes"]["reason"]).contains(B)), "the node answered both reasons Pending");
+    estate.artifact("pending-probes", &json!({ "a_reruns": a_reruns, "pending_probe_answers": probes.len() }));
     estate.record_trace_url(probes[0]["trace_id"].as_str().unwrap_or(""));
 }
 
 const SHAPE1: [(&str, u32, u32); 1] = [("mesh1", 2, 1)];
+
+/// CONTRACT (fabric-node-hooks.md "Outcomes and the gate": "`Failed { reason }`, or the attempts spent |
+/// the start ends `Failed` with the hook step and the last reason, back to whoever started the node";
+/// "Where the failure lands": "a Build (Create) | the step's `rdm.build.step` event, `failed { reason }`;
+/// its mesh's section ends, and the Build ends `incomplete` (Q346)"; the executor "ends its
+/// `WaitForNodeReady` step failed from its Status `StartFailed { step: node.pre-node-ready, reason }`
+/// reply: the node stays `Pending` and its process keeps running"): a Build grows mesh1 by one node
+/// whose hook answers `Pending` on every attempt of a three-attempt `Send`. The hook is called three
+/// times, its start ends Failed with the last reason, the node's probe answers `StartFailed`, the
+/// create's `WaitForNodeReady` ends failed with that reason, mesh1's section ends there and the Build
+/// ends `incomplete` naming it. The node stays Pending, its process running, and nothing calls its
+/// hook again. Must NOT happen: a fourth call, the Build `complete` or `failed`, the step waiting out
+/// its own bound, or the node's process ending.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_created_node_whose_hook_spends_its_attempts_fails_its_step_and_the_build_ends_incomplete() {
+    let test = "a_created_node_whose_hook_spends_its_attempts_fails_its_step_and_the_build_ends_incomplete";
+    const SHAPE1: [(&str, u32, u32); 1] = [("mesh1", 2, 1)];
+    const A: &str = "the rows of orders are not yet published";
+    let held = rdm_core::PathName::new("mesh1.node", "2").unwrap();
+    let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
+    let caller = Caller::of(&estate).await;
+    let (carrier, _) = born_framed(&estate, &caller, &SHAPE1).await;
+
+    // The next node's hook answers Pending for A on each of three attempts.
+    let knob = rdm_test::pre_node_ready_knob_dir(&estate.root);
+    rdm_test::write_pre_node_ready_knob(&estate.root, &held, A).unwrap();
+    rdm_test::write_pre_node_ready_knob_attempts(&estate.root, &held, 3).unwrap();
+    let grown = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", 2)])] };
+    let submitted = std::time::Instant::now();
+    let mut stream = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.expect("the fabric-primary accepts the grown shape");
+    let build_id = stream.build_id().clone();
+    let mut frames = Vec::new();
+    let sections = loop {
+        let frame = tokio::time::timeout(Duration::from_secs(120), stream.next()).await.expect("a frame within the bound").expect("the stream goes on").expect("the stream does not break");
+        frames.push(frame.clone());
+        match frame {
+            BuildFrame::Incomplete { sections } => break sections,
+            BuildFrame::Complete { .. } | BuildFrame::Failed { .. } => panic!("the Build ran and a step failed: it ends incomplete, never {frame:?}; frames {frames:?}"),
+            _ => {}
+        }
+    };
+    let took = submitted.elapsed();
+    let section = sections.iter().find(|u| u.mesh == "mesh1").unwrap_or_else(|| panic!("the end names mesh1's section: {sections:?}"));
+    assert_eq!(section.step, "WaitForNodeReady", "mesh1's section ended at the create's ready wait: {section:?}");
+    assert!(section.reason.contains(A) && section.reason.contains("node.pre-node-ready") && section.reason.contains("3 attempts"), "the step failed with the hook's last reason and step: {section:?}");
+    assert!(took < Duration::from_secs(90), "the step ended on the StartFailed answer, not on a bound: {took:?}");
+    assert!(frames.iter().any(|f| matches!(f, BuildFrame::Pending { step, reason, .. } if step == "WaitForNodeReady" && reason.contains(A))), "the node's Pending was framed before its start ended Failed: {frames:?}");
+    let ended = crate::build_log::build_fact(&estate, build_id.as_str(), "the Build ended short of complete", Duration::from_secs(60), |p| p.state.ended_short()).await.unwrap_or_else(|end| panic!("{end}"));
+    assert_eq!(ended.state, rdm_admin::build_state::BuildState::Incomplete, "the Build ran, so it is incomplete, never failed: {ended:#?}");
+    assert!(ended.steps.iter().any(|st| st.mesh == "mesh1" && st.step == "WaitForNodeReady" && matches!(st.outcome, StepOutcome::Failed { .. })), "the step's rdm.build.step event ended failed: {:?}", ended.steps);
+
+    // The node stays Pending, its process running, and nothing calls its hook again.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert_eq!(knob_attempts(&knob, &held, A), 3, "three attempts and no fourth");
+    let view = estate.node_views().await.into_iter().find(|n| n.path == held.path && n.name == held.name).unwrap_or_else(|| panic!("{held:?} is still in the view"));
+    assert_eq!(view.status, NodeStatus::Pending, "the node stays Pending: {view:?}");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let failed = spans_named(&spans, "rdm.mesh.node.reject.via-start-step-failed").into_iter().find(|sp| at_node(sp, &held) && s(&sp["attributes"]["step"]) == "node.pre-node-ready").cloned().unwrap_or_else(|| panic!("{held:?}'s start named its failed step"));
+    let answered = spans_named(&spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| s(&sp["attributes"]["state"]) == "start-failed" && s(&sp["attributes"]["reason"]).contains(A)).count();
+    assert!(answered >= 1, "the node's probe answered StartFailed with the hook's reason");
+    let step = spans_named(&spans, "rdm.node_admin.build.update.via-step-event").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == build_id.as_str() && s(&sp["attributes"]["step"]) == "WaitForNodeReady").cloned();
+    println!("flame (the start ended Failed at its hook): http://192.168.68.99:16687/trace/{}", s(&failed["trace_id"]));
+    if let Some(step) = &step {
+        println!("flame (WaitForNodeReady failed, the Build incomplete): http://192.168.68.99:16687/trace/{}", s(&step["trace_id"]));
+    }
+    estate.record_trace_url(step.as_ref().map(|sp| sp["trace_id"].as_str().unwrap_or("")).unwrap_or(""));
+}
 
 /// CONTRACT (Q30): a launch whose executable hash outlasts the QUIC idle timeout keeps every open
 /// connection of its admin alive. `rpc_node` is bound to an executable that `exec`s the node and

@@ -439,12 +439,13 @@ pub trait NodeObserver: Send + Sync {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication>;
     /// Is the node serving?
     async fn ready(&self, node: &Node) -> Result<(), String>;
-    /// The named blocker the node reports for its Ready (its `pre_node_ready` hook's
-    /// `Blocked` outcome, with the event it retries on), or `None`. Its only source is the subject's
-    /// Status `Blocked` answer to `ProbeNodeState`. A node that is only still Pending, with no hook
-    /// blocker, has none, and neither has a node whose door answers `NotReady`: `ready` fails for it,
-    /// the step waits, and nothing is framed `Blocked`.
-    async fn ready_blocker(&self, _node: &Node) -> Option<String> {
+    /// What the node's `pre_node_ready` hook answered for its Ready, or `None`: its reason while it
+    /// answered `Pending` (the subject's Status `Pending` answer to `ProbeNodeState`), or the start
+    /// that ended Failed with its last reason (the subject's Status `StartFailed` at
+    /// `node.pre-node-ready`). A node that is only still Pending, with neither, has none, and neither
+    /// has a node whose door answers `NotReady`: `ready` fails for it, the step waits, and nothing is
+    /// framed `Pending`.
+    async fn ready_hook_answer(&self, _node: &Node) -> Option<crate::node_hooks::ProbeAnswer> {
         None
     }
     /// Send `cmd` (`node.connection.delete` or `stop-node`) to the exact birth over Node RPC, opening the
@@ -2160,8 +2161,17 @@ impl DeploymentPipeline<'_> {
                             let detail = self.provider.failure_detail(&handle, &data_dir, super::deadline::Deadline::step()).await;
                             return Err(StepFailure::coded(rdm_core::outcome::Code::Unavailable, format!("runtime exited (code {code:?}) before it was Ready ({not_ready}): {detail}")));
                         }
-                        if let (Some(blocker), Some(run_build)) = (self.observer.ready_blocker(&node).await, run_build) {
-                            self.builds.note_blocked(run_build, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
+                        match self.observer.ready_hook_answer(&node).await {
+                            // The node's start ended Failed at its hook: the step ends failed with the hook's
+                            // last reason; the node stays Pending and nothing calls the hook again
+                            // (fabric-node-hooks.md "Where the failure lands").
+                            Some(crate::node_hooks::ProbeAnswer::StartFailed(reason)) => return Err(StepFailure::coded(rdm_core::outcome::Code::FailedPrecondition, reason)),
+                            Some(crate::node_hooks::ProbeAnswer::Pending(reason)) => {
+                                if let Some(run_build) = run_build {
+                                    self.builds.note_pending(run_build, &run_operation, CreateStep::WaitForNodeReady.name(), &reason).await;
+                                }
+                            }
+                            None => {}
                         }
                         tokio::time::sleep(Duration::from_millis(100)).await
                     }

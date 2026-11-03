@@ -139,16 +139,6 @@ impl Running {
         self.pre_node_ready.lock().unwrap().clone()
     }
 
-    /// Resolves with the reason once this admin's hook failed; never resolves otherwise. The
-    /// process selects on it beside its stop signal and ends by name.
-    pub async fn pre_node_ready_failed(&self) -> String {
-        let handle = self.pre_node_ready.lock().unwrap().clone();
-        match handle {
-            Some(h) => h.failed().await,
-            None => std::future::pending().await,
-        }
-    }
-
     /// Stop executing and reconciling: no Build attempt and no drift
     /// recovery starts after this. A fabric shutdown does this first, so the
     /// runtimes it stops are not recovered as proven drift. The reconcile loop ends, and so does
@@ -2242,7 +2232,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let parts = crate::workflows::node_start::HookParts {
                                 birth: crate::node_hooks::Birth { path: name.path.clone(), name: name.name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), fabric_id: cfg.fabric_id.clone(), mesh_id: mesh_id.clone(), r#type: "node-admin".into() },
                                 node_hooks: wiring.node_hooks.clone(),
-                                events: crate::node_hooks::Events::new(digest_view.clone(), records.wake.pre_node_ready.clone()),
                                 cancel: pre_node_ready_cancel.token(),
                                 state: pre_node_ready_cell.clone(),
                                 runs: crate::workflows::node_start::HookRuns::Spawned {
@@ -2488,9 +2477,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             builds: builds_dyn.clone(),
                                             entry_floor: entry_floor.clone(),
                                             node_hooks: wiring.node_hooks.clone(),
-                                            addressed: records.wake.pre_node_ready.clone(),
                                             pre_node_ready_cell: pre_node_ready_cell.clone(),
-                                            pre_node_ready_task: Arc::default(),
                                             wake: records.clone(),
                                             local: journal.clone(),
                                             declarer: declarer.clone(),

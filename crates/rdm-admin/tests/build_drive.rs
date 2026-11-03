@@ -201,10 +201,10 @@ async fn frames_now(reader: &mut rdm_admin::build_drive::DriveReader) -> Vec<Rea
     read
 }
 
-/// The `Blocked` frames of `read`.
-fn blocked_of(read: &[Read]) -> Vec<BuildReply> {
+/// The `Pending` frames of `read`.
+fn pending_of(read: &[Read]) -> Vec<BuildReply> {
     read.iter().filter_map(|r| match r {
-        Read::Frame(f @ BuildReply::Blocked { .. }) => Some(f.clone()),
+        Read::Frame(f @ BuildReply::Pending { .. }) => Some(f.clone()),
         _ => None,
     }).collect()
 }
@@ -364,7 +364,7 @@ impl OperationRunner for Recovered {
 /// mesh1 is the executor of mesh2's work in its view, and mesh2 is unheard past the staleness floor.
 /// The drive runs nothing and sends no section for mesh2, and says so on one span per operation naming
 /// the mesh, the operation and how long the mesh is unheard, never on the caller's stream
-/// (node-rpc-envelope.md: Blocked's only source is the subject's Status `Blocked`). Once mesh2 is heard
+/// (node-rpc-envelope.md: Pending's only source is the subject's Status `Pending`). Once mesh2 is heard
 /// again, the Build runs.
 #[tokio::test]
 async fn a_peer_mesh_held_unheard_is_never_dispatched_to_until_it_is_heard_again() {
@@ -396,7 +396,7 @@ async fn a_peer_mesh_held_unheard_is_never_dispatched_to_until_it_is_heard_again
     let span_of = |op: &rdm_core::OperationId, path: &str| (Some("mesh2".to_string()), Some(op.to_string()), Some(path.to_string()), Some("2".to_string()), Some("31000".to_string()));
     assert_eq!(sorted(named), sorted(vec![span_of(&rdm_core::OperationId::node("node.create", &admin2), "mesh2.node-admin"), span_of(&rdm_core::OperationId::node("node.create", &node2), "mesh2.node")]), "each operation on the unheard mesh is named once: {targeted:?}");
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {:?}", targeted[0].0, targeted[0].1);
-    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the target on the unheard mesh is named on its span and frames no Blocked to the caller");
+    assert_eq!(pending_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the target on the unheard mesh is named on its span and frames no Pending to the caller");
 
     // Heard again: the Build runs, and mesh2's own primary runs the rest of the mesh.
     r.switch.peer.lock().unwrap().remove("mesh2");
@@ -710,8 +710,8 @@ const LEAVE_INCOMPLETE: &str = "mesh.delete: mesh2.node-admin.1 sent no valid me
 /// Build for the one before it, and the reconcile loop's pass drives nothing of it. Once the leaving
 /// mesh's primary is gone, the caller's resubmit runs it again: one more `rdm.build.started`, the
 /// shutdown runs, and the Build ends `complete`.
-/// Must NOT happen: the Build failed, the reconcile loop driving it on by itself, or a `Blocked` frame on
-/// the caller's stream that no subject's Status `Blocked` reply made.
+/// Must NOT happen: the Build failed, the reconcile loop driving it on by itself, or a `Pending` frame on
+/// the caller's stream that no subject's Status `Pending` reply made.
 #[test]
 fn a_leave_that_ends_incomplete_on_a_lost_primary_ends_the_build_incomplete_and_its_resubmit_completes_it() {
     use rdm_admin::build_state::{BuildState, CurrentBuild};
@@ -757,7 +757,7 @@ fn a_leave_that_ends_incomplete_on_a_lost_primary_ends_the_build_incomplete_and_
     assert!(matches!(ended.as_slice(), [EndedState::Incomplete { .. }, EndedState::Complete]), "one rdm.build.ended per run: {ended:?}");
     assert_eq!(ran.iter().filter(|k| k.action == "mesh.delete").count(), 1, "the shutdown ran to its end once, in the resubmit: {ran:?}");
     let (read_first, read_again) = read;
-    assert_eq!(blocked_of(&read_first), Vec::<BuildReply>::new(), "the section ending short frames no Blocked to the caller");
+    assert_eq!(pending_of(&read_first), Vec::<BuildReply>::new(), "the section ending short frames no Pending to the caller");
     assert!(matches!(read_first.last(), Some(Read::Terminal(BuildReply::Incomplete { .. }))), "the first run's stream ends Incomplete: {read_first:?}");
     assert!(matches!(read_again.last(), Some(Read::Terminal(BuildReply::Complete { .. }))), "the resubmit's stream ends Complete: {read_again:?}");
 }
@@ -801,8 +801,8 @@ async fn mesh2_primary_becomes(r: &Rig, status: NodeStatus) {
 /// unheard, and the leave of it ends incomplete because its primary is unproven. The shutdown runs all
 /// the same, and the Build ends `incomplete` naming the unproven primary; once it has exited, the
 /// caller's resubmit runs the shutdown and completes the Build.
-/// Must NOT happen: the drive stopping at the unheard-mesh target before the shutdown, or a `Blocked`
-/// frame on the caller's stream that no subject's Status `Blocked` reply made.
+/// Must NOT happen: the drive stopping at the unheard-mesh target before the shutdown, or a `Pending`
+/// frame on the caller's stream that no subject's Status `Pending` reply made.
 #[test]
 fn a_leave_of_a_mesh_held_unheard_runs_and_its_resubmit_completes_once_the_primary_has_exited() {
     use rdm_admin::build_state::BuildState;
@@ -836,7 +836,7 @@ fn a_leave_of_a_mesh_held_unheard_runs_and_its_resubmit_completes_once_the_prima
     assert!(matches!(p.unfinished.as_slice(), [u] if u.mesh == "mesh2" && u.reason.contains("not proven exited")), "the Build names the unproven primary: {:?}", p.unfinished);
     assert_eq!(second, (DriveEnd::Terminal, BuildState::Complete), "once the primary has exited, the resubmit runs the shutdown and completes the Build");
     assert_eq!(ran.iter().filter(|k| k.action == "mesh.delete").count(), 1, "the shutdown ran to its end once: {ran:?}");
-    assert_eq!(blocked_of(&read), Vec::<BuildReply>::new(), "neither run frames a Blocked to the caller: {read:?}");
+    assert_eq!(pending_of(&read), Vec::<BuildReply>::new(), "neither run frames a Pending to the caller: {read:?}");
 }
 
 /// CONTRACT (node-rpc-envelope.md "Caller execution and certainty": "a completed Build answers
@@ -1011,7 +1011,7 @@ async fn a_successor_whose_view_already_names_it_primary_acknowledges_the_rows_u
 /// CONTRACT (as above; C1 step 8: "Only then does the commanding Build continue"): an update the row
 /// records that this admin cannot acknowledge (the successor's call fails, the row cannot be read)
 /// leaves the Build where it is: the drive stalls naming why on its span, frames nothing to the caller
-/// (node-rpc-envelope.md: Blocked's only source is the subject's Status `Blocked`), and dispatches nothing.
+/// (node-rpc-envelope.md: Pending's only source is the subject's Status `Pending`), and dispatches nothing.
 /// Must NOT happen: the operation on the old primary dispatched past an update not acknowledged.
 #[tokio::test]
 async fn an_update_the_drive_cannot_acknowledge_stalls_the_drive_by_name_and_dispatches_nothing() {
@@ -1026,7 +1026,7 @@ async fn an_update_the_drive_cannot_acknowledge_stalls_the_drive_by_name_and_dis
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing was dispatched: {:?}", r.dispatch.dispatched.lock().unwrap());
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
     let waiting = frames_now(&mut reader).await;
-    assert_eq!(blocked_of(&waiting), Vec::<BuildReply>::new(), "the update not acknowledged frames no Blocked to the caller: the stall names it on its span");
+    assert_eq!(pending_of(&waiting), Vec::<BuildReply>::new(), "the update not acknowledged frames no Pending to the caller: the stall names it on its span");
 }
 
 /// The view before the primary's row: the fabric-primary `mesh1.node-admin.1` holds both roles, and
@@ -1389,12 +1389,13 @@ impl Gate for FabricChange {
 }
 
 /// CONTRACT (Q154; states.md "Resize and a new executable": "Its Build is Complete only when the fabric is
-/// ready again from this Build's own change ... while the fabric changes, the Build reports
-/// Blocked naming the change, never Complete"; build.md §1: every accepted Build is reconciled, "Every
+/// ready again from this Build's own change ... while the fabric changes, the Build stays in
+/// progress, never Complete"; node-rpc-envelope.md: Pending's "only source is the subject's Status
+/// `Pending` reply"; build.md §1: every accepted Build is reconciled, "Every
 /// execution attempt re-reads the accepted topology and current realized/observed state and computes
 /// remaining work"): a Build whose topology put the fabric back to pending and whose work the view
-/// already holds (nothing left to execute) is started, runs nothing, reports Blocked `fabric-change`,
-/// never Complete, while the fabric changes, and is Complete once the fabric holds ready. Must NOT
+/// already holds (nothing left to execute) is started, runs nothing, frames no `Pending`
+/// (no subject answered one) and is never Complete while the fabric changes, and is Complete once the fabric holds ready. Must NOT
 /// happen: the Build never started, or Complete while the fabric changes.
 #[tokio::test]
 async fn a_build_with_nothing_to_execute_is_started_and_complete_once_the_fabric_is_ready() {
@@ -1421,7 +1422,7 @@ async fn a_build_with_nothing_to_execute_is_started_and_complete_once_the_fabric
     while let Some(read) = next_within(&mut reader).await {
         frames.push(read);
     }
-    assert!(frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, .. }) if step == "fabric-change")), "the Build reports Blocked naming the fabric's change: {frames:?}");
+    assert_eq!(pending_of(&frames), Vec::<BuildReply>::new(), "the fabric's change frames no Pending: no subject answered one");
     assert!(!frames.iter().any(|f| matches!(f, Read::Terminal(_) | Read::Frame(BuildReply::Complete { .. } | BuildReply::Failed { .. }))), "never Complete while the fabric changes: {frames:?}");
     // The fabric's change set ready: the Build is Complete.
     gate.ready.store(true, Ordering::SeqCst);
@@ -1474,7 +1475,7 @@ async fn the_day0_build_writes_its_complete_only_after_its_own_ready() {
     let while_pending = ended_states(&*builds, &day0).await;
     assert!(matches!(&held, DriveEnd::Stalled(why) if why.contains("ready")), "the Day-0 Build waits for the fabric's ready, never Complete while pending: {held:?}; frames {frames:?}");
     assert!(while_pending.is_empty(), "no rdm.build.ended is written while the fabric is pending: {while_pending:?}");
-    assert!(frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, .. }) if step == "fabric-change")), "the Day-0 Build reports Blocked naming the fabric's change: {frames:?}");
+    assert_eq!(pending_of(&frames), Vec::<BuildReply>::new(), "the fabric's change frames no Pending: no subject answered one");
     assert!(!frames.iter().any(|f| matches!(f, Read::Terminal(_))), "never Complete while the fabric changes: {frames:?}");
     // Every mesh is ready: the fabric is ready.
     gate.ready.store(true, Ordering::SeqCst);
@@ -1689,7 +1690,7 @@ async fn a_failed_member_create_stops_none_of_the_others_and_ends_its_section() 
     }
     let frames = frames_now(&mut reader).await;
     assert!(matches!(frames.last(), Some(Read::Terminal(BuildReply::Incomplete { .. }))), "the stream ends Incomplete: {frames:?}");
-    assert_eq!(blocked_of(&frames), Vec::<BuildReply>::new(), "no Blocked frame reaches the caller");
+    assert_eq!(pending_of(&frames), Vec::<BuildReply>::new(), "no Pending frame reaches the caller");
 }
 
 /// CONTRACT (Q250, Q245, Q252; Q346): mesh3's section fails at mesh3.node.2's create. mesh2's section
@@ -1697,7 +1698,7 @@ async fn a_failed_member_create_stops_none_of_the_others_and_ends_its_section() 
 /// step and is sent nothing more, and the Build ends `incomplete` naming mesh3's section, the step and its
 /// reason (node-rpc-envelope.md: `Incomplete { sections }`, "each named by its mesh, operation, step,
 /// reason and code"). Must NOT happen: mesh2's creates held by mesh3's failure, mesh3's section sent
-/// again, the Build ended `failed`, or a Blocked frame before the terminal.
+/// again, the Build ended `failed`, or a Pending frame before the terminal.
 #[tokio::test]
 async fn a_section_that_fails_stops_no_other_and_the_build_ends_incomplete_naming_it() {
     use rdm_admin::build_state::BuildState;
@@ -1714,7 +1715,7 @@ async fn a_section_that_fails_stops_no_other_and_the_build_ends_incomplete_namin
         }
         other => panic!("the stream ends Incomplete {{ sections }}: {other:?}; frames {frames:?}"),
     }
-    assert_eq!(blocked_of(&frames), Vec::<BuildReply>::new(), "no Blocked frame reaches the caller");
+    assert_eq!(pending_of(&frames), Vec::<BuildReply>::new(), "no Pending frame reaches the caller");
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!(p.state, BuildState::Incomplete, "the Build is incomplete, never failed");
     for n in ["2", "3"] {
@@ -1787,9 +1788,9 @@ impl rdm_admin::build_drive::Dispatcher for Refuses {
 
 /// CONTRACT (node-rpc-envelope.md "Refusals": build.attempt.run "refuses by name when the recipient is
 /// not" the mesh's primary (`NotExecutor { named, recipient }`); Q344: a call that ends without the
-/// section's terminal ends its section; Blocked's "only source is the subject's Status `Blocked` reply to
+/// section's terminal ends its section; Pending's "only source is the subject's Status `Pending` reply to
 /// the executor's ProbeNodeState"): mesh1's primary refuses its section by name. The section ends, named
-/// by the refusal, and the Build ends `incomplete`; nothing runs. Must NOT happen: a Blocked frame on the
+/// by the refusal, and the Build ends `incomplete`; nothing runs. Must NOT happen: a Pending frame on the
 /// caller's stream for the refusal, or the section sent again.
 #[tokio::test]
 async fn a_mesh_primary_that_refuses_its_section_ends_the_section_by_name_and_frames_nothing() {
@@ -1802,7 +1803,7 @@ async fn a_mesh_primary_that_refuses_its_section_ends_the_section_by_name_and_fr
     assert_eq!(p.state, rdm_admin::build_state::BuildState::Incomplete);
     assert!(matches!(p.unfinished.as_slice(), [u] if u.mesh == "mesh1" && u.reason.contains("was refused") && u.reason.contains("not-executor")), "the section is named by the refusal: {:?}", p.unfinished);
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
-    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the refusal frames no Blocked to the caller");
+    assert_eq!(pending_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the refusal frames no Pending to the caller");
 }
 
 /// CONTRACT (Q344: "One `Send { attempts, TimeLimit }` on every call, the only retry mechanism"; "No call
@@ -1810,7 +1811,7 @@ async fn a_mesh_primary_that_refuses_its_section_ends_the_section_by_name_and_fr
 /// mesh3, each its own mesh-primary's, and the call that sends mesh3 its section is spent: its primary
 /// cannot be reached. mesh2's section completes; mesh3's ends `UNAVAILABLE`, naming the call, and the
 /// Build ends `incomplete` naming it. Must NOT happen: the drive waiting on mesh3 with a retry of its
-/// own, mesh2's section held by mesh3's, or a Blocked frame on the caller's stream.
+/// own, mesh2's section held by mesh3's, or a Pending frame on the caller's stream.
 #[tokio::test]
 async fn a_spent_section_call_ends_its_section_and_the_build_ends_incomplete() {
     let r = three_meshes_growing(None).await;
@@ -1826,7 +1827,7 @@ async fn a_spent_section_call_ends_its_section_and_the_build_ends_incomplete() {
     }
     let frames = frames_now(&mut reader).await;
     assert!(matches!(frames.last(), Some(Read::Terminal(BuildReply::Incomplete { .. }))), "the stream ends Incomplete: {frames:?}");
-    assert_eq!(blocked_of(&frames), Vec::<BuildReply>::new(), "the spent call frames no Blocked to the caller");
+    assert_eq!(pending_of(&frames), Vec::<BuildReply>::new(), "the spent call frames no Pending to the caller");
 }
 
 /// Accepts a fabric.delete after the Build while the operation runs (build.md §1: it "may interrupt the
@@ -1849,10 +1850,10 @@ impl OperationRunner for DeleteDuring {
 
 /// CONTRACT (build.md §1: a fabric.delete "may interrupt the Build in progress"; Q346: the interrupted
 /// Build ran, so it ends `incomplete`, each section it did not finish naming the delete;
-/// node-rpc-envelope.md: Blocked's "only source is the subject's Status `Blocked` reply to the executor's
+/// node-rpc-envelope.md: Pending's "only source is the subject's Status `Pending` reply to the executor's
 /// ProbeNodeState"): a fabric.delete is accepted while mesh1's primary runs the Build's create, which
 /// fails within its bound. The caller's stream ends `Incomplete`, the section named at the step
-/// `fabric.delete` with the delete's id. Must NOT happen: a Blocked frame on the caller's stream for the
+/// `fabric.delete` with the delete's id. Must NOT happen: a Pending frame on the caller's stream for the
 /// interruption, or the interrupted Build run on.
 #[tokio::test]
 async fn a_run_a_fabric_delete_interrupts_ends_incomplete_naming_the_delete_and_frames_nothing() {
@@ -1874,16 +1875,16 @@ async fn a_run_a_fabric_delete_interrupts_ends_incomplete_naming_the_delete_and_
         Some(Read::Terminal(BuildReply::Incomplete { sections, .. })) => assert!(!sections.is_empty() && sections.iter().all(|u| u.step == "fabric.delete" && u.reason.contains(delete.as_str())), "every section left names the delete: {sections:?}"),
         other => panic!("the stream ends Incomplete naming the delete: {other:?}; frames {frames:?}"),
     }
-    assert_eq!(blocked_of(&frames), Vec::<BuildReply>::new(), "the interruption frames no Blocked to the caller");
+    assert_eq!(pending_of(&frames), Vec::<BuildReply>::new(), "the interruption frames no Pending to the caller");
     assert_eq!(r.ran.0.lock().unwrap().len(), 1, "nothing of the interrupted Build ran after the delete: {:?}", r.ran.0.lock().unwrap());
 }
 
 /// CONTRACT (node-primary-update.md failure contract: "The workflow continues only after the result is
-/// installed and acknowledged"; node-rpc-envelope.md: Blocked's "only source is the subject's Status
-/// `Blocked` reply to the executor's ProbeNodeState"): the fabric-primary `mesh1.node-admin.1` holds both
+/// installed and acknowledged"; node-rpc-envelope.md: Pending's "only source is the subject's Status
+/// `Pending` reply to the executor's ProbeNodeState"): the fabric-primary `mesh1.node-admin.1` holds both
 /// primaries and its Build deletes it, so its drive updates them first; the update answers and this view
 /// still names it the primary of both. The drive stalls naming it on its span and dispatches nothing.
-/// Must NOT happen: a Blocked frame on the caller's stream for the update the view does not show.
+/// Must NOT happen: a Pending frame on the caller's stream for the update the view does not show.
 #[tokio::test(start_paused = true)]
 async fn a_primary_update_the_view_does_not_show_stalls_the_drive_and_frames_nothing() {
     let r = rig_for(view_primary_of_both(), move |t: &rdm_admin::topology::Topology| crate::removed(t, &[rdm_core::PathName { path: "mesh1.node-admin".into(), name: "1".into() }]), |ran, _| ran).await;
@@ -1894,7 +1895,7 @@ async fn a_primary_update_the_view_does_not_show_stalls_the_drive_and_frames_not
         other => panic!("an update the view does not show stalls the drive: {other:?}"),
     }
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
-    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the update's wait frames no Blocked to the caller");
+    assert_eq!(pending_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the update's wait frames no Pending to the caller");
 }
 
 /// The primary's own node.primary.update that moves both primaries to `mesh1.node-admin.2` and the fabric
@@ -1925,10 +1926,10 @@ impl Gate for MovedUnanswered {
 }
 
 /// CONTRACT (node-primary-update.md failure contract: "After the successor installed itself, it is
-/// primary whatever the call returns"; node-rpc-envelope.md: Blocked's "only source is the subject's
-/// Status `Blocked` reply to the executor's ProbeNodeState"): the fabric-primary's own update moves both
+/// primary whatever the call returns"; node-rpc-envelope.md: Pending's "only source is the subject's
+/// Status `Pending` reply to the executor's ProbeNodeState"): the fabric-primary's own update moves both
 /// primaries to `mesh1.node-admin.2` and ends without its answer. The drive records why on its dispatch span
-/// and ends at the fabric record naming the successor. Must NOT happen: a Blocked frame on the caller's
+/// and ends at the fabric record naming the successor. Must NOT happen: a Pending frame on the caller's
 /// stream for the unanswered update.
 #[tokio::test(start_paused = true)]
 async fn a_primary_update_that_moved_the_primaries_without_its_answer_frames_nothing() {
@@ -1940,7 +1941,7 @@ async fn a_primary_update_that_moved_the_primaries_without_its_answer_frames_not
     let end = tokio::time::timeout(Duration::from_secs(60), env.run(&drive)).await.expect("the drive ends");
     assert!(matches!(&end, DriveEnd::RoleLost(_)), "the drive ends at the record naming the successor: {end:?}");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
-    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the unanswered update frames no Blocked to the caller");
+    assert_eq!(pending_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the unanswered update frames no Pending to the caller");
 }
 
 // The reconcile loop's wait (Q253, amended by Luke 2026-10-28: "I hate timers; make this event

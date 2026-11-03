@@ -251,8 +251,8 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
         self.local.write_step(step).await
     }
 
-    async fn note_blocked(&self, build_id: &BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
-        self.local.note_blocked(build_id, operation, step, reason).await
+    async fn note_pending(&self, build_id: &BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
+        self.local.note_pending(build_id, operation, step, reason).await
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {

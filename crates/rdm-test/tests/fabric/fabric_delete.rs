@@ -263,7 +263,7 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
         match tokio::time::timeout_at(until, held.next()).await {
             // The frame's operation is the growth's one create, mesh1.node.1's, keyed by the node.id its
             // record names (D58); its reason names the birth by node id.
-            Ok(Some(Ok(BuildFrame::Blocked { operation, .. }))) if action_of(&operation) == "node.create" => break,
+            Ok(Some(Ok(BuildFrame::Pending { operation, .. }))) if action_of(&operation) == "node.create" => break,
             Ok(Some(Ok(frame @ (BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::Incomplete { .. } | BuildFrame::FabricPrimaryMoved { .. })))) => panic!("the growth {first} ended {frame:?} before mesh1.node.1 was held"),
             Ok(Some(Ok(_))) => {}
             other => panic!("the growth {first} reported no Blocked naming mesh1.node.1 within {SETTLE:?}: {other:?}"),

@@ -15,7 +15,7 @@ mod tests {
         Fabric, FabricId, IncarnationId, Node, NodeId, NodeStatus, ProviderKind, ScopeStatus,
     };
     use crate::topology::Topology;
-    use rdm_core::status::{NodeState, RetryOn, StatusReply, StatusRequest};
+    use rdm_core::status::{NodeState, StatusReply, StatusRequest};
     use std::time::Duration;
 
     fn make_node(name: rdm_core::PathName, mesh: &str, r#type: &str, status: NodeStatus) -> Node {
@@ -38,7 +38,7 @@ mod tests {
     ///  pair's answer counts"
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:27
     /// "Probe: `ProbeNodeState { node_id, incarnation }` on 0x1B, a bounded call with a deadline;
-    ///  the node answers `Current { state }`, `CurrentStopped` or `Blocked { reason, retry_on }`"
+    ///  the node answers `Current { state }`, `CurrentStopped` or `Pending { reason }`"
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:28
     /// "Ladder: Direct first. On failure, the same probe carried by Forward through up to two
     ///  eligible live peers of the node's mesh, both at once; one failed peer probe does not cancel
@@ -49,8 +49,8 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:71
     /// "`{ \"Current\": { \"node_id\": \"k8pag1qx95gw\", \"incarnation\": \"0000000000000008\", \"state\": \"Ready\" } }`"
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:74
-    /// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node held at its hook answers
-    ///  `Blocked { node_id, incarnation, reason, retry_on }`. All three are `reached`."
+    /// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node whose hook answered `Pending` answers
+    ///  `Pending { node_id, incarnation, reason }`. All three are `reached`."
     #[tokio::test]
     async fn birth_answers_include_current_stopped_and_blocked_and_one_failed_peer_does_not_cancel_the_other()
     {
@@ -66,7 +66,7 @@ mod tests {
         let target_inc = target.incarnation_id.clone().unwrap();
         let wrong_inc = IncarnationId::mint();
 
-        // 1. `birth_answered` accepts Current, CurrentStopped, and Blocked only for the exact (node_id, incarnation).
+        // 1. `birth_answered` accepts Current, CurrentStopped, and Pending only for the exact (node_id, incarnation).
         for valid in [
             StatusReply::Current {
                 node_id: target_id.clone(),
@@ -77,11 +77,10 @@ mod tests {
                 node_id: target_id.clone(),
                 incarnation: target_inc.clone(),
             },
-            StatusReply::Blocked {
+            StatusReply::Pending {
                 node_id: target_id.clone(),
                 incarnation: target_inc.clone(),
                 reason: "waiting for schema".into(),
-                retry_on: RetryOn::PrimaryReady,
             },
         ] {
             assert!(
@@ -157,11 +156,10 @@ mod tests {
                 if carrier.node_id == self.disconnected_peer {
                     ProbeEnd::ConnectionLost("connection dropped".into())
                 } else {
-                    ProbeEnd::Reply(StatusReply::Blocked {
+                    ProbeEnd::Reply(StatusReply::Pending {
                         node_id: self.target_id.clone(),
                         incarnation: self.target_inc.clone(),
                         reason: "waiting for peer".into(),
-                        retry_on: RetryOn::PrimaryReady,
                     })
                 }
             }
@@ -192,11 +190,10 @@ mod tests {
                 assert_eq!(carrier, Some(peer2.node_id.clone()));
                 assert_eq!(
                     answer,
-                    StatusReply::Blocked {
+                    StatusReply::Pending {
                         node_id: target_id,
                         incarnation: target_inc,
                         reason: "waiting for peer".into(),
-                        retry_on: RetryOn::PrimaryReady,
                     }
                 );
             }

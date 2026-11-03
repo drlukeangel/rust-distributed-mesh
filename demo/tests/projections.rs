@@ -110,7 +110,7 @@ impl PreNodeReady for Hydrate {
                     .in_scope(|| tracing::info!("hydrated from node-admin's cache before ready"));
                 HookOutcome::Ok
             }
-            PullReply::NotReady { reason } => ctx.primary_not_ready(reason.clone()),
+            PullReply::NotReady { reason } => HookOutcome::Pending { reason: reason.clone() },
             other => HookOutcome::Failed { reason: format!("{other:?}") },
         }
     }

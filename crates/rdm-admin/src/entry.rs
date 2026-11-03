@@ -116,15 +116,7 @@ pub async fn run_on_started(
     // Leave on a signal. A signal is a local stop: this admin leaves and nothing Fabric-wide follows.
     tokio::select! {
         () = stop_requested() => {}
-        // A hook that failed ends the node by name, as an unaccepted join does.
-        why = running.pre_node_ready_failed() => {
-            let node = running.digest.lock().unwrap().node.node_id.to_string();
-            tracing::info_span!("rdm.mesh.node.delete.via-pre-node-ready-failed", node = %node, reason = %why)
-                .in_scope(|| tracing::error!("pre_node_ready failed; this node-admin ends"));
-            eprintln!("{service}: {node} failed pre_node_ready: {why}");
-            rdm_transport::flush_before_exit();
-            std::process::exit(3);
-        }
+        // A start that ended Failed at its hook leaves this admin Pending, its process running (Q350).
         // A mesh transport that stopped for good leaves a runtime that can neither be heard nor
         // answer: it ends, and its exit is the death proof the fabric recovers from.
         reason = rdm_transport::topology::until_transport_stopped() => {

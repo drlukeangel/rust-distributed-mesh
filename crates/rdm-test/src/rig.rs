@@ -87,11 +87,11 @@ impl NodeObserver for LiveMesh {
         Ok(())
     }
 
-    async fn ready_blocker(&self, node: &Node) -> Option<String> {
+    async fn ready_hook_answer(&self, node: &Node) -> Option<rdm_admin::node_hooks::ProbeAnswer> {
         // The same probe the node-admin's own observer sends (node-start.md step 3), to the birth
         // this launcher resolves by its own digest.
         self.echo_target(node).ok()?;
-        rdm_admin::admin::probed_ready_blocker(&self.client, &self.topology_view.digest_view, node).await
+        rdm_admin::admin::probed_hook_answer(&self.client, &self.topology_view.digest_view, node).await
     }
 
     async fn send_command(&self, node: &Node, cmd: rdm_admin::node_commands::NodeCommand, ctx: &rdm_admin::deployment::pipeline::CommandContext) -> rdm_admin::deployment::pipeline::CommandAdmission {

@@ -244,7 +244,7 @@ async fn until_blocked_on(stream: &mut BuildStream, node: &rdm_core::NodeId, wit
             Ok(Some(Ok(frame))) => frame,
         };
         match &frame {
-            BuildFrame::Blocked { reason, .. } if reason.contains(node.as_str()) => return frame,
+            BuildFrame::Pending { reason, .. } if reason.contains(node.as_str()) => return frame,
             BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::FabricPrimaryMoved { .. } => panic!("Build {build} ended {frame:?} before it reported Blocked naming {node:?}"),
             _ => {}
         }

@@ -1491,21 +1491,20 @@ pub enum StatusReply {
         /// Its detail.
         reason: String,
     },
-    /// The exact birth's own answer to a probe while its `pre_node_ready` hook is Blocked: the
-    /// probe served that birth and found an active readiness blocker. `reason` is the hook's own
-    /// text and `retry_on` the event it runs again on. It is never a `NotReady`: a `NotReady` is the
-    /// door or the handler not serving yet, and says nothing of the hook.
+    /// The exact node's own answer to a probe while its `pre_node_ready` hook answered `Pending`
+    /// (fabric-node-hooks.md "Outcomes and the gate"): the probe served that node and found an active
+    /// readiness blocker. `reason` is the hook's own text. It is never a `NotReady`: a `NotReady` is
+    /// the door or the handler not serving yet, and says nothing of the hook.
     ///
-    /// Position 25 on the wire.
-    Blocked {
+    /// Position 25 on the wire (Q350 took the position of `Blocked`, without its retry event: the
+    /// wire format moved).
+    Pending {
         /// The answering birth's logical node.
         node_id: NodeId,
         /// The answering birth's incarnation.
         incarnation: IncarnationId,
-        /// The hook's own blocker, in words.
+        /// The hook's own reason, in words.
         reason: String,
-        /// The event the hook runs again on.
-        retry_on: RetryOn,
     },
     /// The reply of an `UpdateName` (`node.name.updated`): the mesh-primary moved the node's row to
     /// the new name, and the exact birth holds the name (it answered `Applied` or `AlreadyApplied`),
@@ -1916,48 +1915,17 @@ pub enum StatusReply {
     },
 }
 
-/// The event a Blocked `pre_node_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
-/// and the gate"). Positional order is part of the wire schema.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RetryOn {
-    /// The authority's birth changed or deleted.
-    ///
-    /// Position 0 on the wire.
-    PrimaryChanged,
-    /// The named node became reachable (heard after silence, or first heard).
-    ///
-    /// Position 1 on the wire.
-    TargetReachable {
-        /// The node waited for.
-        node_id: NodeId,
-    },
-    /// The authority published Ready.
-    ///
-    /// Position 2 on the wire.
-    PrimaryReady,
-    /// The authority addressed this node (it sent a down op).
-    ///
-    /// Position 3 on the wire.
-    PrimaryAddressed,
-}
-
-impl RetryOn {
-    /// The event's name in spans and evidence.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::PrimaryChanged => "primary-changed",
-            Self::TargetReachable { .. } => "target-reachable",
-            Self::PrimaryReady => "primary-ready",
-            Self::PrimaryAddressed => "primary-addressed",
-        }
-    }
-}
-
-/// The most bytes of a hook's blocker a `Blocked` reply carries: what is left of the reply bound
+/// The most bytes of a hook's reason a `Pending` reply carries: what is left of the reply bound
 /// after the variant (one byte), the node id (a one-byte length and [`CROCKFORD60_LEN`] characters),
-/// the incarnation (a one-byte length and [`CROCKFORD60_LEN`] characters), the retry event at its
-/// largest (a variant byte and a node id), and a two-byte length prefix on the reason.
-pub const MAX_BLOCKED_REASON_BYTES: usize = 1024 - 1 - (1 + CROCKFORD60_LEN) - (1 + CROCKFORD60_LEN) - (1 + 1 + CROCKFORD60_LEN) - 2;
+/// the incarnation (a one-byte length and [`CROCKFORD60_LEN`] characters) and a two-byte length
+/// prefix on the reason.
+pub const MAX_PENDING_REASON_BYTES: usize = 1024 - 1 - (1 + CROCKFORD60_LEN) - (1 + CROCKFORD60_LEN) - 2;
+
+/// The most bytes of the step a `StartFailed` reply carries.
+pub const MAX_START_FAILED_STEP_BYTES: usize = 64;
+/// The most bytes of the reason a `StartFailed` reply carries: what is left of the reply bound after
+/// the variant (one byte), the step at its budget and a two-byte length prefix on each string.
+pub const MAX_START_FAILED_REASON_BYTES: usize = 1024 - 1 - (2 + MAX_START_FAILED_STEP_BYTES) - 2;
 
 /// The most connection ids one `node.connections.deleted` carries across its three lists: each id
 /// is a one-byte length and [`CROCKFORD60_LEN`] characters, after the variant (one byte) and three
@@ -2023,10 +1991,16 @@ impl StatusReply {
         Self::ConfigNotApplied { node: within(node, MAX_REFUSAL_NODE_BYTES), answered: within(answered, MAX_REFUSAL_ANSWERED_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
-    /// `Blocked` for the exact birth (`node_id`, `incarnation`) whose hook is blocked for `reason`
-    /// until `retry_on`, the reason within its budget so the reply always fits the Status reply bound.
-    pub fn blocked(node_id: NodeId, incarnation: IncarnationId, reason: &str, retry_on: RetryOn) -> Self {
-        Self::Blocked { node_id, incarnation, reason: within(reason, MAX_BLOCKED_REASON_BYTES), retry_on }
+    /// `Pending` for the exact node (`node_id`, `incarnation`) whose hook answered `Pending` for
+    /// `reason`, the reason within its budget so the reply always fits the Status reply bound.
+    pub fn pending(node_id: NodeId, incarnation: IncarnationId, reason: &str) -> Self {
+        Self::Pending { node_id, incarnation, reason: within(reason, MAX_PENDING_REASON_BYTES) }
+    }
+
+    /// `StartFailed` naming `step` and why, each within its budget so the reply always fits the
+    /// Status reply bound: a probe's answer once a node's start ended Failed.
+    pub fn start_failed(step: &str, reason: &str) -> Self {
+        Self::StartFailed { step: within(step, MAX_START_FAILED_STEP_BYTES), reason: within(reason, MAX_START_FAILED_REASON_BYTES) }
     }
 
     /// `RejectedTags` naming why, within its budget so the reply always fits the Status reply bound.
@@ -2123,7 +2097,7 @@ impl StatusReply {
             Self::Reserved22 { .. } => "reserved-22",
             Self::ConfigRowRefused { .. } => "config-row-refused",
             Self::ConfigNotApplied { .. } => "config-not-applied",
-            Self::Blocked { .. } => "blocked",
+            Self::Pending { .. } => "pending",
             Self::NameUpdated { .. } => "name-updated",
             Self::RejectedAdmittingConnections { .. } => "rejected-admitting-connections",
             Self::NameHeld { .. } => "name-held",
@@ -2229,7 +2203,7 @@ impl NodeProtocol for Status {
             StatusReply::Reserved22 { .. } => "reserved22",
             StatusReply::ConfigRowRefused { .. } => "config-row-refused",
             StatusReply::ConfigNotApplied { .. } => "config-not-applied",
-            StatusReply::Blocked { .. } => "blocked",
+            StatusReply::Pending { .. } => "pending",
             StatusReply::NameUpdated { .. } => "name-updated",
             StatusReply::RejectedAdmittingConnections { .. } => "rejected-admitting-connections",
             StatusReply::NameHeld { .. } => "name-held",
@@ -2303,7 +2277,7 @@ impl NodeProtocol for Status {
             StatusReply::Reserved22 { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::ConfigRowRefused { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::ConfigNotApplied { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            StatusReply::Blocked { .. } => ReplyKind::Success,
+            StatusReply::Pending { .. } => ReplyKind::Success,
             StatusReply::NameUpdated { .. } => ReplyKind::Success,
             StatusReply::RejectedAdmittingConnections { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::NameHeld { .. } => ReplyKind::new(crate::outcome::Code::AlreadyExists),
@@ -2446,7 +2420,7 @@ mod tests {
             (StatusReply::Reserved22 { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::ConfigRowRefused { node: "mesh1.node.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::ConfigNotApplied { node: "mesh1.node.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::Blocked { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } }, ReplyKind::Success),
+            (StatusReply::Pending { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into() }, ReplyKind::Success),
             (StatusReply::NameUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::RejectedAdmittingConnections { status: crate::views::NodeStatus::ConnectionsDeleting, held_connections: vec![ConnectionId::mint()] }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::NameHeld { path: "mesh1.node".into(), name: "1".into(), by: NodeId::mint() }, ReplyKind::new(crate::outcome::Code::AlreadyExists)),
@@ -2637,19 +2611,21 @@ mod tests {
         assert_eq!(short, StatusReply::RejectedSourceFailed { source: "fabric.storage of mesh1.node-admin.1".into(), op: "put".into(), cause: "disk full".into() }, "fields within their budgets are kept whole");
     }
 
-    /// CONTRACT (a hook's blocker reaches its executor whole or cut, never as a reset): a `Blocked`
-    /// answer whose hook reason is longer than the reply bound, from a birth with minted ids and the
-    /// largest retry event, is still a reply within `MAX_REPLY_FRAME_BYTES`; a reason within its budget
-    /// is kept whole.
+    /// CONTRACT (a hook's reason reaches its executor whole or cut, never as a reset): a `Pending`
+    /// answer whose hook reason is longer than the reply bound, from a node with minted ids, and a
+    /// `StartFailed` answer whose step and reason are past their budgets, are still replies within
+    /// `MAX_REPLY_FRAME_BYTES`; a reason within its budget is kept whole.
     #[test]
-    fn a_blocked_answer_with_a_long_hook_reason_encodes_within_the_reply_bound() {
+    fn a_pending_or_start_failed_answer_with_a_long_hook_reason_encodes_within_the_reply_bound() {
         let long = "x".repeat(4 * Status::MAX_REPLY_FRAME_BYTES);
-        let r = StatusReply::blocked(NodeId::mint(), IncarnationId::mint(), &long, RetryOn::TargetReachable { node_id: NodeId::mint() });
-        let len = Status::encode_reply(&r).unwrap().len();
-        assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "blocked encodes to {len}, over {}", Status::MAX_REPLY_FRAME_BYTES);
+        for r in [StatusReply::pending(NodeId::mint(), IncarnationId::mint(), &long), StatusReply::start_failed(&long, &long)] {
+            let len = Status::encode_reply(&r).unwrap().len();
+            assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "{r:?} encodes to {len}, over {}", Status::MAX_REPLY_FRAME_BYTES);
+        }
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let short = StatusReply::blocked(node_id.clone(), incarnation.clone(), "rows not yet published", RetryOn::PrimaryAddressed);
-        assert_eq!(short, StatusReply::Blocked { node_id, incarnation, reason: "rows not yet published".into(), retry_on: RetryOn::PrimaryAddressed }, "a reason within its budget is kept whole");
+        let short = StatusReply::pending(node_id.clone(), incarnation.clone(), "rows not yet published");
+        assert_eq!(short, StatusReply::Pending { node_id, incarnation, reason: "rows not yet published".into() }, "a reason within its budget is kept whole");
+        assert_eq!(StatusReply::start_failed("node.pre-node-ready", "rows corrupt"), StatusReply::StartFailed { step: "node.pre-node-ready".into(), reason: "rows corrupt".into() }, "a step and reason within their budgets are kept whole");
     }
 
     /// CONTRACT (R-CR3: the completion names every id it accounts for; a request names at most

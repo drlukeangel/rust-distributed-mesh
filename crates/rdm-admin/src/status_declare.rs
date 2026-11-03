@@ -57,8 +57,6 @@ pub struct DeclareWake {
     /// Wakes the hierarchy loop when a Mesh's checklist-complete report arrives.
     pub(crate) report_notify: tokio::sync::Notify,
     addressed: Mutex<BTreeSet<NodeId>>,
-    /// The same down ops, counted for a `pre_node_ready` hook blocked on its authority's word.
-    pub(crate) pre_node_ready: Arc<crate::node_hooks::Addressed>,
 }
 
 impl DeclareWake {
@@ -70,14 +68,9 @@ impl DeclareWake {
         self.notify.notify_one();
     }
 
-    /// A down op reached this admin on a call from the endpoint `peer` (as the transport proved
-    /// it), from the authority `from` where a record names it: a hook blocked on its authority's
-    /// word counts the endpoint, and every declaration owed to `from` is sent again, whatever its
-    /// last outcome.
-    pub(crate) fn addressed_by(&self, from: Option<&NodeId>, peer: Option<iroh::PublicKey>) {
-        if let Some(peer) = peer {
-            self.pre_node_ready.note(&peer);
-        }
+    /// A down op reached this admin from the authority `from` where a record names it: every
+    /// declaration owed to `from` is sent again, whatever its last outcome.
+    pub(crate) fn addressed_by(&self, from: Option<&NodeId>) {
         if let Some(from) = from {
             self.addressed.lock().unwrap().insert(from.clone());
         }
@@ -1161,12 +1154,12 @@ mod tests {
     fn the_down_ops_taken_by_a_sweep_are_not_taken_twice() {
         let w = DeclareWake::new();
         let a = NodeId::mint();
-        w.addressed_by(Some(&a), None);
-        w.addressed_by(Some(&a), None);
+        w.addressed_by(Some(&a));
+        w.addressed_by(Some(&a));
         assert_eq!(w.take_addressed(), [a.clone()].into());
         assert!(w.take_addressed().is_empty());
         let b = NodeId::mint();
-        w.addressed_by(Some(&b), None);
+        w.addressed_by(Some(&b));
         assert_eq!(w.take_addressed(), [b].into());
     }
 }

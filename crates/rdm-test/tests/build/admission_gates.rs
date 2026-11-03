@@ -35,7 +35,7 @@ async fn read_to_complete(stream: &mut BuildStream) {
 async fn wait_for_blocked_frame(stream: &mut BuildStream) -> (String, String) {
     while let Some(frame) = stream.next().await {
         match frame.expect("stream frame") {
-            BuildFrame::Blocked { step, reason, .. } if step != "fabric-change" => {
+            BuildFrame::Pending { step, reason, .. } => {
                 return (step, reason);
             }
             other @ (BuildFrame::Complete { .. } | BuildFrame::Failed { .. }) => {

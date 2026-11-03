@@ -233,13 +233,13 @@ pub struct Drive {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum FrameKey {
     Step { mesh: String, operation: String, step: String },
-    Blocked { mesh: String, operation: String, step: String, reason: String },
+    Pending { mesh: String, operation: String, step: String, reason: String },
 }
 
 fn frame_key(f: &BuildReply) -> Option<FrameKey> {
     match f {
         BuildReply::Step { mesh, operation, step, .. } => Some(FrameKey::Step { mesh: mesh.clone(), operation: operation.clone(), step: step.clone() }),
-        BuildReply::Blocked { mesh, operation, step, reason, .. } => Some(FrameKey::Blocked { mesh: mesh.clone(), operation: operation.clone(), step: step.clone(), reason: reason.clone() }),
+        BuildReply::Pending { mesh, operation, step, reason, .. } => Some(FrameKey::Pending { mesh: mesh.clone(), operation: operation.clone(), step: step.clone(), reason: reason.clone() }),
         _ => None,
     }
 }
@@ -871,10 +871,6 @@ impl DriveEnv {
         DriveEnd::Stalled(why)
     }
 
-    fn blocked(&self, drive: &Arc<Drive>, operation: &rdm_core::OperationId, step: &str, reason: &str) {
-        drive.push(BuildReply::Blocked { build_id: drive.build_id.to_string(), mesh: self.me_mesh.clone(), operation: operation.to_string(), step: step.into(), reason: crate::build_run::bounded_reason(reason.into()) });
-    }
-
     /// The peer mesh `op` acts on, held unheard on the backbone (R-D1), with how long.
     fn unheard_peer(&self, op: &BuildOperation) -> Option<(PathName, u64)> {
         let node = op.node()?;
@@ -1035,7 +1031,6 @@ impl DriveEnv {
                 // from its change (Q154; states.md "Resize and a new executable").
                 if changes_the_fabric(&p) && !self.gate.fabric_ready() {
                     let why = format!("path {me_path:?}, name {me_name:?}: every operation of Build {id} is done, and the Build is Complete only once the fabric's ready state is set", me_path = &me.path, me_name = &me.name);
-                    self.blocked(drive, &rdm_core::OperationId::unscoped("fabric.change"), "fabric-change", &why);
                     return self.stalled(&me, drive, why);
                 }
                 return self.end(&me, drive, BuildReply::Complete { build_id: id.to_string() }, &span).await;
@@ -1187,7 +1182,7 @@ impl DriveEnv {
                     drive.push(f);
                     inner.accepted().await;
                 }
-                InnerItem::Frame(f @ BuildReply::Blocked { .. }) => {
+                InnerItem::Frame(f @ BuildReply::Pending { .. }) => {
                     drive.push(f);
                     inner.accepted().await;
                 }

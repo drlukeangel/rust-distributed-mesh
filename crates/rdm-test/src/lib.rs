@@ -143,8 +143,8 @@ pub fn skew_os_clock_from_root(root: &std::path::Path, name: &rdm_core::PathName
 
 /// The directory under an estate's data root where a scenario records a `pre_node_ready` knob
 /// for one node: while the file `<root>/pre-node-ready-knob/<location-index>` exists when the node starts, the
-/// node registers [`pre_node_ready_probe::KnobPreNodeReady`], whose hook is Blocked with the file's text as its
-/// reason until the text is `pass`.
+/// node registers [`pre_node_ready_probe::KnobPreNodeReady`], whose hook answers `Pending` with the file's text as
+/// its reason until the text is `pass` (or `Failed` for `failed <reason>`).
 pub fn pre_node_ready_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join("pre-node-ready-knob")
 }
@@ -159,6 +159,15 @@ pub fn write_pre_node_ready_knob(root: &std::path::Path, name: &rdm_core::PathNa
     let staged = file.with_extension("staged");
     std::fs::write(&staged, text)?;
     std::fs::rename(&staged, file)
+}
+
+/// Record the attempts node `name`'s knob hook runs under (its `Send`, read once when its start runs
+/// the hook): `<location-index>.send` beside the knob. With none recorded the hook holds its node for
+/// [`pre_node_ready_probe::KNOB_ATTEMPTS`] attempts.
+pub fn write_pre_node_ready_knob_attempts(root: &std::path::Path, name: &rdm_core::PathName, attempts: u8) -> std::io::Result<()> {
+    let file = location_knob_file(&pre_node_ready_knob_dir(root), name).with_extension("send");
+    std::fs::create_dir_all(file.parent().expect("knob parent"))?;
+    std::fs::write(file, attempts.to_string())
 }
 
 /// The directory under an estate's data root where a scenario records a rafka-time knob for one
@@ -213,7 +222,7 @@ mod tests {
     /// open reads the new text. The knob's hook (`pre_node_ready_probe::KnobPreNodeReady`) reads the file on
     /// every attempt while a scenario rewrites it. What must NOT happen: a rewrite in place, which
     /// truncates the very file a reader holds and writes after it, so a read between the two
-    /// sees the knob empty and the hook answers `Blocked` with no reason.
+    /// sees the knob empty and the hook answers `Pending` with no reason.
     #[test]
     fn a_knob_rewrite_never_touches_the_file_a_reader_holds_open() {
         let root = std::env::temp_dir().join(format!("pre-node-ready-knob-rewrite-{}", rdm_core::NodeId::mint()));
@@ -377,15 +386,9 @@ pub async fn run_test_node_with(
     boot.in_scope(|| tracing::info!(served, "type" = role.name(), "role process serving on the imported substrate"));
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
-    let ended = tokio::select! {
-        () = crate::node::wait_for_signal(&executable) => None,
-        why = running.pre_node_ready_failed() => Some(why),
-    };
-    if let Some(why) = ended {
-        tracing::info_span!("rdm.mesh.node.delete.via-pre-node-ready-failed", node_path = %launch.path, node_name = %launch.name, reason = %why).in_scope(|| tracing::error!("pre_node_ready failed; this node ends"));
-        running.stop().await;
-        return Err(anyhow::anyhow!("{:?} failed pre_node_ready: {why}", launch.name));
-    }
+    // A start that ended Failed at its hook leaves the node Pending, its process running (Q350):
+    // only a signal ends it.
+    crate::node::wait_for_signal(&executable).await;
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.path, node_name = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
     running.stop().await;
     Ok(())

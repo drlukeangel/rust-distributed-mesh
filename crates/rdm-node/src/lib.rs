@@ -253,15 +253,9 @@ pub async fn run_on(
     boot.in_scope(|| tracing::info!(served, "type" = role.name(), "role process serving on the imported substrate"));
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
-    let ended = tokio::select! {
-        () = crate::node::wait_for_signal(&executable) => None,
-        why = running.pre_node_ready_failed() => Some(why),
-    };
-    if let Some(why) = ended {
-        tracing::info_span!("rdm.mesh.node.delete.via-pre-node-ready-failed", node_path = %launch.path, node_name = %launch.name, reason = %why).in_scope(|| tracing::error!("pre_node_ready failed; this node ends"));
-        running.stop().await;
-        return Err(anyhow!("{} failed pre_node_ready: {why}", launch.node_id));
-    }
+    // A start that ended Failed at its hook leaves the node Pending, its process running (Q350):
+    // only a signal ends it.
+    crate::node::wait_for_signal(&executable).await;
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.path, node_name = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
     running.stop().await;
     Ok(())

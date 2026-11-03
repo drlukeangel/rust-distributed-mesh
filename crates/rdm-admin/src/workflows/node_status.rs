@@ -267,7 +267,7 @@ mod tests {
         let wake = DeclareWake::new();
         wake.poke();
         wake.poke();
-        wake. addressed_by(Some(&admin_id), None);
+        wake.addressed_by(Some(&admin_id));
         tokio::time::timeout(Duration::from_secs(1), wake.woken()).await.expect("coalesced wake fires once");
         assert!(tokio::time::timeout(Duration::from_millis(20), wake.woken()).await.is_err(), "burst of pokes coalesced into one wake");
         assert_eq!(wake.take_addressed(), BTreeSet::from([admin_id.clone()]));

@@ -12,9 +12,9 @@ use rdm_core::{
 };
 use rdm_node::held_name::HeldName;
 use rdm_node::node_hooks::{
-    AcceptingPrimarySource, Addressed, Birth, CallFailedBirth, CallFailedCtx, CallFailedReason, End,
-    Events, HookOutcome, NoAcceptingPrimary, NodeHooks, NodeReadyCtx, OnCallFailed, OnNodeReady,
-    PreNodeReady, RetryOn, StartKind, Step,
+    AcceptingPrimarySource, Birth, CallFailedBirth, CallFailedCtx, CallFailedReason, End,
+    HookOutcome, NoAcceptingPrimary, NodeHooks, NodeReadyCtx, OnCallFailed, OnNodeReady,
+    PreNodeReady, PreNodeReadyState, StartKind,
 };
 use rdm_transport::topology::TopologyView;
 use rdm_transport::{
@@ -30,6 +30,11 @@ struct TargetWaitHook {
 
 #[async_trait::async_trait]
 impl PreNodeReady for TargetWaitHook {
+    /// Enough attempts to outlast the cell's wait for its target.
+    fn send(&self) -> Send {
+        Send { attempts: 200, time_limit: TimeLimit(std::time::Duration::from_secs(10)) }
+    }
+
     async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
         self.attempts.lock().unwrap().push(ctx.attempt);
         let reachable = ctx
@@ -41,23 +46,23 @@ impl PreNodeReady for TargetWaitHook {
         if reachable {
             HookOutcome::Ok
         } else {
-            HookOutcome::Blocked {
+            HookOutcome::Pending {
                 reason: format!("target {} not yet heard", self.target_node_id),
-                retry_on: RetryOn::TargetReachable {
-                    node_id: self.target_node_id.clone(),
-                },
             }
         }
     }
 }
 
 // @feature: pre-node-ready
-/// CONTRACT: docs/architecture/fabric-node-hooks.md:88
-/// "Ok | start continues at node start step 4 and ends with node.started
-///  Blocked { reason, retry_on } | readiness remains blocked; the reason is named in the blocker
-///  evidence ... the hook runs again only when retry_on occurs"
+/// CONTRACT: docs/architecture/fabric-node-hooks.md "Outcomes and the gate"
+/// "`Ok` | start continues at node start step 4 and ends with node.started
+///  `Pending { reason }` | that attempt ends; the node stays `Pending`, the reason is named in its
+///  blocker evidence ... and RDM calls the hook again after the backoff"; "A node never reaches Ready
+///  while its hook has not returned `Ok`": while the hook answers Pending the app's gated op answers
+///  typed `NotReady`; once the hook's target is heard its next attempt on the Send answers Ok and the
+///  gate opens.
 #[test]
-fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_retry_event_passes() {
+fn pre_node_ready_gates_app_rpc_with_not_ready_while_pending_and_opens_once_an_attempt_answers_ok() {
     let dir = std::env::temp_dir().join(format!("rdm-pre-node-ready-func-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-pre-node-ready-functional")
@@ -142,7 +147,7 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
         .expect("join topology view");
 
         let driver = hooks
-            .driver(
+            .driver_paced(
                 NodeReadyCtx {
                     start_kind: StartKind::FirstStart,
                     birth: Birth {
@@ -162,17 +167,22 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
                     attempt: 0,
                     inherited: false,
                 },
-                Events::new(topology_view.digest_view.clone(), Addressed::new()),
                 tracing::Span::none(),
+                rdm_transport::Pacing { cadence: std::time::Duration::from_millis(20), floor: std::time::Duration::from_millis(50), jitter: false },
             )
             .expect("driver");
 
-        // 1. Attempt 1 blocks on `TargetReachable` because `target_node_id` is not in `digest_view`.
-        let step1 = driver.attempt().await;
-        assert!(matches!(step1, Step::Blocked(_)));
+        // 1. The hook runs under its Send: attempt 1 answers Pending because `target_node_id` is not
+        //    in `digest_view`, and RDM calls again after each backoff.
+        let handle = driver.handle();
+        let driver_for_run = driver.clone();
+        let run_handle = tokio::spawn(async move { driver_for_run.run().await });
+        while !matches!(handle.state(), PreNodeReadyState::Pending { .. }) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         assert!(!gate.is_open());
 
-        // 2. While `pre_node_ready` is blocked, calling the gated op over Node RPC returns typed
+        // 2. While `pre_node_ready` answers Pending, calling the gated op over Node RPC returns typed
         //    `NotReady` and emits `rdm.node_rpc.request.reject.via-pre-node-ready-not-passed`.
         let (blocked_out, _) = client
             .call::<Ping>(
@@ -191,16 +201,14 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
                         "{reason}"
                     );
                 }
-                other => panic!("expected PingReply::NotReady while blocked, got {other:?}"),
+                other => panic!("expected PingReply::NotReady while pending, got {other:?}"),
             },
             other => panic!("expected Reply, got {other:?}"),
         }
 
-        // 3. Record `target_node_id`'s digest into `digest_view` and run the driver: `Events::wait`
-        //    wakes on `TargetReachable`, attempt 2 returns `Ok`, and the gate opens.
+        // 3. Record `target_node_id`'s digest into `digest_view`: the next attempt answers `Ok`, and
+        //    the gate opens.
         let digest_view = topology_view.digest_view.clone();
-        let driver_for_run = driver.clone();
-        let run_handle = tokio::spawn(async move { driver_for_run.run(step1).await });
         assert!(digest_view.record(MeshDigest {
             held_hash: Default::default(),
             fabric_id,
@@ -229,7 +237,8 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
         let end = run_handle.await.expect("join driver run");
         assert_eq!(end, End::Passed);
         assert!(gate.is_open());
-        assert_eq!(*hook.attempts.lock().unwrap(), vec![1, 2]);
+        let attempts = hook.attempts.lock().unwrap().clone();
+        assert!(attempts.len() >= 2 && attempts.iter().enumerate().all(|(i, n)| *n == i as u32 + 1), "one call per attempt, numbered from 1, the last answering Ok: {attempts:?}");
 
         // 4. Now that `pre_node_ready` has returned `Ok`, the gated op serves normally.
         let (ok_out, _) = client
@@ -269,10 +278,11 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
     );
     assert!(
         spans.iter().any(|s| {
-            s["name"] == "rdm.mesh.node.reject.via-pre-node-ready-blocked"
-                && s["attributes"]["cleared_by"] == "target-reachable"
+            s["name"] == "rdm.mesh.node.update.via-pre-node-ready-attempt"
+                && s["attributes"]["outcome"] == "pending"
+                && s["attributes"]["reason"].as_str().is_some_and(|r| r.contains("not yet heard"))
         }),
-        "expected via-pre-node-ready-blocked span with cleared_by=target-reachable: {spans:?}"
+        "expected a pending attempt span naming its reason: {spans:?}"
     );
 }
 
@@ -463,13 +473,12 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
                     attempt: 0,
                     inherited: false,
                 },
-                Events::new(topology_view.digest_view.clone(), Addressed::new()),
                 tracing::Span::none(),
             )
             .expect("driver");
 
         // 1. `pre_node_ready` passes and opens the gate; `spawn_on_node_ready` launches on its own task.
-        assert!(matches!(driver.attempt().await, Step::Passed));
+        assert_eq!(driver.run().await, End::Passed);
         assert!(gate.is_open());
         driver.spawn_on_node_ready();
         entered.notified().await;

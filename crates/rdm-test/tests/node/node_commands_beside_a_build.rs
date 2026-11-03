@@ -35,11 +35,11 @@ async fn read_to_complete(stream: &mut BuildStream) {
     panic!("the Build stream ended before Complete");
 }
 
-/// The held Build's stream up to its Blocked frame at the grown node's readiness.
+/// The held Build's stream up to its Pending frame at the grown node's readiness.
 async fn until_blocked(stream: &mut BuildStream) {
     while let Some(frame) = stream.next().await {
         match frame.expect("stream frame") {
-            BuildFrame::Blocked { step, .. } if step == "WaitForNodeReady" => return,
+            BuildFrame::Pending { step, .. } if step == "WaitForNodeReady" => return,
             other @ (BuildFrame::Complete { .. } | BuildFrame::Failed { .. }) => panic!("the Build ended before it was held: {other:?}"),
             _ => {}
         }
@@ -68,7 +68,7 @@ fn events(frames: &[Frame]) -> Vec<NodeEvent> {
 }
 
 /// A fabric of SHAPE, then a grown Build held at its new node's `pre_node_ready` (the knob), its
-/// stream returned at the Blocked frame.
+/// stream returned at the Pending frame.
 async fn held_build(test: &str) -> (Estate, rdm_client::BuildCarrier, BuildStream, PathName) {
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let carrier = estate.carrier().await;

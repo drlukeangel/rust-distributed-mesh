@@ -308,13 +308,13 @@ impl Cadence {
 // ---- node.tickle (node-tickle.md): the one reach ladder ----
 
 /// The birth's own answer on the probe (`docs/architecture/lifecycles/node-tickle.md` "Probe"):
-/// `Current`, `CurrentStopped` while it is stopped, or `Blocked` while its hook is Blocked, naming
+/// `Current`, `CurrentStopped` while it is stopped, or `Pending` while its hook answered `Pending`, naming
 /// the exact birth probed. A carrier's `InnerNotSent` (no reply reaches the ladder), a `NotReady`
 /// and any refusal are not answers.
 pub fn birth_answered(reply: Option<&rdm_core::status::StatusReply>, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> bool {
     use rdm_core::status::StatusReply;
     match reply {
-        Some(StatusReply::Current { node_id: n, incarnation: i, .. } | StatusReply::CurrentStopped { node_id: n, incarnation: i } | StatusReply::Blocked { node_id: n, incarnation: i, .. }) => n == node_id && i == incarnation,
+        Some(StatusReply::Current { node_id: n, incarnation: i, .. } | StatusReply::CurrentStopped { node_id: n, incarnation: i } | StatusReply::Pending { node_id: n, incarnation: i, .. }) => n == node_id && i == incarnation,
         _ => false,
     }
 }
@@ -1378,7 +1378,7 @@ pub(crate) mod tests {
         use super::super::*;
         use super::{FLOOR, PROBE_DELAY};
         use crate::model::{IncarnationId, Node, NodeId};
-        use rdm_core::status::{NodeState, RetryOn, StatusReply, StatusRequest};
+        use rdm_core::status::{NodeState, StatusReply, StatusRequest};
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
@@ -1620,20 +1620,20 @@ pub(crate) mod tests {
         /// "Target: One node, by `(node.id, incarnation)`; every probe names the same pair, and only that pair's answer counts"
         /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:27
         /// "Probe: `ProbeNodeState { node_id, incarnation }` on 0x1B, a bounded call with a deadline; the node
-        ///  answers `Current { state }`, `CurrentStopped` or `Blocked { reason, retry_on }`"
+        ///  answers `Current { state }`, `CurrentStopped` or `Pending { reason }`"
         /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:71
         /// "`{ \"Current\": { \"node_id\": \"k8pag1qx95gw\", \"incarnation\": \"0000000000000008\", \"state\": \"Ready\" } }`"
         /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:74
-        /// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node held at its hook answers
-        ///  `Blocked { node_id, incarnation, reason, retry_on }`. All three are `reached`."
+        /// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node whose hook answered `Pending` answers
+        ///  `Pending { node_id, incarnation, reason }`. All three are `reached`."
         /// CONTRACT (R-SW1 item 3; node-tickle.md "Probe"): an answer is `Current`, `CurrentStopped` or
-        /// `Blocked` from the exact birth probed. A NotReady (a carrier's or anyone's), another
+        /// `Pending` from the exact birth probed. A NotReady (a carrier's or anyone's), another
         /// incarnation's reply, a refusal and no reply at all are not answers.
         #[test]
         fn only_the_exact_births_state_is_an_answer() {
             let b = birth();
-            let blocked = StatusReply::Blocked { node_id: b.0.clone(), incarnation: b.1.clone(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } };
-            for r in [current(&b), stopped(&b), blocked] {
+            let pending = StatusReply::Pending { node_id: b.0.clone(), incarnation: b.1.clone(), reason: "rows not yet published".into() };
+            for r in [current(&b), stopped(&b), pending] {
                 assert!(birth_answered(Some(&r), &b.0, &b.1), "{} is the birth's answer", r.name());
             }
             let other = (b.0.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("an-older-birth")).unwrap());

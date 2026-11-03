@@ -142,8 +142,9 @@ impl DeploymentProvider for Up {
 
 /// The topology view the admin holds of the birth: it hears the birth only once `joined` is set.
 struct TopologyView {
-    /// While set, the node is not ready and this is what its Ready check names.
-    not_ready: Mutex<Option<String>>,
+    /// While set, the node is not ready and this is what its hook answered: its probe's `Pending`
+    /// reason, or its start's `StartFailed` at the hook.
+    not_ready: Mutex<Option<rdm_admin::node_hooks::ProbeAnswer>>,
     /// While set, the node reports Pending with no blocker: its Ready check fails with this and names nothing.
     pending: Mutex<Option<String>>,
 }
@@ -156,12 +157,15 @@ impl NodeObserver for TopologyView {
         None
     }
     async fn ready(&self, _: &Node) -> Result<(), String> {
-        match self.not_ready.lock().unwrap().clone().or_else(|| self.pending.lock().unwrap().clone()) {
+        let hook = self.not_ready.lock().unwrap().clone().map(|a| match a {
+            rdm_admin::node_hooks::ProbeAnswer::Pending(why) | rdm_admin::node_hooks::ProbeAnswer::StartFailed(why) => why,
+        });
+        match hook.or_else(|| self.pending.lock().unwrap().clone()) {
             Some(why) => Err(why),
             None => Ok(()),
         }
     }
-    async fn ready_blocker(&self, _: &Node) -> Option<String> {
+    async fn ready_hook_answer(&self, _: &Node) -> Option<rdm_admin::node_hooks::ProbeAnswer> {
         self.not_ready.lock().unwrap().clone()
     }
 }
@@ -486,7 +490,7 @@ const STEPS_BEFORE_THE_BIND: [&str; 7] = [
 /// step ends its mesh's section, never the Build): a create whose process starts and whose birth never
 /// reports where it bound (no `JoinNode` arrives) fails its bind wait once: mesh1's section ends there
 /// and the Build ends `incomplete`. The stream ends `Started`, then `Failed { step: node.create,
-/// reason }` from `WaitForBind`, within the deadline and with no Blocked frame before it.
+/// reason }` from `WaitForBind`, within the deadline and with no Pending frame before it.
 /// `node.created`, `node.joined` and `node.started` are never emitted, the node never reaches
 /// ready, and the call's span names the failed step.
 #[test]
@@ -549,18 +553,19 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
     eprintln!("trace {}: rdm.node_admin.node.create.via-workflow outcome=failed failed_step=node.create; steps {}", call[0]["trace_id"], walls.join(", "));
 }
 
-/// CONTRACT: a create whose node has joined but is not ready (its Ready check names a blocker, as an
-/// application's `pre_node_ready` does) streams one `Blocked { operation, step, reason }` frame
-/// naming the step in flight and the check's own reason, however many times the check is polled with
-/// that reason; the blocker is live progress, so the stream goes on, and when the node is ready it
-/// emits `node.created` and `Complete`.
+/// CONTRACT (node-rpc-envelope.md, Build "Frames": Pending is "emitted when its reason changes"; its
+/// only source is the subject's Status `Pending`): a create whose node has joined and whose
+/// `pre_node_ready` answers `Pending` (its probe's Status `Pending`) streams one
+/// `Pending { operation, step, reason }` frame naming the step in flight and the hook's own reason,
+/// however many times the node is probed with that reason; it is live progress, so the stream goes
+/// on, and when the node is ready it emits `node.created` and `Complete`.
 #[test]
-fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() {
+fn a_create_whose_node_answers_pending_streams_its_reason_once() {
     let cap = capture();
-    let (blocked, after, key) = cap.run(async {
+    let (pending, after, key) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let why = "mesh1.node.3: pre_node_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready";
-        *rig.topology_view.not_ready.lock().unwrap() = Some(why.to_string());
+        let why = "mesh1.node.3: pre_node_ready answered Pending: pulling its node-admin";
+        *rig.topology_view.not_ready.lock().unwrap() = Some(rdm_admin::node_hooks::ProbeAnswer::Pending(why.to_string()));
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
@@ -569,38 +574,75 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
         });
-        let mut blocked = None;
-        while blocked.is_none() {
-            match tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("the stream went quiet before any Blocked frame") {
-                Some(Ok(f @ Frame::Blocked { .. })) => blocked = Some(f),
+        let mut pending = None;
+        while pending.is_none() {
+            match tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("the stream went quiet before any Pending frame") {
+                Some(Ok(f @ Frame::Pending { .. })) => pending = Some(f),
                 Some(Ok(_)) => {}
-                other => panic!("the stream ended before the node's blocker was framed: {other:?}"),
+                other => panic!("the stream ended before the node's Pending was framed: {other:?}"),
             }
         }
-        // The Ready check polls again with the same reason: no second frame. Then the node is ready.
+        // The node is probed again with the same reason: no second frame. Then the node is ready.
         tokio::time::sleep(Duration::from_millis(350)).await;
         *rig.topology_view.not_ready.lock().unwrap() = None;
         let (after, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");
         let key = rig.create_key(&build, &PathName::new("mesh1.node", "3").unwrap()).await;
-        (blocked.unwrap(), after, key)
+        (pending.unwrap(), after, key)
     });
     assert_eq!(
-        blocked,
-        Frame::Blocked {
+        pending,
+        Frame::Pending {
             operation: key.to_string(),
             step: "WaitForNodeReady".into(),
-            reason: "mesh1.node.3: pre_node_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready".into()
+            reason: "mesh1.node.3: pre_node_ready answered Pending: pulling its node-admin".into()
         }
     );
-    assert_eq!(after, [Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete], "a repeated blocker makes no second frame, and the ready node ends the stream: {after:?}");
+    assert_eq!(after, [Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete], "a repeated reason makes no second frame, and the ready node ends the stream: {after:?}");
+}
+
+/// CONTRACT (fabric-node-hooks.md "Where the failure lands": a Build-started node's failed start
+/// lands as "the step's `rdm.build.step` event, `failed { reason }`; its mesh's section ends, and the
+/// Build ends `incomplete`"; the executor "ends its `WaitForNodeReady` step failed from its Status
+/// `StartFailed { step: node.pre-node-ready, reason }` reply"): a create whose node has joined and
+/// whose start ended Failed at its hook (its hook's attempts spent answering `Pending`) fails
+/// `WaitForNodeReady` at once with the hook's last reason, long before the step's own bound, and the
+/// stream ends `Failed` at `node.create` naming it. Must NOT happen: the step waiting out its bound,
+/// `node.created` or `Complete`, or the reason lost.
+#[test]
+fn a_create_whose_nodes_start_ended_failed_at_its_hook_fails_its_ready_step_with_the_hooks_reason() {
+    let cap = capture();
+    let (frames, end, took) = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let why = "mesh1.node.3: its start ended Failed at node.pre-node-ready: rows still not published (pre_node_ready answered Pending on each of its 3 attempts)";
+        *rig.topology_view.not_ready.lock().unwrap() = Some(rdm_admin::node_hooks::ProbeAnswer::StartFailed(why.to_string()));
+        let served = serve(door(&rig, Duration::from_secs(30)).await).await;
+        let nodes = nodes_over(&served.carrier);
+        let started = std::time::Instant::now();
+        let mut stream = create_rpc(&nodes, &served).await.unwrap();
+        let build = stream.accepted().expect("the call opened a Build").build_id.clone();
+        tokio::spawn({
+            let (rig, build) = (rig.clone(), build.clone());
+            async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
+        });
+        let (frames, end) = tokio::time::timeout(Duration::from_secs(20), collect_frames(&mut stream, Duration::from_secs(15))).await.expect("the stream ends within 20 s");
+        (frames, end, started.elapsed())
+    });
+    assert!(end.is_none(), "a failed step ends the stream with its terminal frame: {end:?}");
+    let reason = match frames.last() {
+        Some(Frame::Failed { step: NodeStep::Create, reason }) => reason.clone(),
+        other => panic!("the stream ends Failed at node.create, not {other:?}; frames {frames:?}"),
+    };
+    assert!(reason.contains("rows still not published") && reason.contains("node.pre-node-ready"), "the failure carries the hook's last reason and its step: {reason}");
+    assert!(took < Duration::from_secs(15), "the step ends on the StartFailed answer, not on its 30 s bound: {took:?}");
+    assert!(!frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Created) | Frame::Complete)), "nothing downstream of the failed start is emitted: {frames:?}");
 }
 
 /// CONTRACT: a create whose node has joined but only reports Pending (no hook has named a blocker)
-/// streams no `Blocked` frame however long the Ready check fails; when the node is ready the stream
+/// streams no `Pending` frame however long the Ready check fails; when the node is ready the stream
 /// emits `node.created` and `Complete`.
 #[test]
-fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
+fn a_create_whose_node_is_merely_pending_streams_no_pending_frame() {
     let cap = capture();
     let (frames, end) = cap.run(async {
         let rig = Arc::new(Rig::new());
@@ -618,7 +660,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
         collect_frames(&mut stream, Duration::from_secs(10)).await
     });
     assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");
-    assert!(!frames.iter().any(|f| matches!(f, Frame::Blocked { .. })), "a Pending node with no named blocker is not a Blocked frame: {frames:?}");
+    assert!(!frames.iter().any(|f| matches!(f, Frame::Pending { .. })), "a Pending node whose hook answered nothing is not a Pending frame: {frames:?}");
     assert_eq!(frames[frames.len() - 2..], [Frame::Event(NodeEvent::Created), Frame::Complete], "the ready node ends the stream: {frames:?}");
 }
 

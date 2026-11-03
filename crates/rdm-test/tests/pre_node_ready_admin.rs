@@ -77,14 +77,16 @@ fn the_day_zero_root_runs_the_hook_with_no_mesh_primary_and_completes_from_local
     })
 }
 
-/// CONTRACT: an admin launched by another admin runs the same hook against its accepting authority.
-/// The Day-0 admin's own hook is held, so its pull gate is closed: the joining admin's pull is
-/// answered typed `NotReady`, its hook is `Blocked { PrimaryReady }`, the Ready check names that
-/// blocker (`rdm.node_admin.runtime.reject.via-not-ready`) and it publishes Pending.
-/// Its executor's `ready_blocker` (a `ProbeNodeState` to the exact birth) is answered Status
-/// `Blocked` carrying that blocker, named with no attempt counter (node-start.md step 3). When the Day-0 admin's hook returns and it publishes Ready, the joining admin's hook
-/// runs again, pulls the rows and it publishes Ready after its authority. What must NOT
-/// happen: the joining admin Ready while its hook is blocked, or its probe answered `Current`.
+/// CONTRACT (fabric-node-hooks.md "The server side gates too", "Outcomes and the gate"): an admin
+/// launched by another admin runs the same hook against the admin that answered its join. The Day-0
+/// admin's own hook is held, so its pull gate is closed: the joining admin's pull is answered typed
+/// `NotReady`, its hook answers `Pending` with that reason, the Ready check names it
+/// (`rdm.node_admin.runtime.reject.via-not-ready`) and it publishes Pending. Its executor's
+/// `ready_hook_answer` (a `ProbeNodeState` to the exact node) is answered Status `Pending` carrying the
+/// hook's reason, named with no attempt counter. When the Day-0 admin's hook returns, a later attempt
+/// of the joining admin's hook on its `Send` pulls the rows and it publishes Ready after its
+/// authority. What must NOT happen: the joining admin Ready while its hook answers Pending, or its
+/// probe answered `Current`.
 #[test]
 fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_does() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
@@ -98,7 +100,6 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         use rdm_core::launch::{Launch, Launcher};
         use rdm_core::runtime::RuntimeFact;
         use rdm_core::{IncarnationId, NodeId};
-        use rdm_admin::node_hooks::RetryOn;
         use rdm_test::pre_node_ready_probe::{PullServer, Row};
 
         let root_dir = std::env::temp_dir().join(format!("pre-node-ready-pair-a-{}", NodeId::mint()));
@@ -169,25 +170,27 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         let env = launch.to_env();
         let joiner_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
         let joiner_pre_node_ready = TestPreNodeReady::new(Mode::Pull);
+        // Enough attempts to outlast the cell's hold of the Day-0 admin's hook.
+        joiner_pre_node_ready.set_attempts(u8::MAX);
         let joiner = start_with(joiner_cfg, Wiring { node_hooks: NodeHooks::new(joiner_pre_node_ready.clone()), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
 
         let handle = joiner.pre_node_ready().expect("a registered hook has a handle");
-        let blocked = tokio::time::timeout(WRONG, async {
+        let pending = tokio::time::timeout(WRONG, async {
             loop {
-                if matches!(handle.state(), PreNodeReadyState::Blocked { .. }) {
+                if matches!(handle.state(), PreNodeReadyState::Pending { .. }) {
                     return handle.state();
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
-        .expect("the pull was answered NotReady and the hook blocked");
-        assert!(matches!(blocked, PreNodeReadyState::Blocked { retry_on: RetryOn::PrimaryReady, .. }), "{blocked:?}");
-        assert_eq!(joiner.digest.lock().unwrap().status, MemberStatus::Pending, "a blocked admin is Pending");
+        .expect("the pull was answered NotReady and the hook answered Pending");
+        let PreNodeReadyState::Pending { reason: hook_reason, .. } = pending.clone() else { unreachable!() };
+        assert!(hook_reason.contains("NotReady"), "the hook's reason is the admin's answer: {pending:?}");
+        assert_eq!(joiner.digest.lock().unwrap().status, MemberStatus::Pending, "a pending admin is Pending");
         assert_eq!(pull.answered(), 0, "the Day-0 admin answered no rows before its own hook passed");
-        // node-start.md step 3: while Blocked, the node answers its executor's ProbeNodeState with
-        // Blocked { node_id, incarnation, reason, retry_on }, and the executor's `ready_blocker` names it.
-        let PreNodeReadyState::Blocked { reason: hook_reason, .. } = blocked.clone() else { unreachable!() };
+        // node-rpc-envelope.md, Status: while its hook answers Pending, the node answers its executor's
+        // ProbeNodeState with Pending { node_id, incarnation, reason }, and `ready_hook_answer` names it.
         let joiner_digest = joiner.digest.lock().unwrap().clone();
         let mut subject = rdm_admin::model::Node::allocated(joiner_digest.node.location(), joiner_digest.node.mesh.clone(), &joiner_digest.node.r#type);
         subject.node_id = joiner_digest.node.node_id.clone();
@@ -202,15 +205,15 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         };
         let named = tokio::time::timeout(WRONG, async {
             loop {
-                if let Some(why) = rdm_admin::deployment::pipeline::NodeObserver::ready_blocker(&observer, &subject).await {
+                if let Some(rdm_admin::node_hooks::ProbeAnswer::Pending(why)) = rdm_admin::deployment::pipeline::NodeObserver::ready_hook_answer(&observer, &subject).await {
                     return why;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await
-        .expect("the executor's ready_blocker names the blocked admin's blocker");
-        assert!(named.contains(subject.node_id.as_str()) && named.contains(&hook_reason) && named.contains("primary-ready"), "the blocker names the birth by its node id, the hook's reason and its retry event: {named}");
+        .expect("the executor's ready_hook_answer names the pending admin's reason");
+        assert!(named.contains(subject.node_id.as_str()) && named.contains(&hook_reason), "the answer names the node by its node id and the hook's reason: {named}");
         assert!(!named.contains("(attempt "), "no attempt counter: {named}");
         // The Ready check reports a changed blocker list on its own cadence.
         let ready_blockers = tokio::time::timeout(WRONG, async {
@@ -223,26 +226,26 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
                     .filter(|(n, _, f)| n == "rdm.node_admin.runtime.reject.via-not-ready" && f.get("node_path").map(String::as_str) == Some("mesh1.node-admin") && f.get("node_name").map(String::as_str) == Some("2"))
                     .filter_map(|(_, _, f)| f.get("detail").cloned())
                     .collect();
-                if found.iter().any(|d| d.contains("pre_node_ready is blocked")) {
+                if found.iter().any(|d| d.contains("pre_node_ready answered Pending")) {
                     return found;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
-        .expect("the Ready check names the hook's blocker");
-        assert!(ready_blockers.iter().any(|d| d.contains("it runs again on primary-ready")), "the blocker names its retry event: {ready_blockers:?}");
+        .expect("the Ready check names the hook's reason");
+        assert!(ready_blockers.iter().any(|d| d.contains("NotReady")), "the Ready check names the hook's reason: {ready_blockers:?}");
 
-        // The Day-0 admin's hook returns: its gate opens, it is Ready, and the joiner's retry follows.
+        // The Day-0 admin's hook returns: its gate opens, it is Ready, and the joiner's next attempt passes.
         resume.notify_one();
-        assert_eq!(tokio::time::timeout(WRONG, handle.settled()).await.expect("the hook runs again"), PreNodeReadyState::Passed);
+        assert_eq!(tokio::time::timeout(WRONG, handle.settled()).await.expect("a later attempt passes"), PreNodeReadyState::Passed);
         until_ready(&joiner).await;
         assert_eq!(root.digest.lock().unwrap().status, MemberStatus::Ready, "the authority was Ready before the joiner");
         assert_eq!(joiner_pre_node_ready.held().0.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(root_pre_node_ready.contexts.lock().unwrap().len(), 1);
         assert!(root_pre_node_ready.contexts.lock().unwrap()[0].2.is_some(), "the Day-0 root's hook was handed authority None");
         let joiner_ctx = joiner_pre_node_ready.contexts.lock().unwrap().clone();
-        assert_eq!(joiner_ctx.iter().map(|c| c.1.clone()).collect::<Vec<_>>(), vec![Some(root_digest.node.node_id.to_string()); 2], "both attempts pulled from the accepting admin");
+        assert!(joiner_ctx.len() >= 2 && joiner_ctx.iter().all(|c| c.1 == Some(root_digest.node.node_id.to_string())), "every attempt pulled from the admin that answered the join: {joiner_ctx:?}");
 
         joiner.leave().await;
         root.leave().await;

@@ -5,7 +5,7 @@
 //! Build family (op `0x20`, `build.create`): `Started`, then one frame per step event as the
 //! step's `Complete` receipt becomes durable on the executor that wrote it (`node.created`,
 //! `node.joined`, ...), then `Complete` or a typed `Failed { step, reason }` that names the
-//! workflow step that failed. A `Blocked` frame is live progress and no step outcome. The caller
+//! workflow step that failed. A `Pending` frame is live progress and no step outcome. The caller
 //! reads no Build and no gossip: nothing on the path to a frame polls or sleeps.
 //!
 //! The commit cut: a submit that fails before its connection is made provably reached no handler
@@ -35,11 +35,12 @@ pub enum Frame {
     },
     /// A step completed.
     Event(NodeEvent),
-    /// The step in flight is blocked. Live progress: never a step outcome, and not terminal.
-    Blocked {
-        /// The Build operation the blocked step belongs to (`noun.verb:<node_id>`).
+    /// The step in flight is pending: its node's `pre_node_ready` answered `Pending`. Live progress:
+    /// never a step outcome, and not terminal.
+    Pending {
+        /// The Build operation the pending step belongs to (`noun.verb:<node_id>`).
         operation: String,
-        /// The blocked step.
+        /// The pending step.
         step: String,
         /// What it waits for.
         reason: String,
@@ -581,9 +582,9 @@ impl WorkflowStream {
                     self.queued.extend(events.map(Frame::Event));
                     return Some(Ok(self.deliver(Frame::Event(e))));
                 }
-                BuildFrame::Blocked { operation, step, reason, .. } => {
-                    self.span.in_scope(|| tracing::info!(operation = %operation, step = %step, reason = %reason, "the step in flight is blocked"));
-                    return Some(Ok(Frame::Blocked { operation, step, reason }));
+                BuildFrame::Pending { operation, step, reason, .. } => {
+                    self.span.in_scope(|| tracing::info!(operation = %operation, step = %step, reason = %reason, "the step in flight is pending"));
+                    return Some(Ok(Frame::Pending { operation, step, reason }));
                 }
                 BuildFrame::Complete => return Some(Ok(self.deliver(Frame::Complete))),
                 BuildFrame::Failed { reason, .. } => {

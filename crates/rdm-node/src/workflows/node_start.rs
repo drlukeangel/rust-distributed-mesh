@@ -22,8 +22,8 @@
 //! 3. `rdm.mesh.node.update.via-pre-node-ready-attempt` (step 3): the `pre_node_ready` hook, with the
 //!    start kind, the accepting authority (or why there is none), the joined channel, the member cert
 //!    and rafka-time. No topology has been read: topology follows the hook.
-//! 4. Once the hook passed (step 4), in the start itself, or in the task a blocked or spawned hook runs
-//!    on in:
+//! 4. Once the hook passed under its `Send` (step 4), in the start itself, or in the task a spawned
+//!    hook runs in:
 //!    - `rdm.mesh.node.update.via-build-floor`: the type's Build floor, on every start (a node-admin
 //!      reads the Build's committed records it is missing from storage, Q292; a node owes none).
 //!      It reads no topology;
@@ -33,7 +33,7 @@
 //!      after the install. No second topology request is made to refresh rafka-time.
 //! 5. `rdm.mesh.node.update.via-ready` (step 5): the type's node.started report.
 
-use crate::node_hooks::{AcceptingPrimary, AcceptingPrimarySource, Birth, End, Events, HookDriver, NodeReadyCtx, NodeHooks, PreNodeReadyHandle, NoAcceptingPrimary, StartKind, Step};
+use crate::node_hooks::{AcceptingPrimary, AcceptingPrimarySource, Birth, End, HookDriver, NodeReadyCtx, NodeHooks, PreNodeReadyHandle, NoAcceptingPrimary, StartKind, PRE_NODE_READY_STEP};
 use crate::model::NodeId;
 use crate::node_self::StartFailed;
 use crate::topology_read::TopologyRead;
@@ -191,13 +191,12 @@ pub type Spawn = Box<dyn FnOnce(BoxFut<()>) -> tokio::task::JoinHandle<()> + Sen
 
 /// How the hook runs.
 pub enum HookRuns {
-    /// The first attempt runs inside the start, which answers its outcome and, when it passed, runs
-    /// the steps after the hook too; a blocked hook runs on, then those steps, in a task held in
-    /// `blocked`.
-    Inline {
-        /// Where the task of a blocked hook is held, so a stop ends it.
-        blocked: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
-    },
+    /// The hook's first attempt runs inside the start, which answers its end and, when it passed,
+    /// runs the steps after the hook too. When it answered `Pending`, a start after a stop runs the
+    /// rest of its attempts inside the start too, so its caller is answered the hook's end; a first
+    /// start returns with the node Pending and runs them, then the steps after the hook, in a task its
+    /// cancel token ends.
+    Inline,
     /// The start returns while the hook, then the steps after it, run in the task `spawn` starts.
     Spawned {
         /// Starts the hook's task.
@@ -211,8 +210,6 @@ pub struct HookParts {
     pub birth: Birth,
     /// The hook the embedding app registered.
     pub node_hooks: NodeHooks,
-    /// The retry events of this birth.
-    pub events: Events,
     /// Cancelled when the birth is deleted: the hook and any pull it has in flight end.
     pub cancel: CancelToken,
     /// Where the node's Ready check and its probe read the hook's state.
@@ -224,7 +221,7 @@ pub struct HookParts {
 }
 
 /// What a node type plugs into the steps after the hook. It is owned: the steps run inside the start
-/// when the hook passes at its first attempt, and otherwise in the task the hook runs on in.
+/// when the hook runs inline, and otherwise in the task the spawned hook runs in.
 #[async_trait::async_trait]
 pub trait AfterHook: Send + 'static {
     /// The topology step's read is installed: the kind takes what it reaches its mesh through (its
@@ -248,9 +245,12 @@ pub trait AfterHook: Send + 'static {
     /// node.started: the type's report once every step before it ended.
     async fn report(self: Box<Self>);
 
-    /// A step failed: `inside` the start (which answers the failure; the kind ends what the start
-    /// brought up), or in the task a blocked or spawned hook ran in, after the start returned (the
-    /// kind names the failure where its readiness evidence is read; the node stays Pending).
+    /// A step after the hook failed, or a start after a stop ended Failed at the hook: `inside` the
+    /// start (which answers the failure; the kind ends what the start brought up), or in the task a
+    /// spawned hook ran in, after the start returned (the kind names the failure where its readiness
+    /// evidence is read; the node stays Pending). A first start that ended Failed at the hook calls
+    /// none of it: the node stays Pending, its process keeps running, and its probe answers
+    /// `StartFailed` (fabric-node-hooks.md "Where the failure lands").
     async fn start_failed(self: Box<Self>, failed: &StartFailed, inside: bool) {
         let _ = (failed, inside);
     }
@@ -330,55 +330,74 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
         Ok((t, _)) => AcceptingPrimarySource::Accepted(AcceptingPrimary { node_id: t.node_id.clone(), endpoint: t.endpoint, target: t.target.clone() }),
         Err(why) => AcceptingPrimarySource::None(*why),
     };
-    let HookParts { birth, node_hooks, events, cancel, state, runs, after } = parts;
+    let HookParts { birth, node_hooks, cancel, state, runs, after } = parts;
     let inherited = matches!(kind, StartKind::AfterStop)
         || matches!(accepting_primary, AcceptingPrimarySource::None(NoAcceptingPrimary::InheritedRoot | NoAcceptingPrimary::Recovery))
         || std::env::var("RDM_INHERITED_DATA_DIR").ok().as_deref() == Some("1");
     let ctx = NodeReadyCtx { start_kind: kind, birth, accepting_primary, client: client.clone(), topology_view: topology_view.clone(), cancel, rafka_time: rafka_time.clone(), member_cert, attempt: 0, inherited };
-    let driver = node_hooks.driver(ctx, events, root.clone());
+    let driver = node_hooks.driver(ctx, root.clone());
     *state.lock().unwrap() = driver.as_ref().map(|d| d.handle());
     // 4. and 5., once the hook passed.
     let rest = AfterTheHook { root, name: name.clone(), birth_path: path.path.clone(), birth_name: path.name.clone(), node_id, client, rafka_time, topology_view, through: through.ok(), commander, after };
     match runs {
         HookRuns::Spawned { spawn } => {
             let task = spawn(Box::pin(async move {
-                let passed = match &driver {
-                    None => true,
-                    Some(driver) => {
-                        let first = driver.attempt().await;
-                        driver.run(first).await == End::Passed
-                    }
+                let Some(driver) = driver else {
+                    return rest.run_on(None).await;
                 };
-                if passed {
-                    rest.run_on(driver).await;
+                match driver.run().await {
+                    End::Passed => rest.run_on(Some(driver)).await,
+                    End::Failed(why) => rest.ended_failed_at_the_hook(&why),
+                    End::Cancelled => {}
                 }
             }));
             node.hook_started(task).await
         }
-        HookRuns::Inline { blocked } => {
+        HookRuns::Inline => {
             let Some(driver) = driver else {
                 return rest.run_inline(None).await.map_err(Into::into);
             };
-            match driver.attempt().await {
-                Step::Passed => rest.run_inline(Some(driver)).await.map_err(Into::into),
-                Step::Failed(why) => {
-                    let failed = StartFailed { step: "node.pre-node-ready", reason: format!("{} failed pre_node_ready: {why}", rest.node_id) };
-                    rest.after.start_failed(&failed, true).await;
-                    Err(failed.into())
+            let end = match driver.first().await {
+                Some(end) => end,
+                // A first start's hook answered Pending: the start returns with the node Pending, and
+                // the hook's further attempts, then the steps after it, run in a task of their own,
+                // ended by the node's cancel token. Its end lands where the probe reads it.
+                None if kind == StartKind::FirstStart => {
+                    tokio::spawn(async move {
+                        match driver.rest().await {
+                            End::Passed => rest.run_on(Some(driver)).await,
+                            End::Failed(why) => rest.ended_failed_at_the_hook(&why),
+                            End::Cancelled => {}
+                        }
+                    });
+                    return Ok(());
                 }
-                Step::Cancelled => match kind {
+                // A start after a stop runs its hook to its end inside the start: its node.start caller
+                // (or its node.mesh.join commander) is answered that end.
+                None => driver.rest().await,
+            };
+            match end {
+                End::Passed => rest.run_inline(Some(driver)).await.map_err(Into::into),
+                End::Failed(why) => {
+                    rest.ended_failed_at_the_hook(&why);
+                    match kind {
+                        // A first start's failure lands where the probe reads it: the node stays
+                        // Pending, its process keeps running, and its probe answers StartFailed
+                        // (fabric-node-hooks.md "Where the failure lands").
+                        StartKind::FirstStart => Ok(()),
+                        // A start after a stop ends Failed to its node.start caller.
+                        StartKind::AfterStop => {
+                            let failed = StartFailed { step: PRE_NODE_READY_STEP, reason: why };
+                            rest.after.start_failed(&failed, true).await;
+                            Err(failed.into())
+                        }
+                    }
+                }
+                End::Cancelled => match kind {
                     // A first start cancelled while its hook ran ends without a report and without a refusal.
                     StartKind::FirstStart => Ok(()),
-                    StartKind::AfterStop => Err(StartFailed { step: "node.pre-node-ready", reason: format!("{name} was cancelled while pre_node_ready ran") }.into()),
+                    StartKind::AfterStop => Err(StartFailed { step: PRE_NODE_READY_STEP, reason: format!("{name} was cancelled while pre_node_ready ran") }.into()),
                 },
-                blocked_step @ Step::Blocked(_) => {
-                    *blocked.lock().unwrap() = Some(tokio::spawn(async move {
-                        if driver.run(blocked_step).await == End::Passed {
-                            rest.run_on(Some(driver)).await;
-                        }
-                    }));
-                    Ok(())
-                }
             }
         }
     }
@@ -409,6 +428,13 @@ impl AfterTheHook {
 }
 
 impl AfterTheHook {
+    /// The start ended Failed at the hook: named on its own span under the start's root. Nothing after
+    /// the hook runs, nothing calls the hook again, and the node stays Pending.
+    fn ended_failed_at_the_hook(&self, why: &str) {
+        tracing::info_span!(parent: &self.root, "rdm.mesh.node.reject.via-start-step-failed", node_path = %self.birth_path, node_name = %self.name, node_id = %self.node_id, step = PRE_NODE_READY_STEP, reason = %why)
+            .in_scope(|| tracing::warn!("the start ended Failed at pre_node_ready: the node stays Pending and nothing calls the hook again"));
+    }
+
     /// The steps inside the start: a failed step ends what the start brought up, and the start
     /// answers it.
     async fn run_inline(self, driver: Option<Arc<HookDriver>>) -> Result<(), StartFailed> {
@@ -421,7 +447,7 @@ impl AfterTheHook {
         }
     }
 
-    /// The steps in the task a blocked or spawned hook ran in: no caller waits on them, so a failed
+    /// The steps in the task a spawned hook ran in: no caller waits on them, so a failed
     /// step is named on its own span under the start's root, and the node stays Pending.
     async fn run_on(self, driver: Option<Arc<HookDriver>>) {
         let (root, name, path, node_id) = (self.root.clone(), self.name.clone(), self.location(), self.node_id.clone());
@@ -572,7 +598,7 @@ impl<E: From<StartFailed> + Send + 'static> StartNode for FirstStart<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_hooks::{Addressed, HookOutcome, OnNodeReady, PreNodeReady};
+    use crate::node_hooks::{HookOutcome, OnNodeReady, PreNodeReady};
     use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId};
 
     struct RecordedAfter {
@@ -734,12 +760,9 @@ mod tests {
                     r#type: "node".into(),
                 },
                 node_hooks: NodeHooks::new(hook.clone()).with_on_node_ready(hook),
-                events: Events::new(topology_view.digest_view.clone(), Addressed::new()),
                 cancel: CancelToken::new(),
                 state: Arc::default(),
-                runs: HookRuns::Inline {
-                    blocked: Arc::default(),
-                },
+                runs: HookRuns::Inline,
                 after: Box::new(RecordedAfter {
                     steps: self.steps.clone(),
                 }),
@@ -764,7 +787,7 @@ mod tests {
     /// Preserve retained own properties and application recognition. Do not fetch topology before
     /// the Build-floor check and do not issue a second topology request just to refresh time.
     /// 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot
-    /// nor a Blocked hook permits it. That frame is the node's report: the mesh-primary sets Ready on that
+    /// nor a `Pending` hook permits it. That frame is the node's report: the mesh-primary sets Ready on that
     /// exact birth through the node status apply, not a caller op. The node also declares Ready to its
     /// mesh-primary as an owed message, as it declares Stopped (Q36, Q87); frame and declaration apply once
     /// (Q49). A typed refusal of that apply completes no readiness.

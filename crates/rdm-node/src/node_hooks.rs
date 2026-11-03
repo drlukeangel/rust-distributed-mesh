@@ -1,23 +1,25 @@
 //! `pre_node_ready`: the one hook an embedding app supplies to be born full.
 //!
-//! A node reaches the hook after its `JoinNode` was accepted, its `GetTopology` read installed
-//! and its mesh channel joined (node-start.md step 3). The hook returns
-//! [`HookOutcome`]:
+//! A node reaches the hook after its `JoinNode` was accepted and its mesh channel joined
+//! (node-start.md step 3). RDM runs it under the hook's own [`PreNodeReady::send`] (Q350): each call
+//! must answer within the `TimeLimit`, and between calls RDM waits the one Send schedule
+//! ([`rdm_transport::Pacing`]). The hook answers [`HookOutcome`]:
 //!
 //! - `Ok`: RDM's own checks go on to Ready, and the app's own ops are served
 //!   ([`PreNodeReadyGate`] opens).
-//! - `Blocked { reason, retry_on }`: the node stays Pending, the blocker is named where Ready
-//!   blockers are named, and the hook runs again only when the named [`RetryOn`] event happens.
-//!   The wait arms, then re-checks the condition against a count taken before the attempt began, so
-//!   an event that happened while the attempt ran cannot strand the node. No timer and no sleep.
-//! - `Failed { reason }`: the node ends by name.
+//! - `Pending { reason }`: that attempt ends; the node stays Pending, its reason is the blocker
+//!   evidence and the probe's Status `Pending` answer, and RDM calls the hook again after the backoff.
+//!   No answer within the `TimeLimit` is `Pending { reason: "time limit" }`.
+//! - `Failed { reason }`, or the attempts spent: the start ends Failed with the last reason, back to
+//!   whoever started the node. The node stays Pending, its process keeps running, and nothing calls
+//!   the hook again; a probe of it is answered `StartFailed { step: node.pre-node-ready, reason }`.
 //!
-//! The Day-0 root and a fabric-primary recovered from its durable map have no primary to pull from:
-//! their context says so and the hook completes from local state
+//! The Day-0 root and a fabric-primary recovered from its durable map have no node-admin to pull
+//! from: their context says so and the hook completes from local state
 //! (`fabric-node-hooks.md` "What the context carries", `gossip.md` §9).
 //!
 //! One span per attempt (`rdm.mesh.node.update.via-pre-node-ready-attempt`) under the boot span carries
-//! the outcome and the blocker or reason; `via-ready` follows the successful attempt.
+//! the outcome and the reason; `via-ready` follows the successful attempt.
 //! [`OnNodeReady`] is for optional work only: nothing required may live there.
 //!
 //! [`OnCallFailed`] is a notice on every node: once per call it opened whose attempts are spent, on a
@@ -25,12 +27,9 @@
 //! owner (`fabric-node-hooks.md` "on_call_failed"). It gates nothing.
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, PathName};
-use rdm_core::{MemberStatus, MeshDigest};
-use std::time::Duration;
-use rdm_transport::topology::{DigestView, TopologyView};
+use rdm_transport::topology::TopologyView;
 use rdm_transport::{CancelToken, PreNodeReadyGate, NodeRpcClient};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing::Instrument;
 
 /// The exact birth the hook runs for.
@@ -57,10 +56,11 @@ impl Birth {
     pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
-/// The node-admin that accepted this birth's `JoinNode`: the accepting primary the hook pulls from (`fabric-node-hooks.md` "What the context carries"). A start after
-/// a stop reached it back over the call that commanded the start, holding no record of it
-/// (`lifecycles/node-start.md` step 2): it is known by the node ID its join answer gave and the endpoint it answered
-/// on, and the hook calls it through `target`.
+/// The node-admin that answered this node's `JoinNode` (node-mesh-join.md's accepting primary), which
+/// the hook reads its kind topics from (`fabric-node-hooks.md` "What the context carries"). A start
+/// after a stop reached it back over the call that commanded the start, holding no record of it
+/// (`lifecycles/node-start.md` step 2): it is known by the node ID its join answer gave and the
+/// endpoint it answered on, and the hook calls it through `target`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptingPrimary {
     /// The globally unique admin ID supplied by the join answer.
@@ -72,7 +72,8 @@ pub struct AcceptingPrimary {
     pub target: rdm_transport::NodeTarget,
 }
 
-/// Why a birth has no accepting primary to pull from (`fabric-node-hooks.md` "What the context carries").
+/// Why a node has no node-admin that answered its `JoinNode` (`fabric-node-hooks.md` "What the
+/// context carries").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoAcceptingPrimary {
     /// The Day-0 root: no primary exists before it.
@@ -95,17 +96,17 @@ impl NoAcceptingPrimary {
     }
 }
 
-/// Where the hook pulls from.
+/// The node-admin the hook pulls from, or why there is none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcceptingPrimarySource {
-    /// The admin that accepted this birth's join.
+    /// The admin that answered this node's join.
     Accepted(AcceptingPrimary),
     /// There is none, and why: the hook resolves from local state.
     None(NoAcceptingPrimary),
 }
 
 impl AcceptingPrimarySource {
-    /// The accepting admin, when there is one.
+    /// The admin that answered the join, when there is one.
     pub fn accepted(&self) -> Option<&AcceptingPrimary> {
         match self {
             Self::Accepted(a) => Some(a),
@@ -131,53 +132,39 @@ pub struct NodeReadyCtx {
     pub start_kind: StartKind,
     /// The exact birth.
     pub birth: Birth,
-    /// The accepting primary to pull from, or why there is none (`fabric-node-hooks.md` "What the context carries").
+    /// The node-admin that answered the join, to pull from, or why there is none
+    /// (`fabric-node-hooks.md` "What the context carries").
     pub accepting_primary: AcceptingPrimarySource,
     /// The process's one Node RPC client.
     pub client: Arc<NodeRpcClient>,
     /// The topology/gossip handle: the app subscribes its kind topics before it takes its
     /// snapshot, so what changes during the pull arrives by gossip.
     pub topology_view: TopologyView,
-    /// Cancelled when the birth is deleted (stop-node, its process stopping): the hook
-    /// and any pull it has in flight end.
+    /// Cancelled when the node is stopped or deleted: the hook and any pull it has in flight end.
     pub cancel: CancelToken,
     /// Rafka-time: the process's one instance, adopted by the join that was accepted.
     pub rafka_time: rdm_transport::clock::RafkaTime,
-    /// The member cert the accepting primary's signer issued for this exact birth, as opaque
-    /// bytes (`fabric-certs.md`): empty when that primary is configured with no certs; `None`
+    /// The member cert the answering node-admin's signer issued for this exact birth, as opaque
+    /// bytes (`fabric-certs.md`): empty when that node-admin is configured with no certs; `None`
     /// for a birth that made no `JoinNode` (the Day-0 root, a recovery start).
     pub member_cert: Option<Vec<u8>>,
-    /// Which attempt this is, from 1.
+    /// Which attempt of the hook's `Send` this is, from 1.
     pub attempt: u32,
     /// Whether this birth's data dir was inherited from a previous birth (R-FM2).
     pub inherited: bool,
 }
 
-impl NodeReadyCtx {
-    /// The outcome for a pull the accepting primary answered with its typed `NotReady`: wait for that
-    /// primary to be Ready (`fabric-node-hooks.md` "The server side gates too").
-    pub fn primary_not_ready(&self, reason: impl Into<String>) -> HookOutcome {
-        HookOutcome::Blocked { reason: reason.into(), retry_on: RetryOn::PrimaryReady }
-    }
-}
-
-/// The event a blocked hook waits for: the envelope's typed `RetryOn` (node-rpc-envelope.md, Status
-/// op 0x1B), the same value a probe of a blocked birth answers in `Blocked`.
-pub use rdm_core::status::RetryOn;
-
-/// What the hook returns.
+/// What the hook answers (`fabric-node-hooks.md` "pre_node_ready").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookOutcome {
-    /// The node holds the state its role needs: go on to Ready.
+    /// Proceed: the node becomes Ready.
     Ok,
-    /// Not yet: stay Pending and run again on `retry_on`.
-    Blocked {
+    /// Not yet: this attempt ends, and RDM calls again on the hook's `Send`.
+    Pending {
         /// What the node is waiting for, in words.
         reason: String,
-        /// The event that runs the hook again.
-        retry_on: RetryOn,
     },
-    /// Never: the node ends by name.
+    /// Stop now: the node's start ends Failed.
     Failed {
         /// Why.
         reason: String,
@@ -187,7 +174,13 @@ pub enum HookOutcome {
 /// The one hook: run before Ready, for every birth (`fabric-node-hooks.md` "pre_node_ready").
 #[async_trait::async_trait]
 pub trait PreNodeReady: Send + Sync {
-    /// The step this node's role takes before it reports Ready (`fabric-node-hooks.md` "pre_node_ready").
+    /// The Send RDM runs this hook under: how many tries, and how long each may take.
+    /// The application gives its own; with none, `Send::default()` (3 attempts, 10 s).
+    fn send(&self) -> rdm_transport::Send {
+        rdm_transport::Send::default()
+    }
+
+    /// Called before the node reaches Ready. ctx.cancel fires if the node is stopped or deleted meanwhile.
     async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome;
 }
 
@@ -357,118 +350,6 @@ impl rdm_transport::CallEndObserver for CallFailedNotice {
     }
 }
 
-/// Which endpoints addressed this node with a down op, counted: a count survives an event that
-/// happened before anything waited on it. Keyed by the endpoint the transport proved for the call,
-/// so a commander no record names (a commander born after this node's stop, `lifecycles/node-start.md` step 2)
-/// is counted too.
-#[derive(Debug, Default)]
-pub struct Addressed {
-    counts: Mutex<std::collections::HashMap<iroh::PublicKey, u64>>,
-    tick: tokio::sync::watch::Sender<u64>,
-}
-
-impl Addressed {
-    /// An empty record.
-    pub fn new() -> Arc<Self> {
-        Arc::default()
-    }
-
-    /// The endpoint `from` sent this node a down op.
-    pub fn note(&self, from: &iroh::PublicKey) {
-        *self.counts.lock().unwrap().entry(*from).or_default() += 1;
-        self.tick.send_modify(|v| *v += 1);
-    }
-
-    fn count(&self, from: &iroh::PublicKey) -> u64 {
-        self.counts.lock().unwrap().get(from).copied().unwrap_or(0)
-    }
-}
-
-/// The counts a retry waits against, taken before an attempt begins.
-#[derive(Debug, Clone)]
-pub struct Mark {
-    heard: u64,
-    addressed: u64,
-    primary_incarnation: Option<IncarnationId>,
-}
-
-/// How a wait for a retry event ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Waited {
-    /// The event happened.
-    Fired(&'static str),
-    /// The birth was deleted.
-    Cancelled,
-}
-
-/// The retry events of one birth, read from its topology view and the down ops it was sent.
-#[derive(Clone)]
-pub struct Events {
-    digest_view: DigestView,
-    addressed: Arc<Addressed>,
-}
-
-impl Events {
-    /// The events of the birth holding `digest_view`, with the down ops recorded in `addressed`.
-    pub fn new(digest_view: DigestView, addressed: Arc<Addressed>) -> Self {
-        Self { digest_view, addressed }
-    }
-
-    /// The counts now, for the accepting primary.
-    pub fn mark(&self, accepting_primary: &AcceptingPrimarySource) -> Mark {
-        let heard = *self.digest_view.heard_changes().borrow();
-        match accepting_primary.accepted() {
-            Some(a) => Mark { heard, addressed: self.addressed.count(&a.endpoint), primary_incarnation: self.birth_of(a).map(|(d, _)| d.node.incarnation) },
-            None => Mark { heard, addressed: 0, primary_incarnation: None },
-        }
-    }
-
-    /// The birth held for the accepting admin's globally unique ID and its silence duration.
-    /// An endpoint reused by another node never substitutes for this identity.
-    fn birth_of(&self, accepting_primary: &AcceptingPrimary) -> Option<(MeshDigest, Duration)> {
-        self.digest_view.get(accepting_primary.node_id.as_str())
-    }
-
-    fn holds(&self, on: &RetryOn, accepting_primary: Option<&AcceptingPrimary>, mark: &Mark) -> bool {
-        let moved = *self.digest_view.heard_changes().borrow() > mark.heard;
-        if let RetryOn::TargetReachable { node_id: id } = on {
-            return moved && self.digest_view.current(self.digest_view.staleness_floor()).iter().any(|d| &d.node.node_id == id);
-        }
-        // An authority event of a birth with no authority never happens; the attempt refuses such a
-        // request by name before any wait begins.
-        let Some(accepting_primary) = accepting_primary else { return false };
-        let birth = self.birth_of(accepting_primary);
-        match on {
-            RetryOn::PrimaryChanged => match &birth {
-                Some((d, _)) => self.digest_view.is_deleted(d.node.node_id.as_str()) || Some(&d.node.incarnation) != mark.primary_incarnation.as_ref(),
-                None => mark.primary_incarnation.is_some(),
-            },
-            RetryOn::PrimaryReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::Ready && silent <= self.digest_view.staleness_floor()),
-            RetryOn::TargetReachable { .. } => unreachable!("answered above"),
-            RetryOn::PrimaryAddressed => self.addressed.count(&accepting_primary.endpoint) > mark.addressed,
-        }
-    }
-
-    /// Wait for `on`: arm on the view's and the down ops' change counts, then check the condition
-    /// against `mark`, and only then sleep until a count moves or the birth is cancelled.
-    pub async fn wait(&self, on: &RetryOn, accepting_primary: Option<&AcceptingPrimary>, mark: &Mark, cancel: &CancelToken) -> Waited {
-        loop {
-            let mut heard = self.digest_view.heard_changes();
-            let mut addressed = self.addressed.tick.subscribe();
-            heard.borrow_and_update();
-            addressed.borrow_and_update();
-            if self.holds(on, accepting_primary, mark) {
-                return Waited::Fired(on.name());
-            }
-            tokio::select! {
-                _ = heard.changed() => {}
-                _ = addressed.changed() => {}
-                () = cancel.cancelled() => return Waited::Cancelled,
-            }
-        }
-    }
-}
-
 /// Where one birth's hook stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreNodeReadyState {
@@ -477,18 +358,17 @@ pub enum PreNodeReadyState {
         /// Which attempt.
         attempt: u32,
     },
-    /// The last attempt was blocked and the hook waits on its event.
-    Blocked {
+    /// The last attempt answered `Pending` (or its time limit passed); the next follows the backoff.
+    Pending {
         /// Which attempt.
         attempt: u32,
         /// What it waits for, in words.
         reason: String,
-        /// The event that runs the hook again.
-        retry_on: RetryOn,
     },
     /// The hook returned `Ok`.
     Passed,
-    /// The hook failed: the node ends by name.
+    /// The start ended Failed at the hook: it answered `Failed`, or its attempts are spent. The node
+    /// stays Pending and nothing calls the hook again.
     Failed(String),
     /// The hook was cancelled before it passed.
     Cancelled,
@@ -500,22 +380,49 @@ impl PreNodeReadyState {
         match self {
             Self::Passed => None,
             Self::Running { attempt } => Some(format!("{me:?}: pre_node_ready is running (attempt {attempt})")),
-            Self::Blocked { attempt, reason, retry_on } => Some(format!("{me:?}: pre_node_ready is blocked (attempt {attempt}): {reason}; it runs again on {}", retry_on.name())),
-            Self::Failed(why) => Some(format!("{me:?}: pre_node_ready failed: {why}")),
+            Self::Pending { attempt, reason } => Some(format!("{me:?}: pre_node_ready answered Pending (attempt {attempt}): {reason}")),
+            Self::Failed(why) => Some(format!("{me:?}: its start ended Failed at pre_node_ready: {why}")),
             Self::Cancelled => Some(format!("{me:?}: cancelled before pre_node_ready passed")),
         }
     }
 
-    /// What a `ProbeNodeState` is answered `Blocked` with while the hook is `Blocked`
-    /// (node-start.md step 3): the hook's own reason and the event it runs again on, `None` in every
-    /// other state. No attempt counter: a rerun blocked for the same reason answers the same blocker,
-    /// so the executor frames a new `Blocked` only on a new reason.
-    pub fn probe_blocker(&self) -> Option<(String, RetryOn)> {
+    /// What a `ProbeNodeState` is answered while the hook stands here (node-rpc-envelope.md, Status):
+    /// `Pending` with the hook's own reason, `StartFailed` with the last reason once the start ended
+    /// Failed, `None` (Current) in every other state. No attempt counter: a rerun pending for the same
+    /// reason answers the same blocker, so the executor frames a new `Pending` only on a new reason.
+    pub fn probe_answer(&self) -> Option<ProbeAnswer> {
         match self {
-            Self::Blocked { reason, retry_on, .. } => Some((reason.clone(), retry_on.clone())),
-            Self::Running { .. } | Self::Passed | Self::Failed(_) | Self::Cancelled => None,
+            Self::Pending { reason, .. } => Some(ProbeAnswer::Pending(reason.clone())),
+            Self::Failed(why) => Some(ProbeAnswer::StartFailed(why.clone())),
+            Self::Running { .. } | Self::Passed | Self::Cancelled => None,
         }
     }
+}
+
+/// A hook state a probe answers by name (node-rpc-envelope.md, Status: ProbeNodeState).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeAnswer {
+    /// Status `Pending { node_id, incarnation, reason }`.
+    Pending(String),
+    /// Status `StartFailed { step: node.pre-node-ready, reason }`.
+    StartFailed(String),
+}
+
+/// The step a start that ended Failed at the hook names (`StartFailed { step, reason }`).
+pub const PRE_NODE_READY_STEP: &str = "node.pre-node-ready";
+
+/// The Status reply a probe of the exact node (`node_id`, `incarnation`) is answered with for
+/// `answer`, each within its reply bound, named on `rdm.node_admin.status.update.via-probe` with the
+/// probe's `sender`: `Pending { node_id, incarnation, reason }`, or
+/// `StartFailed { step: node.pre-node-ready, reason }` (node-rpc-envelope.md, Status).
+pub fn probe_reply(answer: &ProbeAnswer, node_id: &NodeId, incarnation: &IncarnationId, sender: &str) -> rdm_core::status::StatusReply {
+    let (state, reason, reply) = match answer {
+        ProbeAnswer::Pending(reason) => ("pending", reason, rdm_core::reply::status::bounded_pending(node_id.clone(), incarnation.clone(), reason)),
+        ProbeAnswer::StartFailed(reason) => ("start-failed", reason, rdm_core::reply::status::bounded_start_failed(PRE_NODE_READY_STEP, reason)),
+    };
+    tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %node_id, sender = %sender, state, reason = %reason, "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("probed: the hook's answer is the probe's, nothing re-published"));
+    reply
 }
 
 /// A read-only view of a birth's hook state.
@@ -530,44 +437,13 @@ impl PreNodeReadyHandle {
         self.rx.borrow().clone()
     }
 
-    /// Resolves with the reason once the hook failed; never resolves otherwise. A process selects
-    /// on it beside its stop signal and ends by name.
-    pub async fn failed(&self) -> String {
-        match self.rx.clone().wait_for(|s| matches!(s, PreNodeReadyState::Failed(_))).await {
-            Ok(s) => match &*s {
-                PreNodeReadyState::Failed(why) => why.clone(),
-                _ => unreachable!("waited for Failed"),
-            },
-            Err(_) => std::future::pending().await,
-        }
-    }
-
     /// Resolves once the hook passed or the birth ended without passing.
     pub async fn settled(&self) -> PreNodeReadyState {
-        match self.rx.clone().wait_for(|s| !matches!(s, PreNodeReadyState::Running { .. } | PreNodeReadyState::Blocked { .. })).await {
+        match self.rx.clone().wait_for(|s| !matches!(s, PreNodeReadyState::Running { .. } | PreNodeReadyState::Pending { .. })).await {
             Ok(s) => s.clone(),
             Err(_) => self.state(),
         }
     }
-}
-
-/// A blocked attempt waiting on its event.
-pub struct Pending {
-    retry_on: RetryOn,
-    mark: Mark,
-    span: tracing::Span,
-}
-
-/// How one attempt ended.
-pub enum Step {
-    /// The hook returned `Ok`; the gate is open.
-    Passed,
-    /// The hook failed.
-    Failed(String),
-    /// The hook was cancelled during the attempt; its future was dropped.
-    Cancelled,
-    /// The hook is blocked.
-    Blocked(Pending),
 }
 
 /// How a birth's hook ended.
@@ -575,34 +451,52 @@ pub enum Step {
 pub enum End {
     /// Passed.
     Passed,
-    /// Failed, and why.
+    /// The start ended Failed at the hook, and why: the hook's `Failed`, or its last `Pending` reason
+    /// once its attempts were spent.
     Failed(String),
     /// Cancelled first.
     Cancelled,
 }
 
-/// Runs one birth's hook: the attempts, the waits between them, and the state the Ready check reads.
+/// How one attempt ended.
+enum Attempt {
+    Passed,
+    Pending(String),
+    Failed(String),
+    Cancelled,
+}
+
+/// Runs one birth's hook under its `Send`: the attempts, the backoff between them, and the state the
+/// Ready check and the probe read.
 pub struct HookDriver {
     hook: Arc<dyn PreNodeReady>,
     after: Option<Arc<dyn OnNodeReady>>,
     ctx: NodeReadyCtx,
-    events: Events,
     gate: PreNodeReadyGate,
     state: tokio::sync::watch::Sender<PreNodeReadyState>,
     boot: tracing::Span,
-    attempts: AtomicU32,
+    send: rdm_transport::Send,
+    pacing: rdm_transport::Pacing,
+    /// The attempts made so far.
+    made: std::sync::atomic::AtomicU32,
 }
 
 impl NodeHooks {
     /// The driver for this birth, `None` when no hook is registered. The gate is opened for a node
     /// with no hook, so an app op registered without a hook is never refused.
-    pub fn driver(&self, ctx: NodeReadyCtx, events: Events, boot: tracing::Span) -> Option<Arc<HookDriver>> {
+    pub fn driver(&self, ctx: NodeReadyCtx, boot: tracing::Span) -> Option<Arc<HookDriver>> {
+        self.driver_paced(ctx, boot, rdm_transport::Pacing::from_cadences())
+    }
+
+    /// [`NodeHooks::driver`] on the backoff `pacing` (a cell turns its jitter off).
+    pub fn driver_paced(&self, ctx: NodeReadyCtx, boot: tracing::Span, pacing: rdm_transport::Pacing) -> Option<Arc<HookDriver>> {
         let Some(hook) = self.before.clone() else {
             self.gate.open();
             return None;
         };
+        let send = hook.send();
         let (state, _) = tokio::sync::watch::channel(PreNodeReadyState::Running { attempt: 0 });
-        Some(Arc::new(HookDriver { hook, after: self.after.clone(), ctx, events, gate: self.gate.clone(), state, boot, attempts: AtomicU32::new(0) }))
+        Some(Arc::new(HookDriver { hook, after: self.after.clone(), ctx, gate: self.gate.clone(), state, boot, send, pacing, made: std::sync::atomic::AtomicU32::new(0) }))
     }
 }
 
@@ -612,12 +506,63 @@ impl HookDriver {
         PreNodeReadyHandle { rx: self.state.subscribe() }
     }
 
-    /// One attempt: one span under the boot span carrying the outcome and the blocker or reason.
-    /// The hook future is dropped when the birth is cancelled, which ends any pull it has in
+    /// The hook under its `Send`: attempt after attempt, each bounded by the `TimeLimit`, the backoff
+    /// between them, until it answers `Ok`, answers `Failed`, spends its attempts answering `Pending`,
+    /// or the birth is cancelled. Nothing calls the hook again after it ends.
+    pub async fn run(&self) -> End {
+        match self.first().await {
+            Some(end) => end,
+            None => self.rest().await,
+        }
+    }
+
+    /// The first attempt: its end, or `None` when it answered `Pending` with attempts left, for
+    /// [`HookDriver::rest`] to go on from.
+    pub async fn first(&self) -> Option<End> {
+        self.step().await
+    }
+
+    /// The attempts after the first, each after its backoff, to the hook's end.
+    pub async fn rest(&self) -> End {
+        loop {
+            let cancel = self.ctx.cancel.clone();
+            let after = self.pacing.after(self.made.load(std::sync::atomic::Ordering::SeqCst));
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    self.state.send_replace(PreNodeReadyState::Cancelled);
+                    return End::Cancelled;
+                }
+                () = tokio::time::sleep(after) => {}
+            }
+            if let Some(end) = self.step().await {
+                return end;
+            }
+        }
+    }
+
+    /// One attempt, and the hook's end when it was the last.
+    async fn step(&self) -> Option<End> {
+        let attempts = u32::from(self.send.attempts.max(1));
+        let n = self.made.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        match self.attempt(n).await {
+            Attempt::Passed => Some(End::Passed),
+            Attempt::Cancelled => Some(End::Cancelled),
+            Attempt::Failed(why) => Some(self.failed(why)),
+            Attempt::Pending(reason) if n >= attempts => Some(self.failed(format!("{reason} (pre_node_ready answered Pending on each of its {attempts} attempts)"))),
+            Attempt::Pending(_) => None,
+        }
+    }
+
+    fn failed(&self, why: String) -> End {
+        self.state.send_replace(PreNodeReadyState::Failed(why.clone()));
+        End::Failed(why)
+    }
+
+    /// Attempt `n`: one span under the boot span carrying the outcome and the reason. The hook future
+    /// is dropped when the birth is cancelled or its time limit passes, which ends any pull it has in
     /// flight with it.
-    pub async fn attempt(&self) -> Step {
-        let n = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
-        let mark = self.events.mark(&self.ctx.accepting_primary);
+    async fn attempt(&self, n: u32) -> Attempt {
         self.state.send_replace(PreNodeReadyState::Running { attempt: n });
         let span = tracing::info_span!(
             parent: &self.boot,
@@ -626,19 +571,21 @@ impl HookDriver {
             node_id = %self.ctx.birth.node_id,
             incarnation_id = %self.ctx.birth.incarnation.as_str(),
             attempt = n,
+            attempts = self.send.attempts,
+            time_limit_ms = self.send.time_limit.0.as_millis() as u64,
             inherited = self.ctx.inherited,
             accepting_primary = %match &self.ctx.accepting_primary { AcceptingPrimarySource::Accepted(a) => a.node_id.to_string(), AcceptingPrimarySource::None(why) => format!("none: {}", why.reason()) },
             outcome = tracing::field::Empty,
-            retry_on = tracing::field::Empty,
             reason = tracing::field::Empty,
         );
         let ctx = NodeReadyCtx { attempt: n, ..self.ctx.clone() };
         let cancel = self.ctx.cancel.clone();
+        let limit = self.send.time_limit.0;
         let out = async {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => None,
-                o = self.hook.pre_node_ready(&ctx) => Some(o),
+                o = tokio::time::timeout(limit, self.hook.pre_node_ready(&ctx)) => Some(o.unwrap_or_else(|_| HookOutcome::Pending { reason: "time limit".into() })),
             }
         }
         .instrument(span.clone())
@@ -649,84 +596,26 @@ impl HookDriver {
                 span.record("outcome", "ok");
                 span.in_scope(|| tracing::info!("pre_node_ready returned Ok"));
                 self.state.send_replace(PreNodeReadyState::Passed);
-                Step::Passed
+                Attempt::Passed
             }
-            Some(HookOutcome::Blocked { reason, retry_on }) => {
-                // A Blocked outcome names its blocker (fabric-node-hooks.md, "Outcomes and the gate"):
-                // its reason is the blocker evidence and the executor's ProbeNodeState answer. A reason
-                // that names nothing is no Blocked outcome; the hook ends by name.
-                if reason.trim().is_empty() {
-                    let why = format!("the hook returned Blocked with no reason, asking to run again on {}: a blocker it does not name cannot be answered to the executor", retry_on.name());
-                    span.record("outcome", "failed");
-                    span.record("reason", why.as_str());
-                    span.in_scope(|| tracing::info!("pre_node_ready returned Blocked with no reason"));
-                    self.state.send_replace(PreNodeReadyState::Failed(why.clone()));
-                    return Step::Failed(why);
-                }
-                if self.ctx.accepting_primary.accepted().is_none() && !matches!(retry_on, RetryOn::TargetReachable { .. }) {
-                    let why = format!("the hook asked to wait for {} but this birth has no authority ({}): {reason}", retry_on.name(), match &self.ctx.accepting_primary { AcceptingPrimarySource::None(w) => w.reason(), AcceptingPrimarySource::Accepted(_) => "" });
-                    span.record("outcome", "failed");
-                    span.record("reason", why.as_str());
-                    span.in_scope(|| tracing::info!("pre_node_ready asked to wait on an authority this birth does not have"));
-                    self.state.send_replace(PreNodeReadyState::Failed(why.clone()));
-                    return Step::Failed(why);
-                }
-                span.record("outcome", "blocked");
-                span.record("retry_on", retry_on.name());
+            Some(HookOutcome::Pending { reason }) => {
+                span.record("outcome", "pending");
                 span.record("reason", reason.as_str());
-                span.in_scope(|| tracing::info!("pre_node_ready is blocked"));
-                let blocked = tracing::info_span!(
-                    parent: &self.boot,
-                    "rdm.mesh.node.reject.via-pre-node-ready-blocked",
-                    node_path = %self.ctx.birth.path, node_name = %self.ctx.birth.name,
-                    attempt = n,
-                    blocker = %reason,
-                    retry_on = retry_on.name(),
-                    cleared_by = tracing::field::Empty,
-                );
-                blocked.in_scope(|| tracing::info!("not ready: pre_node_ready is blocked"));
-                self.state.send_replace(PreNodeReadyState::Blocked { attempt: n, reason, retry_on: retry_on.clone() });
-                Step::Blocked(Pending { retry_on, mark, span: blocked })
+                span.in_scope(|| tracing::info!("pre_node_ready answered Pending: this attempt ends"));
+                self.state.send_replace(PreNodeReadyState::Pending { attempt: n, reason: reason.clone() });
+                Attempt::Pending(reason)
             }
             Some(HookOutcome::Failed { reason }) => {
                 span.record("outcome", "failed");
                 span.record("reason", reason.as_str());
-                span.in_scope(|| tracing::info!("pre_node_ready failed"));
-                self.state.send_replace(PreNodeReadyState::Failed(reason.clone()));
-                Step::Failed(reason)
+                span.in_scope(|| tracing::info!("pre_node_ready answered Failed"));
+                Attempt::Failed(reason)
             }
             None => {
                 span.record("outcome", "cancelled");
                 span.in_scope(|| tracing::info!("pre_node_ready was cancelled: the hook and its pull ended"));
                 self.state.send_replace(PreNodeReadyState::Cancelled);
-                Step::Cancelled
-            }
-        }
-    }
-
-    /// From `step` on: wait for each blocked attempt's event and run again, until the hook passes,
-    /// fails or the birth is deleted.
-    pub async fn run(&self, mut step: Step) -> End {
-        loop {
-            match step {
-                Step::Passed => return End::Passed,
-                Step::Failed(why) => return End::Failed(why),
-                Step::Cancelled => return End::Cancelled,
-                Step::Blocked(pending) => {
-                    match self.events.wait(&pending.retry_on, self.ctx.accepting_primary.accepted(), &pending.mark, &self.ctx.cancel).await {
-                        Waited::Fired(event) => {
-                            pending.span.record("cleared_by", event);
-                            pending.span.in_scope(|| tracing::info!(event, "the blocker's event happened: pre_node_ready runs again"));
-                            drop(pending);
-                            step = self.attempt().await;
-                        }
-                        Waited::Cancelled => {
-                            pending.span.record("cleared_by", "cancelled");
-                            self.state.send_replace(PreNodeReadyState::Cancelled);
-                            return End::Cancelled;
-                        }
-                    }
-                }
+                Attempt::Cancelled
             }
         }
     }
@@ -750,290 +639,250 @@ impl HookDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use std::time::Duration;
 
-    /// CONTRACT (node-start.md step 3): the probe's `Blocked` answer is the hook's own reason and
-    /// retry event while Blocked and nothing otherwise; two attempts blocked for the same reason
-    /// answer the same blocker, and a changed reason a different one. What must NOT happen: an
-    /// attempt counter in the blocker, which would frame a new `Blocked` on every rerun.
+    /// CONTRACT (node-rpc-envelope.md, Status ProbeNodeState): the probe's answer is `Pending` with
+    /// the hook's own reason while it answered Pending, `StartFailed` with the last reason once the
+    /// start ended Failed, and Current otherwise; two attempts pending for the same reason answer the
+    /// same blocker, and a changed reason a different one. What must NOT happen: an attempt counter
+    /// in the answer, which would frame a new `Pending` on every rerun.
     #[test]
-    fn a_rerun_blocked_for_the_same_reason_answers_the_same_probe_blocker() {
-        let blocked = |attempt, reason: &str| PreNodeReadyState::Blocked { attempt, reason: reason.into(), retry_on: RetryOn::PrimaryAddressed };
-        let first = blocked(1, "rows not yet published").probe_blocker().expect("blocked answers its blocker");
-        assert_eq!(first, ("rows not yet published".to_string(), RetryOn::PrimaryAddressed), "the hook's own reason and event");
-        assert_eq!(Some(first.clone()), blocked(7, "rows not yet published").probe_blocker(), "the attempt is not part of the blocker");
-        assert_ne!(Some(first), blocked(8, "the authority is connections-deleting").probe_blocker(), "a changed reason is a new blocker");
-        for other in [PreNodeReadyState::Running { attempt: 2 }, PreNodeReadyState::Passed, PreNodeReadyState::Failed("x".into()), PreNodeReadyState::Cancelled] {
-            assert_eq!(other.probe_blocker(), None, "only Blocked answers Blocked: {other:?}");
+    fn a_rerun_pending_for_the_same_reason_answers_the_same_probe_answer() {
+        let pending = |attempt, reason: &str| PreNodeReadyState::Pending { attempt, reason: reason.into() };
+        let first = pending(1, "rows not yet published").probe_answer().expect("pending answers its reason");
+        assert_eq!(first, ProbeAnswer::Pending("rows not yet published".into()), "the hook's own reason");
+        assert_eq!(Some(first.clone()), pending(7, "rows not yet published").probe_answer(), "the attempt is not part of the answer");
+        assert_ne!(Some(first), pending(8, "the node-admin is connections-deleting").probe_answer(), "a changed reason is a new answer");
+        assert_eq!(PreNodeReadyState::Failed("x".into()).probe_answer(), Some(ProbeAnswer::StartFailed("x".into())), "a start that ended Failed answers StartFailed");
+        for other in [PreNodeReadyState::Running { attempt: 2 }, PreNodeReadyState::Passed, PreNodeReadyState::Cancelled] {
+            assert_eq!(other.probe_answer(), None, "Running, Passed and Cancelled answer Current: {other:?}");
         }
     }
 
-    // @feature: pre-node-ready
-    #[test]
-    fn hook_driver_refuses_blank_reason_and_missing_accepting_primary_reruns_on_level_triggered_retry_event_and_cancels_in_flight_attempt() {
-        // docs/architecture/fabric-node-hooks.md:89 — "`Blocked { reason, retry_on }` | readiness
-        // remains blocked; the reason is named in the blocker evidence and answered to the
-        // executor's ProbeNodeState as Status `Blocked { node_id, incarnation, reason, retry_on }`;
-        // the hook runs again only when retry_on occurs"
-        // docs/architecture/fabric-node-hooks.md:93 — "A retry is level-triggered: RDM arms the
-        // wait, then checks the condition again, so an event that fired before arming cannot leave
-        // the node waiting. RDM never retries on a timer."
-        struct ScriptedHook {
-            outcomes: Mutex<Vec<HookOutcome>>,
-            addressed_during_attempt: Option<(Arc<Addressed>, iroh::PublicKey)>,
-            wait_forever_on_attempt: Option<u32>,
-            started_notify: Arc<tokio::sync::Notify>,
+    /// A hook that answers from a script, one outcome per attempt, holding the attempt the cell names
+    /// until it is cancelled or its time limit passes.
+    struct ScriptedHook {
+        outcomes: Mutex<Vec<HookOutcome>>,
+        hang_on_attempt: Option<u32>,
+        started: Arc<tokio::sync::Notify>,
+        send: rdm_transport::Send,
+        attempts_seen: Mutex<Vec<(u32, tokio::time::Instant)>>,
+    }
+
+    impl ScriptedHook {
+        fn new(outcomes: Vec<HookOutcome>, send: rdm_transport::Send) -> Arc<Self> {
+            Arc::new(Self { outcomes: Mutex::new(outcomes), hang_on_attempt: None, started: Arc::new(tokio::sync::Notify::new()), send, attempts_seen: Mutex::default() })
         }
 
-        #[async_trait::async_trait]
-        impl PreNodeReady for ScriptedHook {
-            async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
-                if self.wait_forever_on_attempt == Some(ctx.attempt) {
-                    self.started_notify.notify_one();
-                    std::future::pending::<()>().await;
-                }
-                if ctx.attempt == 1 {
-                    if let Some((addr, key)) = &self.addressed_during_attempt {
-                        addr.note(key);
-                    }
-                }
-                self.outcomes.lock().unwrap().remove(0)
+        fn hanging(on: u32, send: rdm_transport::Send) -> Arc<Self> {
+            Arc::new(Self { outcomes: Mutex::new(Vec::new()), hang_on_attempt: Some(on), started: Arc::new(tokio::sync::Notify::new()), send, attempts_seen: Mutex::default() })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PreNodeReady for ScriptedHook {
+        fn send(&self) -> rdm_transport::Send {
+            self.send
+        }
+
+        async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
+            self.attempts_seen.lock().unwrap().push((ctx.attempt, tokio::time::Instant::now()));
+            if self.hang_on_attempt == Some(ctx.attempt) {
+                self.started.notify_one();
+                std::future::pending::<()>().await;
             }
+            self.outcomes.lock().unwrap().remove(0)
         }
+    }
 
-        let dir = std::env::temp_dir().join(format!("rdm-pre-node-ready-unit-{}", NodeId::mint()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-pre-node-ready-unit")
-            .expect("evidence capture starts");
+    /// What every cell's context is built from.
+    struct Rig {
+        ep: iroh::Endpoint,
+        client: Arc<NodeRpcClient>,
+        topology_view: TopologyView,
+        rafka_time: rdm_transport::clock::RafkaTime,
+        birth: Birth,
+    }
 
-        capture.run(2, async {
-            let ep = rdm_transport::endpoint::bind(
-                iroh::SecretKey::generate(),
-                "127.0.0.1:0".parse().expect("addr"),
-            )
-            .await
-            .expect("bind ep");
-            let resolver = Arc::new(rdm_transport::StaticResolver::new());
-            let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver));
+    impl Rig {
+        async fn new() -> Self {
+            let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().expect("addr")).await.expect("bind ep");
+            let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(rdm_transport::StaticResolver::new())));
             let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
             let _ = rafka_time.adopt(1_000);
-            let fabric_id = FabricId::mint();
-            let mesh_id = MeshId::mint();
-            let name = PathName::numbered("mesh1", "node", 1);
-            let topology_view = TopologyView::join(
-                &gossip,
-                &ep,
-                &fabric_id,
-                "mesh1",
-                &mesh_id,
-                &name.name,
-                Arc::new(rafka_time.clone()),
-                Vec::new(),
-                &[],
-            )
-            .await
-            .expect("join topology view");
+            let (fabric_id, mesh_id, name) = (FabricId::mint(), MeshId::mint(), PathName::numbered("mesh1", "node", 1));
+            let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, &name.name, Arc::new(rafka_time.clone()), Vec::new(), &[]).await.expect("join topology view");
+            let birth = Birth { path: name.path.clone(), name: name.name.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), fabric_id, mesh_id, r#type: "node".into() };
+            Self { ep, client, topology_view, rafka_time, birth }
+        }
 
-            let birth = Birth {
-                path: name.path.clone(), name: name.name.clone(),
-                node_id: NodeId::mint(),
-                incarnation: IncarnationId::mint(),
-                fabric_id,
-                mesh_id,
-                r#type: "node".into(),
-            };
-            let auth_key = iroh::SecretKey::generate().public();
-            let accepting_id = NodeId::mint();
-            let accepting = AcceptingPrimary {
-                node_id: accepting_id.clone(),
-                endpoint: auth_key,
-                target: rdm_transport::NodeTarget::ExactNode(accepting_id),
-            };
-
-            // 1. Blank reason in `Blocked` is refused by name (`Step::Failed`).
-            let blank_hook = Arc::new(ScriptedHook {
-                outcomes: Mutex::new(vec![HookOutcome::Blocked {
-                    reason: "   ".into(),
-                    retry_on: RetryOn::PrimaryAddressed,
-                }]),
-                addressed_during_attempt: None,
-                wait_forever_on_attempt: None,
-                started_notify: Arc::new(tokio::sync::Notify::new()),
-            });
-            let blank_hooks = NodeHooks::new(blank_hook);
-            let blank_driver = blank_hooks
-                .driver(
-                    NodeReadyCtx {
-                        start_kind: StartKind::FirstStart,
-                        birth: birth.clone(),
-                        accepting_primary: AcceptingPrimarySource::Accepted(accepting.clone()),
-                        client: client.clone(),
-                        topology_view: topology_view.clone(),
-                        cancel: CancelToken::new(),
-                        rafka_time: rafka_time.clone(),
-                        member_cert: None,
-                        attempt: 0,
-                        inherited: false,
-                    },
-                    Events::new(topology_view.digest_view.clone(), Addressed::new()),
-                    tracing::Span::none(),
-                )
-                .expect("driver");
-            match blank_driver.attempt().await {
-                Step::Failed(why) => assert!(why.contains("Blocked with no reason"), "{why}"),
-                _ => panic!("expected Step::Failed for blank Blocked reason"),
+        fn ctx(&self, cancel: CancelToken) -> NodeReadyCtx {
+            NodeReadyCtx {
+                start_kind: StartKind::FirstStart,
+                birth: self.birth.clone(),
+                accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
+                client: self.client.clone(),
+                topology_view: self.topology_view.clone(),
+                cancel,
+                rafka_time: self.rafka_time.clone(),
+                member_cert: None,
+                attempt: 0,
+                inherited: false,
             }
-            assert!(!blank_hooks.gate().is_open());
+        }
+    }
 
-            // 2. Waiting on an authority event when the birth has `AcceptingPrimarySource::None` is refused by name.
-            let no_auth_hook = Arc::new(ScriptedHook {
-                outcomes: Mutex::new(vec![HookOutcome::Blocked {
-                    reason: "waiting on primary".into(),
-                    retry_on: RetryOn::PrimaryReady,
-                }]),
-                addressed_during_attempt: None,
-                wait_forever_on_attempt: None,
-                started_notify: Arc::new(tokio::sync::Notify::new()),
-            });
-            let no_auth_hooks = NodeHooks::new(no_auth_hook);
-            let no_auth_driver = no_auth_hooks
-                .driver(
-                    NodeReadyCtx {
-                        start_kind: StartKind::FirstStart,
-                        birth: birth.clone(),
-                        accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
-                        client: client.clone(),
-                        topology_view: topology_view.clone(),
-                        cancel: CancelToken::new(),
-                        rafka_time: rafka_time.clone(),
-                        member_cert: None,
-                        attempt: 0,
-                        inherited: false,
-                    },
-                    Events::new(topology_view.digest_view.clone(), Addressed::new()),
-                    tracing::Span::none(),
-                )
-                .expect("driver");
-            match no_auth_driver.attempt().await {
-                Step::Failed(why) => assert!(why.contains("no authority"), "{why}"),
-                _ => panic!("expected Step::Failed when waiting on authority without one"),
-            }
+    /// The cells' backoff: 40 ms doubling, capped at 200 ms, no jitter, so the gaps are exact.
+    const PACING: rdm_transport::Pacing = rdm_transport::Pacing { cadence: Duration::from_millis(40), floor: Duration::from_millis(200), jitter: false };
 
-            // 3. Level-triggered retry: `addressed.note` fires while attempt 1 is running (before
-            //    `run` enters `events.wait`); `run` sees the count advanced past `mark`, clears the
-            //    blocker without stranding, runs attempt 2 -> `Ok`, and opens the gate.
-            let addressed = Addressed::new();
-            let level_hook = Arc::new(ScriptedHook {
-                outcomes: Mutex::new(vec![
-                    HookOutcome::Blocked {
-                        reason: "awaiting primary address".into(),
-                        retry_on: RetryOn::PrimaryAddressed,
-                    },
-                    HookOutcome::Ok,
-                ]),
-                addressed_during_attempt: Some((addressed.clone(), auth_key)),
-                wait_forever_on_attempt: None,
-                started_notify: Arc::new(tokio::sync::Notify::new()),
-            });
-            let level_hooks = NodeHooks::new(level_hook);
-            let level_driver = level_hooks
-                .driver(
-                    NodeReadyCtx {
-                        start_kind: StartKind::FirstStart,
-                        birth: birth.clone(),
-                        accepting_primary: AcceptingPrimarySource::Accepted(accepting.clone()),
-                        client: client.clone(),
-                        topology_view: topology_view.clone(),
-                        cancel: CancelToken::new(),
-                        rafka_time: rafka_time.clone(),
-                        member_cert: None,
-                        attempt: 0,
-                        inherited: false,
-                    },
-                    Events::new(topology_view.digest_view.clone(), addressed),
-                    tracing::Span::none(),
-                )
-                .expect("driver");
-            let step1 = level_driver.attempt().await;
-            assert!(matches!(step1, Step::Blocked(_)));
-            assert!(!level_hooks.gate().is_open());
-            let end = level_driver.run(step1).await;
-            assert_eq!(end, End::Passed);
-            assert!(level_hooks.gate().is_open());
-            assert_eq!(level_driver.handle().state(), PreNodeReadyState::Passed);
+    fn send(attempts: u8, time_limit: Duration) -> rdm_transport::Send {
+        rdm_transport::Send { attempts, time_limit: rdm_transport::TimeLimit(time_limit) }
+    }
 
-            // 4. Cancellation drops an in-flight attempt and records `Step::Cancelled`.
-            let cancel = CancelToken::new();
-            let started_notify = Arc::new(tokio::sync::Notify::new());
-            let cancel_hook = Arc::new(ScriptedHook {
-                outcomes: Mutex::new(Vec::new()),
-                addressed_during_attempt: None,
-                wait_forever_on_attempt: Some(1),
-                started_notify: started_notify.clone(),
-            });
-            let cancel_hooks = NodeHooks::new(cancel_hook);
-            let cancel_driver = cancel_hooks
-                .driver(
-                    NodeReadyCtx {
-                        start_kind: StartKind::FirstStart,
-                        birth,
-                        accepting_primary: AcceptingPrimarySource::Accepted(accepting),
-                        client,
-                        topology_view,
-                        cancel: cancel.clone(),
-                        rafka_time,
-                        member_cert: None,
-                        attempt: 0,
-                        inherited: false,
-                    },
-                    Events::new(DigestView::default(), Addressed::new()),
-                    tracing::Span::none(),
-                )
-                .expect("driver");
-            let cancel_clone = cancel.clone();
-            tokio::spawn(async move {
-                started_notify.notified().await;
-                cancel_clone.cancel();
-            });
-            let cancelled_step = cancel_driver.attempt().await;
-            assert!(matches!(cancelled_step, Step::Cancelled));
-            assert_eq!(cancel_driver.handle().state(), PreNodeReadyState::Cancelled);
+    // @feature: pre-node-ready
+    /// CONTRACT (fabric-node-hooks.md "Outcomes and the gate", Q350): RDM runs the hook under the
+    /// `Send` its own `send()` gives. `Ok` opens the gate and the node goes on to Ready; `Failed` ends
+    /// the start Failed with its reason at once, never calling again; `Pending` ends that attempt, the
+    /// node stays Pending with the reason as its blocker and probe answer, and RDM calls again after
+    /// the backoff (cadence × 2^(n-1)), so a hook that answers Pending twice then Ok passes on its third
+    /// attempt. What must NOT happen: a call before the backoff, a call after Ok or Failed, or the gate
+    /// open on anything but Ok.
+    #[test]
+    fn the_hook_answers_ok_pending_or_failed_under_its_send() {
+        let dir = std::env::temp_dir().join(format!("rdm-pre-node-ready-answers-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-pre-node-ready-answers").expect("evidence capture starts");
+        capture.run(2, async {
+            let rig = Rig::new().await;
+            let limit = Duration::from_secs(10);
 
-            ep.close().await;
+            // Ok: the first attempt passes and the gate opens.
+            let ok = ScriptedHook::new(vec![HookOutcome::Ok], send(3, limit));
+            let hooks = NodeHooks::new(ok.clone());
+            let driver = hooks.driver_paced(rig.ctx(CancelToken::new()), tracing::Span::none(), PACING).expect("driver");
+            assert_eq!(driver.run().await, End::Passed);
+            assert!(hooks.gate().is_open(), "Ok opens the gate");
+            assert_eq!(ok.attempts_seen.lock().unwrap().len(), 1, "Ok is called once");
+
+            // Failed: the start ends Failed at once with the hook's reason; no second call.
+            let failed = ScriptedHook::new(vec![HookOutcome::Failed { reason: "the rows are corrupt".into() }], send(3, limit));
+            let hooks = NodeHooks::new(failed.clone());
+            let driver = hooks.driver_paced(rig.ctx(CancelToken::new()), tracing::Span::none(), PACING).expect("driver");
+            assert_eq!(driver.run().await, End::Failed("the rows are corrupt".into()));
+            assert!(!hooks.gate().is_open(), "Failed never opens the gate");
+            assert_eq!(failed.attempts_seen.lock().unwrap().len(), 1, "Failed is never called again");
+            assert_eq!(driver.handle().state().probe_answer(), Some(ProbeAnswer::StartFailed("the rows are corrupt".into())), "the probe answers StartFailed with the reason");
+
+            // Pending, Pending, Ok: called again after each backoff, passing on the third attempt.
+            let pending = ScriptedHook::new(vec![HookOutcome::Pending { reason: "rows not yet published".into() }, HookOutcome::Pending { reason: "rows not yet published".into() }, HookOutcome::Ok], send(3, limit));
+            let hooks = NodeHooks::new(pending.clone());
+            let driver = hooks.driver_paced(rig.ctx(CancelToken::new()), tracing::Span::none(), PACING).expect("driver");
+            let handle = driver.handle();
+            let watch = tokio::spawn({
+                let handle = handle.clone();
+                async move {
+                    let mut rx = handle.rx.clone();
+                    let _ = rx.wait_for(|s| matches!(s, PreNodeReadyState::Pending { .. })).await;
+                    handle.state()
+                }
+            });
+            assert_eq!(driver.run().await, End::Passed);
+            let seen = watch.await.unwrap();
+            assert_eq!(seen.probe_answer(), Some(ProbeAnswer::Pending("rows not yet published".into())), "while Pending the probe answers its reason");
+            assert!(seen.blocker(&rig.birth.location()).is_some_and(|b| b.contains("rows not yet published")), "the reason is the blocker evidence: {seen:?}");
+            let at: Vec<_> = pending.attempts_seen.lock().unwrap().clone();
+            assert_eq!(at.iter().map(|(n, _)| *n).collect::<Vec<_>>(), vec![1, 2, 3], "one call per attempt, numbered from 1");
+            assert!(at[1].1 - at[0].1 >= Duration::from_millis(40), "the second call follows the first backoff, 40 ms: {at:?}");
+            assert!(at[2].1 - at[1].1 >= Duration::from_millis(80), "the third call follows the doubled backoff, 80 ms: {at:?}");
+            assert!(hooks.gate().is_open());
+            rig.ep.close().await;
         });
-
         let spans = capture.spans().expect("captured spans");
         let _ = std::fs::remove_dir_all(&dir);
-        let attempts: Vec<&serde_json::Value> = spans
-            .iter()
-            .filter(|s| s["name"] == "rdm.mesh.node.update.via-pre-node-ready-attempt")
-            .collect();
-        assert!(
-            attempts.iter().any(|s| {
-                s["attributes"]["outcome"] == "blocked"
-                    && s["attributes"]["retry_on"] == "primary-addressed"
-            }),
-            "expected blocked attempt span: {attempts:?}"
-        );
-        assert!(
-            attempts
-                .iter()
-                .any(|s| s["attributes"]["outcome"] == "ok"),
-            "expected ok attempt span: {attempts:?}"
-        );
-        assert!(
-            attempts
-                .iter()
-                .any(|s| s["attributes"]["outcome"] == "cancelled"),
-            "expected cancelled attempt span: {attempts:?}"
-        );
-        assert!(
-            spans.iter().any(|s| {
-                s["name"] == "rdm.mesh.node.reject.via-pre-node-ready-blocked"
-                    && s["attributes"]["cleared_by"] == "primary-addressed"
-            }),
-            "expected via-pre-node-ready-blocked span with cleared_by=primary-addressed"
-        );
+        let attempts: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-pre-node-ready-attempt").collect();
+        for outcome in ["ok", "failed", "pending"] {
+            assert!(attempts.iter().any(|s| s["attributes"]["outcome"] == outcome), "an attempt span names outcome {outcome}: {attempts:?}");
+        }
+        assert!(attempts.iter().any(|s| s["attributes"]["outcome"] == "pending" && s["attributes"]["reason"] == "rows not yet published"), "the pending attempt names its reason");
+    }
+
+    // @feature: pre-node-ready
+    /// CONTRACT (fabric-node-hooks.md "Outcomes and the gate", Q350): a hook that answers `Pending` on
+    /// every attempt spends them: after its third `Pending` (the default `Send`, 3 attempts) the start
+    /// ends Failed with the last reason, the node stays Pending and nothing calls the hook again; no
+    /// answer within the `TimeLimit` is `Pending { reason: "time limit" }`. What must NOT happen: a
+    /// fourth call, the gate open, or a hook that never answers holding the start past its attempts.
+    #[test]
+    fn pending_on_every_attempt_spends_them_and_the_start_ends_failed_with_the_last_reason() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        rt.block_on(async {
+            let rig = Rig::new().await;
+            let reasons = ["the node-admin answered NotReady", "rows not yet published", "rows still not published"];
+            let hook = ScriptedHook::new(reasons.iter().map(|r| HookOutcome::Pending { reason: (*r).into() }).collect(), send(rdm_transport::Send::default().attempts, Duration::from_secs(10)));
+            let hooks = NodeHooks::new(hook.clone());
+            let driver = hooks.driver_paced(rig.ctx(CancelToken::new()), tracing::Span::none(), PACING).expect("driver");
+            let End::Failed(why) = driver.run().await else { panic!("spent attempts end the start Failed") };
+            assert!(why.starts_with("rows still not published"), "the start ends with the last reason: {why}");
+            assert_eq!(hook.attempts_seen.lock().unwrap().len(), 3, "three attempts, the default Send's, and no fourth");
+            assert_eq!(driver.handle().state(), PreNodeReadyState::Failed(why.clone()));
+            assert!(!hooks.gate().is_open());
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(hook.attempts_seen.lock().unwrap().len(), 3, "nothing calls the hook again after the start ended Failed");
+
+            // A hook that never answers: each attempt ends at its time limit as Pending "time limit".
+            let silent = ScriptedHook::hanging(1, send(1, Duration::from_millis(100)));
+            let driver = NodeHooks::new(silent.clone()).driver_paced(rig.ctx(CancelToken::new()), tracing::Span::none(), PACING).expect("driver");
+            let started = tokio::time::Instant::now();
+            let End::Failed(why) = driver.run().await else { panic!("a hook that never answers ends the start Failed") };
+            assert!(why.starts_with("time limit"), "no answer within the TimeLimit is Pending \"time limit\": {why}");
+            assert!(started.elapsed() < Duration::from_secs(5), "the time limit bounds the attempt: {:?}", started.elapsed());
+            rig.ep.close().await;
+        });
+    }
+
+    // @feature: pre-node-ready
+    /// CONTRACT (fabric-node-hooks.md "Cancellation and lifecycle commands"): a stop or delete cancels
+    /// the token, which ends the running hook (its future is dropped with any pull in flight) and ends
+    /// the wait between attempts; the hook ends Cancelled, never Failed. What must NOT happen: a call
+    /// after the cancel.
+    #[test]
+    fn a_cancel_ends_the_running_hook_and_the_wait_between_attempts() {
+        let dir = std::env::temp_dir().join(format!("rdm-pre-node-ready-cancel-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-pre-node-ready-cancel").expect("evidence capture starts");
+        capture.run(2, async {
+            let rig = Rig::new().await;
+            // During an attempt.
+            let cancel = CancelToken::new();
+            let hook = ScriptedHook::hanging(1, send(3, Duration::from_secs(10)));
+            let driver = NodeHooks::new(hook.clone()).driver_paced(rig.ctx(cancel.clone()), tracing::Span::none(), PACING).expect("driver");
+            let started = hook.started.clone();
+            tokio::spawn(async move {
+                started.notified().await;
+                cancel.cancel();
+            });
+            assert_eq!(driver.run().await, End::Cancelled);
+            assert_eq!(driver.handle().state(), PreNodeReadyState::Cancelled);
+
+            // During the backoff after a Pending.
+            let cancel = CancelToken::new();
+            let slow = rdm_transport::Pacing { cadence: Duration::from_secs(30), floor: Duration::from_secs(30), jitter: false };
+            let hook = ScriptedHook::new(vec![HookOutcome::Pending { reason: "not yet".into() }, HookOutcome::Ok], send(3, Duration::from_secs(10)));
+            let driver = NodeHooks::new(hook.clone()).driver_paced(rig.ctx(cancel.clone()), tracing::Span::none(), slow).expect("driver");
+            let handle = driver.handle();
+            tokio::spawn(async move {
+                let _ = handle.rx.clone().wait_for(|s| matches!(s, PreNodeReadyState::Pending { .. })).await;
+                cancel.cancel();
+            });
+            assert_eq!(tokio::time::timeout(Duration::from_secs(5), driver.run()).await.expect("the cancel ends the wait"), End::Cancelled);
+            assert_eq!(hook.attempts_seen.lock().unwrap().len(), 1, "no call after the cancel");
+            rig.ep.close().await;
+        });
+        let spans = capture.spans().expect("captured spans");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.node.update.via-pre-node-ready-attempt" && s["attributes"]["outcome"] == "cancelled"), "the cancelled attempt names it");
     }
 
     // @feature: on-node-ready
@@ -1145,11 +994,10 @@ mod tests {
                         attempt: 0,
                         inherited: false,
                     },
-                    Events::new(DigestView::default(), Addressed::new()),
                     tracing::Span::none(),
                 )
                 .expect("driver");
-            assert!(matches!(no_after_driver.attempt().await, Step::Passed));
+            assert_eq!(no_after_driver.run().await, End::Passed);
             no_after_driver.spawn_on_node_ready();
 
             // 2. With `with_on_node_ready`, `spawn_on_node_ready` runs `on_node_ready` once on its
@@ -1175,11 +1023,10 @@ mod tests {
                         attempt: 0,
                         inherited: false,
                     },
-                    Events::new(DigestView::default(), Addressed::new()),
                     boot_span,
                 )
                 .expect("driver");
-            assert!(matches!(driver.attempt().await, Step::Passed));
+            assert_eq!(driver.run().await, End::Passed);
             driver.spawn_on_node_ready();
             done_rx.await.expect("on_node_ready completed on its own task");
             assert_eq!(*after.seen_nodes.lock().unwrap(), vec![expected_name]);
@@ -1208,11 +1055,10 @@ mod tests {
                         attempt: 0,
                         inherited: false,
                     },
-                    Events::new(DigestView::default(), Addressed::new()),
                     tracing::Span::none(),
                 )
                 .expect("driver");
-            assert!(matches!(cancel_driver.attempt().await, Step::Passed));
+            assert_eq!(cancel_driver.run().await, End::Passed);
             cancel_driver.spawn_on_node_ready();
             entered.notified().await;
             cancel.cancel();

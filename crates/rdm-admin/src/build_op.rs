@@ -315,7 +315,7 @@ impl BuildDoor {
                         return Ok(BuildReply::FabricPrimaryMoved { build_id: id.to_string(), fabric_primary: Some(me_id.clone()) });
                     }
                     match f {
-                        BuildReply::Step { .. } | BuildReply::Blocked { .. } => sink.data(f).await.map_err(gone)?,
+                        BuildReply::Step { .. } | BuildReply::Pending { .. } => sink.data(f).await.map_err(gone)?,
                         terminal => return Ok(terminal),
                     }
                 }

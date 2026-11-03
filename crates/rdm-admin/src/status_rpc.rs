@@ -586,8 +586,9 @@ pub struct StatusDoor {
     /// re-join), filled once its digest exists: the check-in a probed birth owes (states.md "The
     /// check-in checklist"), what the checklist's down op reads.
     pub republish: Republish,
-    /// Where this admin's own `pre_node_ready` stands (the cell its start writes): while it is
-    /// Blocked, a probe naming this admin is answered `Blocked` carrying its blocker.
+    /// Where this admin's own `pre_node_ready` stands (the cell its start writes): while it answered
+    /// `Pending` a probe naming this admin is answered `Pending` with its reason, and once its start
+    /// ended Failed `StartFailed`.
     pub pre_node_ready: PreNodeReadyCell,
     /// This admin as the subject of `ApplyNodeName`: it takes the name holding no connection (R-CR1)
     /// and publishes its digest carrying it; filled once its digest exists.
@@ -2524,8 +2525,8 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// re-publishes its presence and answers its current state; no transition. While its
-/// `pre_node_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
-/// re-publishes nothing. `ApplyNodeState` is not served: a node's connections are deleted by `node.connection.delete` and a stop is `stop-node`.
+/// `pre_node_ready` hook answered `Pending` it answers `Pending` with the hook's reason, and once its
+/// start ended Failed `StartFailed`, and re-publishes nothing. `ApplyNodeState` is not served: a node's connections are deleted by `node.connection.delete` and a stop is `stop-node`.
 #[allow(clippy::too_many_arguments)]
 async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, rename: &Rename, pre_node_ready: &PreNodeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let incarnation = match req {
@@ -2543,28 +2544,23 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
     let sender_name = sender.map(|n| n.node_id.to_string()).unwrap_or_default();
     match req {
         StatusRequest::ProbeNodeState { .. } => {
-            // The hook's blocker as it stood when the probe arrived, before the probe addresses
-            // this admin (a hook blocked on its authority's word runs again on it).
-            let blocker = pre_node_ready.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
-            // The authority addressed this admin (R-S3's down op): its endpoint is counted for a hook
-            // blocked on its word, whether or not a record names it, and every declaration owed to it
-            // is sent again, whatever its last outcome.
-            wake.addressed_by(sender.map(|n| &n.node_id), peer);
+            // The hook's answer as it stood when the probe arrived.
+            let hook_answer = pre_node_ready.lock().unwrap().as_ref().and_then(|h| h.state().probe_answer());
+            // The authority addressed this admin (R-S3's down op): every declaration owed to it is
+            // sent again, whatever its last outcome.
+            wake.addressed_by(sender.map(|n| &n.node_id));
             // A stopped admin presents nothing: it says it is stopped.
             if crate::node_self::process_stop().is_stopped() {
                 tracing::info_span!("rdm.node_admin.status.update.via-probe", node_path = %me.path, node_name = %me.name, sender = %sender_name, state = "stopped", "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("probed by a node-admin: stopped, nothing re-published"));
                 return Some(StatusReply::CurrentStopped { node_id: me.node_id.clone(), incarnation: held.clone() });
             }
-            // node-start.md step 3: while its hook is Blocked, the probe served this exact birth and
-            // found an active readiness blocker; it answers Blocked with the hook's own reason and
-            // retry event, before any republish, so a polled blocked birth republishes nothing.
-            if let Some((reason, retry_on)) = blocker {
-                let on = retry_on.name();
-                let reply = rdm_core::reply::status::bounded_blocked(me.node_id.clone(), held.clone(), &reason, retry_on);
-                tracing::info_span!("rdm.node_admin.status.update.via-probe", node_path = %me.path, node_name = %me.name, sender = %sender_name, state = "blocked", blocker = %reason, retry_on = on, "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
-                return Some(reply);
+            // node-rpc-envelope.md, Status: while its hook answered Pending the probe served this exact
+            // node and found an active readiness blocker, answered Pending with the hook's own reason;
+            // once its start ended Failed, StartFailed with the last reason. Either is answered before
+            // any republish, so a polled pending node republishes nothing.
+            if let Some(answer) = hook_answer {
+                return Some(crate::node_hooks::probe_reply(&answer, &me.node_id, held, &sender_name));
             }
             // The check-in a probed birth owes (states.md "The check-in checklist": a new primary re-sends
             // the checklist and members already done check in again): its presence re-published on the

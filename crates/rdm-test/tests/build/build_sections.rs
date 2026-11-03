@@ -54,16 +54,16 @@ async fn mesh2_primary(estate: &Estate) -> NodeView {
     estate.node_views().await.into_iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2's primary")
 }
 
-/// The frames of `stream` up to and including the first `Blocked` frame of `operation`; a terminal
+/// The frames of `stream` up to and including the first `Pending` frame of `operation`; a terminal
 /// before it is a defect of the cell.
-async fn until_blocked(stream: &mut BuildStream, operation: &str) -> Vec<BuildFrame> {
+async fn until_pending(stream: &mut BuildStream, operation: &str) -> Vec<BuildFrame> {
     let mut frames = Vec::new();
     loop {
         let frame = tokio::time::timeout(SETTLE, stream.next()).await.expect("a frame within the bound").expect("the stream goes on").expect("the stream does not break");
         frames.push(frame.clone());
         match frame {
-            BuildFrame::Blocked { operation: o, .. } if o == operation => return frames,
-            BuildFrame::Complete | BuildFrame::Failed { .. } | BuildFrame::Incomplete { .. } => panic!("the Build ended before {operation} was blocked: {frames:?}"),
+            BuildFrame::Pending { operation: o, .. } if o == operation => return frames,
+            BuildFrame::Complete | BuildFrame::Failed { .. } | BuildFrame::Incomplete { .. } => panic!("the Build ended before {operation} was pending: {frames:?}"),
             _ => {}
         }
     }
@@ -91,7 +91,7 @@ async fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the
     let build_id: BuildId = stream.build_id().clone();
     let b = build_id.to_string();
     let held_op = format!("node.create:{}", crate::build_log::created_id(&estate, &b, &held_at).await);
-    until_blocked(&mut stream, &held_op).await;
+    until_pending(&mut stream, &held_op).await;
     drop(stream);
 
     // The section stands where it is: its mesh-primary is lost.

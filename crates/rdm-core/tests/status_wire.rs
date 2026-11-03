@@ -14,7 +14,7 @@
 use rdm_core::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_core::outcome::MalformedKind;
 use rdm_core::protocol::NodeProtocol;
-use rdm_core::status::{ConnectionScope, ConnectionsReceipt, DeclaredOperation, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteIdentity, MeshState, NodeSelect, NodeState, NotPrimary, ReportedBirth, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope, WhichMesh};
+use rdm_core::status::{ConnectionScope, ConnectionsReceipt, DeclaredOperation, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteIdentity, MeshState, NodeSelect, NodeState, NotPrimary, ReportedBirth, Status, StatusReply, StatusRequest, TagFilter, TagScope, WhichMesh};
 use rdm_core::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
@@ -157,7 +157,8 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
         // node | reason
         (ConfigRowRefused { node: "n".into(), reason: "r".into() }, "17016e0172"),
         (ConfigNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "18016e01610172"),
-        (Blocked { node_id: node(), incarnation: birth(), reason: "r".into(), retry_on: RetryOn::TargetReachable { node_id: node() } }, "190c3031323334353637383961620c3977637072666777767468790172010c303132333435363738396162"),
+        // position 25 (Q350): the Pending a hook answered, its node | incarnation | reason; no retry event (the wire format moved)
+        (Pending { node_id: node(), incarnation: birth(), reason: "r".into() }, "190c3031323334353637383961620c3977637072666777767468790172"),
         (NameUpdated { node_id: node(), incarnation: birth() }, "1a0c3031323334353637383961620c397763707266677776746879"),
         // status Ready (1) | held_connections (len 1)
         (RejectedAdmittingConnections { status: NodeStatus::Ready, held_connections: vec![connection()] }, "1b01010c333132333435363738396162"),
@@ -386,10 +387,6 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(MalformedKind::UnknownVariant, "01");
     golden(MalformedKind::Corrupt, "02");
     golden(MalformedKind::TypesOverCap, "03");
-    golden(RetryOn::PrimaryChanged, "00");
-    golden(RetryOn::TargetReachable { node_id: node() }, "010c303132333435363738396162");
-    golden(RetryOn::PrimaryReady, "02");
-    golden(RetryOn::PrimaryAddressed, "03");
     golden(ConnectionScope::All, "00");
     golden(ConnectionScope::Connections(vec![connection()]), "01010c333132333435363738396162");
     golden(NodeSelect::Id(node()), "000c303132333435363738396162");

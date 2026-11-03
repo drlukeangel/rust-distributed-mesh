@@ -12,12 +12,12 @@
 //! GetBuilds  caller -> fabric-primary         build.get: every Build the filter matches, each whole
 //! ```
 //!
-//! A stream is one refusal, or `Started`, then `Step`/`Blocked`/`Events` frames, then one terminal:
+//! A stream is one refusal, or `Started`, then `Step`/`Pending`/`Events` frames, then one terminal:
 //!
 //! ```text
 //! Started { build_id, disposition }
 //! Step { build_id, mesh, operation, step, result }    after the step's `rdm.build.step` is written
-//! Blocked { build_id, mesh, operation, step, reason } non-terminal, never durable, never a step outcome
+//! Pending { build_id, mesh, operation, step, reason } non-terminal, never durable, never a step outcome
 //! Complete | Failed { step, reason } | FabricPrimaryMoved { fabric_primary }
 //!                                                  the terminal of Create (Complete or Failed of AttemptRun)
 //! Got | Deleted                                    the terminal of Get / Delete
@@ -341,18 +341,19 @@ pub enum BuildReply {
         /// How the step ended.
         result: StepResult,
     },
-    /// The step in flight is blocked. Non-terminal, in memory only, sent on a new blocker or a
-    /// changed reason and never on a timer; never a step outcome.
+    /// The step in flight is pending: its node's `pre_node_ready` answered `Pending`
+    /// (fabric-node-hooks.md "Outcomes and the gate"). Non-terminal, in memory only, sent when its
+    /// reason changes; never a step outcome.
     ///
     /// Position 2 on the wire.
-    Blocked {
+    Pending {
         /// The Build.
         build_id: String,
         /// The mesh whose section the step belongs to.
         mesh: String,
-        /// The operation the blocked step belongs to.
+        /// The operation the pending step belongs to.
         operation: String,
-        /// The blocked step.
+        /// The pending step.
         step: String,
         /// What it waits for.
         reason: String,
@@ -595,7 +596,7 @@ impl BuildReply {
     /// The key `(build_id, mesh, operation, step)` of a progress frame, when it is one.
     pub fn progress_key(&self) -> Option<(&str, &str, &str, &str)> {
         match self {
-            Self::Step { build_id, mesh, operation, step, .. } | Self::Blocked { build_id, mesh, operation, step, .. } => Some((build_id, mesh, operation, step)),
+            Self::Step { build_id, mesh, operation, step, .. } | Self::Pending { build_id, mesh, operation, step, .. } => Some((build_id, mesh, operation, step)),
             _ => None,
         }
     }
@@ -626,7 +627,7 @@ impl NodeProtocol for Build {
         match reply {
             BuildReply::Started { .. } => "started",
             BuildReply::Step { .. } => "step",
-            BuildReply::Blocked { .. } => "blocked",
+            BuildReply::Pending { .. } => "pending",
             BuildReply::Complete { .. } => "complete",
             BuildReply::Failed { .. } => "failed",
             BuildReply::Got { .. } => "got",
@@ -659,7 +660,7 @@ impl NodeProtocol for Build {
             BuildReply::Started { disposition: Disposition::AlreadyApplied, .. } => ReplyKind::new(crate::outcome::Code::AlreadyExists),
             BuildReply::Started { .. } => ReplyKind::Success,
             BuildReply::Step { .. } => ReplyKind::Success,
-            BuildReply::Blocked { .. } => ReplyKind::Success,
+            BuildReply::Pending { .. } => ReplyKind::Success,
             BuildReply::Complete { .. } => ReplyKind::Success,
             BuildReply::Failed { code, .. } => ReplyKind::new(*code),
             BuildReply::Got { .. } => ReplyKind::Success,
@@ -718,7 +719,7 @@ impl StreamingProtocol for Build {
     fn frame_kind(frame: &BuildReply) -> FrameKind {
         match frame {
             BuildReply::Started { .. } => FrameKind::Started,
-            BuildReply::Step { .. } | BuildReply::Blocked { .. } | BuildReply::Events { .. } | BuildReply::Topology { .. } | BuildReply::Build { .. } => FrameKind::Data,
+            BuildReply::Step { .. } | BuildReply::Pending { .. } | BuildReply::Events { .. } | BuildReply::Topology { .. } | BuildReply::Build { .. } => FrameKind::Data,
             BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::Incomplete { .. } | BuildReply::FabricPrimaryMoved { .. } | BuildReply::Got { .. } | BuildReply::Deleted { .. } | BuildReply::End { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Build::classify_reply(other)),
         }

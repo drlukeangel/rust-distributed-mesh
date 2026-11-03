@@ -55,13 +55,14 @@ pub enum BuildFrame {
         /// How the step ended.
         result: StepResult,
     },
-    /// The step in flight is blocked: live progress, never a step outcome.
-    Blocked {
+    /// The step in flight is pending: its node's `pre_node_ready` answered `Pending`. Live progress,
+    /// never a step outcome.
+    Pending {
         /// The mesh whose section the step belongs to.
         mesh: String,
         /// The operation.
         operation: String,
-        /// The blocked step.
+        /// The pending step.
         step: String,
         /// What it waits for.
         reason: String,
@@ -151,11 +152,11 @@ impl BuildStream {
                     }
                     return Some(Ok(BuildFrame::Step { mesh, operation, step, result }));
                 }
-                BuildReply::Blocked { mesh, operation, step, reason, .. } => {
-                    if !self.seen.insert(("blocked".into(), mesh.clone(), operation.clone(), step.clone(), reason.clone())) {
+                BuildReply::Pending { mesh, operation, step, reason, .. } => {
+                    if !self.seen.insert(("pending".into(), mesh.clone(), operation.clone(), step.clone(), reason.clone())) {
                         continue;
                     }
-                    return Some(Ok(BuildFrame::Blocked { mesh, operation, step, reason }));
+                    return Some(Ok(BuildFrame::Pending { mesh, operation, step, reason }));
                 }
                 BuildReply::Events { events, .. } => match parse_events(events) {
                     Ok(events) => return Some(Ok(BuildFrame::Events(events))),

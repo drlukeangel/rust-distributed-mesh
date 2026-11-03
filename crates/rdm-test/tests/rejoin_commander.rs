@@ -371,57 +371,56 @@ fn a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call() {
     })
 }
 
-/// CONTRACT (fabric-node-hooks.md "Outcomes and the gate": a Blocked hook runs again only when its
-/// `retry_on` occurs; node-start.md step 2: the stopped node holds no record of the commander and
-/// learns who answered from the join answer): a node is stopped and started by an admin no
-/// record it holds names, and its hook answers `Blocked { PrimaryAddressed }` after that start. The
-/// commander then addresses the node with a down op (a probe): the hook runs again at once, passes,
-/// and the node is Ready. The primary is known by the endpoint of the call it answered
-/// on, so its down op is counted whatever record names it. Must NOT happen: the hook waiting on, and
-/// the node held Pending, because the down op came from an endpoint no record names.
+/// CONTRACT (fabric-node-hooks.md "Outcomes and the gate": "`Failed { reason }`, or the attempts spent |
+/// the start ends `Failed` with the hook step and the last reason, back to whoever started the node";
+/// "Where the failure lands": "a `node.start` command | the command ends `Failed { reason }` to its
+/// caller"): a node is stopped, and after its start its hook answers `Pending` on every attempt of the
+/// default `Send` (3 attempts). The start runs the hook to its end inside the start: three calls, each
+/// after the backoff, then the `StartNode` call is answered `StartFailed { step: node.pre-node-ready,
+/// reason }` naming the hook's last reason. A start whose hook answers `Pending` once and then `Ok` is
+/// answered `Started`. Must NOT happen: `Started` for a start whose hook never answered Ok, a fourth
+/// call of the hook, or the reason lost.
 #[test]
-fn a_hook_blocked_on_its_primarys_word_runs_again_when_a_commander_no_record_names_addresses_it() {
-    let cell = "a_hook_blocked_on_its_primarys_word_runs_again_when_a_commander_no_record_names_addresses_it";
+fn a_start_whose_hook_answers_pending_on_every_attempt_answers_its_caller_start_failed() {
+    let cell = "a_start_whose_hook_answers_pending_on_every_attempt_answers_its_caller_start_failed";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         if crate::own_process::delegated(module_path!(), cell) {
             return;
         }
-        use rdm_admin::node_hooks::{HookOutcome, PreNodeReadyState, RetryOn};
+        use rdm_admin::node_hooks::HookOutcome;
         use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
         let pre_node_ready = TestPreNodeReady::new(Mode::Local);
-        let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, .. } = rig_pre_node_ready("addressed-unrecorded", false, Some(pre_node_ready.clone())).await;
+        let Rig { primary: _primary, commander, _carried, running: _running, launch, key, dir, target, node_id, incarnation, .. } = rig_pre_node_ready("start-hook-spent", false, Some(pre_node_ready.clone())).await;
         let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "f4te7echyh6f".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "f4te7echyh6f".into(), operation: rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
-        let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         assert!(matches!(call(&commander, &target, &stop).await, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped");
         commander.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
-        // After this start the hook waits on its authority's word.
-        pre_node_ready.set_mode(Mode::Fixed(HookOutcome::Blocked { reason: "waits for its authority to address it".into(), retry_on: RetryOn::PrimaryAddressed }));
-        assert_eq!(call(&commander, &target, &start).await, StatusReply::Started, "the start joins the commander over its call; its hook runs on, blocked");
-        let handle = running.pre_node_ready().expect("a registered hook has a handle");
-        tokio::time::timeout(NEVER, async {
-            while !matches!(handle.state(), PreNodeReadyState::Blocked { retry_on: RetryOn::PrimaryAddressed, .. }) {
-                tokio::time::sleep(Duration::from_millis(20)).await;
+        // After this start the hook answers Pending on every attempt.
+        let before = pre_node_ready.attempts.load(std::sync::atomic::Ordering::SeqCst);
+        pre_node_ready.set_mode(Mode::Fixed(HookOutcome::Pending { reason: "the rows of orders are not yet published".into() }));
+        let answered = call(&commander, &target, &start).await;
+        let StatusReply::StartFailed { step, reason } = &answered else { panic!("a start whose hook spent its attempts is answered StartFailed, not {answered:?}") };
+        assert_eq!(step, "node.pre-node-ready", "the failed step is the hook's");
+        assert!(reason.contains("the rows of orders are not yet published") && reason.contains("3 attempts"), "the caller is answered the hook's last reason: {reason}");
+        assert_eq!(pre_node_ready.attempts.load(std::sync::atomic::Ordering::SeqCst) - before, 3, "three attempts, the default Send's, and no fourth");
+        let attempts: Vec<String> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.mesh.node.update.via-pre-node-ready-attempt").filter_map(|(_, _, f)| f.get("outcome").cloned()).collect();
+        assert_eq!(attempts.iter().filter(|o| *o == "pending").count(), 3, "each of the three attempts answered Pending: {attempts:?}");
+
+        // A start whose hook answers Pending once, then Ok, is answered Started.
+        commander.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
+        let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
+        pre_node_ready.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Pending { reason: "one more turn".into() } });
+        tokio::spawn({
+            let pre_node_ready = pre_node_ready.clone();
+            async move {
+                started.notified().await;
+                pre_node_ready.set_mode(Mode::Local);
+                resume.notify_one();
             }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("the hook never blocked on its authority's word: {:?}", handle.state()));
-        // The commander's down op: the hook runs again, and this time passes.
-        pre_node_ready.set_mode(Mode::Local);
-        let _ = call(&commander, &target, &probe).await;
-        let settled = tokio::time::timeout(NEVER, handle.settled()).await.unwrap_or_else(|_| panic!("the hook never ran again on the commander's down op: {:?}", handle.state()));
-        assert_eq!(settled, PreNodeReadyState::Passed);
-        tokio::time::timeout(NEVER, async {
-            while !matches!(call(&commander, &target, &probe).await, StatusReply::Current { state: NodeState::Ready, .. }) {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("the started node never answered Ready");
-        let blocked = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.node.reject.via-pre-node-ready-blocked" && f.get("cleared_by").map(String::as_str) == Some("primary-addressed")).count();
-        assert_eq!(blocked, 1, "the blocker span closes naming the event that cleared it, primary-addressed");
+        });
+        assert_eq!(tokio::time::timeout(NEVER, call(&commander, &target, &start)).await.expect("the start is answered"), StatusReply::Started, "a start whose hook's next attempt answered Ok is Started");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

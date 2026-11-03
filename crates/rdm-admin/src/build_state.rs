@@ -587,8 +587,8 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn write_step(&self, step: &StepWrite) -> Result<(), BuildStateError> {
         Err(BuildStateError::Io(format!("this Build store writes no step event: {} of {} is written by a run's step log", step.step, step.operation)))
     }
-    /// The step in flight of `operation` is blocked for `reason`: live progress, never durable.
-    async fn note_blocked(&self, _build_id: &BuildId, _operation: &rdm_core::OperationId, _step: &str, _reason: &str) {}
+    /// The step in flight is pending for `reason` (its node's `pre_node_ready` answered `Pending`): live progress, never durable.
+    async fn note_pending(&self, _build_id: &BuildId, _operation: &rdm_core::OperationId, _step: &str, _reason: &str) {}
 }
 
 #[derive(Debug, Default)]

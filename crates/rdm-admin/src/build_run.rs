@@ -6,14 +6,14 @@
 //!
 //! - **start-or-reattach on `(build_id, mesh)`.** A call for a section this admin is running
 //!   attaches to that run: it is replayed a `Step` frame per step the run wrote, then the current
-//!   `Blocked` if the run is still blocked, then the run's live frames. A call with no run here
+//!   `Pending` if the run is still pending, then the run's live frames. A call with no run here
 //!   starts one: the admin reads the Build and its events from storage (Q292) and plans its own
 //!   mesh's section; a step whose `rdm.build.step` event ended `complete` is never run again.
 //! - **refusals by name.** A call to an admin that is not the mesh's primary in its view is
 //!   `NotExecutor { named, recipient }`.
 //! - **frames after durability.** A `Step` frame is produced only once the step's `rdm.build.step`
-//!   event is written on this admin ([`FramedBuilds`] writes it). `Blocked` is kept in memory per
-//!   run, sent on a new blocker or a changed reason and never on a timer, and is never a step outcome.
+//!   event is written on this admin ([`FramedBuilds`] writes it). `Pending` is kept in memory per
+//!   run, sent when its reason changes, and is never a step outcome.
 //! - **a cut call cancels nothing.** The run is its own task; the stream is a view of its
 //!   [`RunLog`]. Only a step that ends failed ends a section `Failed`.
 //! - **a run is a turn of the admin's stop gate** (stop_gate.rs). A run served for a call begins
@@ -57,12 +57,12 @@ pub fn result_of(outcome: &StepOutcome) -> StepResult {
 
 #[derive(Default)]
 struct RunState {
-    /// Every `Step` and `Blocked` frame, in the order they were produced.
+    /// Every `Step` and `Pending` frame, in the order they were produced.
     events: Vec<BuildReply>,
     /// The `Step` frames alone: what a reattaching call is replayed.
     steps: Vec<BuildReply>,
     /// The blocker the run holds now, `(operation, step, reason)`.
-    blocked: Option<(String, String, String)>,
+    pending: Option<(String, String, String)>,
     /// The last step to fail, `(operation, step, reason)`: what the terminal `Failed` names.
     failed: Option<(String, String, String)>,
     /// The section's terminal frame.
@@ -100,23 +100,23 @@ impl RunLog {
         let frame = BuildReply::Step { build_id: self.build_id.clone(), mesh: self.mesh.clone(), operation: operation.into(), step: step.into(), result };
         s.steps.push(frame.clone());
         s.events.push(frame);
-        if s.blocked.as_ref().is_some_and(|(o, t, _)| o == operation && t == step) {
-            s.blocked = None;
+        if s.pending.as_ref().is_some_and(|(o, t, _)| o == operation && t == step) {
+            s.pending = None;
         }
         drop(s);
         self.wake.notify_waiters();
     }
 
-    /// The run is blocked at `step` of `operation`. A frame goes out only for a new blocker or a
-    /// changed reason; the blocker stays in memory for a call that attaches later.
-    pub fn blocked(&self, operation: &str, step: &str, reason: &str) {
+    /// The run is pending at `step` of `operation` (its node's `pre_node_ready` answered `Pending`). A
+    /// frame goes out only when the reason changes; it stays in memory for a call that attaches later.
+    pub fn pending(&self, operation: &str, step: &str, reason: &str) {
         let mut s = self.state.lock().unwrap();
         let now = (operation.to_string(), step.to_string(), reason.to_string());
-        if s.blocked.as_ref() == Some(&now) {
+        if s.pending.as_ref() == Some(&now) {
             return;
         }
-        s.blocked = Some(now);
-        s.events.push(BuildReply::Blocked { build_id: self.build_id.clone(), mesh: self.mesh.clone(), operation: operation.into(), step: step.into(), reason: bounded_reason(reason.into()) });
+        s.pending = Some(now);
+        s.events.push(BuildReply::Pending { build_id: self.build_id.clone(), mesh: self.mesh.clone(), operation: operation.into(), step: step.into(), reason: bounded_reason(reason.into()) });
         drop(s);
         self.wake.notify_waiters();
     }
@@ -130,7 +130,7 @@ impl RunLog {
     pub fn finish(&self, terminal: BuildReply) {
         let mut s = self.state.lock().unwrap();
         if s.terminal.is_none() {
-            s.blocked = None;
+            s.pending = None;
             s.terminal = Some(terminal);
         }
         drop(s);
@@ -138,12 +138,12 @@ impl RunLog {
     }
 
     /// A call attached to the run after it began: the frames it is replayed (a `Step` per step
-    /// written, then the current `Blocked` if the run is still blocked) and the live reader after them.
+    /// written, then the current `Pending` if the run is still pending) and the live reader after them.
     pub fn attach(self: &Arc<Self>) -> (Vec<BuildReply>, RunReader) {
         let s = self.state.lock().unwrap();
         let mut replay = s.steps.clone();
-        if let Some((operation, step, reason)) = &s.blocked {
-            replay.push(BuildReply::Blocked { build_id: self.build_id.clone(), mesh: self.mesh.clone(), operation: operation.clone(), step: step.clone(), reason: bounded_reason(reason.clone()) });
+        if let Some((operation, step, reason)) = &s.pending {
+            replay.push(BuildReply::Pending { build_id: self.build_id.clone(), mesh: self.mesh.clone(), operation: operation.clone(), step: step.clone(), reason: bounded_reason(reason.clone()) });
         }
         (replay, RunReader { log: self.clone(), cursor: s.events.len(), done: false })
     }
@@ -162,7 +162,7 @@ pub struct RunReader {
 }
 
 impl RunReader {
-    /// The next frame in order: every `Step` and `Blocked` frame, then the terminal, then `None`.
+    /// The next frame in order: every `Step` and `Pending` frame, then the terminal, then `None`.
     pub async fn next(&mut self) -> Option<BuildReply> {
         if self.done {
             return None;
@@ -368,11 +368,11 @@ impl BuildStateAdapter for FramedBuilds {
         Ok(())
     }
 
-    async fn note_blocked(&self, build_id: &BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
+    async fn note_pending(&self, build_id: &BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
         let mesh = self.steps.as_ref().map(|(_, own)| own.clone()).unwrap_or_default();
         let held = self.runs.runs.lock().unwrap().iter().filter(|((b, _), _)| b == build_id.as_str()).map(|(_, r)| r.clone()).collect::<Vec<_>>();
         for run in held.iter().filter(|r| r.mesh == mesh || held.len() == 1) {
-            run.blocked(&operation.to_string(), step, reason);
+            run.pending(&operation.to_string(), step, reason);
         }
     }
 }

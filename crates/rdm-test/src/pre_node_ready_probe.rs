@@ -7,7 +7,7 @@
 //!
 //! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
-use rdm_node::node_hooks::{HookOutcome, PreNodeReady, NodeReadyCtx, RetryOn};
+use rdm_node::node_hooks::{HookOutcome, PreNodeReady, NodeReadyCtx};
 use rdm_transport::{CallOptions, PreNodeReadyGate, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
@@ -204,7 +204,8 @@ impl PullServer {
 /// What a [`TestPreNodeReady`] does on an attempt.
 #[derive(Debug, Clone)]
 pub enum Mode {
-    /// Pull from the accepting authority; its `NotReady` is `Blocked { PrimaryReady }`.
+    /// Pull from the node-admin that answered the join; its `NotReady` is `Pending` with that reason
+    /// (fabric-node-hooks.md "The server side gates too").
     Pull,
     /// Complete from local state: no pull (the Day-0 root).
     Local,
@@ -236,6 +237,8 @@ pub struct Held {
 /// A test app's `pre_node_ready`.
 pub struct TestPreNodeReady {
     mode: Mutex<Mode>,
+    /// The `Send` RDM runs the hook under ([`TestPreNodeReady::set_attempts`]).
+    send: Mutex<rdm_transport::Send>,
     held: Mutex<Held>,
     /// What each attempt saw of its context: `(attempt, authority named, authority reason)`.
     pub contexts: Mutex<Vec<(u32, Option<String>, Option<String>)>>,
@@ -270,6 +273,7 @@ impl TestPreNodeReady {
     pub fn new(mode: Mode) -> Arc<Self> {
         Arc::new(Self {
             mode: Mutex::new(mode),
+            send: Mutex::new(rdm_transport::Send::default()),
             held: Mutex::default(),
             contexts: Mutex::default(),
             member_certs: Mutex::default(),
@@ -285,6 +289,12 @@ impl TestPreNodeReady {
     /// Change what the next attempt does.
     pub fn set_mode(&self, mode: Mode) {
         *self.mode.lock().unwrap() = mode;
+    }
+
+    /// The attempts the hook's `Send` makes (the default time limit), read when its start runs it:
+    /// a cell that waits on an event while the hook answers `Pending` gives it enough to outlast it.
+    pub fn set_attempts(&self, attempts: u8) {
+        self.send.lock().unwrap().attempts = attempts;
     }
 
     /// A row delivered by gossip. Applying a version already held changes nothing.
@@ -318,6 +328,10 @@ impl TestPreNodeReady {
 
 #[async_trait::async_trait]
 impl PreNodeReady for TestPreNodeReady {
+    fn send(&self) -> rdm_transport::Send {
+        *self.send.lock().unwrap()
+    }
+
     async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
         self.attempts.fetch_add(1, Ordering::SeqCst);
         let _ = self.digest_view.set(ctx.topology_view.digest_view.clone());
@@ -356,10 +370,10 @@ impl PreNodeReady for TestPreNodeReady {
                             }
                             HookOutcome::Ok
                         }
-                        PullReply::NotReady { reason } => ctx.primary_not_ready(format!("{} answered NotReady: {reason}", accepting_primary.node_id)),
+                        PullReply::NotReady { reason } => HookOutcome::Pending { reason: format!("{} answered NotReady: {reason}", accepting_primary.node_id) },
                         other => HookOutcome::Failed { reason: format!("{} answered the pull with {other:?}", accepting_primary.node_id) },
                     },
-                    other => HookOutcome::Blocked { reason: format!("the pull to {} was not answered: {}", accepting_primary.node_id, other.name()), retry_on: RetryOn::PrimaryChanged },
+                    other => HookOutcome::Pending { reason: format!("the pull to {} was not answered: {}", accepting_primary.node_id, other.name()) },
                 }
             }
         }
@@ -368,12 +382,19 @@ impl PreNodeReady for TestPreNodeReady {
 
 /// A node's `pre_node_ready` read from a scenario's knob file
 /// ([`crate::pre_node_ready_knob_dir`]`/<location-index>`): each attempt reads the file; `pass` (or no file)
-/// returns `Ok`, any other text is `Blocked` with that text as its reason, run again when the
-/// node's authority addresses it. A scenario changes the reason or lets the hook pass by rewriting
-/// the file. Testkit only; never a product binary.
+/// returns `Ok`, `failed <reason>` returns `Failed` with that reason, and any other text is `Pending`
+/// with that text as its reason, called again on the hook's `Send`. A scenario changes the reason or
+/// lets the hook pass by rewriting the file. The hook's `Send` holds the node until the scenario lets
+/// it pass ([`KNOB_ATTEMPTS`] attempts, the default time limit), or, when the scenario recorded one
+/// ([`crate::write_pre_node_ready_knob_attempts`]), the attempts in `<location-index>.send`. Testkit
+/// only; never a product binary.
 pub struct KnobPreNodeReady {
     file: std::path::PathBuf,
 }
+
+/// The attempts a knob's hook makes when its scenario recorded none: enough to hold its node through
+/// a scenario's kills and elections until the scenario lets it pass.
+pub const KNOB_ATTEMPTS: u8 = u8::MAX;
 
 impl KnobPreNodeReady {
     /// The hook for the node `name` of the estate under `root`, when the scenario recorded a knob
@@ -393,18 +414,28 @@ impl KnobPreNodeReady {
 
 #[async_trait::async_trait]
 impl PreNodeReady for KnobPreNodeReady {
+    fn send(&self) -> rdm_transport::Send {
+        let recorded = std::fs::read_to_string(self.file.with_extension("send")).ok().and_then(|t| t.trim().parse::<u8>().ok());
+        rdm_transport::Send { attempts: recorded.unwrap_or(KNOB_ATTEMPTS), ..rdm_transport::Send::default() }
+    }
+
     async fn pre_node_ready(&self, _ctx: &NodeReadyCtx) -> HookOutcome {
         if !self.file.exists() {
             return HookOutcome::Ok;
         }
         let outcome = match std::fs::read_to_string(&self.file) {
-            Ok(text) if text.trim() != "pass" => HookOutcome::Blocked { reason: text.trim().to_string(), retry_on: RetryOn::PrimaryAddressed },
-            _ => HookOutcome::Ok,
+            Ok(text) if text.trim() == "pass" => HookOutcome::Ok,
+            Ok(text) => match text.trim().strip_prefix("failed ") {
+                Some(reason) => HookOutcome::Failed { reason: reason.to_string() },
+                None => HookOutcome::Pending { reason: text.trim().to_string() },
+            },
+            Err(_) => HookOutcome::Ok,
         };
         // One line per attempt beside the knob (`<location-index>.attempts`): what the scenario waits on.
         let line = match &outcome {
-            HookOutcome::Blocked { reason, .. } => format!("blocked {reason}\n"),
-            _ => "ok\n".to_string(),
+            HookOutcome::Pending { reason } => format!("pending {reason}\n"),
+            HookOutcome::Failed { reason } => format!("failed {reason}\n"),
+            HookOutcome::Ok => "ok\n".to_string(),
         };
         let attempts = std::path::PathBuf::from(format!("{}.attempts", self.file.display()));
         let _ = std::fs::OpenOptions::new().create(true).append(true).open(&attempts).and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));

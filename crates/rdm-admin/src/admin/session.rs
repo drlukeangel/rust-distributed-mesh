@@ -162,16 +162,16 @@ impl TopologyObserver {
     }
 }
 
-/// The blocker an exact birth names for its Ready (node-start.md step 3): only while `digest_view` holds the
-/// birth Pending (the status its mesh-primary set, never its heartbeat's), one `ProbeNodeState` to
-/// that birth over `client`, and the hook's blocker of
-/// a Status `Blocked` answer, named with the birth and the event it runs again on and no attempt
-/// counter. Every other answer names no blocker and frames nothing: a `NotReady` is the subject's
-/// door or handler not serving yet (node-rpc-envelope.md, "NotReady ... is never a hook blocker"),
-/// and the step waits on; so does a birth that answers its state (`Current`, `CurrentStopped`), a
-/// stale incarnation, or a call that ends unanswered: why it is not Ready is the Ready check's to
-/// report.
-pub async fn probed_ready_blocker(client: &rdm_transport::NodeRpcClient, digest_view: &DigestView, node: &Node) -> Option<String> {
+/// What an exact node's hook answered for its Ready (node-rpc-envelope.md, Status: ProbeNodeState):
+/// only while `digest_view` holds the node Pending (the status its mesh-primary set, never its
+/// heartbeat's), one `ProbeNodeState` to that node over `client`. A Status `Pending` answer is the
+/// hook's reason, named with the node and no attempt counter; a `StartFailed` at
+/// `node.pre-node-ready` is the start that ended Failed, with the hook's last reason. Every other
+/// answer names nothing and frames nothing: a `NotReady` is the subject's door or handler not serving
+/// yet (node-rpc-envelope.md, "NotReady ... is never a hook blocker"), and the step waits on; so does
+/// a node that answers its state (`Current`, `CurrentStopped`), a stale incarnation, or a call that
+/// ends unanswered: why it is not Ready is the Ready check's to report.
+pub async fn probed_hook_answer(client: &rdm_transport::NodeRpcClient, digest_view: &DigestView, node: &Node) -> Option<crate::node_hooks::ProbeAnswer> {
     let incarnation = node.incarnation_id.clone()?;
     let (digest, _) = digest_view.get(node.node_id.as_str()).filter(|(d, _)| d.node.incarnation == incarnation)?;
     if digest.status != MemberStatus::Pending {
@@ -179,8 +179,11 @@ pub async fn probed_ready_blocker(client: &rdm_transport::NodeRpcClient, digest_
     }
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
     match rdm_client::NodeRpc::new(client).get(&birth, &rdm_transport::CallOptions::default()).await {
-        Ok(rdm_core::status::StatusReply::Blocked { node_id, incarnation: answered, reason, retry_on }) if node_id == node.node_id && answered == incarnation => {
-            Some(format!("{}: pre_node_ready is blocked: {reason}; it runs again on {}", node.node_id, retry_on.name()))
+        Ok(rdm_core::status::StatusReply::Pending { node_id, incarnation: answered, reason }) if node_id == node.node_id && answered == incarnation => {
+            Some(crate::node_hooks::ProbeAnswer::Pending(format!("{}: pre_node_ready answered Pending: {reason}", node.node_id)))
+        }
+        Ok(rdm_core::status::StatusReply::StartFailed { step, reason }) if step == crate::node_hooks::PRE_NODE_READY_STEP => {
+            Some(crate::node_hooks::ProbeAnswer::StartFailed(format!("{}: its start ended Failed at {step}: {reason}", node.node_id)))
         }
         _ => None,
     }
@@ -227,8 +230,8 @@ impl NodeObserver for TopologyObserver {
         Err(format!("{} is held {:?}, not ready: {member}; {started}", node.node_id, d.status))
     }
 
-    async fn ready_blocker(&self, node: &Node) -> Option<String> {
-        probed_ready_blocker(self.client.as_deref()?, &self.digest_view, node).await
+    async fn ready_hook_answer(&self, node: &Node) -> Option<crate::node_hooks::ProbeAnswer> {
+        probed_hook_answer(self.client.as_deref()?, &self.digest_view, node).await
     }
 
     async fn send_command(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext) -> crate::deployment::pipeline::CommandAdmission {
@@ -298,9 +301,7 @@ pub(crate) struct AdminSession {
     pub(crate) builds: Arc<dyn BuildStateAdapter>,
     pub(crate) entry_floor: Arc<Mutex<Option<crate::build::BuildId>>>,
     pub(crate) node_hooks: crate::node_hooks::NodeHooks,
-    pub(crate) addressed: Arc<crate::node_hooks::Addressed>,
     pub(crate) pre_node_ready_cell: Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>>,
-    pub(crate) pre_node_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub(crate) wake: Arc<Records>,
     /// This admin's own Build log: a start's Build-floor step absorbs the facts it reads into it.
     pub(crate) local: Arc<dyn crate::build_state::LocalBuildLog>,
@@ -332,9 +333,6 @@ impl crate::node_self::Session for AdminSession {
     }
 
     async fn leave_channels(&self) {
-        if let Some(h) = self.pre_node_ready_task.lock().unwrap().take() {
-            h.abort();
-        }
         self.node_hooks.gate().close();
         crate::node_self::leave_channels(&self.topology_view, Some(&self.backbone), &self.node_id).await;
     }
@@ -511,15 +509,14 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 progress: None,
                 held: Some(s.local.clone()),
             },
-            leave: (self.operation.operation.action == "node.mesh.join").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), node_hooks: s.node_hooks.clone(), pre_node_ready_task: s.pre_node_ready_task.clone(), node_id: s.node_id.clone(), path: me.path.clone(), name: me.name.clone()}),
+            leave: (self.operation.operation.action == "node.mesh.join").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), node_hooks: s.node_hooks.clone(), node_id: s.node_id.clone(), path: me.path.clone(), name: me.name.clone()}),
         };
         Ok(crate::workflows::node_start::HookParts {
             birth: crate::node_hooks::Birth { path: me.path.clone(), name: me.name.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), r#type: "node-admin".into() },
             node_hooks: s.node_hooks.clone(),
-            events: crate::node_hooks::Events::new(topology_view.digest_view.clone(), s.addressed.clone()),
             cancel: self.birth_cancel.take().expect("the hook's token is handed once"),
             state: s.pre_node_ready_cell.clone(),
-            runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.pre_node_ready_task.clone() },
+            runs: crate::workflows::node_start::HookRuns::Inline,
             after: Box::new(after),
         })
     }
@@ -534,7 +531,6 @@ pub(crate) struct AdminLeave {
     topology_view: TopologyView,
     backbone: Backbone,
     node_hooks: crate::node_hooks::NodeHooks,
-    pre_node_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     node_id: NodeId,
     path: String,
     /// The name, beside its path.
@@ -543,9 +539,6 @@ pub(crate) struct AdminLeave {
 
 impl AdminLeave {
     async fn run(self, step: &str, reason: &str) {
-        if let Some(h) = self.pre_node_ready_task.lock().unwrap().take() {
-            h.abort();
-        }
         self.node_hooks.gate().close();
         crate::node_self::leave_channels(&self.topology_view, Some(&self.backbone), &self.node_id).await;
         tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node_path = %self.path, node_name = %self.name, step, reason)
