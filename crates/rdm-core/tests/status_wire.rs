@@ -32,7 +32,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_thirty_nine_variant_wire_schema() {
+fn requests_match_the_frozen_forty_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Stopped, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
@@ -114,6 +114,9 @@ fn requests_match_the_frozen_thirty_nine_variant_wire_schema() {
             "0c303132333435363738396162", "0c397763707266677776746879", "096d657368312e7270630132",
             "0172",
         )),
+        // fabric.storage.update (storage.md §2 "Changing it"), appended last at position 39:
+        // topology_storage_provider "t".
+        (UpdateStorage { topology_storage_provider: "t".into() }, "270174"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -124,7 +127,7 @@ fn requests_match_the_frozen_thirty_nine_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_sixty_three_variant_wire_schema() {
+fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use StatusReply::*;
     let fixtures = [
@@ -249,6 +252,12 @@ fn replies_match_the_frozen_sixty_three_variant_wire_schema() {
         (RejectedRotationInProgress { phase: rdm_core::status::RootsPhase::Distributed }, "3d01"),
         // root-already-trusted, appended last: root "ab"
         (RejectedRootAlreadyTrusted { root: "ab".into() }, "3e026162"),
+        // fabric.storage.updated, appended last at 63: change_id
+        (StorageUpdated { change_id: rdm_core::ChangeId::parse("3123456789ab").unwrap() }, "3f0c333132333435363738396162"),
+        // build-in-progress of fabric.storage.update, appended last at 64: build_id Some("b") | change_id None
+        (RejectedBuildInProgress { build_id: Some("b".into()), change_id: None }, "4001016200"),
+        // fabric.storage.update's provider refused, appended last at 65: reason "r" | detail "d"
+        (RejectedTopologyStorageProvider { reason: "r".into(), detail: "d".into() }, "4101720164"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
@@ -438,5 +447,5 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
 
 #[test]
 fn every_reply_variant_of_status_classifies_to_one_code() {
-    replies_match_the_frozen_sixty_three_variant_wire_schema();
+    replies_match_the_frozen_sixty_six_variant_wire_schema();
 }

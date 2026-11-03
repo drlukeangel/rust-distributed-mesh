@@ -20,18 +20,21 @@ fn bytes(hex: &str) -> Vec<u8> {
 
 /// CONTRACT (Luke Q7): the requests of op 0x22 in frozen bytes: `DeleteConnections` variant 0 (node id,
 /// incarnation, then the scope: `All` 0, `Connections` 1 with its ids), `StopNode` 1, `StartNode` 2 and a
-/// storage change's `StorageStep` 3 (storage.md §2 "Changing it") and `LeaveMesh` 4 (Q205,
-/// node-mesh-leave.md Wire).
+/// storage change's `StorageStep` 3 (storage.md §2 "Changing it"), `LeaveMesh` 4 (Q205,
+/// node-mesh-leave.md Wire), `StorageBlock` 5, and the fabric-primary's `BlockMesh` 6 and `UnblockMesh` 7
+/// to a mesh-primary: the change and its two providers, no Build.
 #[test]
-fn the_requests_match_the_frozen_six_variant_wire_schema() {
-    assert_eq!(NodeCommand::REQUEST_VARIANTS, 6);
+fn the_requests_match_the_frozen_eight_variant_wire_schema() {
+    assert_eq!(NodeCommand::REQUEST_VARIANTS, 8);
     for (req, hex) in [
         (NodeCommandRequest::StopNode { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("o") }, "010c3031323334353637383961620c397763707266677776746879016201016f000000"),
         (NodeCommandRequest::StartNode { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("o") }, "020c3031323334353637383961620c397763707266677776746879016201016f000000"),
         (NodeCommandRequest::DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::All }, "000c3031323334353637383961620c39776370726667777674687900"),
         (NodeCommandRequest::DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "000c3031323334353637383961620c39776370726667777674687901010c333132333435363738396162"),
-        (NodeCommandRequest::StorageBlock { node_id: node(), incarnation: birth(), build_id: "b".into(), change_id: change() }, "050c3031323334353637383961620c39776370726667777674687901620c333132333435363738396162"),
-        (NodeCommandRequest::StorageStep { node_id: node(), incarnation: birth(), build_id: "b".into(), change_id: change(), provider: "f".into() }, "030c3031323334353637383961620c39776370726667777674687901620c3331323334353637383961620166"),
+        (NodeCommandRequest::StorageBlock { node_id: node(), incarnation: birth(), change_id: change() }, "050c3031323334353637383961620c3977637072666777767468790c333132333435363738396162"),
+        (NodeCommandRequest::StorageStep { node_id: node(), incarnation: birth(), change_id: change(), provider: "f".into() }, "030c3031323334353637383961620c3977637072666777767468790c3331323334353637383961620166"),
+        (NodeCommandRequest::BlockMesh { node_id: node(), incarnation: birth(), change_id: change(), from: "f".into(), to: "t".into() }, "060c3031323334353637383961620c3977637072666777767468790c33313233343536373839616201660174"),
+        (NodeCommandRequest::UnblockMesh { node_id: node(), incarnation: birth(), change_id: change(), from: "f".into(), to: "t".into() }, "070c3031323334353637383961620c3977637072666777767468790c33313233343536373839616201660174"),
         (NodeCommandRequest::LeaveMesh { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("o") }, "040c3031323334353637383961620c397763707266677776746879016201016f000000"),
     ] {
         let expected = bytes(hex);
@@ -43,11 +46,12 @@ fn the_requests_match_the_frozen_six_variant_wire_schema() {
 /// CONTRACT (Luke Q7): every reply of op 0x22 in frozen bytes, in its position: `CommandAccepted` 0,
 /// `ConnectionsDeleting` 1, `ConnectionsDeleted` 2 (its receipt absent for a list of ids, present for
 /// `All`), then the refusals; Q205 appends `Leaving` 19, `StopMeshLeft` 20, `MeshLeft` 21 and
-/// `BusyHoldingConnections` 22.
+/// `BusyHoldingConnections` 22; `StorageBlocked` 23; a mesh-primary's `MeshBlocked` 24 and
+/// `MeshUnblocked` 25.
 #[test]
-fn replies_match_the_frozen_twenty_four_variant_wire_schema() {
+fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
-    assert_eq!(NodeCommand::REPLY_VARIANTS, 24);
+    assert_eq!(NodeCommand::REPLY_VARIANTS, 26);
     use NodeCommandReply::*;
     for (reply, hex) in [
         (CommandAccepted { node_id: node(), incarnation: birth() }, "000c3031323334353637383961620c397763707266677776746879"),
@@ -75,6 +79,8 @@ fn replies_match_the_frozen_twenty_four_variant_wire_schema() {
         (StopMeshLeft { left: vec![rdm_core::status::WhichMesh::Own] }, "140100"),
         (MeshLeft { node_id: node(), incarnation: birth(), left: vec![rdm_core::status::WhichMesh::Own, rdm_core::status::WhichMesh::Backbone] }, "150c3031323334353637383961620c397763707266677776746879020001"),
         (BusyHoldingConnections { connections: vec![connection()] }, "16010c333132333435363738396162"),
+        (MeshBlocked, "18"),
+        (MeshUnblocked { provider: "f".into() }, "190166"),
     ] {
         let expected = bytes(hex);
         variants.insert(NodeCommand::encode_reply(&reply).unwrap()[0]);
@@ -110,7 +116,7 @@ fn node_command_builds_streaming_and_never_forwarded_beside_a_forwarded_status()
 
 #[test]
 fn every_reply_variant_of_node_command_classifies_to_one_code() {
-    replies_match_the_frozen_twenty_four_variant_wire_schema();
+    replies_match_the_frozen_twenty_six_variant_wire_schema();
 }
 
 /// CONTRACT (Q47 A): stop/start append requests 1/2, with the exact birth and operation;
