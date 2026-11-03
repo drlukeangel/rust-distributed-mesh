@@ -1277,7 +1277,11 @@ impl Estate {
         for e in std::fs::read_dir(&self.root).into_iter().flatten().flatten() {
             let Ok(raw) = std::fs::read_to_string(e.path().join("deployment.json")) else { continue };
             let Some(pid) = serde_json::from_str::<Value>(&raw).ok().and_then(|v| v["pid"].as_u64()) else { continue };
-            if runs(pid as u32) {
+            // The recorded pid is this estate's runtime only while that process's environment names this
+            // root (the reaper's own rule, [`environ_names_estate`]): a runtime that ended frees its pid, and
+            // once the box's pid counter wraps another process, another cell's test binary included, can
+            // hold it. Signalling it by the number alone signals that process (rdm#305).
+            if runs(pid as u32) && std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| environ_names_estate(&env, &self.root)) {
                 out.push((e.path(), pid as u32));
             }
         }
