@@ -3,7 +3,7 @@
 
 use rdm_core::connections::{
     carrier_order, proxy_invalid, resolve, ApplyRefusal, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState,
-    ConnectionsHeld, DirectRecovery, EffectiveRoute, NodeConnection, StaticIncarnations, INVALID_CARRIER_SUPERSEDED,
+    ConnectionsHeld, EffectiveRoute, NodeConnection, StaticIncarnations, INVALID_CARRIER_SUPERSEDED,
     INVALID_DESTINATION_SUPERSEDED,
 };
 use rdm_core::{IncarnationId, NodeId, PathName};
@@ -18,8 +18,7 @@ fn end(r#type: &str, ordinal: u32, incarnation: Option<&str>) -> ConnectionEnd {
 }
 
 fn direct(source: ConnectionEnd, destination: ConnectionEnd, state: ConnectionState, at: u64) -> NodeConnection {
-    let recovery = (state == ConnectionState::Failed).then_some(DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
-    NodeConnection { id: rdm_core::ConnectionId::mint(), source, destination, kind: ConnectionKind::Direct, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier: None, recovery, reason: None, logged_at_ms: at }
+    NodeConnection { id: rdm_core::ConnectionId::mint(), source, destination, kind: ConnectionKind::Direct, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier: None, reason: None, logged_at_ms: at }
 }
 
 fn proxy(source: ConnectionEnd, carrier: ConnectionEnd, destination: ConnectionEnd, at: u64) -> NodeConnection {
@@ -31,7 +30,6 @@ fn proxy(source: ConnectionEnd, carrier: ConnectionEnd, destination: ConnectionE
         alpn: rdm_core::connections::ALPN.to_vec(),
         state: ConnectionState::Connected,
         carrier: Some(carrier),
-        recovery: None,
         reason: None,
         logged_at_ms: at,
     }
@@ -103,8 +101,8 @@ fn the_route_prefers_a_valid_proxy_then_an_active_direct_then_none() {
 }
 
 /// CONTRACT: a complete holder that has never observed a Direct fact toward the destination
-/// dials it (connections.md section 7); once a Direct Failed fact stands, the reconnect series owns
-/// the retry (section 9.1) and no route is offered.
+/// dials it (connections.md section 7); once a Direct Failed fact stands, no route is offered
+/// (section 5.1: "else if the latest Direct is Failed: NoActiveRoute").
 #[test]
 fn a_complete_projection_with_no_direct_fact_dials_and_a_standing_failed_fact_does_not() {
     let (mut held, own, _carrier, dest) = estate();
@@ -115,13 +113,14 @@ fn a_complete_projection_with_no_direct_fact_dials_and_a_standing_failed_fact_do
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute);
 }
 
-/// CONTRACT (connections.md section 9.1: a reconnect series exists only when the latest Direct is
-/// Failed; section 1.2: only Failed is this source's failure evidence): a Direct this node dropped
-/// (`node.connection.delete`'s Disconnected, as node.stop writes) leaves no series
-/// to retry it, so the next new call dials the destination again; a Failed one after it waits for its
-/// series. Must NOT happen: a dropped Direct answering NoActiveRoute to every later call.
+/// CONTRACT (connections.md section 5.1: "else if the latest Direct is Failed: NoActiveRoute" and
+/// "Any other non-active Direct is none ever observed, a closed connection (Disconnected, as
+/// `node.connection.delete` writes at every node.stop), or an acceptor's Refused. A new call dials
+/// it"): a Direct this node dropped is no failure, so the next new call dials the destination again;
+/// a Failed one after it resolves to no active route. Must NOT happen: a dropped Direct answering
+/// NoActiveRoute to every later call.
 #[test]
-fn a_dropped_direct_is_dialled_again_and_only_a_failed_one_waits_for_its_series() {
+fn a_dropped_direct_is_dialled_again_and_only_a_failed_one_resolves_to_no_active_route() {
     let (mut held, own, _carrier, dest) = estate();
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: true });
@@ -129,10 +128,10 @@ fn a_dropped_direct_is_dialled_again_and_only_a_failed_one_waits_for_its_series(
     assert!(held.holds_direct_fact(&own.node_id, &dest.node_id));
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "a drop is no failure: nothing else dials it again");
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 40)).unwrap();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute, "the series owns a Failed Direct's retry");
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute, "a latest Failed Direct offers no route");
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 50)).unwrap();
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Disconnected, 60)).unwrap();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "a later drop supersedes the series' Failed");
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "a later drop supersedes the Failed");
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Refused, 70)).unwrap();
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "an acceptor's Refused is no failure of this source");
 }
@@ -212,18 +211,17 @@ fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     assert!(held.active_directs_to(&dest.node_id).unwrap().is_empty(), "no connection names the current destination");
 }
 
-/// CONTRACT (connections.md §9.1: "A reconnect series exists when the latest Direct record for this
-/// source and destination is Failed for the current destination incarnation"; §5.1: "A latest Failed
-/// Direct is the one state a reconnect series stands on"; §13 I: "Stale evidence is never used for a new
-/// process birth"): a latest Direct Failed naming a destination process the topology view no longer
-/// holds (another birth of the node, or a node that left its path) stands no series, so a new call
-/// dials the current birth. Must NOT happen: `NoActiveRoute` from a Failed fact about a gone birth.
+/// CONTRACT (connections.md §5.1: "else if the latest Direct is Failed: NoActiveRoute"; §13 I:
+/// "Stale evidence is never used for a new process birth"): a latest Direct Failed naming a
+/// destination process the topology view no longer holds (another birth of the node, or a node that
+/// left its path) is stale evidence, so a new call dials the current birth. Must NOT happen:
+/// `NoActiveRoute` from a Failed fact about a gone birth.
 #[test]
-fn a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call_dials() {
+fn a_failed_direct_naming_a_superseded_destination_is_stale_evidence_and_the_call_dials() {
     let (mut held, own, carrier, dest) = estate();
     let m = members(&mut held, &[&carrier, &dest]);
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 20)).unwrap();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute, "the series of the current birth owns the retry");
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute, "a Failed fact about the current birth offers no route");
     m.set(dest.node_id.clone(), dest.location(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "the Failed fact names d1, the topology view holds d2");
     m.set(dest.node_id.clone(), dest.location(), dest.incarnation.clone().unwrap());
@@ -296,12 +294,9 @@ fn another_nodes_proxy_is_never_held() {
 #[test]
 fn malformed_entries_are_refused_by_name() {
     let (mut held, own, carrier, dest) = estate();
-    let mut failed_proxy = proxy(own.clone(), carrier, dest.clone(), 30);
+    let mut failed_proxy = proxy(own, carrier, dest, 30);
     failed_proxy.state = ConnectionState::Failed;
     assert!(matches!(held.apply(failed_proxy), Err(ApplyRefusal::Shape(s)) if s.contains("Failed is a Direct state only")));
-    let mut no_recovery = direct(own, dest, ConnectionState::Failed, 40);
-    no_recovery.recovery = None;
-    assert!(matches!(held.apply(no_recovery), Err(ApplyRefusal::Shape(s)) if s.contains("recovery")));
 }
 
 /// CONTRACT (connections.md §6, Q227): the carriers a source asks are the live nodes of its mesh, from

@@ -66,7 +66,6 @@ fn fact(launch: &Launch, ordinal: u32) -> NodeConnection {
         alpn: b"storage-provider/1".to_vec(),
         state: ConnectionState::Connected,
         carrier: None,
-        recovery: None,
         reason: None,
         logged_at_ms: 1,
     }

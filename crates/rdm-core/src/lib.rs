@@ -86,7 +86,7 @@ pub const TRANSPORT_DIAG_TARGET: &str = "transport_diag";
 
 pub use codes::ResetCode;
 pub use connections::{
-    CarrierPolicy, ConnectionEnd, ConnectionIndex, ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery,
+    CarrierPolicy, ConnectionEnd, ConnectionIndex, ConnectionKind, ConnectionState, ConnectionsHeld,
     EffectiveRoute, NodeConnection, RouteResolution,
 };
 pub use digest::{GossipStats, MemberStatus, MeshDigest, MeshNode, NodeLoad, NodeState};

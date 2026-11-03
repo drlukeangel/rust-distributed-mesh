@@ -33,7 +33,7 @@ use crate::storage::ConnectionsStorage;
 /// The direct-recovery reconciler tick and attempt types (`connections.md` §9.4).
 pub use crate::connection_reconnect::{RECONCILER_TICK, RecoveryDial};
 use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
-use rdm_core::reconnect::{first_failure, owed_direct_restored};
+use rdm_core::reconnect::owed_direct_restored;
 use rdm_core::{IncarnationId, PathName};
 use rdm_transport::{ConnectionObserver, ResolvedNode};
 use std::sync::{Arc, Mutex};
@@ -238,7 +238,7 @@ impl ConnectionsWriter {
     }
 
     /// Snapshot the current descriptive name. The held route projection stays keyed by
-    /// this node's ID across rename, preserving its connection and recovery facts.
+    /// this node's ID across rename, preserving its connection facts.
     fn own_now(&self) -> ConnectionEnd {
         self.own()
     }
@@ -435,11 +435,6 @@ impl ConnectionsWriter {
         }
     }
 
-    /// The latest Direct row this node holds toward `destination` on the default ALPN, if any.
-    fn latest_direct(&self, destination: &ConnectionEnd) -> Option<NodeConnection> {
-        self.latest_direct_for(destination, rdm_core::connections::ALPN)
-    }
-
     /// The latest Direct row this node holds toward `destination` on `alpn`, if any.
     pub fn latest_direct_for(&self, destination: &ConnectionEnd, alpn: &[u8]) -> Option<NodeConnection> {
         self.inner.held.lock().unwrap().own_latest_directs().into_iter().find(|d| d.destination.node_id == destination.node_id && d.alpn.as_slice() == alpn).cloned()
@@ -454,7 +449,6 @@ impl ConnectionsWriter {
             alpn: rdm_core::connections::ALPN.to_vec(),
             state,
             carrier: None,
-            recovery: None,
             reason,
             logged_at_ms: local_now_ms(),
         }
@@ -549,8 +543,8 @@ impl ConnectionsWriter {
 
     /// An observed fact: `build` makes the row from the held projection when the writer takes it,
     /// queued behind every write owed before it (Q169). The row is written until it lands and is
-    /// applied to the held projection only once it has; a row built from the held projection (a
-    /// failing series' next ordinal) sees every earlier owed row already applied. A Direct
+    /// applied to the held projection only once it has; a row built from the held projection sees
+    /// every earlier owed row already applied. A Direct
     /// Connected settles the Proxy delete it may owe once its own write has landed.
     fn observed(&self, build: impl FnOnce(&Self, ConnectionEnd) -> NodeConnection + Send + 'static, origin: &'static str, node: &ResolvedNode) {
         self.owe(Box::new(move |w, own| Some(build(w, own))), Origin::Observed { origin, peer: node.endpoint_id.fmt_short().to_string() });
@@ -587,8 +581,6 @@ impl ConnectionsWriter {
                     state = state_name(row.state),
                     reason = %row.reason.clone().unwrap_or_default(),
                     logged_at_ms = row.logged_at_ms,
-                    recovery_round = tracing::field::Empty,
-                    attempt_ordinal = tracing::field::Empty,
                     origin = *origin,
                     attempts = tracing::field::Empty,
                     outcome = tracing::field::Empty,
@@ -608,9 +600,6 @@ impl ConnectionsWriter {
                     outcome = tracing::field::Empty,
                 ),
             };
-            if let Some(r) = row.recovery {
-                span.record("recovery_round", r.recovery_round).record("attempt_ordinal", r.attempt_ordinal);
-            }
             let landed = match w.land(&row, &span, gate).await {
                 Some((attempts, gate)) => {
                     span.record("attempts", attempts);
@@ -655,34 +644,9 @@ impl ConnectionObserver for ConnectionsWriter {
     fn direct_failed(&self, node: &ResolvedNode, reason: &str) {
         let destination = end_of(node);
         let reason = reason.to_string();
-        self.observed(
-            move |w, own| {
-                let previous = w.latest_direct(&destination);
-                // A failing series of the birth dialled continues in its round, one ordinal up;
-                // anything else (never tried, connected, dropped, or a failure against another
-                // birth at the destination: a series is for the current destination incarnation,
-                // connections.md §9.1) is a new incident: a new round at ordinal one.
-                match previous.as_ref() {
-                    Some(p) if p.state == ConnectionState::Failed && (&p.destination.node_id, &p.destination.incarnation) == (&destination.node_id, &destination.incarnation) => match p.recovery {
-                        // The row names both ends as they are now: this process's birth, never the
-                        // one that wrote the previous attempt, and the birth dialled.
-                        Some(r) => NodeConnection {
-                            id: rdm_core::ConnectionId::mint(),
-                            source: own,
-                            destination,
-                            recovery: Some(rdm_core::connections::DirectRecovery { recovery_round: r.recovery_round, attempt_ordinal: r.attempt_ordinal.saturating_add(1) }),
-                            reason: Some(reason),
-                            logged_at_ms: local_now_ms(),
-                            ..p.clone()
-                        },
-                        None => first_failure(own, destination, previous.as_ref(), &reason, local_now_ms()),
-                    },
-                    _ => first_failure(own, destination, previous.as_ref(), &reason, local_now_ms()),
-                }
-            },
-            "dial",
-            node,
-        );
+        // One dial is one row (connections.md §9.3): the row names both ends as they are now, this
+        // process's birth and the birth dialled.
+        self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Failed, Some(reason)), "dial", node);
     }
 
     fn direct_broken(&self, node: &ResolvedNode, reason: &str) {

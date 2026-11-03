@@ -1,8 +1,8 @@
-//! A source's Direct failure rows and the ordered Proxy delete (`rdm_core::reconnect`; connections.md
-//! §7, §10; Q348: nothing schedules a dial from a Failed row).
+//! The ordered Proxy delete (`rdm_core::reconnect`; connections.md §7, §10; Q348: nothing schedules
+//! a dial from a Failed row).
 
 use rdm_core::connections::{resolve, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute, NodeConnection};
-use rdm_core::reconnect::{first_failure, owed_direct_restored, DIRECT_RESTORED};
+use rdm_core::reconnect::{owed_direct_restored, DIRECT_RESTORED};
 use rdm_core::{IncarnationId, NodeId};
 
 fn rpc() -> CarrierPolicy {
@@ -29,24 +29,9 @@ fn connected(source: &ConnectionEnd, destination: &ConnectionEnd, at: u64) -> No
         alpn: rdm_core::connections::ALPN.to_vec(),
         state: ConnectionState::Connected,
         carrier: None,
-        recovery: None,
         reason: None,
         logged_at_ms: at,
     }
-}
-
-/// own (rpc.1) failed to reach dest (rpc.3, process d1): the first Failed row of round 1, at 100.
-fn failed_once(own: &ConnectionEnd, dest: &ConnectionEnd) -> NodeConnection {
-    first_failure(own.clone(), dest.clone(), None, "connect refused", 100)
-}
-
-#[test]
-fn a_new_incident_starts_a_new_round_at_ordinal_one() {
-    let (own, dest) = (end(1, "o1"), end(3, "d1"));
-    let latest = failed_once(&own, &dest);
-    assert_eq!(latest.recovery.map(|r| (r.recovery_round, r.attempt_ordinal)), Some((1, 1)), "the first incident is round 1");
-    let again = first_failure(own.clone(), dest.clone(), Some(&latest), "connect refused", 9000);
-    assert_eq!(again.recovery.map(|r| (r.recovery_round, r.attempt_ordinal)), Some((2, 1)));
 }
 
 #[test]
@@ -62,7 +47,6 @@ fn cutback_to_direct_happens_only_after_the_proxy_disconnected_write_is_applied_
         alpn: rdm_core::connections::ALPN.to_vec(),
         state: ConnectionState::Connected,
         carrier: Some(carrier.clone()),
-        recovery: None,
         reason: None,
         logged_at_ms: 20,
     };

@@ -394,7 +394,7 @@ pub(crate) fn accepted_resolved(writer: &ConnectionsWriter, node: &ResolvedNode)
 mod tests {
     use super::*;
     use crate::storage::MemoryConnectionsStorage;
-    use rdm_core::connections::{ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery, NodeConnection};
+    use rdm_core::connections::{ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
     use rdm_core::ConnectionId;
     use std::collections::BTreeMap;
 
@@ -468,11 +468,11 @@ mod tests {
             let alpn = b"app-reconnect/1".to_vec();
             let writer = Arc::new(ConnectionsWriter::new(src.clone(), Arc::new(MemoryConnectionsStorage::default()), Arc::new(Mutex::new(ConnectionsHeld::new()))));
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-            let row = |kind: ConnectionKind, state: ConnectionState, carrier: Option<ConnectionEnd>, recovery: Option<DirectRecovery>, at: u64| NodeConnection {
-                id: ConnectionId::mint(), source: src.clone(), destination: dst.clone(), kind, alpn: alpn.clone(), state, carrier, recovery, reason: None, logged_at_ms: at,
+            let row = |kind: ConnectionKind, state: ConnectionState, carrier: Option<ConnectionEnd>, at: u64| NodeConnection {
+                id: ConnectionId::mint(), source: src.clone(), destination: dst.clone(), kind, alpn: alpn.clone(), state, carrier, reason: None, logged_at_ms: at,
             };
-            writer.record(row(ConnectionKind::Direct, ConnectionState::Failed, None, Some(DirectRecovery { recovery_round: 1, attempt_ordinal: 1 }), now)).await.expect("record failed");
-            writer.record(row(ConnectionKind::Proxy, ConnectionState::Connected, Some(carrier), None, now + 1)).await.expect("record proxy");
+            writer.record(row(ConnectionKind::Direct, ConnectionState::Failed, None, now)).await.expect("record failed");
+            writer.record(row(ConnectionKind::Proxy, ConnectionState::Connected, Some(carrier), now + 1)).await.expect("record proxy");
             assert!(recovery_pending(&writer).is_empty(), "a Direct Failed row schedules no dial (Q348)");
 
             let birth = |incarnation: IncarnationId| Birth { mesh: dst.mesh.clone(), r#type: dst.r#type.clone(), path: dst.path.clone(), name: dst.name.clone(), node_id: dst.node_id.clone(), incarnation };

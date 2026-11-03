@@ -130,16 +130,6 @@ impl ConnectionEnd {
     pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
-/// Where a Direct `Failed` entry sits in its reconnect series. `recovery_round` names one failure
-/// incident and is compared for equality only; `attempt_ordinal` counts its attempts from 1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DirectRecovery {
-    /// The incident the recovery series belongs to, compared for equality only.
-    pub recovery_round: u64,
-    /// This attempt's ordinal within the series, from 1.
-    pub attempt_ordinal: u32,
-}
-
 /// What the projection keys an entry by: one `(source, destination, alpn)` has at most its Direct and its Proxy.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ConnectionIndex {
@@ -172,8 +162,6 @@ pub struct NodeConnection {
     pub state: ConnectionState,
     /// `Some` on a Proxy entry, `None` on a Direct one.
     pub carrier: Option<ConnectionEnd>,
-    /// `Some` on a Direct `Failed` entry, `None` on every other.
-    pub recovery: Option<DirectRecovery>,
     /// Why a drop or a failure happened; `None` on a connect.
     pub reason: Option<String>,
     /// When the fact was written (ms).
@@ -213,31 +201,25 @@ impl NodeConnection {
         if self.alpn.is_empty() {
             return Some(format!("{}: an entry must name a non-empty alpn", at()));
         }
-        match (self.kind, self.state, self.carrier.is_some(), self.recovery.is_some()) {
-            (ConnectionKind::Proxy, ConnectionState::Failed, _, _) => Some(format!("{}: Failed is a Direct state only", at())),
-            (ConnectionKind::Proxy, ConnectionState::Refused, _, _) => Some(format!("{}: Refused is a Direct state only", at())),
-            (ConnectionKind::Direct, ConnectionState::Failed, _, false) => {
-                Some(format!("{}: a Direct Failed entry carries its recovery round and attempt ordinal", at()))
-            }
-            (_, ConnectionState::Connected | ConnectionState::Disconnected | ConnectionState::Refused, _, true) => {
-                Some(format!("{}: only a Direct Failed entry carries a recovery", at()))
-            }
-            (ConnectionKind::Proxy, _, false, _) => Some(format!("{}: a Proxy entry names its carrier", at())),
-            (ConnectionKind::Direct, _, true, _) => Some(format!("{}: a Direct entry names no carrier", at())),
+        match (self.kind, self.state, self.carrier.is_some()) {
+            (ConnectionKind::Proxy, ConnectionState::Failed, _) => Some(format!("{}: Failed is a Direct state only", at())),
+            (ConnectionKind::Proxy, ConnectionState::Refused, _) => Some(format!("{}: Refused is a Direct state only", at())),
+            (ConnectionKind::Proxy, _, false) => Some(format!("{}: a Proxy entry names its carrier", at())),
+            (ConnectionKind::Direct, _, true) => Some(format!("{}: a Direct entry names no carrier", at())),
             _ => None,
         }
     }
 }
 
 /// One key's latest stamp, its entry only when that entry is an active Direct fact, and whether
-/// that entry is a Direct Failed one (connections.md section 9.1: the only latest Direct a reconnect
-/// series stands on).
+/// that entry is a Direct Failed one (connections.md §5.1: the one latest Direct that resolves to no
+/// active route).
 #[derive(Debug, Clone)]
 struct Cell {
     stamp: u64,
     active: Option<NodeConnection>,
-    /// The destination end a latest Direct Failed entry names: a series stands on it only while the
-    /// topology view still holds that process (§9.1).
+    /// The destination end a latest Direct Failed entry names: it resolves to no active route only
+    /// while the topology view still holds that process (§13 I).
     failed: Option<ConnectionEnd>,
 }
 
@@ -250,8 +232,7 @@ pub struct ConnectionsHeld {
     complete: bool,
     own_source: Option<NodeId>,
     own_proxies: HashMap<(NodeId, Vec<u8>), NodeConnection>,
-    /// This node's latest Direct entry per `(destination, alpn)`, whatever its state: what its reconnect
-    /// series is reconstructed from.
+    /// This node's latest Direct entry per `(destination, alpn)`, whatever its state.
     own_directs: HashMap<(NodeId, Vec<u8>), NodeConnection>,
     /// The topology view's current process birth per path; absent until the holder is given one.
     topology_view: Option<std::sync::Arc<dyn CurrentIncarnations>>,
@@ -429,8 +410,8 @@ impl ConnectionsHeld {
     }
 
     /// Whether the latest Direct fact `source -> destination` on `alpn` is Failed for the destination
-    /// process the topology view holds now: the one state a reconnect series stands on (connections.md
-    /// section 9.1: "Failed for the current destination incarnation"). `false` when none is held, when
+    /// process the topology view holds now: the one latest Direct that resolves to no active route
+    /// (connections.md §5.1). `false` when none is held, when
     /// the latest is Connected, a drop (Disconnected) or an acceptor's Refused, and when the Failed
     /// fact names a destination process that is gone (§13 I: stale evidence is never used for a new
     /// process birth).
@@ -622,12 +603,11 @@ pub fn resolve_for_carriers(
         Some(Some(_)) => EffectiveRoute::Direct { known: true },
         // No Direct fact was ever observed toward this destination, or the latest one is a drop
         // (Disconnected: a connection this node closed, as node.connection.delete does at every
-        // node.stop) or an acceptor's Refused: nothing says it is unreachable and
-        // no reconnect series stands on it (connections.md §9.1), so the node calls it by its
-        // transport key and address (§7).
+        // node.stop) or an acceptor's Refused: nothing says it is unreachable (connections.md
+        // §5.1), so the node calls it by its transport key and address (§7).
         Some(None) if !held.latest_direct_failed_for(own, destination, alpn) => EffectiveRoute::Direct { known: false },
-        // The latest Direct fact is Failed: its reconnect series owns the retry, and no new call
-        // dials over it.
+        // The latest Direct fact is Failed: it records the last dial whose `Send` was spent, and
+        // nothing is scheduled from it (connections.md §5.1).
         Some(None) => EffectiveRoute::NoActiveRoute,
         None => EffectiveRoute::Direct { known: false },
     };
@@ -696,11 +676,14 @@ mod tests {
         }
     }
 
-    /// CONTRACT: docs/architecture/connections.md:116
-    /// "`Failed` is valid for Direct recovery attempts. It means only that this source failed to establish the
-    /// named direct connection. It is never global proof that the destination node is dead."
-    /// CONTRACT: docs/architecture/connections.md:148
-    /// "// Proxy only: carrier, carrier_node_id, carrier_incarnation_id; // Direct Failed only: recovery_round, attempt_ordinal"
+    /// CONTRACT: docs/architecture/connections.md §1.2
+    /// "`Failed` is valid for a Direct dial whose `Send` attempts are spent (§9.3). It means only that this source failed to establish the
+    /// named direct connection. It is never global evidence that the destination node is dead."
+    /// CONTRACT: docs/architecture/connections.md §2
+    /// "// Proxy only
+    ///  carrier
+    ///  carrier_node_id
+    ///  carrier_incarnation_id"
     #[test]
     fn shape_refusal_and_is_active_direct_enforce_connection_row_invariants() {
         let src = end(PathName::new("mesh1.node", "1").unwrap(), NodeId::mint(), Some(IncarnationId::mint()));
@@ -715,7 +698,6 @@ mod tests {
             alpn: ALPN.to_vec(),
             state: ConnectionState::Connected,
             carrier: None,
-            recovery: None,
             reason: None,
             logged_at_ms: 100,
         };
@@ -754,33 +736,13 @@ mod tests {
         };
         assert!(proxy_refused.shape_refusal().is_some_and(|r| r.contains("Refused is a Direct state only")));
 
-        // Direct Failed without recovery is refused; with recovery is admitted.
-        let direct_failed_no_rec = NodeConnection {
+        // Direct Failed is admitted.
+        let direct_failed = NodeConnection {
             state: ConnectionState::Failed,
-            recovery: None,
             ..valid_direct.clone()
         };
-        assert!(direct_failed_no_rec.shape_refusal().is_some_and(|r| r.contains("recovery round and attempt ordinal")));
-
-        let direct_failed_ok = NodeConnection {
-            state: ConnectionState::Failed,
-            recovery: Some(DirectRecovery {
-                recovery_round: 1,
-                attempt_ordinal: 1,
-            }),
-            ..valid_direct.clone()
-        };
-        assert_eq!(direct_failed_ok.shape_refusal(), None);
-
-        // Non-Failed carrying recovery is refused.
-        let connected_with_rec = NodeConnection {
-            recovery: Some(DirectRecovery {
-                recovery_round: 1,
-                attempt_ordinal: 1,
-            }),
-            ..valid_direct.clone()
-        };
-        assert!(connected_with_rec.shape_refusal().is_some_and(|r| r.contains("only a Direct Failed entry carries a recovery")));
+        assert!(!direct_failed.is_active_direct());
+        assert_eq!(direct_failed.shape_refusal(), None);
 
         // Proxy without carrier and Direct with carrier are refused.
         let proxy_no_carrier = NodeConnection {
@@ -799,9 +761,9 @@ mod tests {
 
     /// CONTRACT: docs/architecture/connections.md:325
     /// "A valid active Proxy overrides an active Direct until the proxy is durably deleted"
-    /// CONTRACT: docs/architecture/connections.md:482
-    /// "A reconnect series exists when the latest Direct record for this source and destination is Failed for the
-    /// current destination incarnation and no newer Direct Connected supersedes it."
+    /// CONTRACT: docs/architecture/connections.md §5.1
+    /// "else if the latest Direct is Failed:
+    ///     NoActiveRoute"
     #[test]
     fn held_projection_and_resolve_for_respect_incarnations_and_precedence() {
         let src_id = NodeId::mint();
@@ -843,7 +805,6 @@ mod tests {
             alpn: ALPN.to_vec(),
             state: ConnectionState::Connected,
             carrier: None,
-            recovery: None,
             reason: None,
             logged_at_ms: 100,
         };
@@ -863,7 +824,6 @@ mod tests {
             alpn: ALPN.to_vec(),
             state: ConnectionState::Connected,
             carrier: Some(car.clone()),
-            recovery: None,
             reason: None,
             logged_at_ms: 110,
         };
@@ -914,10 +874,6 @@ mod tests {
         let direct_failed = NodeConnection {
             id: ConnectionId::mint(),
             state: ConnectionState::Failed,
-            recovery: Some(DirectRecovery {
-                recovery_round: 1,
-                attempt_ordinal: 1,
-            }),
             reason: Some("dial failed".into()),
             logged_at_ms: 130,
             ..direct_conn.clone()

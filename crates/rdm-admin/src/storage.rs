@@ -602,7 +602,6 @@ mod tests {
             alpn: rdm_core::connections::ALPN.to_vec(),
             state,
             carrier: None,
-            recovery: None,
             reason: None,
             logged_at_ms: 1,
         }

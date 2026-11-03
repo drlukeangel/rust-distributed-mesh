@@ -225,9 +225,8 @@ fn a_blocked_direct_node_rpc_dial_ends_not_sent_and_a_carrier_of_the_sources_mes
 /// span `rdm.mesh.node.update.via-leave-shutdown`). Four reconciler ticks later the node has dialled
 /// nothing: no `rdm.node_admin.connection.create.via-recovery-dial` of its own begins, before its stop
 /// or after it.
-/// Must NOT happen: the stopped birth's reconciler running on past its stop and dialling its recovery
-/// series (the release red demo-rshape-consumer-connections row 6: a `via-recovery-dial` at ordinal 4,
-/// 20 s after the stop, `NotSent`).
+/// Must NOT happen: the stopped birth's reconciler running on past its stop and dialling (the release
+/// red demo-rshape-consumer-connections row 6: a `via-recovery-dial` 20 s after the stop, `NotSent`).
 #[test]
 fn a_stopped_node_dials_no_recovery_attempt_after_its_stop() {
     use rdm_node::connection_reconnect::RECONCILER_TICK;

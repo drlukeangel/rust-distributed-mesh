@@ -12,7 +12,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::connections::{
     ConnectionEnd, ConnectionKind as CoreConnectionKind, ConnectionState, ConnectionsHeld,
-    DirectRecovery, NodeConnection,
+    NodeConnection,
 };
 use rdm_core::{ConnectionId, IncarnationId, NodeId};
 use rdm_node::connection_reconnect::{AlpnRecoveryDial, Reconciler};
@@ -249,8 +249,8 @@ async fn one_discovered_proxy_serves_every_consumer_of_the_same_destination() {
 
 /// §13 B (Q227): a restart closes every connection the node held, so the restarted source holds no
 /// Proxy and reads none back: its first open dials Direct, which provably sends nothing, and proves
-/// its carrier again from the topology it holds, writing a new Direct Failed (round 1, ordinal 1)
-/// and a new Proxy Connected under its own birth. The store keeps the first birth's rows as written.
+/// its carrier again from the topology it holds, writing a new Direct Failed and a new Proxy
+/// Connected under its own birth. The store keeps the first birth's rows as written.
 /// Must NOT happen: the restarted birth routing over a Proxy it never proved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_source_holds_no_proxy_and_proves_its_carrier_again() {
@@ -302,8 +302,8 @@ async fn a_restarted_source_holds_no_proxy_and_proves_its_carrier_again() {
     let history = gw1.storage.history().await.unwrap();
     let mine: Vec<&NodeConnection> = history.iter().filter(|r| r.source == gw1_restarted_birth.to_end()).collect();
     assert!(
-        mine.iter().any(|r| r.kind == CoreConnectionKind::Direct && r.state == ConnectionState::Failed && r.recovery == Some(DirectRecovery { recovery_round: 1, attempt_ordinal: 1 })),
-        "the restarted birth starts its own series at round 1, ordinal 1: {mine:?}"
+        mine.iter().any(|r| r.kind == CoreConnectionKind::Direct && r.state == ConnectionState::Failed),
+        "the restarted birth writes its own Direct Failed: {mine:?}"
     );
     assert!(mine.iter().any(|r| r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Connected), "and writes its own Proxy Connected: {mine:?}");
     assert!(history.iter().any(|r| r.source == gw1_first_birth.to_end() && r.kind == CoreConnectionKind::Proxy), "the store keeps the first birth's rows as written");
@@ -339,7 +339,7 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
     gw2.know(&brk2);
     establish_carrier_direct(&gw2, &brk2, &mut acc_brk2, ALPN_A).await;
 
-    // First open establishes Proxy Connected(via=gw2) and writes Direct Failed(round=1, ordinal=1):
+    // First open establishes Proxy Connected(via=gw2) and writes the first Direct Failed:
     let accept_task = tokio::spawn(async move {
         let c = acc_brk2.accept().await.unwrap();
         (c, acc_brk2)
@@ -351,17 +351,9 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
 
     // Five more Direct dials, each on `Send` and each failing (total 6 Direct Failed rows): the cell makes
     // them, as nothing schedules a dial from a Failed row (Q348).
-    for expected_ordinal in 2..=6u32 {
+    for _ in 2..=6u32 {
         assert!(gw1.registry.probe_direct(&brk2.birth, ALPN_A).await.is_err(), "gw1 has no Direct path to brk2");
-        until("next Direct Failed ordinal is held", || {
-            gw1.held
-                .lock()
-                .unwrap()
-                .own_latest_directs()
-                .iter()
-                .any(|d| d.alpn == ALPN_A && d.recovery.map(|r| r.attempt_ordinal) == Some(expected_ordinal))
-        })
-        .await;
+        gw1.writer.observations_landed().await;
     }
 
     let history = gw1.storage.history().await.unwrap();
@@ -375,14 +367,7 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
                 && r.state == ConnectionState::Failed
         })
         .collect();
-    assert_eq!(
-        direct_failures
-            .iter()
-            .map(|r| r.recovery.unwrap().attempt_ordinal)
-            .collect::<Vec<_>>(),
-        vec![1, 2, 3, 4, 5, 6],
-        "raw log keeps the full retry history"
-    );
+    assert_eq!(direct_failures.len(), 6, "raw log keeps every failed dial: {direct_failures:?}");
 
     let index = gw1.storage.connections().await.unwrap();
     let pair_index: Vec<_> = index
@@ -413,13 +398,7 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
         .iter()
         .find(|r| r.kind == CoreConnectionKind::Direct)
         .unwrap();
-    assert_eq!(
-        indexed_direct.recovery,
-        Some(DirectRecovery {
-            recovery_round: 1,
-            attempt_ordinal: 6
-        })
-    );
+    assert_eq!(&indexed_direct.id, &direct_failures[5].id, "the Direct member is the latest failed dial");
 
     gw1.shutdown().await;
     gw2.shutdown().await;
@@ -451,10 +430,6 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
                 alpn: ALPN_A.to_vec(),
                 state: ConnectionState::Failed,
                 carrier: None,
-                recovery: Some(DirectRecovery {
-                    recovery_round: 1,
-                    attempt_ordinal: ord,
-                }),
                 reason: Some("seed failure".into()),
                 logged_at_ms: past + u64::from(ord),
             })
@@ -469,7 +444,6 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
                 alpn: ALPN_A.to_vec(),
                 state: ConnectionState::Connected,
                 carrier: Some(gw2.birth.to_end()),
-                recovery: None,
                 reason: None,
                 logged_at_ms: past + 10,
             })
@@ -509,7 +483,6 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
                     alpn,
                     state: ConnectionState::Connected,
                     carrier: None,
-                    recovery: None,
                     reason: None,
                     logged_at_ms: 0,
                 });

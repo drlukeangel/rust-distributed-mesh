@@ -300,7 +300,6 @@ async fn refuse(
             alpn: alpn.name.clone(),
             state: ConnectionState::Refused,
             carrier: None,
-            recovery: None,
             reason: Some(reason.to_string()),
             logged_at_ms: 0,
         };

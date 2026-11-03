@@ -62,9 +62,9 @@ async fn recovered(estate: &Estate, node: &PathName) -> Value {
 }
 
 /// CONTRACT (Q227; connections.md §13 B and C: a restart closes every connection the node held, so
-/// the recovered source holds none, its reconnect backoff starts fresh, and it reads no connection
-/// fact back): the source records a Proxy to the destination after five Direct Failed facts (one
-/// round, ordinals 1-5), then its runtime is killed and its mesh-primary recovers it over the inherited
+/// the recovered source holds none, no Failed Direct among them, and it reads no connection fact
+/// back): the source records a Proxy to the destination after five Direct Failed facts, then its
+/// runtime is killed and its mesh-primary recovers it over the inherited
 /// data dir. The recovered source holds no Direct and no Proxy, its boot opens its connections store
 /// and reads nothing back, and the store keeps the first birth's rows as written. Must NOT happen: the
 /// recovered source holding the fifth Failed row, or the Proxy, it read back from the store.
@@ -78,8 +78,9 @@ async fn a_recovered_source_holds_no_connection_and_reads_none_back() {
     let seeded = estate.probe(&["record-proxy", "--target", &format!("exact:{source_id}"), "--destination", &format!("exact:{destination_id}"), "--carrier", &format!("exact:{carrier_id}"), "--failed-attempts", "5", "--key", "x"]);
     assert_eq!(seeded["proxy_recorded"], true, "{seeded}");
     let control = serde_json::json!(rdm_core::connections::ALPN);
-    let fifth = rows(&estate.connection_history(&source_id), &destination_id, "Direct").into_iter().rev().find(|r| r["state"] == "Failed" && r["alpn"] == control).cloned().expect("the fifth Direct Failed");
-    assert_eq!(fifth["recovery"]["attempt_ordinal"], 5, "{fifth}");
+    let failed: Vec<Value> = rows(&estate.connection_history(&source_id), &destination_id, "Direct").into_iter().filter(|r| r["state"] == "Failed" && r["alpn"] == control).cloned().collect();
+    assert_eq!(failed.len(), 5, "{failed:?}");
+    let fifth = failed[4].clone();
 
     let after = recovered(&estate, &source()).await;
     let recovered_id: NodeId = serde_json::from_value(after["node_id"].clone()).expect("recovered ID");

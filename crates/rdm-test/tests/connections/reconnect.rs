@@ -2,7 +2,7 @@
 
 use crate::common::admin_side_serving;
 use rdm_core::connections::{
-    ConnectionEnd, ConnectionKind, ConnectionState, DirectRecovery, NodeConnection,
+    ConnectionEnd, ConnectionKind, ConnectionState, NodeConnection,
 };
 use rdm_core::launch::Launch;
 use rdm_core::outcome::RpcOutcome;
@@ -145,10 +145,6 @@ fn source_node_reconciler_dials_the_destination_an_accept_woke_and_deletes_activ
             alpn: rdm_core::connections::ALPN.to_vec(),
             state: ConnectionState::Failed,
             carrier: None,
-            recovery: Some(DirectRecovery {
-                recovery_round: 1,
-                attempt_ordinal: 1,
-            }),
             reason: Some("NotSent".into()),
             logged_at_ms: base_ms,
         };
@@ -167,7 +163,6 @@ fn source_node_reconciler_dials_the_destination_an_accept_woke_and_deletes_activ
                 alpn: rdm_core::connections::ALPN.to_vec(),
                 state: ConnectionState::Connected,
                 carrier: Some(carrier_end),
-                recovery: None,
                 reason: None,
                 logged_at_ms: base_ms + 1,
             })

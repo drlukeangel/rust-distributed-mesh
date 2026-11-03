@@ -147,7 +147,6 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
                 alpn: rdm_core::connections::ALPN.to_vec(),
                 state: ConnectionState::Connected,
                 carrier: None,
-                recovery: None,
                 reason: None,
                 logged_at_ms: 1,
             })

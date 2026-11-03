@@ -35,11 +35,11 @@ fn end(name: rdm_core::PathName, mesh: &str, r#type: &str) -> ConnectionEnd {
 }
 
 fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
-    NodeConnection { id: rdm_core::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
+    NodeConnection { id: rdm_core::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier: carrier.cloned(), reason: None, logged_at_ms: at }
 }
 
 /// CONN-D (connections.md §13 D, §3, §9): many completed NotSent dial attempts from this source
-/// to one exact destination birth advance the Direct Failed round/ordinal durably, grow the raw
+/// to one exact destination birth each write one Direct Failed row durably, grow the raw
 /// log by one row each, and leave the current index holding one Direct and one Proxy for the
 /// pair; superseded evidence never revives. Nothing schedules a dial from the rows (Q348).
 #[test]
@@ -77,27 +77,28 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
 
         // ATTEMPTS completed NotSent dials, each one's completion paired with the rows it left.
         let mut attempts = Vec::new();
-        for ordinal in 1..=ATTEMPTS {
-            let (out, _) = client.call::<Ping>(&NodeTarget::ExactNode(destination.node_id.clone()), &PingRequest::Ping { payload: vec![ordinal as u8] }, &opts).await;
+        let mut last_indexed: Option<rdm_core::ConnectionId> = None;
+        for attempt in 1..=ATTEMPTS {
+            let (out, _) = client.call::<Ping>(&NodeTarget::ExactNode(destination.node_id.clone()), &PingRequest::Ping { payload: vec![attempt as u8] }, &opts).await;
             let reason = match &out {
                 RpcOutcome::NotSent(n) => format!("{:?}", n.reason()),
-                other => panic!("attempt {ordinal} did not end NotSent: {other:?}"),
+                other => panic!("attempt {attempt} did not end NotSent: {other:?}"),
             };
             // The index write of this attempt's Direct Failed row, as the storage holds it.
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             let indexed = loop {
                 let rows = storage.connections().await.unwrap();
-                if let Some(r) = rows.iter().find(|r| r.kind == ConnectionKind::Direct && r.source.location() == me.location() && r.destination.location() == dest.location() && r.recovery.is_some_and(|x| x.attempt_ordinal == ordinal)) {
+                if let Some(r) = rows.iter().find(|r| r.kind == ConnectionKind::Direct && r.source.location() == me.location() && r.destination.location() == dest.location() && last_indexed.as_ref() != Some(&r.id)) {
                     break r.clone();
                 }
-                assert!(std::time::Instant::now() < deadline, "attempt {ordinal}'s Direct Failed row never reached the index: {rows:?}");
+                assert!(std::time::Instant::now() < deadline, "attempt {attempt}'s Direct Failed row never reached the index: {rows:?}");
                 tokio::time::sleep(Duration::from_millis(10)).await;
             };
             let history_len = storage.history().await.unwrap().len();
             assert_eq!(indexed.state, ConnectionState::Failed);
-            assert_eq!(indexed.recovery.unwrap().recovery_round, 1, "one incident, one round");
-            assert_eq!(history_len, seeded + ordinal as usize, "the raw log grows by one row per attempt");
-            attempts.push(json!({ "ordinal": ordinal, "outcome": out.name(), "reason": reason, "indexed_row": indexed, "history_len": history_len }));
+            assert_eq!(history_len, seeded + attempt as usize, "the raw log grows by one row per attempt");
+            last_indexed = Some(indexed.id.clone());
+            attempts.push(json!({ "attempt": attempt, "outcome": out.name(), "reason": reason, "indexed_row": indexed, "history_len": history_len }));
         }
 
         // The current index: one Direct and one Proxy for the pair; the held projection the same
@@ -108,7 +109,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
         assert_eq!(pair.iter().filter(|r| r.kind == ConnectionKind::Direct).count(), 1, "{pair:?}");
         assert_eq!(pair.iter().filter(|r| r.kind == ConnectionKind::Proxy).count(), 1, "{pair:?}");
         let direct = pair.iter().find(|r| r.kind == ConnectionKind::Direct).unwrap();
-        assert_eq!(direct.recovery.unwrap().attempt_ordinal, ATTEMPTS);
+        assert_eq!(Some(&direct.id), last_indexed.as_ref(), "the Direct member is the last attempt's row");
         let history = storage.history().await.unwrap();
         assert_eq!(history.len(), seeded + ATTEMPTS as usize);
         let (latest_directs, active_proxies, route) = {

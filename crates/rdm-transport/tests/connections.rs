@@ -230,7 +230,6 @@ async fn a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_d
         alpn: ALPN_B.to_vec(),
         state: ConnectionState::Connected,
         carrier: Some(carrier_birth.to_end()),
-        recovery: None,
         reason: None,
         logged_at_ms: 10,
     };
@@ -434,8 +433,8 @@ async fn an_inbound_connection_on_a_registered_alpn_passes_admit_before_accept()
         Some("expired member cert")
     );
 
-    // Flip admitter to allow -> the dialer's reconnect series' next attempt (the refusal left its
-    // Direct Failed row, connections.md §9.1) is admitted and reaches accept().
+    // Flip admitter to allow -> the dialer's next dial (the refusal left its Direct Failed row,
+    // connections.md §1.3) is admitted and reaches accept().
     admitter.allow.store(true, Ordering::SeqCst);
     let accept_task = tokio::spawn(async move { acceptor_b.accept().await.unwrap() });
     let conn_a = peer_a.registry.probe_direct(&peer_b.birth, ALPN_A).await.unwrap();
@@ -446,11 +445,10 @@ async fn an_inbound_connection_on_a_registered_alpn_passes_admit_before_accept()
     peer_b.shutdown().await;
 }
 
-/// CONTRACT (node-connections-admit.md step 5, connections.md §9.1, §9.3; decided 2026-10-19): a
+/// CONTRACT (node-connections-admit.md step 5, connections.md §1.3, §5.1, §9.3; decided 2026-10-19): a
 /// refusal is the acceptor's `Refused` fact and, on the dialer, a Direct `Failed` row with the named
-/// reason, so the dialer's reconnect series exists and continues: a new call dials nothing over the
-/// standing `Failed` row (`NoActiveRoute`), each refused attempt of the series is the next ordinal,
-/// and the attempt that is admitted is Direct `Connected`.
+/// reason: a new call dials nothing over the standing `Failed` row (`NoActiveRoute`), each refused
+/// dial writes one more `Failed` row, and the dial that is admitted is Direct `Connected`.
 #[tokio::test]
 async fn a_refusal_is_a_refused_fact_on_the_acceptor_and_a_failed_row_on_the_dialer() {
     let dialer = TestPeer::bind(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &[alpn(ALPN_A)]).await;
@@ -475,16 +473,14 @@ async fn a_refusal_is_a_refused_fact_on_the_acceptor_and_a_failed_row_on_the_dia
     assert_eq!(rows.len(), 1, "the dialer writes one Direct row for the refused dial: {rows:#?}");
     assert_eq!(rows[0].state, ConnectionState::Failed);
     assert_eq!(rows[0].reason.as_deref(), Some("refused: expired member cert"), "the acceptor's named reason");
-    assert_eq!(rows[0].recovery.map(|r| r.attempt_ordinal), Some(1));
     assert_eq!(rows[0].destination.incarnation.as_ref(), Some(&acceptor.birth.incarnation));
 
-    assert_eq!(opener.open(&acceptor.birth).await.unwrap_err(), ConnectError::NoActiveRoute { direct: None }, "the series owns the retry; a new call dials nothing over it");
+    assert_eq!(opener.open(&acceptor.birth).await.unwrap_err(), ConnectError::NoActiveRoute { direct: None }, "a new call dials nothing over the standing Failed row");
     assert_eq!(admitter.calls.load(Ordering::SeqCst), 1);
 
-    assert_eq!(dialer.registry.probe_direct(&acceptor.birth, ALPN_A).await.unwrap_err(), refused, "the series' next attempt is refused again");
+    assert_eq!(dialer.registry.probe_direct(&acceptor.birth, ALPN_A).await.unwrap_err(), refused, "the next dial is refused again");
     let rows = direct_rows(&dialer);
-    assert_eq!(rows.iter().map(|r| (r.state, r.recovery.map(|x| x.attempt_ordinal))).collect::<Vec<_>>(), vec![(ConnectionState::Failed, Some(1)), (ConnectionState::Failed, Some(2))]);
-    assert_eq!(rows[0].recovery.map(|r| r.recovery_round), rows[1].recovery.map(|r| r.recovery_round), "one recovery round");
+    assert_eq!(rows.iter().map(|r| r.state).collect::<Vec<_>>(), vec![ConnectionState::Failed, ConnectionState::Failed], "one row per refused dial");
 
     admitter.allow.store(true, Ordering::SeqCst);
     let accepted = tokio::spawn(async move { accepts.accept().await.unwrap() });
@@ -1260,7 +1256,6 @@ async fn seed_carrier_direct_connection(
         alpn: alpn.to_vec(),
         state: ConnectionState::Connected,
         carrier: None,
-        recovery: None,
         reason: None,
         logged_at_ms: 1,
     };
@@ -1325,7 +1320,6 @@ async fn a_held_proxy_is_taken_without_a_direct_dial() {
         alpn: ALPN_A.to_vec(),
         state: ConnectionState::Connected,
         carrier: Some(carrier.birth.to_end()),
-        recovery: None,
         reason: None,
         logged_at_ms: 5,
     };
@@ -2129,7 +2123,6 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
         alpn: ALPN_A.to_vec(),
         state: ConnectionState::Connected,
         carrier: None,
-        recovery: None,
         reason: None,
         logged_at_ms: 100,
     };
@@ -2225,7 +2218,6 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
             alpn: ALPN_A.to_vec(),
             state: ConnectionState::Connected,
             carrier: None,
-            recovery: None,
             reason: None,
             logged_at_ms: 100,
         });
@@ -2389,10 +2381,6 @@ async fn a_protocol_with_proxy_false_never_consumes_a_proxy_even_when_one_is_hel
         alpn: ALPN_A.to_vec(),
         state: ConnectionState::Failed,
         carrier: None,
-        recovery: Some(rdm_core::connections::DirectRecovery {
-            recovery_round: 1,
-            attempt_ordinal: 1,
-        }),
         reason: Some("unreachable".into()),
         logged_at_ms: 10,
     };
@@ -2404,7 +2392,6 @@ async fn a_protocol_with_proxy_false_never_consumes_a_proxy_even_when_one_is_hel
         alpn: ALPN_A.to_vec(),
         state: ConnectionState::Connected,
         carrier: Some(carrier.birth.to_end()),
-        recovery: None,
         reason: None,
         logged_at_ms: 11,
     };
@@ -2617,7 +2604,6 @@ async fn a_direct_connected_disconnects_the_proxy() {
         alpn: ALPN_A.to_vec(),
         state: ConnectionState::Connected,
         carrier: None,
-        recovery: None,
         reason: None,
         logged_at_ms: 50,
     };

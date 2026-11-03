@@ -171,7 +171,6 @@ fn proxied_held(r: &Rig) -> (rdm_core::connections::ConnectionsHeld, NodeId, rdm
         alpn: rdm_core::connections::ALPN.to_vec(),
         state: ConnectionState::Connected,
         carrier: Some(end(&r.carrier.resolved)),
-        recovery: None,
         reason: None,
         logged_at_ms: 10,
     };

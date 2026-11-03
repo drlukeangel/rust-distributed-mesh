@@ -6,7 +6,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::connections::{
-    ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery, NodeConnection,
+    ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection,
 };
 use rdm_core::{IncarnationId, NodeId, PathName};
 use rdm_transport::{CallOptions, HandlerFault, NodeRpcClient, PeerContext, ResolvedNode, RouteChoice, RouteLeg, ServedBirth, ServerBuilder, StaticResolver};
@@ -199,8 +199,7 @@ pub fn own_end(own: &PathName, mesh: &str, r#type: &str) -> ConnectionEnd {
 
 /// A connections fact at stamp `at`, in the shape the writer records it.
 pub fn connection(from: ConnectionEnd, to: ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<ConnectionEnd>, at: u64) -> NodeConnection {
-    let recovery = (kind == ConnectionKind::Direct && state == ConnectionState::Failed).then_some(DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
-    NodeConnection { id: rdm_core::ConnectionId::mint(), source: from, destination: to, kind, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier, recovery, reason: None, logged_at_ms: at }
+    NodeConnection { id: rdm_core::ConnectionId::mint(), source: from, destination: to, kind, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier, reason: None, logged_at_ms: at }
 }
 
 pub fn held_for(own: &NodeId) -> ConnectionsHeld {

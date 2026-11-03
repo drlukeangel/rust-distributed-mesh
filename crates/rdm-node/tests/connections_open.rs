@@ -65,7 +65,6 @@ fn fact(source: ConnectionEnd, ordinal: u32) -> NodeConnection {
         alpn: rdm_core::connections::ALPN.to_vec(),
         state: ConnectionState::Connected,
         carrier: None,
-        recovery: None,
         reason: None,
         logged_at_ms: 1,
     }

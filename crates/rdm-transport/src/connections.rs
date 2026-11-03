@@ -8,10 +8,9 @@
 use crate::resolve::{NodeResolver, NodeTarget};
 use rdm_core::connections::{
     CarrierPolicy, ConnectionEnd, ConnectionKind as CoreKind, ConnectionState, ConnectionsHeld,
-    DirectRecovery, EffectiveRoute, INVALID_CONNECTION_LOST, NodeConnection,
+    EffectiveRoute, INVALID_CONNECTION_LOST, NodeConnection,
     carrier_order, resolve_for_carriers,
 };
-use rdm_core::reconnect::first_failure_for;
 use rdm_core::{ConnectionId, IncarnationId, NodeId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -297,7 +296,6 @@ pub fn owed_drop(route: &NodeConnection, reason: &str) -> OwedRow {
             alpn: route.alpn.clone(),
             state: ConnectionState::Disconnected,
             carrier: route.carrier.clone(),
-            recovery: None,
             reason: Some(reason),
             logged_at_ms: 0,
         })
@@ -656,10 +654,10 @@ impl ConnectionsRegistry {
         self.inner.slots.lock().unwrap().contains_key(alpn)
     }
 
-    /// A direct transport connection dial on `alpn` toward `destination` (`connections.md` §9.5
+    /// A direct transport connection dial on `alpn` toward `destination` (`connections.md` §9.3
     /// step 3), on the default `Send` (Q344): a dial that sent nothing is made again within its
-    /// attempts. On success, `Direct Connected` is recorded through the sink; on each failed
-    /// attempt, the series' next `Direct Failed` row is recorded through the sink.
+    /// attempts. On success, `Direct Connected` is recorded through the sink; when its attempts are
+    /// spent, the dial's one `Direct Failed` row is recorded through the sink.
     pub async fn probe_direct(&self, destination: &Birth, alpn: &[u8]) -> Result<Connection, ConnectError> {
         if self.inner.deleted.load(Ordering::SeqCst) {
             return Err(ConnectError::Deleted);
@@ -1513,11 +1511,11 @@ impl Dialer {
     /// One Direct dial on `Send::default()` (Q344, node-rpc.md §43's schedule): `dial` is made, and
     /// made again after the schedule's delay while it ends `NotSent` (nothing reached the
     /// destination) and attempts are left; `dial` is told whether its attempt is the last, the one
-    /// whose failure the series' Direct Failed row records (connections.md §9.1: one row per dial). A
-    /// refusal, a wrong incarnation or this birth's connections deleted ends it at once. Each dial made
-    /// again is made only while the topology view still holds `destination`'s birth current
-    /// (connections.md §9.5 step 1, "Verify its `Node.incarnation_id` still matches"; §9.1: a series is
-    /// "for the current destination incarnation"): a birth superseded or deleted while the dial waited
+    /// whose failure the dial's one Direct Failed row records (connections.md §9.3: one dial is one
+    /// row). A refusal, a wrong incarnation or this birth's connections deleted ends it at once. Each
+    /// dial made again is made only while the topology view still holds `destination`'s birth current
+    /// (connections.md §9.3 step 1, "Verify the destination's `Node.incarnation_id` is the one the dial
+    /// names"): a birth superseded or deleted while the dial waited
     /// ends it `NotSent` (`destination-incarnation-superseded`), with no further attempt and so no
     /// Failed row naming that birth.
     async fn on_send<F, Fut>(&self, destination: &Birth, mut dial: F) -> Result<Connection, ConnectError>
@@ -1765,8 +1763,7 @@ impl Dialer {
 
         match verdict {
             // A refusal is a named end of this dial (node-connections-admit.md step 5): a Direct
-            // Failed row with the acceptor's reason, so this source's reconnect series exists and
-            // continues from it (connections.md §9.1, §9.3).
+            // Failed row with the acceptor's reason, `refused: <reason>` (connections.md §1.3).
             AdmitVerdict::Refused { reason } => {
                 dial.refused(&reason);
                 self.record_direct_failure(own, destination, &format!("refused: {reason}"), caller_span);
@@ -1843,7 +1840,6 @@ impl Dialer {
                     alpn: self.alpn.name.clone(),
                     state: ConnectionState::Connected,
                     carrier: None,
-                    recovery: None,
                     reason: None,
                     logged_at_ms: 0,
                 };
@@ -2044,7 +2040,6 @@ impl Dialer {
                             alpn: self.alpn.name.clone(),
                             state: ConnectionState::Connected,
                             carrier: Some(carrier.to_end()),
-                            recovery: None,
                             reason: None,
                             logged_at_ms: 0,
                         };
@@ -2101,9 +2096,8 @@ impl Dialer {
         dial_root(&self.registry.inner.endpoint, &self.alpn.name, to, addr, cert_expires_at, opener).await
     }
 
-    /// Owe the dial's `Failed` row (Q169): built when the writer takes it, from the held
-    /// projection then, so a failing series of the birth dialled continues one ordinal up from the
-    /// failure owed before it; anything else is a new incident at ordinal one. Never awaited.
+    /// Owe the dial's `Failed` row (Q169): one dial is one row (connections.md §9.3), naming both
+    /// ends as they are now. Never awaited.
     fn record_direct_failure(
         &self,
         own: &Birth,
@@ -2111,41 +2105,18 @@ impl Dialer {
         reason: &str,
         caller_span: &tracing::Span,
     ) {
-        let own = own.to_end();
-        let dest_end = destination.to_end();
-        let alpn = self.alpn.name.clone();
-        let reason = reason.to_string();
-        let build: OwedRow = Box::new(move |held: &ConnectionsHeld| {
-            let previous = held
-                .own_latest_directs()
-                .into_iter()
-                .find(|d| d.destination.node_id == dest_end.node_id && d.alpn == alpn)
-                .cloned();
-            Some(match previous.as_ref() {
-                Some(p)
-                    if p.state == ConnectionState::Failed
-                        && (&p.destination.node_id, &p.destination.incarnation)
-                            == (&dest_end.node_id, &dest_end.incarnation) =>
-                {
-                    match p.recovery {
-                        Some(r) => NodeConnection {
-                            id: ConnectionId::mint(),
-                            source: own,
-                            destination: dest_end,
-                            recovery: Some(DirectRecovery {
-                                recovery_round: r.recovery_round,
-                                attempt_ordinal: r.attempt_ordinal.saturating_add(1),
-                            }),
-                            reason: Some(reason),
-                            logged_at_ms: 0,
-                            ..p.clone()
-                        },
-                        None => first_failure_for(own, dest_end, alpn, previous.as_ref(), &reason, 0),
-                    }
-                }
-                _ => first_failure_for(own, dest_end, alpn, previous.as_ref(), &reason, 0),
-            })
-        });
+        let row = NodeConnection {
+            id: ConnectionId::mint(),
+            source: own.to_end(),
+            destination: destination.to_end(),
+            kind: CoreKind::Direct,
+            alpn: self.alpn.name.clone(),
+            state: ConnectionState::Failed,
+            carrier: None,
+            reason: Some(reason.to_string()),
+            logged_at_ms: 0,
+        };
+        let build: OwedRow = Box::new(move |_: &ConnectionsHeld| Some(row));
         caller_span.in_scope(|| self.registry.inner.sink.record_row(build));
     }
 }
@@ -2791,7 +2762,6 @@ mod tests {
             alpn: b"app-data/1".to_vec(),
             state: ConnectionState::Connected,
             carrier: Some(carrier_birth.to_end()),
-            recovery: None,
             reason: None,
             logged_at_ms: 0,
         });
@@ -2808,7 +2778,6 @@ mod tests {
             alpn: b"app-data/1".to_vec(),
             state: ConnectionState::Connected,
             carrier: None,
-            recovery: None,
             reason: None,
             logged_at_ms: 0,
         });

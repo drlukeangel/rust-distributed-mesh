@@ -115,8 +115,8 @@ fn route_span<'a>(spans: &'a [Value], own: &NodeId, from: u64, to: u64) -> Optio
 }
 
 /// CONN-G: with a Proxy active, the destination dials the source. The source's accept writes
-/// nothing and wakes the source's own reconciler; once the series' reconnect backoff ends the
-/// source dials its own data-plane connection, and only that dial's Direct Connected
+/// nothing and wakes the source's own reconciler, which dials the source's own data-plane
+/// connection, and only that dial's Direct Connected
 /// (`via-observed origin=dial`) owes the Proxy's deletion. While the deletion write is refused
 /// the source's calls stay on the Proxy; only after `Proxy Disconnected(direct-restored)` lands
 /// durably do new calls go Direct.

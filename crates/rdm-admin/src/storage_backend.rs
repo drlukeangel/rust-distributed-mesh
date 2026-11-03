@@ -929,7 +929,6 @@ mod tests {
             alpn: b"storage-provider/1".to_vec(),
             state: rdm_core::connections::ConnectionState::Connected,
             carrier: None,
-            recovery: None,
             reason: None,
             logged_at_ms: 1,
         };

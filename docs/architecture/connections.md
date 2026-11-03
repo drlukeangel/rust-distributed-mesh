@@ -179,7 +179,7 @@ Exact Rust representation may differ, but the semantic fields and ownership abov
 `Node.incarnation_id`, the process-birth identity landed by #2696. No second process-incarnation
 identity is invented.
 
-Adding `kind`, `Failed`, carrier fields, incarnation fields, recovery fields, or otherwise changing the
+Adding `kind`, `Failed`, carrier fields, incarnation fields, or otherwise changing the
 positional durable row shape is a hard durable cut. The implementing commit carries the exact marker:
 
 ```text
@@ -217,10 +217,10 @@ Example raw history:
 ```text
 09:00 Direct Connected
 09:12 Direct Disconnected
-09:12 Direct Failed       round=R1 attempt=1
+09:12 Direct Failed
 09:12 Proxy  Connected    via=gw2
-09:30 Direct Failed       round=R1 attempt=2
-10:30 Direct Failed       round=R1 attempt=3
+09:30 Direct Failed
+10:30 Direct Failed
 14:00 Direct Connected
 14:00 Proxy  Disconnected reason=direct-restored
 ```
@@ -228,7 +228,7 @@ Example raw history:
 During the outage the compacted current view is only:
 
 ```text
-Direct -> Failed(round=R1, attempt=3, event_time=10:30)
+Direct -> Failed(event_time=10:30)
 Proxy  -> Connected(via=gw2)
 ```
 
@@ -646,7 +646,7 @@ dial ladder before proxying.
 With latest indexed rows:
 
 ```text
-Direct -> Failed(E1,N)
+Direct -> Failed
 Proxy  -> Connected(via=gw2)
 ```
 

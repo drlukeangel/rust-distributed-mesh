@@ -548,7 +548,7 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &rdm_core::NodeId, destinatio
     // the reply names the first, the one toward this destination when it was among them.
     let deleted = call.delete.first().map(|(_, why)| why.to_string());
     for (proxy, why) in call.delete {
-        let row = NodeConnection { id: rdm_core::ConnectionId::mint(), state: ConnectionState::Disconnected, reason: Some(why.to_string()), recovery: None, logged_at_ms: now_ms().max(proxy.logged_at_ms + 1), ..proxy };
+        let row = NodeConnection { id: rdm_core::ConnectionId::mint(), state: ConnectionState::Disconnected, reason: Some(why.to_string()), logged_at_ms: now_ms().max(proxy.logged_at_ms + 1), ..proxy };
         let _ = seams.connections.record(row).await;
     }
     let (route, carrier) = match &call.route {
@@ -707,7 +707,6 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::No
         alpn: rdm_core::connections::ALPN.to_vec(),
         state: ConnectionState::Connected,
         carrier: Some(end(&via)),
-        recovery: None,
         reason: None,
         logged_at_ms: now_ms().saturating_add(1),
     };
@@ -825,7 +824,7 @@ mod tests {
     }
 
     fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
-        NodeConnection { id: rdm_core::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, alpn: rdm_core::connections::ALPN.to_vec(), state: ConnectionState::Connected, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
+        NodeConnection { id: rdm_core::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, alpn: rdm_core::connections::ALPN.to_vec(), state: ConnectionState::Connected, carrier: carrier.cloned(), reason: None, logged_at_ms: at }
     }
 
     /// CONTRACT: the door resolves a held Proxy under the carrier policy it is served with. A

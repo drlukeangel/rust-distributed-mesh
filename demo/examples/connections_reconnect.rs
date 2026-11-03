@@ -1,8 +1,8 @@
 //! `connections-reconnect`: a lost Direct's Failed row and the ordered Proxy deletion when a Direct
 //! comes back (`docs/architecture/connections.md` §9, §10; `crates/rdm-core/src/reconnect.rs`).
 //!
-//! A lost Direct is dialled on `Send` and nothing else (Q348): its Failed row (`first_failure_for`)
-//! records the incident, and no dial is scheduled from it. A source holding a Proxy returns to Direct
+//! A lost Direct is dialled on `Send` and nothing else (Q348): its Failed row records the dial whose
+//! attempts were spent, and no dial is scheduled from it. A source holding a Proxy returns to Direct
 //! when the destination dials it (R-CN1) or the Proxy is invalidated (§8); once its own Direct is
 //! `Connected`, `owed_direct_restored` produces the ordered `Proxy Disconnected(reason=direct-restored)`
 //! entry before the Proxy route is deleted.
@@ -18,7 +18,7 @@ use rdm_client::{Filter, MeshNode, NodeStatus, NodeView, Nodes, Peers};
 use rdm_core::connections::{
     ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection,
 };
-use rdm_core::reconnect::{first_failure_for, owed_direct_restored, DIRECT_RESTORED};
+use rdm_core::reconnect::{owed_direct_restored, DIRECT_RESTORED};
 use rdm_core::ConnectionId;
 
 fn to_end(n: &NodeView) -> Result<ConnectionEnd> {
@@ -65,14 +65,17 @@ async fn main() -> Result<()> {
     held.set_own_source(src.node_id.clone());
     held.mark_complete();
 
-    let failed_1 = first_failure_for(
-        src_end.clone(),
-        dst_end.clone(),
-        alpn.clone(),
-        None,
-        "not-sent:quic-connect",
-        10_000,
-    );
+    let failed_1 = NodeConnection {
+        id: ConnectionId::mint(),
+        source: src_end.clone(),
+        destination: dst_end.clone(),
+        kind: ConnectionKind::Direct,
+        alpn: alpn.clone(),
+        state: ConnectionState::Failed,
+        carrier: None,
+        reason: Some("not-sent:quic-connect".into()),
+        logged_at_ms: 10_000,
+    };
     let proxy_up = NodeConnection {
         id: ConnectionId::mint(),
         source: src_end.clone(),
@@ -81,7 +84,6 @@ async fn main() -> Result<()> {
         alpn: alpn.clone(),
         state: ConnectionState::Connected,
         carrier: Some(gw_end),
-        recovery: None,
         reason: None,
         logged_at_ms: 10_010,
     };
@@ -89,12 +91,12 @@ async fn main() -> Result<()> {
     held.apply(proxy_up).map_err(|e| anyhow!("{e:?}"))?;
 
     println!(
-        "Direct Failed (path {:?}, name {:?} -> path {:?}, name {:?}): round={:?}; nothing dials from it (Q348)",
+        "Direct Failed (path {:?}, name {:?} -> path {:?}, name {:?}): reason={:?}; nothing dials from it (Q348)",
         src.path,
         src.name,
         dst.path,
         dst.name,
-        failed_1.recovery.map(|r| r.recovery_round),
+        failed_1.reason,
     );
 
     let direct_up = NodeConnection {
@@ -105,7 +107,6 @@ async fn main() -> Result<()> {
         alpn,
         state: ConnectionState::Connected,
         carrier: None,
-        recovery: None,
         reason: None,
         logged_at_ms: 20_000,
     };

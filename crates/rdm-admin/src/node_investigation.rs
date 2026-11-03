@@ -378,7 +378,7 @@ mod tests {
     }
 
     fn row(source: &Node, destination: &Node, kind: ConnectionKind, state: ConnectionState) -> NodeConnection {
-        NodeConnection { id: rdm_core::ConnectionId::mint(), source: end(source), destination: end(destination), kind, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier: None, recovery: None, reason: None, logged_at_ms: 1 }
+        NodeConnection { id: rdm_core::ConnectionId::mint(), source: end(source), destination: end(destination), kind, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier: None, reason: None, logged_at_ms: 1 }
     }
 
     fn current(n: &Node) -> StatusReply {

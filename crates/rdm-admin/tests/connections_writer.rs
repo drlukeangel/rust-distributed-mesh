@@ -1,8 +1,8 @@
 //! i143.e6.s11 functional: the source-owned connections writer. A node's own Direct and Proxy
 //! facts are rows it writes (the raw log grows, the index keeps one entry per pair), applied to
 //! the held projection the route resolver reads. A birth holds no connection and reads none back
-//! (Q227): a restart holds no Proxy (connections.md §13 B) and starts its reconnect series fresh
-//! (§13 C), and the index stays bounded (§13 D).
+//! (Q227): a restart holds no Proxy (connections.md §13 B) and no Failed Direct (§13 C), and the
+//! index stays bounded (§13 D).
 
 use rdm_core::connections::{resolve, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute, NodeConnection};
 use rdm_core::{IncarnationId, NodeId, PathName};
@@ -32,7 +32,7 @@ fn resolved(e: &ConnectionEnd) -> ResolvedNode {
 }
 
 fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
-    NodeConnection { id: rdm_core::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
+    NodeConnection { id: rdm_core::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier: carrier.cloned(), reason: None, logged_at_ms: at }
 }
 
 fn data_dir(tag: &str) -> std::path::PathBuf {
@@ -49,8 +49,7 @@ async fn a_restart_holds_none_of_the_previous_births_rows_and_the_first_resoluti
     let open = || async { FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap() };
     {
         let storage = open().await;
-        let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
-        failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 2 });
+        let failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
         for r in [failed, row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 11), row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), 12)] {
             storage.append_history(&r).await.unwrap();
             storage.put_connection(&r).await.unwrap();
@@ -66,8 +65,8 @@ async fn a_restart_holds_none_of_the_previous_births_rows_and_the_first_resoluti
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// §13 D: many failed attempts for one pair leave the raw log growing while the index holds one
-/// Direct member for the pair; the ordinal counts up in one round.
+/// §13 D: many failed dials for one pair leave the raw log growing while the index holds one
+/// Direct member for the pair, the latest failure.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pair() {
     let dir = data_dir("bounded");
@@ -84,9 +83,9 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
     assert_eq!(history.len(), 7, "every failure joins the raw log");
     let index = storage.connections().await.unwrap();
     assert_eq!(index.len(), 1, "one Direct member for the pair: {index:?}");
-    assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_round, r.attempt_ordinal)), Some((1, 7)), "the ordinal counts up in one round");
+    assert_eq!(index[0].reason.as_deref(), Some("refused 6"), "the index holds the latest failure");
     assert_eq!(held.lock().unwrap().own_latest_directs().len(), 1);
-    // A Direct Connected ends the series and is the pair's one Direct member now.
+    // A Direct Connected is the pair's one Direct member now.
     writer.direct_connected(&target);
     writer.observations_landed().await;
     let index = storage.connections().await.unwrap();
@@ -117,9 +116,9 @@ async fn a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The data-plane dial a cell hands the reconciler (connections.md §9.5 step 3): every call is
+/// The data-plane dial a cell hands the reconciler (connections.md §9.3 step 3): every call is
 /// recorded with its local instant, waits for the cell to let it go, then reports its outcome to
-/// the writer as the data-plane client's observer would (§9.5 step 5: the reconnect module invents
+/// the writer as the data-plane client's observer would (§9.3 step 5: the reconnect module invents
 /// no success fact of its own).
 struct CellDial {
     writer: ConnectionsWriter,
@@ -174,16 +173,15 @@ async fn until(what: &str, cond: impl Fn() -> bool) {
     }
 }
 
-/// A source holding a Proxy to `dest` through `carrier`, its latest Direct to `dest` Failed
-/// (round 1, ordinal 1) at `failed_at`: what a proven carried path leaves (connections.md §7).
+/// A source holding a Proxy to `dest` through `carrier`, its latest Direct to `dest` Failed at
+/// `failed_at`: what a proven carried path leaves (connections.md §7).
 async fn proxied(tag: &str, failed_at: u64) -> (std::path::PathBuf, ConnectionEnd, ConnectionEnd, Arc<dyn ConnectionsStorage>, Arc<Mutex<ConnectionsHeld>>, ConnectionsWriter, NodeConnection) {
     let dir = data_dir(tag);
     let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
-    let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
-    failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
+    let failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
     writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, failed_at)).await.unwrap();
     writer.record(failed.clone()).await.unwrap();
     writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), failed_at + 1)).await.unwrap();
@@ -243,20 +241,21 @@ async fn repeated_accepts_coalesce_into_one_dial() {
 }
 
 /// CONTRACT (connections.md §9, R-CN1 (5); Q348): when the dial an accept woke fails, the Proxy stays the
-/// route, the failure is the series' next Failed row (same round, next ordinal), and nothing dials
+/// route, the failure is one more Direct Failed row (one dial is one row), and nothing dials
 /// again: the woken dial has ended, and only the next accept wakes another. What must NOT happen: the
 /// Proxy deleted, or a second dial from the Failed row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_dial_after_an_accept_keeps_the_proxy_and_is_not_made_again() {
     let (dir, me, dest, storage, held, writer, _) = proxied("accept-failed-dial", now_ms() - 60_000).await;
-    let dial = CellDial::new(&writer, resolved(&dest), vec![Err("cell: the source's dial ended NotSent".to_string())]);
+    let reason = "cell: the source's dial ended NotSent";
+    let dial = CellDial::new(&writer, resolved(&dest), vec![Err(reason.to_string())]);
     let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(50), Some(dial.dial()));
     writer.accepted(&resolved(&dest));
     until("the source dials its own connection", || dial.calls().len() == 1).await;
     dial.go.add_permits(1);
-    until("the failed dial's row is held", || held.lock().unwrap().own_latest_directs().iter().any(|d| d.recovery.map(|r| r.attempt_ordinal) == Some(2))).await;
+    until("the failed dial's row is held", || held.lock().unwrap().own_latest_directs().iter().any(|d| d.reason.as_deref() == Some(reason))).await;
     let latest = storage.history().await.unwrap().into_iter().last().unwrap();
-    assert_eq!((latest.kind, latest.state, latest.recovery.map(|r| (r.recovery_round, r.attempt_ordinal))), (ConnectionKind::Direct, ConnectionState::Failed, Some((1, 2))), "the series' next Failed row: {latest:?}");
+    assert_eq!((latest.kind, latest.state, latest.reason.as_deref()), (ConnectionKind::Direct, ConnectionState::Failed, Some(reason)), "the dial's one Failed row: {latest:?}");
     assert!(matches!(resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, policy()).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays the route");
     assert!(writer.owed().is_empty(), "no delete is owed");
     until("the woken dial has ended", || writer.recovery_pending().is_empty()).await;
@@ -378,7 +377,6 @@ async fn a_carrier_names_its_own_connection_only_when_its_latest_direct_is_not_c
     writer.record(row(&me, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();
     assert_eq!(writer.connection_not_active(&dest.node_id).await, None, "a Connected connection is Active");
     let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 20);
-    failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
     failed.reason = Some("dial failed".into());
     writer.record(failed).await.unwrap();
     let why = writer.connection_not_active(&dest.node_id).await.expect("a Failed connection is not Active");
@@ -494,7 +492,6 @@ async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct
     let index = storage.connections().await.unwrap();
     assert_eq!(index.len(), 1, "{index:?}");
     assert_eq!((index[0].kind, index[0].state), (ConnectionKind::Direct, ConnectionState::Failed));
-    assert_eq!(index[0].recovery.map(|r| r.attempt_ordinal), Some(1));
     assert_eq!(held.lock().unwrap().own_latest_directs().len(), 1, "the failure is held once it is durable");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -529,7 +526,7 @@ impl ConnectionsStorage for SlowFirstPut {
 }
 
 /// CONTRACT: observations of one pair reach the index in the order they were observed, so after
-/// every observation has landed, the index member of the pair is the latest ordinal even when the first
+/// every observation has landed, the index member of the pair is the latest one even when the first
 /// observation's index write is the slowest.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
@@ -544,7 +541,7 @@ async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
     writer.observations_landed().await;
     let index = storage.connections().await.unwrap();
     assert_eq!(index.len(), 1);
-    assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_round, r.attempt_ordinal)), Some((1, 3)), "the index holds the latest observation: {index:?}");
+    assert_eq!(index[0].reason.as_deref(), Some("refused 2"), "the index holds the latest observation: {index:?}");
 }
 
 /// CONTRACT (node-identity-and-state.md §8: `source` is the end's path.name and `source_node_id` the
@@ -588,20 +585,19 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
 }
 
 /// CONTRACT (node-identity-and-state.md §8: `source_node_id` is the instance at each end when the
-/// entry was written; connections.md §13 C, Q227: a restart's backoff starts fresh): a restarted birth
-/// of `mesh1.node.1` (same node id, next incarnation) reads none of the previous birth's failing Direct
-/// back, and its first failure toward the destination is a new series, round 1 ordinal 1, naming its
-/// OWN birth as the source. What must NOT happen: the row continuing the previous birth's series.
+/// entry was written; connections.md §13 C, Q227: a restart holds no Failed Direct): a restarted birth
+/// of `mesh1.node.1` (same node id, next incarnation) reads none of the previous birth's Failed Direct
+/// back, and its failed dial toward the destination writes a row naming its OWN birth as the source.
+/// What must NOT happen: the row naming the previous birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_restarted_birth_starts_its_own_series_naming_its_own_birth() {
-    let dir = data_dir("restart-series");
+async fn a_restarted_births_failed_dial_row_names_its_own_birth() {
+    let dir = data_dir("restart-birth");
     let (previous, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
     let me = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..previous.clone() };
     let open = || async { FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap() };
     {
         let storage = open().await;
-        let mut failed = row(&previous, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
-        failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 4, attempt_ordinal: 2 });
+        let failed = row(&previous, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
         storage.append_history(&failed).await.unwrap();
         storage.put_connection(&failed).await.unwrap();
     }
@@ -611,20 +607,19 @@ async fn a_restarted_birth_starts_its_own_series_naming_its_own_birth() {
     writer.observations_landed().await;
     let history = storage.history().await.unwrap();
     let next = history.last().unwrap();
-    assert_eq!(next.recovery.map(|r| (r.recovery_round, r.attempt_ordinal)), Some((1, 1)), "the restarted birth starts its own series: {next:?}");
     assert_eq!(next.source, me, "the row names the birth that wrote it: {next:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// CONTRACT (node-identity-and-state.md §8: `destination_node_id` is the instance at that end when the
-/// entry was written; connections.md §9.1 and §9.4: a reconnect series is for the current destination
-/// incarnation): a failing series against `mesh1.node.3`'s birth, then a failed dial to its next
-/// birth (same node id, next incarnation), is a new incident: a new round at ordinal one, naming the
-/// birth that was dialled. What must NOT happen: the series of the gone birth continued one ordinal
-/// up, or a row naming the gone birth as the destination of a dial to its successor.
+/// entry was written; connections.md §9.3 step 1: "Verify the destination's `Node.incarnation_id` is
+/// the one the dial names"): failed dials against `mesh1.node.3`'s birth, then a failed dial to its
+/// next birth (same node id, next incarnation), write one row per dial, the last naming the birth that
+/// was dialled. What must NOT happen: a row naming the gone birth as the destination of a dial to its
+/// successor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming_that_birth() {
-    let dir = data_dir("next-birth-series");
+async fn a_failed_dial_to_the_destinations_next_birth_names_that_birth() {
+    let dir = data_dir("next-birth");
     let (me, gone) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
     let next = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..gone.clone() };
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
@@ -636,7 +631,7 @@ async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming
     writer.direct_failed(&resolved(&next), "refused by the next birth");
     writer.observations_landed().await;
     let history = storage.history().await.unwrap();
-    assert_eq!(history.iter().map(|r| r.recovery.map(|r| (r.recovery_round, r.attempt_ordinal))).collect::<Vec<_>>(), vec![Some((1, 1)), Some((1, 2)), Some((2, 1))], "the next birth's failure is a new incident: {history:#?}");
+    assert_eq!(history.iter().map(|r| (r.state, r.destination.incarnation.clone())).collect::<Vec<_>>(), vec![(ConnectionState::Failed, gone.incarnation.clone()), (ConnectionState::Failed, gone.incarnation.clone()), (ConnectionState::Failed, next.incarnation.clone())], "one row per dial, each naming the birth dialled: {history:#?}");
     assert_eq!(history[2].destination, next, "the row names the birth that was dialled: {:?}", history[2]);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -699,13 +694,13 @@ fn the_span_that_owed_a_write_has_ended_once_the_write_has_landed() {
 }
 
 /// CONTRACT (the writer's stamp: every row it writes carries a later one than the rows it wrote
-/// before; connections.md §9.1: a newer Direct Connected supersedes a series): a fact this writer
-/// observes after a row it recorded for the same pair is the pair's latest, whatever the clock reads
-/// when the observation is stamped: a Direct Connected observed after a recorded Direct Failed
-/// stamped at the clock's own millisecond, or later, is held, and the series it satisfied ends.
+/// before; connections.md §3: "A later event of the same kind replaces that kind's index row"): a
+/// fact this writer observes after a row it recorded for the same pair is the pair's latest, whatever
+/// the clock reads when the observation is stamped: a Direct Connected observed after a recorded
+/// Direct Failed stamped at the clock's own millisecond, or later, is held.
 /// What must NOT happen: the Connected row landing in the store while the held projection keeps the
-/// Failed row as the pair's latest (one millisecond, and a Failed row wins a tie), so the series
-/// stands and the reconciler dials a destination already connected.
+/// Failed row as the pair's latest (one millisecond, and a Failed row wins a tie), so a destination
+/// already connected resolves to no active route.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_observation_after_a_recorded_row_of_its_pair_is_held_as_the_latest_whatever_the_clock_reads() {
     let dir = data_dir("recorded-then-observed");
@@ -714,8 +709,7 @@ async fn an_observation_after_a_recorded_row_of_its_pair_is_held_as_the_latest_w
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     // Recorded at a millisecond the clock has not passed when the observation is stamped.
-    let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, now_ms() + 1_000);
-    failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
+    let failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, now_ms() + 1_000);
     writer.record(failed.clone()).await.unwrap();
     assert!(writer.recovery_pending().is_empty(), "the recorded Failed row wakes no dial (Q348)");
     writer.direct_connected(&resolved(&dest));
@@ -783,29 +777,25 @@ fn attr(sp: &serde_json::Value, k: &str) -> Option<String> {
 
 /// CONTRACT (connections.md §12: "Every durable connection transition retains its existing
 /// connection update evidence and names at least: source destination kind state reason. Proxy
-/// transitions additionally identify the carrier. Reconnect attempts identify the recovery round
-/// and attempt ordinal"): this node's writer lands each kind of transition it owns, each on its
-/// span: an observed Proxy Connected (`via-observed`), a reconnect attempt of a failing series
-/// (`via-recovery-dial`, the series' round and the attempt's ordinal, one above the latest Failed
-/// row's), the attempt's Direct Connected (`via-observed`), the Proxy's `Disconnected
-/// (direct-restored)` (`via-direct-restored`), a first Direct Failed toward another destination
-/// (`via-observed`, its round and ordinal 1) and a connections delete's drop
-/// (`via-connection-delete`). Every transition span names source, destination, kind, state and
-/// reason; every Proxy transition its carrier; every Direct Failed and every reconnect attempt its
-/// round and ordinal. Must NOT happen: a landed transition whose span leaves out any of them.
+/// transitions additionally identify the carrier"): this node's writer lands each kind of
+/// transition it owns, each on its span: an observed Proxy Connected (`via-observed`), the dial an
+/// accept woke (`via-recovery-dial`), its Direct Connected (`via-observed`), the Proxy's
+/// `Disconnected (direct-restored)` (`via-direct-restored`), a Direct Failed toward another
+/// destination (`via-observed`) and a connections delete's drop (`via-connection-delete`). Every
+/// transition span names source, destination, kind, state and reason; every Proxy transition its
+/// carrier. Must NOT happen: a landed transition whose span leaves out any of them.
 #[test]
-fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason_carrier_and_series_position() {
+fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason_and_carrier() {
     let (me, carrier, dest, other) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node"));
     let names = (me.node_id.to_string(), carrier.node_id.to_string(), dest.node_id.to_string(), other.node_id.to_string());
     let dir = data_dir("transition-spans");
-    let spans = spans_of("every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason_carrier_and_series_position", None, || async {
+    let spans = spans_of("every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason_and_carrier", None, || async {
         let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
-        // Seeded: the carrier's connection, and a failing series at (1, 2).
+        // Seeded: the carrier's connection, and a Direct Failed toward the destination.
         let failed_at = now_ms() - 1;
         let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
-        failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 2 });
         failed.reason = Some("seeded".into());
         writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, failed_at)).await.unwrap();
         writer.record(failed).await.unwrap();
@@ -821,7 +811,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
         let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(25), Some(dial.dial()));
         until("the attempt connects and the Proxy's delete lands", || held.lock().unwrap().own_active_proxies().is_empty()).await;
         writer.observations_landed().await;
-        // A first failure toward another destination, then the connection to the destination dropped.
+        // A failed dial toward another destination, then the connection to the destination dropped.
         writer.direct_failed(&resolved(&other), "refused by the cell");
         writer.observations_landed().await;
         let open = writer.held_routes().await.into_iter().filter(|r| r.destination.location() == dest.location()).collect::<Vec<_>>();
@@ -852,7 +842,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
     let drop = named("rdm.node_admin.connection.update.via-connection-delete");
     assert_eq!(drop.iter().map(|sp| (attr(sp, "destination_id"), attr(sp, "kind"), attr(sp, "state"))).collect::<Vec<_>>(), vec![(Some(names.2.clone()), Some("direct".into()), Some("disconnected".into()))], "{drop:?}");
     let failed: Vec<&&serde_json::Value> = transitions.iter().filter(|sp| attr(sp, "state").as_deref() == Some("failed")).collect();
-    assert_eq!(failed.iter().map(|sp| (attr(sp, "destination_id"), attr(sp, "recovery_round"), attr(sp, "attempt_ordinal"))).collect::<Vec<_>>(), vec![(Some(names.3.clone()), Some("1".into()), Some("1".into()))], "a Direct Failed names its round and ordinal: {failed:?}");
+    assert_eq!(failed.iter().map(|sp| attr(sp, "destination_id")).collect::<Vec<_>>(), vec![Some(names.3.clone())], "one Direct Failed, toward the other destination: {failed:?}");
     let dials = named("rdm.node_admin.connection.create.via-recovery-dial");
     assert_eq!(dials.iter().map(|sp| (attr(sp, "destination_id"), attr(sp, "fact"))).collect::<Vec<_>>(), vec![(Some(names.2.clone()), Some("connected".into()))], "the woken dial names its destination and its fact: {dials:?}");
 }
