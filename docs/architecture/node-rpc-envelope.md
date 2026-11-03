@@ -1141,7 +1141,10 @@ exact birth and scopes the source-version revision as in [gossip](gossip.md#31-f
 
 ```rust
 pub struct StoredNode {
+    pub mesh: String,
+    pub r#type: String,
     pub node_id: NodeId,
+    pub path: String,
     pub name: String,
     pub endpoint_id: EndpointId,
     pub incarnation: IncarnationId,
