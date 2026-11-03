@@ -10,7 +10,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | page | owns |
 |---|---|
 | this page | the page map, the workflow tables, the wire-op → workflow table, the terminology firewall |
-| [States](lifecycles/states.md) | fabric, mesh and node lifecycle states, who sets each, setting a state and its checklist, the one routing rule, stopped nodes, resize and executable replacement |
+| [States](lifecycles/states.md) | fabric, mesh and node lifecycle states, who sets each, setting a state and its checklist, the one routing rule, stopped nodes, resize and a new executable |
 | [Gossip](gossip.md) | the channels, the frame catalog (each frame's fields, author and channels), cadence and timers, peers' receive rules, external topology, deleted retention, held-member repair, frame examples |
 | [Node RPC envelope](node-rpc-envelope.md) | the op ledger, target and context, every op's request/reply schema and positional order, reserved stream codes, the typed object → wire mapping, the Build carrier `0x20` schema, RPC runtime span names, caller execution and certainty |
 | [Query](query.md) | how anything reads the fabric: the filter and its matching rules, the reads the fabric-primary answers through the current-pair lookup, and a node's local query of the topology it holds |
@@ -21,7 +21,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | [Elections](fabric-node-lifecycle-elections.md) | the leadership election: a heard primary stays, unheard past the staleness floor it is superseded; the Mesh row and the fabric row as its inputs |
 | [Node-admin lifecycle](node-admin-lifecycle.md) | node-admin launch inputs and start modes, who starts a node-admin of an existing mesh, the Rafka recovery copy |
 | [Build](build.md) | the Build engine: accepted topology, the Build record written once and its events, BuildStateAdapter, storage interfaces, crash safety, lifecycle transitions, the RDM/Rafka boundary and import rule |
-| [Build deployment](build-deployment.md) | what a Build deploys: the executable each node runs, named per node at create, recorded on the row, re-hashed at the launch, replaced only by re-birth, recovered from the row, read from the rows |
+| [Build deployment](build-deployment.md) | what a Build deploys: the executable each node runs, named per node at create, recorded on the row, re-hashed at the launch, a new executable being a new node, recovered from the row, read from the rows |
 | [Deployment provider](deployment-provider.md) | the deployment provider and its environment policy, the DeploymentPipeline, the RuntimeFact contract, current runtime metadata and the exact runtime handle |
 | [Fabric primary](fabric-primary.md) | the fabric-primary: the mesh roster from the accepted Build, takeover as hydration, the complete-view gate, fabric identity hydration, the event-distinction table |
 | [Node identity and state](node-identity-and-state.md) | node identity (ids, endpoint_id, path and name, incarnation, prefixes), node/mesh/fabric rows and their writers, the NodeState liveness enum, the hydration roster, local eviction, the stopped-node collector |
@@ -36,9 +36,9 @@ TOPOLOGY GOSSIP
     says what the Fabric looks like now
     topology channels, mesh topologies, lifecycle events
 
-BUILD / ATTEMPT / CLAIM / STEP
-    assigns durable work and records its outcome
-    survives a primary change; a successor continues the same Build
+BUILD / SECTION / STEP
+    adds or removes nodes and records each step as an event
+    survives a primary change; a mesh's new primary runs its section from the events
     each mesh's section runs at that mesh's primary
 
 NODE RPC
@@ -60,7 +60,7 @@ What an operation is admitted against, gate by gate and the source each reads, i
 | Workflow | Read when |
 |---|---|
 | [fabric.create](lifecycles/fabric-create.md) | Creating a fabric: minting it, its first mesh's first node-admin as fabric-primary, the fabric's states to ready |
-| [node.primary.update](lifecycles/node-primary-update.md) | Moving the primary of the nodes of one type in one mesh to its successor, first in every stop, delete, replace or `node.connection.delete { scope: All }` of a primary |
+| [node.primary.update](lifecycles/node-primary-update.md) | Moving the primary of the nodes of one type in one mesh to its successor, first in every stop, delete or `node.connection.delete { scope: All }` of a primary |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | Moving the fabric-primary, the first step of a mesh.delete of its mesh |
 | [fabric.ca.renew](lifecycles/fabric-ca-renew.md) | RDM's CA rotated internally on policy under the same anchor: every issuer re-minted, no node's trust set touched |
 | [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | The trust anchor rotated on a caller's new root, through an overlap in which every node trusts both, then the CA re-minted under it and the old anchor replaced |
@@ -115,7 +115,7 @@ are explicit.
 |---|---|---|
 | 0x1B Status | [Status](node-rpc-envelope.md#status-op-0x1b-rdm) | [node.cert.renew](lifecycles/node-cert-renew.md), [node.issuer.update](lifecycles/node-issuer-update.md), [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive), [Node status](lifecycles/node-status.md), [replace](lifecycles/node-replace.md), [delete](lifecycles/node-delete.md), [ready](lifecycles/states.md#the-fabrics-ready), [mesh.delete](lifecycles/mesh-delete.md), [start](lifecycles/node-start.md), [create](lifecycles/node-create.md), [node recovery](lifecycles/node-recovery.md), [stop](lifecycles/node-stop.md), [node.connection.delete](lifecycles/node-connections-delete.md) |
 | 0x1F (reserved, Q292) | [Build floor read](node-rpc-envelope.md#build-floor-read-op-0x1f-reserved) | none: [node.start](lifecycles/node-start.md#end-to-end-sequence) step 4 and a primary taking its role ([states](lifecycles/states.md)) read the Build's committed records from the Build storage |
-| 0x20 build | [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) | [Node create](lifecycles/node-create.md), [delete](lifecycles/node-delete.md); fabric-primary claim-and-dispatch of topology operations; reattachment |
+| 0x20 build | [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) | [Node create](lifecycles/node-create.md), [delete](lifecycles/node-delete.md); fabric-primary dispatch of each mesh's section; reattachment |
 | 0x21 PrimaryUpdate | [PrimaryUpdate](node-rpc-envelope.md#primaryupdate-op-0x21-rdm) | [node.primary.update and node.fabric-primary.update](lifecycles/node-primary-update.md), before a primary's [node.connection.delete](lifecycles/node-connections-delete.md), [stop](lifecycles/node-stop.md), replace or delete |
 | 0x22 NodeCommand | [NodeCommand](node-rpc-envelope.md#nodecommand-op-0x22-rdm) | [node.connection.delete](lifecycles/node-connections-delete.md), [stop](lifecycles/node-stop.md), [start](lifecycles/node-start.md): the mesh-primary to the exact node |
 

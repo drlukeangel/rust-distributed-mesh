@@ -147,7 +147,7 @@ sequenceDiagram
     participant R as Peer mesh-primaries
     C->>F: build.create (topology adds mesh2)
     Note over F: 1. accepted, MeshId minted
-    Note over F: 2. claim attempt, node.create of mesh2.node-admin.1, fabric-primary as maker
+    Note over F: 2. node.create of mesh2.node-admin.1, fabric-primary as maker
     A->>F: 3. JoinNode on the maker
     F-->>A: Joined (fabric, rafka-time, cert, name, config)
     A->>G: 4. create mesh2's channel, join the backbone
@@ -185,7 +185,7 @@ stream certainty follow the [caller execution contract](../node-rpc-envelope.md#
 | Step | Actor | Span / evidence | Correlation |
 |---|---|---|---|
 | Acceptance | fabric-primary | `rdm.node_admin.build.create.via-accepted`; the MeshId in the accepted topology | Build id |
-| Create | fabric-primary | [node.create](node-create.md)'s spans as maker and executor | Build, attempt, `node.create:mesh2.node-admin.1` |
+| Create | fabric-primary | [node.create](node-create.md)'s spans as maker and executor | Build, `node.create:<node_id>` |
 | Join | node-admin, fabric-primary | [node.mesh.join](node-mesh-join.md#observability-contract) | same operation |
 | Mesh Pending | fabric-primary | the Ping, then `ApplyMeshState(Pending)`'s call span | mesh id, mesh name |
 | Primary and name | node-admin | `rdm.mesh.election.resolve.via-recompute`; the mesh row write | mesh id, revision |

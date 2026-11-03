@@ -31,7 +31,7 @@ namespace ([Runtime spans](node-rpc-envelope.md#runtime-spans)).
 - **No payload enters a span.** No byte of a frame's or a call's body, and never a declared secret
   or RDM's own secret material, is written as a span attribute.
 - **Identity correlates traces that start on their own.** Every Build-backed span carries `build_id`
-  and, where it applies, `attempt`, `operation`, `step`, `node_id` and `incarnation`. A trace that
+  and, where it applies, `mesh`, `operation`, `step`, `node_id` and `incarnation`. A trace that
   starts on its own (§4) is joined to the operation that caused it by those fields.
 
 ## 3. The carriers

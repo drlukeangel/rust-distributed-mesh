@@ -33,7 +33,7 @@ does exactly the same. The workflow re-creates the node-admin at the fabric-prim
 ([node recovery](node-recovery.md), over the inherited data dir when the investigation's provider step
 found the old runtime exited, otherwise over a newly allocated one, R-FM2). When that node is
 Ready the workflow restores it as mesh-primary and fabric-primary (step 4) and completes. Nothing is
-taken over and nothing is handed back; the fabric-primary's path and name never changed, so a replacement
+taken over and nothing is handed back; the fabric-primary's path and name never changed, so a new
 executor starting the workflow over knows it. The workflow names the birth it recovers, and its
 executor writes, while the target mesh has no active mesh-primary, the mesh and node records its own
 operations require, nothing else; this makes it no primary, and ordinary mesh writing passes to the restored
@@ -62,7 +62,7 @@ the same order starts the workflow again, resuming from the progress recorded on
    hook, cert and rafka-time (Q87). Any other verdict, node recovery re-creates it at the same path and name
    with a new node.id: over the inherited data dir with the same endpoint key when the investigation's
    provider step found the old runtime exited, over a newly allocated data dir, `inherited = false`,
-   otherwise (`R-FM2`). An old birth that comes back once its verdict is not `reached`, during its replacement's birth or after it, is a deleted birth: every view refuses its
+   otherwise (`R-FM2`). An old birth that comes back once its verdict is not `reached`, during its successor's creation or after it, is a deleted birth: every view refuses its
    Digest by name, and its mesh-primary decides it by its path and name and its atlas
    ([node investigation](node-investigation.md), Q207): its recovery or its re-created birth is there, so the primary whose atlas decided it terminates its runtime (Q110).
    Nothing holds, and nothing waits for evidence. From the backbone the re-create terminates nothing in the

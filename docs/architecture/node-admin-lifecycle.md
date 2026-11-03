@@ -74,7 +74,7 @@ The parameters select one of these modes:
 | mode | parameters | started by | what the node-admin does |
 |---|---|---|---|
 | **Day 0** | no mesh and no durable topology | a person | Starts the fabric as its fabric primary ([fabric.create](lifecycles/fabric-create.md)), then waits for the next node or mesh deployment request (a Build). |
-| **Create** | mesh, seed | a node-admin executing a Build | Runs [node.start](lifecycles/node-start.md) with FirstStart, its maker the accepting primary; once ready it takes part in elections. |
+| **Create** | mesh, seed | a node-admin executing a Build | Runs [node.start](lifecycles/node-start.md) with FirstStart, reporting its join to its maker; once ready it takes part in elections. |
 | **Recover** | mesh, seed, the exited node's data dir | a node-admin executing node recovery | node.create at the same path and name over the inherited data dir: same endpoint key, new NodeId, incarnation and port ([node recovery](lifecycles/node-recovery.md)). |
 | **Create as mesh primary** | mesh, seed, mesh primary | the fabric primary | A live peer mesh lost all its node-admins: [node recovery](lifecycles/node-recovery.md) of its lost mesh-primary re-creates a node-admin into it (Q335), then the entry sequence (§4) and the mesh's missing node-admins (§4.3). |
 | **Fabric recovery** | mesh, seed, mesh primary, fabric primary | a person | Every node-admin is lost (catastrophic): the entry sequence (§4), then every mesh's missing node-admins. The launched node-admin is a new node over its inherited data dir: new node.id and incarnation, same path and name and endpoint key, new port. |
@@ -149,7 +149,7 @@ The Pending hand-off to a mesh's first admin is a row of [States: who sets each 
 A node.delete of a birth absent from the executor's view runs against its exact runtime, rebuilt
 from the birth its operation pins ([build.md §4.4](build.md#44-the-gates-before-an-operation)), the node record and the data-root runtime record. It emits
 `rdm.node_admin.node.update.via-rebuilt-birth` and refuses by name when no record names
-the birth. Completion requires the NodeDeleted receipt of that exact birth. Source:
+the birth. Completion requires the NodeDeleted of that exact birth. Source:
 RDM's `rebuild_absent_birth` in `rdm-admin`.
 
 ## 7. Rafka storage and recovery

@@ -44,7 +44,7 @@ whose verdict is the one decision about an unheard node (Q111); nothing waits on
    allocated data dir; delete skips the stop and terminates).
 5. `exited { code }`: the caller acts as its page says (investigation's verdict: re-created over the
    inherited data dir; delete proceeds to `node.deleted`).
-6. The caller continues per its page: `node.deleted`, the recovery attempt, the investigation's
+6. The caller continues per its page: `node.deleted`, the recovery, the investigation's
    verdict.
 
 ## Command, completion and gossip messages

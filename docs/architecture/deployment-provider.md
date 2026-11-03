@@ -91,7 +91,7 @@ Exact Rust naming may differ. The semantic cuts may not:
 - **Spawn records before it runs.** The launch record (`deployment.json` in the data dir) is durable before the executable runs, so a runtime that runs always has its record and an executor lost at any point of the spawn leaves `find` a record to read. A record that cannot be written stops the launch before the executable runs.
 - **Find is for the launcher's successor.** It tells a running launch, one that ran and exited, and one never launched apart, from the record and the domain, so a re-run after a crash mid-`DeployRuntime` adopts the runtime instead of starting a second one.
 - **Every command has a deadline.** Every provider command has a finite deadline, bounded by any earlier caller deadline, except the provider's own wait for the exit of a runtime it started, which ends with that exit or with the provider. Expiry ends the client wait and names the command and the elapsed time; it shows neither the cancellation of an external mutation nor the runtime's exit. Before repeating a mutation the workflow finds its exact deployment in the same control domain and adopts or reconciles what it observes; an inspection that is unavailable never means absence.
-- **Adopt is for any primary.** A successor reconstructs a control handle from a birth's published RuntimeFact alone, with no launcher and no completed Build receipts. The Day-0 admin a person or the test harness started enters the same tracking by adopting its own current runtime before Ready.
+- **Adopt is for any primary.** A successor reconstructs a control handle from a birth's published RuntimeFact alone, with no launcher and no completed Build step events. The Day-0 admin a person or the test harness started enters the same tracking by adopting its own current runtime before Ready.
 - **Inspect reads, terminate acts, nothing else commands.** The provider sends no signal to a runtime but the stop ladder's and the terminate's. It never sends `SIGCONT`, never unpauses a container, never authors a node's status, never speaks Node RPC.
 
 ### 2.1 RuntimeFact is compact exact current-runtime identity
@@ -247,7 +247,7 @@ Once a handle is adopted or spawned, the provider's `Exited` for that exact hand
 
 ## 3. The pipeline's steps
 
-The provider is driven by the DeploymentPipeline, whose steps are the Build's receipts (build.md §4.1). The canonical managed creation:
+The provider is driven by the DeploymentPipeline, whose steps are the Build's `rdm.build.step` events (build.md §4.1). The canonical managed creation:
 
 ```text
 AllocateIdentity

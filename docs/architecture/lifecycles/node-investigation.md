@@ -46,7 +46,7 @@ node-admin's atlas is its topology and its in-flight commands over the meshes it
 mesh as a mesh-primary and every mesh as the fabric-primary, taken as it takes that primary and narrowed off as it hands it away; the caller's record and the record at its path and name are read through the current-pair lookup ([query.md §1](../query.md#1-external-a-query-to-the-fabric-primary)). A node-admin that is not the fabric-primary
 verifies its decision at the root with `fabric.atlas.get` before it acts, and the root's answer wins, except that a caller whose record it holds deleted stays deleted (Q217). A
 deleted caller's runtime is terminated by the primary whose atlas decided it, its own workflow, under `node.terminate:<path>@<incarnation>` (`rdm.node_admin.node.update.via-returned-reported`); each decision is one
-`rdm.node_admin.node.update.via-refused-caller` span. A node that comes back once its verdict is not `reached`, during its replacement's birth or after it, is
+`rdm.node_admin.node.update.via-refused-caller` span. A node that comes back once its verdict is not `reached`, during its successor's creation or after it, is
 such a caller: its recovery or its re-created birth holds its path and name, and it is deleted. A second birth another
 executor made at the path and name across a cut is made a deleted birth by its mesh-primary, which writes its
 row deleted ([node.delete](node-delete.md), releasing the name) and reports it the same way (Q142).

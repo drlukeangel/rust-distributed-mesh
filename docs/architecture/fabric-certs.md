@@ -80,7 +80,7 @@ was given; the app never signs or verifies anything.
 
 | Event | Issuer | Carried in |
 |---|---|---|
-| a node's JoinNode is accepted (the first start inside node.create, and every node.start after a stop) | the accepting primary: the maker for a node-admin, the mesh-primary for an ordinary node | the JoinNode answer, as opaque bytes |
+| a node's JoinNode is accepted (the first start inside node.create, and every node.start after a stop) | the node-admin it reports to: the maker for a node-admin, the mesh-primary for an ordinary node | the JoinNode answer, as opaque bytes |
 | a new mesh's first node-admin is deployed | the maker, which holds the root or an issuing cert that may mint for that mesh | that admin's launch |
 | a member cert has lived two thirds of its TTL (`RDM_CERT_RENEW_AT`, with up to 5 % jitter) | the birth's issuer (its mesh-primary; the fabric-primary for a mesh-primary) | [node.cert.renew](lifecycles/node-cert-renew.md) to the running birth; the old cert stays valid to its own expiry |
 
@@ -168,7 +168,7 @@ One vocabulary, `<entity>.<thing>.<verb>`, the event in the past tense.
 | `mesh.issuer.create` | step inside mesh.create | the fabric-primary, at the mesh's acceptance | none (the first admin's launch env) | [mesh.create](lifecycles/mesh-create.md) step 2 |
 | `mesh.issuer.renew` | workflow, on the fabric-primary's tick | the fabric-primary → the mesh-primary, and through it (forwarded) every other node-admin of the mesh | `node.issuer.update` per admin | [mesh.issuer.renew](lifecycles/mesh-issuer-renew.md) |
 | `node.issuer.update` | primitive | the fabric-primary → one node-admin, exact birth: the mesh-primary directly, any other admin forwarded through the mesh-primary | Status 0x1B `UpdateIssuer`, reply `IssuerUpdated` | [node.issuer.update](lifecycles/node-issuer-update.md) |
-| `node.cert.create` | step inside node.mesh.join | the accepting primary, before it admits | none (the join answer) | [node.mesh.join](lifecycles/node-mesh-join.md) step 5 |
+| `node.cert.create` | step inside node.mesh.join | the node-admin it reports to, before it admits | none (the join answer) | [node.mesh.join](lifecycles/node-mesh-join.md) step 5 |
 | `node.cert.renew` | primitive, on the issuer's tick | mesh-primary → member; fabric-primary → mesh-primary | Status 0x1B `RenewCert`, reply `CertRenewed` | [node.cert.renew](lifecycles/node-cert-renew.md) |
 | `node.cert.get` | a field of node.get | any caller → the view | `NodeView.cert` on the `Nodes` reply | [typed-object table](node-rpc-envelope.md#typed-object-contract) |
 | `node.connection.create` | primitive, on accept | the acceptor, every inbound connection of a registered ALPN | the connection's first bi-stream; not a Node RPC op | [node.connection.create](lifecycles/node-connections-admit.md) |
