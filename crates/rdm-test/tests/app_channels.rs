@@ -434,9 +434,19 @@ fn an_event_a_mesh1_node_publishes_reaches_a_mesh2_node_through_the_node_admins_
         assert_eq!(on_m2n["attributes"]["source_node_id"], m1n.to_string().as_str(), "sourced from mesh1's node");
         assert_eq!(neighbour_peers(&spans_of(&span_files(&dir), &m2n)), std::collections::BTreeSet::from([m2a_key.clone()]), "mesh2's node's one neighbour on the channel is mesh2's node-admin: it carried the event");
         capture.spans().expect("the cell's own spans are flushed");
-        let files = span_files(&dir);
+        // Each node-admin's spans reach its file on that process's own export batch: its receipt is
+        // waited for, bounded, as mesh2's node's is above.
         for (who, id) in [("mesh1.node-admin.1", &day0), ("mesh2.node-admin.1", &m2a)] {
-            let carried = received(&spans_of(&files, id)).unwrap_or_else(|| panic!("{who}'s application received the event it carried"));
+            let carried = tokio::time::timeout(WRONG, async {
+                loop {
+                    if let Some(s) = received(&spans_of(&span_files(&dir), id)) {
+                        return s;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{who}'s application received the event it carried"));
             assert_eq!(carried["trace_id"], on_m2n["trace_id"], "{who}'s receipt is in the publisher's trace");
         }
         eprintln!("app channel trace: {}", on_m2n["trace_id"].as_str().unwrap_or_default());
