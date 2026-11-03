@@ -449,13 +449,13 @@ fn build_wire_refuses_a_moved_position_or_a_lost_golden() {
 #[test]
 fn store_layout_wire_refuses_a_moved_format_a_moved_key_or_a_lost_golden() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-node/src/store_root.rs", "pub const LAYOUT_VALUE: &str = \"r-sr1\";", "pub const LAYOUT_VALUE: &str = \"r-sr2\";");
+    t.edit("crates/rdm-node/src/store_root.rs", "pub const LAYOUT_VALUE: &str = \"q365\";", "pub const LAYOUT_VALUE: &str = \"q366\";");
     only(check(t.root()), Ratchet::StoreLayoutWireIsAtomic);
     let l = Planted::of_tree();
     l.edit("crates/rdm-node/src/store_log/tests.rs", "fn a_line_states_its_own_length_first_and_its_checksum_last", "fn changed_line_cell");
     only(check(l.root()), Ratchet::StoreLayoutWireIsAtomic);
     let k = Planted::of_tree();
-    k.edit("crates/rdm-admin/src/build_state.rs", "BuildFact::Accepted(_) => \"accepted\".to_string(),", "BuildFact::Accepted(_) => \"acceptance\".to_string(),");
+    k.edit("crates/rdm-admin/src/build_state.rs", "pub const RECORD_KIND: &str = \"build-record\";", "pub const RECORD_KIND: &str = \"build\";");
     only(check(k.root()), Ratchet::StoreLayoutWireIsAtomic);
     let f = Planted::of_tree();
     f.edit("crates/rdm-admin/src/build_state.rs", "fn the_store_layout_is_frozen_byte_for_byte", "fn changed_store_layout_cell");

@@ -657,24 +657,24 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, "crates/rdm-core/tests/build_wire.rs", &["fn failure_codes_are_appended_and_retained_by_the_build_wire", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
         }
         Ratchet::StoreLayoutWireIsAtomic => {
-            // The store root's layout (Q28 A; build.md §5.3; R-SR1 to R-SR5): the layout marker, the
-            // store file's line (its len first, its crc32 last, frozen byte for byte by one cell), the
-            // Build record's format and keys, one line per fact at its own key, frozen byte for byte by
-            // one cell; a layout that moves moves them together (`durable format moved`).
+            // The store root's layout (Q28 A; build.md §5.3; R-SR1 to R-SR5; Q365): the layout marker,
+            // the store file's line (a CloudEvents 1.0 event, its len first, its crc32 last, frozen byte
+            // for byte by one cell), the Build record's `type` and `dataschema`, one line per fact at its
+            // Build's id, frozen byte for byte by one cell; a layout that moves moves them together
+            // (`durable format moved`).
             require(
                 root,
                 "crates/rdm-admin/src/build_state.rs",
                 &[
                     "pub const RECORD_FORMAT: &str = \"build-record/3\";",
-                    "BuildFact::Accepted(_) => \"accepted\".to_string(),",
-                    "BuildFact::Forget { .. } => \"forget\".to_string()",
+                    "pub const RECORD_KIND: &str = \"build-record\";",
                     "fn the_store_layout_is_frozen_byte_for_byte",
                 ],
                 ratchet,
                 &mut out,
             );
-            require(root, "crates/rdm-node/src/store_root.rs", &["pub const LAYOUT_VALUE: &str = \"r-sr1\";"], ratchet, &mut out);
-            require(root, "crates/rdm-node/src/store_log.rs", &["const CRC_SUFFIX: usize = 20;"], ratchet, &mut out);
+            require(root, "crates/rdm-node/src/store_root.rs", &["pub const LAYOUT_VALUE: &str = \"q365\";"], ratchet, &mut out);
+            require(root, "crates/rdm-node/src/store_log.rs", &["const CRC_SUFFIX: usize = 20;", "pub const SPEC_VERSION: &str = \"1.0\";"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/store_log/tests.rs", &["fn a_line_states_its_own_length_first_and_its_checksum_last"], ratchet, &mut out);
         }
         Ratchet::PrimaryUpdateWireIsAtomic => {
