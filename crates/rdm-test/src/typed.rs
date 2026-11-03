@@ -752,18 +752,24 @@ impl Estate {
     }
 
     /// `node.create` of one more `type` node in `mesh`, at the lowest free ordinal of its type, on the
-    /// estate's executable for it: the complete topology with the path added
-    /// ([`rdm_client::Nodes::create_named`]). Not accepted: how the call ended.
+    /// estate's executable for it: a Create of that node alone ([`rdm_client::Nodes::create`]). Not
+    /// accepted: how the call ended.
     pub async fn create_node(&self, mesh: &str, r#type: &str) -> Result<WorkflowStream, CallEnd> {
-        let (based_on, nodes) = self.create_node_request(mesh, r#type).await;
-        self.nodes_obj().await.create_named(based_on, nodes).await
+        let node = self.create_node_request(mesh, r#type).await;
+        self.nodes_obj().await.create(vec![node]).await
     }
 
-    /// The `based_on` and complete topology of [`Self::create_node`], for a cell that submits it itself.
-    pub async fn create_node_request(&self, mesh: &str, r#type: &str) -> (BuildId, Vec<rdm_core::meta::NodeSpec>) {
-        let current = self.current().await;
-        let nodes = current.with_one_more(mesh, r#type, &self.executables);
-        (current.based_on, nodes)
+    /// The node [`Self::create_node`] adds, by its Nodes schema, for a cell that submits it itself.
+    pub async fn create_node_request(&self, mesh: &str, r#type: &str) -> rdm_core::build::Nodes {
+        self.current().await.one_more(mesh, r#type, &self.executables).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// `node.delete` of the birth at `node` now, by its node.id, read with `node.get` first (build.md §1:
+    /// a Delete names each node by its node.id) ([`rdm_client::Nodes::delete`]). Not accepted: how the
+    /// call ended.
+    pub async fn delete_node(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
+        let node_id = self.node_view(node).await.node_id;
+        self.nodes_obj().await.delete(vec![node_id]).await
     }
 
     /// Reconcile the fabric to `desired`: `build.create`, awaited to the stream's `Complete`.

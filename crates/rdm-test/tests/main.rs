@@ -137,6 +137,8 @@ mod offline_tick_store_reads;
 mod executor_pass_store_reads;
 #[path = "build/node_create_after_delete.rs"]
 mod node_create_after_delete;
+#[path = "build/batch_change.rs"]
+mod batch_change;
 #[path = "mesh/stopped_last_admin.rs"]
 mod stopped_last_admin;
 #[path = "gossip/peer_mesh_topology.rs"]

@@ -8,7 +8,8 @@
 //! current. The Fabric row carries no pointer to the newest Build, so nothing but the Build
 //! entities says which Build is current.
 
-use rdm_admin::accepted::{AcceptedStore, FabricTopology, TopologyChange};
+use rdm_admin::accepted::{AcceptedStore, FabricTopology};
+use rdm_core::build::BuildChange;
 use rdm_admin::build::{BuildId, MeshDesired};
 use rdm_admin::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::control_plane::{ControlPlane, Refusal};
@@ -82,7 +83,7 @@ async fn an_accepted_build_is_current_from_the_build_store_alone() {
     let (cp, builds, b0) = fabric_primary().await;
     let topology = builds.read_build(&b0).await.unwrap().topology;
     let b1 = BuildId::mint();
-    builds.publish_accepted(&BuildAccepted { build_id: b1.clone(), topology, submitted_change: None, submitted_at_ms: 5 }).await.unwrap();
+    builds.publish_accepted(&BuildAccepted { build_id: b1.clone(), topology, submitted_change: None, source: None, submitted_at_ms: 5 }).await.unwrap();
     match cp.submit("POST /api/meshes", TopologyChange::CreateMesh { desired: mesh("mesh2") }).await {
         Err(Refusal::BuildInProgress(held)) => assert_eq!(held.current_build_id, b1, "the refusal names the Build in progress"),
         Err(other) => panic!("refused, but not as the Build in progress {b1}: {other:?}"),

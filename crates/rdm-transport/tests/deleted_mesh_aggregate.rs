@@ -43,7 +43,7 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
     let final_del = LifecycleOp { r#type: m3_a1.node.r#type.clone(), mesh: m3_a1.node.mesh.clone(),
         build_id: "b-s72".into(),
         attempt: 1,
-        operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh3.node-admin", "1").unwrap()),
+        operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh3.node-admin", "1").unwrap())),
         node_id: m3_a1.node.node_id.clone(),
         incarnation: m3_a1.node.incarnation.clone(),
         path: m3_a1.node.path.clone(), name: m3_a1.node.name.clone(),

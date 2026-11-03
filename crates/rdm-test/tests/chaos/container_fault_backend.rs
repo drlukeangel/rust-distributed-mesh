@@ -1223,7 +1223,8 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
     for name in containers_before.keys().filter(|n| n.path.starts_with(&format!("{lost_mesh}.")) && **n != primary) {
         estate.until_node(name, &format!("{name:?} gone from the view after mesh.deleted"), Duration::from_secs(30), |n| n.is_none().then_some(())).await;
     }
-    let delete = estate.submit_change(rdm_client::Change::RemoveNode { node: primary.clone() }).await;
+    let primary_id = estate.node_view(&primary).await.node_id;
+    let delete = estate.submit_change(rdm_client::Change::Delete { meshes: vec![], node_ids: vec![primary_id] }).await;
     let delete_build_id = estate.follow(delete).await.build_id.to_string();
     // The former primary's containers: terminal at the daemon (not running, or removed).
     let mut lost_terminal: BTreeMap<PathName, Value> = BTreeMap::new();
@@ -1566,7 +1567,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let recovery_for = |path: &PathName| -> Value {
         reconciles
             .iter()
-            .find(|r| attr(r, "reason") == "recovery" && attr(r, "operations").contains("action: \"node.delete\"") && plans_operation(r, "node.create", &rdm_core::OperationSubject::Location(path.clone())))
+            .find(|r| attr(r, "reason") == "recovery" && attr(r, "operations").contains("action: \"node.delete\"") && rdm_test::estate::plans_a_create(r))
             .cloned()
             .cloned()
             .unwrap_or_else(|| panic!("a recovery attempt of {build_id} recovering {path:?}: {reconciles:?}"))

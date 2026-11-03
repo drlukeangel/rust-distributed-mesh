@@ -473,7 +473,7 @@ mod tests {
         };
         write(Box::new(|b| { b.declared.insert(NodeState::Ready); })).await;
         write(Box::new(|b| { b.declared.insert(NodeState::Pending); })).await;
-        let op = || rdm_core::status::DeclaredOperation { operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()).in_occurrence(rdm_core::OperationOccurrenceId::mint()) };
+        let op = || rdm_core::status::DeclaredOperation { operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())).in_occurrence(rdm_core::OperationOccurrenceId::mint()) };
         write(Box::new(move |b| b.apply_operation(&op(), NodeState::Stopped))).await;
         write(Box::new(move |b| b.apply_operation(&op(), NodeState::Stopped))).await;
         write(Box::new(|b| b.data_dir_lost = Some(DataDirLost { path: "/d".into(), since: 1 }))).await;

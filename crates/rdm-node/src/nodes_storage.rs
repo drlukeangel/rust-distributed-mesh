@@ -245,17 +245,7 @@ pub struct NodeRow {
     /// (`rdm_admin::node_rows::finish_release`); once that key no longer holds the node it says nothing,
     /// so it is never cleared. A row no rename wrote carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub renamed_from: Option<String>,
-    /// The original pair of this exact subject retained by a replacement. Independent of the
-    /// most recent claim release; cleared only when the replacement rolls back to this pair.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replacement_from: Option<PathName>,
-    /// The successor whose claim at this row's original pair named it as its predecessor (node-replace.md
-    /// step 3), written on the retained predecessor's row once the successor's claim stands at the name.
-    /// A rename of the row writes none: the node takes a name again (node-replace.md "Rollback" step 3).
-    /// A row no successor marked carries none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inherited_by: Option<NodeId>,
+    pub renamed_from: Option<PathName>,
     /// The executable binding the node runs, beside its config (node-replace.md step 3: "the row
     /// records it beside `config`"): written at the create's claim with the binding that create
     /// launches, kept by every later write of the row, a `Deleted` row's included, and seeded from the
@@ -275,7 +265,6 @@ pub struct NodeRow {
     pub mesh_id: Option<MeshId>,
     /// The exact birth this node replaced, written at its create from the recovery attempt that named
     /// it: what a birth recovered over a fresh data dir reads its predecessor's `data-dir-lost` through.
-    /// `inherited_by` points the other way and is not followed backwards.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predecessor: Option<BirthRef>,
     /// The node's `storage_persistence` as its create spec names it (storage.md §1; Q166, build.md §1:
@@ -339,7 +328,7 @@ pub struct Allocation {
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
     pub fn new(name: PathName, mesh: impl Into<String>, r#type: &str, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { path: name.path.clone(), name: name.name.clone(), mesh: mesh.into(), r#type: r#type.to_string(), node_id, status, allocated: None, initial_properties: None, renamed_from: None, replacement_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, topology_storage_provider: None, writer: None }
+        Self { path: name.path.clone(), name: name.name.clone(), mesh: mesh.into(), r#type: r#type.to_string(), node_id, status, allocated: None, initial_properties: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, topology_storage_provider: None, writer: None }
     }
 
     /// Write `to` as the node's status, set by its mesh-primary at the transition states.md "Who sets

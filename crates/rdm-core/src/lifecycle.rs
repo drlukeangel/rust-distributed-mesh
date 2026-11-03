@@ -136,7 +136,7 @@ mod tests {
         let op = LifecycleOp { r#type: "node".into(), mesh: "mesh2".into(),
             build_id: "b1".into(),
             attempt: 2,
-            operation: crate::OperationId::location("node.delete", &crate::PathName::new("mesh2.node", "2").unwrap()),
+            operation: crate::OperationId::node("node.delete", &crate::fixture_node_id(&crate::PathName::new("mesh2.node", "2").unwrap())),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             path: "mesh2.node".into(), name: "2".into(),

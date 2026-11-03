@@ -272,7 +272,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
 
         // node.joined at the mesh-primary (its start workflow took `Started`): its own view ends the stop
         // and holds the birth Pending; v3, its next projection, lists the birth again.
-        let start = LifecycleOp { operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), ..stop.clone() };
+        let start = LifecycleOp { operation: rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), ..stop.clone() };
         assert!(p.digest_view.joined(&start), "the mesh-primary ends the stop at node.joined");
         assert_eq!(p.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "the primary holds the birth Pending");
         publication().await;
@@ -380,7 +380,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
 
         // node.joined at the mesh-primary before its next publication; the member is stopped through the publication,
         // so the projection listing the birth again reaches it only through its top-up.
-        let start = LifecycleOp { operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), ..stop.clone() };
+        let start = LifecycleOp { operation: rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), ..stop.clone() };
         assert!(p.digest_view.joined(&start), "the mesh-primary ends the stop at node.joined");
         m.stop().await;
         publication().await;

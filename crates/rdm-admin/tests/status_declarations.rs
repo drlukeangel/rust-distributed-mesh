@@ -1530,7 +1530,7 @@ async fn stopped_with_row(rig: &Rig, b: &Birth, tags: &[&str]) {
     if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == b.node.node_id) {
         (n.stopped, n.status) = (true, NodeStatus::Leaving);
     }
-    let row = rdm_admin::storage::NodeRow { replacement_from: None, r#type: b.node.r#type.clone(), mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+    let row = rdm_admin::storage::NodeRow { r#type: b.node.r#type.clone(), mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
     rig.nodes.write_record(&row).await.unwrap();
 }
 
@@ -1552,7 +1552,7 @@ async fn hold_left(rig: &Rig, b: &Birth) {
 async fn left_with_row(rig: &Rig, b: &Birth, tags: &[&str]) -> ServedNode {
     hold_left(rig, b).await;
     own_tags(b, tags).await;
-    let row = rdm_admin::storage::NodeRow { replacement_from: None, r#type: b.node.r#type.clone(), mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+    let row = rdm_admin::storage::NodeRow { r#type: b.node.r#type.clone(), mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
     rig.nodes.write_record(&row).await.unwrap();
     let node = serve_node(b).await;
     configs_door(rig, &node).await;
@@ -1645,7 +1645,7 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_and_it_has_left_i
         assert_eq!(on_mesh, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ConnectionsDeleting, held_connections: vec![] }, "a birth still on its mesh keeps its name");
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "nothing is claimed while the birth is on its mesh");
 
-        let left = rig.door.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, &rdm_core::OperationId::node("node.mesh.leave", &succ.node.node_id)).await;
+        let left = rig.door.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), &rdm_core::OperationId::node("node.mesh.leave", &succ.node.node_id)).await;
         assert!(matches!(&left, Ok(StatusReply::MeshLeft { .. })), "the mesh-primary carries the leave and the birth answers MeshLeft: {left:?}");
         assert_eq!(node.seen.lock().unwrap().last().cloned(), Some(leave_mesh(&succ)), "the leave is carried to the exact birth");
         let applied = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
@@ -1730,7 +1730,7 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         hold_left(&rig, &succ).await;
         let holder = NodeId::mint();
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
-        rig.nodes.write_record(&rdm_admin::storage::NodeRow { replacement_from: None, r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
+        rig.nodes.write_record(&rdm_admin::storage::NodeRow { r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
         let held = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(held, StatusReply::NameHeld { path: taken.path.clone(), name: taken.name.clone(), by: holder.clone() });
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
@@ -1762,7 +1762,7 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
         let (succ, node) = successor_connections_deleted(&rig).await;
         assert!(matches!(deleted_all(&rig, &succ).await, rdm_admin::status_rpc::CarryEnd::Deleted { .. }), "the successor's connections are deleted first");
         let leave = leave_mesh(&succ);
-        assert!(matches!(rig.door.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, &rdm_core::OperationId::node("node.mesh.leave", &succ.node.node_id)).await, Ok(StatusReply::MeshLeft { .. })), "then it leaves its mesh");
+        assert!(matches!(rig.door.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), &rdm_core::OperationId::node("node.mesh.leave", &succ.node.node_id)).await, Ok(StatusReply::MeshLeft { .. })), "then it leaves its mesh");
         let (carrier, _carrier_router) = carrier_admin(&b["admin2"], &rig.resolved).await;
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(carrier.clone());
@@ -1913,7 +1913,7 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
         configs_door(&rig, &node).await;
         assert!(matches!(deleted_all(&rig, &succ).await, rdm_admin::status_rpc::CarryEnd::Deleted { .. }));
         let leave = leave_mesh(&succ);
-        assert!(matches!(rig.door.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, &rdm_core::OperationId::node("node.mesh.leave", &succ.node.node_id)).await, Ok(StatusReply::MeshLeft { .. })));
+        assert!(matches!(rig.door.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), &rdm_core::OperationId::node("node.mesh.leave", &succ.node.node_id)).await, Ok(StatusReply::MeshLeft { .. })));
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
         let incomplete = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert!(matches!(&incomplete, StatusReply::NameNotApplied { node, answered, .. } if node == succ.node.node_id.as_str() && answered == "not-ready"), "{incomplete:?}");
@@ -2054,7 +2054,7 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
 
         hold_left(&rig, rpc2).await;
         own_tags(rpc2, &["red"]).await;
-        let row = rdm_admin::storage::NodeRow { replacement_from: None, r#type: rpc2.node.r#type.clone(), mesh: rpc2.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: rpc2.node.path.clone(), name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_admin::storage::NodeRow { r#type: rpc2.node.r#type.clone(), mesh: rpc2.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: rpc2.node.path.clone(), name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         rig.nodes.write_record(&row).await.unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2-old")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() });
@@ -2175,7 +2175,7 @@ const NODE_LEFT_EXPECTED: &str = "no command: node-left is never a call; a stopp
 #[test]
 fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
     let cap = capture();
-    let operation = rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap());
+    let operation = rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap()));
     let reported = format!("node-left {operation:?} (build 66h8qrqvaajk, attempt 1)");
     let (stop_open, reply, admin, rpc) = cap.run(async {
         let (rig, b) = rig().await;
@@ -2278,7 +2278,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
     assert_eq!(answer(builds.clone()).await.build_id, Some(held.to_string()), "fabric.get answers the current Build the admin's builds store returns");
     // A newer Build that failed is skipped: the older completed one is still the current Build.
     let newer = rdm_admin::build::BuildId::mint();
-    builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), submitted_change: None, submitted_at_ms: u64::MAX - 1 }).await.unwrap();
+    builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), submitted_change: None, source: None, submitted_at_ms: u64::MAX - 1 }).await.unwrap();
     builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: newer.clone(), attempt: 1, executor: admin.node.birth().unwrap() }).await.unwrap();
     assert_eq!(answer(builds.clone()).await.build_id, Some(newer.to_string()), "the newer Build in progress is the current Build");
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: newer, attempt: 1, outcome: AttemptOutcome::Failed { reason: "node.create: PrepareStorage".into(), code: rdm_core::outcome::Code::FailedPrecondition } }).await.unwrap();
@@ -2314,112 +2314,6 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
             assert_eq!(got, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "{case}: {} answers the receiver's own fact", req.op());
         }
     }
-}
-
-/// CONTRACT (docs/architecture/lifecycles/node-replace.md:19 Properties: "The successor's own property
-/// record starts from its Build entry's config and tags; its lifecycle claim retains the exact immutable
-/// launch snapshot ... Tags remain in the subject's own property record; a current-pair lookup selects
-/// the successor's ID, not the predecessor's properties ... It never writes the entry over a later node
-/// or caller update ... Nothing is copied from the predecessor"; Rollback step 3: node.name.update to
-/// `{ path, name }`, "its own tags remain at its node ID"):
-/// 1. The predecessor `mesh1.node.2`, live and off its mesh, its own property record holding `{zone: a}`
-///    and `{rabbit, red}`, is renamed `mesh1.node.2-old` under the replace step's intent (step 2). The successor's claim at `mesh1.node.2`,
-///    the name it released (step 3, `RowFor::Successor`), names the predecessor's exact birth
-///    (`Allocation.predecessor`) and retains its Build entry's `{zone: c}` and `{rabbit, red}` as its
-///    launch snapshot, never the predecessor's `{zone: a}` (Q305); the retained row at `mesh1.node.2-old`
-///    is marked `inherited_by` the successor and the predecessor's own record keeps its properties.
-/// 2. The successor's later config and tags (`{zone: b, tier: gold}`, `{rabbit, blue}`), in its own
-///    property record, survive a repeated claim (the create's resume), which writes nothing and finds
-///    the retained row marked.
-/// 3. Rollback: the successor deleted (its `Deleted` row at `mesh1.node.2`), the predecessor renamed back
-///    to `mesh1.node.2` under the rollback step's intent (an ordinary caller rename back is refused) stands there with no `inherited_by`, `mesh1.node.2-old` is released, and its own
-///    record still holds `{zone: a}` and `{rabbit, red}`.
-#[test]
-fn a_replace_successor_takes_its_entrys_properties_keeps_its_later_updates_on_a_repeated_create_and_the_rollback_rename_restores_the_predecessor() {
-    use rdm_admin::node_rows::{RowFor, NodeRows};
-    use rdm_core::status::TagScope;
-    let cap = capture();
-    cap.run(async {
-        let (rig, b) = rig().await;
-        let pred = &b["rpc2"];
-        hold_left(&rig, pred).await;
-        let pred_incarnation = pred.node.incarnation_id.clone().unwrap();
-        let mut row = rdm_admin::storage::NodeRow::new(pred.node.location(), pred.node.mesh.clone(), &pred.node.r#type, pred.node.node_id.clone(), NodeStatus::ConnectionsDeleting);
-        row.birth_mut(&pred_incarnation, &pred.node.location());
-        rig.nodes.write_record(&row).await.unwrap();
-        let mut succ = birth(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", "mesh1", false, false);
-        succ.node.status = NodeStatus::Pending;
-        let (pred_node, succ_node) = (serve_node(pred).await, serve_node(&succ).await);
-        configs_door_for(&rig, &[&pred_node, &succ_node]).await;
-        let pred_cfg: BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
-        assert_eq!(
-            updated(&reply(&call(&rig, &b["admin2"], &StatusRequest::UpdateNodeConfig { node_id: pred.node.node_id.clone(), incarnation: pred_incarnation.clone(), config: pred_cfg.clone() }).await)),
-            updated_of(pred, &pred_cfg)
-        );
-        assert_eq!(
-            reply(&call(&rig, &b["admin2"], &create_tags(pred, &["rabbit", "red"])).await),
-            StatusReply::TagsCreated { node_id: pred.node.node_id.clone(), incarnation: pred_incarnation.clone(), already_carried: Default::default() }
-        );
-        assert_eq!(props(&rig, &pred.node.node_id).await, (pred_cfg.clone(), labels(&["rabbit", "red"])), "the predecessor's own record holds its properties");
-        // Step 2: the predecessor, off its mesh, takes `-old` under the replace step's intent, which
-        // retains its original pair as the successor's provenance.
-        let (base_name, old_name): (PathName, PathName) = (rdm_core::PathName::new("mesh1.node", "2").unwrap(), rdm_core::PathName::new("mesh1.node", "2-old").unwrap());
-        let rows = NodeRows::new(rig.admin.node.location(), rig.admin.node.node_id.clone(), rig.topology.clone(), rig.nodes.clone()).with_written(rig.door.caches.nodes.clone());
-        let moved = rows.rename_row_with_intent(&pred.node, &old_name, &rdm_admin::accepted::RenameIntent::Replacement { original_path: base_name.path.clone(), original_name: base_name.name.clone()}).await.expect("the replace step's rename");
-        assert_eq!((moved.location(), moved.replacement_from), (old_name.clone(), Some(base_name.clone())));
-
-        // Step 3: the successor's claim at the name the predecessor released, naming its exact birth.
-        rig.topology.write().await.nodes.push(succ.node.clone());
-        let (entry_cfg, entry_tags): (BTreeMap<String, String>, _) = ([("zone".to_string(), "c".to_string())].into(), labels(&["rabbit", "red"]));
-        let create_operation = rdm_core::OperationId::location("node.create", &base_name);
-        let allocation = rdm_admin::storage::Allocation {
-            predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.node.node_id.clone(), incarnation_id: pred_incarnation.clone() }),
-            build_id: Some(rdm_core::BuildId::mint()),
-            operation: create_operation.clone(),
-            incarnation: succ.node.incarnation_id.clone().unwrap(),
-            deployment_id: rdm_admin::model::DeploymentId::mint(),
-        };
-        let claim = || rows.create_row_with_spec(&base_name, &succ.node.mesh, &succ.node.r#type, &succ.node.node_id, &create_operation, Some(&allocation), None, &entry_tags, &entry_cfg, None, RowFor::Successor);
-        let claimed = claim().await;
-        let Ok(rdm_admin::node_rows::RowCreated::Written { row: succ_row, seeded_from }) = claimed else { panic!("the successor claims the released name: {claimed:?}") };
-        assert_eq!((succ_row.node_id.clone(), seeded_from), (succ.node.node_id.clone(), Some(pred.node.node_id.clone())), "the claim's admitted provenance names the predecessor");
-        let snapshot = succ_row.initial_properties.clone().expect("the claim retains the launch snapshot");
-        assert_eq!((&snapshot.config, &snapshot.tags), (&entry_cfg, &labels(&["rabbit", "red"])), "the successor's snapshot is its entry's, never the predecessor's {{zone: a}}");
-        assert_eq!(rig.nodes.record_at(&base_name).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()), "a current-pair lookup selects the successor's ID");
-        let retained = rig.nodes.record_at(&old_name).await.unwrap().expect("retained predecessor row at mesh1.node.2-old");
-        assert_eq!((retained.node_id.clone(), retained.inherited_by.clone()), (pred.node.node_id.clone(), Some(succ.node.node_id.clone())));
-        assert_eq!(props(&rig, &pred.node.node_id).await, (pred_cfg.clone(), labels(&["rabbit", "red"])), "the predecessor's tags remain in its own record");
-
-        // Later updates on the successor, in its own record, then a repeated claim (the create's resume).
-        let succ_cfg: BTreeMap<String, String> = [("zone".to_string(), "b".to_string()), ("tier".to_string(), "gold".to_string())].into();
-        assert_eq!(
-            updated(&reply(&call(&rig, &b["admin2"], &StatusRequest::UpdateNodeConfig { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), config: succ_cfg.clone() }).await)),
-            updated_of(&succ, &succ_cfg)
-        );
-        assert_eq!(
-            reply(&call(&rig, &b["admin2"], &create_tags(&succ, &["rabbit", "blue"])).await),
-            StatusReply::TagsCreated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), already_carried: Default::default() }
-        );
-        assert_eq!(
-            reply(&call(&rig, &b["admin2"], &delete_tags(&succ, TagScope::Labels(labels(&["red"])))).await),
-            StatusReply::TagsDeleted { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), not_carried: labels(&["red"]) }
-        );
-        assert!(matches!(claim().await, Ok(rdm_admin::node_rows::RowCreated::HeldByNode(ref held)) if held.initial_properties.as_ref() == Some(&snapshot)), "a repeated claim finds the successor's own claim, its snapshot unchanged");
-        assert_eq!(props(&rig, &succ.node.node_id).await, (succ_cfg, labels(&["rabbit", "blue"])), "a repeated claim keeps the successor's later updates");
-
-        // Rollback: the successor deleted, the predecessor renamed back to `mesh1.node.2`.
-        rows.deleted(&succ.node, &rdm_core::OperationId::node("node.delete", &succ.node.node_id)).await.expect("the successor's Deleted row at mesh1.node.2");
-        let mut retained_node = pred.node.clone();
-        { let at = old_name.clone(); retained_node.path = at.path; retained_node.name = at.name; }
-        rows.rename_row_with_intent(&retained_node, &base_name, &rdm_admin::accepted::RenameIntent::Rollback { original_path: base_name.path.clone(), original_name: base_name.name.clone()}).await.expect("the rollback step's rename");
-        let restored = rig.nodes.record_at(&base_name).await.unwrap().expect("predecessor row restored at mesh1.node.2");
-        assert_eq!((restored.node_id.clone(), restored.inherited_by), (pred.node.node_id.clone(), None), "rollback restores the predecessor row at its original name with inherited_by cleared");
-        assert_eq!(rig.nodes.record_at(&old_name).await.unwrap(), None, "mesh1.node.2-old is released");
-        assert_eq!(props(&rig, &pred.node.node_id).await, (pred_cfg, labels(&["rabbit", "red"])), "the predecessor's own record holds its properties through the rollback");
-    });
-    let marks = cap.spans("rdm.node_admin.node.update.via-inherited-row");
-    assert_eq!(marks.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["inherited".to_string(), "already-inherited".to_string()], "{marks:?}");
-    eprintln!("trace {}: rdm.node_admin.node.update.via-inherited-row subject=mesh1.node.2-old outcome=inherited", marks[0].0);
 }
 
 

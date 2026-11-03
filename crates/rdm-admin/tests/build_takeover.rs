@@ -10,7 +10,8 @@
 
 use iroh::endpoint::presets;
 use iroh::{Endpoint, SecretKey};
-use rdm_admin::accepted::{AcceptedStore, FabricTopology, TopologyChange};
+use rdm_admin::accepted::{AcceptedStore, FabricTopology};
+use rdm_core::build::BuildChange;
 use rdm_admin::build::{BuildId, BuildOperation, MeshDesired};
 use rdm_admin::build_state::{BuildState, BuildStateAdapter};
 use rdm_admin::build_drive::{Drive, DriveEnv, DriveEnd};
@@ -241,7 +242,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // The settled Build A is seeded into the fabric's builds store, which its control plane moves.
     let seed = rdm_admin::build::BuildId::mint();
     a.builds
-        .publish_accepted(&rdm_admin::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&*topology.read().await), submitted_change: None, submitted_at_ms: 0 })
+        .publish_accepted(&rdm_admin::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&*topology.read().await), submitted_change: None, source: None, submitted_at_ms: 0 })
         .await
         .unwrap();
     a.builds.claim_attempt(&rdm_admin::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: seed.clone(), attempt: 1, executor: a_birth.clone() }).await.unwrap();
@@ -318,17 +319,17 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     assert_eq!(
         *a_runner.ran.lock().unwrap(),
         vec![
-            (1, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "2".into(), over: None, executable: Some(crate::test_executable("node")), entry: None }),
-            (1, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "3".into(), over: None, executable: Some(crate::test_executable("node")), entry: None }),
+            (1, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "2".into(), node_id: rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap()), over: None, executable: Some(crate::test_executable("node")), entry: None }),
+            (1, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "3".into(), node_id: rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap()), over: None, executable: Some(crate::test_executable("node")), entry: None }),
         ]
     );
     assert_eq!(
         *b_runner.ran.lock().unwrap(),
         vec![
             // A's admin is lost too: its path is part of what is left.
-            (2, BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), over: None, executable: None, entry: None }),
+            (2, BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()), over: None, executable: None, entry: None }),
             // The successor reads the Build from the store, where each entry keeps its executable (Q186).
-            (2, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "3".into(), over: None, executable: Some(crate::test_executable("node")), entry: None }),
+            (2, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "3".into(), node_id: rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap()), over: None, executable: Some(crate::test_executable("node")), entry: None }),
         ],
         "mesh1.node.2 is never created twice"
     );
@@ -352,7 +353,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // The span names the executor the takeover follows: the admin that held attempt 1, not the
     // claim of attempt 2 the executor absorbed before it runs.
     assert_eq!(takeover.get("previous_executor"), Some(&format!("{:?}", Some(&a_birth))), "the takeover names the executor it follows: {takeover:?}");
-    assert_eq!(takeover.get("operations"), Some(&format!("{:?}", [rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node-admin", "1").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap())])));
+    assert_eq!(takeover.get("operations"), Some(&format!("{:?}", [rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node-admin", "1").unwrap())), rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap()))])));
     assert_eq!(takeover.get("outcome").map(String::as_str), Some("converged"));
     let inspected = all
         .values()

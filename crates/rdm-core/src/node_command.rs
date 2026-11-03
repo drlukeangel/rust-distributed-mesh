@@ -635,7 +635,7 @@ mod tests {
         for f in [NodeCommandReply::Leaving { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, NodeCommandReply::StopMeshLeft { left: vec![WhichMesh::Own] }, left, NodeCommandReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] }] {
             assert_eq!(NodeCommand::decode_reply(&NodeCommand::encode_reply(&f).unwrap()).unwrap(), f, "{}", f.name());
         }
-        let req = NodeCommandRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), operation: crate::OperationId::location("node.mesh.leave", &crate::PathName::new("mesh1.node", "1").unwrap()) };
+        let req = NodeCommandRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), operation: crate::OperationId::node("node.mesh.leave", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) };
         assert_eq!(NodeCommand::decode_request(&NodeCommand::encode_request(&req).unwrap()).unwrap(), req);
     }
 

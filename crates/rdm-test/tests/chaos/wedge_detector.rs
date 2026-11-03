@@ -520,7 +520,7 @@ impl Run {
 
     /// `node.delete` of `node`, accepted: the stream of the Build that runs it.
     async fn delete(&self, node: &PathName) -> WorkflowStream {
-        self.estate.nodes_obj().await.delete(node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {node:?}: {e}"))
+        self.estate.delete_node(node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {node:?}: {e}"))
     }
 
     async fn names(&self) -> Vec<PathName> {
@@ -619,8 +619,8 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         }
         Trigger::SpawnRequest => {
             let nodes = Nodes::new(run.estate.carrier_at(&door.location()).await);
-            let (based_on, request) = run.estate.create_node_request("mesh1", "node").await;
-            let task = tokio::spawn(async move { nodes.create_named(based_on, request).await });
+            let request = run.estate.create_node_request("mesh1", "node").await;
+            let task = tokio::spawn(async move { nodes.create(vec![request]).await });
             (String::new(), Triggered::Request(task))
         }
     };

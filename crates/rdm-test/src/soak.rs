@@ -670,7 +670,7 @@ async fn born_at(estate: &Estate, read: BuildRead, build_id: &str, path: &PathNa
             match l["state"].as_str() {
                 Some("failed") => return Err(format!("attempt {} of {mesh}'s lane of Build {build_id} failed: {}", num(&l["attempt"]), l["last_failure"])),
                 Some("complete") => {
-                    if let Some(birth) = allocated_at(&l["steps"], path, lane_after) {
+                    if let Some(birth) = allocated_at(&l["steps"], &b["topology"]["created"], path, lane_after) {
                         return Ok(Some(birth));
                     }
                 }
@@ -688,16 +688,19 @@ async fn born_at(estate: &Estate, read: BuildRead, build_id: &str, path: &PathNa
         Some("complete") => {}
         _ => return Ok(None),
     }
-    Ok(allocated_at(&b["steps"], path, after_attempt))
+    Ok(allocated_at(&b["steps"], &b["topology"]["created"], path, after_attempt))
 }
 
-/// The birth the last complete `AllocateIdentity` for `path` past attempt `after` names in `steps`.
-fn allocated_at(steps: &Value, path: &PathName, after: u64) -> Option<(String, String)> {
+/// The birth the last complete `AllocateIdentity` for `path` past attempt `after` names in `steps`: the
+/// create keyed by the node.id the Build record's `created` names at `path` (D58).
+fn allocated_at(steps: &Value, created: &Value, path: &PathName, after: u64) -> Option<(String, String)> {
+    let id: rdm_core::NodeId = created.as_array()?.iter().find(|e| e[0]["path"] == path.path.as_str() && e[0]["name"] == path.name.as_str()).and_then(|e| serde_json::from_value(e[1].clone()).ok())?;
+    let key = rdm_core::OperationId::node("node.create", &id);
     steps
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|st| st["step"] == "AllocateIdentity" && st["outcome"] == "complete" && num(&st["attempt"]) > after && serde_json::from_value::<rdm_core::OperationId>(st["operation"].clone()).ok().is_some_and(|o| o.action == "node.create" && o.subject == Some(rdm_core::OperationSubject::Location(path.clone()))))
+        .filter(|st| st["step"] == "AllocateIdentity" && st["outcome"] == "complete" && num(&st["attempt"]) > after && serde_json::from_value::<rdm_core::OperationId>(st["operation"].clone()).ok().is_some_and(|o| o == key))
         .last()
         .map(|st| (s(&st["output"]["node_id"]), s(&st["output"]["incarnation"])))
 }
@@ -825,12 +828,6 @@ fn fabric_primaries(nodes: &[Value]) -> String {
 fn acted_on(before: &Value, after: &Value, location: &PathName, birth: &(String, String)) -> BTreeMap<(Option<String>, u64), Vec<String>> {
     const ACTS: [&str; 4] = ["node.create", "node.delete", "node.restart", "node.stop"];
     let pinned = |pin: &Value| pin["node_id"] == birth.0 && pin["incarnation"] == birth.1;
-    let recipe_targets = |action: &Value| {
-        let steps: Vec<rdm_core::build::Step> = serde_json::from_value(action["steps"].clone()).expect("admitted steps");
-        let pins: Vec<(PathName, Value)> = serde_json::from_value(action["pinned"].clone()).expect("admitted structured pins");
-        let targets = rdm_core::build::step_targets(&steps, pins.into_iter().map(|(at, pin)| (at, Some(pin))).collect(), |_, _, _| None).expect("valid admitted step targets");
-        (steps, targets)
-    };
     let mut out: BTreeMap<(Option<String>, u64), Vec<String>> = BTreeMap::new();
     let mut scan = |lane: Option<&str>, projection: &Value, from: u64| {
         for st in projection["steps"].as_array().into_iter().flatten().filter(|st| num(&st["attempt"]) > from) {
@@ -846,42 +843,10 @@ fn acted_on(before: &Value, after: &Value, location: &PathName, birth: &(String,
                     if action.is_null() {
                         let pin = after["topology"]["pinned"].as_array().into_iter().flatten().map(|entry| &entry[1]).find(|pin| pin["node_id"] == birth.0).expect("node lifecycle receipt needs an immutable topology pin when no attempt action exists");
                         pinned(pin)
-                    } else if action["action"] == "recipe" {
-                        let (_, targets) = recipe_targets(action);
-                        let position = op.recipe_step.and_then(|s| s.checked_sub(1)).expect("step operation has its admitted position");
-                        targets.get(position as usize).and_then(Option::as_ref).is_some_and(pinned)
                     } else {
                         assert!(action["node_id"].is_string() && action["from_incarnation"].is_string(), "node lifecycle receipt needs an explicit admitted birth");
                         action["node_id"] == birth.0 && action["from_incarnation"] == birth.1
                     }
-                }
-                Some(rdm_core::OperationSubject::Location(at)) if op.action == "node.create" && at == location => {
-                    if st["step"] != "AllocateIdentity" || st["outcome"] != "complete" { continue; }
-                    let allocated: rdm_core::framing::Birth = rdm_core::framing::Birth {
-                        node_id: serde_json::from_value(st["output"]["node_id"].clone()).expect("allocation node ID"),
-                        incarnation: serde_json::from_value(st["output"]["incarnation"].clone()).expect("allocation incarnation"),
-                    };
-                    let _: rdm_core::DeploymentId = serde_json::from_value(st["output"]["deployment_id"].clone()).expect("allocation deployment ID");
-                    let predecessor = if action["action"] == "recover" {
-                        assert_eq!(action["path"], serde_json::json!(at), "recovery create differs from its admitted location");
-                        serde_json::json!({"node_id": action["node_id"], "incarnation": action["from_incarnation"]})
-                    } else if action["action"] == "recipe" {
-                        let (steps, targets) = recipe_targets(action);
-                        let position = op.recipe_step.expect("create has its original admitted step position");
-                        assert!(position > 0 && matches!(steps.get(position as usize - 1), Some(step @ rdm_core::build::Step::Create { .. }) if step.location() == *at), "create differs from its admitted step");
-                        let intents: BTreeMap<u32, Value> = serde_json::from_value(action["rename_intents"].clone()).expect("admitted rename intents");
-                        intents.range(..position).rev().find_map(|(rename, intent)| {
-                            if intent["Replacement"]["original"] != serde_json::json!(at) { return None; }
-                            let index = rename.checked_sub(1)? as usize;
-                            assert!(matches!(steps.get(index), Some(rdm_core::build::Step::Update { .. })), "replacement intent belongs to a rename step");
-                            targets.get(index).and_then(Option::as_ref).cloned()
-                        }).expect("creation at held location requires its exact admitted predecessor rename")
-                    } else {
-                        panic!("creation at the held location lacks immutable predecessor admission: {st}; action: {action}");
-                    };
-                    if !pinned(&predecessor) { continue; }
-                    assert_ne!(allocated.node_id.as_str(), birth.0, "a replacement allocates a distinct node ID");
-                    true
                 }
                 _ => false,
             };
@@ -1391,7 +1356,7 @@ impl Driver {
             }
             Action::Shrink { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node:?} is not in the view")))?;
-                let delete = after_build_in_progress(|| async { self.estate.nodes_obj().await.delete(&node.clone()).await }).await.map_err(|end| refused(&format!("node.delete {node:?}"), end))?;
+                let delete = after_build_in_progress(|| async { self.estate.delete_node(&node.clone()).await }).await.map_err(|end| refused(&format!("node.delete {node:?}"), end))?;
                 entry["accepted"] = accepted_json(delete.accepted());
                 entry["build"] = self.await_build(delete).await?;
                 gone = Some(node.clone());
@@ -1693,8 +1658,8 @@ impl Driver {
         let (path, mesh) = (location(n), s(&n["mesh"]));
         let r#type: String = serde_json::from_value(n["type"].clone()).unwrap_or_else(|e| panic!("{path:?}: the view's type {} is no node type: {e}", n["type"]));
         let nodes = self.estate.nodes_obj().await;
-        let target = &path.clone();
-        let delete = after_build_in_progress(|| nodes.delete(&target)).await.map_err(|end| refused(&format!("node.delete {path:?}"), end))?;
+        let target = rdm_core::NodeId::parse(&s(&n["node_id"])).unwrap_or_else(|e| panic!("{path:?}: the view's node_id {} is no node.id: {e}", n["node_id"]));
+        let delete = after_build_in_progress(|| nodes.delete(vec![target.clone()])).await.map_err(|end| refused(&format!("node.delete {path:?}"), end))?;
         entry["accepted"] = accepted_json(delete.accepted());
         entry["build"] = self.await_build(delete).await?;
         // A deleted fabric-primary or entry admin takes the entry with it: the create goes to the admin
@@ -2439,7 +2404,7 @@ mod tests {
             "build_id": "a00000000000",
             "attempt": attempt,
             "steps": [
-                { "attempt": 1, "operation": rdm_core::OperationId::location("node.create", &location), "step": "AllocateIdentity", "outcome": "complete",
+                { "attempt": 1, "operation": rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&location)), "step": "AllocateIdentity", "outcome": "complete",
                   "output": { "node_id": "100000000000", "incarnation": "200000000000", "deployment_id": "300000000000" } },
             ],
             "lanes": lanes,
@@ -2469,7 +2434,7 @@ mod tests {
             "steps": [
                 { "attempt": 2, "operation": lifecycle_operation("node.delete", "400000000000", &birth.1), "step": "TerminateRuntime", "outcome": "complete" },
                 { "attempt": 3, "operation": lifecycle_operation("node.delete", &birth.0, &birth.1), "step": "TerminateRuntime", "outcome": "complete" },
-                { "attempt": 3, "operation": rdm_core::OperationId::location("node.create", &location), "step": "AllocateIdentity", "outcome": "complete",
+                { "attempt": 3, "operation": rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&location)), "step": "AllocateIdentity", "outcome": "complete",
                   "output": { "node_id": "500000000000", "incarnation": "600000000000", "deployment_id": "700000000000" } },
             ]
         } }));

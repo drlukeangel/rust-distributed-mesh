@@ -14,8 +14,9 @@
 //! know to produce an output, or an output that is not the type its step produces, is refused by
 //! name (`WireRefusal`) — never sent as something else, never dropped.
 
-use crate::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyChange};
-use crate::build::{BuildId, FabricDesired, MeshDesired};
+use crate::accepted::{AttemptAction, FabricTopology, MeshTopology};
+use rdm_core::build::BuildChange;
+use crate::build::BuildId;
 use crate::build_state::{AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, AttemptOpened, StepOutcome};
 use crate::deployment::pipeline::Bound;
 use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Identity, DeleteStep, StorageDisposition, TerminalReceipt};
@@ -78,8 +79,10 @@ pub(crate) struct WireSection {
 pub(crate) struct WireAccepted {
     build_id: BuildId,
     topology: WireTopology,
-    submitted_change: Option<WireChange>,
+    submitted_change: Option<BuildChange>,
     submitted_at_ms: u64,
+    /// The record's writer (appended).
+    source: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -157,38 +160,6 @@ enum WireStorage {
 }
 
 #[derive(Serialize, Deserialize)]
-struct WireMeshDesired {
-    name: String,
-    counts: std::collections::BTreeMap<String, u32>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct WireFabricDesired {
-    fabric: String,
-    meshes: Vec<WireMeshDesired>,
-}
-
-#[derive(Serialize, Deserialize)]
-enum WireChange {
-    ReconcileFabric { desired: WireFabricDesired },
-    ReconcileMesh { desired: WireMeshDesired },
-    AddNode { mesh: String, r#type: String },
-    RemoveNode { path: String, name: String },
-    CreateMesh { desired: WireMeshDesired },
-    RemoveMesh { mesh: String },
-    DeleteFabric,
-    /// Reserved position: the removed per-type executable-set change (proposal
-    /// executable-bindings-at-create.md §1). Read as the stored history it is
-    /// ([`TopologyChange::Reserved`]); kept so `Reconcile` keeps its position.
-    Reserved7,
-    /// The complete topology (proposal executable-bindings-at-create.md rule 1), appended last. Each
-    /// node's create spec travels as the topology's do, by its path and name with its storage,
-    /// no executable, no tags and no config (rule 7: nothing about executables rides gossip); the stored
-    /// accepted Build keeps them.
-    Reconcile { based_on: BuildId, nodes: Vec<(PathName, WireSpec)> },
-}
-
-#[derive(Serialize, Deserialize)]
 enum WireAction {
     /// Reserved position: the removed node.restart's action (Q183). Never sent; a fact carrying it is
     /// refused by name ([`fact_from_wire`]). Kept so every later action keeps its position.
@@ -200,64 +171,12 @@ enum WireAction {
     Reserved3 { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
     Reserved4 { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
     Delete { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
-    Steps { steps: Vec<rdm_core::build::Step>, pinned: Vec<(PathName, crate::build::PinnedBirth)>, rename_intents: std::collections::BTreeMap<u32, crate::accepted::RenameIntent> },
 }
 
-impl From<&MeshDesired> for WireMeshDesired {
-    fn from(m: &MeshDesired) -> Self {
-        Self { name: m.name.clone(), counts: m.counts.clone() }
-    }
-}
-impl From<WireMeshDesired> for MeshDesired {
-    fn from(m: WireMeshDesired) -> Self {
-        Self { name: m.name, counts: m.counts }
-    }
-}
-impl From<&FabricDesired> for WireFabricDesired {
-    fn from(f: &FabricDesired) -> Self {
-        Self { fabric: f.fabric.clone(), meshes: f.meshes.iter().map(Into::into).collect() }
-    }
-}
-impl From<WireFabricDesired> for FabricDesired {
-    fn from(f: WireFabricDesired) -> Self {
-        Self { fabric: f.fabric, meshes: f.meshes.into_iter().map(Into::into).collect() }
-    }
-}
-impl From<&TopologyChange> for WireChange {
-    fn from(c: &TopologyChange) -> Self {
-        match c {
-            TopologyChange::ReconcileFabric { desired } => Self::ReconcileFabric { desired: desired.into() },
-            TopologyChange::ReconcileMesh { desired } => Self::ReconcileMesh { desired: desired.into() },
-            TopologyChange::AddNode { mesh, r#type } => Self::AddNode { mesh: mesh.clone(), r#type: r#type.clone() },
-            TopologyChange::RemoveNode { path, name } => Self::RemoveNode { path: path.clone(), name: name.clone() },
-            TopologyChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
-            TopologyChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh: mesh.clone() },
-            TopologyChange::DeleteFabric => Self::DeleteFabric,
-            TopologyChange::Reserved {} => Self::Reserved7,
-            TopologyChange::Reconcile { based_on, nodes, .. } => Self::Reconcile { based_on: based_on.clone(), nodes: nodes.iter().map(|s| (s.location(), s.into())).collect() },
-        }
-    }
-}
-impl From<WireChange> for TopologyChange {
-    fn from(c: WireChange) -> Self {
-        match c {
-            WireChange::ReconcileFabric { desired } => Self::ReconcileFabric { desired: desired.into() },
-            WireChange::ReconcileMesh { desired } => Self::ReconcileMesh { desired: desired.into() },
-            WireChange::AddNode { mesh, r#type } => Self::AddNode { mesh, r#type },
-            WireChange::RemoveNode { path, name } => Self::RemoveNode { path, name },
-            WireChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
-            WireChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh },
-            WireChange::DeleteFabric => Self::DeleteFabric,
-            WireChange::Reserved7 => Self::Reserved {},
-            WireChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on, nodes: nodes.into_iter().map(|(p, w)| w.at(p)).collect() },
-        }
-    }
-}
 impl From<&AttemptAction> for WireAction {
     fn from(a: &AttemptAction) -> Self {
         match a {
             AttemptAction::Delete { r#type, mesh, path, node_id, from_incarnation } => Self::Delete { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Steps { steps, pinned, rename_intents } => Self::Steps { steps: steps.clone(), pinned: pinned.clone(), rename_intents: rename_intents.clone() },
         }
     }
 }
@@ -272,7 +191,6 @@ impl TryFrom<WireAction> for AttemptAction {
                 return Err(format!("the attempt's action on {path:?} is a reserved position: a node command or a repair is never a Build's attempt (Q342)"))
             }
             WireAction::Delete { r#type, mesh, path, node_id, from_incarnation } => Self::Delete { r#type, mesh, path, node_id, from_incarnation },
-            WireAction::Steps { steps, pinned, rename_intents } => Self::Steps { steps, pinned, rename_intents },
         })
     }
 }
@@ -334,7 +252,7 @@ impl From<WireTopology> for FabricTopology {
             .collect();
         // The Build topic carries no topology_storage_provider: the journal's record of the accepted
         // Build is the one that does.
-        Self { fabric: t.fabric, meshes, topology_storage_provider: None, pinned: t.pinned, section_of: None }
+        Self { fabric: t.fabric, meshes, topology_storage_provider: None, pinned: t.pinned, created: Vec::new(), section_of: None }
     }
 }
 
@@ -666,7 +584,7 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
             fabric: a.topology.fabric.clone(),
             topology_storage_provider: a.topology.topology_storage_provider.clone(),
             submitted_at_ms: a.submitted_at_ms,
-            deletes_fabric: matches!(a.submitted_change, Some(TopologyChange::DeleteFabric)),
+            deletes_fabric: matches!(a.submitted_change, Some(BuildChange::DeleteFabric)),
             named: a.topology.section_of.clone().unwrap_or_default(),
             meshes: a.topology.meshes.values().map(WireMesh::from).collect(),
             pinned: a.topology.pinned.clone(),
@@ -674,8 +592,9 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
         BuildFact::Accepted(a) => WireFact::Accepted(WireAccepted {
             build_id: a.build_id.clone(),
             topology: (&a.topology).into(),
-            submitted_change: a.submitted_change.as_ref().map(Into::into),
+            submitted_change: a.submitted_change.clone(),
             submitted_at_ms: a.submitted_at_ms,
+            source: a.source.clone(),
         }),
         BuildFact::Opened(o) => WireFact::Opened(WireOpened {
             build_id: o.build_id.clone(),
@@ -715,8 +634,8 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
         WireFact::Accepted(a) => BuildFact::Accepted(BuildAccepted {
             build_id: a.build_id,
             topology: a.topology.into(),
-            submitted_change: a.submitted_change.map(Into::into),
-            submitted_at_ms: a.submitted_at_ms,
+            submitted_change: a.submitted_change,
+            source: a.source, submitted_at_ms: a.submitted_at_ms,
         }),
         WireFact::Opened(o) => BuildFact::Opened(AttemptOpened {
             action: {
@@ -752,10 +671,10 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
                 meshes: c.meshes.into_iter().map(|m| (m.name.clone(), m.into())).collect(),
                 topology_storage_provider: c.topology_storage_provider,
                 pinned: c.pinned,
-                section_of: Some(c.named),
+                created: Vec::new(), section_of: Some(c.named),
             },
-            submitted_change: c.deletes_fabric.then_some(TopologyChange::DeleteFabric),
-            submitted_at_ms: c.submitted_at_ms,
+            submitted_change: c.deletes_fabric.then_some(BuildChange::DeleteFabric),
+            source: None, submitted_at_ms: c.submitted_at_ms,
         }),
     })
 }
@@ -919,7 +838,7 @@ mod tests {
         let op = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(),
             build_id: "b1".into(),
             attempt: 3,
-            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
+            operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
             node_id: crate::model::NodeId::mint(),
             incarnation: crate::model::IncarnationId::mint(),
             path: "mesh1.node".into(), name: "1".into(),

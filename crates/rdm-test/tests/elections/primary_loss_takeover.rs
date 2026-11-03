@@ -173,7 +173,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
             (left.len() == 1 && left[0].status == NodeStatus::Ready).then(|| left[0].location())
         })
         .await;
-    let mut delete = estate.nodes_obj().await.delete(&last).await.unwrap_or_else(|e| panic!("the node.delete of the lost mesh's last admin {last:?} was refused: {e}"));
+    let mut delete = estate.delete_node(&last).await.unwrap_or_else(|e| panic!("the node.delete of the lost mesh's last admin {last:?} was refused: {e}"));
     Estate::complete(&mut delete).await;
     // The former primary's runtimes: terminal, observed by the host.
     for (name, pid) in &lost_pids {

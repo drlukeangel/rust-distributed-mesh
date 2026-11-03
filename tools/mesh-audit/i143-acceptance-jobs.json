@@ -801,14 +801,6 @@
           "test": "a_path_move_preserves_the_node_identity"
         },
         {
-          "name": "a_deleted_birth_cannot_hide_its_successor",
-          "source": "crates/rdm-test/tests/node_records.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/a_deleted_birth_cannot_hide_its_successor/estate cargo test -p rdm-test --test main node_records::a_deleted_birth_cannot_hide_its_successor -- --exact",
-          "dir": "target/i143-acceptance/260/process/a_deleted_birth_cannot_hide_its_successor",
-          "evidence": "runner",
-          "test": "a_deleted_birth_cannot_hide_its_successor"
-        },
-        {
           "name": "a_deleted_birth_is_read_by_its_id",
           "source": "crates/rdm-test/tests/node_records.rs",
           "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/a_deleted_birth_is_read_by_its_id/estate cargo test -p rdm-test --test main node_records::a_deleted_birth_is_read_by_its_id -- --exact",

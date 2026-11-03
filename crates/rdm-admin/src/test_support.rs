@@ -85,3 +85,24 @@ pub(crate) fn op_waits_on_the_blocking_pool<S: Send + 'static, T: Send + 'static
 }
 
 
+
+/// A Create of `meshes` and of each `(path, name, mesh, type)` in `nodes`, each node on a fixture
+/// binding of its type: a compile or plan cell's request (build.md §1), never hashed.
+pub(crate) fn create_of(meshes: &[&str], nodes: &[(&str, &str, &str, &str)]) -> rdm_core::build::BuildChange {
+    rdm_core::build::BuildChange::Create {
+        meshes: meshes.iter().map(|m| rdm_core::build::Meshes { name: (*m).to_string() }).collect(),
+        nodes: nodes
+            .iter()
+            .map(|(path, name, mesh, r#type)| rdm_core::build::Nodes {
+                path: (*path).into(),
+                name: (*name).into(),
+                mesh: (*mesh).into(),
+                r#type: (*r#type).into(),
+                storage_persistence: None,
+                executable: Some(rdm_core::binding::Binding { launch_id: (*r#type).into(), executable: format!("/b/{type}", type = r#type).into(), sha256: (*r#type).into(), image: None }),
+                tags: Default::default(),
+                config: Default::default(),
+            })
+            .collect(),
+    }
+}

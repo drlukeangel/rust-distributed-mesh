@@ -309,7 +309,7 @@ async fn accepted_build(builds: &MemoryBuildStateAdapter) -> BuildId {
             build_id: build_id.clone(),
             topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
             submitted_change: None,
-            submitted_at_ms: 0,
+            source: None, submitted_at_ms: 0,
         })
         .await
         .unwrap();
@@ -317,7 +317,7 @@ async fn accepted_build(builds: &MemoryBuildStateAdapter) -> BuildId {
 }
 
 fn request(build_id: &BuildId, attempt: u32, node: &PathName) -> CreateRequest {
-    CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node)), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt, path: node.path.clone(), name: node.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None }
+    CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(node)), node_id: rdm_core::fixture_node_id(node), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt, path: node.path.clone(), name: node.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None }
 }
 
 /// Attempt 1 by `lost`, killed at `dies`.
@@ -333,7 +333,7 @@ async fn lost_attempt(fleet: &Fleet, lost: &Executor, builds: &MemoryBuildStateA
 }
 
 fn complete_attempts(view: &rdm_admin::build_state::BuildProjection, step: CreateStep, node: &PathName) -> Vec<u32> {
-    view.steps.iter().filter(|r| r.step == step.name() && r.operation == rdm_core::OperationId::location("node.create", node) && r.outcome == StepOutcome::Complete).map(|r| r.attempt).collect()
+    view.steps.iter().filter(|r| r.step == step.name() && r.operation == rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(node)) && r.outcome == StepOutcome::Complete).map(|r| r.attempt).collect()
 }
 
 /// CONTRACT (#2892): a create re-run by a successor executor (the lost admin's recovery, at
@@ -401,7 +401,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
             mesh: None,
             build_id: build_unborn.clone(),
             attempt: 1,
-            operation: rdm_core::OperationId::location("node.create", &unborn),
+            operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&unborn)),
             step: CreateStep::AllocateIdentity.name().into(),
             outcome: StepOutcome::Complete,
             output: Some(json!({"node_id": NodeId::mint(), "incarnation": IncarnationId::mint(), "supersedes": null, "deployment_id": DeploymentId::mint()})),

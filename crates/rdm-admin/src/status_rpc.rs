@@ -936,15 +936,6 @@ impl StatusDoor {
     /// `node.name.update` (`UpdateName`) at this admin, a caller's or a replace's step
     /// in-process: the one validator and writer of a rename.
     pub async fn update_name(&self, req: &StatusRequest) -> StatusReply {
-        self.update_name_with_build_context(req, &crate::accepted::RenameIntent::Ordinary).await
-    }
-
-    /// A validated, pinned Build step may retain or restore a predecessor name at its immutable path.
-    pub(crate) async fn update_name_in_build(&self, req: &StatusRequest, intent: &crate::accepted::RenameIntent) -> StatusReply {
-        self.update_name_with_build_context(req, intent).await
-    }
-
-    async fn update_name_with_build_context(&self, req: &StatusRequest, intent: &crate::accepted::RenameIntent) -> StatusReply {
         let StatusRequest::UpdateName { node_id, incarnation, .. } = req else { unreachable!("update_name is called for UpdateName only") };
         let me = self.held_name().await;
         // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
@@ -954,7 +945,7 @@ impl StatusDoor {
             (declared.connections_deleted.get(&birth).cloned(), declared.meshes_left.contains(&birth))
         };
         let doors = crate::node_name_update::NameDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
-        crate::node_name_update::update_in_build_context(&me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), left, req, intent).await
+        crate::node_name_update::update(&me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), left, req).await
     }
 
     /// `node.config.update` (`UpdateNodeConfig`) of a Build's create spec at this admin, in-process
@@ -986,7 +977,7 @@ impl StatusDoor {
     /// (`BusyHoldingConnections` naming what it still holds, a stale incarnation); a refusal this
     /// mesh-primary decides is its own reply, and nothing is sent; a call that ended in no reply is
     /// `Err` naming how it ended. One `rdm.node_admin.node.remove.via-mesh-leave` span.
-    pub async fn carry_mesh_leave(&self, node_id: &NodeId, incarnation: &IncarnationId, build_id: &str, attempt: u32, operation: &rdm_core::OperationId) -> Result<StatusReply, String> {
+    pub async fn carry_mesh_leave(&self, node_id: &NodeId, incarnation: &IncarnationId, operation: &rdm_core::OperationId) -> Result<StatusReply, String> {
         use tracing::Instrument;
         let view = self.topology.read().await.clone();
         let me_name = self.held_name_in(&view);
@@ -2860,12 +2851,12 @@ fn serve_node_command(b: ServerBuilder, door: Arc<OnceLock<Arc<StatusDoor>>>) ->
                     .in_scope(|| tracing::info!("a node command naming this admin was decided"));
                 return Ok(reply);
             }
-            // A caller's node.stop, node.start or node.connection.delete of any scope (D40, D18; Q342): of another birth, or of this one from a
+            // A caller's node.stop, node.start, node.mesh.leave or node.connection.delete of any scope (D40, D18, D61; Q342): of another birth, or of this one from a
             // sender no node-admin holds (the fabric-primary is the primary above itself), it is this
             // admin's to run as the primary above the node. A node-admin's command to this birth is the
             // primary above it commanding it, served by the birth itself.
             let caller_command = match &req {
-                NodeCommandRequest::StopNode { node_id, .. } | NodeCommandRequest::StartNode { node_id, .. } | NodeCommandRequest::DeleteConnections { node_id, .. } => *node_id != door.node_id || !sender.as_ref().is_some_and(|n| rdm_core::is_node_admin(&n.r#type)),
+                NodeCommandRequest::StopNode { node_id, .. } | NodeCommandRequest::StartNode { node_id, .. } | NodeCommandRequest::DeleteConnections { node_id, .. } | NodeCommandRequest::LeaveMesh { node_id, .. } => *node_id != door.node_id || !sender.as_ref().is_some_and(|n| rdm_core::is_node_admin(&n.r#type)),
                 _ => false,
             };
             if caller_command {
@@ -4166,7 +4157,7 @@ mod tests {
         let (reply, effect) = decide(&door, &view, &Declared::default(), &declare);
         assert!(holding_me(&reply) && effect.is_none(), "the deleted birth's role is not this admin's: {reply:?}");
 
-        let stop = StatusRequest::JoinMesh { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), operation: rdm_core::OperationId::location("node.mesh.join", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()), primary: None };
+        let stop = StatusRequest::JoinMesh { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), operation: rdm_core::OperationId::node("node.mesh.join", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap())), primary: None };
         let reply = door.apply(Some(owner.clone()), &stop).await;
         assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a JoinMesh naming this admin's node id reaches the subject's own door: {reply:?}");
     }
@@ -4192,13 +4183,13 @@ mod tests {
         };
         let door = mesh_primary_of(&me, view);
         let incarnation = me.incarnation_id.clone().unwrap();
-        let stop = StatusRequest::JoinMesh { node_id: me.node_id.clone(), incarnation: incarnation.clone(), operation: rdm_core::OperationId::location("node.mesh.join", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()), primary: None };
+        let stop = StatusRequest::JoinMesh { node_id: me.node_id.clone(), incarnation: incarnation.clone(), operation: rdm_core::OperationId::node("node.mesh.join", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap())), primary: None };
         let reply = door.apply(None, &stop).await;
         assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a JoinMesh from a stranger reaches the subject's own door: {reply:?}");
         let probe = StatusRequest::ProbeNodeState { node_id: me.node_id.clone(), incarnation: incarnation.clone() };
         let reply = door.apply(None, &probe).await;
         assert!(matches!(&reply, R::Current { node_id, state: NodeState::Ready, .. } if *node_id == me.node_id), "a probe from a stranger is answered by the subject: {reply:?}");
-        let stale = StatusRequest::JoinMesh { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), operation: rdm_core::OperationId::location("node.mesh.join", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()), primary: None };
+        let stale = StatusRequest::JoinMesh { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), operation: rdm_core::OperationId::node("node.mesh.join", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap())), primary: None };
         assert_eq!(door.apply(None, &stale).await, R::RejectedStaleIncarnation { held: incarnation });
     }
 
@@ -4356,7 +4347,7 @@ mod tests {
         digest_view.depart(rdm_core::LifecycleOp { r#type: deleted.r#type.clone(), mesh: deleted.mesh.clone(),
             build_id: "build1".into(),
             attempt: 1,
-            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node", "2").unwrap()),
+            operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())),
             node_id: deleted.node_id.clone(),
             incarnation: deleted.incarnation_id.clone().unwrap(),
             path: deleted.path.clone(), name: deleted.name.clone(),

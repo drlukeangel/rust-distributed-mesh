@@ -641,7 +641,7 @@ mod tests {
                     build_id: build_id.clone(),
                     topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", mesh1_id.clone()),
                     submitted_change: None,
-                    submitted_at_ms: 1,
+                    source: None, submitted_at_ms: 1,
                 })
                 .await
                 .unwrap();

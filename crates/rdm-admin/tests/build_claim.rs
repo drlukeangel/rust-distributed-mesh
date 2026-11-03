@@ -105,7 +105,7 @@ async fn elect(
 /// A Build whose log holds `settled` converged attempts: accepted, then claim + converged each.
 async fn settled(builds: &MemoryBuildStateAdapter, id: &BuildId, holder: &Birth, settled: u32) {
     builds
-        .publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
+        .publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 })
         .await
         .unwrap();
     for attempt in 1..=settled {

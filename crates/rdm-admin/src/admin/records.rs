@@ -776,12 +776,6 @@ impl Records {
             if let Some(fold) = self.status.get() {
                 fold.on_install(&t, &self.declared, self.digest_view.get()).await;
             }
-            // A renamed predecessor this view now names the predecessor name `<name>-old` at the same path (its row's name; its digest still
-            // says `<path>`): one span as it enters.
-            for old in t.predecessors().filter(|o| !held.predecessors().any(|h| h.node_id == o.node_id && h.incarnation_id == o.incarnation_id)) {
-                tracing::info_span!("rdm.node_admin.topology.update.via-predecessor-held", node_path = %old.path, node_name = %old.name, node_id = %old.node_id, status = ?old.status)
-                    .in_scope(|| tracing::info!("the view holds the renamed predecessor at its unchanged path"));
-            }
             // The births the fabric-primary's view holds for the first time: their rows are written
             // from this held record once the view is installed (`crate::node_rows`).
             let arrivals = self.rows.get().map(|rows| rows.arrivals(&held, &t)).unwrap_or_default();

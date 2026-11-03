@@ -413,7 +413,9 @@ impl AdminRunner {
         let hand_off = self.mesh_state_hook(mesh, state)?;
         let template = self.with_issuing_material(self.template_bound(path, mesh, "node-admin", executable, "row").await?, mesh).await?;
         let held_runtimes = self.held_runtimes().await;
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(path)), mesh: mesh.to_string(), r#type: "node-admin".into(), build_id: Some(build_id.clone()), attempt, path: path.path.clone(), name: path.name.clone(), spec: self.listeners.spec_for("node-admin"), data_dir: None, held_runtimes, entry: None };
+        // The admin is a new node.id at the path, minted when the fabric-primary decides the create.
+        let born = crate::model::NodeId::mint();
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &born), node_id: born.clone(), mesh: mesh.to_string(), r#type: "node-admin".into(), build_id: Some(build_id.clone()), attempt, node: path.clone(), spec: self.listeners.spec_for("node-admin"), data_dir: None, held_runtimes, entry: None };
         let created = self.pipeline(&template).create_with(&req, Some(hand_off), None).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(created.node.node_id.clone(), (created.node, created.handle));
@@ -1298,7 +1300,7 @@ mod tests {
                 build_id: build_id.clone(),
                 topology: fab_top,
                 submitted_change: None,
-                submitted_at_ms: 1000,
+                source: None, submitted_at_ms: 1000,
             })
             .await
             .unwrap();

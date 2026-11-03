@@ -357,10 +357,11 @@ async fn a_stop_of_a_node_already_connections_deleted_and_left_answers_each_prim
     let path: PathName = node_at();
     // Node-side spans name the node by its id.
     let node_id = estate.node_view(&path).await.node_id.to_string();
-    use rdm_core::build::Step;
-    let steps = vec![Step::DeleteConnections { path: path.path.clone(), name: path.name.clone()}, Step::LeaveMesh { path: path.path.clone(), name: path.name.clone()}, Step::Stop { path: path.path.clone(), name: path.name.clone()}];
-    let got = frames(estate.nodes_obj().await.steps(steps).await.expect("the Build was accepted")).await;
-    assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
+    let nodes = estate.nodes_obj().await;
+    for stream in [nodes.delete_connections(&path, &rdm_core::status::ConnectionScope::All).await, nodes.leave_mesh(&path).await, nodes.stop(&path).await] {
+        let got = frames(stream.expect("the node command was accepted")).await;
+        assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
+    }
 
     estate.stop().await;
     let spans = estate.spans();
@@ -569,15 +570,7 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
     let pid = estate.pid_of(&path).await;
 
     // The predecessor's half of a replace: its connections, its mesh, its name live, then its stop.
-    use rdm_core::build::Step;
-    let steps = vec![
-        Step::DeleteConnections { path: path.path.clone(), name: path.name.clone()},
-        Step::LeaveMesh { path: path.path.clone(), name: path.name.clone()},
-        Step::Update { path: path.path.clone(), name: path.name.clone(), new_path: renamed.path.clone(), new_name: renamed.name.clone() },
-        Step::Stop { path: renamed.path.clone(), name: renamed.name.clone()},
-    ];
-    let half = frames(nodes.steps(steps).await.expect("the Build was accepted")).await;
-    assert_eq!(half.last(), Some(&Frame::Complete), "{half:?}");
+    rdm_test::replace::free_the_name(&estate, &path).await.unwrap_or_else(|e| panic!("the predecessor's half of the replace of {path:?}: {e}"));
     // Every admin's view names the stopped birth by its row, the one that performed no rename included.
     for admin in &admins {
         let listed = estate
@@ -838,7 +831,7 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
         .max()
         .unwrap_or_else(|| panic!("mesh2 lists another node that is not its primary: {mesh2:?}"));
     let (other, other_id) = other;
-    let mut stream = nodes.delete(&other).await.expect("the delete was accepted");
+    let mut stream = nodes.delete(vec![other_id.clone()]).await.expect("the delete was accepted");
     let build_id = stream.accepted().expect("the call opened a Build").build_id.to_string();
     // Read until the Build ends, bounded and without a panic: a Build that does not end is asserted below
     // from its spans, which name the operations every attempt planned.
@@ -865,10 +858,11 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     estate.stop().await;
     let spans = estate.spans();
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|sp| attr(sp, "build_id") == build_id).collect();
-    let (creates, deletes) = (OperationSubject::Location(stopped_path.clone()), OperationSubject::Node(other_id.clone()));
+    // A Delete creates nothing: its record names no node.id to create (D58), so no pass plans a create.
+    let deletes = OperationSubject::Node(other_id.clone());
     let planned_create: Vec<String> = reconciles
         .iter()
-        .filter(|sp| plans_operation(sp, "node.create", &creates))
+        .filter(|sp| rdm_test::estate::planned_operations(sp).iter().any(|op| op.contains("action: \"node.create\"")))
         .map(|sp| format!("attempt {} at {}: {} ({})", attr(sp, "attempt"), attr(sp, "executor"), attr(sp, "operations"), attr(sp, "outcome")))
         .collect();
     assert!(planned_create.len() <= 1, "the stopped {stopped_path:?}'s create is planned at most once in the delete Build {build_id}, its check holding the birth; {} of {} attempts planned it: {:#?}", planned_create.len(), reconciles.len(), &planned_create[..planned_create.len().min(5)]);
@@ -877,8 +871,8 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     assert!(reconciles.len() <= 3, "the delete Build {build_id} runs a bounded number of attempts, never a loop: {}", reconciles.len());
     let ops: Vec<String> = reconciles.iter().flat_map(|sp| planned_operations(sp)).collect();
     assert!(reconciles.iter().any(|sp| plans_operation(sp, "node.delete", &deletes)), "an attempt of the delete Build {build_id} plans the delete of {other:?}: {ops:?}");
-    let (delete_op, create_op) = ((r#"action: "node.delete""#, format!("subject: {:?}", Some(&deletes))), (r#"action: "node.create""#, format!("subject: {:?}", Some(&creates))));
-    assert!(ops.iter().all(|op| (op.contains(delete_op.0) && op.contains(&delete_op.1)) || (op.contains(create_op.0) && op.contains(&create_op.1))), "the delete Build {build_id} plans the delete of {other:?} and at most the stopped path's held create: {ops:?}");
+    let delete_op = (r#"action: "node.delete""#, format!("subject: {:?}", Some(&deletes)));
+    assert!(ops.iter().all(|op| op.contains(delete_op.0) && op.contains(&delete_op.1)), "the delete Build {build_id} plans the delete of {other:?} and nothing else: {ops:?}");
     let completed: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build_id && at_location(sp, &other) && attr(sp, "step") == "Complete" && attr(sp, "outcome") == "complete").collect();
     assert!(!completed.is_empty(), "the delete of {other:?} completes in Build {build_id}");
     assert!(settled, "the delete Build {build_id} of {other:?} ends Complete within {SETTLE:?}, the stopped {stopped_path:?} holding nothing: {deleted:?}");
@@ -1307,8 +1301,8 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     // The old primary holds the node's node.started at its status door: the declaration stays owed.
     let door = Door::at(&estate, &primary).await;
     door.arm("declaration", serde_json::json!({"kind": "declaration", "node": node, "state": "Ready"})).await;
-    let (based_on, request) = estate.create_node_request("mesh2", "node").await;
-    let restarted = frames(nodes.create_named(based_on, request).await.expect("the create was accepted")).await;
+    let request = estate.create_node_request("mesh2", "node").await;
+    let restarted = frames(nodes.create(vec![request]).await.expect("the create was accepted")).await;
     assert!(
         matches!(restarted.last(), Some(Frame::Failed { reason, .. }) if reason.contains("WaitForNodeReady") && reason.contains("it took no node.started")),
         "the first start's wait for readiness fails naming the node.started its primary never took: {restarted:?}"
@@ -1787,9 +1781,9 @@ async fn a_fabric_primary_serving_a_held_claim_leaves_on_its_signal_within_the_b
     let (fp_id, mesh2_primary_id) = (id_of(&rows, &fp), id_of(&rows, &Estate::path("mesh2.node-admin", "1")));
     fp_door.arm("held-claim", serde_json::json!({"kind": "claimed-attempt"})).await;
     // A Build adds a node to mesh2; mesh2's primary's claim of its attempt is held at the fabric-primary.
-    let (based_on, request) = estate.create_node_request("mesh2", "node").await;
+    let request = estate.create_node_request("mesh2", "node").await;
     let nodes = estate.nodes_obj().await;
-    let create = tokio::spawn(async move { nodes.create_named(based_on, request).await.map(|_| ()) });
+    let create = tokio::spawn(async move { nodes.create(vec![request]).await.map(|_| ()) });
     let claimed = fp_door.wait_held("held-claim").await;
     create.abort();
     assert_eq!(s(&claimed["hit"]["executor"]["node_id"]), mesh2_primary_id, "the held claim is mesh2's primary's, served by the fabric-primary: {claimed}");

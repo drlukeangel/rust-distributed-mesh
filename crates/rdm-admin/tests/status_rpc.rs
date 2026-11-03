@@ -356,7 +356,7 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     let rig = rig(subject, &[&executor], BTreeMap::new()).await;
     // The exact-birth Status command control is JoinMesh; StopNode is now reserved (Q47).
     // This cell still proves the admitted status door, its refusal and transport certainty arms.
-    let command = |inc: IncarnationId| StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation: inc, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()), primary: None };
+    let command = |inc: IncarnationId| StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation: inc, operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap())), primary: None };
 
     // Healthy control before connections-deleting: a ping is served.
     let c = client_of(&rig, &executor).await;
@@ -486,7 +486,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
             build_id: build_id.clone(),
             topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
             submitted_change: None,
-            submitted_at_ms: 0,
+            source: None, submitted_at_ms: 0,
         })
         .await
         .unwrap();

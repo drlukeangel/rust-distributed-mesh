@@ -1719,7 +1719,7 @@ impl Write {
     async fn change(&self, e: &Estate, admin: &PathName) -> BuildChange {
         match self {
             Self::Restart(n) => unreachable!("a restart is node commands, never a Build change (Q342): {n:?}"),
-            Self::Delete(n) => BuildChange::RemoveNode { node: n.clone() },
+            Self::Delete(n) => BuildChange::Delete { meshes: vec![], node_ids: vec![e.node_view(n).await.node_id] },
             Self::Create { mesh, kind } => created(e, admin, mesh, kind.clone()).await,
         }
     }
@@ -1936,8 +1936,10 @@ impl Run {
         let t0 = now_ns();
         let mut answers = Vec::new();
         for a in &st.admins {
-            let v = ask(&f.estate, &location(&a), BuildChange::RemoveNode { node: path.clone() }).await;
-            answers.push(json!({"admin": location(&a), "node_id": a["node_id"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "detail": v["detail"]}));
+            // A node.id no birth holds, as the path is one no node holds: only the fabric-primary decides it.
+            let _ = &path;
+            let v = ask(&f.estate, &location(&a), BuildChange::Delete { meshes: vec![], node_ids: vec![rdm_core::NodeId::mint()] }).await;
+            answers.push(json!({"admin": a["name"], "node_id": a["node_id"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "detail": v["detail"]}));
         }
         let t1 = now_ns();
         let writers: Vec<&Value> = answers.iter().filter(|a| a["reply"] != "not-fabric-primary").collect();
@@ -2019,20 +2021,23 @@ impl Run {
         want
     }
 
-    /// Submit the replace steps of `node` (lifecycles/node-replace.md: one Build of node primitives)
-    /// to the fabric-primary over the `node` objects: the Build it runs on. The attempt it opened is
-    /// what [`Self::finish`] waits for. The caller's stream is read on a task of its own.
-    async fn write_steps(&mut self, f: &Formed, st: &Stable, what: &str, node: &PathName) -> String {
+    /// The replace of `node` (lifecycles/node-replace.md): the node commands that free its name, then
+    /// the successor's Create, submitted to the fabric-primary over the `node` objects: the Build it
+    /// runs on. The attempt it opened is what [`Self::finish`] waits for. The caller's stream is read on
+    /// a task of its own.
+    async fn write_replace(&mut self, f: &Formed, st: &Stable, what: &str, node: &PathName) -> String {
         use rdm_client::Nodes;
         let t0 = now_ms();
         let nodes = Nodes::new(f.estate.carrier_at(&st.fp_name()).await);
         let subject = f.estate.node_view(node).await;
-        let mut stream = nodes.steps(rdm_test::steps::replace(node, &subject.mesh, &subject.r#type).expect("valid replacement fixture name")).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {:?} refused the replace steps of {node:?}: {e}", st.fp_name()));
+        rdm_test::replace::free_the_name(&f.estate, node).await.unwrap_or_else(|e| panic!("{what}: the node commands that free {node:?}: {e}"));
+        let successor = rdm_core::build::Nodes { path: node.path.clone(), name: node.name.clone(), mesh: subject.mesh.clone(), r#type: subject.r#type.clone(), storage_persistence: None, executable: Some(f.estate.executables.of(&subject.r#type)), tags: Default::default(), config: Default::default() };
+        let mut stream = nodes.create(vec![successor]).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {:?} refused the successor's Create at {node:?}: {e}", st.fp_name()));
         let (build_id, attempt) = (stream.accepted().expect("the call opened a Build").build_id.to_string(), stream.accepted().expect("the call opened a Build").attempt);
         tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
         self.attempts.insert(build_id.clone(), u64::from(attempt));
-        self.actions.push(json!({"t_ms": t0, "action": what, "via": format!("build.create steps {node:?}"), "status": "started", "build_id": build_id, "accepted_by": st.fp["name"]}));
-        progress(&format!("{what}: the replace steps of {node:?} accepted by {:?} as {build_id} attempt {attempt}", st.fp_name()));
+        self.actions.push(json!({"t_ms": t0, "action": what, "via": format!("node commands, then build.create Create {node:?}"), "status": "started", "build_id": build_id, "accepted_by": st.fp["name"]}));
+        progress(&format!("{what}: the successor's Create at {node:?} accepted by {:?} as {build_id} attempt {attempt}", st.fp_name()));
         build_id
     }
 
@@ -2330,11 +2335,11 @@ fn start_ns(sp: &Value) -> u64 {
 }
 
 /// The node id of an executor as a Build view (a `Birth` object) or a span (`<node id>/<incarnation>`) names it.
-/// Whether a reconcile span plans `action` on the node at `at` whose id is `id`: a command keys its
-/// operation by node id, a step by location.
-fn plans_on(sp: &Value, action: &str, at: &PathName, id: &str) -> bool {
+/// Whether a reconcile span plans `action` on the node whose id is `id`; a create is keyed by the
+/// node.id its Build record minted (D58), so any planned create counts.
+fn plans_on(sp: &Value, action: &str, _at: &PathName, id: &str) -> bool {
     NodeId::parse(id).is_ok_and(|id| rdm_test::estate::plans_operation(sp, action, &rdm_core::OperationSubject::Node(id)))
-        || rdm_test::estate::plans_operation(sp, action, &rdm_core::OperationSubject::Location(at.clone()))
+        || (action == "node.create" && rdm_test::estate::plans_a_create(sp))
 }
 
 fn executor_id(v: &Value) -> String {
@@ -3007,8 +3012,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
         "the re-birth is a later attempt than the dead executor's, in its own lane: {:?}",
         creates.iter().map(|c| (lane_of(c), attempt_of(c))).collect::<Vec<_>>()
     );
-    let rebirth = rdm_core::OperationSubject::Location(executor_name.clone());
-    let rebirth_executors: BTreeSet<String> = spans_after.iter().filter(|c| rdm_test::estate::plans_operation(&json!({"attributes": {"operations": c["operations"]}}), "node.create", &rebirth)).map(|c| executor_id(&c["executor"])).collect();
+    let rebirth_executors: BTreeSet<String> = spans_after.iter().filter(|c| rdm_test::estate::plans_a_create(&json!({"attributes": {"operations": c["operations"]}}))).map(|c| executor_id(&c["executor"])).collect();
     let (survivor_name, survivor_id, fp_id_at_the_death) = (location(&survivor), s(&survivor["node_id"]), s(&st_fp_id_at_the_death));
     assert!(rebirth_executors.contains(&survivor_id) && rebirth_executors.iter().all(|e| *e == survivor_id || *e == fp_id_at_the_death), "the dead admin's re-birth was opened by the fabric-primary {fp_at_the_death:?} and executed by its mesh's surviving primary admin {survivor_name:?}: {rebirth_executors:?}");
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
@@ -3666,7 +3670,8 @@ async fn admin_views_of(a: &mut Run, f: &Formed, name: &PathName) -> Vec<Value> 
 async fn refused_by_a_non_writer(f: &Formed, a: &mut Run, st: &Stable, path: &PathName, how: Removal) -> Value {
     let non_writer = st.admins.iter().find(|n| (rdm_test::estate::location(&n) != rdm_test::estate::location(&st.fp))).expect("an admin that is not the fabric-primary").clone();
     let _ = how;
-    let v = ask(&f.estate, &location(&non_writer), BuildChange::RemoveNode { node: path.clone() }).await;
+    let node_id = f.estate.node_view(path).await.node_id;
+    let v = ask(&f.estate, &location(&non_writer), BuildChange::Delete { meshes: vec![], node_ids: vec![node_id] }).await;
     assert_eq!((v["reply"].as_str(), &v["fabric_primary"]), (Some("not-fabric-primary"), &st.fp["node_id"]), "a delete sent to {} is refused naming the fabric-primary: {v}", non_writer["name"]);
     let rec = json!({"sent_to": non_writer["name"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "path": path, "route": "delete", "t_ms": now_ms()});
     a.refused_writes.push(rec.clone());
@@ -3718,7 +3723,7 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathN
             (build_id, fin)
         }
         Removal::Replace => {
-            let build_id = a.write_steps(f, st, &format!("{label}: authorized replace steps"), node).await;
+            let build_id = a.write_replace(f, st, &format!("{label}: authorized replace"), node).await;
             assert_eq!(build_id, before_build, "{node:?}: steps change no topology, so they are the next attempt of the accepted Build and mint none");
             a.finish(f, &build_id, Until::Joined { node: node.clone(), not_node_id: node_id.clone() }, "during-replace").await;
             // The Build's last step deleted the predecessor at `<node>.old` (its exit proven,
@@ -3841,7 +3846,8 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
 /// other operation of the node or its predecessor. Each operation on the predecessor names it by its
 /// node id (`old_id`); the create names the location its successor is born at.
 fn step_ops_of(spans: &[Value], node: &PathName, old_id: &str, build_id: &str) -> Vec<String> {
-    let at = format!("subject: {:?}", Some(rdm_core::OperationSubject::Location(node.clone())));
+    // A create is keyed by the node.id its record minted (D58): the successor's create is the one create.
+    let at = "action: \"node.create\"".to_string();
     let on_old = format!("subject: Some(Node(NodeId({old_id:?})))");
     // The steps are an attempt of the accepted Build (its via-steps span names the attempt it opened):
     // the reconciles from that attempt on in the fabric lane are the steps'. The formation's earlier
@@ -4130,14 +4136,13 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, i
 /// create pipeline (AllocateIdentity .. WaitForNodeReady), and the new NodeId's own ready span follows;
 /// the old identity's NodeDeleted comes later, from the Build's delete of `<node>.old`.
 fn check_replace_create_chain(spans: &[Value], node: &PathName, build_id: &str, node_id: &str, incarnation: &str) -> Value {
-    let create = rdm_core::OperationSubject::Location(node.clone());
     let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         // The formation created the node at the same path under the same key: the steps' reconcile is
         // the one whose action is the steps (`AttemptAction::Steps`, its journal tag `"recipe"`).
-        .find(|sp| sp["attributes"]["build_id"] == build_id && s(&sp["attributes"]["action"]).contains("\"recipe\"") && rdm_test::estate::plans_operation(sp, "node.create", &create))
+        .find(|sp| sp["attributes"]["build_id"] == build_id && s(&sp["attributes"]["action"]).contains("\"recipe\"") && rdm_test::estate::plans_a_create(sp))
         .cloned()
-        .unwrap_or_else(|| panic!("{node:?}: no reconcile of {build_id} carrying the steps executed node.create of {create:?}"));
+        .unwrap_or_else(|| panic!("{node:?}: no reconcile of {build_id} carrying the steps executed node.create of {node:?}"));
     let action = s(&reconcile["attributes"]["action"]);
     assert!(action.contains("\"recipe\"") && action.contains(node.path.as_str()) && action.contains(node.name.as_str()), "{node:?}: the reconcile carries the steps: {action}");
     let make = named(spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| at_location(sp, node) && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node:?}: no node.create.via-build of the successor under the steps' reconcile"));
@@ -4293,7 +4298,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     assert_eq!(s(&drift_spans[0]["attributes"]["build_id"]), drift_build, "the recovery is an attempt of {drift_build}");
     let proven: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(&id2)).collect();
     assert!(proven.is_empty(), "the fabric-primary opened a drift attempt for a member: {proven:?}");
-    let recreate: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|sp| sp["attributes"]["build_id"] == drift_build.as_str() && start_ns(sp) > kill_ns && rdm_test::estate::plans_operation(sp, "node.create", &rdm_core::OperationSubject::Location(victim2.clone()))).collect();
+    let recreate: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|sp| sp["attributes"]["build_id"] == drift_build.as_str() && start_ns(sp) > kill_ns && rdm_test::estate::plans_a_create(sp)).collect();
     assert!(!recreate.is_empty(), "no reconcile of {drift_build} after the kill executed node.create of {victim2:?}");
     let drift_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id2.as_str()).collect();
     let drift_chain = json!({

@@ -116,8 +116,9 @@ pub mod disk_faults;
 pub mod link_faults;
 pub mod netfault;
 pub mod process_faults;
-/// Rafka's replace steps and its rollback as a test caller submits them (lifecycles/node-replace.md).
-pub mod steps;
+/// Rafka's replace as a test caller runs it: node commands free the name, then one Build adds the
+/// successor (lifecycles/node-replace.md).
+pub mod replace;
 
 /// A planned node's test control file, using the existing bounded composite location index.
 /// Path and name remain separate properties; the physical index is never parsed as identity.

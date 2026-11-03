@@ -48,7 +48,7 @@ async fn a_create_accepted_inside_a_deletions_window_births_the_path_once() {
     let path = &before.location();
     assert_eq!(before.status, NodeStatus::Ready, "{path:?} is ready before the delete: {before:?}");
 
-    let mut deleting = estate.nodes_obj().await.delete(path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {path:?}: {e}"));
+    let mut deleting = estate.delete_node(path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {path:?}: {e}"));
     let delete = Estate::complete(&mut deleting).await.expect("the call opened a Build").build_id.to_string();
     // At once, inside the window: the create is submitted on the delete's completion, before any view read.
     let mut creating = estate.create_node("mesh2", "node-admin").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node-admin in mesh2: {e}"));

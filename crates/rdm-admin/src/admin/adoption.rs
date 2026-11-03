@@ -613,7 +613,7 @@ mod tests {
                     build_id: build_id.clone(),
                     topology: FabricTopology::root("fabric1", "mesh1", mesh_id.clone()),
                     submitted_change: None,
-                    submitted_at_ms: 1000,
+                    source: None, submitted_at_ms: 1000,
                 },
                 None,
                 "mesh1.node-admin.1",

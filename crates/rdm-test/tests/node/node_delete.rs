@@ -87,7 +87,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // The initial fabric refuses the removal of a node until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 1. The removal.
-    let mut removal = estate.nodes_obj().await.delete(&victim_at).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {victim_at:?}: {e}"));
+    let mut removal = estate.delete_node(&victim_at).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {victim_at:?}: {e}"));
     // The pre-notice is read from each receiver's overlay span below, not from a poll: the window
     // in which the node is live and not routable is the stop leg, and a poll's cadence
     // is not evidence of it.
@@ -313,7 +313,7 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
 
     let door = Door::at(&estate, &p_name).await;
     door.arm("deleted-unpublished", json!({"kind": "event", "event": "deleted", "node": victim_id})).await;
-    let mut removal = estate.nodes_obj().await.delete(&victim_at).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {victim_at:?}: {e}"));
+    let mut removal = estate.delete_node(&victim_at).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {victim_at:?}: {e}"));
     let held = door.wait_held("deleted-unpublished").await;
     let (build, attempt) = (s(&held["hit"]["build_id"]), held["hit"]["attempt"].as_u64().expect("the held event names its attempt"));
     assert_eq!((&held["hit"]["operation"]["action"], &held["hit"]["operation"]["subject"], s(&held["hit"]["incarnation_id"])), (&json!("node.delete"), &json!({"Node": victim_id}), victim_inc.clone()), "P holds the victim's NodeDeleted publish: {held}");

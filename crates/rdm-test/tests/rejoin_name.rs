@@ -108,7 +108,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         assert_eq!(published(), seq_at_leave, "the node published nothing from its leave to its stop");
 
         // The authority holds the birth under its row's name, and its held stopped digest names it too.
-        admin.put_row(NodeRow { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), replacement_from: None, initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None });
+        admin.put_row(NodeRow { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None });
         admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
 
         assert_eq!(call(&admin, &target, &start).await, StatusReply::Started, "the start presents the name the node holds");

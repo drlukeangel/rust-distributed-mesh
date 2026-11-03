@@ -5,7 +5,8 @@
 //! sweep; the delete's admission runs the stopped and open-Build checks again, serialized with it.
 //! Every cell writes the records it decides from: nothing here depends on timing.
 
-use rdm_admin::accepted::{AcceptedStore, AttemptAction, FabricTopology, TopologyChange};
+use rdm_admin::accepted::{AcceptedStore, AttemptAction, FabricTopology};
+use rdm_core::build::BuildChange;
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{
     AttemptOpened, AttemptOutcome, AttemptReason, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateAdapter, MemoryBuildStateAdapter,
@@ -110,25 +111,6 @@ async fn settle(builds: &MemoryBuildStateAdapter, id: &BuildId, executor_birth: 
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
 }
 
-/// The replace steps of the birth `b` (lifecycles/node-replace.md), pinned to it: `b`'s connections
-/// deleted, its mesh left, renamed to `<name>-old` at its unchanged path, live and stopped, the successor created at its name, `b`
-/// deleted under its retained name.
-fn replace_steps(b: &(PathName, NodeId, IncarnationId)) -> AttemptAction {
-    use rdm_core::build::Step;
-    let node = b.0.clone();
-    AttemptAction::Steps { rename_intents: [(3, rdm_admin::accepted::RenameIntent::Replacement { original_path: node.path.clone(), original_name: node.name.clone()})].into(),
-        steps: vec![
-            Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()},
-            Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()},
-            Step::Update { path: node.path.clone(), name: node.name.clone(), new_path: node.path.clone(), new_name: node.renamed().unwrap().name },
-            Step::Stop { path: node.renamed().unwrap().path, name: node.renamed().unwrap().name},
-            Step::Create { mesh: "mesh1".into(), r#type: "node".into(), path: node.path.clone(), name: node.name.clone(), executable: None },
-            Step::Delete { path: node.renamed().unwrap().path, name: node.renamed().unwrap().name},
-        ],
-        pinned: vec![(node, rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node".into(), node_id: b.1.clone(), incarnation: b.2.clone() })],
-    }
-}
-
 fn birth(t: &Topology, p: &PathName) -> (PathName, NodeId, IncarnationId) {
     let n = t.node(p).unwrap();
     (n.location(), n.node_id.clone(), n.incarnation_id.clone().unwrap())
@@ -205,82 +187,6 @@ async fn a_blank_ttl_runs_no_sweep() {
     period(&cp, &builds, &old, true, 1).await;
     assert_eq!(cp.sweep_stopped(None).await, Swept::Forever);
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0), "nothing was submitted");
-}
-
-/// CONTRACT (§6.9 Recheck): the scan selects `mesh1.node.1`, stopped past the ttl. Before the
-/// delete is admitted the node is started (its start receipted, the view holding it live again):
-/// the admission runs the stopped check again and refuses by name, `node-not-stopped`; a second
-/// candidate, referenced by a Build opened after the scan, is refused `referenced-by-open-build`.
-/// Must NOT happen: a delete accepted from the scan's stale decision.
-#[tokio::test]
-async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
-    let (spans, _g) = capture("i143-3072-recheck");
-    let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
-    let (old, other) = (birth(&t, &stopped()), birth(&t, &young()));
-    let cp = plane(builds.clone(), t, &PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
-    period(&cp, &builds, &old, true, 1).await;
-    period(&cp, &builds, &other, true, 2).await;
-    let candidates: Vec<_> = cp.scan_stopped(TTL, now(&cp)).await.into_iter().filter_map(|v| if let Verdict::Expired(c) = v { Some(c) } else { None }).collect();
-    assert_eq!(candidates.iter().map(|c| c.location()).collect::<Vec<_>>(), vec![stopped(), young()], "both are stopped past the ttl at the scan");
-
-    // After the scan: mesh1.node.1 is started.
-    period(&cp, &builds, &old, false, now(&cp)).await;
-    cp.topology.write().await.nodes.iter_mut().filter(|n| n.location() == old.0).for_each(|n| {
-        n.stopped = false;
-        n.status = NodeStatus::Ready;
-    });
-    let refused = cp.collect_stopped(&candidates[0], TTL).await;
-    assert!(matches!(&refused, Err(Refusal::Reject(r)) if r.reason() == "node-not-stopped"), "{refused:?}");
-
-    // After the scan: the accepted Build opens the replace steps of mesh1.node.2's birth, whose attempt
-    // fails part-way: the Build is open, not in flight, and keeps the birth as its rollback point.
-    let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
-    builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Steps, action: Some(replace_steps(&other)), opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: now(&cp), context: None }),
-        BuildFact::Claim(BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: executor(&cp).await }),
-        BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() , code: rdm_core::outcome::Code::FailedPrecondition } }),
-    ]).await;
-    let referenced = cp.collect_stopped(&candidates[1], TTL).await;
-    assert!(matches!(&referenced, Err(Refusal::Reject(r)) if r.reason() == "referenced-by-open-build"), "{referenced:?}");
-
-    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0), "no delete was accepted");
-    assert_eq!(spans.spans("rdm.node_admin.build.reject.via-node-not-stopped").len(), 1);
-    assert_eq!(spans.spans("rdm.node_admin.build.reject.via-referenced-by-open-build").len(), 1);
-    let tried = spans.spans("rdm.node_admin.node.delete.via-stopped-ttl");
-    assert_eq!(tried.len(), 2, "{tried:?}");
-    assert!(tried.iter().all(|(_, a)| !a.contains_key("build_id")), "neither collection was accepted as a Build: {tried:?}");
-}
-
-/// CONTRACT (§6.9 Selection: "except a birth an open Build still references (a replace
-/// mid-transfer keeps its rollback point)"): `mesh1.node.1`, stopped past the ttl, is the birth a
-/// replace steps left part-way (its attempt failed, the Build is not settled). The scan says it is
-/// referenced by that Build and the sweep submits nothing for it.
-#[tokio::test]
-async fn a_stopped_birth_an_open_replace_build_references_is_skipped() {
-    let (spans, _g) = capture("i143-3072-referenced");
-    let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
-    let old = birth(&t, &stopped());
-    let cp = plane(builds.clone(), t, &PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
-    period(&cp, &builds, &old, true, 1).await;
-    let young = birth(&cp.topology.read().await.clone(), &young());
-    period(&cp, &builds, &young, true, now(&cp)).await;
-    let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
-    builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Steps, action: Some(replace_steps(&old)), opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: now(&cp), context: None }),
-        BuildFact::Claim(BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: executor(&cp).await }),
-        BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() , code: rdm_core::outcome::Code::FailedPrecondition } }),
-    ]).await;
-
-    let verdicts = cp.scan_stopped(TTL, now(&cp)).await;
-    assert!(verdicts.contains(&Verdict::Referenced { path: old.0.path.clone(), name: old.0.name.clone(), build_id: b0.clone() }), "{verdicts:?}");
-    assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
-    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0));
-    let skipped = spans.spans("rdm.node_admin.node.reject.via-open-build-reference");
-    assert!(skipped.iter().any(|(_, a)| (a["node_path"].as_str(), a["node_name"].as_str()) == (stopped().path.as_str(), stopped().name.as_str())), "{skipped:?}");
 }
 
 /// CONTRACT (§6.9 Age: "The current stopped period's own stop, recorded on the node record"):

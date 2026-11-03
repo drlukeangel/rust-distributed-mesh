@@ -186,8 +186,8 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         let current = Current::read(&carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
         let mut two_more = current.counts_of("mesh1");
         *two_more.counts.entry("node".into()).or_insert(0) += 2;
-        let request = current.resized(&[two_more], false, &executables);
-        let created = Estate::workflow("node.create of two nodes in mesh1", nodes.create_named(current.based_on, request).await).await.expect("a create opens a Build");
+        let request = current.added(current.resized(&[two_more], false, &executables));
+        let created = Estate::workflow("node.create of two nodes in mesh1", nodes.create(request).await).await.expect("a create opens a Build");
         until_status(&nodes, &node, NodeStatus::Ready).await;
         until_status(&nodes, &rdm_core::PathName::new("mesh1.node", "2").unwrap(), NodeStatus::Ready).await;
         until_fabric_ready(&fabrics).await;

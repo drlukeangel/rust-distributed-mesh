@@ -344,7 +344,7 @@ pub fn template(admin: &AdminSide) -> LaunchTemplate {
 pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTopology) -> BuildId {
     let build_id = BuildId::mint();
     builds
-        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, submitted_at_ms: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, source: None, submitted_at_ms: 0 })
         .await
         .unwrap();
     build_id
@@ -352,7 +352,7 @@ pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTop
 
 /// mesh1 with one admin and one node: what the smoke deploys toward.
 pub fn add_node() -> FabricTopology {
-    FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])))].into() }
+    FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])))].into() }
 }
 
 /// What `deploy_through_every_step` found.
@@ -422,7 +422,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     };
 
     let created = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node_name)), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: node_name.path.clone(), name: node_name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(node_name))), node_id: (rdm_core::fixture_node_id(&(node_name))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: node_name.path.clone(), name: node_name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await;
     let created = match created {
         Ok(c) => c,
@@ -470,7 +470,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     // Every step has exactly one Complete receipt, in pipeline order.
     let view = builds.read_build(&build_id).await.unwrap();
     let receipts: Vec<_> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, &r.operation, r.attempt)).collect();
-    let operation = rdm_core::OperationId::location("node.create", &created.node.location());
+    let operation = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&created.node.location()));
     let want: Vec<_> = CreateStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, &operation, 1)).collect();
     assert_eq!(receipts, want);
 

@@ -2,7 +2,7 @@
 //! fields independently of codec round trips; enums are append-only.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
-use rdm_core::build::{Build, BuildChange, Step, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};
+use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};
 use rdm_core::context::CallContext;
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::{DecodeFailure, NodeProtocol};
@@ -23,56 +23,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 #[test]
 fn requests_match_the_frozen_four_variant_wire_schema() {
     let fixtures = [
-        // positions 0, 1, 2 and 4 are reserved (the count forms): `a_request_at_a_reserved_count_position_is_an_unknown_variant`; position 6 (the removed restart): `a_request_at_the_removed_restart_position_is_an_unknown_variant`
-        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { node: rdm_core::PathName::new("m.node", "1").unwrap() }) }, "00 00 03 06 6d 2e 6e 6f 64 65 01 31"),
-        (
-            BuildRequest::Create {
-                submit: BuildSubmit::Change(BuildChange::Steps {
-                    steps: vec![
-                        Step::DeleteConnections { path: "m.node".into(), name: "1".into()},
-                        Step::LeaveMesh { path: "m.node".into(), name: "1".into()},
-                        Step::Update { path: "m.node".into(), name: "1".into(), new_path: "m.node".into(), new_name: "1-old".into()},
-                        Step::Stop { path: "m.node".into(), name: "1-old".into()},
-                        Step::Create { mesh: "m".into(), r#type: "node".into(), path: "m.node".into(), name: "1".into(), executable: None },
-                        Step::Start { path: "m.node".into(), name: "1-old".into()},
-                        Step::Delete { path: "m.node".into(), name: "1-old".into()},
-                    ],
-                }),
-            },
-            "00 00 0b 07 05 06 6d2e6e6f6465 01 31 06 06 6d2e6e6f6465 01 31 02 06 6d2e6e6f6465 01 31 06 6d2e6e6f6465 05 312d6f6c64 01 06 6d2e6e6f6465 05 312d6f6c64 00 06 6d2e6e6f6465 01 31 01 6d 04 6e6f6465 00 03 06 6d2e6e6f6465 05 312d6f6c64 04 06 6d2e6e6f6465 05 312d6f6c64",
-        ),
-        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteFabric) }, "00 00 0c"),
-        // position 14 is reserved (the removed change): `a_request_at_the_removed_change_position_is_an_unknown_variant`
-        // the complete topology (proposal executable-bindings-at-create.md rule 1): the change's last
-        // variant; based_on, then each node's create spec positional (Q166, NodeSpec): its path.name,
-        // Explicit mesh and type (a string) follow the path; storage, executable, tags and the whole
-        // config follow them. Neither ownership nor type is decoded from a path segment.
-        (
-            BuildRequest::Create {
-                submit: BuildSubmit::Change(BuildChange::Reconcile {
-                    based_on: rdm_core::BuildId::parse("0123456789ab").unwrap(),
-                    nodes: vec![
-                        rdm_core::meta::NodeSpec {
-                            path: "m.node-admin".into(), name: "1".into(), mesh: "m".into(), r#type: "node-admin".into(),
-                            storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
-                            
-                            executable: Some(rdm_core::binding::Binding { launch_id: "node-admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
-                            tags: ["t".to_string()].into(),
-                            config: Default::default(),
-                        },
-                        rdm_core::meta::NodeSpec { path: "m.node".into(), name: "1".into(), mesh: "m".into(), r#type: "node".into(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
-                    ],
-                }),
-            },
-            // the change carries no provider: a storage change is fabric.storage.update, never a Build
-            // (storage.md §2 "Changing it").
-            "00 00 0f 0c 303132333435363738396162 02 0c 6d2e6e6f64652d61646d696e 01 31 01 6d 0a 6e6f64652d61646d696e 01 00 01 0a 6e6f64652d61646d696e 02 2f78 01 73 00 01 01 74 00 06 6d2e6e6f6465 01 31 01 6d 04 6e6f6465 00 00 00 01 01 6b 01 76",
-        ),
-        // a complete topology listing no node: based_on, then the empty list.
-        (
-            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { based_on: rdm_core::BuildId::parse("0123456789ab").unwrap(), nodes: vec![] }) },
-            "00 00 0f 0c 303132333435363738396162 00",
-        ),
+        // positions 0, 1 and 2 (Create, Delete, DeleteFabric): `a_change_is_a_create_a_delete_by_node_id_or_a_fabric_delete`
         (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into(), from_attempt: 3 } }, "00 01 01 62 03"),
         (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: executor_birth(), context: CallContext::default(), operations: vec![b"{}".to_vec()], hand_off_to: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()), mesh: None }, "01 01 62 02 0c 303132333435363738396162 0c 303132333435363738396163 00 00 00 00 01 02 7b7d 01 0c 303132333435363738396162 00"),
         // a drift attempt names its mesh (Q118): mesh "m"
@@ -89,6 +40,8 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
     }
     assert_eq!(Build::REQUEST_VARIANTS, 5);
     assert_eq!(Build::decode_request(&[5]), Err(DecodeFailure::UnknownVariant));
+    // a change past DeleteFabric (position 2) is an unknown variant
+    assert_eq!(Build::decode_request(&bytes("00 00 03")), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]
@@ -366,69 +319,6 @@ fn failure_codes_are_appended_and_retained_by_the_build_wire() {
     assert_eq!(Build::decode_reply(&bytes("05 01 62 02 01 6f 01 73 01 72 11")), Err(DecodeFailure::Corrupt));
 }
 
-/// CONTRACT (proposal executable-bindings-at-create.md §1: the removed change's
-/// positional slots reserved, no format move; §4: the removed change refused as unknown, the Build wire's
-/// reserved slots decode as before): a request a caller of the removed operation sends (change position
-/// 14, its set after it) decodes as `UnknownVariant`, never a change; the change after it keeps its
-/// position (`Reconcile` = 0f).
-#[test]
-fn a_request_at_the_removed_change_position_is_an_unknown_variant() {
-    let removed = bytes("00 00 0e 01 63 01 62 01 0a 6e6f64655f61646d696e 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00");
-    assert_eq!(Build::decode_request(&removed), Err(DecodeFailure::UnknownVariant));
-    assert_eq!(Build::decode_request(&bytes("00 00 0e")), Err(DecodeFailure::UnknownVariant), "the bare position too");
-    let reconcile = bytes("00 00 0f 0c 303132333435363738396162 00 00");
-    assert!(matches!(Build::decode_request(&reconcile), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { .. }) })), "Reconcile keeps position 15");
-}
-
-/// CONTRACT (Q183, Luke 2026-10-26: node.restart is removed; callers run node.stop then node.start):
-/// a request a caller of the removed restart sends (change position 6, its node after it) decodes as
-/// `UnknownVariant`, never a change, and so does the bare position.
-#[test]
-fn a_request_at_the_removed_restart_position_is_an_unknown_variant() {
-    assert_eq!(Build::decode_request(&bytes("00 00 06 0a 6d657368312e6e6f6465 01 31")), Err(DecodeFailure::UnknownVariant), "a node.restart of mesh1.node.1");
-    assert_eq!(Build::decode_request(&bytes("00 00 06")), Err(DecodeFailure::UnknownVariant), "the bare position too");
-}
-
-/// CONTRACT (Q342, build.md §1: node.stop, node.start and node.connection.delete are node commands of
-/// the primary above the node, and a node recovery and the terminate of a deleted birth heard again
-/// are the primary's own workflow, never a Build or part of one): a request a caller of a removed
-/// change sends (`DeleteConnections` = 07, `Stop` = 08, `Start` = 09, `Recover` = 0a, `Terminate` =
-/// 0d, each with its node after it) decodes as `UnknownVariant`, never a change, and so does the bare
-/// position; the changes after them keep their positions (`Steps` = 0b, `DeleteFabric` = 0c,
-/// `Reconcile` = 0f).
-#[test]
-fn a_request_at_a_removed_node_command_or_repair_position_is_an_unknown_variant() {
-    for position in ["07", "08", "09", "0a", "0d"] {
-        assert_eq!(Build::decode_request(&bytes(&format!("00 00 {position} 09 6d657368312e727063 01 31"))), Err(DecodeFailure::UnknownVariant), "position {position} with its node");
-        assert_eq!(Build::decode_request(&bytes(&format!("00 00 {position}"))), Err(DecodeFailure::UnknownVariant), "the bare position {position}");
-    }
-    assert!(matches!(Build::decode_request(&bytes("00 00 0c")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteFabric) })), "DeleteFabric keeps position 12");
-}
-
-/// CONTRACT (proposal executable-bindings-at-create.md §3.10(a): "the count forms `ReconcileFabric`,
-/// `ReconcileMesh`, `AddNode` and `CreateMesh` are reserved (positional, no format move)"): a request a
-/// caller of a count form sends (change positions 0, 1, 2 and 4, with the counts after them, or the bare
-/// position) decodes as `UnknownVariant`, never a change; every change between and after them keeps its
-/// position (`RemoveNode` = 03, `RemoveMesh` = 05, `Reconcile` = 0f).
-#[test]
-fn a_request_at_a_reserved_count_position_is_an_unknown_variant() {
-    for (what, sent) in [
-        ("ReconcileFabric { fabric: f, meshes: [m 1 admin 1 rpc] }", "00 00 00 01 66 01 01 6d 01 01 00 00 00"),
-        ("ReconcileMesh { m 1 admin 1 rpc }", "00 00 01 01 6d 01 01 00 00 00"),
-        ("AddNode { m, RpcNode }", "00 00 02 01 6d 01"),
-        ("CreateMesh { m 1 admin 1 rpc }", "00 00 04 01 6d 01 01 00 00 00"),
-        ("the bare position 0", "00 00 00"),
-        ("the bare position 1", "00 00 01"),
-        ("the bare position 2", "00 00 02"),
-        ("the bare position 4", "00 00 04"),
-    ] {
-        assert_eq!(Build::decode_request(&bytes(sent)), Err(DecodeFailure::UnknownVariant), "{what}");
-    }
-    assert!(matches!(Build::decode_request(&bytes("00 00 03 06 6d2e6e6f64650131")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { .. }) })), "RemoveNode keeps position 3");
-    assert!(matches!(Build::decode_request(&bytes("00 00 05 01 6d")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveMesh { .. }) })), "RemoveMesh keeps position 5");
-    assert!(matches!(Build::decode_request(&bytes("00 00 0f 0c 303132333435363738396162 00 00")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { .. }) })), "Reconcile keeps position 15");
-}
-
 /// A create spec carries its owning mesh and its type explicitly, followed by the complete
 /// properties. The full rebirth cut refuses a request written with the former entry shape.
 #[test]
@@ -451,6 +341,53 @@ fn a_create_spec_carries_explicit_ownership_and_the_complete_config_map() {
     }
     let configured = rdm_core::meta::NodeSpec { config: [("k".to_string(), "v".to_string())].into(), ..node.clone() };
     assert_eq!(postcard::to_allocvec(&configured).unwrap(), bytes("06 6d2e6e6f64650131 01 6d 04 6e6f6465 00 00 00 01 01 6b 01 76"));
-    let old_request = bytes("00 00 0f 0c 303132333435363738396162 02 09 6d2e61646d696e2e31 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 07 6d2e7270632e31 00 00 00");
+    let old_request = bytes("00 00 03 0c 303132333435363738396162 02 09 6d2e61646d696e2e31 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 07 6d2e7270632e31 00 00 00");
     assert!(Build::decode_request(&old_request).is_err(), "a request written before Q166 does not decode against the create spec");
+}
+
+/// CONTRACT (node-rpc-envelope.md "Build schema"; build.md §1, Q342): a Build's change is one of
+/// three batches, at positions 0, 1 and 2: `Create { meshes, nodes }`, each mesh by its Meshes schema
+/// (its name) and each node by its Nodes schema, its `path` and `name` two strings and its `type` a
+/// string, its storage and executable `None` where its type's apply; `Delete { meshes, node_ids }`,
+/// each mesh by name and each node by its node.id, never by a path and name; and `DeleteFabric`.
+#[test]
+fn a_change_is_a_create_a_delete_by_node_id_or_a_fabric_delete() {
+    use rdm_core::build::{Meshes, Nodes};
+    let admin = Nodes {
+        path: "m2.admin".into(),
+        name: "1".into(),
+        mesh: "m2".into(),
+        r#type: "node-admin".into(),
+        storage_persistence: None,
+        executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
+        tags: Default::default(),
+        config: Default::default(),
+    };
+    let rpc = Nodes {
+        path: "m2.rpc".into(),
+        name: "1".into(),
+        mesh: "m2".into(),
+        r#type: "rpc-node".into(),
+        storage_persistence: Some(rdm_core::meta::StoragePersistence::Ephemeral),
+        executable: None,
+        tags: ["t".to_string()].into(),
+        config: [("k".to_string(), "v".to_string())].into(),
+    };
+    let fixtures = [
+        (
+            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Create { meshes: vec![Meshes { name: "m2".into() }], nodes: vec![admin, rpc] }) },
+            "00 00 00 01 02 6d32 02 \
+             08 6d322e61646d696e 01 31 02 6d32 0a 6e6f64652d61646d696e 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 00 00 \
+             06 6d322e727063 01 31 02 6d32 08 7270632d6e6f6465 01 00 00 01 01 74 01 01 6b 01 76",
+        ),
+        (
+            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Delete { meshes: vec!["m3".into()], node_ids: vec![rdm_core::NodeId::parse("0123456789ab").unwrap()] }) },
+            "00 00 01 01 02 6d33 01 0c 303132333435363738396162",
+        ),
+        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteFabric) }, "00 00 02"),
+    ];
+    for (q, hex) in fixtures {
+        assert_eq!(Build::encode_request(&q).unwrap(), bytes(hex), "{q:?}");
+        assert_eq!(Build::decode_request(&bytes(hex)).unwrap(), q);
+    }
 }

@@ -6,7 +6,8 @@
 //! Each cell drives the fabric-primary's control plane in process over the memory Build store, with
 //! the view set by the cell. Nothing here depends on timing.
 
-use rdm_admin::accepted::{AcceptedStore, AttemptAction, FabricTopology, TopologyChange};
+use rdm_admin::accepted::{AcceptedStore, AttemptAction, FabricTopology};
+use rdm_core::build::BuildChange;
 use rdm_admin::build::{BuildId, BuildReject};
 use rdm_admin::build_claim::AttemptContexts;
 use rdm_admin::build_state::{
@@ -153,41 +154,6 @@ async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_b
     }
 }
 
-/// CONTRACT (build.md §4.4, gate order): "A node stands at the path" (fourth) is read before "The
-/// node's mesh is heard" (sixth): a steps Build whose step acts on a path no node stands at, in a peer
-/// mesh held unheard, is refused `unknown-node` naming the step (Q223).
-/// Must NOT happen: the steps refused `unheard-mesh` by the later gate first.
-#[tokio::test]
-async fn a_step_on_no_node_is_refused_unknown_before_the_heard_gate() {
-    let r = rig(view(NodeStatus::Ready)).await;
-    let _ = r.cp.mesh_unheard.set(Arc::new(|m: &str| (m == "mesh2").then_some(40_000)));
-    let steps = vec![rdm_core::build::Step::Stop { path: "mesh2.node".into(), name: "9".into()}];
-    let span = tracing::info_span!("gates-steps");
-    let out = r.cp.open_steps_in(span, "gates-steps-unknown", steps).await;
-    assert!(matches!(&out, Err(Refusal::Reject(BuildReject::UnknownNode { step: Some(1), .. }))), "the steps are refused unknown-node, naming the step, before the heard gate (Q223), not {}", reason(&out));
-}
-
-/// CONTRACT (build.md §4.4: "A gate that fails refuses by name and nothing is written"; gate "The
-/// attempt is claimed | the Build store | `attempt-taken`"): a node.stop whose attempt number another
-/// writer's open took first is refused `attempt-taken`, and the context that attempt holds is the
-/// other writer's still.
-/// Must NOT happen: the refused stop's context put over the attempt another action holds.
-#[tokio::test]
-async fn an_attempt_taken_refusal_writes_no_attempt_context() {
-    let r = rig(view(NodeStatus::Ready)).await;
-    let current = r.builds.current().await.unwrap().expect("the seeded Build is current");
-    let theirs = rdm_core::context::CallContext { caller_system: Some("the racer".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), tracestate: None, baggage: None };
-    // The number the stop asks for: the fabric lane's next.
-    let n = current.attempt + 1;
-    r.contexts.put_attempt_context(&current.build_id, None, n, &theirs).await.unwrap();
-    r.builds.armed.store(true, Ordering::SeqCst);
-    let span = tracing::info_span!("gates-attempt-taken");
-    let out = r.cp.open_steps_in(span, "gates-attempt-taken", vec![rdm_core::build::Step::Stop { path: "mesh1.node".into(), name: "1".into() }]).await;
-    assert!(matches!(&out, Err(Refusal::AttemptTaken(_))), "the stop is refused attempt-taken, not {}", reason(&out));
-    let held = r.contexts.attempt_context(&current.build_id, None, n).await.unwrap();
-    assert_eq!(held, Some(theirs), "nothing is written by the refused stop: attempt {n}'s context is the racer's");
-}
-
 /// The Build store; every open is followed at once by a drive pass's claim of the attempt it opened,
 /// decided before the opener's call returns: what a drive pass already running does when it claims
 /// the attempt the moment the open lands.
@@ -249,36 +215,6 @@ impl BuildStateAdapter for ClaimedInTheOpen {
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
-}
-
-/// CONTRACT (build.md §4.4, gate "The attempt is claimed"; build_claim.rs `for_claim_lane`: "The
-/// context `attempt` is claimed with: its own"): an attempt's call context is written with its open,
-/// in the one record, so a drive pass that claims the attempt the moment the open lands claims it with
-/// the opening request's context, never the previous attempt's.
-/// Must NOT happen: the claim between the open and a later context write taking the previous
-/// attempt's context (its reconcile parented to another request's span).
-#[tokio::test]
-async fn a_claim_the_moment_the_open_lands_takes_the_opening_requests_context() {
-    let t = view(NodeStatus::Ready);
-    let contexts = Arc::new(AttemptContexts::on(Arc::new(MemoryBuildStateAdapter::new()) as Arc<dyn LocalBuildLog>));
-    let builds = Arc::new(ClaimedInTheOpen { executor: executor(&t), inner: MemoryBuildStateAdapter::new(), contexts: contexts.clone(), claims: Default::default(), claimed: Default::default() });
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &executor(&t), "mesh1").await.unwrap();
-    let mut cp = crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t.clone(), crate::adopted_time()).with_contexts(contexts.clone());
-    // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
-    crate::bind_records(&cp, &[&t]).await;
-    cp.topology = Arc::new(tokio::sync::RwLock::new(t));
-    let current = builds.current().await.unwrap().expect("the seeded Build is current");
-    // The previous attempt's context: another request's trace.
-    let previous = rdm_core::context::CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), tracestate: None, baggage: None };
-    contexts.put(&current.build_id, current.attempt, &previous).await.unwrap();
-    let opened = cp
-        .open_steps_in(tracing::info_span!("gates-claimed-in-the-open"), "gates-claimed-in-the-open", vec![rdm_core::build::Step::Stop { path: "mesh1.node".into(), name: "1".into() }])
-        .await
-        .expect("the stop is admitted");
-    assert_eq!(opened.attempt, current.attempt + 1);
-    let claimed = builds.claimed.lock().unwrap().clone().expect("the drive pass won the attempt's claim");
-    assert_ne!(claimed.traceparent, previous.traceparent, "the claim took the previous attempt's context: {claimed:?}");
-    assert_eq!(contexts.get(&opened.build_id, opened.attempt).await.unwrap(), Some(claimed), "the attempt's context is the one its claim took");
 }
 
 /// Node investigation as the cells set it (node-investigation.md): the provider reads the one exact

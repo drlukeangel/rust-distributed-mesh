@@ -17,7 +17,8 @@
 //!   fabric-primary for a topology attempt and by a mesh's primary for its drift
 //!   attempt, the mesh in the key (R-BI7), so a successor reads it there.
 
-use crate::accepted::{AttemptAction, FabricTopology, TopologyChange};
+use crate::accepted::{AttemptAction, FabricTopology};
+use rdm_core::build::BuildChange;
 use crate::build::BuildId;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -36,7 +37,12 @@ pub struct BuildAccepted {
     pub topology: FabricTopology,
     /// The change that produced the topology: history only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub submitted_change: Option<TopologyChange>,
+    pub submitted_change: Option<BuildChange>,
+    /// Who wrote the record: the accepting fabric-primary's exact birth,
+    /// `rdm://<fabric_id>/<node_id>/<incarnation>` (gossip.md §3.4's `source`). A record written before
+    /// the field names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// When the Build was accepted, in milliseconds since the Unix epoch.
     pub submitted_at_ms: u64,
 }
@@ -67,10 +73,9 @@ pub enum AttemptReason {
     /// The delete of a stopped birth at its retained predecessor location, or of a deleted mesh's last admin, was
     /// requested (`node.delete:<path>`, node.delete's one key).
     Delete,
-    /// Steps were submitted: one Build of node primitives (build.md §1). Its journal name stays
-    /// `recipe`, the name `builds.jsonl` already holds (Q211 renamed the variant only, as `roll` before it).
-    #[serde(rename = "recipe")]
-    Steps,
+    /// Reserved position: the removed steps' reason (Q342: a replace is node commands, then a Build
+    /// that adds; node-replace.md). Never opened.
+    Reserved9,
     /// Reserved position: the removed adoption launch's reason; it is fabric recovery, the primary's own
     /// workflow (Q342). Never opened.
     Reserved10,
@@ -89,14 +94,14 @@ impl AttemptReason {
             Self::Reserved6 => "reserved-6",
             Self::Reserved7 => "reserved-7",
             Self::Delete => "delete",
-            Self::Steps => "steps",
+            Self::Reserved9 => "reserved-9",
             Self::Reserved10 => "reserved-10",
         }
     }
 
     /// Whether the reason is a reserved position, which no attempt is opened with.
     pub fn is_reserved(self) -> bool {
-        !matches!(self, Self::Requested | Self::Delete | Self::Steps)
+        !matches!(self, Self::Requested | Self::Delete)
     }
 }
 
@@ -314,7 +319,7 @@ pub struct BuildProjection {
     pub topology: FabricTopology,
     /// The change that produced the topology: history only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub submitted_change: Option<TopologyChange>,
+    pub submitted_change: Option<BuildChange>,
     /// When the Build was accepted, in milliseconds since the Unix epoch.
     pub submitted_at_ms: u64,
     /// Where the Build is in its life.
@@ -434,7 +439,7 @@ impl Lane {
 impl BuildProjection {
     /// Whether the change that produced this Build is fabric.delete.
     pub fn deletes_fabric(&self) -> bool {
-        matches!(self.submitted_change, Some(TopologyChange::DeleteFabric))
+        matches!(self.submitted_change, Some(BuildChange::DeleteFabric))
     }
 
     /// Whether any mesh's drift lane holds an attempt open.
@@ -626,7 +631,7 @@ pub async fn fabric_delete_in_force(builds: &dyn BuildStateAdapter) -> Result<Op
     }
     let facts = builds.facts().await?;
     let Some(id) = facts.iter().rev().find_map(|f| match f {
-        BuildFact::Accepted(a) if a.submitted_at_ms == newest && matches!(a.submitted_change, Some(TopologyChange::DeleteFabric)) => Some(a.build_id.clone()),
+        BuildFact::Accepted(a) if a.submitted_at_ms == newest && matches!(a.submitted_change, Some(BuildChange::DeleteFabric)) => Some(a.build_id.clone()),
         _ => None,
     }) else {
         return Ok(None);
@@ -1284,7 +1289,6 @@ pub(crate) fn delete_step_birth(s: &BuildStepReceipt, step: &str) -> Option<(cra
     let matches_subject = match &s.operation.subject {
         Some(rdm_core::OperationSubject::Node(id)) => *id == op.node_id,
         Some(rdm_core::OperationSubject::Birth { node_id, incarnation }) => *node_id == op.node_id && *incarnation == op.incarnation,
-        Some(rdm_core::OperationSubject::Location(location)) => *location == op.location(),
         _ => false,
     };
     matches_subject.then_some((op.location(), op.node_id, op.incarnation))
@@ -1339,7 +1343,6 @@ fn mesh_deleted_final(s: &BuildStepReceipt) -> Option<(crate::model::NodeId, cra
 fn describe_open(o: &AttemptOpened) -> String {
     let action = match &o.action {
         Some(crate::accepted::AttemptAction::Delete { path, node_id, from_incarnation, .. }) => format!("delete of path {path_field:?}, name {name_field:?} from {node_id} at {from_incarnation}", path_field = &path.path, name_field = &path.name),
-        Some(crate::accepted::AttemptAction::Steps { steps, .. }) => format!("{} step(s): {:?}", steps.len(), steps.iter().map(crate::build::step_key).collect::<Vec<_>>()),
         None => "no targeted action".to_string(),
     };
     let lane = o.mesh.as_ref().map(|m| format!(", in {m}'s drift lane")).unwrap_or_default();
@@ -2702,11 +2705,11 @@ mod tests {
 
     #[test]
     fn a_structured_step_without_optional_output_decodes() {
-        let mut without_output = serde_json::to_value(step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()))).unwrap();
+        let mut without_output = serde_json::to_value(step("b1", 1, rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())))).unwrap();
         without_output.as_object_mut().unwrap().remove("output");
         let receipt: BuildStepReceipt = serde_json::from_value(without_output).unwrap();
         assert_eq!(receipt.output, None);
-        let with = BuildStepReceipt { output: Some(serde_json::json!({"pid": 7})), ..step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
+        let with = BuildStepReceipt { output: Some(serde_json::json!({"pid": 7})), ..step("b1", 1, rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap()))) };
         let back: BuildStepReceipt = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
         assert_eq!(back, with);
     }
@@ -2717,7 +2720,7 @@ mod tests {
     #[test]
     fn receipt_identity_preserves_structured_fields() {
         let location = rdm_core::PathName::new("elsewhere.gateway", "north").unwrap();
-        let first = step("b1", 1, rdm_core::OperationId::location("node.create", &location));
+        let first = step("b1", 1, rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&location)));
         let mut variants = vec![first.clone()];
         let mut changed = first.clone();
         changed.operation.recipe_step = Some(2);
@@ -2726,10 +2729,10 @@ mod tests {
         changed.step = "Complete".into();
         variants.push(changed);
         let mut changed = first.clone();
-        changed.operation = rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("elsewhere", "north").unwrap());
+        changed.operation = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("elsewhere", "north").unwrap()));
         variants.push(changed);
         let mut changed = first.clone();
-        changed.operation = rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("elsewhere.gateway", "south").unwrap());
+        changed.operation = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("elsewhere.gateway", "south").unwrap()));
         variants.push(changed);
         let mut nested = first.clone();
         nested.operation = rdm_core::OperationId::primary_update(rdm_core::PrimaryRole::FabricPrimary, &first.operation);
@@ -2785,7 +2788,7 @@ mod tests {
             build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(),
             topology: FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()),
             submitted_change: None,
-            submitted_at_ms: 1,
+            source: None, submitted_at_ms: 1,
         }
     }
 
@@ -2911,7 +2914,7 @@ mod tests {
                 mesh: None,
                 build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
                 attempt: 2,
-                operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
+                operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
                 step: "NodeDeleting".into(),
                 outcome: StepOutcome::Complete,
                 output,
@@ -2924,7 +2927,7 @@ mod tests {
         assert!(read.ops.is_empty(), "an unreadable step opens no overlay");
         assert_eq!(read.unrecognised.len(), 1, "{read:?}");
         let u = &read.unrecognised[0];
-        assert_eq!((u.attempt, &u.operation, u.step.as_str()), (2, &rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), "NodeDeleting"));
+        assert_eq!((u.attempt, &u.operation, u.step.as_str()), (2, &rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), "NodeDeleting"));
         assert!(u.reason.contains("not a LifecycleOp this build reads"), "{}", u.reason);
         let held = [BuildFact::Accepted(intent("b1")), step(None)];
         let none = in_flight_ops(&held, &fold(&held));
@@ -3103,7 +3106,7 @@ mod tests {
         .await;
         let (b1, b2) = (BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap().to_string(), BuildId::parse(&rdm_core::fixture_crockford60("b2")).unwrap().to_string());
         assert_eq!(seen.lock().unwrap().last().unwrap(), &[b1.clone()].into_iter().collect(), "installed: the current Build, b1");
-        m.absorb(&[BuildFact::Accepted(BuildAccepted { submitted_at_ms: 2, ..intent("b2") })]).await;
+        m.absorb(&[BuildFact::Accepted(BuildAccepted { source: None, submitted_at_ms: 2, ..intent("b2") })]).await;
         assert_eq!(seen.lock().unwrap().last().unwrap(), &[b1.clone(), b2.clone()].into_iter().collect(), "b2's acceptance: b2's own, and b1 still current until it is indexed");
         m.absorb(&[BuildFact::Claim(claim("b2", 1, "100000000001", "mesh1"))]).await;
         assert_eq!(seen.lock().unwrap().last().unwrap(), &[b2.clone()].into_iter().collect(), "a fact of the current Build b2: b2 alone, b1 is neither touched, current nor held");
@@ -3210,10 +3213,8 @@ mod tests {
         let current = j.current().await.unwrap().expect("the old Build is current");
         assert_eq!((current.build_id.clone(), current.state), (BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), BuildState::Complete));
         assert_eq!(current.topology, intent("b1").topology, "read as it is: every entry names none");
-        let admin = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node-admin".into(), path: "mesh1.node-admin".into(), name: "1".into(), storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve }, executable: None, tags: Default::default(), config: Default::default() };
-        let mut rpc = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node".into(), path: "mesh1.node".into(), name: "1".into(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
-        rpc.executable = Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
-        let change = crate::accepted::TopologyChange::Reconcile { based_on: current.build_id.clone(), nodes: vec![admin, rpc] };
+        let rpc = rdm_core::build::Nodes { path: "mesh1.node".into(), name: "1".into(), mesh: "mesh1".into(), r#type: "node".into(), storage_persistence: None, executable: Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None }), tags: Default::default(), config: Default::default() };
+        let change = rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: vec![rpc] };
         let observed = crate::topology::Topology {
             fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
             meshes: vec![],
@@ -3262,7 +3263,7 @@ mod tests {
     }
 
     fn accepted_at(id: &str, at_ms: u64) -> BuildAccepted {
-        BuildAccepted { submitted_at_ms: at_ms, ..intent(id) }
+        BuildAccepted { source: None, submitted_at_ms: at_ms, ..intent(id) }
     }
 
     /// CONTRACT (R-BI3: "it reads the builds till it finds the last committed/completed build id and
@@ -3299,7 +3300,7 @@ mod tests {
             assert_eq!(s.read_build(&id("b0")).await.unwrap().state, BuildState::Failed);
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")), "an attempt of an unchanged topology that failed never makes an older Build current");
             // The failed b1 resubmitted: its next attempt makes it the Build in progress.
-            s.open_attempt(&opened("b1", 2, AttemptReason::Steps)).await.unwrap();
+            s.open_attempt(&opened("b1", 2, AttemptReason::Delete)).await.unwrap();
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b1")));
             s.claim_attempt(&claim("b1", 2, "100000000007", "mesh1")).await.unwrap();
             s.append_attempt_receipt(&attempt("b1", 2, AttemptOutcome::Converged)).await.unwrap();
@@ -3572,23 +3573,6 @@ mod tests {
         assert!(fabric.get("mesh").is_none() && fabric.get("claimant").is_none(), "a fabric-lane line is written as before: {fabric}");
     }
 
-    /// CONTRACT (Q211: the Build's ordered list is steps; the rename moves no durable format): an attempt
-    /// that carries steps is written to `builds.jsonl` under the tags the journal already holds,
-    /// `"reason":"recipe"` and `"action":"recipe"`, and a line written before the rename reads back as
-    /// `AttemptReason::Steps` carrying `AttemptAction::Steps`. Views and spans name the reason `steps`.
-    #[test]
-    fn an_attempt_of_steps_keeps_the_journal_tags_written_before_the_rename() {
-        let node: crate::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let mut steps = opened("b1", 2, AttemptReason::Steps);
-        steps.action = Some(crate::accepted::AttemptAction::Steps { rename_intents: Default::default(), steps: vec![rdm_core::build::Step::Stop { path: node.path.clone(), name: node.name.clone()}], pinned: vec![] });
-        let line = serde_json::to_value(BuildFact::Opened(steps.clone())).unwrap();
-        assert_eq!((line["reason"].as_str(), line["action"]["action"].as_str()), (Some("recipe"), Some("recipe")), "{line}");
-        let old = line.to_string();
-        assert!(old.contains(r#""reason":"recipe""#) && old.contains(r#""action":"recipe""#), "{old}");
-        assert_eq!(serde_json::from_str::<BuildFact>(&old).unwrap(), BuildFact::Opened(steps));
-        assert_eq!(AttemptReason::Steps.as_str(), "steps");
-    }
-
     /// CONTRACT (i146 Q61 A; build.md §5.2: "Restarting every node-admin at once must not erase the facts
     /// needed to reconstruct the Fabric and continue an active Build", §5.3: "a successor reads them
     /// there"): a fabric-primary's committed Build facts (the accepted Build, its attempt claim, a step
@@ -3651,7 +3635,7 @@ mod tests {
         let long = "x".repeat(9_000);
         fp.publish_accepted(&intent("b1")).await.unwrap();
         fp.claim_attempt(&claim("b1", 1, "100000000001", "mesh1")).await.unwrap();
-        let failed = BuildStepReceipt { outcome: StepOutcome::Failed { reason: long.clone(), code: rdm_core::outcome::Code::DeadlineExceeded }, ..step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
+        let failed = BuildStepReceipt { outcome: StepOutcome::Failed { reason: long.clone(), code: rdm_core::outcome::Code::DeadlineExceeded }, ..step("b1", 1, rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap()))) };
         fp.append_step_receipt(&failed).await.unwrap();
 
         assert!(mp.facts().await.unwrap().is_empty(), "the reader's cached log holds nothing: it is not the fabric-primary");
@@ -3667,7 +3651,7 @@ mod tests {
         assert_eq!(fold(&read).get(&id).map(|p| p.attempt), Some(1), "the read folds to the Build's claimed attempt");
 
         // A record committed after the first read is in the next one: nothing is cached.
-        fp.append_step_receipt(&step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()))).await.unwrap();
+        fp.append_step_receipt(&step("b1", 1, rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())))).await.unwrap();
         assert_eq!(mp.committed_facts(Some(&id)).await.unwrap().len(), 4, "the next read holds the record committed since");
 
         let absent = BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap();

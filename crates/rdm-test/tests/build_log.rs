@@ -24,6 +24,15 @@ fn builds_file(estate: &Estate) -> std::path::PathBuf {
     estate.fabric_store_root().join(rdm_admin::store_root::BUILDS_FILE)
 }
 
+/// The node.id Build `id`'s record minted for the node it creates at `at` (D58: the fabric-primary
+/// mints it at acceptance and writes it in the record). Panics naming the Build when it creates none
+/// there.
+pub async fn created_id(estate: &Estate, id: &str, at: &rdm_core::PathName) -> rdm_core::NodeId {
+    let facts = log_read(estate, id).await.unwrap_or_else(|end| panic!("the record of Build {id}: {end}"));
+    let accepted = facts.iter().find_map(|f| match f { BuildFact::Accepted(a) => Some(a), _ => None }).unwrap_or_else(|| panic!("Build {id} holds no accepted record"));
+    accepted.topology.created_id(at).cloned().unwrap_or_else(|| panic!("Build {id} creates no node at {at:?}: {:?}", accepted.topology.created))
+}
+
 /// The committed records of Build `id` on the estate's fabric store root now, read whole. A store that
 /// holds no record of the Build ends the call `Indeterminate` (`unknown build`), naming it; a store that
 /// cannot be read ends it `Indeterminate` with the read's own words.

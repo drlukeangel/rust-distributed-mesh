@@ -142,11 +142,9 @@ pub struct FabricView {
 }
 
 impl Topology {
-    /// The active members used by planning, drift, election, primaries and executors.
-    /// Explicit replacement provenance excludes a predecessor, whose path stays unchanged
-    /// and whose name becomes `<name>-old`. Neither field's spelling determines membership.
+    /// The members used by planning, election, primaries and executors: every birth the view holds.
     pub fn members(&self) -> impl Iterator<Item = &Node> {
-        self.nodes.iter().filter(|n| n.renamed_from.is_none())
+        self.nodes.iter()
     }
 
     /// Every birth the view holds, replaced predecessors included. For what names or waits on a
@@ -154,11 +152,6 @@ impl Topology {
     /// shutdown that stops every runtime still present.
     pub fn births(&self) -> impl Iterator<Item = &Node> {
         self.nodes.iter()
-    }
-
-    /// The replaced predecessors (the predecessor name `<name>-old` at the same path) still held, until their departure.
-    pub fn predecessors(&self) -> impl Iterator<Item = &Node> {
-        self.nodes.iter().filter(|n| n.renamed_from.is_some())
     }
 
     /// Whether the birth `node_id` is the only node of `mesh` (R-MT1: the delete of a mesh's only node
@@ -289,7 +282,6 @@ impl Topology {
         match subject {
             rdm_core::OperationSubject::Node(id) => self.own(id),
             rdm_core::OperationSubject::Birth { node_id, incarnation } => self.own(node_id).filter(|node| node.incarnation_id.as_ref() == Some(incarnation)),
-            rdm_core::OperationSubject::Location(location) => self.node(location),
             _ => None,
         }
     }
@@ -448,7 +440,7 @@ mod tests {
         let successor_id = successor.node_id.clone();
         view.nodes.push(successor);
         assert_eq!(view.node_subject(&subject).map(|n| &n.node_id), Some(&id));
-        assert_eq!(view.node_subject(&rdm_core::OperationSubject::Location(location)).map(|n| &n.node_id), Some(&successor_id));
+        assert_eq!(view.node_subject(&rdm_core::OperationSubject::Node(successor_id.clone())).map(|n| &n.node_id), Some(&successor_id));
         assert_eq!(crate::executor::role_move(&op, &view).map(|m| m.primary.node_id), Some(id.clone()));
         let updates = crate::build_drive::preceding_updates(&op, &rdm_core::BuildId::mint(), 2);
         assert_eq!(updates.len(), 2);

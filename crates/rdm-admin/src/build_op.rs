@@ -12,7 +12,6 @@
 //! which names the Build and the claim and never carries a copy of the Build: the executor reads its
 //! committed records from storage before it plans (Q292).
 
-use crate::accepted::TopologyChange;
 use crate::build::{BuildId, BuildOperation};
 use crate::executor::RunPlan;
 use crate::build_drive::{Dispatched, Dispatcher, Drive, DriveEnv, Drives, InnerItem, InnerStream, Read, VerdictSink};
@@ -99,7 +98,7 @@ impl BuildDoor {
     async fn admit_change(&self, change: &BuildChange) -> Result<Admitted, BuildReply> {
         let cp = &self.control;
         let node_span = |node: &PathName| tracing::info_span!("rdm.node_admin.build.update.via-node-rpc", route = "build.create", build_id = tracing::field::Empty, attempt = tracing::field::Empty, node_path = %node.path, node_name = %node.name);
-        let created = |change: &TopologyChange| {
+        let created = |change: &BuildChange| {
             tracing::info_span!(
                 "rdm.node_admin.build.create.via-node-rpc",
                 route = "build.create",
@@ -109,46 +108,37 @@ impl BuildDoor {
                 minted_meshes = tracing::field::Empty,
             )
         };
-        let topology = |c: TopologyChange| async move {
+        let topology = |c: BuildChange| async move {
             let span = created(&c);
             cp.submit_in(span, "build.create", c).await
         };
         let r = match change {
-            // The stopped predecessor a replacement left at the predecessor name `<name>-old` at the same path, and the last admin of a mesh
-            // deleted at mesh.deleted (mesh-delete.md step 7: a separate node.delete after
-            // mesh.deleted), are deleted by the next attempt of the accepted Build, targeted to the exact
-            // birth: the topology never names that path.
-            BuildChange::RemoveNode { node } => {
-                match cp.of_deleted_mesh(node).await {
-                    Ok(true) => cp.open_delete_in(node_span(node), "build.create", node.clone()).await,
-                    Ok(false) => topology(TopologyChange::RemoveNode { path: node.path.clone(), name: node.name.clone()}).await,
-                    Err(e) => Err(e),
+            // The meshes and nodes a Create adds, as it came in (build.md §1).
+            BuildChange::Create { .. } => topology(change.clone()).await,
+            // The stopped predecessor a replacement left at the predecessor name `<name>-old` at the same
+            // path, and the last admin of a mesh deleted at mesh.deleted (mesh-delete.md step 7: a separate
+            // node.delete after mesh.deleted), named alone by its node.id, are deleted by the next attempt
+            // of the accepted Build, targeted to the exact birth: the topology never names that path. Every
+            // other Delete is a topology Build, each node.id resolved at acceptance.
+            BuildChange::Delete { meshes, node_ids } => {
+                let alone = match (meshes.as_slice(), node_ids.as_slice()) {
+                    ([], [id]) => cp.path_of_node_id(id).await,
+                    _ => None,
+                };
+                match alone {
+                    Some(node) => match cp.of_deleted_mesh(&node).await {
+                        Ok(true) => cp.open_delete_in(node_span(&node), "build.create", node.clone()).await,
+                        Ok(false) => topology(change.clone()).await,
+                        Err(e) => Err(e),
+                    },
+                    None => topology(change.clone()).await,
                 }
             }
-            BuildChange::RemoveMesh { mesh } => topology(TopologyChange::RemoveMesh { mesh: mesh.clone() }).await,
             BuildChange::DeleteFabric => match cp.fabric_delete_in_force().await {
                 Ok(Some((o, failed))) => return Ok(Admitted::Resumed(o, if failed { Disposition::NextAttempt } else { Disposition::Attached })),
-                Ok(None) => topology(TopologyChange::DeleteFabric).await,
+                Ok(None) => topology(change.clone()).await,
                 Err(r) => Err(r),
             },
-            // A reserved position (the removed count forms, the removed restart and the executable-set
-            // change) decodes as an unknown variant (`Build::decode_request`); a caller that builds the value in process is answered the
-            // same, `Malformed(UnknownVariant)` (node-rpc.md §26), nothing accepted.
-            // The node commands and repairs that are never a Build (Q342) are reserved positions too.
-            BuildChange::Reserved0 | BuildChange::Reserved1 | BuildChange::Reserved2 | BuildChange::Reserved4 | BuildChange::Reserved6 | BuildChange::Reserved7 | BuildChange::Reserved8 | BuildChange::Reserved9 | BuildChange::Reserved10 | BuildChange::Reserved13 | BuildChange::Reserved14 => return Err(rdm_core::reply::build::malformed(rdm_core::outcome::MalformedKind::UnknownVariant)),
-            // The complete topology (proposal executable-bindings-at-create.md rule 1): a topology Build,
-            // its `based_on` checked against the current Build at the door.
-            BuildChange::Reconcile { based_on, nodes } => topology(TopologyChange::Reconcile { based_on: based_on.clone(), nodes: nodes.clone() }).await,
-            BuildChange::Steps { steps } => {
-                let span = tracing::info_span!(
-                    "rdm.node_admin.build.update.via-steps",
-                    route = "build.create",
-                    build_id = tracing::field::Empty,
-                    attempt = tracing::field::Empty,
-                    steps = ?steps.iter().map(crate::build::step_key).collect::<Vec<_>>(),
-                );
-                cp.open_steps_in(span, "build.create", steps.clone()).await
-            }
         };
         r.map(Admitted::Opened).map_err(refusal_reply)
     }
@@ -673,7 +663,7 @@ impl InnerStream for RemoteStream {
 /// Build records (Q227), its acceptance the stored record's, so every executor, this admin included,
 /// takes them from the operation and reads none. A path the topology holds no entry for carries none.
 pub(crate) async fn with_entries(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, mut plan: RunPlan) -> Result<RunPlan, String> {
-    let needs = |op: &BuildOperation| matches!(op, BuildOperation::CreateNode { .. } | BuildOperation::UpdateConfig { .. } | BuildOperation::Step { step: rdm_core::build::Step::Create { .. }, .. });
+    let needs = |op: &BuildOperation| matches!(op, BuildOperation::CreateNode { .. });
     if !plan.operations.iter().any(needs) {
         return Ok(plan);
     }
@@ -681,7 +671,7 @@ pub(crate) async fn with_entries(builds: &dyn crate::build_state::BuildStateAdap
     let entry_of = |node: &PathName| held.topology.node_spec(node).map(crate::build::EntrySpec::of);
     for op in &mut plan.operations {
         match op {
-            BuildOperation::CreateNode { path: node_path, name: node_name, entry, .. } | BuildOperation::UpdateConfig { path: node_path, name: node_name, entry, .. } | BuildOperation::Step { step: rdm_core::build::Step::Create { path: node_path, name: node_name, .. }, entry, .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; *entry = entry_of(node) }
+            BuildOperation::CreateNode { node, entry, .. } => *entry = entry_of(node),
             _ => {}
         }
     }
@@ -1003,7 +993,7 @@ mod tests {
                 build_id: build_id.clone(),
                 topology: fab_top,
                 submitted_change: None,
-                submitted_at_ms: 1000,
+                source: None, submitted_at_ms: 1000,
             })
             .await
             .unwrap();
@@ -1011,13 +1001,9 @@ mod tests {
         let plan_with_create = RunPlan {
             operations: vec![
                 BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(),
-                    path: node_path.path.clone(), name: node_path.name.clone(),
+                    node_id: rdm_core::fixture_node_id(&node_path.clone()), node: node_path.clone(),
                     over: None,
                     executable: None,
-                    entry: None,
-                },
-                BuildOperation::UpdateConfig { node_id: crate::model::NodeId::mint(), r#type: "node".into(), mesh: "mesh1".into(),
-                    path: node_path.path.clone(), name: node_path.name.clone(),
                     entry: None,
                 },
             ],
@@ -1026,7 +1012,7 @@ mod tests {
         let populated = with_entries(&adapter, &build_id, plan_with_create).await.unwrap();
         for op in &populated.operations {
             match op {
-                BuildOperation::CreateNode { entry, .. } | BuildOperation::UpdateConfig { entry, .. } => {
+                BuildOperation::CreateNode { entry, .. } => {
                     let spec = entry.as_ref().expect("entry populated from accepted topology");
                     assert_eq!(spec.tags, BTreeSet::from(["role-rpc".to_string()]));
                     assert_eq!(spec.config.get("k").map(String::as_str), Some("v"));

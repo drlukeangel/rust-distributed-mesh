@@ -127,12 +127,11 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     // The recovery ends with its create of the node now holding the path: work on one node is serialized
     // at its mesh-primary, so the replace below waits for no Build attempt.
 
-    // 4. The replace steps do not inherit it: the successor's data dir is its own.
+    // 4. The replace does not inherit it: the successor's data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
     {
         let node = location();
-        let mut stream = estate.nodes_obj().await.steps(rdm_test::steps::replace(&node, "mesh1", "node").expect("valid replacement fixture name")).await.expect("the replace steps were accepted");
-        Estate::complete(&mut stream).await;
+        rdm_test::replace::replace(&estate, &node, "mesh1", "node").await.unwrap_or_else(|e| panic!("the replace of {node:?}: {e}"));
     }
     let replacement = estate
         .until_node(&location(), "a new logical node holds the path", Duration::from_secs(60), |n| {

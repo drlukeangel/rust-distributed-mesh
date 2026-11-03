@@ -42,235 +42,73 @@ use serde::{Deserialize, Serialize};
 /// The Build protocol: Builds are created, driven, read and deleted through the fabric-primary.
 pub struct Build;
 
-/// What a caller submits. The fabric-primary compiles it once against the accepted topology (a
-/// topology change opens a new Build) or opens the next attempt of the accepted Build (steps,
-/// targeted at the births they act on). A node command or a repair is never a Build (Q342).
+/// A mesh a [`BuildChange::Create`] adds, by its Meshes schema (node-rpc-envelope.md "Build schema"):
+/// the settable field. The record adds its `mesh_id` and state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Meshes {
+    /// The mesh's name.
+    pub name: String,
+}
+
+/// A node a [`BuildChange::Create`] adds, whole, by its Nodes schema (node-rpc-envelope.md "Build
+/// schema"): the settable fields, `path` and `name` two strings (R-NR1). The record adds the node's
+/// node.id, incarnation, state, endpoint and primaries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Nodes {
+    /// The node's path.
+    pub path: String,
+    /// The node's name.
+    pub name: String,
+    /// The mesh the node is created in.
+    pub mesh: String,
+    /// The node's type, by its name: a type the fabric does not
+    /// declare is refused by name at acceptance.
+    pub r#type: String,
+    /// The node's `storage_persistence` (storage.md §1); `None`: its type's.
+    pub storage_persistence: Option<crate::meta::StoragePersistence>,
+    /// The executable the node runs; `None`: its type's. A node with neither is refused by name.
+    pub executable: Option<crate::binding::Binding>,
+    /// The node's tag labels.
+    pub tags: std::collections::BTreeSet<String>,
+    /// The application's map; RDM never reads it.
+    pub config: std::collections::BTreeMap<String, String>,
+}
+
+/// What a caller submits (build.md §1): every external change that adds or removes a node is its own
+/// Build, a batch with a result per node or mesh. The caller states only what it adds or removes, never
+/// a node it does not touch. A node command or a repair is never a Build (Q342).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildChange {
-    /// Reserved position: the removed count form `ReconcileFabric` (proposal
-    /// executable-bindings-at-create.md §3.10(a)). Never sent; a request at this position decodes as
-    /// `UnknownVariant` ([`Build::decode_request`]). Kept so every later change keeps its position.
+    /// Add `meshes` and `nodes`, each node whole. A node whose mesh is not yet live creates that mesh
+    /// with its first node-admin. Refused by name: a new mesh with no node-admin among the nodes, a node
+    /// naming a mesh neither in the request nor live, a path and name already held, an undeclared type,
+    /// a node with no executable, its own or its type's.
     ///
     /// Position 0 on the wire.
-    Reserved0,
-    /// Reserved position: the removed count form `ReconcileMesh` (§3.10(a)), as [`Self::Reserved0`].
+    Create {
+        /// The meshes the Build adds.
+        meshes: Vec<Meshes>,
+        /// The nodes the Build adds.
+        nodes: Vec<Nodes>,
+    },
+    /// Delete `meshes`, each by name, and the nodes `node_ids`, each by its node.id, never by a path
+    /// and name. A node.id already deleted or replaced is refused by name in its own result.
     ///
     /// Position 1 on the wire.
-    Reserved1,
-    /// Reserved position: the removed count form `AddNode` (§3.10(a)), as [`Self::Reserved0`].
-    ///
-    /// Position 2 on the wire.
-    Reserved2,
-    /// Remove one node.
-    ///
-    /// Position 3 on the wire.
-    RemoveNode {
-        /// The node to remove.
-        node: PathName,
-    },
-    /// Reserved position: the removed count form `CreateMesh` (§3.10(a)), as [`Self::Reserved0`].
-    ///
-    /// Position 4 on the wire.
-    Reserved4,
-    /// Remove a mesh.
-    ///
-    /// Position 5 on the wire.
-    RemoveMesh {
-        /// The mesh to remove.
-        mesh: String,
-    },
-    /// Reserved position: the removed `node.restart` (Q183; callers run node.stop then node.start).
-    /// Never sent; a request at this position decodes as `UnknownVariant` ([`Build::decode_request`]).
-    /// Kept so every later change keeps its position.
-    ///
-    /// Position 6 on the wire.
-    Reserved6,
-    /// Reserved position: the removed `DeleteConnections` (Q342: node.connection.delete is a node
-    /// command of the primary above the node, never a Build or part of one; node-connections-delete.md).
-    /// Never sent; a request at this position decodes as `UnknownVariant` ([`Build::decode_request`]).
-    /// Kept so every later change keeps its position.
-    ///
-    /// Position 7 on the wire.
-    Reserved7,
-    /// Reserved position: the removed `Stop` (Q342: node.stop is a node command of the primary above
-    /// the node, NodeCommand 0x22 `StopNode` to its mesh-primary, D40; node-stop.md), as
-    /// [`Self::Reserved7`].
-    ///
-    /// Position 8 on the wire.
-    Reserved8,
-    /// Reserved position: the removed `Start` (Q342: node.start is a node command of the primary above
-    /// the node, NodeCommand 0x22 `StartNode` to its mesh-primary, D40; node-start.md), as
-    /// [`Self::Reserved7`].
-    ///
-    /// Position 9 on the wire.
-    Reserved9,
-    /// Reserved position: the removed `Recover` (Q342: node recovery is the primary's own workflow,
-    /// never a Build or part of one; node-recovery.md), as [`Self::Reserved7`].
-    ///
-    /// Position 10 on the wire.
-    Reserved10,
-    /// Steps: one Build whose steps are node primitives, run in order (build.md §1: "Rafka's
-    /// replace steps (one Build of node primitives ...)"; lifecycles/node-replace.md).
-    /// The caller owns the steps; RDM executes each step as its op's own workflow and records the
-    /// step's receipts. A resume never runs a completed step again. The topology is unchanged:
-    /// the steps are the next attempt of the accepted Build.
-    ///
-    /// Position 11 on the wire.
-    Steps {
-        /// The steps, in the order they run.
-        steps: Vec<Step>,
+    Delete {
+        /// The meshes the Build deletes, by name.
+        meshes: Vec<String>,
+        /// The nodes the Build deletes, by node.id.
+        node_ids: Vec<NodeId>,
     },
     /// Delete the fabric (`fabric.delete`, lifecycles/fabric-delete.md): run `mesh.delete` on each
     /// mesh leaf-inward (the fabric-primary's own mesh last, where the fabric role stays put),
     /// delete each other mesh's final mesh-primary, release the fabric name and report
     /// `fabric.deleted` while the fabric-primary remains alive for its separate `node.delete`.
     ///
-    /// Position 12 on the wire.
-    DeleteFabric,
-    /// Reserved position: the removed `Terminate` (Q342: the terminate of a deleted birth heard again
-    /// is the primary's own workflow, never a Build or part of one; node-investigation.md), as
-    /// [`Self::Reserved7`].
-    ///
-    /// Position 13 on the wire.
-    Reserved13,
-    /// Reserved position: the removed per-type executable-set change (proposal
-    /// executable-bindings-at-create.md §1, Q157). Never sent; a request at this position decodes as
-    /// `UnknownVariant` ([`Build::decode_request`]). A node's executable is replaced by a
-    /// [`Self::Reconcile`] naming it for its path. Kept so every later change keeps its position.
-    ///
-    /// Position 14 on the wire.
-    Reserved14,
-    /// The complete topology (proposal executable-bindings-at-create.md rule 1): every node of the
-    /// fabric, each by its create spec ([`crate::meta::NodeSpec`]: its `(path, name)` and its properties,
-    /// flat, Q166), the executable included. A node left out is
-    /// removed, one added is created, one whose executable differs from what its row records is
-    /// replaced (node.delete then node.create at the path, in RDM's order). A mesh named for the
-    /// first time is created with its first node-admin; a mesh left out is mesh.delete. Refused by
-    /// name when `based_on` is no longer the current Build (nothing accepted; the caller re-reads),
-    /// when it lists no node (that is fabric.delete), and when a path it creates names no
-    /// executable. Appended last: the Build wire is positional.
-    ///
-    /// Position 15 on the wire.
-    Reconcile {
-        /// The build_id of the current Build the caller read.
-        based_on: crate::BuildId,
-        /// Every node of the fabric, each by its create spec.
-        nodes: Vec<crate::meta::NodeSpec>,
-    },
-}
-
-impl BuildChange {
-    /// Whether this is a reserved position (positions 0, 1, 2, 4, 6, 7 to 10, 13 and 14: the removed count
-    /// forms, the removed restart, the node commands and repairs that are never a Build (Q342) and the
-    /// removed executable-set change): never sent, and a request at one is an unknown variant.
-    pub fn is_reserved(&self) -> bool {
-        matches!(self, Self::Reserved0 | Self::Reserved1 | Self::Reserved2 | Self::Reserved4 | Self::Reserved6 | Self::Reserved7 | Self::Reserved8 | Self::Reserved9 | Self::Reserved10 | Self::Reserved13 | Self::Reserved14)
-    }
-}
-
-/// One step of a [`BuildChange::Steps`]: one node primitive acting on the node a `(path, name)` names
-/// when the step runs. A path an earlier step of the same steps creates or renames to names the node
-/// that step left there.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Step {
-    /// node.create at `node`: a new node.id, incarnation and data dir at that exact `(path, name)`
-    /// (for a replace's successor, the `<name>` its predecessor released), claimed before anything is
-    /// launched.
-    ///
-    /// Position 0 on the wire.
-    Create {
-        /// The path the node is created at.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-        /// The owning mesh, independent of the path/name.
-        mesh: String,
-        /// The node's type, which the explicit executable serves.
-        r#type: String,
-        /// The executable binding the Build fixes for the node (node-rpc-envelope.md "Build schema";
-        /// node-replace.md step 3): whichever admin runs or resumes the step launches it, re-hashed at
-        /// the launch, and the node's row records it beside `config`. Absent, the node runs the
-        /// executable its seeding row records (the predecessor's, a recovered node's), and only a
-        /// node no row records one for takes its type's binding from the admin that launches it.
-        /// A record written before the step carried it decodes with none.
-        #[serde(default)]
-        executable: Option<crate::binding::Binding>,
-    },
-    /// node.stop of the live node at `node`: it is stopped, its process and data kept.
-    ///
-    /// Position 1 on the wire.
-    Stop {
-        /// The node.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-    },
-    /// node.update of the node at `node`: its `(path, name)` becomes `name` (lifecycles/node-name-update.md, under the
-    /// rename precondition: the node is live, its `node.connections.deleted` of an `All` and then its
-    /// `node.mesh.left` held, and it holds no connection; a stopped node is never renamed).
-    ///
     /// Position 2 on the wire.
-    Update {
-        /// The node.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-        /// The path it takes.
-        new_path: String,
-        /// The name, beside its path.
-        new_name: String,
-    },
-    /// node.start of the stopped node at `node`: the same process rejoins under the name its row holds.
-    ///
-    /// Position 3 on the wire.
-    Start {
-        /// The node.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-    },
-    /// node.delete of the node at `node`: its identity and name are released, its storage kept.
-    ///
-    /// Position 4 on the wire.
-    Delete {
-        /// The node.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-    },
-    /// node.connection.delete `{ scope: All }` of the live node at `node`
-    /// (lifecycles/node-connections-delete.md): every connection it holds is closed; it keeps running
-    /// on its mesh.
-    ///
-    /// Position 5 on the wire.
-    DeleteConnections {
-        /// The node.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-    },
-    /// node.mesh.leave of the live node at `node`, once its connections are deleted
-    /// (lifecycles/node-mesh-leave.md): it leaves its mesh (and the backbone, a node-admin) and its Node
-    /// RPC pool, its endpoint kept bound.
-    ///
-    /// Position 6 on the wire.
-    LeaveMesh {
-        /// The node.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-    },
+    DeleteFabric,
 }
-
-impl Step {
-    /// The `(path, name)` lookup index key of the node the step acts on when it runs.
-    pub fn location(&self) -> PathName {
-        match self {
-            Self::Create { path, name, .. } | Self::Stop { path, name } | Self::Update { path, name, .. } | Self::Start { path, name } | Self::Delete { path, name } | Self::DeleteConnections { path, name } | Self::LeaveMesh { path, name } => PathName { path: path.clone(), name: name.clone() },
-        }
-    }
-}
-
 /// A storage change (storage.md §2 "Changing it"): the fabric-primary's own workflow, never a Build,
 /// that moves RDM's stores from the fabric's provider to the one `fabric.storage.update` names,
 /// recorded as its `rdm.storage.started` event before its first command.
@@ -905,13 +743,8 @@ impl NodeProtocol for Build {
     type Request = BuildRequest;
     type Reply = BuildReply;
 
-    /// A change at a reserved position (a removed change, [`BuildChange::is_reserved`]) is a variant
-    /// this build does not know: refused as `UnknownVariant`, never a change.
     fn decode_request(bytes: &[u8]) -> Result<Self::Request, DecodeFailure> {
-        match crate::protocol::decode_enum(bytes, Self::REQUEST_VARIANTS)? {
-            BuildRequest::Create { submit: BuildSubmit::Change(change) } if change.is_reserved() => Err(DecodeFailure::UnknownVariant),
-            request => Ok(request),
-        }
+        crate::protocol::decode_enum(bytes, Self::REQUEST_VARIANTS)
     }
 
     fn reply_detail(reply: &Self::Reply) -> &'static str {
@@ -1016,143 +849,4 @@ impl StreamingProtocol for Build {
             other => FrameKind::Refusal(Build::classify_reply(other)),
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::binding::Binding;
-    use crate::protocol::NodeProtocol;
-
-    // @feature: node-replace
-    /// CONTRACT: docs/architecture/lifecycles/node-replace.md:5
-    /// "Replace is Rafka's steps, submitted as one Build. RDM executes its primitives and records their receipts"
-    /// CONTRACT: docs/architecture/lifecycles/node-replace.md:30
-    /// "1. node[1]: node.connection.delete `{ scope: All }`, then node.mesh.leave.
-    ///  2. node.name.update of node[1] to `<name>-old` ... Then node[1].stop ... If no rollback is wanted, node[1].delete ...
-    ///  3. node.create of node[2] at `<name>` ... The Build fixes the bin on its Create step"
-    #[test]
-    fn replace_step_primitives_preserve_wire_positions_and_reserved_changes_are_refused() {
-        let name: PathName = crate::PathName::new("mesh1.node", "1").unwrap();
-        let old_name = name.renamed().unwrap();
-        let binding = Binding {
-            launch_id: "node".into(),
-            executable: "/bin/testkit-node-v2".into(),
-            sha256: "b".repeat(64),
-            image: None,
-        };
-        let steps = vec![
-            Step::DeleteConnections { path: name.path.clone(), name: name.name.clone()},
-            Step::LeaveMesh { path: name.path.clone(), name: name.name.clone()},
-            Step::Update {
-                path: name.path.clone(), name: name.name.clone(),
-                new_path: old_name.path.clone(), new_name: old_name.name.clone(),
-            },
-            Step::Stop {
-                path: old_name.path.clone(), name: old_name.name.clone(),
-            },
-            Step::Create { mesh: "mesh1".into(), r#type: "node".into(),
-                path: name.path.clone(), name: name.name.clone(),
-                executable: Some(binding),
-            },
-            Step::Start {
-                path: old_name.path.clone(), name: old_name.name.clone(),
-            },
-            Step::Delete {
-                path: old_name.path.clone(), name: old_name.name.clone(),
-            },
-        ];
-        assert_eq!(steps[0].location(), name);
-        assert_eq!(steps[1].location(), name);
-        assert_eq!(steps[2].location(), name);
-        assert_eq!(steps[3].location(), old_name);
-        assert_eq!(steps[4].location(), name);
-        assert_eq!(steps[5].location(), old_name);
-        assert_eq!(steps[6].location(), old_name);
-
-        let req = BuildRequest::Create {
-            submit: BuildSubmit::Change(BuildChange::Steps {
-                steps: steps.clone(),
-            }),
-        };
-        let bytes = Build::encode_request(&req).unwrap();
-        let decoded = Build::decode_request(&bytes).unwrap();
-        assert_eq!(decoded, req);
-
-        for reserved in [
-            BuildChange::Reserved0,
-            BuildChange::Reserved1,
-            BuildChange::Reserved2,
-            BuildChange::Reserved4,
-            BuildChange::Reserved6,
-            BuildChange::Reserved7,
-            BuildChange::Reserved8,
-            BuildChange::Reserved9,
-            BuildChange::Reserved10,
-            BuildChange::Reserved13,
-            BuildChange::Reserved14,
-        ] {
-            assert!(reserved.is_reserved());
-            let raw = Build::encode_request(&BuildRequest::Create {
-                submit: BuildSubmit::Change(reserved),
-            })
-            .unwrap();
-            assert_eq!(
-                Build::decode_request(&raw),
-                Err(DecodeFailure::UnknownVariant)
-            );
-        }
-    }
-}
-
-/// Why an admitted step cannot resolve its structured target.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StepTargetError {
-    /// No preceding create or admission pin supplies this target.
-    Unknown {
-        /// Separate path of the target.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-        /// Original one-based step position.
-        step: u32,
-    },
-    /// A rename violates the immutable path or name grammar.
-    InvalidRename {
-        /// Original one-based step position.
-        step: u32,
-        /// The violated rule.
-        detail: String,
-    },
-}
-
-/// Resolve each original step against explicit admission pins, carrying a pin through renames.
-/// Creates receive their value from `created`; no location spelling supplies identity or metadata.
-pub fn step_targets<T: Clone>(steps: &[Step], mut at: std::collections::BTreeMap<PathName, T>, mut created: impl FnMut(&PathName, &str, &str) -> T) -> Result<Vec<T>, StepTargetError> {
-    let mut out = Vec::with_capacity(steps.len());
-    for (index, step) in steps.iter().enumerate() {
-        let position = index as u32 + 1;
-        let node = step.location();
-        let unknown = || StepTargetError::Unknown { path: node.path.clone(), name: node.name.clone(), step: position };
-        let target = match step {
-            Step::Create { mesh, r#type, .. } => {
-                let target = created(&node, mesh, r#type);
-                at.insert(node.clone(), target.clone());
-                target
-            }
-            Step::Update { new_path, new_name, .. } => {
-                if node.path != *new_path {
-                    return Err(StepTargetError::InvalidRename { step: position, detail: "a node's path is immutable".into() });
-                }
-                let name = PathName::new(new_path, new_name).map_err(|error| StepTargetError::InvalidRename { step: position, detail: error.to_string() })?;
-                let target = at.remove(&node).ok_or_else(unknown)?;
-                at.insert(name, target.clone());
-                target
-            }
-            Step::Delete { .. } => at.remove(&node).ok_or_else(unknown)?,
-            Step::Stop { .. } | Step::Start { .. } | Step::DeleteConnections { .. } | Step::LeaveMesh { .. } => at.get(&node).cloned().ok_or_else(unknown)?,
-        };
-        out.push(target);
-    }
-    Ok(out)
 }

@@ -630,7 +630,12 @@ async fn run_delete(a: &Args) -> Result<Value, String> {
         let NodeTarget::CurrentPath(path) = self::target(&a.target)? else {
             return Err("node-delete requires a structured path/name target".into());
         };
-        match Nodes::new(carrier).delete(&path).await {
+        let nodes = Nodes::new(carrier);
+        let at = nodes.get(&rdm_client::Filter::new().eq("path", [path.path.as_str()]).eq("name", [path.name.as_str()])).await.map_err(|e| format!("node.get of {path:?} before its node.delete: {e}"))?;
+        let Some(birth) = at.into_iter().next() else {
+            return Err(format!("node.get holds no node at {path:?} to delete").into());
+        };
+        match nodes.delete(vec![birth.node_id]).await {
             Err(end) => json!({"outcome": "Rejected", "reason": end.to_string()}),
             Ok(mut stream) => {
                 let mut deleted = false;

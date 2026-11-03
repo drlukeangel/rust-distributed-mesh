@@ -7,7 +7,7 @@
 //! one ordinary node.delete Build per sweep. The sweep deletes nothing itself; the delete's admission rechecks the stopped
 //! and open-Build facts, serialized with it.
 
-use crate::accepted::{AttemptAction, TopologyChange};
+use crate::accepted::AttemptAction;
 use crate::build::{BuildId, BuildReject};
 use crate::build_state::BuildState;
 use crate::control_plane::Refusal;
@@ -192,11 +192,10 @@ pub enum Swept {
 }
 
 /// Whether an attempt's targeted action acts on the birth `incarnation`: the one birth a delete is
-/// targeted to, or any birth a Build pinned.
+/// targeted to.
 fn acts_on(action: &AttemptAction, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
     match action {
         AttemptAction::Delete { node_id: id, from_incarnation, .. } => id == node_id && from_incarnation == incarnation,
-        AttemptAction::Steps { pinned, .. } => pinned.iter().any(|(_, b)| b.node_id == *node_id && b.incarnation == *incarnation),
     }
 }
 
@@ -342,8 +341,7 @@ impl crate::control_plane::ControlPlane {
         }
     }
 
-    /// The node.delete Build of `candidate`: the ordinary `RemoveNode` Build `DELETE /api/nodes/{name}`
-    /// accepts, admitted only after the stopped and open-Build checks run again under the admission,
+    /// The node.delete Build of `candidate`: a `Delete` of its node.id (build.md §1), admitted only after the stopped and open-Build checks run again under the admission,
     /// serialized with the write (§6.9 Recheck).
     pub async fn collect_stopped(&self, candidate: &Candidate, ttl: Duration) -> Result<crate::control_plane::Opened, Refusal> {
         let span = tracing::info_span!(
@@ -354,7 +352,7 @@ impl crate::control_plane::ControlPlane {
             build_id = tracing::field::Empty,
             previous_build_id = tracing::field::Empty,
         );
-        self.submit_checked(span, "stopped-ttl", TopologyChange::RemoveNode { path: candidate.path.clone(), name: candidate.name.clone()}, Some(candidate)).await
+        self.submit_checked(span, "stopped-ttl", rdm_core::build::BuildChange::Delete { meshes: Vec::new(), node_ids: vec![candidate.node_id.clone()] }, Some(candidate)).await
     }
 
     /// The recheck at the delete's admission: the view still holds the candidate's exact birth

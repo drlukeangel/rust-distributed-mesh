@@ -439,7 +439,7 @@ fn a_failing_child_leaves_no_trace_of_a_secret(test: &str, spawn_type: &'static 
             timeouts: Timeouts { bind: Duration::from_secs(20), ..Timeouts::default() },
         };
         let err = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap())), mesh: "mesh1".into(), r#type: "node-admin".into(), build_id: Some(build_id.clone()), attempt: 1, path: "mesh1.node-admin".into(), name: "2".into(), spec: &rdm_admin::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node-admin".into(), build_id: Some(build_id.clone()), attempt: 1, path: "mesh1.node-admin".into(), name: "2".into(), spec: &rdm_admin::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_err();
         let receipts: Vec<String> = builds

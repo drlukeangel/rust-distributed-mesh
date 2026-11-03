@@ -33,11 +33,6 @@ fn on_mesh(o: &OperationId, action: &str, mesh_id: &str) -> bool {
     o.action == action && matches!(&o.subject, Some(OperationSubject::Mesh(m)) if m.as_str() == mesh_id)
 }
 
-/// Whether receipt operation `o` is `action` at the location `at`.
-fn at_loc(o: &OperationId, action: &str, at: &PathName) -> bool {
-    o.action == action && o.subject.as_ref() == Some(&OperationSubject::Location(at.clone()))
-}
-
 /// Whether receipt operation `o` is `action` of the node `node_id`.
 fn of_id(o: &OperationId, action: &str, node_id: &str) -> bool {
     o.action == action && matches!(&o.subject, Some(OperationSubject::Node(n)) if n.as_str() == node_id)
@@ -243,8 +238,9 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
     let until = tokio::time::Instant::now() + SETTLE;
     loop {
         match tokio::time::timeout_at(until, held.next()).await {
-            // The frame's operation is the birth's create at its (path, name); its reason names the birth by node id.
-            Ok(Some(Ok(BuildFrame::Blocked { operation, .. }))) if operation.subject == Some(rdm_core::OperationSubject::Location(rdm_core::PathName::new("mesh1.node", "1").unwrap())) => break,
+            // The frame's operation is the growth's one create, mesh1.node.1's, keyed by the node.id its
+            // record names (D58); its reason names the birth by node id.
+            Ok(Some(Ok(BuildFrame::Blocked { operation, .. }))) if operation.action == "node.create" => break,
             Ok(Some(Ok(frame @ (BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::FabricPrimaryMoved { .. })))) => panic!("the growth {first} ended {frame:?} before mesh1.node.1 was held"),
             Ok(Some(Ok(_))) => {}
             other => panic!("the growth {first} reported no Blocked naming mesh1.node.1 within {SETTLE:?}: {other:?}"),
@@ -255,8 +251,8 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
 
     let carrier = estate.carrier().await;
     let standalone: Vec<(&str, Result<(), CallEnd>)> = vec![
-        ("mesh.delete mesh1", carrier.create(Change::RemoveMesh { mesh: "mesh1".into() }).await.map(|_| ())),
-        ("node.delete mesh1.node-admin.1", estate.nodes_obj().await.delete(&Estate::path("mesh1.node-admin", "1")).await.map(|_| ())),
+        ("mesh.delete mesh1", carrier.create(Change::Delete { meshes: vec!["mesh1".into()], node_ids: vec![] }).await.map(|_| ())),
+        ("node.delete mesh1.node-admin.1", estate.delete_node(&Estate::path("mesh1.node-admin", "1")).await.map(|_| ())),
     ];
     for (workflow, end) in standalone {
         match end {
@@ -321,8 +317,9 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
 
     let grown = receipts_at(&estate, &Estate::path("mesh1.node-admin", "1"), &grow_id).await;
     failed_naming(&grown, &id);
-    assert_eq!(count(&grown, |o| at_loc(o, "node.create", &Estate::path("mesh1.node", "1")), "DeployRuntime"), 1, "the admitted launch's evidence is retained: {:?}", listed(&grown));
-    assert_eq!(count(&grown, |o| at_loc(o, "node.create", &Estate::path("mesh1.node", "1")), "Complete"), 1, "the admitted launch ended within its bound: {:?}", listed(&grown));
+    let launched_id = build_log::created_id(&estate, &grow_id, &Estate::path("mesh1.node", "1")).await;
+    assert_eq!(count(&grown, |o| of_id(o, "node.create", launched_id.as_str()), "DeployRuntime"), 1, "the admitted launch's evidence is retained: {:?}", listed(&grown));
+    assert_eq!(count(&grown, |o| of_id(o, "node.create", launched_id.as_str()), "Complete"), 1, "the admitted launch ended within its bound: {:?}", listed(&grown));
     let receipts = receipts_at(&estate, &Estate::path("mesh1.node-admin", "1"), &id).await;
     assert_eq!(count(&receipts, |o| o.action == "mesh.delete", rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh1 is deleted: {:?}", listed(&receipts));
     assert_eq!(count(&receipts, |o| o.action == "fabric.delete", "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
@@ -375,7 +372,8 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
 
     let grown = receipts_at(&estate, &fp.0, &grow_id).await;
     failed_naming(&grown, &id);
-    assert_eq!(count(&grown, |o| at_loc(o, "node.create", &Estate::path("mesh1.node", "2")), "Complete"), 0, "the outstanding create is never run again: {:?}", listed(&grown));
+    let outstanding = build_log::created_id(&estate, &grow_id, &Estate::path("mesh1.node", "2")).await;
+    assert_eq!(count(&grown, |o| of_id(o, "node.create", outstanding.as_str()), "Complete"), 0, "the outstanding create is never run again: {:?}", listed(&grown));
     let receipts = receipts_at(&estate, &fp.0, &id).await;
     torn_down(&receipts, 2, &id_in(&ids, "mesh2.node-admin", "1"));
     // mesh1.node.2's node id is the one its create launched it under: its own boot names it (the claim's
@@ -567,7 +565,7 @@ async fn the_fabric_primary_left_after_fabric_deleted_is_deleted_by_an_outside_n
     let pid = estate.bootstrap_pid().expect("the fabric-primary mesh1.node-admin.1 is the bootstrap admin");
     assert!(running(pid), "the fabric-primary reported fabric.deleted alive");
 
-    let mut own = estate.nodes_obj().await.delete(&Estate::path("mesh1.node-admin", "1")).await.unwrap_or_else(|end| panic!("the outside node.delete of the fabric-primary was refused: {end}"));
+    let mut own = estate.delete_node(&Estate::path("mesh1.node-admin", "1")).await.unwrap_or_else(|end| panic!("the outside node.delete of the fabric-primary was refused: {end}"));
     let begun = tokio::time::Instant::now();
     let replies = tokio::time::timeout(OWN_DELETE_BOUND, async {
         let mut replies = Vec::new();

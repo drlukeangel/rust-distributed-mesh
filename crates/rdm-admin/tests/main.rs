@@ -144,35 +144,47 @@ pub fn test_executable(r#type: &str) -> rdm_core::binding::Binding {
     rdm_core::binding::Binding { launch_id: r#type.into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
 }
 
-/// `change`, a count form, as the complete-topology request a caller builds from what it reads
-/// (proposal executable-bindings-at-create.md rule 1: the count is the door's vocabulary, expanded into
-/// named paths before the typed call): compiled against `cp`'s current Build, every path it creates
-/// named on [`test_executable`] of its type, every held path listed as its entry holds it; a change
-/// that creates no path is returned as it is. `cp` reads its node rows from an empty store when it has
-/// none.
-pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, change: rdm_admin::accepted::TopologyChange) -> rdm_admin::accepted::TopologyChange {
-    use rdm_admin::build_state::BuildStateAdapter as _;
-    let current = cp.builds.current().await.expect("the Build state reads").expect("a current Build");
+/// The request `of` names against `cp`'s view: a cell states its change as counts or paths, and the
+/// caller names every node before the typed call (build.md §1: counts are the door's vocabulary).
+pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, of: impl FnOnce(&rdm_admin::topology::Topology) -> rdm_core::build::BuildChange) -> rdm_core::build::BuildChange {
     let observed = cp.topology.read().await.clone();
-    let next = rdm_admin::accepted::compile(&current.topology, &change, &observed).unwrap_or_else(|e| panic!("{change:?} compiles: {e}"));
-    // A change that creates no path is submitted as it is: only a create names an executable.
-    if next.meshes.values().flat_map(|m| m.nodes.iter()).all(|p| current.topology.contains(p)) {
-        return change;
-    }
-    let _ = cp.node_rows.set(std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default()));
-    let nodes = next
-        .meshes
-        .values()
-        .flat_map(|m| m.spec_by_path.values())
-        .map(|s| {
-            let mut s = s.clone();
-            if !current.topology.contains(&s.location()) && s.executable.is_none() {
-                s.executable = Some(test_executable(&s.r#type));
+    of(&observed)
+}
+
+/// The Create that grows each mesh of `desired` to its counts in `t`: each missing node at the lowest
+/// free ordinal of its type, on [`test_executable`] of its type, and each mesh `t` does not hold with it.
+/// A count below what the mesh holds removes nothing (a Delete names the nodes it removes).
+pub fn grown(t: &rdm_admin::topology::Topology, desired: &[rdm_admin::build::MeshDesired]) -> rdm_core::build::BuildChange {
+    let mut meshes = Vec::new();
+    let mut nodes = Vec::new();
+    for d in desired {
+        if !t.meshes.iter().any(|m| m.name == d.name) {
+            meshes.push(rdm_core::build::Meshes { name: d.name.clone() });
+        }
+        let mut types: Vec<(String, u32)> = d.counts().into_iter().collect();
+        types.sort_by_key(|(r#type, _)| !rdm_core::is_node_admin(r#type));
+        for (r#type, want) in types {
+            let held = |p: &rdm_core::PathName| t.nodes.iter().any(|n| &n.name == p && n.status.is_live());
+            let mut have = t.nodes.iter().filter(|n| n.mesh == d.name && n.r#type == r#type && n.status.is_live()).count() as u32;
+            let mut ordinal = 1;
+            while have < want {
+                let path = rdm_core::PathName::numbered(&d.name, &r#type, ordinal);
+                ordinal += 1;
+                if held(&path) {
+                    continue;
+                }
+                nodes.push(rdm_core::build::Nodes { path: path.path, name: path.name, mesh: d.name.clone(), r#type: r#type.clone(), storage_persistence: None, executable: Some(test_executable(&r#type)), tags: Default::default(), config: Default::default() });
+                have += 1;
             }
-            s
-        })
-        .collect();
-    rdm_admin::accepted::TopologyChange::Reconcile { based_on: current.build_id, nodes }
+        }
+    }
+    rdm_core::build::BuildChange::Create { meshes, nodes }
+}
+
+/// The Delete of the node `t` holds at each of `paths`, by its node.id.
+pub fn removed(t: &rdm_admin::topology::Topology, paths: &[rdm_core::PathName]) -> rdm_core::build::BuildChange {
+    let node_ids = paths.iter().map(|p| t.node(p).unwrap_or_else(|| panic!("the view holds {p:?}")).node_id.clone()).collect();
+    rdm_core::build::BuildChange::Delete { meshes: Vec::new(), node_ids }
 }
 
 /// A nodes store holding the record of every birth `t` names, each written as its create wrote it
@@ -286,7 +298,7 @@ mod provider_state;
 mod provider_policy;
 mod read_stream;
 mod readiness_gates;
-mod reconcile_variants;
+mod batch_change;
 mod receipt_refusal;
 mod start_join_order;
 mod pipeline_moves_no_primary;
@@ -303,11 +315,9 @@ mod fabric_create;
 mod fabric_states;
 mod fabric_delete;
 mod build_reattach;
-mod build_executables;
 mod node_create;
 mod node_delete;
 mod node_mesh_leave;
-mod node_replace;
 mod node_investigation;
 mod node_tickle;
 mod node_runtime_inspect;

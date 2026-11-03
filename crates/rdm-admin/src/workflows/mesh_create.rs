@@ -9,9 +9,9 @@ pub use crate::mesh_claims::{InFlight, Taken};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accepted::{compile, plan, AcceptedStore, FabricTopology, TopologyChange};
+    use crate::accepted::{compile, plan, AcceptedStore, FabricTopology};
     use crate::admin::Records;
-    use crate::build::{BuildId, BuildOperation, FabricDesired, MeshDesired};
+    use crate::build::{BuildId, BuildOperation};
     use crate::build_state::{
         BuildAccepted, BuildState, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome,
     };
@@ -106,7 +106,7 @@ mod tests {
                 build_id: day0_id.clone(),
                 topology: root_top.clone(),
                 submitted_change: None,
-                submitted_at_ms: 1,
+                source: None, submitted_at_ms: 1,
             })
             .await
             .unwrap();
@@ -134,9 +134,7 @@ mod tests {
         cp_pending.topology = Arc::new(tokio::sync::RwLock::new(day0_view));
         // Boot sets the admin's own node id once it is minted; the fabric-primary role is checked by it.
         let _ = cp_pending.node_id.set(cp_pending.topology.read().await.fabric_primary().expect("the view holds the fabric-primary").node_id.clone());
-        let add_mesh2 = TopologyChange::CreateMesh {
-            desired: MeshDesired::of("mesh2", [("node-admin", 1), ("node", 1)]),
-        };
+        let add_mesh2 = crate::test_support::create_of(&["mesh2"], &[("mesh2.node-admin", "1", "mesh2", "node-admin"), ("mesh2.node", "1", "mesh2", "node")]);
         match cp_pending.submit("create-mesh2-early", add_mesh2.clone()).await {
             Err(Refusal::BuildInProgress(running)) => {
                 assert_eq!(running.current_build_id, day0_id);
@@ -163,24 +161,18 @@ mod tests {
         // Boot sets the admin's own node id once it is minted; the fabric-primary role is checked by it.
         let _ = cp.node_id.set(cp.topology.read().await.fabric_primary().expect("the view holds the fabric-primary").node_id.clone());
 
-        let current_build_id = settled_builds
-            .current_build()
-            .await
-            .unwrap()
-            .into_build_id()
-            .unwrap();
         let _ = cp.node_rows.set(Arc::new(MemoryNodesStorage::default()));
         let exe_dir = crate::test_support::tempdir("mesh-create-exe");
         let spec_with_exe = |path: PathName, mesh: &str, r#type: &str| {
             use std::os::unix::fs::PermissionsExt;
-            let p = path;
             let bin = exe_dir.join(r#type);
             std::fs::write(&bin, format!("#!/bin/sh\n# {}\n", r#type)).unwrap();
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-            rdm_core::meta::NodeSpec {
+            rdm_core::build::Nodes {
                 mesh: mesh.to_owned(), r#type: r#type.to_string(),
-                path: p.path.clone(), name: p.name.clone(),
-                storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral,
+                path: path.path.clone(),
+                name: path.name.clone(),
+                storage_persistence: Some(rdm_core::meta::StoragePersistence::Ephemeral),
                 executable: Some(rdm_core::binding::Binding {
                     launch_id: r#type.into(),
                     sha256: rdm_core::binding::sha256_file(&bin).unwrap(),
@@ -191,17 +183,16 @@ mod tests {
                 config: std::collections::BTreeMap::new(),
             }
         };
-        let add_mesh2_reconcile = TopologyChange::Reconcile {
-            based_on: current_build_id,
+        let add_mesh2 = rdm_core::build::BuildChange::Create {
+            meshes: vec![rdm_core::build::Meshes { name: "mesh2".into() }],
             nodes: vec![
-                spec_with_exe(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"),
                 spec_with_exe(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin"),
                 spec_with_exe(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node"),
-            ]
+            ],
         };
 
         let opened = cp
-            .submit("create-mesh2", add_mesh2_reconcile)
+            .submit("create-mesh2", add_mesh2)
             .await
             .expect("CreateMesh accepted once Day-0 Build is Complete");
         let build_proj = settled_builds.read_build(&opened.build_id).await.unwrap();
@@ -227,36 +218,9 @@ mod tests {
         );
 
         // MeshId (line 18, 30-32): carried unchanged by every Build after it; never reissued.
-        let grown = compile(
-            &build_proj.topology,
-            &TopologyChange::ReconcileMesh {
-                desired: MeshDesired::of(
-                    "mesh2",
-                    [("node-admin", 1), ("node", 2)],
-                ),
-            },
-            &settled_view,
-        )
-        .unwrap();
+        let grown = compile(&build_proj.topology, &crate::test_support::create_of(&[], &[("mesh2.node", "2", "mesh2", "node")]), &settled_view).unwrap();
         assert_eq!(grown.mesh("mesh2").unwrap().mesh_id, mesh2_id);
-        let whole = compile(
-            &grown,
-            &TopologyChange::ReconcileFabric {
-                desired: FabricDesired {
-                    fabric: "fabric1".into(),
-                    meshes: vec![
-                        MeshDesired::of("mesh1", [("node-admin", 1)]),
-                        MeshDesired::of(
-                            "mesh2",
-                            [("node-admin", 1), ("node", 2)],
-                        ),
-                    ],
-                },
-            },
-            &settled_view,
-        )
-        .unwrap();
-        assert_eq!(whole.mesh("mesh2").unwrap().mesh_id, mesh2_id);
+
 
         // Executor / maker & Members (lines 20, 22): while mesh2 has no primary, the fabric-primary
         // (`mesh1.node-admin.1`) executes `CreateMesh` and `CreateNode` of `mesh2.node-admin.1` on its own
@@ -279,13 +243,13 @@ mod tests {
             "mesh2.node.1 is not the first node-admin of mesh2"
         );
         let create_m2_admin = BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh2".into(),
-            path: m2_admin_path.path.clone(), name: m2_admin_path.name.clone(),
+            node_id: rdm_core::fixture_node_id(&m2_admin_path), node: m2_admin_path,
             over: None,
             executable: None,
             entry: None,
         };
         let create_m2_rpc = BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh2".into(),
-            path: m2_rpc_path.path.clone(), name: m2_rpc_path.name.clone(),
+            node_id: rdm_core::fixture_node_id(&m2_rpc_path), node: m2_rpc_path,
             over: None,
             executable: None,
             entry: None,
@@ -434,7 +398,7 @@ mod tests {
         let m2_admin_id = view_with_m2_primary.nodes.last().unwrap().node_id.clone();
         let m2_admin_alloc = Allocation { predecessor: None,
             build_id: Some(opened.build_id.clone()),
-            operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()),
+            operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())),
             incarnation: IncarnationId::mint(),
             deployment_id: crate::model::DeploymentId::mint(),
         };
@@ -458,7 +422,7 @@ mod tests {
         let m2_rpc_id = NodeId::mint();
         let m2_rpc_alloc = Allocation { predecessor: None,
             build_id: Some(opened.build_id.clone()),
-            operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node", "1").unwrap()),
+            operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "1").unwrap())),
             incarnation: IncarnationId::mint(),
             deployment_id: crate::model::DeploymentId::mint(),
         };

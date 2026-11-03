@@ -104,7 +104,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
     let builds = MemoryBuildStateAdapter::new();
     let build_id = BuildId::mint();
     builds
-        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 })
         .await
         .unwrap();
     builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
@@ -297,7 +297,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
                 submitted_change: None,
-                submitted_at_ms: 0,
+                source: None, submitted_at_ms: 0,
             })
             .await
             .unwrap();

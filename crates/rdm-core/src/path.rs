@@ -171,10 +171,6 @@ mod tests {
             let json = serde_json::to_value(pair).unwrap();
             assert_eq!(json, serde_json::json!({"path": pair.path, "name": pair.name}), "the pair is two fields: {json}");
             assert_eq!(serde_json::from_value::<PathName>(json).unwrap(), *pair);
-            // An operation's location subject carries the same two fields.
-            let op = crate::OperationId::location("node.create", pair);
-            let back: crate::OperationId = serde_json::from_value(serde_json::to_value(&op).unwrap()).unwrap();
-            assert_eq!(back.subject, Some(crate::OperationSubject::Location(pair.clone())), "the Location subject round-trips: {back:?}");
             // The node.get filter selects by the two fields, and neither alone is the pair.
             let filter = crate::filter::Filter::new().eq("path", [pair.path.clone()]).eq("name", [pair.name.clone()]);
             assert_eq!(filter.refusal(crate::filter::Entity::Nodes), None, "path and name are node.get fields");

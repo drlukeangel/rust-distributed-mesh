@@ -60,7 +60,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
             timeouts: Timeouts::default(),
         };
         let created = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .expect("the node is born");
         let node = created.node.clone();
@@ -97,7 +97,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         assert_eq!(call(downward_declare).await, StatusReply::RequestNotHandled { request: "declare-node-state".into() }, "a request the node has no handler for is answered not handled here");
         // node-left is never sent: refused by name as no command, as a node-admin refuses it, never
         // sent on to "a node-admin" that would refuse it too.
-        let stop = rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap());
+        let stop = rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap()));
         let left = StatusRequest::NodeLeft { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: stop.clone() };
         assert_eq!(
             call(left).await,
@@ -120,7 +120,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         let stale_config = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: IncarnationId::mint(), config: Default::default() };
         assert_eq!(call(stale_config).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() }, "a config for another birth is refused with the one held");
         // The reserved Reserved6 is refused by name; node.connection.delete { All } is answered with its receipt.
-        let reserved = StatusRequest::Reserved6 { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: rdm_core::OperationId::location("node.connection.delete", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
+        let reserved = StatusRequest::Reserved6 { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: rdm_core::OperationId::node("node.connection.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
         assert!(matches!(call(reserved).await, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name");
         let all = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: node.node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
         let deleted = common::node_command_completion(&observer.client, &target, &all).await;

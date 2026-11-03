@@ -1017,9 +1017,8 @@ mod tests {
         let me_id = id_of(2);
         let mut v = view(1, 3);
         let own = v.nodes.iter_mut().find(|n| n.node_id == me_id).unwrap();
-        { let at = me.renamed().unwrap(); own.path = at.path; own.name = at.name; }
-        own.renamed_from = Some(me.name.clone());
-        assert_eq!(own.location(), me.renamed().unwrap());
+        own.name = me.renamed().unwrap();
+        assert_eq!(own.name, me.renamed().unwrap());
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
         owed_from_view(&d, &me.renamed().unwrap(), &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, false, None, |_| 0, &v, &ids);

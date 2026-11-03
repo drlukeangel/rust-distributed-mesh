@@ -227,8 +227,8 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // The final primary's end: an ordinary node.delete, a separate call, the fabric-primary its
     // executor. The topology names no mesh1, so the call opens its own targeted attempt of the accepted
     // Build (as a delete of a stopped `.old` does), with its own trace.
-    let mut removal = estate.nodes_obj().await.delete(&final_name).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {final_name:?}: {e}"));
-    let accepted = Estate::complete(&mut removal).await.expect("a delete opens a Build");
+    let mut removal = estate.delete_node(&final_name).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {final_name:?}: {e}"));
+    let accepted = Estate::complete(&mut removal).await.expect("the call opened a Build");
     let (c, c_attempt) = (accepted.build_id.to_string(), u64::from(accepted.attempt));
     let after = Estate::values(&estate.settles_to_named(&names(&["mesh2", "mesh3"]), Duration::from_secs(60)).await);
     ids.extend(after.iter().map(|n| (location(n), s(&n["node_id"]))));

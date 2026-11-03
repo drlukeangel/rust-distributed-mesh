@@ -277,7 +277,7 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
     for d in &mesh2_doors {
         d.arm("atlas:no-gossip", json!({"kind": "announcement", "announcement": "aggregate-in-flight", "channel": "backbone"})).await;
     }
-    Estate::workflow(&format!("the predecessor's half of the replace of {node:?}"), estate.nodes_obj().await.steps(rdm_test::steps::predecessor_steps(&node).expect("valid replacement fixture name")).await).await;
+    rdm_test::replace::free_the_name(&estate, &node).await.unwrap_or_else(|e| panic!("the predecessor's half of the replace of {node:?}: {e}"));
     // No wait: the read goes out on the Build's Complete.
     let listed = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [&estate.node_view(&renamed).await.mesh])).await.expect("node.get [mesh] at the fabric-primary");
     let read = atlas(&estate, "R-FA2: fabric.atlas.get on the Build's Complete").await;
@@ -321,7 +321,17 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
     let renamed = node.renamed().unwrap();
     let nodes = estate.nodes_obj().await;
     // The node's connections deleted and its mesh left: the precondition of a live rename.
-    Estate::workflow(&format!("node.connection.delete and node.mesh.leave of {node:?}"), nodes.steps(vec![rdm_core::build::Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()}, rdm_core::build::Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()}]).await).await;
+    for (what, stream) in [("node.connection.delete", nodes.delete_connections(&node, &rdm_core::status::ConnectionScope::All).await), ("node.mesh.leave", nodes.leave_mesh(&node).await)] {
+        let mut stream = stream.unwrap_or_else(|e| panic!("{what} of {node:?} was refused: {e}"));
+        let mut last = None;
+        while let Some(f) = stream.next().await {
+            let f = f.unwrap_or_else(|e| panic!("{what} of {node:?}: {e}"));
+            let terminal = f.is_terminal();
+            last = Some(f);
+            if terminal { break; }
+        }
+        assert_eq!(last, Some(rdm_client::Frame::Complete), "{what} of {node:?} completes");
+    }
     let id = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
     let node_id: rdm_core::NodeId = serde_json::from_value(targets[0]["node_id"].clone()).expect("a node id");
     let birth = rdm_client::ExactBirth {

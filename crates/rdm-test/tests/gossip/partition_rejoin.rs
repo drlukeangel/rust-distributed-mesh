@@ -323,7 +323,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let victim = after.iter().find(|n| n["type"] == "node" && n["mesh"] == "mesh2" && n["is_primary"] == false).cloned().expect("a non-primary node of mesh2");
     let (victim_name, victim_id) = (location(&victim), s(&victim["node_id"]));
     let delete_at = now_ns();
-    let mut delete = estate.nodes_obj().await.delete(&victim_name).await.unwrap_or_else(|e| panic!("the node.delete of {victim_name:?} was refused: {e}"));
+    let mut delete = estate.delete_node(&victim_name).await.unwrap_or_else(|e| panic!("the node.delete of {victim_name:?} was refused: {e}"));
     Estate::complete(&mut delete).await;
     let remaining: Vec<PathName> = everyone.iter().filter(|n| **n != victim_name).cloned().collect();
     for (name, base) in &bases {
@@ -377,7 +377,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let remaining2: Vec<PathName> = remaining.iter().filter(|n| **n != av_name).cloned().collect();
     assert!(survivors.iter().filter(|(_, m)| m == "mesh2").count() == 1, "mesh2 keeps its other admin");
     let delete2_at = now_ns();
-    let mut delete = estate.nodes_obj().await.delete(&av_name).await.unwrap_or_else(|e| panic!("the node.delete of {av_name:?} was refused: {e}"));
+    let mut delete = estate.delete_node(&av_name).await.unwrap_or_else(|e| panic!("the node.delete of {av_name:?} was refused: {e}"));
     Estate::complete(&mut delete).await;
     for (name, base) in &bases_left {
         wait_for(&format!("{name:?} no longer lists the deleted admin {av_name:?}"), Duration::from_secs(60), || async {

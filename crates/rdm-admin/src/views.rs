@@ -558,7 +558,6 @@ mod tests {
             let rpc_pred_path = rpc_path.renamed().unwrap();
             let mut rpc_pred = Node::allocated(rpc_pred_path.clone(), "mesh1", "node");
             rpc_pred.node_id = rpc_pred_id.clone();
-            rpc_pred.renamed_from = Some(rpc_path.name.clone());
             rpc_pred.incarnation_id = Some(rpc_pred_inc.clone());
             rpc_pred.status = ModelNodeStatus::Ready;
 
@@ -604,10 +603,8 @@ mod tests {
             });
             succ_row.births.push(succ_birth);
 
-            // The retained predecessor's tags stay in its own record at its own id (node-replace.md:41):
-            // `inherited_by` hides none of them.
+            // The predecessor's tags stay in its own record at its own id (node-replace.md "Properties").
             let mut pred_row = NodeRow::new(rpc_pred_path.clone(), "mesh1", "node", rpc_pred_id.clone(), ModelNodeStatus::Ready);
-            pred_row.inherited_by = Some(rpc_succ_id.clone());
             pred_row.births.push(BirthFacts::new(rpc_pred_inc.clone(), rpc_pred_path.clone()));
             for row in [&admin_row, &succ_row, &pred_row] {
                 crate::storage::NodesStorage::put_node(&claims, row).await.unwrap();

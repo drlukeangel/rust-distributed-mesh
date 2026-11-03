@@ -1,6 +1,6 @@
 //! The node commands the primary above a node runs for a caller (node-stop.md, node-start.md,
-//! node-connections-delete.md; Q342, D40). A caller sends NodeCommand 0x22 `StopNode`, `StartNode` or
-//! `DeleteConnections { scope }` to the node's mesh-primary (the fabric-primary for a mesh-primary). The primary admits it from its atlas (`ControlPlane::
+//! node-connections-delete.md, node-mesh-leave.md; Q342, D40, D61). A caller sends NodeCommand 0x22
+//! `StopNode`, `StartNode`, `DeleteConnections { scope }` or `LeaveMesh` to the node's mesh-primary (the fabric-primary for a mesh-primary). The primary admits it from its atlas (`ControlPlane::
 //! admit_node_command`), takes the node's work turn (one node command, repair or Build step on a node
 //! at a time), moves a primary's roles first by node.primary.update (R-MT1), and runs the same stop or
 //! start body a Build's step runs (`AdminRunner::standalone`, `AdminRunner::start_stopped`), with no
@@ -29,6 +29,7 @@ impl crate::node_commands::PrimaryCommands for PrimaryCommandDoor {
         let (node_id, incarnation, operation, kind) = match &req {
             NodeCommandRequest::StopNode { node_id, incarnation, operation } => (node_id.clone(), incarnation.clone(), operation.clone(), ActionKind::Stop),
             NodeCommandRequest::StartNode { node_id, incarnation, operation } => (node_id.clone(), incarnation.clone(), operation.clone(), ActionKind::Start),
+            NodeCommandRequest::LeaveMesh { node_id, incarnation, operation } => (node_id.clone(), incarnation.clone(), operation.clone(), ActionKind::LeaveMesh),
             // The request carries no operation: the command's identity is minted here, keyed on the node.id.
             // A scope that names nothing the node can cut is refused by name, `Rejected` with reason
             // `rejected-connection-scope`, nothing sent (node-connections-delete.md "Wire").
@@ -38,7 +39,7 @@ impl crate::node_commands::PrimaryCommands for PrimaryCommandDoor {
                 }
                 (node_id.clone(), incarnation.clone(), rdm_core::OperationId::node("node.connection.delete", node_id).in_occurrence(rdm_core::OperationOccurrenceId::mint()), ActionKind::DeleteConnections)
             }
-            other => return rdm_core::reply::node_command::rejected("receiver-not-primary", format!("{} is no caller's node command: the primary above a node runs node.stop, node.start and node.connection.delete", other.op())),
+            other => return rdm_core::reply::node_command::rejected("receiver-not-primary", format!("{} is no caller's node command: the primary above a node runs node.stop, node.start, node.connection.delete and node.mesh.leave", other.op())),
         };
         let me = self.runner.held_name();
         let span = tracing::info_span!(
@@ -127,6 +128,9 @@ impl PrimaryCommandDoor {
             Err(r) => return rdm_core::reply::node_command::rejected(r.reason, r.detail),
         };
         tracing::Span::current().record("subject_path", path.path.as_str()).record("subject_name", path.name.as_str());
+        if kind == ActionKind::LeaveMesh {
+            return self.leave_mesh(node_id, incarnation, operation, frames).await;
+        }
         // A primary's roles move first by node.primary.update (R-MT1; node-primary-update.md §1,
         // node-connections-delete.md step 0). A node-admin's command is then its mesh's new mesh-primary's,
         // which the caller's command goes on to. A delete of named connections moves no role: step 0 is
@@ -193,6 +197,24 @@ impl PrimaryCommandDoor {
                 rdm_core::reply::node_command::failed(req.op().into(), end.reason().to_string(), code)
             }
             Err(end) => sent.refusal.unwrap_or_else(|| rdm_core::reply::node_command::rejected("not-sent", format!("{} of node {node_id} was not admitted by the node: {}", req.op(), end.reason()))),
+        }
+    }
+
+    /// A caller's node.mesh.leave (node-mesh-leave.md, D61): this mesh-primary carries `LeaveMesh` to the
+    /// exact birth and holds its `node.mesh.left` for its rename, as it does for its own workflows. The
+    /// node's refusal before it accepted is the caller's refusal, by name; its `MeshLeft` is the
+    /// terminal, after the acceptance. No role moves: a primary's roles moved at its `{ All }` delete.
+    async fn leave_mesh(&self, node_id: &NodeId, incarnation: &IncarnationId, operation: &rdm_core::OperationId, frames: &mut Box<dyn CommandFrames>) -> NodeCommandReply {
+        let Some(door) = self.runner.observer.status_door.get().cloned() else {
+            return rdm_core::reply::node_command::not_ready(format!("{}: this admin holds no Status door yet; LeaveMesh is refused", self.runner.node_id));
+        };
+        match door.carry_mesh_leave(node_id, incarnation, operation).await {
+            Ok(rdm_core::status::StatusReply::MeshLeft { node_id, incarnation, left }) => {
+                let _ = frames.accepted(NodeCommandReply::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await;
+                NodeCommandReply::MeshLeft { node_id, incarnation, left }
+            }
+            Ok(refused) => rdm_core::reply::node_command::rejected(refused.name(), format!("node.mesh.leave of node {node_id} was refused: {refused:?}")),
+            Err(why) => rdm_core::reply::node_command::rejected("not-sent", format!("node.mesh.leave of node {node_id} did not complete: {why}")),
         }
     }
 

@@ -332,7 +332,7 @@ async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_
     let incarnation = IncarnationId::mint();
     let row = OperationEffect {
         node_id: node_id.clone(), incarnation_id: incarnation.clone(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), state: NodeState::Stopped,
-        operation: rdm_core::status::DeclaredOperation { operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) },
+        operation: rdm_core::status::DeclaredOperation { operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) },
     };
     let next = OperationEffect { operation: rdm_core::status::DeclaredOperation { operation: row.operation.operation.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint()) }, ..row.clone() };
     {

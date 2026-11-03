@@ -91,7 +91,7 @@ async fn a_successor_manages_births_it_never_launched() {
     // bin, path/name and storage"): the node is ready again as the same birth.
     let after = estate.until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1.node.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation_id), (&restarted.node_id, &restarted.incarnation_id), "a restart keeps the node id and the birth");
-    Estate::workflow("node.delete of mesh1.node.3", estate.nodes_obj().await.delete(&deleted.location()).await).await;
+    Estate::workflow("node.delete of mesh1.node.3", estate.delete_node(&deleted.location()).await).await;
     wait_for("mesh1.node.3's runtime is gone", Duration::from_secs(30), || async { (!alive(deleted_pid)).then_some(()) }).await;
 
     // The admins that hold mesh1 now: the successor, and the drift recovery's rebirth of the

@@ -212,6 +212,24 @@ impl Current {
         self.try_with_one_more(mesh, r#type, executables).unwrap_or_else(|e| panic!("{e}"))
     }
 
+    /// The nodes a Create adds (build.md §1): each of `specs` at a path the topology does not hold, by
+    /// its Nodes schema.
+    pub fn added(&self, specs: Vec<NodeSpec>) -> Vec<rdm_core::build::Nodes> {
+        let held = |p: &PathName| self.topology.values().any(|m| m.contains_key(p));
+        specs
+            .into_iter()
+            .filter(|s| !held(&s.path))
+            .map(|s| rdm_core::build::Nodes { path: s.path.path, name: s.path.name, mesh: s.mesh, r#type: s.r#type, storage_persistence: Some(s.storage_persistence), executable: s.executable, tags: s.tags, config: s.config })
+            .collect()
+    }
+
+    /// The one node a Create adds for one more `type` in `mesh`: the path [`Self::with_one_more`] adds,
+    /// at the lowest free ordinal of its type, on `executables`' binding for it.
+    pub fn one_more(&self, mesh: &str, r#type: &str, executables: &Executables) -> Result<rdm_core::build::Nodes, String> {
+        let specs = self.try_with_one_more(mesh, r#type, executables)?;
+        self.added(specs).into_iter().next().ok_or_else(|| format!("one more {type} in {mesh} names no path the topology does not hold", type = r#type))
+    }
+
     /// [`Self::with_one_more`], a path that cannot be named named in the error.
     pub fn try_with_one_more(&self, mesh: &str, r#type: &str, executables: &Executables) -> Result<Vec<NodeSpec>, String> {
         let mut grown = self.counts_of(mesh);

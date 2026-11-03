@@ -113,7 +113,7 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         let op = LifecycleOp { r#type: subject.node.r#type, mesh: subject.node.mesh.clone(),
             build_id: "b-peer-mesh-deletion".into(),
             attempt: 3,
-            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()),
+            operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())),
             node_id: id.clone(),
             incarnation: inc.clone(),
             path: subject.node.path.clone(), name: subject.node.name.clone(),

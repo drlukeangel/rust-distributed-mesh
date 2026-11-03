@@ -343,14 +343,13 @@ impl Prepared {
                 .unwrap();
             // The birth's row at its path.name, as its mesh's writer left it: the name is held by this node.id.
             let birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), own.location());
-            let row = rdm_admin::storage::NodeRow { replacement_from: None, r#type: "node-admin".into(), mesh: own.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
+            let row = rdm_admin::storage::NodeRow { r#type: "node-admin".into(), mesh: own.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
                 path: own.path.clone(), name: own.name.clone(),
                 node_id: node_id.clone(),
                 status: rdm_admin::model::NodeStatus::Ready,
                 allocated: None,
                 renamed_from: None,
-                inherited_by: None,
-                executable: None,
+                    executable: None,
                 births: vec![birth],
                 predecessor: None,
                 mesh_id: Some(mesh_id.clone()),
@@ -377,14 +376,13 @@ impl Prepared {
                     config: Default::default(), tags: Default::default(),
                     endpoint_id: Some(EndpointId(iroh::SecretKey::generate().public().to_string())), transport_addr: Some(unanswered_addr()), listeners: Vec::new(), app_types: None, held: Default::default(),
                 }).await.unwrap();
-                let row = rdm_admin::storage::NodeRow { mesh: "mesh1".to_owned(), r#type: (*r#type).to_string(), replacement_from: None, initial_properties: None, topology_storage_provider: None, writer: None,
+                let row = rdm_admin::storage::NodeRow { mesh: "mesh1".to_owned(), r#type: (*r#type).to_string(), initial_properties: None, topology_storage_provider: None, writer: None,
                     path: location.path.clone(), name: location.name.clone(),
                     node_id: node_id.clone(),
                     status: rdm_admin::model::NodeStatus::Ready,
                     allocated: None,
                     renamed_from: None,
-                    inherited_by: None,
-                    executable: None,
+                            executable: None,
                     births: vec![birth],
                     predecessor: None,
                     mesh_id: Some(mesh_id.clone()),
@@ -399,7 +397,7 @@ impl Prepared {
                 build_id: build_id.clone(),
                 topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", mesh_id.clone()),
                 submitted_change: None,
-                submitted_at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+                source: None, submitted_at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
             };
             rdm_admin::build_state::accept(&journal, &accepted, None, "mesh1.node-admin.1", "prepared-root").await.unwrap();
             launched
@@ -1057,9 +1055,9 @@ impl Prepared {
             let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &self.dir.join("fixture"), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
             let delete = rdm_admin::build_state::BuildAccepted {
                 build_id: rdm_admin::build::BuildId::mint(),
-                topology: rdm_admin::accepted::FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },
-                submitted_change: Some(rdm_admin::accepted::TopologyChange::DeleteFabric),
-                submitted_at_ms: now_ms(),
+                topology: rdm_admin::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },
+                submitted_change: Some(rdm_core::build::BuildChange::DeleteFabric),
+                source: None, submitted_at_ms: now_ms(),
             };
             rdm_admin::build_state::accept(&journal, &delete, None, "mesh1.node-admin.1", "fabric.delete").await.unwrap();
             if dead {

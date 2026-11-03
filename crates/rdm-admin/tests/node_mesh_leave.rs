@@ -362,7 +362,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
                 submitted_change: None,
-                submitted_at_ms: 1000,
+                source: None, submitted_at_ms: 1000,
             })
             .await
             .unwrap();
@@ -681,7 +681,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
                 &NodeCommandRequest::LeaveMesh {
                     node_id: admin_id.clone(),
                     incarnation: admin_inc.clone(),
-                    operation: rdm_core::OperationId::location("node.mesh.leave", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()),
+                    operation: rdm_core::OperationId::node("node.mesh.leave", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap())),
                 },
                 Box::new(ChannelFrames(tx_admin_leave)),
             )

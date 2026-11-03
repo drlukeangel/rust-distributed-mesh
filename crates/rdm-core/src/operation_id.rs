@@ -3,8 +3,8 @@
 use crate::{FabricId, IncarnationId, MeshId, NodeId, PathName};
 use serde::{Deserialize, Serialize};
 
-/// The subject chosen when an operation is admitted. A create retains its location subject
-/// after allocation; the allocated NodeId is a separate execution input.
+/// The subject chosen when an operation is admitted. A create's subject is the node.id the
+/// fabric-primary minted for the node when it accepted the Build, as every node operation's is.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OperationSubject {
     /// An admitted existing node.
@@ -20,10 +20,11 @@ pub enum OperationSubject {
         /// The exact process incarnation, compared only for equality.
         incarnation: IncarnationId,
     },
-    /// A create or an accepted reference to a not-yet-created entry.
+    /// Reserved position: the removed location subject. Every node operation's subject is its node.id
+    /// (D58), a create's included. Never sent; kept so every later subject keeps its position.
     ///
     /// Position 2 on the wire.
-    Location(PathName),
+    Reserved2,
     /// An existing mesh.
     ///
     /// Position 3 on the wire.
@@ -67,11 +68,6 @@ impl OperationId {
     /// An operation on an explicit subject.
     pub fn new(action: impl Into<String>, subject: OperationSubject) -> Self {
         Self { action: action.into(), subject: Some(subject), recipe_step: None, occurrence: None }
-    }
-
-    /// An operation on a structured entry location, before a node ID exists.
-    pub fn location(action: impl Into<String>, location: &PathName) -> Self {
-        Self::new(action, OperationSubject::Location(location.clone()))
     }
 
     /// An operation on an already admitted node ID.
@@ -122,7 +118,7 @@ impl OperationSubject {
         match self {
             Self::Node(id) => (0, id.as_str(), ""),
             Self::Birth { node_id, incarnation } => (1, node_id.as_str(), incarnation.as_str()),
-            Self::Location(location) => (2, &location.path, &location.name),
+            Self::Reserved2 => (2, "", ""),
             Self::Mesh(id) => (3, id.as_str(), ""),
             Self::Fabric(id) => (4, id.as_str(), ""),
             Self::Named(name) => (5, name, ""),
@@ -175,7 +171,7 @@ mod tests {
     #[test]
     fn command_keeps_admitted_subject_and_scopes_nested_primitive() {
         let location = PathName::new("arbitrary.location", "worker").unwrap();
-        let admitted = OperationId::location("node.stop", &location).at_step(Some(7));
+        let admitted = OperationId::node("node.stop", &crate::fixture_node_id(&location)).at_step(Some(7));
         let allocated = NodeId::mint();
         assert_eq!(admitted.command("node.stop", &allocated), admitted);
         assert_eq!(admitted.command("node.stop", &NodeId::mint()), admitted);

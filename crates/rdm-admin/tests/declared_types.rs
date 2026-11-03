@@ -4,7 +4,8 @@
 //! naming an undeclared type is refused by name at node.create, and neither of RDM's two can be declared
 //! again").
 
-use rdm_admin::accepted::{AcceptedStore, FabricTopology, TopologyChange};
+use rdm_admin::accepted::{AcceptedStore, FabricTopology};
+use rdm_core::build::BuildChange;
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::control_plane::Refusal;
 use rdm_admin::fabric_storage::FabricStorage as _;

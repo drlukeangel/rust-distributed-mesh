@@ -128,14 +128,14 @@ Five concepts are distinct and never mixed.
 reconciliation. Operation names render mechanically from the typed object:
 
 ```text
-node.create:<path.name>
+node.create:<node_id>
 node.stop:<node_id>
 node.start:<node_id>
 node.delete:<node_id>
 node.connection.delete:<node_id>
 ```
 
-A typed call has one canonical name, noun.verb, and a command completes as noun.verb in the past tense: node.create completes as node.created, node.connection.delete as node.connection.deleted. The Rust request and reply variants (`NodeRequest::Create`, `NodeReply::Created`), the Build step key (`noun.verb:<path.name>`, an opaque string, see [the Build schema](node-rpc-envelope.md#build-schema)) and the span (`rdm.<component>.<noun>.<verb>.via-...`) are rendered from it mechanically and are never named by hand.
+A typed call has one canonical name, noun.verb, and a command completes as noun.verb in the past tense: node.create completes as node.created, node.connection.delete as node.connection.deleted. The Rust request and reply variants (`NodeRequest::Create`, `NodeReply::Created`), the Build step key (`noun.verb:<node_id>`, an opaque string, see [the Build schema](node-rpc-envelope.md#build-schema)) and the span (`rdm.<component>.<noun>.<verb>.via-...`) are rendered from it mechanically and are never named by hand.
 
 A new node is node.created. Birth and re-birth are the application's names for its own workflows, never RDM operations. Rafka names its own recover/replace steps without creating an RDM opcode.
 

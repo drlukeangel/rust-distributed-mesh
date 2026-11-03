@@ -66,7 +66,7 @@ pub fn sectioned(facts: Vec<BuildFact>, meshes: Option<&std::collections::BTreeS
     facts
         .into_iter()
         .flat_map(|f| match f {
-            BuildFact::Accepted(a) => a.topology.sections(meshes).into_iter().map(|topology| BuildFact::Accepted(BuildAccepted { topology, submitted_change: a.submitted_change.clone().filter(|c| matches!(c, crate::accepted::TopologyChange::DeleteFabric)), ..a.clone() })).collect(),
+            BuildFact::Accepted(a) => a.topology.sections(meshes).into_iter().map(|topology| BuildFact::Accepted(BuildAccepted { topology, submitted_change: a.submitted_change.clone().filter(|c| matches!(c, rdm_core::build::BuildChange::DeleteFabric)), ..a.clone() })).collect(),
             other => vec![other],
         })
         .collect()
@@ -326,13 +326,13 @@ mod tests {
             .collect();
         let pin = crate::build::PinnedBirth { mesh: "mesh2".into(), r#type: "node".into(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
         let topology = crate::accepted::FabricTopology {
-            section_of: None,
+            created: Vec::new(), section_of: None,
             pinned: vec![(rdm_core::PathName::new("mesh2.node", "1").unwrap(), pin)],
             topology_storage_provider: Some("file".into()),
             fabric: "fabric1".into(),
             meshes,
         };
-        BuildAccepted { build_id: BuildId::mint(), topology, submitted_change: None, submitted_at_ms: 7 }
+        BuildAccepted { build_id: BuildId::mint(), topology, submitted_change: None, source: None, submitted_at_ms: 7 }
     }
 
     /// CONTRACT (INDEX Q284: "The fabric-primary records the accepted Build whole in the journal, and
@@ -379,7 +379,7 @@ mod tests {
         assert!(a.topology.names_mesh("mesh7") && !a.topology.meshes.contains_key("mesh7"), "mesh7 is the Build's, its section not here");
         let delete = BuildAccepted {
             topology: crate::accepted::FabricTopology { meshes: Default::default(), pinned: Vec::new(), ..whole.topology.clone() },
-            submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric),
+            submitted_change: Some(rdm_core::build::BuildChange::DeleteFabric),
             ..whole
         };
         for wanted in [None, Some(&touched)] {
@@ -389,7 +389,7 @@ mod tests {
             let heard = BuildMessage::from_bytes(&messages[0]).unwrap().facts;
             let [BuildFact::Accepted(a)] = heard.as_slice() else { panic!("the Build's one section: {heard:?}") };
             assert!(a.topology.meshes.is_empty() && a.topology.mesh_names().is_empty());
-            assert_eq!(a.submitted_change, Some(crate::accepted::TopologyChange::DeleteFabric), "it says it deletes the fabric");
+            assert_eq!(a.submitted_change, Some(rdm_core::build::BuildChange::DeleteFabric), "it says it deletes the fabric");
         }
     }
 
@@ -431,7 +431,7 @@ mod tests {
         let op = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(),
             build_id: "b1".into(),
             attempt: 2,
-            operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
+            operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
             node_id: crate::model::NodeId::mint(),
             incarnation: crate::model::IncarnationId::mint(),
             path: "mesh1.node".into(), name: "1".into(),
@@ -453,7 +453,7 @@ mod tests {
         let (messages, refused) = encode_chunks(vec![stop.clone()]);
         assert!(refused.is_empty(), "{refused:?}");
         assert_eq!(BuildMessage::from_bytes(&messages[0]).unwrap().facts, vec![stop]);
-        let (_, refused) = encode_chunks(vec![BuildFact::Step(receipt(&rdm_core::OperationId::location("node.create", &op.location())))]);
+        let (_, refused) = encode_chunks(vec![BuildFact::Step(receipt(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&op.location()))))]);
         assert_eq!(refused.len(), 1, "another operation's Complete commits no output");
     }
 
@@ -479,35 +479,6 @@ mod tests {
             let sent: usize = messages.iter().map(|m| BuildMessage::from_bytes(m).unwrap().facts.len()).sum();
             assert_eq!(sent, 60, "no fact lost");
         }
-    }
-
-    /// CONTRACT (build.md §1: "Rafka's replace steps (one Build of node primitives ...)";
-    /// lifecycles/node-replace.md): the attempt the steps open travels in a Build message with its steps
-    /// and the births it pinned, so every admin folds the same steps and plans the same remaining
-    /// steps from it.
-    #[test]
-    fn an_attempt_travels_the_build_topic_with_its_steps_and_pinned_births() {
-        use rdm_core::build::Step;
-        let node: crate::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let pin = crate::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node".into(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
-        let opened = crate::build_state::AttemptOpened {
-            mesh: None,
-            build_id: BuildId::parse("3qcfk1kq47m9").unwrap(),
-            attempt: 2,
-            reason: crate::build_state::AttemptReason::Steps,
-            action: Some(crate::accepted::AttemptAction::Steps { rename_intents: Default::default(),
-                steps: vec![Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()}, Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()}, Step::Update { path: node.path.clone(), name: node.name.clone(), new_path: node.path.clone(), new_name: node.renamed().unwrap().name }, Step::Stop { path: node.path.clone(), name: node.renamed().unwrap().name }, Step::Create { mesh: "mesh1".to_owned(), r#type: "node".into(), path: node.path.clone(), name: node.name.clone(), executable: None }, Step::Delete { path: node.path.clone(), name: node.renamed().unwrap().name }],
-                pinned: vec![(node.clone(), pin)],
-            }),
-            opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
-            opened_at_ms: 7,
-            context: None,
-        };
-        let bytes = match encode(vec![BuildFact::Opened(opened.clone())]) {
-            Ok(b) => b,
-            Err(e) => panic!("the Build's Opened fact must have a wire shape: {e}"),
-        };
-        assert_eq!(BuildMessage::from_bytes(&bytes).unwrap().facts, vec![BuildFact::Opened(opened)], "a peer folds the same steps");
     }
 
     /// CONTRACT (proposal node-primary-update Part C1 step 5: "This is the commit. From this write the

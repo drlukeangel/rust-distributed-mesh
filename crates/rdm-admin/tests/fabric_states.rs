@@ -1,6 +1,6 @@
 //! Functional test for `fabric-states` (`docs/architecture/lifecycles/states.md`).
 
-use rdm_admin::accepted::TopologyChange;
+use rdm_core::build::BuildChange;
 use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::build_state::BuildState;
 use rdm_admin::model::ScopeStatus;

@@ -1902,7 +1902,7 @@ mod tests {
         let (admin, rpc) = (joined(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), joined(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"));
         let claimed_inc = crate::model::IncarnationId::mint();
         let mut claim = NodeRow::new(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", NodeId::mint(), crate::model::NodeStatus::Pending);
-        claim.allocated = Some(Allocation { predecessor: None, build_id: Some(BuildId::mint()), operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), incarnation: claimed_inc.clone(), deployment_id: crate::model::DeploymentId::mint() });
+        claim.allocated = Some(Allocation { predecessor: None, build_id: Some(BuildId::mint()), operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())), incarnation: claimed_inc.clone(), deployment_id: crate::model::DeploymentId::mint() });
         let roster = stored_roster(&[admin.clone(), rpc.clone(), claim.clone()], "mesh1", &mesh_id, &[]);
         let of = |r: &NodeRow, inc: &crate::model::IncarnationId| RosterBirth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node: r.location(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() };
         let mut want = vec![of(&admin, &admin.births[0].incarnation_id), of(&rpc, &rpc.births[0].incarnation_id), of(&claim, &claimed_inc)];

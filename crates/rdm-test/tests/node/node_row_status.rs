@@ -83,7 +83,7 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
             "node.connection.delete" => nodes.delete_connections(&path, &rdm_core::status::ConnectionScope::All).await,
             "node.stop" => nodes.stop(&path).await,
             "node.start" => nodes.start(&path).await,
-            _ => nodes.delete(&path).await,
+            _ => nodes.delete(vec![subject.node_id.clone()]).await,
         };
         let frames = frames(stream.unwrap_or_else(|e| panic!("{call} of {path:?} was refused: {e}"))).await;
         assert_eq!(frames.last(), Some(&Frame::Complete), "{call}: {frames:?}");

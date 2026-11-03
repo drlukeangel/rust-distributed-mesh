@@ -15,7 +15,8 @@ use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, M
 use rdm_transport::chunking::MAX_MESSAGE_BYTES;
 use rdm_transport::topology::Frame;
 use rdm_transport::snapshot::{chunks_of, Full, PublisherId};
-use rdm_admin::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyChange};
+use rdm_admin::accepted::{AttemptAction, FabricTopology, MeshTopology};
+use rdm_core::build::BuildChange;
 use rdm_admin::build::{BuildId, FabricDesired, MeshDesired};
 use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateError, BuildStepReceipt, StepOutcome};
 use rdm_admin::deployment::pipeline::Bound;
@@ -187,7 +188,7 @@ fn changes() -> Vec<Option<TopologyChange>> {
 }
 
 fn step(step: &str, output: Option<Value>) -> BuildFact {
-    BuildFact::Step(BuildStepReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node", "1").unwrap()), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor()) })
+    BuildFact::Step(BuildStepReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "1").unwrap())), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor()) })
 }
 
 fn to_json<T: serde::Serialize>(v: &T) -> Value {
@@ -199,45 +200,18 @@ fn facts() -> Vec<BuildFact> {
     let deleted_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let mut out = Vec::new();
     for change in changes() {
-        out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), submitted_change: change, submitted_at_ms: 55 }));
+        out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), submitted_change: change, source: None, submitted_at_ms: 55 }));
     }
     let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Delete, action: a, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 56, context: None });
     out.push(action(None));
     out.push(action(Some(AttemptAction::Delete { r#type: "node".into(), mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() })));
-    // Steps (build.md §1; lifecycles/node-replace.md): the steps and the births they pinned.
-    {
-        use rdm_core::build::Step;
-        let node: rdm_admin::model::PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
-        let pin = rdm_admin::build::PinnedBirth { mesh: "mesh2".into(), r#type: "node".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        out.push(BuildFact::Opened(AttemptOpened {
-            mesh: None,
-            build_id: bid("3qcfk1kq47m9"),
-            attempt: 2,
-            reason: AttemptReason::Steps,
-            action: Some(AttemptAction::Steps { rename_intents: Default::default(),
-                steps: vec![
-                    Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()},
-                    Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()},
-                    Step::Update { path: node.path.clone(), name: node.name.clone(), new_path: node.path.clone(), new_name: node.renamed().unwrap().name },
-                    Step::Stop { path: node.renamed().unwrap().path, name: node.renamed().unwrap().name},
-                    // The executable the Build fixes rides the positional wire with every field written.
-                    Step::Create { mesh: "mesh1".into(), r#type: "node".into(), path: node.path.clone(), name: node.name.clone(), executable: Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/opt/node".into(), sha256: "ab".repeat(32), image: None }) },
-                    Step::Delete { path: node.renamed().unwrap().path, name: node.renamed().unwrap().name},
-                ],
-                pinned: vec![(node, pin)],
-            }),
-            opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
-            opened_at_ms: 56,
-            context: None,
-        }));
-    }
     out.push(BuildFact::Claim(BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, executor: executor() }));
     out.push(step("PrepareNetwork", None));
     out.push(BuildFact::Step(BuildStepReceipt {
         mesh: None,
         build_id: bid("3qcfk1kq47m9"),
         attempt: 2,
-        operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node", "1").unwrap()),
+        operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "1").unwrap())),
         step: "WaitForBind".into(),
         outcome: StepOutcome::failed("runtime exited (code Some(1)) before binding"),
         output: None,
@@ -505,7 +479,7 @@ fn the_accepted_fact_on_the_build_topic_carries_no_executable_and_a_twelve_node_
     let named = twelve_node_topology();
     assert_eq!(named.meshes.values().map(|m| m.nodes.len()).sum::<usize>(), 12);
     let nodes: Vec<NodeSpec> = named.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
-    let fact = |t: FabricTopology, nodes: Vec<NodeSpec>| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, submitted_change: Some(TopologyChange::Reconcile { based_on: bid("2qcfk1kq47m8"), nodes }), submitted_at_ms: 1_700_000_000_000 });
+    let fact = |t: FabricTopology, nodes: Vec<NodeSpec>| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, submitted_change: Some(TopologyChange::Reconcile { based_on: bid("2qcfk1kq47m8"), nodes }), source: None, submitted_at_ms: 1_700_000_000_000 });
     let stripped_nodes: Vec<NodeSpec> = nodes.iter().map(|s| NodeSpec { executable: None, tags: Default::default(), config: Default::default(), ..s.clone() }).collect();
     let with = fact(named.clone(), nodes);
     let without = fact(without_executables(&named), stripped_nodes);

@@ -88,7 +88,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
             build_id: build_id.clone(),
             topology,
             submitted_change: None,
-            submitted_at_ms: 1000,
+            source: None, submitted_at_ms: 1000,
         })
         .await
         .unwrap();
@@ -105,7 +105,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
             log.append_step_receipt(&BuildStepReceipt {
                 build_id: build_id.clone(),
                 attempt: 1,
-                operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
+                operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
                 step: step.into(),
                 outcome: StepOutcome::Complete,
                 output: None,
@@ -151,7 +151,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                                 sink.data(BuildReply::Step {
                                     build_id: bid.clone(),
                                     attempt: 1,
-                                    operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
+                                    operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
                                     step: "AllocateIdentity".into(),
                                     receipt: None,
                                 })
@@ -182,7 +182,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                                 sink.data(BuildReply::Step {
                                     build_id: bid.clone(),
                                     attempt: 1,
-                                    operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
+                                    operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
                                     step: "WaitForMeshJoin".into(),
                                     receipt: None,
                                 })
@@ -191,7 +191,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                                 sink.data(BuildReply::Step {
                                     build_id: bid.clone(),
                                     attempt: 1,
-                                    operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
+                                    operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
                                     step: "Complete".into(),
                                     receipt: None,
                                 })
@@ -239,9 +239,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
         let carrier = BuildCarrier::at_node(client, node_id);
 
         let initial_stream = carrier
-            .create(BuildChange::RemoveNode {
-                node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
-            })
+            .create(BuildChange::DeleteFabric)
             .await
             .expect("initial create call is accepted");
 
@@ -251,7 +249,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
             .expect("follow reattaches through build.get and resubmit to completion");
 
         assert_eq!(followed.reattached, 1);
-        let op = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "1").unwrap());
+        let op = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "1").unwrap()));
         assert_eq!(
             followed.frames,
             vec![

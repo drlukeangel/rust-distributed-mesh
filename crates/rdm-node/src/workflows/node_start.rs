@@ -304,7 +304,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
             let digest = node.join_digest();
             let (mesh, mesh_id) = (digest.node.mesh, digest.mesh_id.as_ref().map(ToString::to_string).unwrap_or_default());
             let operation = node.operation().unwrap_or_else(|| match kind {
-                StartKind::FirstStart => rdm_core::OperationId::location("node.create", &path),
+                StartKind::FirstStart => rdm_core::OperationId::node("node.create", &node_id),
                 StartKind::AfterStop => rdm_core::OperationId::node("node.start", &node_id),
             });
             let report_parent = matches!(kind, StartKind::FirstStart).then(|| step.clone());

@@ -388,7 +388,7 @@ mod tests {
         assert_eq!(commands.complete(&k), Accepted::First);
         rx.wait_for(|v| *v).await.unwrap();
         assert_eq!(commands.complete(&k), Accepted::Again);
-        let other = CommandKey { operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), ..k.clone() };
+        let other = CommandKey { operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), ..k.clone() };
         assert_eq!(commands.complete(&other), Accepted::NoOpenCommand { field: "operation".into(), expected: format!("{:?}", k.operation), reported: format!("{:?}", other.operation) });
         let attempt = CommandKey { attempt: 2, ..k.clone() };
         assert_eq!(commands.complete(&attempt), Accepted::NoOpenCommand { field: "attempt".into(), expected: "1".into(), reported: "2".into() });

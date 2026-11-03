@@ -77,7 +77,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
             late = Some(born);
             break;
         }
-        Estate::workflow(&format!("node.delete of {:?}", born.name), estate.nodes_obj().await.delete(&born.location()).await).await;
+        Estate::workflow(&format!("node.delete of {:?}", born.name), estate.delete_node(&born.location()).await).await;
         estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
     }
     let late = late.unwrap_or_else(|| {
@@ -124,7 +124,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     estate.stop_then_start(&restarted.location()).await;
     let after = estate.until_node(&restarted.location(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation_id), (&restarted.node_id, &restarted.incarnation_id), "stop/start keeps ID and incarnation");
-    Estate::workflow(&format!("node.delete of {:?}", deleted.name), estate.nodes_obj().await.delete(&deleted.location()).await).await;
+    Estate::workflow(&format!("node.delete of {:?}", deleted.name), estate.delete_node(&deleted.location()).await).await;
     estate
         .until_view("the deleted birth leaves the view", Duration::from_secs(30), |views| views.iter().all(|n| n.node_id != deleted.node_id || n.incarnation_id != deleted.incarnation_id).then_some(()))
         .await;

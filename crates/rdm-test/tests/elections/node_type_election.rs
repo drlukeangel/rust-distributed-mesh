@@ -303,7 +303,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     // legal removal of the primary -> the next-lowest succeeds
     let removed = primary_of(&nodes, &rpc).unwrap();
     let removed_id = removed.clone();
-    complete(&format!("node.delete of {removed}"), estate.nodes_obj().await.delete(&location_of(&nodes, &removed)).await).await;
+    complete(&format!("node.delete of {removed}"), estate.delete_node(&location_of(&nodes, &removed)).await).await;
     let nodes = estate
         .until_view("the view drops the removed primary", Duration::from_secs(30), |views| {
             let nodes = Estate::values(views);
@@ -487,7 +487,7 @@ async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
     let nodes = estate.node_values().await;
     let removed = primary_of(&nodes, &admin2).unwrap();
     let removed_id = removed.clone();
-    complete(&format!("node.delete of {removed}"), estate.nodes_obj().await.delete(&location_of(&nodes, &removed)).await).await;
+    complete(&format!("node.delete of {removed}"), estate.delete_node(&location_of(&nodes, &removed)).await).await;
     // The removed primary keeps its role while it deletes its connections and leaves: a role moves only by an
     // explicit transfer or a proven loss, never by its primary's status (R-EL1). The view is
     // read once the role has left the removed birth.

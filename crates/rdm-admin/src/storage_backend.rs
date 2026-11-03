@@ -963,7 +963,7 @@ mod tests {
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("after")).unwrap(),
             topology: crate::accepted::FabricTopology::root("fabric1", "meshafter", mesh.mesh_id.clone()),
             submitted_change: None,
-            submitted_at_ms: 1,
+            source: None, submitted_at_ms: 1,
         };
         builds.publish_accepted(&build).await.unwrap();
         let fact = rdm_core::connections::NodeConnection {

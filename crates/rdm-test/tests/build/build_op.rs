@@ -173,7 +173,7 @@ async fn a_delete_over_the_build_family_is_one_call_that_pushes_every_step_frame
     let executor_birth = birth_of(executor);
     let fabric_primary = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
 
-    let mut stream = caller.nodes(&carrier).delete(&node).await.expect("the fabric-primary accepts the delete");
+    let mut stream = caller.nodes(&carrier).delete(vec![estate.node_view(&node).await.node_id]).await.expect("the fabric-primary accepts the delete");
     let accepted = stream.accepted().cloned().expect("the call opened a Build");
     let frames = frames_of(&mut stream).await;
     assert_eq!(frames.first(), Some(&Frame::Started { build_id: accepted.build_id.clone(), attempt: accepted.attempt }));
@@ -221,20 +221,20 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
     let node = secondary_node(&estate).await;
     let nodes = caller.nodes(&carrier);
 
-    let mut cut = nodes.delete(&node).await.expect("the fabric-primary accepts the delete");
+    let mut cut = nodes.delete(vec![estate.node_view(&node).await.node_id]).await.expect("the fabric-primary accepts the delete");
     let accepted = cut.accepted().cloned().expect("the call opened a Build");
     // The first frame is the call's `Started`; the cut follows it, before any step is reported.
     assert!(matches!(cut.next().await, Some(Ok(Frame::Started { .. }))));
     drop(cut);
 
-    let mut attached = nodes.resume(WorkflowKind::Delete(node.clone()), &accepted).await.expect("the re-submit is accepted");
+    let mut attached = nodes.resume(WorkflowKind::Delete(vec![estate.node_view(&node).await.node_id]), &accepted).await.expect("the re-submit is accepted");
     assert_eq!(attached.disposition(), Some(StartDisposition::Attached), "the Build the cut left running is the one the re-submit attaches to");
     assert_eq!(attached.accepted().expect("the call opened a Build").build_id, accepted.build_id, "never a second Build");
     let first = frames_of(&mut attached).await;
     assert_eq!(first.last(), Some(&Frame::Complete));
     assert_eq!(events(&first), DELETE_EVENTS, "{first:?}");
 
-    let mut again = nodes.resume(WorkflowKind::Delete(node), &accepted).await.expect("the second re-submit is accepted");
+    let mut again = nodes.resume(WorkflowKind::Delete(vec![estate.node_view(&node).await.node_id]), &accepted).await.expect("the second re-submit is accepted");
     assert_eq!(again.disposition(), Some(StartDisposition::AlreadyApplied));
     let second = frames_of(&mut again).await;
     assert_eq!(second.last(), Some(&Frame::Complete), "the terminal frame follows AlreadyApplied");
@@ -362,7 +362,7 @@ async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
-    let mut stream = caller.nodes(&carrier).delete(&node).await.expect("the fabric-primary accepts the delete");
+    let mut stream = caller.nodes(&carrier).delete(vec![estate.node_view(&node).await.node_id]).await.expect("the fabric-primary accepts the delete");
     let accepted = stream.accepted().cloned().expect("the call opened a Build");
     assert_eq!(frames_of(&mut stream).await.last(), Some(&Frame::Complete));
 
@@ -1008,11 +1008,11 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     let mut stream = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.expect("the fabric-primary accepts the grown shape");
     let (before_a, (step, reason, operation)) = next_blocked(&mut stream).await;
     assert_eq!(step, "WaitForNodeReady", "the blocked step: {reason}");
-    // The frame's operation is the birth's create at its (path, name); its reason names the birth by
-    // node id, the hook's reason and its retry event.
-    assert_eq!((operation.action.as_str(), operation.subject.clone()), ("node.create", Some(rdm_core::OperationSubject::Location(blocked.clone()))), "the frame names the birth's create: {operation:?}");
+    // The frame's operation is the birth's create, keyed by the node.id the Build record minted for it
+    // (D58); its reason names the birth by node id, the hook's reason and its retry event.
     assert!(reason.contains(": pre_node_ready is blocked: ") && reason.contains(A) && reason.contains("primary-addressed"), "the frame names the birth, the hook's reason and its retry event: {reason}");
     let blocked_id = reason.split(':').next().expect("the reason opens with the birth's node id").to_string();
+    assert_eq!((operation.action.as_str(), operation.subject.clone()), ("node.create", Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse(&blocked_id).expect("a node id")))), "the frame names the birth's create by the node.id it runs with: {operation:?}");
     assert!(!before_a.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })));
 
     // Reruns blocked for the same reason: the executor's probes address the birth, so its hook runs
@@ -1171,7 +1171,7 @@ async fn a_restored_fabric_primary_reads_the_create_mesh_receipt_and_does_not_cl
     let carrier = born(&estate, &caller, &SHAPE1).await;
     // The cut: mesh2's first admin has its identity allocated and that receipt is not durable; the
     // fabric-primary ran `create-mesh:mesh2` before it.
-    let lost = lose_the_fabric_primary_creating_mesh2(&mut estate, &caller, &carrier, json!({"kind": "receipt", "step": "AllocateIdentity", "operation": "node.create", "node": rdm_core::OperationSubject::Location(PathName::new("mesh2.node-admin", "1").unwrap())}), true).await;
+    let lost = lose_the_fabric_primary_creating_mesh2(&mut estate, &caller, &carrier, json!({"kind": "receipt", "step": "AllocateIdentity", "operation": "node.create", "at": (PathName::new("mesh2.node-admin", "1").unwrap())}), true).await;
     let receipts = create_mesh_receipts(&lost).await;
 
     estate.stop().await;
@@ -1288,7 +1288,7 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
         let executor = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
         let door = Door::at(&estate, &executor.location()).await;
         door.arm("closure", json!({"kind": "receipt", "step": cut, "operation": "node.delete", "node": rdm_core::OperationSubject::Node(subject_id.clone())})).await;
-        let mut stream = caller.nodes(&carrier).delete(&node).await.expect("the Build accepts the delete");
+        let mut stream = caller.nodes(&carrier).delete(vec![estate.node_view(&node).await.node_id]).await.expect("the Build accepts the delete");
         let accepted = stream.accepted().cloned().expect("the call opened a Build");
         let held = door.wait_held("closure").await;
         assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.to_string());

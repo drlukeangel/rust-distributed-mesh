@@ -10,10 +10,8 @@
 
 use crate::build_log;
 use rdm_client::{BuildFrame, CallEnd, Change, Frame, NodeEvent, NodeStatus, Nodes, PathName};
-use rdm_core::build::Step;
 use rdm_test::estate::{at_location, descends_from, is_operation, location, named, wait_for, Estate, Owner};
 use rdm_core::{NodeId, OperationSubject};
-use rdm_test::steps::{replace as replace_steps, replace_keeping_predecessor, rollback as rollback_steps};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use rdm_test::process_faults::{ExactRuntime, Fault};
 use serde_json::{json, Value};
@@ -258,7 +256,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     let spans = wait_for("the recovery's create, the exited birth's target and the new node's boot span are exported", SETTLE, || async {
         let spans = estate.spans();
         let run = in_trace(&spans, &recovery);
-        (create_span(&run, NO_BUILD, NO_ATTEMPT, node_path).is_some() && !exited_birth_spans(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
+        (recovery_create_span(&run, node_path).is_some() && !exited_birth_spans(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
     })
     .await;
     // The recovery's own run, one trace from the mesh-primary's submit: its delete and its create.
@@ -274,7 +272,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     // create's, run by the executor that launches the new node with the retained key, inside the
     // create's own operation and before that launch. A target run after the delete's Complete is left
     // undone when that executor is lost before it, and the next attempt's create launches untargeted.
-    let create = create_span(&run, NO_BUILD, NO_ATTEMPT, node_path).expect("the recovery's create operation span");
+    let create = recovery_create_span(&run, node_path).expect("the recovery's create operation span");
     let targets = exited_birth_spans(&spans, &before);
     assert_eq!(targets.len(), 1, "the exited birth is targeted once: {targets:?}");
     assert!(start(create) <= start(targets[0]) && end(targets[0]) <= end(create), "the target runs inside the create operation: {} vs {create}", targets[0]);
@@ -337,7 +335,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     let spans = wait_for("the recovery's create, the exited birth's target and the successor's boot span are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
         let run = in_trace(&spans, &recovery);
-        (create_span(&run, NO_BUILD, NO_ATTEMPT, node).is_some() && !exited_birth_spans(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
+        (recovery_create_span(&run, node).is_some() && !exited_birth_spans(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
     })
     .await;
     // The recovery's own run, in the submit's trace.
@@ -361,7 +359,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     // create's, run by the executor that launches the new node with the retained key, inside the
     // create's own operation and before that launch. A target run after the delete's Complete is left
     // undone when that executor is lost before it, and the next attempt's create launches untargeted.
-    let create = create_span(&run, NO_BUILD, NO_ATTEMPT, node).expect("the recovery's create operation span");
+    let create = recovery_create_span(&run, node).expect("the recovery's create operation span");
     let targets = exited_birth_spans(&spans, &before);
     assert_eq!(targets.len(), 1, "the exited birth is targeted once: {targets:?}");
     assert!(start(create) <= start(targets[0]) && end(targets[0]) <= end(create), "the target runs inside the create operation: {} vs {create}", targets[0]);
@@ -369,8 +367,8 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     // Each operation is its workflow: its node operation span and its own pipeline, never a recovery
     // pipeline of its own.
     for (op, pipeline) in [("delete", "delete"), ("create", "create")] {
-        let name = format!("rdm.node_admin.node.{op}.via-build");
-        let at = named(&run, &name).into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == NO_BUILD && s(&sp["attributes"]["attempt"]) == NO_ATTEMPT && at_location(sp, node)).unwrap_or_else(|| panic!("the recovery's {name} span"));
+        let name = format!("rdm.node_admin.node.{op}.via-node-recovery");
+        let at = named(&run, &name).into_iter().find(|sp| at_location(sp, node)).unwrap_or_else(|| panic!("the recovery's {name} span"));
         assert_eq!(at["attributes"]["node_id"], before["node_id"], "{name} names the exited birth it acts for: {at}");
         assert!(
             named(&run, "rdm.node_admin.deployment.update.via-pipeline").into_iter().any(|sp| s(&sp["attributes"]["build_id"]) == NO_BUILD && s(&sp["attributes"]["attempt"]) == NO_ATTEMPT && at_location(sp, node) && sp["attributes"]["pipeline"] == pipeline),
@@ -478,10 +476,10 @@ fn lane_reconcile_span<'a>(spans: &'a [Value], build: &str, lane: &str, attempt:
 }
 
 /// The `deployment.update.via-step` span of `step` for `node` in `attempt` of `build`.
-/// The node.create operation span of `node` at `attempt` of `build`: exported once the create, a
-/// recovery's last operation, ended.
-fn create_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &PathName) -> Option<&'a Value> {
-    named(spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["attempt"]) == attempt && at_location(sp, node))
+/// The recovery's node.create span of `node` (the primary's own workflow, never a Build: node-recovery.md,
+/// Q342): exported once the create, a recovery's last operation, ended.
+fn recovery_create_span<'a>(spans: &'a [Value], node: &PathName) -> Option<&'a Value> {
+    named(spans, "rdm.node_admin.node.create.via-node-recovery").into_iter().find(|sp| at_location(sp, node))
 }
 
 fn step_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &PathName, step: &str) -> Option<&'a Value> {
@@ -520,343 +518,67 @@ async fn frames(mut stream: rdm_client::WorkflowStream) -> Vec<Frame> {
     out
 }
 
-/// CONTRACT (lifecycles/node-replace.md: "Replace is Rafka's steps, submitted as one Build. RDM
-/// executes its primitives and records their receipts; it has no replace opcode"; steps 1-3: "A node is
-/// renamed only while it is live: its connections deleted and its mesh left first ...; it is stopped
-/// after. A stopped node is never renamed"; build.md §1): the caller submits the replace of
-/// `mesh1.node.1` as ONE Build over the `node` object, and RDM runs its steps in order, each as its own
-/// op's operation: node[1].connections.delete `{ All }`, node[1].mesh.leave, node[1].update
-/// (path `mesh1.node`, name `1-old`), node[1].stop at `<name>-old`, node.create(`mesh1.node.1`), node[1].delete at `<name>-old`.
-/// The stream is `Started`, every step's events in that order, `Complete`; the Build's operations are
-/// exactly those six keys in that order, and no replace operation exists. The predecessor leaves its
-/// mesh before its rename (the mesh-primary carries `LeaveMesh` and holds its `MeshLeft`), takes
-/// `<name>-old` live (the rename's `via-writer` span says `connections=deleted mesh=left`, applied by the
-/// node, which publishes nothing off its mesh), and is stopped as `<name>-old` after (its NodeStopped once,
-/// its stop span naming `<name>-old`). The successor is a re-birth at `mesh1.node.1`, the name the rename
-/// released (a new node.id, transport key and data dir), its row a successor's seeded from the
-/// predecessor's row, and its join admitted under `mesh1.node.1`: it is never born at any other name.
-/// The predecessor is deleted at `<name>-old` on the provider's exited verdict (NodeDeleted once, its Deleted row
-/// at `<name>-old`, its data dir kept). RDM moves no data. At the end `mesh1.node.1` is the successor, ready,
-/// and nothing is listed at `<name>-old`.
+/// CONTRACT (lifecycles/node-replace.md: "Replace is the caller's sequence: node commands free the
+/// name, then one Build adds the successor ... The sequence is not a Build of its own"; steps 1-4): the
+/// caller replaces `mesh1.node.1`. node.connection.delete `{ All }` and node.mesh.leave of the
+/// predecessor, node commands of its mesh-primary, each end `Complete` and open no Build; the
+/// mesh-primary carries the leave (one `rdm.node_admin.node.remove.via-mesh-leave` naming it, outcome
+/// `mesh-left`). node.name.update renames it `<name>-old` live (`via-writer` says `connections=deleted
+/// mesh=left`), and node.stop stops it there: node.get lists it stopped at `<name>-old` with its
+/// node.id, its process alive, its data dir kept. Then `Create { nodes: [the successor] }` is one Build
+/// that births a new node.id at `<name>`, ready, its own data dir, nothing handed from the predecessor
+/// (its row is seeded from no other row). Last, `Delete { node_ids: [the predecessor] }` removes the
+/// predecessor: its process exits, nothing is listed at `<name>-old`, its data kept. Must NOT happen:
+/// a Build accepted for a node command, the successor born at any other name, the predecessor's data
+/// moved or deleted by RDM.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replace_runs_as_one_build_of_node_primitives_in_order() {
-    let (mut estate, _birth) = estate("a_replace_runs_as_one_build_of_node_primitives_in_order").await;
+async fn a_replace_is_node_commands_then_one_create_and_the_predecessor_stays_stopped_at_its_old_name() {
+    let (mut estate, _birth) = estate("a_replace_is_node_commands_then_one_create_and_the_predecessor_stays_stopped_at_its_old_name").await;
     let path = PathName::new("mesh1.node", "1").unwrap();
     let old = path.renamed().unwrap();
-    assert_eq!(old.path, path.path, "replacement preserves the path");
-    assert_eq!(old.name, "1-old", "only the predecessor name changes");
-    let nodes = objects(&estate).await;
-    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
-    let before = mesh.iter().find(|n| n.location() == path).cloned().expect("node.get lists the node");
+    let before = estate.node_view(&path).await;
     let pid = estate.pid_of(&path).await;
     let old_dir = std::path::PathBuf::from(estate.data_dir(&path).await);
     let segment = old_dir.join("app-data").join("seg-0");
     std::fs::create_dir_all(segment.parent().unwrap()).unwrap();
     std::fs::write(&segment, b"records").unwrap();
+    let builds_before = estate.builds_obj().await.get(&rdm_client::Filter::new()).await.expect("build.get").len();
 
-    let stream = nodes.steps(replace_steps(&path, &before.mesh, &before.r#type).expect("valid replacement fixture name")).await.expect("the Build was accepted");
-    let accepted = stream.accepted().cloned().expect("the call opened a Build");
-    let got = frames(stream).await;
-    assert!(matches!(got.first(), Some(Frame::Started { .. })), "{got:?}");
-    use NodeEvent::*;
-    let want = vec![ConnectionsDeleted, MeshLeft, Updated, ConnectionsDeleted, Stopped, Joined, Started, Created, Deleted];
-    assert_eq!(events(&got), want, "every step's events, in step order: {got:?}");
-    assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
+    let predecessor = rdm_test::replace::free_the_name(&estate, &path).await.unwrap_or_else(|e| panic!("the node commands free {path:?}: {e}"));
+    assert_eq!(predecessor, before.node_id, "the commands acted on the node at {path:?}");
+    let stopped = estate.node_view(&old).await;
+    assert!(stopped.stopped && stopped.node_id == before.node_id, "node.get lists the predecessor stopped at {old:?} with its node.id: {stopped:?}");
+    assert!(alive(pid), "the stopped predecessor ({pid}) is alive: it is kept for the caller's transfer");
+    assert_eq!(estate.builds_obj().await.get(&rdm_client::Filter::new()).await.expect("build.get").len(), builds_before, "the node commands opened no Build");
 
-    // The Build's operations: the six steps, each its own op's operation, in order; no replace.
-    let build = accepted.build_id.to_string();
-    let b = build_log::build_value(&estate, &build).await;
-    let steps = b["steps"].as_array().cloned().unwrap_or_default();
-    let mut operations: Vec<rdm_core::OperationId> = Vec::new();
-    for r in steps.iter().filter(|r| r["attempt"].as_u64().unwrap_or(0) >= accepted.attempt as u64) {
-        let op: rdm_core::OperationId = serde_json::from_value(r["operation"].clone()).expect("structured operation");
-        if !operations.contains(&op) {
-            operations.push(op);
-        }
-    }
-    let keys = [
-        rdm_core::OperationId::node("node.connection.delete", &before.node_id).at_step(Some(1)),
-        rdm_core::OperationId::node("node.mesh.leave", &before.node_id).at_step(Some(2)),
-        rdm_core::OperationId::node("node.update", &before.node_id).at_step(Some(3)),
-        rdm_core::OperationId::node("node.stop", &before.node_id).at_step(Some(4)),
-        rdm_core::OperationId::location("node.create", &path).at_step(Some(5)),
-        rdm_core::OperationId::node("node.delete", &before.node_id).at_step(Some(6)),
-    ];
-    assert_eq!(operations, keys.to_vec(), "the Build's operations, in order: {b:#}");
-
-    // The end state: the successor holds the name, ready; nothing at `<name>-old`.
-    let after = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
-    let successor = after.iter().find(|n| n.location() == path).cloned().expect("node.get lists the successor at the name");
+    let got = rdm_test::replace::add_successor(&estate, &path, &before.mesh, &before.r#type).await.unwrap_or_else(|e| panic!("the successor's Create: {e}"));
+    assert!(matches!(got.first(), Some(Frame::Started { .. })), "the Create is one Build: {got:?}");
+    let successor = estate.node_view(&path).await;
     assert!(successor.status == NodeStatus::Ready && !successor.stopped, "{successor:?}");
-    assert_ne!(successor.node_id, before.node_id, "a new node.id");
-    assert_ne!(successor.endpoint_id, before.endpoint_id, "a new transport key");
-    assert!(!after.iter().any(|n| n.location() == path.renamed().unwrap()), "nothing is listed under name-old: {after:#?}");
-    assert!(!alive(pid), "the predecessor's process {pid} exited at its delete");
-    assert_eq!(std::fs::read(&segment).unwrap(), b"records", "node.delete keeps storage, and RDM moved no data: {segment:?}");
+    assert_ne!(successor.node_id, before.node_id, "a new node.id at {path:?}");
     let new_dir = std::path::PathBuf::from(estate.data_dir(&path).await);
     assert_ne!(new_dir, old_dir, "the successor has its own data dir");
     assert!(!new_dir.join("app-data").exists(), "RDM handed nothing to the successor: {new_dir:?}");
 
+    let deleted = frames(estate.nodes_obj().await.delete(vec![before.node_id.clone()]).await.expect("the predecessor's Delete is accepted")).await;
+    assert_eq!(deleted.last(), Some(&Frame::Complete), "{deleted:?}");
+    wait_for(&format!("the predecessor's process {pid} exits at its delete"), Duration::from_secs(30), || async { (!alive(pid)).then_some(()) }).await;
+    let after = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
+    assert!(!after.iter().any(|n| n.name == old), "nothing is listed at {old:?}: {after:#?}");
+    assert_eq!(std::fs::read(&segment).unwrap(), b"records", "node.delete keeps storage, and RDM moved no data: {segment:?}");
+    assert!(estate.builds_obj().await.get(&rdm_client::Filter::new()).await.expect("build.get").len() > builds_before, "the successor's Create is a Build of its own");
+
     estate.stop().await;
     let spans = estate.spans();
-    let of = |name: &str, id: &rdm_core::NodeId| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == id.to_string()).cloned().collect() };
-    // The predecessor: its connections deleted and its mesh left, then renamed live, then stopped.
-    let left = named(&spans, "rdm.node_admin.node.remove.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["subject_id"]) == before.node_id.to_string()).cloned().collect::<Vec<_>>();
+    let left: Vec<&Value> = named(&spans, "rdm.node_admin.node.remove.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["subject_id"]) == before.node_id.to_string()).collect();
     assert_eq!(left.len(), 1, "the mesh-primary carried the predecessor's leave once: {left:#?}");
-    assert_eq!((s(&left[0]["attributes"]["subject"]), s(&left[0]["attributes"]["outcome"])), (before.node_id.to_string(), "mesh-left".to_string()), "{:#}", left[0]);
-    let renames1 = of("rdm.node_admin.name.update.via-writer", &before.node_id);
-    assert_eq!(renames1.len(), 1, "{renames1:#?}");
-    let r1 = &renames1[0];
-    assert_eq!(
-        (s(&r1["attributes"]["from_path"]), s(&r1["attributes"]["from_name"]), s(&r1["attributes"]["to_path"]), s(&r1["attributes"]["to_name"]), s(&r1["attributes"]["connections"]), s(&r1["attributes"]["mesh"]), s(&r1["attributes"]["answered"]), s(&r1["attributes"]["outcome"])),
-        (path.path.clone(), path.name.clone(), old.path.clone(), old.name.clone(), "deleted".into(), "left".into(), "applied".into(), "name-updated".into()),
-        "{r1:#}"
-    );
-    assert!(end(&left[0]) <= start(r1), "the predecessor leaves its mesh before it gives up its name");
-    let applied: Vec<Value> = named(&spans, "rdm.node_admin.node.update.via-apply-node-name").into_iter().filter(|sp| sp["attributes"]["node_id"] == before.node_id.as_str() && sp["attributes"]["to_path"] == old.path && sp["attributes"]["to_name"] == old.name).cloned().collect();
-    assert_eq!(applied.iter().map(|sp| (s(&sp["attributes"]["outcome"]), s(&sp["attributes"]["digest"]))).collect::<Vec<_>>(), vec![("applied".to_string(), "off-mesh".to_string())], "the predecessor takes name-old off its mesh and publishes nothing: {applied:#?}");
-    let stopped1 = of("rdm.node_admin.node.update.via-node-stopped", &before.node_id);
-    assert_eq!(stopped1.len(), 1, "the predecessor's NodeStopped once: {stopped1:#?}");
-    assert!(end(r1) <= start(&stopped1[0]), "the predecessor gives up its name before it is stopped");
-    let stop_node: Vec<String> = named(&spans, "rdm.node_admin.status.update.via-stop-node").into_iter().filter(|sp| sp["attributes"]["operation"] == "node.stop" && sp["attributes"]["node"] == before.node_id.as_str() && sp["attributes"]["build_id"] == build).map(|sp| s(&sp["attributes"]["node"])).collect();
-    assert_eq!(stop_node, vec![before.node_id.to_string()], "the predecessor stops as the same node after its rename");
-    // The successor: a re-birth at the name, its row seeded from the predecessor's row, admitted there.
-    let created = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == successor.node_id.to_string() && sp["attributes"]["moment"] == "create").cloned().expect("the successor's row");
-    assert_eq!((s(&created["attributes"]["subject_path"]), s(&created["attributes"]["subject_name"]), s(&created["attributes"]["seeded_from"])), (path.path.clone(), path.name.clone(), before.node_id.to_string()), "the successor writes its row at the released name, seeded from the predecessor's row: {created:#}");
-    assert!(end(&stopped1[0]) <= start(&created), "the successor is created once the predecessor is stopped as name-old");
-    let join = of("rdm.node_admin.node.update.via-join", &successor.node_id).into_iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "installed").collect::<Vec<_>>();
-    assert!(join.iter().all(|j| j["attributes"]["admitted_path"] == path.path && j["attributes"]["admitted_name"] == path.name) && !join.is_empty(), "the successor's join is admitted at {path:?} and no other name: {join:#?}");
-    assert!(of("rdm.node_admin.name.update.via-writer", &successor.node_id).is_empty(), "the successor is never renamed");
-    // The predecessor's delete at `<name>-old`: the provider's exited verdict, NodeDeleted once, the Deleted row.
-    let deleted = of("rdm.node_admin.node.delete.via-node-deleted", &before.node_id);
-    assert_eq!(deleted.len(), 1, "NodeDeleted once for the predecessor: {deleted:#?}");
-    assert_eq!(s(&deleted[0]["attributes"]["operation"]), "node.delete");
-    let rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["node_id"] == before.node_id.as_str() && sp["attributes"]["subject_path"] == old.path && sp["attributes"]["subject_name"] == old.name).collect();
-    assert!(rows.len() == 1 && s(&rows[0]["attributes"]["outcome"]) == "row-deleted" && s(&rows[0]["attributes"]["node_id"]) == before.node_id.to_string(), "one Deleted row under name-old for the predecessor: {rows:#?}");
-    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "nothing of the Build is drift");
-    let create = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == build && sp["attributes"]["node_path"] == path.path && sp["attributes"]["node_name"] == path.name).cloned().expect("the successor's create operation span");
-    estate.artifact("steps.json", &json!({"operations": keys, "leave": left[0], "rename_old": r1, "stopped_old": stopped1[0], "created": created, "node_deleted": deleted[0], "deleted_row": rows[0]}));
-    estate.record_trace_url(create["trace_id"].as_str().unwrap_or(""));
-}
-
-/// CONTRACT (build.md §4.4 gate 4: "A node stands at the path | the fabric-primary's view by name ... |
-/// `unknown-node`"; Q223: one gate, one refusal, whatever the Build): steps whose first step stops the
-/// live `mesh1.node.1` and whose second starts `mesh1.node.9`, a path no birth holds and no earlier step
-/// makes, are refused at acceptance `unknown-node`, the detail naming step 2 and `mesh1.node.9`, under
-/// the fabric-primary's `rdm.node_admin.build.reject.via-unknown-node` span naming both. Nothing
-/// executes: the accepted Build opens no attempt and records no receipt, and `mesh1.node.1` is still
-/// the same birth in the same process, ready.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn steps_naming_an_unknown_node_are_refused_unknown_node_naming_the_step_and_execute_nothing() {
-    let (mut estate, birth) = estate("steps_naming_an_unknown_node_are_refused_unknown_node_naming_the_step_and_execute_nothing").await;
-    let path = PathName::new("mesh1.node", "1").unwrap();
-    let unknown = PathName::new("mesh1.node", "9").unwrap();
-    let unknown_detail = format!("path `{}`, name `{}`", unknown.path, unknown.name);
-    let nodes = objects(&estate).await;
-    let before = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]").into_iter().find(|n| n.location() == path).expect("node.get lists the node");
-    let pid = estate.pid_of(&path).await;
-    let b0 = build_log::build_value(&estate, &birth).await;
-
-    let steps = vec![Step::Stop { path: path.path.clone(), name: path.name.clone()}, Step::Start { path: unknown.path.clone(), name: unknown.name.clone()}];
-    let (reason, detail) = match nodes.steps(steps).await {
-        Err(CallEnd::Rejected { reason, detail }) => (reason, detail),
-        Err(other) => panic!("steps naming an unknown node end Rejected: {other:?}"),
-        Ok(_) => panic!("steps naming an unknown node were accepted"),
-    };
-    assert_eq!(reason, "unknown-node", "the one name build.md §4.4 gate 4 gives: {detail}");
-    assert!(detail.contains("step 2 ") && detail.contains(&unknown_detail), "the detail names the step and the target: {detail}");
-
-    let b1 = build_log::build_value(&estate, &birth).await;
-    assert_eq!((&b1["attempt"], b1["steps"].as_array().map(Vec::len)), (&b0["attempt"], b0["steps"].as_array().map(Vec::len)), "the refusal opened no attempt and recorded no receipt: {b0:#} / {b1:#}");
-    let after = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]").into_iter().find(|n| n.location() == path).expect("node.get lists the node");
-    assert!(after.status == NodeStatus::Ready && !after.stopped, "step 1 never ran: {after:?}");
-    assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth");
-    assert_eq!(estate.pid_of(&path).await, pid, "the same process");
-
-    estate.stop().await;
-    let spans = estate.spans();
-    let refused: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-unknown-node").into_iter().filter(|sp| s(&sp["attributes"]["detail"]).contains("step 2 ") && s(&sp["attributes"]["detail"]).contains(&unknown_detail)).collect();
-    assert_eq!(refused.len(), 1, "the fabric-primary's refusal span, its detail naming the step and the target: {refused:#?}");
-    assert!(named(&spans, "rdm.node_admin.status.update.via-stop-node").into_iter().all(|sp| sp["attributes"]["node"] != before.node_id.as_str() || sp["attributes"]["operation"] != "node.stop"), "no stop of the selected node ran");
-    estate.artifact("refused.json", &json!({"reason": reason, "detail": detail, "span": refused[0]}));
-}
-
-/// CONTRACT (node-replace.md "Properties": "Tags remain in the subject's own property record; a
-/// current-pair lookup selects the successor's ID, not the predecessor's properties"; query.md:
-/// "Historical records ... remain queryable by their own IDs and matching properties"): mesh2's
-/// primary tells `mesh2.node.1` a config and a tag,
-/// then the node is replaced up to the successor's create (no delete of the predecessor). The
-/// predecessor leaves its mesh, takes `<name>-old` live and is stopped there; the successor's create at
-/// `<name>`, the name it released, puts its row with its Build entry's config and tags (Q305,
-/// node-replace.md "Properties"): this Build of steps takes its entry from its topology, which names
-/// none of the config and the tag the calls wrote, so the successor's row carries neither, never the
-/// retained `.old` row's (`seeded_from` the predecessor all the same). The create then marks the
-/// retained row `inherited_by` the successor. The successor's join under `<name>` hands it no config;
-/// node.get by the tag names the retained predecessor alone, which stays at `<name>-old` with its tag
-/// in its own property record, never the successor. Must NOT happen: the dead predecessor's config or
-/// tags copied onto the successor.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_its_create_and_the_retained_row_leaves_the_tags_index() {
-    let (estate, _build) = two_mesh_estate("a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_its_create_and_the_retained_row_leaves_the_tags_index").await;
-    let views = estate.node_views().await;
-    let fabric_primary = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
-    let primary = views.iter().find(|n| n.mesh != fabric_primary.mesh && n.r#type == "node-admin" && n.is_primary).expect("peer mesh primary");
-    let member = views.iter().find(|n| n.mesh == primary.mesh && n.r#type == "node" && !n.is_primary).expect("ordinary RPC member");
-    let node_path = &member.location();
-    let old_name = node_path.renamed().unwrap();
-    let mesh_primary = &primary.location();
-    let fp = serde_json::to_value(fabric_primary).unwrap();
-    let before = serde_json::to_value(member).unwrap();
-    let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
-    let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
-    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
-    // node-config-update.md step 1: the caller sends it to the fabric-primary, which sends it down.
-    let (fp_client, fp_id) = caller_of(&fp).await;
-    let reply = rdm_client::NodeRpc::new(&fp_client)
-        .config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
-        .await
-        .unwrap_or_else(|e| panic!("node.config.update of {node_path:?} at the fabric-primary: {e:?}"));
-    assert_eq!(reply.name(), "config-updated", "the mesh-primary wrote the row and the node applied it: {reply:?}");
-    let told_json = json!({"tier": "gold"});
-    wait_for(&format!("{node_path:?} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;
-    let labels: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
-    // Commands go down: the caller sends it to the fabric-primary, which sends it to the mesh-primary (Q203).
-    let tagged = rdm_client::NodeRpc::new(&fp_client)
-        .tags_create(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &rdm_transport::CallOptions::default())
-        .await
-        .unwrap_or_else(|e| panic!("node.tag.create of {node_path:?} at the fabric-primary: {e:?}"));
-    assert_eq!(tagged.name(), "tags-created", "the mesh-primary wrote the label's row: {tagged:?}");
-    wait_for(&format!("{node_path:?} carries its tag"), Duration::from_secs(30), || async { (estate.node_view(node_path).await.tags == labels).then_some(()) }).await;
-
-    let create_steps: Vec<Step> = replace_steps(node_path, &s(&before["mesh"]), before["type"].as_str().unwrap()).expect("valid replacement fixture name").into_iter().take(5).collect();
-    let got = frames(estate.nodes_obj().await.steps(create_steps).await.expect("the Build up to the successor's create was accepted")).await;
-    assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
-    let after = estate.until_node(node_path, "the successor is ready at the original location", SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != member.node_id).map(|n| serde_json::to_value(n).unwrap())).await;
-    let spans = wait_for("the successor's row, the retained row's mark and the successor's join under the name are exported", Duration::from_secs(60), || async {
-        let spans = estate.spans();
-        let joined = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().any(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["admitted_path"] == node_path.path && sp["attributes"]["admitted_name"] == node_path.name);
-        let marked = named(&spans, "rdm.node_admin.node.update.via-inherited-row").into_iter().any(|sp| sp["attributes"]["node_id"] == before["node_id"]);
-        (joined && marked).then_some(spans)
-    })
-    .await;
-    // Step 3: the successor's create at the released name writes its entry's properties (none here), then marks the retained row.
-    let created = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "create").expect("the successor's row").clone();
-    let a = &created["attributes"];
-    assert_eq!(
-        (s(&a["node_path"]), s(&a["node_name"]), s(&a["subject_path"]), s(&a["subject_name"]), s(&a["outcome"]), s(&a["seeded_from"]), s(&a["keys"]), s(&a["tags"])),
-        (mesh_primary.path.clone(), mesh_primary.name.clone(), node_path.path.clone(), node_path.name.clone(), "row-seeded".to_string(), s(&before["node_id"]), "0".to_string(), "".to_string()),
-        "the mesh-primary puts the successor at {node_path:?} with its entry's config and tags, none, never the retained row's: {created}"
-    );
-    assert!(named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().all(|sp| sp["attributes"]["node_id"] != after["node_id"]), "the successor is never renamed");
-    let mark = named(&spans, "rdm.node_admin.node.update.via-inherited-row").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).expect("the retained row's mark").clone();
-    let m = &mark["attributes"];
-    assert_eq!((s(&m["original_path"]), s(&m["original_name"]), s(&m["inherited_by"]), s(&m["outcome"])), (node_path.path.clone(), node_path.name.clone(), s(&after["node_id"]), "inherited".to_string()), "the retained row says who inherited it (its tag stays in its own property record, read below): {mark}");
-    assert_eq!(mark["parent_span_id"], created["span_id"], "the mark is the create's last write: {mark} under {created}");
-    // The successor's join under the name is installed (node-start.md step 2); the answer carries no config.
-    let joined = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["admitted_path"] == node_path.path && sp["attributes"]["admitted_name"] == node_path.name).expect("the successor's join under the name").clone();
-    assert_eq!(s(&joined["attributes"]["outcome"]), "installed".to_string(), "the successor's join under {node_path:?} is installed: {joined}");
-    let carried = estate.node_value(node_path).await;
-    assert_eq!((carried["node_id"].clone(), carried["config"].clone()), (after["node_id"].clone(), json!({})), "the successor carries its entry's config, not the predecessor's {told_json}");
-    assert!(estate.node_view(node_path).await.tags.is_empty(), "the successor's row carries none of the predecessor's tags");
-    let selected: Vec<String> = estate
-        .nodes_obj()
-        .await
-        .get(&rdm_client::Filter::new().eq("tags", labels.iter().cloned()))
-        .await
-        .unwrap_or_else(|e| panic!("node.get [tags: rabbit]: {e:?}"))
-        .into_iter()
-        .map(|n| n.node_id.to_string())
-        .collect();
-    assert_eq!(selected, vec![s(&before["node_id"])], "a read by the tag names the retained predecessor, whose own record keeps it, and never the successor, whose entry named no tag: {selected:?}");
-    let retained = estate.node_values().await.into_iter().find(|n| n["node_id"] == before["node_id"]).unwrap_or_else(|| panic!("the predecessor is retained at {old_name:?}"));
-    assert_eq!(retained["name"], json!(old_name), "predecessor keeps its path and changes only its name");
-    let retained_record = rdm_admin::store_log::read_record(&estate.fabric_store_root().join(rdm_admin::store_root::NODES_FILE), "node-properties", Some(member.node_id.as_str())).expect("durable retained predecessor properties");
-    assert_eq!(retained_record["record"]["tags"], json!(labels), "the retained row keeps its tags after leaving the active index");
-    assert_eq!(retained_record["record"]["config"], told_json, "the retained row keeps its own config");
-    assert_eq!(retained["node_id"], before["node_id"], "the retained {old_name:?} is the predecessor: {retained}");
-    eprintln!("trace {}: successor={} predecessor={} path={:?} name={:?}; inherited_by={}; trace {}: join", s(&created["trace_id"]), s(&after["node_id"]), s(&before["node_id"]), node_path.path, node_path.name, s(&m["inherited_by"]), s(&joined["trace_id"]));
-    estate.shutdown().await;
-}
-
-/// CONTRACT (lifecycles/node-replace.md "Rollback": "While node[1] is stopped as `<name>-old` and its
-/// data remains available: 1. node[2]: node.connection.delete `{ scope: All }`, node.mesh.leave, then
-/// node[2].delete releases `<name>` after exact runtime exited verdict. 2. node[1].start rejoins the same
-/// stopped process with AfterStop under `<name>-old` ... 3. node[1]: node.connection.delete `{ scope:
-/// All }`, node.mesh.leave, then node.name.update to `<name>` ..., then node[1].stop and node[1].start
-/// under `<name>`. Its ready ends the rollback"): `mesh1.node.1` is replaced up to the
-/// successor's create (the predecessor stopped at `.old`), then the rollback runs as one Build of nine
-/// steps, each its own op's operation in order. The successor at `mesh1.node.1` has its connections
-/// deleted, leaves its mesh and is deleted on its exited verdict; the predecessor starts as
-/// path `mesh1.node`, name `1-old` (the same process), has its connections deleted, leaves its mesh, takes
-/// `mesh1.node.1` live, and is stopped and started under it. At the end `mesh1.node.1` is the predecessor,
-/// the same node.id, incarnation and process, ready; nothing is listed at `.old`, and the
-/// successor's process exited. Both of the predecessor's renames are of a node off its mesh
-/// (`connections=deleted mesh=left`, applied), and no rename of a stopped node is decided.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replace_rollback_ends_with_the_predecessor_ready_under_its_name() {
-    let (mut estate, _birth) = estate("a_replace_rollback_ends_with_the_predecessor_ready_under_its_name").await;
-    let path = PathName::new("mesh1.node", "1").unwrap();
-    let old = path.renamed().unwrap();
-    assert_eq!(old.path, path.path);
-    let nodes = objects(&estate).await;
-    let before = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]").into_iter().find(|n| n.location() == path).expect("node.get lists the node");
-    let pid = estate.pid_of(&path).await;
-
-    let forward: Vec<Step> = replace_steps(&path, &before.mesh, &before.r#type).expect("valid replacement fixture name").into_iter().take(5).collect();
-    let got = frames(nodes.steps(forward).await.expect("the replace up to the successor's create was accepted")).await;
-    assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
-    let successor = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]").into_iter().find(|n| n.location() == path).expect("the successor at the name");
-    assert_ne!(successor.node_id, before.node_id, "the successor is a re-birth");
-    let successor_pid = estate.pid_of(&path).await;
-    assert_ne!(successor_pid, pid, "the successor runs its own process");
-
-    let stream = nodes.steps(rollback_steps(&path).expect("valid replacement fixture name")).await.expect("the rollback steps were accepted");
-    let accepted = stream.accepted().cloned().expect("the call opened a Build");
-    let got = frames(stream).await;
-    assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
-    let build = accepted.build_id.to_string();
-    let b = build_log::build_value(&estate, &build).await;
-    let mut operations: Vec<rdm_core::OperationId> = Vec::new();
-    for r in b["steps"].as_array().cloned().unwrap_or_default().iter().filter(|r| r["attempt"].as_u64().unwrap_or(0) >= accepted.attempt as u64) {
-        let op: rdm_core::OperationId = serde_json::from_value(r["operation"].clone()).expect("structured operation");
-        if !operations.contains(&op) {
-            operations.push(op);
-        }
-    }
-    let keys: Vec<_> = [
-        ("node.connection.delete", &successor.node_id),
-        ("node.mesh.leave", &successor.node_id),
-        ("node.delete", &successor.node_id),
-        ("node.start", &before.node_id),
-        ("node.connection.delete", &before.node_id),
-        ("node.mesh.leave", &before.node_id),
-        ("node.update", &before.node_id),
-        ("node.stop", &before.node_id),
-        ("node.start", &before.node_id),
-    ].into_iter().enumerate().map(|(index, (action, id))| rdm_core::OperationId::node(action, id).at_step(Some(index as u32 + 1))).collect();
-    assert_eq!(operations, keys.to_vec(), "the rollback's operations, in order: {b:#}");
-
-    let after = estate.until_node(&path, "the predecessor is ready under its original name", SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id == before.node_id).map(|n| serde_json::to_value(n).unwrap())).await;
-    assert_eq!(s(&after["incarnation_id"]), before.incarnation_id.as_ref().unwrap().to_string(), "the same birth: {after}");
-    assert_eq!(estate.pid_of(&path).await, pid, "the same process");
-    assert!(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]").iter().all(|n| n.location() != path.renamed().unwrap()), "nothing is listed under name-old");
-    assert!(!alive(successor_pid), "the successor's process {successor_pid} exited at its delete");
-
-    estate.stop().await;
-    let spans = estate.spans();
-    let renames: Vec<Value> = named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string()).cloned().collect();
-    assert_eq!(
-        renames.iter().map(|sp| (s(&sp["attributes"]["to_path"]), s(&sp["attributes"]["to_name"]), s(&sp["attributes"]["connections"]), s(&sp["attributes"]["mesh"]), s(&sp["attributes"]["outcome"]))).collect::<Vec<_>>(),
-        vec![(old.path.clone(), old.name.clone(), "deleted".to_string(), "left".to_string(), "name-updated".to_string()), (path.path.clone(), path.name.clone(), "deleted".to_string(), "left".to_string(), "name-updated".to_string())],
-        "the predecessor is renamed twice, each time live and off its mesh: {renames:#?}"
-    );
-    assert!(named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().all(|sp| s(&sp["attributes"]["traffic"]) != "Stopped"), "no rename of a stopped node is decided");
-    let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").map(|sp| PathName::new(s(&sp["attributes"]["admitted_path"]), s(&sp["attributes"]["admitted_name"])).unwrap()).collect::<Vec<_>>();
-    assert_eq!(join, vec![path.clone(), old.clone(), path.clone()], "the predecessor joined at its birth, then as name-old at its start, then at {path:?} at its last start: {join:?}");
-    let deleted = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == successor.node_id.to_string()).count();
-    assert_eq!(deleted, 1, "NodeDeleted once for the successor");
-    estate.artifact("rollback.json", &json!({"operations": keys, "renames": renames}));
-    estate.record_trace_url(renames[1]["trace_id"].as_str().unwrap_or(""));
+    assert_eq!(s(&left[0]["attributes"]["outcome"]), "mesh-left", "{:#}", left[0]);
+    let renamed: Vec<&Value> = named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string()).collect();
+    assert_eq!(renamed.len(), 1, "{renamed:#?}");
+    assert_eq!((s(&renamed[0]["attributes"]["to_name"]), s(&renamed[0]["attributes"]["connections"]), s(&renamed[0]["attributes"]["mesh"])), (old.name.clone(), "deleted".to_string(), "left".to_string()), "{:#}", renamed[0]);
+    let row = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == successor.node_id.to_string() && sp["attributes"]["moment"] == "create").cloned().expect("the successor's row");
+    assert_eq!(s(&row["attributes"]["seeded_from"]), "", "the successor's row is seeded from no other row: {row:#}");
+    estate.record_trace_url(left[0]["trace_id"].as_str().unwrap_or(""));
 }
 
 /// The steps of `node.delete` of a stopped birth at its `.old` path (node-delete.md: its stop steps
@@ -1025,11 +747,10 @@ async fn leave_rename_and_stop(estate: &Estate, nodes: &Nodes, node: &PathName) 
     let fabric_primary = rdm_test::typed::the_fabric(&estate.fabrics_obj().await).await.expect("fabric.get").fabric_primary.expect("a fabric-primary");
     let primary = rdm_test::typed::one_mesh(&estate.meshes_obj().await, &s(&before["mesh"])).await.expect("mesh.get").expect("the admin holds the node's mesh").primary_admin.expect("the node's mesh-primary");
     let r#type: &str = before["type"].as_str().expect("a node type");
-    let got = frames(nodes.steps(replace_keeping_predecessor(node, &s(&before["mesh"]), r#type).expect("valid replacement fixture name")).await.expect("the replace keeping its predecessor was accepted")).await;
-    assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
+    rdm_test::replace::replace_keeping_predecessor(estate, node, &s(&before["mesh"]), r#type).await.unwrap_or_else(|e| panic!("the replace of {node:?} keeping its predecessor: {e}"));
     let old = node.renamed().expect("the reserved name fits");
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [&s(&before["mesh"])])).await.expect("node.get [mesh]");
-    let stopped = mesh.iter().find(|n| n.location() == old && n.stopped).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node:?} stopped at {old:?} once its steps completed: {mesh:#?}"));
+    let stopped = mesh.iter().find(|n| n.location() == old && n.stopped).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node:?} stopped at {old:?} once its replace completed: {mesh:#?}"));
     assert_eq!(stopped.node_id.to_string(), s(&before["node_id"]), "the stopped birth at {old:?} is {node:?}'s");
     assert!(alive(pid), "the stopped {node:?} ({pid}) is alive before its delete");
     StoppedBirth { node: node.clone(), before, pid, old_dir, renamed_by: primary, fabric_primary }
@@ -1041,7 +762,7 @@ async fn delete_stopped_and_assert(estate: &Estate, birth_build: &str, stopped: 
     let StoppedBirth { node, before, pid, old_dir, .. } = stopped;
     let old = node.renamed().expect("the reserved name fits");
     let node_id: NodeId = serde_json::from_value(before["node_id"].clone()).expect("a node id");
-    let delete = estate.submit_change(Change::RemoveNode { node: old.clone() }).await;
+    let delete = estate.submit_change(Change::Delete { meshes: vec![], node_ids: vec![node_id.clone()] }).await;
     assert_eq!(delete.build_id().as_str(), birth_build, "no Build is minted");
     let attempt_no = u64::from(delete.attempt());
     let opened = build_log::build_fact(&estate, birth_build, "the delete attempt is the Build's current attempt", Duration::from_secs(30), |p| serde_json::to_value(p).expect("a Build view serializes")["reason"] == "delete")
@@ -1111,9 +832,8 @@ async fn a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births() {
     assert_eq!(estate.entry().await, stays, "the admin that stays is the entry the typed objects ask");
     let node: PathName = rdm_test::estate::location(&before);
     let node_path = node.clone();
-    let nodes_obj = objects(&estate).await;
-    let got = frames(nodes_obj.steps(replace_steps(&node_path, &s(&before["mesh"]), before["type"].as_str().unwrap()).expect("valid replacement fixture name")).await.expect("the Build was accepted")).await;
-    assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
+
+    rdm_test::replace::replace(&estate, &node_path, &s(&before["mesh"]), before["type"].as_str().unwrap()).await.unwrap_or_else(|e| panic!("the replace of {node_path:?}: {e}"));
     at_most_one_live_birth(&estate, &[stays.clone()], &node).await;
     let after = estate.until_node(&node, "the successor admin is ready", SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id.as_str() != before["node_id"].as_str().unwrap()).map(|n| serde_json::to_value(n).unwrap())).await;
     // The successor admin's own view: itself at the path, ready, under its new NodeId.
@@ -1297,7 +1017,7 @@ async fn a_hung_mesh_primary_is_investigated_and_recovered_by_its_successor_afte
     // recovery of the hung birth.
     let created_rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row")
         .into_iter()
-        .filter(|sp| rdm_test::estate::span_operation(sp, "node.create", &OperationSubject::Location(mp_name.clone())) && sp["attributes"]["node_id"] == after["node_id"] && matches!(sp["attributes"]["outcome"].as_str(), Some("row-seeded" | "row-written")))
+        .filter(|sp| rdm_test::estate::span_operation(sp, "node.create", &OperationSubject::Node(serde_json::from_value(after["node_id"].clone()).expect("the new birth's node id"))) && sp["attributes"]["node_id"] == after["node_id"] && matches!(sp["attributes"]["outcome"].as_str(), Some("row-seeded" | "row-written")))
         .collect();
     assert!(!created_rows.is_empty() && created_rows.iter().all(|sp| at_location(sp, &standby)), "the new birth at {mp_name:?} is created by {standby:?}, mesh2's primary, never by {fp}: {created_rows:#?}");
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == mp["node_id"]).collect();
@@ -1522,116 +1242,6 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     estate.shutdown().await;
 }
 
-/// CONTRACT (the approved proposal docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md
-/// Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update` commanded for a
-/// node type with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary
-/// of type <type> in mesh <mesh>`, until a secondary is available. The primary stays primary, nothing
-/// is cut off, no row is written, and the workflow that commanded it ... fails by name with that
-/// reason"): in a fabric whose fabric-primary is its mesh's only node-admin, each of the changes Steps (replace),
-/// DeleteConnections and Stop of the fabric-primary, submitted by `build.create`, is refused by name, `last-admin`
-/// with exactly `cannot transfer: no secondary of type node-admin in mesh <its mesh>`, one
-/// `rdm.node_admin.build.reject.via-last-admin` per call with the same text. The mesh-primary role has no
-/// secondary, so the peer mesh's Ready primary is no successor of both roles (C2's outside search is
-/// mesh.delete's only). No attempt opens, no role move is commanded, no row is written, and every node
-/// stays as it was.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused_by_name() {
-    let (estate, birth_build) = two_mesh_estate("a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused_by_name").await;
-    let before = estate.node_values().await;
-    let primary = before.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
-    let fp: PathName = rdm_test::estate::location(&primary);
-    let mesh = s(&primary["mesh"]);
-    assert_eq!(before.iter().filter(|n| n["type"] == "node-admin" && n["mesh"] == mesh.as_str()).count(), 1, "the fabric-primary is its mesh's only admin: {before:#?}");
-    let attempt = build_log::build_value(&estate, &birth_build).await["attempt"].clone();
-    let q7 = format!("cannot transfer: no secondary of type node-admin in mesh {mesh}");
-    let node = fp.clone();
-    let carrier = estate.carrier().await;
-    // The replace is a Build; the connections delete and the stop are node commands of the primary
-    // above the fabric-primary, itself (Q342, D40): each is refused by the same name and text.
-    match carrier.create(Change::Steps { steps: replace_steps(&node, &mesh, "node-admin").expect("valid replacement fixture name") }).await {
-        // The Build call ends naming the reason, then the refusal's text: `<reason>: <text>`.
-        Err(CallEnd::Rejected { reason, detail }) => assert_eq!((reason.as_str(), detail.as_str()), ("last-admin", format!("last-admin: {q7}").as_str()), "replace: refused with Q7's exact text"),
-        Ok(_) => panic!("replace of the fabric-primary {fp:?}, its mesh's last admin, was accepted"),
-        Err(other) => panic!("replace of the fabric-primary {fp:?}, its mesh's last admin, is refused last-admin, not {other:?}"),
-    }
-    let nodes = estate.nodes_obj().await;
-    for (action, call) in [("node.connection.delete", nodes.delete_connections(&node, &rdm_core::status::ConnectionScope::All).await), ("stop", nodes.stop(&node).await)] {
-        match call {
-            Err(CallEnd::Rejected { reason, detail }) => assert_eq!((reason.as_str(), detail.as_str()), ("last-admin", format!("last-admin: {q7}").as_str()), "{action}: refused with Q7's exact text"),
-            Ok(_) => panic!("{action} of the fabric-primary {fp:?}, its mesh's last admin, was accepted"),
-            Err(other) => panic!("{action} of the fabric-primary {fp:?}, its mesh's last admin, is refused last-admin, not {other:?}"),
-        }
-    }
-    let b = build_log::build_value(&estate, &birth_build).await;
-    assert_eq!(b["attempt"], attempt, "no attempt opened: {b}");
-    let spans = wait_for("the three refusals are exported", Duration::from_secs(30), || async {
-        let spans = estate.spans();
-        (named(&spans, "rdm.node_admin.build.reject.via-last-admin").len() >= 3).then_some(spans)
-    })
-    .await;
-    let refused = named(&spans, "rdm.node_admin.build.reject.via-last-admin");
-    assert_eq!(refused.len(), 3, "one refusal per call: {refused:?}");
-    assert!(refused.iter().all(|sp| s(&sp["attributes"]["detail"]) == q7), "every refusal span carries Q7's exact text: {refused:?}");
-    assert!(named(&spans, "rdm.node_admin.primary.update.via-update-primary").is_empty(), "no node.primary.update ran");
-    assert!(
-        named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().all(|sp| s(&sp["attributes"]["attempt"]).is_empty()),
-        "no attempt number was recorded by any refused request"
-    );
-    estate.record_trace_url(refused[0]["trace_id"].as_str().unwrap_or(""));
-    for n in &before {
-        assert_eq!(serde_json::to_value(estate.node_view_by_id(&s(&n["node_id"]).parse().unwrap()).await).unwrap()["incarnation_id"], n["incarnation_id"], "{} is untouched", s(&n["name"]));
-    }
-    estate.shutdown().await;
-}
-
-/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part C1 "The
-/// no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update` commanded for a node type with no
-/// other node of that type in the mesh is refused by name, `cannot transfer: no secondary of type
-/// <type> in mesh <mesh>` ... The primary stays primary, nothing is cut off, no row is written, and
-/// the workflow that commanded it ... fails by name with that reason"; node-replace.md: the replace
-/// steps never leave a mesh with no live node-admin): in a fabric whose mesh2 has one node-admin, its
-/// mesh-primary and not the fabric-primary, `build.create` of the replace steps of mesh2's primary is refused
-/// `last-admin` with exactly `cannot transfer: no secondary of type node-admin in mesh mesh2`, under one
-/// `rdm.node_admin.build.reject.via-last-admin` with the same text, before any step (its first, the
-/// node.connection.delete that moves a primary's roles, has no successor): no attempt opens, no
-/// connection is deleted, no role move is commanded, no row is written, and every node keeps its birth.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_by_name_before_any_step() {
-    let (estate, birth_build) = two_mesh_estate("a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_by_name_before_any_step").await;
-    let before = estate.node_values().await;
-    let admins: Vec<&Value> = before.iter().filter(|n| n["type"] == "node-admin" && n["mesh"] == "mesh2").collect();
-    assert_eq!(admins.len(), 1, "mesh2 has one node-admin: {before:#?}");
-    let primary = admins[0];
-    assert_eq!((primary["is_primary"].clone(), primary["is_fabric_primary"].clone()), (json!(true), json!(false)), "mesh2's only admin is its mesh-primary, not the fabric-primary: {primary}");
-    let mp: PathName = rdm_test::estate::location(&primary);
-    let attempt = build_log::build_value(&estate, &birth_build).await["attempt"].clone();
-    let q7 = "cannot transfer: no secondary of type node-admin in mesh mesh2";
-    match estate.carrier().await.create(Change::Steps { steps: replace_steps(&mp, "mesh2", "node-admin").expect("valid replacement fixture name") }).await {
-        // The call ends naming the reason, then the refusal's text: `<reason>: <text>`.
-        Err(CallEnd::Rejected { reason, detail }) => assert_eq!((reason.as_str(), detail.as_str()), ("last-admin", format!("last-admin: {q7}").as_str()), "the replace of {mp:?} is refused with Q7's exact text"),
-        Ok(_) => panic!("the replace of {mp:?}, mesh2's only node-admin, was accepted"),
-        Err(other) => panic!("the replace of {mp:?}, mesh2's only node-admin, is refused last-admin, not {other:?}"),
-    }
-    assert_eq!(build_log::build_value(&estate, &birth_build).await["attempt"], attempt, "no attempt opened");
-    let spans = wait_for("the refusal is exported", Duration::from_secs(30), || async {
-        let spans = estate.spans();
-        (!named(&spans, "rdm.node_admin.build.reject.via-last-admin").is_empty()).then_some(spans)
-    })
-    .await;
-    let refused = named(&spans, "rdm.node_admin.build.reject.via-last-admin");
-    assert_eq!(refused.len(), 1, "one refusal: {refused:?}");
-    assert_eq!(s(&refused[0]["attributes"]["detail"]), q7, "the refusal span carries Q7's exact text: {refused:?}");
-    assert!(named(&spans, "rdm.node_admin.connection.delete.via-mesh-primary").is_empty(), "no connection was deleted");
-    assert!(named(&spans, "rdm.node_admin.primary.update.via-update-primary").is_empty(), "no node.primary.update ran");
-    estate.record_trace_url(refused[0]["trace_id"].as_str().unwrap_or(""));
-    for n in &before {
-        let now = serde_json::to_value(estate.node_view_by_id(&s(&n["node_id"]).parse().unwrap()).await).unwrap();
-        assert_eq!((&now["node_id"], &now["incarnation_id"], &now["is_primary"]), (&n["node_id"], &n["incarnation_id"], &n["is_primary"]), "{} is untouched", s(&n["name"]));
-    }
-    eprintln!("trace {}: rdm.node_admin.build.reject.via-last-admin detail={q7:?} (replace of {mp:?})", s(&refused[0]["trace_id"]));
-    estate.shutdown().await;
-}
-
 /// A caller outside the fabric that reaches the node-admin `admin` by its exact birth: its own
 /// endpoint, and a resolver holding that birth as the answering admin's view names it.
 async fn caller_of(admin: &Value) -> (std::sync::Arc<rdm_transport::NodeRpcClient>, rdm_core::NodeId) {
@@ -1780,7 +1390,7 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
     assert_eq!((s(&done["attributes"]["submitter"]), s(&done["attributes"]["mesh"])), (mp.clone(), "mesh2".to_string()), "mesh2's primary runs it: {done}");
     let spans = wait_for("the recovery's create is exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        create_span(&in_trace(&spans, &done), NO_BUILD, NO_ATTEMPT, node).is_some().then_some(spans)
+        recovery_create_span(&in_trace(&spans, &done), node).is_some().then_some(spans)
     })
     .await;
     let run = in_trace(&spans, &done);
@@ -2026,93 +1636,6 @@ async fn a_member_held_on_an_unreadable_data_dir_completes_recovery_with_its_ret
 async fn exe_of(estate: &Estate, node: &PathName) -> std::path::PathBuf {
     let pid = estate.pid_of(node).await;
     std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|e| panic!("{node:?} (pid {pid}): /proc exe: {e}"))
-}
-
-/// The reason of the Failed frame a Build ends with.
-async fn failed_steps(nodes: &Nodes, steps: Vec<Step>) -> String {
-    let got = frames(nodes.steps(steps).await.expect("the Build was accepted")).await;
-    match got.last() {
-        Some(Frame::Failed { reason, .. }) => reason.clone(),
-        other => panic!("the Build ended {other:?}, not Failed: {got:?}"),
-    }
-}
-
-/// CONTRACT (node-rpc-envelope.md "Build schema": "Create names the node and the executable binding the
-/// Build fixes for it (launch id, hash); the executing admin launches that binding, verified at launch,
-/// whichever admin runs or resumes the step"; node-replace.md step 3: "The Build fixes the bin on its
-/// Create step, so every admin that runs or resumes the step launches that one, and the row
-/// records it beside `config`"; node-recovery.md "Retained": "config and the executable (both seeded
-/// from the deleted row: a recovered node runs the bin its row records, never the recovering
-/// admin's)"; build-deployment.md §2: every create names its executable): the fabric is born on
-/// binding set A (`rpc_node` = the built node), every path named on set A's executable of its type,
-/// and mesh1's and mesh2's admins alike launch set A's. A Create binding, a copy the set does not name, is the Create step of a
-/// replace steps of `mesh1.node.1` (run by mesh1's admin) and of `mesh2.node.1` (run by mesh2's admin):
-/// both successors run that copy. `mesh1.node.1` is then killed and recovered over its inherited data
-/// dir, and `mesh2.node.1` held (SIGSTOP) and recovered over a newly allocated one: each recovered node
-/// runs the copy its row records, not set A's. A Create step naming a file that is not there,
-/// and one naming the copy with a hash its bytes do not have, end Failed by name, nothing launched.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_through_recovery() {
-    use rdm_client::binding::{sha256_file, Binding};
-    let sha = candidate_sha();
-    let set_a = binding_set(&sha);
-    let estate = Estate::bootstrap_on(owner("a_create_steps_executable_reaches_the_provider_at_every_admin_and_through_recovery"), "fabric1", "mesh1", &set_a, &sha, &["node"])
-        .await
-        .expect("binding set A is accepted");
-    let rpc_a = set_a.bindings.iter().find(|b| b.launch_id == "node").cloned().expect("set A binds rpc_node");
-    // A copy of the node's bytes at its own path: the one the Build fixes.
-    let execs = estate.root.join("execs");
-    std::fs::create_dir_all(&execs).unwrap();
-    let fixed = execs.join("rpc-node-fixed");
-    std::fs::copy(&rpc_a.executable, &fixed).unwrap();
-    let binding = Binding { launch_id: "node".into(), sha256: sha256_file(&fixed).unwrap(), executable: fixed.clone(), image: None };
-    let shape = [("mesh1", 1, 2), ("mesh2", 1, 2)];
-    let estate = born_at(estate, &shape, Duration::from_secs(90)).await.0;
-    assert_eq!(exe_of(&estate, &Estate::path("mesh1.node", "2")).await, rpc_a.executable, "mesh1's admin launches set A's node, the one its path names");
-    assert_eq!(exe_of(&estate, &Estate::path("mesh2.node", "2")).await, rpc_a.executable, "mesh2's admin launches set A's node, the one its path names");
-
-    let nodes = objects(&estate).await;
-    let with_binding = |node: &PathName, mesh: &str, b: &Binding| -> Vec<Step> {
-        replace_steps(node, mesh, "node").expect("valid replacement fixture name").into_iter().map(|s| match s {
-            Step::Create { path: node_path, name: node_name, mesh, r#type, .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; Step::Create { path: node.path.clone(), name: node.name.clone(), mesh, r#type, executable: Some(b.clone()) } },
-            other => other,
-        }).collect()
-    };
-    for (node, mesh) in [(&Estate::path("mesh1.node", "1"), "mesh1"), (&Estate::path("mesh2.node", "1"), "mesh2")] {
-        let path: PathName = node.clone();
-        let got = frames(nodes.steps(with_binding(&path, mesh, &binding)).await.expect("the Build was accepted")).await;
-        assert_eq!(got.last(), Some(&Frame::Complete), "the replace of {node:?}: {got:?}");
-        let n = until_node_where(&estate, node, &format!("{node:?} ready"), SETTLE, ready).await;
-        assert_eq!(exe_of(&estate, node).await, fixed, "{node:?}'s successor runs the executable its Build fixed, not its admin's: {n}");
-    }
-
-    // Recovery over the inherited data dir: the exited birth's row records the executable.
-    let before = estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
-    let dir = estate.data_dir(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
-    estate.kill_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
-    let after = until_new_birth(&estate, &Estate::path("mesh1.node", "1"), &before, SETTLE).await;
-    assert_eq!((after["endpoint_id"].clone(), estate.data_dir(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await), (before["endpoint_id"].clone(), dir), "recovered over the inherited data dir");
-    assert_eq!(exe_of(&estate, &Estate::path("mesh1.node", "1")).await, fixed, "the node recovered over its inherited dir runs the executable its row records, not its path's entry's");
-
-    // Recovery over a newly allocated data dir: a held member is terminated and created afresh.
-    let before = estate.node_value(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).await;
-    let dir = estate.data_dir(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).await;
-    assert_eq!(exact_runtime(&estate, &Estate::path("mesh2.node", "1")).await.apply(Fault::Stop).expect("the exact runtime is held").state_after, Some('T'));
-    let after = until_new_birth(&estate, &Estate::path("mesh2.node", "1"), &before, SETTLE).await;
-    assert!(after["endpoint_id"] != before["endpoint_id"] && estate.data_dir(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).await != dir, "recovered over a newly allocated data dir: {after}");
-    assert_eq!(exe_of(&estate, &Estate::path("mesh2.node", "1")).await, fixed, "the node recovered over a new dir runs the executable its row records, not its path's entry's");
-
-    // The refusals, by name, nothing launched.
-    let absent = Binding { executable: execs.join("not-there"), ..binding.clone() };
-    let reason = failed_steps(&nodes, vec![Step::Create { mesh: "mesh1".into(), r#type: "node".into(), path: "mesh1.node".into(), name: "7".into(), executable: Some(absent) }]).await;
-    assert!(reason.contains("not-there") && reason.contains("cannot be read"), "a missing file is refused by name: {reason}");
-    let mismatched = Binding { sha256: "0".repeat(64), ..binding.clone() };
-    let reason = failed_steps(&nodes, vec![Step::Create { mesh: "mesh1".into(), r#type: "node".into(), path: "mesh1.node".into(), name: "8".into(), executable: Some(mismatched) }]).await;
-    assert!(reason.contains("rpc-node-fixed") && reason.contains("the binding expects"), "a hash mismatch is refused by name: {reason}");
-    for node in [Estate::path("mesh1.node", "7"), Estate::path("mesh1.node", "8")] {
-        assert!(!estate.node_values().await.iter().any(|n| rdm_test::estate::is_location(n, &node)), "nothing is launched at {node:?}");
-    }
-    estate.shutdown().await;
 }
 
 /// CONTRACT (node-investigation.md: "A node that comes back after it was re-created is refused ... The

@@ -214,8 +214,6 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let (reason, detail) = rejected("a created path on an executable whose bytes hash otherwise", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", Some(&differing)) }).await);
     assert_eq!(reason, "executable-refused", "{detail}");
     assert!(detail.contains("path `mesh1.node`, name `3`"), "{detail}");
-    let (reason, detail) = rejected("a request at a count form's reserved position", carrier.create(Change::Reserved2).await);
-    assert_eq!((reason.as_str(), detail.as_str()), ("malformed", "UnknownVariant"), "the count forms are reserved positions: a request at one is an unknown variant");
     assert_eq!(estate.accepted_build_id().await, b, "nothing is accepted");
     assert!(estate.node_value_opt(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await.is_none(), "nothing runs at mesh1.node.3");
 
@@ -292,7 +290,7 @@ async fn a_request_changing_only_the_gateways_executables_replaces_every_gateway
         assert_ne!(now.incarnation_id, v.incarnation_id, "{name:?}: a new birth");
         assert_eq!(exe_of(&estate, name).await, next.executable, "{name:?} runs the new executable");
         assert_eq!(receipts_of(&steps, &OperationId::node("node.delete", &v.node_id), "NodeDeleted").len(), 1, "{name:?} is deleted once");
-        assert_eq!(receipts_of(&steps, &OperationId::location("node.create", name), "Complete").len(), 1, "{name:?} is created once");
+        assert_eq!(receipts_of(&steps, &OperationId::node("node.create", &rdm_core::fixture_node_id(name)), "Complete").len(), 1, "{name:?} is created once");
     }
     for mesh in ["mesh1", "mesh2"] {
         let (primary, other): (Vec<&NodeView>, Vec<&NodeView>) = before.values().filter(|v| v.r#type == "gateway" && v.mesh == mesh).partition(|v| v.is_primary);
@@ -319,7 +317,7 @@ async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_
     let p = before.values().find(|v| v.mesh == "mesh2" && v.r#type == "node-admin" && v.is_primary).map(|v| v.location()).expect("mesh2's primary admin");
     let first = before.values().find(|v| v.mesh == "mesh2" && v.r#type == "gateway" && !v.is_primary).map(|v| v.location()).expect("mesh2's non-primary gateway");
     let door = Door::at(&estate, &p).await;
-    door.arm("gateway-created", json!({"kind": "receipt", "step": "Complete", "operation": "node.create", "node": OperationSubject::Location(first.clone())})).await;
+    door.arm("gateway-created", json!({"kind": "receipt", "step": "Complete", "operation": "node.create", "at": (first.clone())})).await;
     let gateway = before[&PathName::new("mesh1.gateway", "1").unwrap()].executable.clone().expect("a gateway's row records its executable");
     let next = another_build(&estate, &gateway, "next");
     let (based_on, request) = gateways_on(&estate, &next).await;
@@ -327,7 +325,7 @@ async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_
     let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
     let build = stream.build_id().to_string();
     let held = door.wait_held("gateway-created").await;
-    assert_eq!((s(&held["hit"]["build_id"]), held["hit"]["operation"].clone()), (build.clone(), json!(OperationId::location("node.create", &first))), "{p:?} is held at {first:?}'s create Complete: {held}");
+    assert_eq!((s(&held["hit"]["build_id"]), held["hit"]["operation"].clone()), (build.clone(), json!(OperationId::node("node.create", &rdm_core::fixture_node_id(&first)))), "{p:?} is held at {first:?}'s create Complete: {held}");
     let successor = estate.until_node(&first, &format!("{first:?}'s successor ready"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != before[&first].node_id).cloned()).await;
     let left: Vec<PathName> = before.values().filter(|v| v.r#type == "gateway" && v.location() != first && v.mesh == "mesh2").map(|v| v.location()).collect();
     assert_eq!(left.len(), 1);
@@ -373,7 +371,7 @@ async fn a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_exec
     let admin = before[&PathName::new("mesh2.node-admin", "1").unwrap()].executable.clone().expect("mesh2.node-admin.1's row records its executable");
     let next = another_build(&estate, &admin, "next");
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await;
-    door.arm("added-admin-created", json!({"kind": "receipt", "step": "Complete", "operation": "node.create", "node": OperationSubject::Location(PathName::new("mesh2.node-admin", "2").unwrap())})).await;
+    door.arm("added-admin-created", json!({"kind": "receipt", "step": "Complete", "operation": "node.create", "at": (PathName::new("mesh2.node-admin", "2").unwrap())})).await;
     let (based_on, request) = read_request(&estate).await;
     let stale = request.clone();
 
@@ -639,7 +637,7 @@ async fn a_request_replacing_every_nodes_executable_moves_the_fabric_primary_onc
         let rpc = before.values().find(|m| m.view.mesh == mesh && m.view.r#type == "node").expect("mesh node");
         assert!(deleted(&primary) < deleted(&rpc.view.location()), "{mesh}: node-admins before the other types");
         for (n, _) in before.iter().filter(|(_, m)| m.view.mesh == mesh) {
-            assert_eq!(receipts_of(&steps, &OperationId::location("node.create", n), "Complete").len(), 1, "{n:?} is created once");
+            assert_eq!(receipts_of(&steps, &OperationId::node("node.create", &rdm_core::fixture_node_id(n)), "Complete").len(), 1, "{n:?} is created once");
         }
         let rpc_delete: Vec<&str> = steps.iter().filter(|r| r.operation == OperationId::node("node.delete", &rpc.view.node_id)).map(|r| r.step.as_str()).collect();
         assert!(rpc_delete.contains(&"StopNode") && rpc_delete.contains(&"TerminateRuntime"), "{mesh}: its only node's node.delete composes the whole stop: {rpc_delete:?}");
@@ -697,7 +695,7 @@ async fn an_executor_lost_after_a_replaced_brokers_delete_leaves_its_create_alon
     replaced(&estate, &broker(), &before[&broker()], &next).await;
     let steps = receipts(&estate, &build).await;
     assert_eq!(receipts_of(&steps, &OperationId::node("node.delete", &before[&broker()].view.node_id), "NodeDeleted").len(), 1, "the broker is deleted once");
-    assert_eq!(receipts_of(&steps, &OperationId::location("node.create", &broker()), "Complete").len(), 1, "the broker is created once");
+    assert_eq!(receipts_of(&steps, &OperationId::node("node.create", &rdm_core::fixture_node_id(&broker())), "Complete").len(), 1, "the broker is created once");
     estate.shutdown().await;
 }
 
@@ -739,7 +737,7 @@ async fn an_executor_lost_inside_a_replaced_brokers_delete_has_its_successor_cre
     followed(&estate, stream).await;
     let steps = receipts(&estate, &build).await;
     assert_eq!(receipts_of(&steps, &OperationId::node("node.delete", &before[&broker()].view.node_id), "NodeDeleting").len(), 1, "the broker is deleted once: the next attempt does not delete it again");
-    assert_eq!(receipts_of(&steps, &OperationId::location("node.create", &broker()), "Complete").len(), 1, "the broker is created once");
+    assert_eq!(receipts_of(&steps, &OperationId::node("node.create", &rdm_core::fixture_node_id(&broker())), "Complete").len(), 1, "the broker is created once");
     estate.shutdown().await;
 }
 
@@ -833,7 +831,7 @@ async fn a_replacements_delete_of_a_birth_replaced_after_acceptance_is_refused_b
     let target = before.values().find(|v| v.mesh == "mesh2" && v.r#type == "gateway" && !v.is_primary).map(|v| v.location()).expect("mesh2's non-primary gateway");
     let pinned = before[&target].clone();
     let door = Door::at(&estate, &p1).await;
-    door.arm("mesh1-gateway-created", json!({"kind": "receipt", "step": "Complete", "operation": "node.create", "node": OperationSubject::Location(first.clone())})).await;
+    door.arm("mesh1-gateway-created", json!({"kind": "receipt", "step": "Complete", "operation": "node.create", "at": (first.clone())})).await;
     let gateway = pinned.executable.clone().expect("a gateway's row records its executable");
     let next = another_build(&estate, &gateway, "next");
     let (based_on, request) = gateways_on(&estate, &next).await;

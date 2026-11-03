@@ -146,14 +146,8 @@ pub enum ProviderKind {
 /// One node as the fabric control projection knows it (`NodeView`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
-    /// The exact birth's original claimed name, at its unchanged path, while listed as a moved
-    /// predecessor.
-    #[serde(default)]
-    pub renamed_from: Option<String>,
-    /// The node's path.
-    pub path: String,
-    /// The name, beside its path.
-    pub name: String,
+    /// The node's separate path and name fields.
+    pub name: PathName,
     /// The node's immutable type, set at creation, independent of its path and name.
     pub r#type: String,
     /// The name of the node's mesh.
@@ -217,7 +211,6 @@ impl Node {
     /// A newly allocated node: identity only, nothing realised yet.
     pub fn allocated(name: PathName, mesh: impl Into<String>, r#type: &str) -> Self {
         Self {
-            renamed_from: None,
             r#type: r#type.to_string(),
             mesh: mesh.into(),
             path: name.path.clone(), name: name.name.clone(),

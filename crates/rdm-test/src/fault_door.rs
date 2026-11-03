@@ -30,7 +30,7 @@ pub const OP: u8 = <FaultDoor as NodeProtocol>::OP;
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "CutSpec")]
 enum CutWire {
-    Receipt { step: String, operation: Option<String>, node: Option<rdm_core::OperationSubject>, failed: bool },
+    Receipt { step: String, operation: Option<String>, node: Option<rdm_core::OperationSubject>, at: Option<rdm_core::PathName>, failed: bool },
     Event { event: String, node: Option<rdm_core::NodeId> },
     AcceptedBuild,
     ClaimedAttempt { attempt: Option<u32> },
@@ -490,8 +490,8 @@ mod tests {
     /// One cut of every kind the door arms.
     fn every_cut() -> Vec<CutSpec> {
         vec![
-            CutSpec::Receipt { step: "StopNode".into(), operation: Some("node.delete".into()), node: None, failed: false },
-            CutSpec::Receipt { step: "TerminateRuntime".into(), operation: Some("node.delete".into()), node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("200000000000").unwrap())), failed: true },
+            CutSpec::Receipt { step: "StopNode".into(), operation: Some("node.delete".into()), node: None, at: None, failed: false },
+            CutSpec::Receipt { step: "TerminateRuntime".into(), operation: Some("node.delete".into()), node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("200000000000").unwrap())), at: None, failed: true },
             CutSpec::Event { event: "deleting".into(), node: Some(rdm_core::NodeId::parse("100000000000").unwrap()) },
             CutSpec::AcceptedBuild,
             CutSpec::ClaimedAttempt { attempt: Some(2) },
@@ -531,7 +531,7 @@ mod tests {
         ]
         .into();
         let all = [
-            FaultReply::Armed { node: "mesh1.node-admin.1".into(), id: "c".into(), spec: CutSpec::Receipt { step: "StartNode".into(), operation: None, node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("100000000000").unwrap())), failed: false } },
+            FaultReply::Armed { node: "mesh1.node-admin.1".into(), id: "c".into(), spec: CutSpec::Receipt { step: "StartNode".into(), operation: None, node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("100000000000").unwrap())), at: None, failed: false } },
             FaultReply::Released { node: "mesh1.node-admin.1".into(), id: "c".into(), was_held: true, held_ms: Some(3) },
             FaultReply::State(FaultState { node: "mesh1.node-admin.1".into(), cuts, receipts_seen: 4 }),
             FaultReply::Refused { reason: "r".into() },

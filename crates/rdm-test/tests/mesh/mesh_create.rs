@@ -144,7 +144,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let b = built(&estate, &grow).await;
     assert_eq!(last_run_executor(&b), mesh2_primary, "{b:#}");
     estate.until_node(&rdm_core::PathName::new("mesh2.node", "4").unwrap(), "mesh2.node.4 ready", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
-    let mut shrinking = estate.nodes_obj().await.delete(&rdm_core::PathName::new("mesh2.node", "4").unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh2.node.4: {e}"));
+    let mut shrinking = estate.delete_node(&rdm_core::PathName::new("mesh2.node", "4").unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh2.node.4: {e}"));
     let shrink = Estate::complete(&mut shrinking).await.expect("the call opened a Build").build_id.to_string();
     let b = built(&estate, &shrink).await;
     assert_eq!(last_run_executor(&b), mesh2_primary, "{b:#}");

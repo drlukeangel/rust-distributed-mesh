@@ -392,7 +392,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
                 submitted_change: None,
-                submitted_at_ms: 1000,
+                source: None, submitted_at_ms: 1000,
             })
             .await
             .unwrap();
@@ -482,7 +482,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
                 submitted_change: None,
-                submitted_at_ms: 2000,
+                source: None, submitted_at_ms: 2000,
             })
             .await
             .unwrap();
@@ -570,7 +570,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         assert_eq!(deleted_row.status, NodeStatus::Deleted);
         assert_eq!(deleted_row.births.last().map(|b| b.incarnation_id.clone()), Some(target_incarnation.clone()), "the deleted row keeps its record, its birth included");
         let successor_id = NodeId::mint();
-        rows.create_row(&target_name, "mesh1", "node", &successor_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), None, None, RowFor::Create)
+        rows.create_row(&target_name, "mesh1", "node", &successor_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), None, None, RowFor::Create)
         .await
         .expect("deleted row must release the name claim for a successor node_id");
 
@@ -850,7 +850,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
                 submitted_change: None,
-                submitted_at_ms: 1000,
+                source: None, submitted_at_ms: 1000,
             })
             .await
             .unwrap();
@@ -1033,7 +1033,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
                 submitted_change: None,
-                submitted_at_ms: 2000,
+                source: None, submitted_at_ms: 2000,
             })
             .await
             .unwrap();

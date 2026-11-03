@@ -11,7 +11,7 @@
 //! yet end `NotBackedToday`, naming why; no request is invented for them.
 
 use rdm_core::read::Rows;
-use crate::build_stream::{Build, BuildCarrier};
+use crate::build_stream::{Build, BuildCarrier, BuildStream};
 use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeOp};
 use crate::workflow::{WorkflowKind, WorkflowStream};
 use crate::{Accepted, AtlasView, BuildId, CallEnd, ConnectionsView, ExactBirth, FabricView, MeshView, NodeView};
@@ -131,18 +131,9 @@ impl Nodes {
         Self { carrier }
     }
 
-    /// Submit a workflow call. Its span opens here and closes with the returned stream; a call the
-    /// fabric-primary did not accept ends here, with the span saying how.
+    /// Submit a workflow call ([`workflow`]).
     async fn workflow(&self, kind: WorkflowKind, change: BuildChange) -> Result<WorkflowStream, CallEnd> {
-        let span = kind.span();
-        match tracing::Instrument::instrument(self.carrier.create(change), span.clone()).await {
-            Ok(inner) => Ok(WorkflowStream::new(inner, kind, span)),
-            Err(end) => {
-                span.record("outcome", end.outcome());
-                span.in_scope(|| tracing::info!(op = kind.name(), reason = %end, "the workflow call was not accepted"));
-                Err(end)
-            }
-        }
+        workflow(&self.carrier, kind, change).await
     }
 
     /// Re-submit the workflow `kind` of the call that opened `accepted`: never a second Build. A
@@ -227,12 +218,12 @@ impl Nodes {
         CallEnd::NotBackedToday { op: NodeOp::ConfigGet, why: "node.config.get has no request of its own; node.get answers the node's config" }
     }
 
-    /// `node.create` of the paths `nodes` adds to the topology Build `based_on` accepted, each named by
-    /// its create spec, the node's properties flat, the executable included (Q166; build.md §1): `nodes` is the complete topology, `build.create { Change(Reconcile { based_on, nodes }) }`.
-    /// The stream is `Started`, then the step events of the create, ending `Complete` or
+    /// `node.create` of `nodes`, each whole by its Nodes schema, in meshes already live: one Build,
+    /// `build.create { Change(Create { meshes: [], nodes }) }` (build.md §1). The request names only the
+    /// nodes it adds. The stream is `Started`, then the step events of each create, ending `Complete` or
     /// `Failed { step, reason }`.
-    pub async fn create_named(&self, based_on: BuildId, nodes: Vec<rdm_core::meta::NodeSpec>) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Create, BuildChange::Reconcile { based_on, nodes }).await
+    pub async fn create(&self, nodes: Vec<rdm_core::build::Nodes>) -> Result<WorkflowStream, CallEnd> {
+        workflow(&self.carrier, WorkflowKind::Create, BuildChange::Create { meshes: Vec::new(), nodes }).await
     }
 
     /// `node.stop` of `node` (`lifecycles/node-stop.md`): delete its connections, leave its mesh and stop, keeping its `node.id`, `incarnation`, `(path, name)` and data dir.
@@ -271,6 +262,15 @@ impl Nodes {
         self.node_command(WorkflowKind::DeleteConnections(node.clone()), node, Some(scope)).await
     }
 
+    /// `node.mesh.leave` of `node` (`lifecycles/node-mesh-leave.md`): a node command, never a Build
+    /// (Q342), NodeCommand 0x22 `LeaveMesh` to the node's mesh-primary, directly, sent after the
+    /// node's connections are deleted ([`Self::delete_connections`]); the mesh-primary holds the node's
+    /// `node.mesh.left` for its rename. The process keeps running. The stream is `node.mesh.left`,
+    /// ending `Complete`; a leave the primary refuses before it runs is the call's `Rejected`, by name.
+    pub async fn leave_mesh(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
+        self.node_command(WorkflowKind::LeaveMesh(node.clone()), node, None).await
+    }
+
     /// The node command `kind` of the node at `node`, sent to the primary above it (D40): its exact
     /// birth and that primary read with `node.get` from the node the carrier starts at, then one direct
     /// NodeCommand 0x22 call, `scope` a connections delete's. A command the primary refuses before it
@@ -285,10 +285,18 @@ impl Nodes {
             // The command's identity: its operation, keyed on the node.id, with an occurrence minted once
             // for this command (every resend of it carries it): each stop and each start of one node is
             // its own command, never a repeat of the last.
-            let step = if matches!(kind, WorkflowKind::Start(_)) { rdm_core::names::NodeStep::Start } else { rdm_core::names::NodeStep::Stop };
+            let step = match kind {
+                WorkflowKind::Start(_) => rdm_core::names::NodeStep::Start,
+                WorkflowKind::LeaveMesh(_) => rdm_core::names::NodeStep::MeshLeave,
+                _ => rdm_core::names::NodeStep::Stop,
+            };
             let operation = rdm_core::OperationId::node(step.name(), &target.node_id).in_occurrence(rdm_core::OperationOccurrenceId::mint());
             let sent = match &kind {
                 WorkflowKind::Start(_) => rpc.start(&target, &operation, &opts).await,
+                WorkflowKind::LeaveMesh(_) => {
+                    let req = rdm_core::node_command::NodeCommandRequest::LeaveMesh { node_id: target.node_id.clone(), incarnation: target.incarnation.clone(), operation: operation.clone() };
+                    self.carrier.client().call_stream::<rdm_core::node_command::NodeCommand>(&target.target, &req, &opts).await.map(|(stream, _)| stream).map_err(|(out, _)| out)
+                }
                 WorkflowKind::DeleteConnections(_) => {
                     let scope = scope.cloned().unwrap_or(rdm_core::status::ConnectionScope::All);
                     let req = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: target.node_id.clone(), incarnation: target.incarnation.clone(), scope };
@@ -348,18 +356,14 @@ impl Nodes {
         Ok((ExactBirth { target: rdm_transport::NodeTarget::ExactNode(view.node_id.clone()), node_id: view.node_id, incarnation }, primary))
     }
 
-    /// `node.delete` of `node` (`lifecycles/node-delete.md`): compose `node.stop` when the process is live, terminate its exact runtime through the provider, and release `node.id` and `(path, name)`.
-    /// The stream is `Started`, every `node.stop` event when live, and `node.deleted`, ending `Complete` or `Failed { step, reason }`.
-    pub async fn delete(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Delete(node.clone()), BuildChange::RemoveNode { node: node.clone() }).await
-    }
-
-    /// Steps: one Build of node primitives (`BuildChange::Steps`), each step its op's own
-    /// workflow, run in order by RDM (build.md §1; lifecycles/node-replace.md). The caller owns the
-    /// steps. The stream is `Started`, then every step's events in step order, ending `Complete`
-    /// or `Failed { step, reason }` naming the step that failed; a resume never runs a completed step.
-    pub async fn steps(&self, steps: Vec<rdm_core::build::Step>) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Steps(steps.clone()), BuildChange::Steps { steps }).await
+    /// `node.delete` of the nodes `node_ids`, each by its node.id (`lifecycles/node-delete.md`): one
+    /// Build, `build.create { Change(Delete { meshes: [], node_ids }) }` (build.md §1). Each composes
+    /// `node.stop` when its process is live, terminates its exact runtime through the provider, and
+    /// releases its node.id and path and name. A node.id already deleted or replaced is refused by name.
+    /// The stream is `Started`, every `node.stop` event of a live node, and `node.deleted`, ending
+    /// `Complete` or `Failed { step, reason }`.
+    pub async fn delete(&self, node_ids: Vec<NodeId>) -> Result<WorkflowStream, CallEnd> {
+        workflow(&self.carrier, WorkflowKind::Delete(node_ids.clone()), BuildChange::Delete { meshes: Vec::new(), node_ids }).await
     }
 
     /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary
@@ -405,7 +409,22 @@ async fn read_rows<T>(
     r
 }
 
-/// The `mesh` objects: reads on op `0x23` to the fabric-primary the carrier starts at.
+/// Submit a workflow call through `carrier`. Its span opens here and closes with the returned stream;
+/// a call the fabric-primary did not accept ends here, with the span saying how.
+async fn workflow(carrier: &BuildCarrier, kind: WorkflowKind, change: BuildChange) -> Result<WorkflowStream, CallEnd> {
+    let span = kind.span();
+    match tracing::Instrument::instrument(carrier.create(change), span.clone()).await {
+        Ok(inner) => Ok(WorkflowStream::new(inner, kind, span)),
+        Err(end) => {
+            span.record("outcome", end.outcome());
+            span.in_scope(|| tracing::info!(op = kind.name(), reason = %end, "the workflow call was not accepted"));
+            Err(end)
+        }
+    }
+}
+
+/// The `mesh` objects: `mesh.create` and `mesh.delete` through the fabric-primary's Build family, and
+/// reads on op `0x23` to the fabric-primary the carrier starts at.
 #[derive(Debug, Clone)]
 pub struct Meshes {
     carrier: BuildCarrier,
@@ -415,6 +434,20 @@ impl Meshes {
     /// The objects over `carrier`.
     pub fn new(carrier: BuildCarrier) -> Self {
         Self { carrier }
+    }
+
+    /// `mesh.create` of `meshes` with `nodes`, each node whole by its Nodes schema: one Build,
+    /// `build.create { Change(Create { meshes, nodes }) }` (build.md §1). Each new mesh is created with
+    /// its first node-admin, which `nodes` names; a new mesh with none is refused by name. The stream is
+    /// `Started`, then the step events of each create, ending `Complete` or `Failed { step, reason }`.
+    pub async fn create(&self, meshes: Vec<rdm_core::build::Meshes>, nodes: Vec<rdm_core::build::Nodes>) -> Result<WorkflowStream, CallEnd> {
+        workflow(&self.carrier, WorkflowKind::Create, BuildChange::Create { meshes, nodes }).await
+    }
+
+    /// `mesh.delete` of the meshes `names` (lifecycles/mesh-delete.md): one Build,
+    /// `build.create { Change(Delete { meshes: names, node_ids: [] }) }` (build.md §1).
+    pub async fn delete(&self, names: Vec<String>) -> Result<BuildStream, CallEnd> {
+        self.carrier.create(BuildChange::Delete { meshes: names, node_ids: Vec::new() }).await
     }
 
     /// `mesh.get` (Q167): every mesh the fabric-primary holds that matches every pair of `filter`, by
@@ -615,7 +648,7 @@ mod tests {
     fn one_name_per_op_opens_its_one_literal_span() {
         use rdm_core::names::NodeEvent;
         let (_g, spans) = capture_spans();
-        let ops: [(tracing::Span, &str); 15] = [
+        let ops: [(tracing::Span, &str); 16] = [
             (NodeOp::Get.span(), "rdm.node_admin.node.resolve.via-call"),
             (NodeOp::NameUpdate.span(), "rdm.node_admin.name.update.via-call"),
             (NodeOp::TopologyGet.span(), "rdm.node_admin.topology.resolve.via-call"),
@@ -629,6 +662,7 @@ mod tests {
             (NodeOp::Stop.span(), "rdm.node_admin.node.update.via-stop-workflow"),
             (NodeOp::Start.span(), "rdm.node_admin.node.update.via-start-workflow"),
             (NodeOp::Delete.span(), "rdm.node_admin.node.delete.via-workflow"),
+            (NodeOp::MeshLeave.span(), "rdm.node_admin.node.remove.via-mesh-leave-call"),
             (NodeOp::PrimaryUpdate.span(), "rdm.node_admin.primary.update.via-call"),
             (NodeOp::FabricPrimaryUpdate.span(), "rdm.node_admin.primary.update.via-fabric-primary-call"),
         ];

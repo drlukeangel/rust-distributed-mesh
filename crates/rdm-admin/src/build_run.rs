@@ -987,11 +987,11 @@ mod tests {
     #[tokio::test]
     async fn a_reattached_call_is_replayed_the_framed_steps_then_the_current_blocker_then_live() {
         let log = RunLog::new(&id(), 3);
-        log.step(&rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "1").unwrap()), "AllocateIdentity");
-        log.step(&rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "1").unwrap()), "AllocateIdentity");
-        log.blocked(&rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "1").unwrap()), "WaitForNodeReady", "authority not ready");
-        log.blocked(&rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "1").unwrap()), "WaitForNodeReady", "authority not ready");
-        log.blocked(&rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "1").unwrap()), "WaitForNodeReady", "pulling the accepting authority");
+        log.step(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh2.node", "1").unwrap())), "AllocateIdentity");
+        log.step(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh2.node", "1").unwrap())), "AllocateIdentity");
+        log.blocked(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh2.node", "1").unwrap())), "WaitForNodeReady", "authority not ready");
+        log.blocked(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh2.node", "1").unwrap())), "WaitForNodeReady", "authority not ready");
+        log.blocked(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh2.node", "1").unwrap())), "WaitForNodeReady", "pulling the accepting authority");
         let mut first = log.reader();
         let mut seen = Vec::new();
         for _ in 0..3 {
@@ -1003,7 +1003,7 @@ mod tests {
         assert_eq!(names(&replay), vec!["step", "blocked"], "a Step per Complete receipt, then only the current Blocked");
         assert!(matches!(&replay[1], BuildReply::Blocked { reason, .. } if reason == "pulling the accepting authority"));
 
-        log.step(&rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "1").unwrap()), "WaitForNodeReady");
+        log.step(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh2.node", "1").unwrap())), "WaitForNodeReady");
         assert!(matches!(reader.next().await.unwrap(), BuildReply::Step { step, .. } if step == "WaitForNodeReady"), "live frames follow the replay");
         let (replay, _) = log.attach();
         assert_eq!(names(&replay), vec!["step", "step"], "the step that completed cleared its blocker");
@@ -1017,8 +1017,8 @@ mod tests {
     fn a_failed_terminal_retains_its_typed_cause_without_reclassifying_the_explanation() {
         use rdm_core::outcome::Code;
         for code in [Code::Unknown, Code::DeadlineExceeded, Code::Unavailable] {
-            let r = Reconciled::Failed { attempt: 1, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), reason: "same explanation".into(), code };
-            let receipt = Some((rdm_core::OperationId::location("node.start", &PathName::new("mesh1.node", "2").unwrap()), "StartNode".into(), "same explanation".into()));
+            let r = Reconciled::Failed { attempt: 1, operation: rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())), reason: "same explanation".into(), code };
+            let receipt = Some((rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap())), "StartNode".into(), "same explanation".into()));
             assert!(matches!(terminal_of(&id(), &r, receipt), BuildReply::Failed { code: held, .. } if held == code));
         }
     }
@@ -1027,13 +1027,13 @@ mod tests {
     /// when that receipt belongs to the failed operation, and carries the attempt's own reason.
     #[test]
     fn a_failed_attempt_names_the_step_its_failed_receipt_names() {
-        let r = Reconciled::Failed { attempt: 2, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), reason: "node.create path=mesh1.node name=2: WaitForMeshJoin failed: no join".into() , code: rdm_core::outcome::Code::FailedPrecondition };
-        let failed = Some((rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap()), "WaitForMeshJoin".to_string(), "no join".to_string()));
+        let r = Reconciled::Failed { attempt: 2, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())), reason: "node.create path=mesh1.node name=2: WaitForMeshJoin failed: no join".into() , code: rdm_core::outcome::Code::FailedPrecondition };
+        let failed = Some((rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap())), "WaitForMeshJoin".to_string(), "no join".to_string()));
         assert_eq!(
             terminal_of(&id(), &r, failed),
-            BuildReply::Failed { build_id: "vhpqxdbt5w2g".into(), attempt: 2, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), step: "WaitForMeshJoin".into(), reason: "node.create path=mesh1.node name=2: WaitForMeshJoin failed: no join".into() , code: rdm_core::outcome::Code::FailedPrecondition }
+            BuildReply::Failed { build_id: "vhpqxdbt5w2g".into(), attempt: 2, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())), step: "WaitForMeshJoin".into(), reason: "node.create path=mesh1.node name=2: WaitForMeshJoin failed: no join".into() , code: rdm_core::outcome::Code::FailedPrecondition }
         );
-        let other = Some((rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "9").unwrap()), "DeployRuntime".to_string(), "other".to_string()));
+        let other = Some((rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "9").unwrap())), "DeployRuntime".to_string(), "other".to_string()));
         assert!(matches!(terminal_of(&id(), &r, other), BuildReply::Failed { step, .. } if step == "attempt"), "a failed receipt of another operation is not this attempt's step");
     }
 
@@ -1139,7 +1139,7 @@ mod tests {
 
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
-        BuildStepReceipt { mesh: None, build_id: id(), attempt, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), step: step.into(), outcome, output: None, executor: None }
+        BuildStepReceipt { mesh: None, build_id: id(), attempt, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())), step: step.into(), outcome, output: None, executor: None }
     }
 
     /// CONTRACT: a step frame is made only after the step's `Complete` receipt has been appended on
@@ -1161,7 +1161,7 @@ mod tests {
         ok.append_step_receipt(&receipt(1, "PrepareNetwork", StepOutcome::failed("no port"))).await.unwrap();
         log.finish(BuildReply::Complete { build_id: id().to_string(), attempt: 1 });
         assert_eq!(reader.next().await.unwrap().name(), "complete", "an append that failed and a failed step made no step frame");
-        assert_eq!(log.last_failed_step(), Some((rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap()), "PrepareNetwork".into(), "no port".into())), "the failed step is kept for the terminal to name");
+        assert_eq!(log.last_failed_step(), Some((rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap())), "PrepareNetwork".into(), "no port".into())), "the failed step is kept for the terminal to name");
     }
 
     struct Nothing;
@@ -1195,7 +1195,7 @@ mod tests {
 
     async fn accepted(memory: &MemoryBuildStateAdapter) {
         memory
-            .publish_accepted(&BuildAccepted { build_id: id(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: id(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 })
             .await
             .unwrap();
     }
@@ -1242,7 +1242,7 @@ mod tests {
     #[tokio::test]
     async fn a_returning_fabric_primarys_writes_before_it_learns_the_transfer_are_ignored_and_its_call_refused_stale() {
         let (door, memory) = door(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", second_birth()).await;
-        memory.publish_accepted(&BuildAccepted { build_id: id(), topology: crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric), submitted_at_ms: 0 }).await.unwrap();
+        memory.publish_accepted(&BuildAccepted { build_id: id(), topology: crate::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(rdm_core::build::BuildChange::DeleteFabric), source: None, submitted_at_ms: 0 }).await.unwrap();
         let step = |attempt: u32, operation: &rdm_core::OperationId, step: &str, output: Option<serde_json::Value>| BuildStepReceipt { mesh: None, build_id: id(), attempt, operation: operation.clone(), step: step.into(), outcome: StepOutcome::Complete, output, executor: None };
         let (lost, lost_inc, exec, exec_inc) = (first_birth().node_id, first_birth().incarnation, second_birth().node_id, second_birth().incarnation);
         memory.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: Some(first_birth().node_id), mesh: None, build_id: id(), attempt: 1, executor: first_birth() }).await.unwrap();
@@ -1342,8 +1342,8 @@ mod report_scope_tests {
     #[test]
     fn run_replay_keeps_structured_operation_and_step_identity() {
         let log = RunLog::new(&BuildId::mint(), 1);
-        let first = rdm_core::OperationId::location("node.create", &PathName::new("opaque.group", "north").unwrap());
-        let second = rdm_core::OperationId::location("node.create", &PathName::new("opaque", "north").unwrap());
+        let first = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("opaque.group", "north").unwrap()));
+        let second = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("opaque", "north").unwrap()));
         log.step(&first, "Complete");
         log.step(&first, "Complete");
         log.step(&second, "Complete");

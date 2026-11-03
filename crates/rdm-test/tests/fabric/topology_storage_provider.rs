@@ -338,7 +338,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     let deleted = estate.node_view(&PathName::new("mesh1.node", "2").unwrap()).await;
     estate.reconcile(&two_meshes()).await;
     // A deleted mesh's last node-admin is a separate node.delete after mesh.deleted (mesh-delete.md step 7).
-    Estate::workflow("node.delete of mesh3.node-admin.1", estate.nodes_obj().await.delete(&Estate::path("mesh3.node-admin", "1")).await).await;
+    Estate::workflow("node.delete of mesh3.node-admin.1", estate.delete_node(&Estate::path("mesh3.node-admin", "1")).await).await;
     let views = estate.settles_to_named(&two_mesh_names(), SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let before = births(&views);

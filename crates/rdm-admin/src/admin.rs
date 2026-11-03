@@ -224,7 +224,7 @@ mod tests {
         assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: last.node.r#type.clone(), mesh: last.node.mesh.clone(),
             build_id: "b7".into(),
             attempt: 1,
-            operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()),
+            operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap())),
             node_id: last.node.node_id.clone(),
             incarnation: last.node.incarnation.clone(),
             path: last.node.path.clone(), name: last.node.name.clone(),
@@ -266,7 +266,7 @@ mod tests {
             assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: successor.node.r#type.clone(), mesh: successor.node.mesh.clone(),
                 build_id: "b9".into(),
                 attempt: 9,
-                operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "2").unwrap()),
+                operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())),
                 node_id: successor.node.node_id.clone(),
                 incarnation: successor.node.incarnation.clone(),
                 path: successor.node.path.clone(), name: successor.node.name.clone(),
@@ -985,7 +985,7 @@ mod tests {
         let meshes = crate::storage::MemoryMeshStorage::default();
         let observed = view(&[digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready)]);
         let current = crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap());
-        let change = crate::accepted::TopologyChange::CreateMesh { desired: crate::build::MeshDesired::of("mesh2", [("node-admin", 1), ("node", 1)]) };
+        let change = crate::test_support::create_of(&["mesh2"], &[("mesh2.node-admin", "1", "mesh2", "node-admin"), ("mesh2.node", "1", "mesh2", "node")]);
         let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
         let create_mesh_of = |plan: crate::build::BuildPlan| plan.operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. })).expect("the plan creates mesh2");
         let (first_op, successor_op) = (create_mesh_of(crate::accepted::plan(&accepted, &observed, None)), create_mesh_of(crate::accepted::plan(&accepted, &observed, None)));
@@ -1012,11 +1012,11 @@ mod tests {
     async fn build_creating_mesh2(builds: &crate::build_state::MemoryBuildStateAdapter) -> (crate::build::BuildId, BuildOperation) {
         let observed = view(&[digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready)]);
         let current = crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap());
-        let change = crate::accepted::TopologyChange::CreateMesh { desired: crate::build::MeshDesired::of("mesh2", [("node-admin", 1), ("node", 1)]) };
+        let change = crate::test_support::create_of(&["mesh2"], &[("mesh2.node-admin", "1", "mesh2", "node-admin"), ("mesh2.node", "1", "mesh2", "node")]);
         let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
         let op = crate::accepted::plan(&accepted, &observed, None).operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. })).expect("the plan creates mesh2");
         let build_id = crate::build::BuildId::parse("jrr142w4840j").unwrap();
-        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: accepted, submitted_change: Some(change), submitted_at_ms: 0 }).await.expect("the Build is accepted");
+        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: accepted, submitted_change: Some(change), source: None, submitted_at_ms: 0 }).await.expect("the Build is accepted");
         (build_id, op)
     }
 
@@ -2083,7 +2083,7 @@ mod tests {
         let op = rdm_core::LifecycleOp { r#type: member.node.r#type.clone(), mesh: member.node.mesh.clone(),
             build_id: "9r7cpewghdkk".into(),
             attempt: 2,
-            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.node", "1").unwrap()),
+            operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "1").unwrap())),
             node_id: member.node.node_id.clone(),
             incarnation: member.node.incarnation.clone(),
             path: member.node.path.clone(), name: member.node.name.clone(),
@@ -2093,7 +2093,7 @@ mod tests {
         };
         let build = crate::build::BuildId::parse(&op.build_id).unwrap();
         let mut facts = vec![
-            BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2", crate::model::MeshId::parse("meshd0000002").unwrap()), submitted_change: None, submitted_at_ms: 1 }),
+            BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2", crate::model::MeshId::parse("meshd0000002").unwrap()), submitted_change: None, source: None, submitted_at_ms: 1 }),
             BuildFact::Step(BuildStepReceipt { mesh: None, build_id: build.clone(), attempt: 2, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: Some(serde_json::to_value(&op).unwrap()), executor: None }),
         ];
         let capture = crate::span_capture::Capture::new("i143-3068-failed-removal-recovered");
@@ -2227,7 +2227,7 @@ mod tests {
         }
         let desired = |mesh: &str, rpc: u32| crate::build::MeshDesired::of(mesh, [("node-admin", 1), ("node", rpc)]);
         let records = Records::default();
-        let mut plan = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: BTreeMap::new() };
+        let mut plan = crate::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: BTreeMap::new() };
         plan.meshes.insert("mesh1".into(), crate::accepted::MeshTopology::of(&desired("mesh1", 1)));
         records.set_planned(&plan);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
@@ -2938,12 +2938,12 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3068-leaving-mesh-admin-row");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let created: PathName = rdm_core::PathName::new("mesh2.node-admin", "2").unwrap();
-        let refused = rows.create_row(&created, "mesh2", "node-admin", &NodeId::mint(), &rdm_core::OperationId::location("node.create", &created), None, None, crate::node_rows::RowFor::Create).await;
+        let refused = rows.create_row(&created, "mesh2", "node-admin", &NodeId::mint(), &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&created)), None, None, crate::node_rows::RowFor::Create).await;
         assert!(matches!(&refused, Err(crate::node_rows::RowRefused::NotMeshPrimary(_))), "unheld, the lost primary still writes mesh2's rows: {refused:?}");
         depart(&digest_view, &records, &lost).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)).await;
         let born = NodeId::mint();
-        match rows.create_row(&created, "mesh2", "node-admin", &born, &rdm_core::OperationId::location("node.create", &created), None, None, crate::node_rows::RowFor::Create).await {
+        match rows.create_row(&created, "mesh2", "node-admin", &born, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&created)), None, None, crate::node_rows::RowFor::Create).await {
             Ok(crate::node_rows::RowCreated::Written { row, .. }) => assert_eq!((row.node_id, row.status), (born, NodeStatus::Starting), "a create writes the record starting"),
             other => panic!("the fabric-primary writes the created admin's row once the lost primary's exit is held: {other:?}"),
         }
@@ -3212,7 +3212,7 @@ mod tests {
         let blocked = node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await.expect("blocked while the entry's Build is not held");
         assert_eq!(blocked.need(), crate::fetch_build::Need::BuildFacts(id.clone()), "{blocked}");
         assert!(blocked.to_string().contains(&format!("holds no facts of Build {id}")), "{blocked}");
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 }).await.unwrap();
         assert_eq!(node_admin_not_ready(&me, &builds, None).await, None, "an admin served no entry owes no attempt floor");
         let blocked = node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await.expect("blocked below the entry's attempt").to_string();
         assert!(blocked.contains(&format!("holds attempt 0 of Build {id}")) && blocked.contains("held attempt 2"), "{blocked}");
@@ -3401,7 +3401,7 @@ mod tests {
         assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
-            operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
+            operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
             node_id: held.node.node_id.clone(),
             incarnation: held.node.incarnation.clone(),
             path: held.node.path.clone(), name: held.node.name.clone(),
@@ -3415,7 +3415,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { replacement_from: None, r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: held.node.path.clone(), name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = crate::storage::NodeRow { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: held.node.path.clone(), name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         crate::node_rows::move_row(&primary, &Default::default(), &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), &record, &held.node.location(), &to).await.unwrap();
         // This admin: the same view, its own store on the same root, no rename of its own.
@@ -3457,7 +3457,7 @@ mod tests {
         assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
-            operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
+            operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
             node_id: held.node.node_id.clone(),
             incarnation: held.node.incarnation.clone(),
             path: held.node.path.clone(), name: held.node.name.clone(),
@@ -3630,7 +3630,7 @@ mod tests {
         assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_some(), "a birth saying ConnectionsDeleting makes the rebuild due at once");
 
         wake.seen();
-        let stop = rdm_core::LifecycleOp { r#type: rpc.node.r#type.clone(), mesh: rpc.node.mesh.clone(), build_id: "b1".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let stop = rdm_core::LifecycleOp { r#type: rpc.node.r#type.clone(), mesh: rpc.node.mesh.clone(), build_id: "b1".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(digest_view.stopped(stop));
         assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
     }
@@ -3812,7 +3812,7 @@ mod tests {
         assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
-            operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "7").unwrap()),
+            operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "7").unwrap())),
             node_id: held.node.node_id.clone(),
             incarnation: held.node.incarnation.clone(),
             path: held.node.path.clone(), name: held.node.name.clone(),
@@ -3824,7 +3824,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { replacement_from: None, r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: held.node.path.clone(), name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = crate::storage::NodeRow { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: held.node.path.clone(), name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         let (me, base) = (rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), rdm_core::PathName::new("mesh1.node", "1").unwrap());
         crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &held.node.location(), &base).await.unwrap();
@@ -3889,7 +3889,7 @@ mod tests {
         let stop = rdm_core::LifecycleOp { r#type: stopped.node.r#type.clone(), mesh: stopped.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
-            operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
+            operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
             node_id: stopped.node.node_id.clone(),
             incarnation: stopped.node.incarnation.clone(),
             path: stopped.node.path.clone(), name: stopped.node.name.clone(),
@@ -3944,7 +3944,7 @@ mod tests {
         digest_view.depart(rdm_core::LifecycleOp { r#type: gone.node.r#type.clone(), mesh: gone.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
-            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node", "3").unwrap()),
+            operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap())),
             node_id: gone.node.node_id.clone(),
             incarnation: gone.node.incarnation.clone(),
             path: gone.node.path.clone(), name: gone.node.name.clone(),

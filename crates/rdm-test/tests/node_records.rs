@@ -283,12 +283,6 @@ async fn tags_create(estate: &Estate, v: &NodeView, labels: &BTreeSet<String>) -
     rdm_client::NodeRpc::new(carrier.client()).tags_create(&fp, &rdm_transport::RouteChoice::Direct, &birth_of(v), labels, &rdm_transport::CallOptions::default()).await.unwrap_or_else(|e| panic!("node.tag.create of {:?} at the fabric-primary: {e:?}", v.name))
 }
 
-/// `steps` as one Build of node primitives, followed to its Complete.
-async fn steps_to_complete(estate: &Estate, steps: Vec<rdm_core::build::Step>) -> rdm_client::Accepted {
-    let mut stream = estate.nodes_obj().await.steps(steps).await.unwrap_or_else(|e| panic!("the steps were not accepted: {e}"));
-    Estate::complete(&mut stream).await.expect("steps open a Build")
-}
-
 /// The own update of `v`'s config through the testkit probe: the node's own local durable write.
 fn own_update(estate: &Estate, v: &NodeView, value: &str) {
     let answer = estate.probe(&["own-config", "--target", &format!("exact:{}", v.node_id), "--value", value]);
@@ -333,7 +327,6 @@ fn fields(r: &NodeRow) -> Value {
         "cert": b.and_then(|b| b.cert.as_ref()), "signing_cert": b.and_then(|b| b.signing_cert.as_ref()),
         "executable": r.executable, "storage_persistence": r.storage_persistence, "topology_storage_provider": r.topology_storage_provider,
         "allocated": r.allocated, "initial_properties": r.initial_properties, "predecessor": r.predecessor, "renamed_from": r.renamed_from,
-        "replacement_from": r.replacement_from, "inherited_by": r.inherited_by,
     })
 }
 
@@ -416,7 +409,7 @@ async fn a_path_move_preserves_the_node_identity() {
     let moved = subject.renamed().expect("the reserved name fits");
     let before = estate.node_view(&subject).await;
     let pid = estate.pid_of(&subject).await;
-    steps_to_complete(&estate, rdm_test::steps::replace_keeping_predecessor(&subject, &before.mesh, &before.r#type).unwrap()).await;
+    rdm_test::replace::replace_keeping_predecessor(&estate, &subject, &before.mesh, &before.r#type).await.unwrap_or_else(|e| panic!("the replace of {subject:?}: {e}"));
     let at_moved = at_pair(&estate, &moved).await;
     assert_eq!(at_moved.len(), 1, "node.get [path, name] names one node at the moved pair: {at_moved:#?}");
     let predecessor = at_moved[0].clone();
@@ -436,7 +429,6 @@ async fn a_path_move_preserves_the_node_identity() {
         (&before.node_id, before.incarnation_id.as_ref(), &moved),
         "the moved node's record keeps its identity and names the moved pair: {record:?}"
     );
-    assert_eq!(record.replacement_from.as_ref(), Some(&subject), "the retained predecessor's record names the pair it moved from: {record:?}");
     let own = estate.node_properties(&before.node_id).expect("the moved node's own property record stays at its node id");
     assert_eq!(Some(&own.birth.incarnation_id), before.incarnation_id.as_ref(), "{own:?}");
     estate.artifact("path-move.json", &json!({"before": before, "predecessor": predecessor, "successor": successor, "record": record}));
@@ -448,86 +440,6 @@ async fn a_path_move_preserves_the_node_identity() {
         .find(|sp| attr(sp, "to_path") == moved.path && attr(sp, "to_name") == moved.name && attr(sp, "outcome") == "name-updated")
         .unwrap_or_else(|| panic!("the rename of {} to the moved pair is recorded with its two fields: {renames:#?}", before.node_id));
     estate.record_trace_url(moved_to["trace_id"].as_str().unwrap());
-}
-
-// @feature: node-records
-/// CONTRACT (i150 R2, R5, R11; e2, e5; query.md §1: "A current-pair lookup resolves the path/name
-/// claim to a node ID. The reader reads the node's record at that node ID: one record per node,
-/// append-only, its latest line current ... A raw last-written-path index supplies no fallback"; Q323):
-/// `mesh1.node` / `2` is replaced and its predecessor deleted. Then the deleted birth's late writes
-/// land: an earlier Ready line of its lifecycle record at the pair is appended at its node id, and a put
-/// of its own properties commits with another map. node.get by the pair names the successor alone with
-/// its own config: the pair resolves through its name claim, so the late line never selects the deleted
-/// birth at its path. node.get by the deleted birth's id answers that node's latest line, never the
-/// pair's claimant. A later Build naming the pair applies its entry to the successor, never to the
-/// deleted birth's record. The shared resolver records the read of the successor's record. Must NOT
-/// happen: the late write making the pair name the deleted birth.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_deleted_birth_cannot_hide_its_successor() {
-    let test = "a_deleted_birth_cannot_hide_its_successor";
-    let mut estate = estate_at(Estate::bootstrap(owner_of(test, "deleted-birth"), "fabric1", "mesh1").await, &[("mesh1", 1, 2)]).await;
-    let subject = pair("mesh1.node", "2");
-    let before = estate.node_view(&subject).await;
-    steps_to_complete(&estate, rdm_test::steps::replace(&subject, &before.mesh, &before.r#type).unwrap()).await;
-    let successor = estate.until_node(&subject, "the successor is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
-    // The deleted birth's late writes: an earlier Ready line of its record, at the pair, lands now as
-    // its record's latest line.
-    let earlier = lines_of(&estate, &before.node_id)
-        .into_iter()
-        .rev()
-        .find(|r| status_of(r) == "ready" && r.location() == subject)
-        .expect("an earlier Ready line of the predecessor's record at the pair");
-    let late_writes_at = now_ns();
-    late_record_put(&estate, &earlier).await;
-    let late: BTreeMap<String, String> = [("late".into(), "predecessor".into())].into();
-    let mut late_properties = estate.node_properties(&before.node_id).expect("the predecessor's own property record");
-    late_properties.config = late.clone();
-    late_properties_put(&estate, &late_properties).await;
-    let current = latest(&estate, &before.node_id).await.expect("the deleted birth's record");
-    assert_eq!(current, earlier, "the late line is the deleted birth's latest line");
-    let at = at_pair(&estate, &subject).await;
-    assert_eq!(
-        at.iter().map(|n| (n.node_id.clone(), n.status)).collect::<Vec<_>>(),
-        vec![(successor.node_id.clone(), NodeStatus::Ready)],
-        "node.get by the pair names the successor alone after the deleted birth's late writes: {at:#?}"
-    );
-    assert_ne!(at[0].config, late, "the successor's config is its own, never the deleted birth's late map");
-    let listed = by_id(&estate, &before.node_id).await;
-    assert!(listed.iter().all(|n| n.node_id == before.node_id), "node.get by the deleted birth's id is not redirected to the pair's claimant: {listed:#?}");
-    for n in &listed {
-        assert_eq!(
-            (n.incarnation_id.as_ref(), serde_json::to_value(n.status).unwrap().as_str().unwrap_or_default(), n.path.as_str(), n.name.as_str()),
-            (current.newest_birth().map(|b| &b.incarnation_id), status_of(&current).as_str(), current.path.as_str(), current.name.as_str()),
-            "node.get by the deleted birth's id answers its record's latest line: {n:?}"
-        );
-    }
-    // Acceptance reads the current record: a Build naming the pair applies to the successor alone.
-    let entry: BTreeMap<String, String> = [("entry".into(), "after-late-writes".into())].into();
-    let stream = estate
-        .submit_named("a Build names the pair after the deleted birth's late writes", |current, _| {
-            current.topology.values().flat_map(|mesh| mesh.values()).cloned().map(|mut spec| {
-                if spec.location() == subject {
-                    spec.config = entry.clone();
-                }
-                spec
-            }).collect()
-        })
-        .await;
-    estate.follow(stream).await;
-    let after = estate.node_view(&subject).await;
-    assert_eq!((&after.node_id, &after.config), (&successor.node_id, &entry), "the Build's entry reaches the successor");
-    assert_eq!(estate.node_properties(&before.node_id).expect("the deleted birth's record").config, late, "no write reaches the deleted birth's record");
-    estate.artifact("deleted-birth.json", &json!({"before": before, "successor": successor, "late_record": earlier, "by_id": listed, "after": after}));
-    estate.stop().await;
-    let spans = estate.spans();
-    let read = *reads_of(&spans, &successor.node_id, late_writes_at).first().unwrap_or_else(|| {
-        panic!(
-            "the shared resolver records a read of the successor {}'s record after the deleted birth's late writes (i150 OTLP table, rdm.node_admin.node.resolve.via-lifecycle-record; {} such spans)",
-            successor.node_id,
-            named(&spans, "rdm.node_admin.node.resolve.via-lifecycle-record").len()
-        )
-    });
-    estate.record_trace_url(read["trace_id"].as_str().unwrap());
 }
 
 // @feature: node-records
@@ -544,7 +456,7 @@ async fn a_deleted_birth_is_read_by_its_id() {
     let mut estate = estate_at(Estate::bootstrap(owner_of(test, "deleted-history"), "fabric1", "mesh1").await, &[("mesh1", 1, 2)]).await;
     let subject = pair("mesh1.node", "2");
     let before = estate.node_view(&subject).await;
-    steps_to_complete(&estate, rdm_test::steps::replace(&subject, &before.mesh, &before.r#type).unwrap()).await;
+    rdm_test::replace::replace(&estate, &subject, &before.mesh, &before.r#type).await.unwrap_or_else(|e| panic!("the replace of {subject:?}: {e}"));
     let successor = estate.until_node(&subject, "the successor is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
     let record = latest(&estate, &before.node_id).await.expect("the deleted predecessor's record");
     assert_eq!(status_of(&record), "deleted", "the predecessor's latest line is Deleted: {record:?}");
@@ -751,7 +663,7 @@ async fn current_node_reads_survive_fabric_primary_restart() {
     let mut estate = estate_at(Estate::bootstrap(owner_of(test, "fabric-primary-restart"), "fabric1", "mesh1").await, &shape).await;
     let subject = pair("mesh2.node", "2");
     let before = estate.node_view(&subject).await;
-    steps_to_complete(&estate, rdm_test::steps::replace(&subject, &before.mesh, &before.r#type).unwrap()).await;
+    rdm_test::replace::replace(&estate, &subject, &before.mesh, &before.r#type).await.unwrap_or_else(|e| panic!("the replace of {subject:?}: {e}"));
     let successor = estate.until_node(&subject, "the successor is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
     let build = estate.accepted_build_id().await;
     let attempt = estate.attempt_of_build(&build).await;

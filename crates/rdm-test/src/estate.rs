@@ -1720,6 +1720,12 @@ pub fn plans_operation(sp: &Value, action: &str, subject: &rdm_core::OperationSu
     planned_operations(sp).iter().any(|op| op.contains(&action) && op.contains(&subject))
 }
 
+/// Whether a span plans a `node.create`: a create's key is the node.id its Build record minted
+/// (D58), which names no path, so a create is told apart by the Build that plans it.
+pub fn plans_a_create(sp: &Value) -> bool {
+    planned_operations(sp).iter().any(|op| op.contains("action: \"node.create\""))
+}
+
 /// Spans by name.
 pub fn named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     spans.iter().filter(|s| s["name"] == name).collect()

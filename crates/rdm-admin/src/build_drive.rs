@@ -108,12 +108,6 @@ pub trait Gate: Send + Sync {
     }
     /// Attempt `attempt` of `build_id` ended `Failed`: what it accepted is no longer executing.
     async fn attempt_failed(&self, _build_id: &BuildId, _attempt: u32) {}
-    /// What the node rows record of each member of `topology`'s executable, for a replacement's plan
-    /// ([`crate::accepted::recorded_executables`]; build-deployment.md §3). A gate with no rows
-    /// records none: every member is owed its replacement.
-    async fn recorded_executables(&self, _topology: &crate::accepted::FabricTopology) -> Result<crate::accepted::Recorded, String> {
-        Ok(crate::accepted::Recorded::new())
-    }
     /// The meshes of `observed` whose Mesh record holds them Dead (mesh-delete.md: the mesh row goes Dead
     /// at mesh.deleted; a `dead` record is final), read from the Mesh records, never from the view: a view
     /// that has not heard a mesh's Dead yet still shows it live. A gate with no Mesh records holds none.
@@ -163,25 +157,22 @@ pub struct PrecedingUpdate {
 /// alone; of a node of any other type, its type's primary's update; for a mesh delete, the
 /// fabric-primary's under that mesh. None for any other operation.
 pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> Vec<PrecedingUpdate> {
-    use rdm_core::build::Step;
     use crate::fabric_handover::update_operation;
     use rdm_core::PrimaryRole;
     let key = op.key();
     match op {
         BuildOperation::ShutdownMesh { mesh, .. } => vec![PrecedingUpdate { run, mesh: mesh.clone(), operation: update_operation(PrimaryRole::FabricPrimary, &key), primary: None }],
-        BuildOperation::DeleteLiveNode { exited: None, .. }
-        | BuildOperation::DeleteConnections { .. }
-        | BuildOperation::StopNode { .. }
-        | BuildOperation::Step { step: Step::Stop { .. } | Step::Delete { .. } | Step::DeleteConnections { .. }, .. }
+        BuildOperation::DeleteLiveNode { node, exited: None, .. }
+        | BuildOperation::DeleteConnections { node, .. }
+        | BuildOperation::StopNode { node, .. }
             if op.r#type().as_deref().is_some_and(rdm_core::is_node_admin) =>
         {
             [PrimaryRole::MeshPrimary, PrimaryRole::FabricPrimary].into_iter().map(|role| PrecedingUpdate { run, mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(role, &key), primary: op.subject() }).collect()
         }
         // Any other node type's primary, commanded by its mesh-primary (node-primary-update.md, "Commander").
-        BuildOperation::DeleteLiveNode { exited: None, .. }
-        | BuildOperation::DeleteConnections { .. }
-        | BuildOperation::StopNode { .. }
-        | BuildOperation::Step { step: Step::Stop { .. } | Step::Delete { .. } | Step::DeleteConnections { .. }, .. } => {
+        BuildOperation::DeleteLiveNode { node, exited: None, .. }
+        | BuildOperation::DeleteConnections { node, .. }
+        | BuildOperation::StopNode { node, .. } => {
             vec![PrecedingUpdate { run, mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(PrimaryRole::of_type(&op.r#type().expect("a node operation has a type")), &key), primary: op.subject() }]
         }
         _ => Vec::new(),
@@ -377,10 +368,6 @@ pub struct Drive {
     /// An ensure found this drive's run in progress: the run is made once more when it ends waiting
     /// ([`Drives::ensure`]).
     again: AtomicBool,
-    /// What the node rows recorded of each member's executable when this drive's pass last read them:
-    /// a replacement's plan ([`crate::accepted::plan_with_replacements`]); `None` until a pass of a Build
-    /// that plans replacements read them.
-    recorded: Mutex<Option<crate::accepted::Recorded>>,
     /// The meshes the Mesh records held Dead when this drive's pass last read them ([`Gate::deleted_meshes`]):
     /// planned as Dead whatever the view shows.
     dead: Mutex<std::collections::HashSet<crate::model::MeshId>>,
@@ -430,7 +417,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), again: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), created: Mutex::new(Default::default()), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), again: AtomicBool::new(false), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), created: Mutex::new(Default::default()), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -732,30 +719,52 @@ pub enum DriveEnd {
     RoleLost(String),
 }
 
-/// The application's notices of a Build's openings and endings (fabric-node-hooks.md
-/// `on_build_started`, `on_build_ended`; build.md §4.1, Q256), as the fabric-primary sends them: each
-/// fire and forget, after the claim or the terminal it follows is recorded, gating nothing and writing
-/// no receipt. [`Default`]: the application registered none.
+/// The Build-level events the fabric-primary writes (build.md §5: `rdm.build.started`,
+/// `rdm.build.dispatched`, `rdm.build.ended`) and the application's notices sent from them
+/// (fabric-node-hooks.md `on_build_started`, `on_build_ended`; build.md §4.1, Q256): each notice fire
+/// and forget, sent once its event is durable, gating nothing; an event not written sends none.
+/// [`Default`]: no events store and no hooks.
 #[derive(Clone, Default)]
 pub struct BuildNotices {
     fabric_id: Option<rdm_core::FabricId>,
     on_build_started: Option<crate::wiring::BuildStartedNotice>,
     on_build_ended: Option<crate::wiring::BuildEndedNotice>,
+    events: Option<crate::events_storage::EventsWriter>,
 }
 
 impl BuildNotices {
     /// The notices of fabric `fabric_id` the application registered in `hooks`.
     pub fn of(fabric_id: rdm_core::FabricId, hooks: &crate::wiring::FabricHooks) -> Self {
-        Self { fabric_id: Some(fabric_id), on_build_started: hooks.on_build_started.clone(), on_build_ended: hooks.on_build_ended.clone() }
+        Self { fabric_id: Some(fabric_id), on_build_started: hooks.on_build_started.clone(), on_build_ended: hooks.on_build_ended.clone(), events: None }
     }
 
-    /// `on_build_started` of attempt `attempt` of `build_id`, whose claim opened the Build, under its
-    /// own span (`rdm.node_admin.build.update.via-on-build-started`) parented to the attempt's context.
-    fn started(&self, me: &PathName, contexts: &Arc<crate::build_claim::AttemptContexts>, build_id: &BuildId, attempt: u32, reason: crate::build_state::AttemptReason, context: &CallContext) {
+    /// These notices, each sent from the write of its event through `events`.
+    pub fn writing_to(self, events: crate::events_storage::EventsWriter) -> Self {
+        Self { events: Some(events), ..self }
+    }
+
+    /// Append the event `make` builds, on `span`: `Ok` once it is durable, or when no events store is
+    /// wired (a rig with none); `Err` naming why it was not written.
+    async fn write(&self, span: &tracing::Span, make: impl FnOnce(&crate::events_storage::EventSource, u64) -> crate::events_storage::Event) -> Result<(), String> {
+        let Some(events) = &self.events else { return Ok(()) };
+        let event_id = events.append(make).instrument(span.clone()).await?;
+        span.record("event_id", event_id.as_str());
+        Ok(())
+    }
+
+    /// `rdm.build.started` of `build_id`, whose attempt `attempt` opened it, then `on_build_started` from
+    /// that write, under its own span (`rdm.node_admin.build.update.via-on-build-started`) parented to the
+    /// attempt's context.
+    async fn started(&self, me: &PathName, contexts: &Arc<crate::build_claim::AttemptContexts>, build_id: &BuildId, attempt: u32, reason: crate::build_state::AttemptReason, context: &CallContext) {
         let hook = self.fabric_id.clone().zip(self.on_build_started.clone());
-        let span = tracing::info_span!(parent: None, "rdm.node_admin.build.update.via-on-build-started", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), attempt, reason = reason.as_str(), outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
+        let span = tracing::info_span!(parent: None, "rdm.node_admin.build.update.via-on-build-started", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), attempt, reason = reason.as_str(), event_id = tracing::field::Empty, outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
         if let Some(tp) = &context.traceparent {
             rdm_transport::set_remote_parent(&span, tp, context.tracestate.as_deref());
+        }
+        if let Err(cause) = self.write(&span, |source, time_ms| crate::events_storage::Event::build_started(source, time_ms, build_id)).await {
+            span.record("outcome", "event-not-written");
+            span.in_scope(|| tracing::info!(cause = %cause, "the Build's rdm.build.started event was not written: the notice is not sent"));
+            return;
         }
         let (contexts, build_id) = (contexts.clone(), build_id.clone());
         tokio::spawn(
@@ -772,16 +781,37 @@ impl BuildNotices {
         );
     }
 
-    /// `on_build_ended` of attempt `attempt` of `build_id`, whose terminal `state` is recorded, under its
-    /// own span (`rdm.node_admin.build.update.via-on-build-ended`) in the trace of `parent`, the attempt's
-    /// span: parented through its trace context, never as a local child, so a notice not yet sent holds
-    /// the attempt's span open for nothing.
-    fn ended(&self, me: &PathName, contexts: &Arc<crate::build_claim::AttemptContexts>, build_id: &BuildId, attempt: u32, reason: crate::build_state::AttemptReason, state: crate::wiring::BuildEndedState, parent: &tracing::Span) {
+    /// `rdm.build.dispatched` of `build_id`'s section of `mesh`, written as the fabric-primary
+    /// dispatches it, under its own span (`rdm.node_admin.build.update.via-dispatched`), a child of the
+    /// span current here. It gates nothing: a dispatch whose event is not written runs, named on the span.
+    async fn dispatched(&self, me: &PathName, build_id: &BuildId, mesh: &str) {
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatched", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), mesh, event_id = tracing::field::Empty, outcome = "written");
+        if let Err(cause) = self.write(&span, |source, time_ms| crate::events_storage::Event::build_dispatched(source, time_ms, build_id, mesh)).await {
+            span.record("outcome", "event-not-written");
+            span.in_scope(|| tracing::info!(cause = %cause, "the section's rdm.build.dispatched event was not written"));
+        }
+    }
+
+    /// `rdm.build.ended` of `build_id`, whose terminal `state` is recorded, then `on_build_ended` from
+    /// that write, under its own span (`rdm.node_admin.build.update.via-on-build-ended`) in the trace of
+    /// `parent`, the attempt's span: parented through its trace context, never as a local child, so a
+    /// notice not yet sent holds the attempt's span open for nothing.
+    #[allow(clippy::too_many_arguments)]
+    async fn ended(&self, me: &PathName, contexts: &Arc<crate::build_claim::AttemptContexts>, build_id: &BuildId, attempt: u32, reason: crate::build_state::AttemptReason, state: crate::wiring::BuildEndedState, parent: &tracing::Span) {
         let hook = self.fabric_id.clone().zip(self.on_build_ended.clone());
-        let span = tracing::info_span!(parent: None, "rdm.node_admin.build.update.via-on-build-ended", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), attempt, reason = reason.as_str(), state = state.as_str(), outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
+        let span = tracing::info_span!(parent: None, "rdm.node_admin.build.update.via-on-build-ended", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), attempt, reason = reason.as_str(), state = state.as_str(), event_id = tracing::field::Empty, outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
         let under = parent.in_scope(crate::build_claim::current_context);
         if let Some(tp) = &under.traceparent {
             rdm_transport::set_remote_parent(&span, tp, under.tracestate.as_deref());
+        }
+        let ended = match &state {
+            crate::wiring::BuildEndedState::Complete => crate::events_storage::EndedState::Complete,
+            crate::wiring::BuildEndedState::Failed { step, reason, code } => crate::events_storage::EndedState::Failed { step: step.clone(), reason: reason.clone(), code: code.name().to_string() },
+        };
+        if let Err(cause) = self.write(&span, |source, time_ms| crate::events_storage::Event::build_ended(source, time_ms, build_id, &ended)).await {
+            span.record("outcome", "event-not-written");
+            span.in_scope(|| tracing::info!(cause = %cause, "the Build's rdm.build.ended event was not written: the notice is not sent"));
+            return;
         }
         let (contexts, build_id) = (contexts.clone(), build_id.clone());
         tokio::spawn(
@@ -1046,22 +1076,15 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
     } else {
         t
     };
-    // A replacement plans from what the rows recorded at this pass ([`Gate::recorded_executables`]).
     // A fabric.delete plans every mesh the store holds a row of beside the view's ([`Gate::mesh_rows`]).
     let stored = drive.mesh_rows.lock().unwrap().as_ref().map(|rows| crate::accepted::with_mesh_rows(t, rows));
     let t = stored.as_ref().unwrap_or(t);
     // A standalone action plans from the birth the atlas row held at this pass ([`Gate::atlas_birth`]).
     let atlas = drive.atlas.lock().unwrap().clone();
     let created = drive.created.lock().unwrap().clone();
-    let plan = crate::accepted::plan_for_build_created(p, t, drive.recorded.lock().unwrap().as_ref(), atlas.as_ref(), &created);
+    let plan = crate::accepted::plan_for_build_created(p, t, atlas.as_ref(), &created);
     let sections: HashSet<rdm_core::OperationId> = drive.section_done.lock().unwrap().iter().filter(|(run, _)| *run == p.opened).map(|(_, key)| key.clone()).collect();
     plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a)) && !sections.contains(&op.key())).collect()
-}
-
-/// Whether `p` is a Build that owes the replacements its rows say are left (a complete-topology
-/// request's, proposal executable-bindings-at-create.md rule 5): its rows are read at every pass.
-fn plans_replacements(p: &BuildProjection) -> bool {
-    p.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::plans_replacements)
 }
 
 /// Whether `p`'s Build changes the fabric to ready (states.md "Resize and executable
@@ -1073,7 +1096,7 @@ fn plans_replacements(p: &BuildProjection) -> bool {
 /// again. A Build whose topology the change left as it was puts nothing back, and the fabric it finds
 /// ready holds it.
 fn changes_the_fabric(p: &BuildProjection) -> bool {
-    !p.submitted_change.as_ref().is_some_and(|c| matches!(c, crate::accepted::TopologyChange::DeleteFabric))
+    !p.submitted_change.as_ref().is_some_and(|c| matches!(c, rdm_core::build::BuildChange::DeleteFabric))
 }
 
 /// Whether `p`'s attempt waits for the fabric's ready before its Build is Complete: the
@@ -1368,14 +1391,6 @@ impl DriveEnv {
                 }
                 Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: the current Build could not be read to admit Build {id}: {e}", me_path = &me.path, me_name = &me.name)),
             }
-            // A replacement's remaining work is the members whose row records another sha than their
-            // entry names (build-deployment.md §3): the rows are read at every pass, before it plans.
-            if plans_replacements(&p) {
-                match self.gate.recorded_executables(&p.topology).await {
-                    Ok(recorded) => *drive.recorded.lock().unwrap() = Some(recorded),
-                    Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id} plans replacements and the node rows could not be read for what each member runs: {e}", me_path = &me.path, me_name = &me.name)),
-                }
-            }
             // A mesh the Mesh records hold Dead is done whatever the view shows (a view that has not heard
             // its Dead yet): the plan reads mesh death from the records at every pass, before it plans.
             let observed = self.topology.read().await.clone();
@@ -1523,7 +1538,7 @@ impl DriveEnv {
                     self.release_mesh(&id, attempt, &executor).await;
                     self.gate.attempt_completed(&id, attempt).await;
                     // The Build's Complete is recorded: the ending's last step (Q256).
-                    self.notices.ended(&me, &self.door.contexts, &id, attempt, p.reason, crate::wiring::BuildEndedState::Complete, &dspan);
+                    self.notices.ended(&me, &self.door.contexts, &id, attempt, p.reason, crate::wiring::BuildEndedState::Complete, &dspan).await;
                     drive.finish(t);
                     return DriveEnd::Terminal;
                 }
@@ -1540,7 +1555,7 @@ impl DriveEnv {
                     self.release_mesh(&id, attempt, &executor).await;
                     self.gate.attempt_failed(&id, attempt).await;
                     // The Build's Failed is recorded: the ending's last step (Q256).
-                    self.notices.ended(&me, &self.door.contexts, &id, attempt, p.reason, ended_state(&t), &dspan);
+                    self.notices.ended(&me, &self.door.contexts, &id, attempt, p.reason, ended_state(&t), &dspan).await;
                     drive.finish(t);
                     return DriveEnd::Terminal;
                 }
@@ -1698,7 +1713,7 @@ impl DriveEnv {
                     Ok(ended) if ended.state == BuildState::Failed && ended.failed_at == Some(p.attempt) => {
                         span.in_scope(|| tracing::info!(%reason, "the interrupted Build's attempt ran at this fabric-primary with no run live here: it ends Failed naming the fabric.delete"));
                         // The Build's Failed is recorded: the ending's last step (Q256).
-                        self.notices.ended(me, &self.door.contexts, id, p.attempt, p.reason, state, &span);
+                        self.notices.ended(me, &self.door.contexts, id, p.attempt, p.reason, state, &span).await;
                         Interrupted::Ended { attempt: p.attempt, reason }
                     }
                     Ok(other) => Interrupted::Open(format!("path {me_path:?}, name {me_name:?}: the terminal of attempt {} of Build {id}, which fabric.delete {} interrupts, was not recorded: the Build reads {:?} at attempt {}", p.attempt, delete.build_id, other.state, other.attempt, me_path = &me.path, me_name = &me.name)),
@@ -1737,7 +1752,7 @@ impl DriveEnv {
         // The Build's Failed is recorded: the ending's last step (Q256). An attempt claimed here only to
         // end it opened nothing, and sends no on_build_started.
         let state = crate::wiring::BuildEndedState::Failed { step: "fabric.delete".into(), reason: crate::build_run::bounded_reason(reason.clone()), code: rdm_core::outcome::Code::Aborted };
-        self.notices.ended(me, &self.door.contexts, id, attempt, p.reason, state, &span);
+        self.notices.ended(me, &self.door.contexts, id, attempt, p.reason, state, &span).await;
         Interrupted::Ended { attempt, reason }
     }
 
@@ -1835,7 +1850,7 @@ impl DriveEnv {
             dspan.record("outcome", "failed").record("reason", why.as_str());
             // The Build's Failed is recorded: the ending's last step (Q256).
             if recorded {
-                self.notices.ended(me, &self.door.contexts, id, attempt, p.reason, ended_state(&terminal), &dspan);
+                self.notices.ended(me, &self.door.contexts, id, attempt, p.reason, ended_state(&terminal), &dspan).await;
             }
             drive.finish(terminal);
             return Err(DriveEnd::Terminal);
@@ -1897,7 +1912,7 @@ impl DriveEnv {
                     .unwrap_or(false)
             }));
         if opening {
-            self.notices.started(me, &self.door.contexts, &p.build_id, attempt, p.reason, context);
+            self.notices.started(me, &self.door.contexts, &p.build_id, attempt, p.reason, context).await;
         }
     }
 
@@ -2116,6 +2131,7 @@ impl DriveEnv {
             let plan = RunPlan { operations, hand_off_to: None };
             let mut completed: Vec<rdm_core::OperationId> = Vec::new();
             let mut failed_step: Option<(rdm_core::OperationId, String, String)> = None;
+            self.notices.dispatched(me, id, &mesh).await;
             let outcome = match self.dispatcher.dispatch_in(turn, executor, &mesh, id, attempt, context, plan).await {
                 Dispatched::Refused(r) => AttemptOutcome::Failed { reason: format!("{executor} refused the section: {}", describe(&r)), code: rdm_core::outcome::Code::Unavailable },
                 Dispatched::Unreached(why) => match self.departure.exited_or_os_stopped(executor).await {
@@ -2326,6 +2342,9 @@ impl DriveEnv {
 
     #[allow(clippy::too_many_arguments)]
     async fn run_inner(&self, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &rdm_core::framing::Birth, context: CallContext, plan: RunPlan) -> Inner {
+        // The section's mesh: its first operation's, else this admin's own.
+        let section = plan.operations.first().and_then(|op| op.mesh()).map(str::to_string).unwrap_or_else(|| self.me_mesh.clone());
+        self.notices.dispatched(&self.held_name().await, id, &section).await;
         let mut stream = match self.dispatcher.dispatch(turn, executor, id, attempt, context, plan).await {
             Dispatched::Stream(s) => s,
             Dispatched::Refused(r) => return Inner::Refused(r),
@@ -2455,7 +2474,7 @@ mod tests {
     fn completion_replay_keeps_operation_fields_and_attempt_separate() {
         let drive = Drive::detached(BuildId::mint());
         let location = PathName::new("arbitrary.location", "worker").unwrap();
-        let operation = rdm_core::OperationId::location("node.create", &location).at_step(Some(2));
+        let operation = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&location)).at_step(Some(2));
         let frame = BuildReply::Step { build_id: drive.build_id.to_string(), attempt: 3, operation: operation.clone(), step: "Complete".into(), receipt: None };
         assert!(drive.push(frame.clone()));
         assert!(!drive.push(frame));
@@ -2463,7 +2482,7 @@ mod tests {
         assert!(drive.completed_in(&operation, |attempt| attempt == 3));
         assert!(!drive.completed_in(&operation, |attempt| attempt == 4));
         assert!(!drive.completed_in(&operation.clone().at_step(Some(4)), |_| true));
-        let other = rdm_core::OperationId::location("node.create", &PathName::new("arbitrary", "location-worker").unwrap()).at_step(Some(2));
+        let other = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("arbitrary", "location-worker").unwrap())).at_step(Some(2));
         assert!(!drive.completed_in(&other, |_| true));
         drive.state.lock().unwrap().seen.insert(FrameKey::Blocked { attempt: 4, operation: other.clone(), step: "Complete".into(), reason: "waiting".into() });
         assert!(!drive.completed_in(&other, |_| true));
@@ -2562,7 +2581,7 @@ mod tests {
                 1,
                 crate::build_state::AttemptReason::Requested,
                 &call_ctx,
-            );
+            ).await;
             unbound.ended(
                 &me,
                 &contexts,
@@ -2571,7 +2590,7 @@ mod tests {
                 crate::build_state::AttemptReason::Requested,
                 crate::wiring::BuildEndedState::Complete,
                 &tracing::Span::none(),
-            );
+            ).await;
 
             // 2. Registered `BuildNotices::of(fabric_id, &hooks)` delivers `BuildStartedCtx` and
             //    `BuildEndedCtx` (`Complete` and `Failed`) with `outcome = "sent"`.
@@ -2590,7 +2609,13 @@ mod tests {
                 })),
                 ..crate::wiring::FabricHooks::no_app_work()
             };
-            let bound = BuildNotices::of(fabric_id, &hooks);
+            // Each notice is sent from its event's write (build.md §5): the events store holds
+            // `rdm.build.started` and each `rdm.build.ended`, in the order they were written.
+            let events = Arc::new(crate::events_storage::MemoryEventsStorage::new());
+            let time = rdm_transport::clock::RafkaTime::unadopted();
+            time.adopt(1_000);
+            let source = crate::events_storage::EventSource { fabric_id: fabric_id.clone(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+            let bound = BuildNotices::of(fabric_id.clone(), &hooks).writing_to(crate::events_storage::EventsWriter { events: events.clone(), source: source.clone(), time });
             bound.started(
                 &me,
                 &contexts,
@@ -2598,7 +2623,7 @@ mod tests {
                 1,
                 crate::build_state::AttemptReason::Requested,
                 &call_ctx,
-            );
+            ).await;
             let parent = tracing::info_span!("rdm.node_admin.build.update.via-dispatch");
             bound.ended(
                 &me,
@@ -2608,20 +2633,37 @@ mod tests {
                 crate::build_state::AttemptReason::Requested,
                 crate::wiring::BuildEndedState::Complete,
                 &parent,
-            );
+            ).await;
             bound.ended(
                 &me,
                 &contexts,
                 &build_id,
                 2,
-                crate::build_state::AttemptReason::Steps,
+                crate::build_state::AttemptReason::Delete,
                 crate::wiring::BuildEndedState::Failed {
                     step: "node.create".into(),
                     reason: "spawn refused".into(),
                     code: rdm_core::outcome::Code::FailedPrecondition,
                 },
                 &parent,
-            );
+            ).await;
+
+            bound.dispatched(&me, &build_id, "mesh1").await;
+            let written: Vec<String> = crate::events_storage::EventsStorage::of_build(&*events, &build_id).await.unwrap().into_iter().map(|e| e.r#type).collect();
+            assert_eq!(written, [crate::events_storage::BUILD_STARTED, crate::events_storage::BUILD_ENDED, crate::events_storage::BUILD_ENDED, crate::events_storage::BUILD_DISPATCHED], "each Build-level event is written once, in order");
+
+            // 3. A writer that cannot write the event (no rafka-time) sends no notice.
+            let (silent_tx, mut silent_rx) = tokio::sync::mpsc::unbounded_channel::<crate::wiring::BuildStartedCtx>();
+            let silent_hooks = crate::wiring::FabricHooks {
+                on_build_started: Some(Arc::new(move |ctx| {
+                    let _ = silent_tx.send(ctx);
+                    Box::pin(async {})
+                })),
+                ..crate::wiring::FabricHooks::no_app_work()
+            };
+            let unwritten = BuildNotices::of(fabric_id.clone(), &silent_hooks).writing_to(crate::events_storage::EventsWriter { events: events.clone(), source, time: rdm_transport::clock::RafkaTime::unadopted() });
+            unwritten.started(&me, &contexts, &build_id, 3, crate::build_state::AttemptReason::Requested, &call_ctx).await;
+            assert!(silent_rx.try_recv().is_err(), "an event not written sends no notice");
 
             let started_ctx = started_rx.recv().await.expect("started notice delivered");
             let mut ended = vec![
@@ -2654,7 +2696,7 @@ mod tests {
         assert_eq!(ended_complete.context.baggage.as_deref(), Some("k=v"));
 
         assert_eq!(ended_failed.attempt, 2);
-        assert_eq!(ended_failed.reason, crate::build_state::AttemptReason::Steps);
+        assert_eq!(ended_failed.reason, crate::build_state::AttemptReason::Delete);
         assert_eq!(
             ended_failed.state,
             crate::wiring::BuildEndedState::Failed {
@@ -2665,6 +2707,10 @@ mod tests {
         );
 
         let started_spans = capture.named("rdm.node_admin.build.update.via-on-build-started");
+        assert!(
+            started_spans.iter().any(|s| s.attributes.get("outcome").map(String::as_str) == Some("event-not-written") && s.attributes.get("attempt").map(String::as_str) == Some("3")),
+            "expected via-on-build-started with outcome=event-not-written for the writer with no rafka-time"
+        );
         assert!(
             started_spans
                 .iter()
@@ -2697,9 +2743,9 @@ mod tests {
             ended_spans.iter().any(|s| {
                 s.attributes.get("outcome").map(String::as_str) == Some("sent")
                     && s.attributes.get("state").map(String::as_str) == Some("failed")
-                    && s.attributes.get("reason").map(String::as_str) == Some("steps")
+                    && s.attributes.get("reason").map(String::as_str) == Some("delete")
             }),
-            "expected via-on-build-ended with outcome=sent, state=failed, and reason=steps"
+            "expected via-on-build-ended with outcome=sent, state=failed, and reason=delete"
         );
     }
 }

@@ -539,26 +539,6 @@ mod tests {
     }
 
     #[test]
-    fn a_renamed_predecessor_is_never_a_candidate_or_a_primary() {
-        let mut old = node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "000000000001", true);
-        old.renamed_from = Some(old.name.clone());
-        { let at = old.location().renamed().unwrap(); old.path = at.path; old.name = at.name; }
-        let successor = node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "000000000009", true);
-        let view = crate::topology::Topology {
-            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "f".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
-            meshes: vec![],
-            nodes: vec![old, successor, node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "000000000005", true)],
-        };
-        // An election takes the view's members: the renamed predecessor is not among them.
-        let mut members: Vec<Node> = view.members().cloned().collect();
-        resolve(&mut members);
-        assert_eq!(members.len(), 2);
-        assert_eq!(primaries(&members), vec![PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh1.node-admin", "1").unwrap()]);
-        assert_eq!(view.births().count(), 3, "the predecessor is still a birth the view holds");
-        assert_eq!(view.predecessors().count(), 1);
-    }
-
-    #[test]
     fn lexical_order_of_canonical_node_ids_is_crockford_numeric_order() {
         // Boundaries: 0 < 9 < a < z, at the first and the last place.
         let ordered = ["000000000000", "000000000009", "00000000000a", "00000000000z", "000000000010", "900000000000", "a00000000000", "zzzzzzzzzzzz"];

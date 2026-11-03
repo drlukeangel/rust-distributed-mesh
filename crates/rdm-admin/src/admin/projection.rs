@@ -162,7 +162,7 @@ pub(crate) struct RowNames {
 /// Where the row of one birth stands.
 pub(crate) enum RowName {
     /// The name of the row the birth holds (the name it published, when it holds no row).
-    At(PathName, Option<PathName>),
+    At(PathName),
     /// Its id index entry could not be read: the birth's name is not known, and the view does not
     /// list it.
     Unreadable,
@@ -204,7 +204,7 @@ impl RowNames {
         }
         for (node_id, incarnation, published) in quiet {
             let (name, released) = row_name(me, &*store, &node_id, &incarnation, &published).await;
-            if let RowName::At(moved, _) = &name {
+            if let RowName::At(moved) = &name {
                 if moved != &published {
                     *listed.entry(moved.clone()).or_default() += 1;
                 }
@@ -233,7 +233,7 @@ impl RowNames {
     /// `(node id, incarnation, published, row's name)`.
     pub(crate) fn moved(&self) -> impl Iterator<Item = (&NodeId, &IncarnationId, &PathName, &PathName)> {
         self.names.iter().filter_map(|((id, inc), (published, row))| match row {
-            RowName::At(name, _) if name != published => Some((id, inc, published, name)),
+            RowName::At(name) if name != published => Some((id, inc, published, name)),
             _ => None,
         })
     }
@@ -243,7 +243,7 @@ impl RowNames {
     /// could not be read, and the birth is not listed.
     pub(crate) fn name_of(&self, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> Option<PathName> {
         match self.names.get(&(node_id.clone(), incarnation.clone())) {
-            Some((_, RowName::At(n, _))) => Some(n.clone()),
+            Some((_, RowName::At(n))) => Some(n.clone()),
             Some((_, RowName::Unreadable)) => None,
             None => Some(published.clone()),
         }
@@ -271,10 +271,7 @@ impl RowNames {
 
     /// List `n` at `name` when no birth is listed there yet, or when the birth listed there is not the
     /// current one and `n` is ([`Self::takes_path`]).
-    pub(crate) fn place(&self, nodes: &mut BTreeMap<PathName, Node>, name: PathName, mut n: Node) {
-        if let Some((_, RowName::At(_, predecessor))) = n.incarnation_id.as_ref().and_then(|inc| self.names.get(&(n.node_id.clone(), inc.clone()))) {
-            n.renamed_from = predecessor.clone().map(|p| p.name);
-        }
+    pub(crate) fn place(&self, nodes: &mut BTreeMap<PathName, Node>, name: PathName, n: Node) {
         match nodes.get(&name) {
             Some(listed) if self.takes_path(listed, &n) != Some(true) => {}
             _ => {
@@ -298,10 +295,10 @@ pub(crate) async fn row_name(me: &PathName, store: &dyn crate::storage::NodesSto
     match store.node(node_id).await {
         Ok(Some(row)) => {
             let released = crate::node_rows::released_its_name(&row);
-            (RowName::At(row.location(), row.replacement_from.clone()), released)
+            (RowName::At(row.location()), released)
         }
         // The node holds no row: no rename moved it, and the name it published stands.
-        Ok(None) => (RowName::At(published.clone(), None), false),
+        Ok(None) => (RowName::At(published.clone()), false),
         Err(e) => {
             tracing::info_span!("rdm.node_admin.topology.reject.via-row-unreadable", node_path = %me.path, node_name = %me.name, subject_path = %published.path, subject_name = %published.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), index = "id", detail = %e)
                 .in_scope(|| tracing::info!("the birth's row could not be read through its id index: its name is not known and the view does not list it"));
@@ -592,10 +589,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             n.is_fabric_primary = false;
         }
     } else {
-        // The election takes members: a replaced predecessor holds no role.
-        let (mut members, predecessors): (Vec<Node>, Vec<Node>) = std::mem::take(&mut topology.nodes).into_iter().partition(|n| n.renamed_from.is_none());
-        crate::election::resolve_with(&mut members, decided);
-        topology.nodes = members.into_iter().chain(predecessors).collect();
+        crate::election::resolve_with(&mut topology.nodes, decided);
     }
     if topology.fabric_primary().is_some() {
         topology.fabric.status = records.fabric_state().scope();
@@ -795,12 +789,12 @@ mod tests {
         let new_inc = IncarnationId::mint();
 
         let (r_none, rel_none) = row_name(&me_name, &store, &new_id, &new_inc, &rpc_path).await;
-        assert!(matches!(r_none, RowName::At(ref p, _) if p == &rpc_path));
+        assert!(matches!(r_none, RowName::At(ref p) if p == &rpc_path));
         assert!(!rel_none);
 
         store.put_node(&NodeRow::new(rpc_path.clone(), "mesh1", "node", old_id.clone(), NodeStatus::Deleted)).await.unwrap();
         let (r_del, rel_del) = row_name(&me_name, &store, &old_id, &old_inc, &rpc_path).await;
-        assert!(matches!(r_del, RowName::At(ref p, _) if p == &rpc_path));
+        assert!(matches!(r_del, RowName::At(ref p) if p == &rpc_path));
         assert!(rel_del);
 
         let mut row_names = RowNames::default();

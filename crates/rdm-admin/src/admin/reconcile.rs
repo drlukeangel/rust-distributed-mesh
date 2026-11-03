@@ -93,13 +93,6 @@ impl crate::build_drive::Gate for RoleGate {
         Ok(Some(crate::accepted::AtlasBirth(birth)))
     }
 
-    async fn recorded_executables(&self, topology: &crate::accepted::FabricTopology) -> Result<crate::accepted::Recorded, String> {
-        let Some(rows) = self.handover.records.contacts.get().cloned() else {
-            return Err(format!("{}: no nodes.storage is open yet to read the node rows from", self.handover.node_id));
-        };
-        crate::accepted::recorded_executables(&*rows, topology).await
-    }
-
     /// The meshes of `observed` whose Mesh record is deleted: one point read of each record the view does
     /// not already hold deleted. Each is held as the fabric-primary that accepted its mesh.deleted holds it
     /// (`Records::hold_mesh_deleted`), so this admin's view shows it deleted from its next projection: a
@@ -588,7 +581,7 @@ mod tests {
             build_id: build_id.clone(),
             topology: FabricTopology::root("fab", "mesh1", mesh_id),
             submitted_change: None,
-            submitted_at_ms: 1_000,
+            source: None, submitted_at_ms: 1_000,
         })
         .await
         .unwrap();

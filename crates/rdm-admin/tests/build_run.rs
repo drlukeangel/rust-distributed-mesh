@@ -117,7 +117,7 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, R
     let runner = Arc::new(CallingOut { calls: calls.clone(), gate: gate.clone(), hold_first });
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: builds.clone(), topology, runner });
     memory
-        .publish_accepted(&BuildAccepted { build_id: build_id(), topology: FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id(), topology: FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 })
         .await
         .unwrap();
     memory.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
@@ -285,7 +285,7 @@ async fn a_renamed_admin_runs_a_claimed_attempt_under_its_new_name() {
     // Only the name changes; attempt 1 remains claimed for the same exact birth.
     { let at = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(); topology.write().await.nodes[0].path = at.path; topology.write().await.nodes[0].name = at.name; }
     memory
-        .publish_accepted(&BuildAccepted { build_id: build_id(), topology: FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id(), topology: FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 })
         .await
         .unwrap();
     memory.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();

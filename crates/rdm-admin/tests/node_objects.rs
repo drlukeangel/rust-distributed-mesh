@@ -399,14 +399,19 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     Served { router, carrier: BuildCarrier::new(client, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()), door }
 }
 
-/// `node.create` of mesh1's next node, named on its executable (proposal
-/// executable-bindings-at-create.md rule 1: the complete-topology request, the count expanded at the
-/// door), over `nodes`, built from what `served`'s door reads.
+/// `node.create` of mesh1's next node, named on its executable: a Create of that node alone
+/// (build.md §1), its path the one the count expands to against what `served`'s door reads.
 async fn create_rpc(nodes: &Nodes, served: &Served) -> Result<WorkflowStream, CallEnd> {
-    let rdm_admin::accepted::TopologyChange::Reconcile { based_on, nodes: entries, .. } = crate::named_request(&served.door.control, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }).await else {
+    let rdm_core::build::BuildChange::Reconcile { nodes: entries, .. } = crate::named_request(&served.door.control, rdm_core::build::BuildChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }).await else {
         unreachable!("a create is named as the complete topology")
     };
-    nodes.create_named(based_on, entries).await
+    let held = served.door.control.topology.read().await.clone();
+    let added: Vec<rdm_core::build::Nodes> = entries
+        .into_iter()
+        .filter(|s| held.node(&s.path).is_none())
+        .map(|s| rdm_core::build::Nodes { path: s.path.path, name: s.path.name, mesh: s.mesh, r#type: s.r#type, storage_persistence: Some(s.storage_persistence), executable: s.executable, tags: s.tags, config: s.config })
+        .collect();
+    nodes.create(added).await
 }
 
 /// The node objects over `carrier`; no cell of this file reads a view.
@@ -463,7 +468,7 @@ impl Rig {
             template: &self.template,
             timeouts: Timeouts { bind: join, join, ..Timeouts::default() },
         };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", name), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build.clone()), attempt, path: name.path.clone(), name: name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(name)), node_id: (rdm_core::fixture_node_id(name)).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build.clone()), attempt, path: name.path.clone(), name: name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
@@ -471,7 +476,7 @@ impl Rig {
     /// node's own `JoinNode`, the validated report the pipeline's `WaitForBind` and `WaitForMeshJoin`
     /// complete from (node-create.md step 5).
     async fn report_bind(&self, build: &BuildId, name: &PathName) {
-        let op = rdm_core::OperationId::location("node.create", name);
+        let op = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(name));
         loop {
             // The executor's own log holds the Build once the call that carries it has arrived.
             let Ok(view) = self.builds.read_build(build).await else {
@@ -647,7 +652,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
     assert_eq!(
         blocked,
         Frame::Blocked {
-            operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "3").unwrap()),
+            operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap())),
             step: "WaitForNodeReady".into(),
             reason: "mesh1.node.3: pre_node_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready".into()
         }
@@ -745,7 +750,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     };
     assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "build.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
     assert_eq!(completed_steps(&receipts_after_cut, 1), ATTEMPT_ONE_STEPS);
-    assert_eq!(resume.from, Some((rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), "WaitForBind".to_string())), "the resume starts at the first step without a Complete receipt");
+    assert_eq!(resume.from, Some((rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap())), "WaitForBind".to_string())), "the resume starts at the first step without a Complete receipt");
     assert_eq!(resume.completed.len(), ATTEMPT_ONE_STEPS.len());
     assert_eq!(disposition, Some(rdm_core::build::Disposition::Attached), "the re-submit attached to the Build the cut left running");
 
@@ -1170,11 +1175,11 @@ fn every_pipeline_step_is_named_by_the_client() {
     let rpc_id = NodeId::mint();
     let admin_id = NodeId::mint();
     let create: Vec<&str> = CreateStep::ORDER.iter().map(|s| s.name()).collect();
-    let f = rdm_client::fold(&WorkflowKind::Create, &view(&rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), create), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Create, &view(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap())), create), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
     let name: rdm_core::PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
     let delete: Vec<&str> = DeleteStep::ORDER.iter().map(|s| s.name()).collect();
-    let f = rdm_client::fold(&WorkflowKind::Delete(name.clone()), &view(&rdm_core::OperationId::node("node.delete", &rpc_id), delete.clone()), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Delete(vec![rpc_id.clone()]), &view(&rdm_core::OperationId::node("node.delete", &rpc_id), delete.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
@@ -1183,7 +1188,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
     // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
     let admin: rdm_core::PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
-    let f = rdm_client::fold(&WorkflowKind::Delete(admin.clone()), &view(&rdm_core::OperationId::node("node.delete", &admin_id), delete.clone()), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Delete(vec![admin_id.clone()]), &view(&rdm_core::OperationId::node("node.delete", &admin_id), delete.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
@@ -1197,27 +1202,28 @@ fn every_pipeline_step_is_named_by_the_client() {
     let f = rdm_client::fold(&WorkflowKind::DeleteConnections(name.clone()), &view(&rdm_core::OperationId::node("node.connection.delete", &rpc_id), vec!["DeleteConnections", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete]);
     // A node-admin's delete with only NodeDeleting held resumes at StopNode, as any node's does.
-    let r = rdm_client::Resume::from_view(&WorkflowKind::Delete(admin.clone()), &view(&rdm_core::OperationId::node("node.delete", &admin_id), vec!["NodeDeleting"]), 1).unwrap();
+    let r = rdm_client::Resume::from_view(&WorkflowKind::Delete(vec![admin_id.clone()]), &view(&rdm_core::OperationId::node("node.delete", &admin_id), vec!["NodeDeleting"]), 1).unwrap();
     assert_eq!(r.from, Some((rdm_core::OperationId::node("node.delete", &admin_id), "StopNode".to_string())));
     // A SeatTransfer receipt is a deleted step: refused by name under any target, never folded.
     for (kind, op, steps) in [
-        (WorkflowKind::Delete(name.clone()), rdm_core::OperationId::node("node.delete", &rpc_id), vec!["NodeDeleting", "SeatTransfer"]),
+        (WorkflowKind::Delete(vec![rpc_id.clone()]), rdm_core::OperationId::node("node.delete", &rpc_id), vec!["NodeDeleting", "SeatTransfer"]),
         (WorkflowKind::Stop(name.clone()), rdm_core::OperationId::node("node.stop", &rpc_id), vec!["SeatTransfer"]),
         (WorkflowKind::Stop(admin.clone()), rdm_core::OperationId::node("node.stop", &admin_id), vec!["SeatTransfer"]),
     ] {
         assert_eq!(rdm_client::fold(&kind, &view(&op, steps), 1).unwrap_err(), CallEnd::UnrecognisedReceipt { operation: op.clone(), step: "SeatTransfer".into() }, "{kind:?}");
     }
-    let unknown = view(&rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), vec!["AllocateIdentity", "InventedStep"]);
+    let unknown = view(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap())), vec!["AllocateIdentity", "InventedStep"]);
     assert_eq!(
         rdm_client::fold(&WorkflowKind::Create, &unknown, 1).unwrap_err(),
-        CallEnd::UnrecognisedReceipt { operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "3").unwrap()), step: "InventedStep".into() }
+        CallEnd::UnrecognisedReceipt { operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap())), step: "InventedStep".into() }
     );
 }
 
 /// Deletion progress follows receipts, independently of path or name spelling.
 #[test]
 fn deletion_progress_does_not_infer_lifecycle_state_from_path_or_name() {
-    let operation = rdm_core::OperationId::node("node.delete", &NodeId::mint());
+    let deleted = NodeId::mint();
+    let operation = rdm_core::OperationId::node("node.delete", &deleted);
     let view = |steps: Vec<&str>| -> rdm_client::BuildView {
         serde_json::from_value(json!({
             "build_id": "3qcfk1kq47m9", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
@@ -1225,8 +1231,8 @@ fn deletion_progress_does_not_infer_lifecycle_state_from_path_or_name() {
             "last_failure": null, "reason": "delete"
         })).unwrap()
     };
-    for location in [PathName::new("mesh1.node", "3-old").unwrap(), PathName::new("mesh1.node.old", "3").unwrap(), PathName::new("mesh1.node", "3").unwrap()] {
-        let kind = WorkflowKind::Delete(location);
+    {
+        let kind = WorkflowKind::Delete(vec![deleted.clone()]);
         let pending = rdm_client::Resume::from_view(&kind, &view(vec!["NodeDeleting"]), 1).unwrap();
         assert_eq!(pending.from, Some((operation.clone(), "StopNode".into())), "a spelling is not proof of a stopped birth");
         let folded = rdm_client::fold(&kind, &view(vec!["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]), 1).unwrap();
@@ -1256,7 +1262,7 @@ fn a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_
     let end = cap.run(async {
         let rig = Arc::new(Rig::new());
         let served = serve(door_not_fabric_primary(&rig).await).await;
-        served.carrier.create(rdm_core::build::BuildChange::RemoveNode { node: rdm_core::PathName::new("mesh1.node", "1").unwrap() }).await.err()
+        served.carrier.create(rdm_core::build::BuildChange::DeleteFabric).await.err()
     });
     match &end {
         Some(CallEnd::Rejected { reason, detail }) => {

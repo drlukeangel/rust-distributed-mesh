@@ -82,7 +82,7 @@ Every term below links to the architecture pages that define it.
   attempt lost with its executor leaves the Build `Running`, and a successor claims
   the next attempt (`attempt + 1`).
 - **step** ([Build](architecture/build.md)): One unit of work inside a Build (for example,
-  `node.create:<path.name>` or `node.replace:<path.name>:cutover`), assigned by the
+  `node.create:<node_id>`), assigned by the
   `fabric-primary` to a mesh executor over the [Build carrier](architecture/node-rpc-envelope.md).
 - **receipt** ([Build](architecture/build.md)): The durable record written as a Build step reaches
   an execution milestone or terminal outcome (`Complete` or `Failed`), allowing a successor

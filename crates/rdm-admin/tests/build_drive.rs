@@ -6,7 +6,8 @@
 //! `mesh1.node-admin.2` (so a node of `mesh1` is executed by an admin that is not the fabric-primary),
 //! and `mesh1.node.1`. The Build grows `mesh1` by one node.
 
-use rdm_admin::accepted::{AcceptedStore, FabricTopology, TopologyChange};
+use rdm_admin::accepted::{AcceptedStore, FabricTopology};
+use rdm_core::build::BuildChange;
 use rdm_admin::build::{BuildId, BuildOperation, FabricDesired, MeshDesired};
 use rdm_admin::build_claim::{AttemptContexts, ClaimDoor};
 use rdm_admin::build_drive::{Drive, DriveEnd, DriveEnv, Gate, PrecedingUpdate, Read};
@@ -134,6 +135,12 @@ struct Rig {
 }
 
 impl Rig {
+    /// The node.id the rig's Build record minted for the node it creates at `at` (D58).
+    async fn created(&self, at: &PathName) -> rdm_core::NodeId {
+        let build = self.builds.read_build(&self.build).await.unwrap();
+        build.topology.created_id(at).cloned().unwrap_or_else(|| panic!("the Build creates no node at {at:?}: {:?}", build.topology.created))
+    }
+
     async fn birth(&self, path: &str, name: &str) -> rdm_core::framing::Birth {
         let location = PathName::new(path, name).unwrap();
         let topology = self.env.topology.read().await;
@@ -142,13 +149,19 @@ impl Rig {
     }
 }
 
+/// `v` in order: the created nodes' node.ids are minted at acceptance, so their keys sort as the ids do.
+fn sorted<T: Ord>(mut v: Vec<T>) -> Vec<T> {
+    v.sort();
+    v
+}
+
 async fn rig() -> Rig {
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [("node-admin", 2), ("node", 2)]) };
     rig_for(view(), change, |ran, _| ran).await
 }
 
 /// A Build of `change` over `t`, run by `runner(ran, topology)`: `ran` records what ran.
-async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Creates>, Arc<RwLock<Topology>>) -> Arc<dyn OperationRunner>) -> Rig {
+async fn rig_for(t: Topology, change: BuildChange, runner: impl FnOnce(Arc<Creates>, Arc<RwLock<Topology>>) -> Arc<dyn OperationRunner>) -> Rig {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let fp = t.node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).expect("the fabric-primary is in the view");
     let fp_birth = rdm_core::framing::Birth { node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() };
@@ -383,7 +396,7 @@ async fn an_unreachable_executor_not_inspected_exited_keeps_its_attempt_and_fram
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![(r.birth("mesh1.node-admin", "1").await, 2)], "attempt 2 went to the admin the view names, not to the lost one");
     assert_eq!(
         *r.ran.0.lock().unwrap(),
-        vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()), rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap())],
+        vec![rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await)],
         "the lost admin's path is part of what is left, planned from the view as it is now"
     );
 }
@@ -457,7 +470,7 @@ struct Recovered {
 impl OperationRunner for Recovered {
     async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
         self.ran.run(build, lane, attempt, op).await?;
-        if op.key() == rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()) {
+        if op.created_node() == Some(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()) {
             let mut v = self.topology.write().await;
             v.nodes.retain(|n| n.location() != rdm_core::PathName::new("mesh2.node-admin", "1").unwrap());
             v.nodes.push(node(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true, false));
@@ -508,7 +521,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_it_is_heard_again()
     // Heard again: the Build runs, and mesh2's own primary runs the rest of the mesh.
     r.switch.peer.lock().unwrap().remove("mesh2");
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()), rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "2").unwrap()), rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node", "2").unwrap())]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh2.node-admin", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh2.node", "2").unwrap()).await)]);
     let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
     assert_eq!(dispatched.last().map(|(x, _)| x), Some(&r.birth("mesh2.node-admin", "1").await), "the mesh reconciles its own nodes once heard: {dispatched:?}");
 }
@@ -568,7 +581,7 @@ async fn a_run_is_cut_before_an_operation_of_a_mesh_whose_admin_is_held_and_the_
         DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains(&format!("node {} (PendingReconnect)", r.birth("mesh2.node-admin", "2").await.node_id)), "the stall names the held admin: {why}"),
         other => panic!("mesh2's work waits for its own role: {other:?}"),
     }
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap())], "the run was cut before mesh2's admins");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await)], "the run was cut before mesh2's admins");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![(r.birth("mesh1.node-admin", "1").await, 1)]);
 }
 
@@ -652,8 +665,8 @@ async fn a_remote_executors_completed_operation_is_never_dispatched_again_before
     let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
     let ran = r.ran.0.lock().unwrap().clone();
     assert_eq!((dispatched.len(), ran.len()), (1, 1), "the completed operation is dispatched once: dispatched {:?}, ran {:?}", &dispatched[..dispatched.len().min(4)], &ran[..ran.len().min(4)]);
-    assert!(remote.read_build(&r.build).await.unwrap().completed_in_run(&rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap())), "the receipt is durable on the executor");
-    assert!(!r.builds.read_build(&r.build).await.unwrap().completed_in_run(&rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap())), "the fabric-primary's log has not heard the receipt");
+    assert!(remote.read_build(&r.build).await.unwrap().completed_in_run(&rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await)), "the receipt is durable on the executor");
+    assert!(!r.builds.read_build(&r.build).await.unwrap().completed_in_run(&rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await)), "the fabric-primary's log has not heard the receipt");
     match end {
         Ok(DriveEnd::Stalled(why)) => assert!(why.contains(&format!("node {} (PendingReconnect)", r.birth("mesh2.node-admin", "2").await.node_id)), "{why}"),
         other => panic!("the drive stalls naming mesh2's held admin: {other:?}"),
@@ -714,7 +727,7 @@ async fn a_run_handed_back_is_claimed_for_the_admin_the_view_names_for_what_is_l
     let r = rig_for(t, change, |ran, topology| Arc::new(LandsAndTakesRole { ran, topology })).await;
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await)]);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![(r.birth("mesh1.node-admin", "1").await, 1), (r.birth("mesh2.node-admin", "2").await, 2)], "the hand-back is claimed for mesh2's primary admin");
 }
 
@@ -730,7 +743,7 @@ async fn a_lost_executors_unreported_receipt_does_not_make_its_operation_done() 
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [("node-admin", 2), ("node", 3)]) };
     let r = rig_for(view(), change, |ran, _| ran).await;
     assert!(matches!(r.env.door.claim(&r.birth("mesh1.node-admin", "2").await.node_id, &r.build, 1).await, rdm_core::build_claim::BuildClaimReply::Won { .. }));
-    let receipt = BuildStepReceipt { mesh: None, build_id: r.build.clone(), attempt: 1, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+    let receipt = BuildStepReceipt { mesh: None, build_id: r.build.clone(), attempt: 1, operation: rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
     r.builds.append_step_receipt(&receipt).await.unwrap();
     r.dispatch.lose(&r.birth("mesh1.node-admin", "2").await.node_id);
     let exited = r.birth("mesh1.node-admin", "2").await;
@@ -747,7 +760,7 @@ async fn a_lost_executors_unreported_receipt_does_not_make_its_operation_done() 
     }
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()), rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "3").unwrap())], "the lost run's node is created again");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await)], "the lost run's node is created again");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![(r.birth("mesh1.node-admin", "1").await, 2)]);
 }
 
@@ -767,7 +780,7 @@ async fn an_executor_whose_view_lags_runs_the_first_operation_it_was_claimed_for
     r.dispatch.sees(&r.birth("mesh1.node-admin", "2").await.node_id, Arc::new(RwLock::new(theirs)));
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap())]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await)]);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![(r.birth("mesh1.node-admin", "2").await, 1)], "one attempt, on the admin the fabric-primary's view named");
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 1);
 }
@@ -868,7 +881,7 @@ async fn an_executor_whose_view_lacks_a_just_launched_node_creates_only_what_the
     r.dispatch.sees(&r.birth("mesh1.node-admin", "2").await.node_id, Arc::new(RwLock::new(view())));
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "3").unwrap())], "only what the fabric-primary planned ran; mesh1.node.2 was launched already");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await)], "only what the fabric-primary planned ran; mesh1.node.2 was launched already");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![(r.birth("mesh1.node-admin", "2").await, 1)]);
 }
 
@@ -883,7 +896,7 @@ struct MeshBirth {
 impl OperationRunner for MeshBirth {
     async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
         self.ran.run(build, lane, attempt, op).await?;
-        if op.key() == rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()) {
+        if op.created_node() == Some(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()) {
             self.topology.write().await.nodes.push(node(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true, false));
         }
         Ok(())
@@ -902,7 +915,7 @@ async fn a_run_that_creates_a_meshs_first_admin_hands_the_rest_of_the_mesh_to_it
     let r = rig_for(t, change, |ran, topology| Arc::new(MeshBirth { ran, topology })).await;
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()), rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node", "1").unwrap())]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).await)]);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![(r.birth("mesh1.node-admin", "1").await, 1), (r.birth("mesh2.node-admin", "1").await, 2)], "mesh2's own primary ran the members");
 }
 
@@ -1013,7 +1026,7 @@ async fn a_fabric_primary_record_naming_the_executor_ends_the_drive_on_its_fabri
     let step = BuildReply::Step {
         build_id: r.build.to_string(),
         attempt: 1,
-        operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()),
+        operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap())),
         step: "PrimaryUpdated".into(),
         receipt: None,
     };
@@ -1557,7 +1570,7 @@ async fn a_drive_whose_attempt_is_running_when_its_admin_stops_is_a_turn_the_sto
     tokio::time::timeout(Duration::from_secs(5), quiesce).await.expect("the quiesce never resolved once the attempt ended").unwrap();
     assert!(drive.completed(), "the quiesce resolved before the drive recorded the Build's end");
     assert_eq!(tokio::time::timeout(Duration::from_secs(5), driving).await.expect("the drive ended with its turn").unwrap(), DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap())]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await)]);
 }
 
 /// CONTRACT (stop_gate.rs: no turn begins while the gate is stopped; node-stop.md step 4, R-ON1: a
@@ -2295,7 +2308,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
 
         let nodes_storage = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
         let rows = rdm_admin::node_rows::NodeRows::new(boot.clone(), fp_id.clone(), topology.clone(), nodes_storage);
-        rows.create_row(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &NodeId::mint(), &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap()), None, None, rdm_admin::node_rows::RowFor::Create)
+        rows.create_row(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &NodeId::mint(), &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap())), None, None, rdm_admin::node_rows::RowFor::Create)
         .await
         .expect("the renamed mesh-primary claims the node row");
 
@@ -2357,7 +2370,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         let drive = Drive::detached(opened.build_id.clone());
         let end = env.run(&drive).await;
         assert_eq!(end, DriveEnd::Terminal, "the renamed admin drives and dispatches in-process under its held name");
-        assert_eq!(*ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap())]);
+        assert_eq!(*ran.0.lock().unwrap(), vec![rdm_core::OperationId::node("node.create", &builds.read_build(&opened.build_id).await.unwrap().topology.created_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).cloned().expect("the Build creates mesh1.node.2"))]);
         let projected = builds.read_build(&opened.build_id).await.unwrap();
         assert_eq!(projected.state, rdm_admin::build_state::BuildState::Complete);
         assert_eq!(projected.executor.as_ref(), Some(&fp_birth), "the attempt was claimed for the held name");
@@ -2718,7 +2731,7 @@ async fn the_day0_build_writes_its_complete_only_after_its_own_ready() {
     let day0 = BuildId::mint();
     let contexts = Arc::new(AttemptContexts::in_memory());
     contexts.put(&day0, 1, &rdm_admin::build_claim::current_context()).await.unwrap();
-    let accepted = rdm_admin::build_state::BuildAccepted { build_id: day0.clone(), topology: FabricTopology::root("fabric1", "mesh1", mesh_id), submitted_change: None, submitted_at_ms: 1 };
+    let accepted = rdm_admin::build_state::BuildAccepted { build_id: day0.clone(), topology: FabricTopology::root("fabric1", "mesh1", mesh_id), submitted_change: None, source: None, submitted_at_ms: 1 };
     rdm_admin::build_state::accept(&*builds, &accepted, None, t.node(&me).unwrap().node_id.as_str(), "day-0").await.unwrap();
     let topology = Arc::new(RwLock::new(t.clone()));
     let ran = Arc::new(Creates(Mutex::new(Vec::new()), inner.clone()));
@@ -2790,7 +2803,7 @@ async fn a_fabric_delete_ends_an_attempt_this_fabric_primary_holds_without_waiti
     assert_eq!(r.builds.claim_attempt(&claim).await.unwrap(), rdm_admin::build_state::ClaimOutcome::Won);
     let grow = r.builds.read_build(&r.build).await.unwrap();
     let at = r.builds.newest_accepted_at_ms().await.unwrap().unwrap_or(0) + 1;
-    let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), submitted_change: Some(TopologyChange::DeleteFabric), submitted_at_ms: at };
+    let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), submitted_change: Some(BuildChange::DeleteFabric), source: None, submitted_at_ms: at };
     rdm_admin::build_state::accept(&*r.builds, &delete, Some(&r.build), r.switch.node_id.as_str(), "accepted").await.unwrap();
     // A run of the attempt is live here: it is not ended under the run.
     let live = rdm_admin::build_drive::Dispatcher::hold(&*r.dispatch, &me, &r.build, 1).expect("no run of the attempt is live before the cell holds one");
@@ -2843,7 +2856,7 @@ async fn a_build_a_fabric_delete_interrupts_before_its_first_claim_sends_one_fai
     let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     let grow = r.builds.read_build(&r.build).await.unwrap();
     let at = r.builds.newest_accepted_at_ms().await.unwrap().unwrap_or(0) + 1;
-    let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), submitted_change: Some(TopologyChange::DeleteFabric), submitted_at_ms: at };
+    let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), submitted_change: Some(BuildChange::DeleteFabric), source: None, submitted_at_ms: at };
     rdm_admin::build_state::accept(&*r.builds, &delete, Some(&r.build), r.switch.node_id.as_str(), "accepted").await.unwrap();
     let drive = Drive::detached(r.build.clone());
     let end = tokio::time::timeout(Duration::from_secs(10), r.env.run(&drive)).await;
@@ -2951,15 +2964,16 @@ async fn a_remote_executors_reported_receipts_are_written_by_the_claim_record_an
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt, p.executor.as_ref()), (1, Some(&r.birth("mesh1.node-admin", "2").await)), "attempt 1 runs at the remote executor");
     let executor = r.birth("mesh1.node-admin", "2").await;
-    let receipt = |attempt: u32, step: &str| BuildStepReceipt { build_id: r.build.clone(), attempt, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), step: step.into(), outcome: StepOutcome::Complete, output: None, executor: Some(executor.clone()), mesh: None };
-    let frame = |attempt: u32, step: &str| InnerItem::Frame(BuildReply::Step { build_id: r.build.to_string(), attempt, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), step: step.into(), receipt: Some(serde_json::to_vec(&receipt(attempt, step)).unwrap()) });
+    let created = r.created(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
+    let receipt = |attempt: u32, step: &str| BuildStepReceipt { build_id: r.build.clone(), attempt, operation: rdm_core::OperationId::node("node.create", &created), step: step.into(), outcome: StepOutcome::Complete, output: None, executor: Some(executor.clone()), mesh: None };
+    let frame = |attempt: u32, step: &str| InnerItem::Frame(BuildReply::Step { build_id: r.build.to_string(), attempt, operation: rdm_core::OperationId::node("node.create", &created), step: step.into(), receipt: Some(serde_json::to_vec(&receipt(attempt, step)).unwrap()) });
     feed.send(frame(1, "AllocateIdentity")).unwrap();
     feed.send(frame(2, "PrepareStorage")).unwrap();
     feed.send(InnerItem::Frame(BuildReply::Complete { build_id: r.build.to_string(), attempt: 1 })).unwrap();
     let end = tokio::time::timeout(Duration::from_secs(5), running).await.expect("the drive ends on the run's terminal").unwrap();
     assert!(matches!(end, DriveEnd::Terminal), "{end:?}");
     let p = r.builds.read_build(&r.build).await.unwrap();
-    let steps: Vec<(u32, String)> = p.steps.iter().filter(|s| s.operation == rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap())).map(|s| (s.attempt, s.step.clone())).collect();
+    let steps: Vec<(u32, String)> = p.steps.iter().filter(|s| s.operation == rdm_core::OperationId::node("node.create", &created)).map(|s| (s.attempt, s.step.clone())).collect();
     assert_eq!(steps, vec![(1, "AllocateIdentity".to_string())], "the claimed attempt's receipt is written and the other attempt's is not");
     assert!(p.reported.contains(&1), "the fabric-primary writes the remote run's verdict: {:?}", p.reported);
     let refused = capture.spans("rdm.node_admin.build.reject.via-stale-claim");
@@ -2996,7 +3010,7 @@ impl OperationRunner for AtOnce {
         self.most.fetch_max(now, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(50)).await;
         self.running.fetch_sub(1, Ordering::SeqCst);
-        if self.fails.as_ref().is_some_and(|f| op.key() == rdm_core::OperationId::location("node.create", f)) && self.failing.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+        if self.fails.as_ref().is_some_and(|f| op.created_node() == Some(f)) && self.failing.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
             self.ran.0.lock().unwrap().push(op.key());
             let node = self.fails.as_ref().expect("the selected create failed");
             return Err(rdm_admin::executor::RunEnd::failed(format!("WaitForBind failed: path {:?}, name {:?} did not report where it bound (JoinNode) within 300ms", node.path, node.name)));
@@ -3041,7 +3055,7 @@ async fn a_meshs_member_creates_run_at_once() {
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
     let mut ran = r.ran.0.lock().unwrap().clone();
     ran.sort();
-    assert_eq!(ran, vec![rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "4").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "5").unwrap())]);
+    assert_eq!(ran, sorted(vec![rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "3").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "4").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "5").unwrap()).await)]));
     assert_eq!(at.most.load(Ordering::SeqCst), 4, "the four creates ran at once");
 }
 
@@ -3055,7 +3069,7 @@ async fn a_failed_member_create_stops_none_of_the_others() {
     assert_eq!(tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s"), DriveEnd::Terminal);
     let mut ran = r.ran.0.lock().unwrap().clone();
     ran.sort();
-    assert_eq!(ran, vec![rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "4").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "5").unwrap())], "every create ran to its end, the failed one on the next attempt too");
+    assert_eq!(ran, sorted(vec![rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "3").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "3").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "4").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "5").unwrap()).await)]), "every create ran to its end, the failed one on the next attempt too");
     assert_eq!(at.most.load(Ordering::SeqCst), 4);
 }
 
@@ -3069,7 +3083,7 @@ async fn a_further_node_admin_is_created_with_its_meshs_other_nodes() {
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
     let mut ran = r.ran.0.lock().unwrap().clone();
     ran.sort();
-    assert_eq!(ran, vec![rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "4").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node-admin", "3").unwrap())], "the creates, sorted");
+    assert_eq!(ran, sorted(vec![rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "3").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node", "4").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh1.node-admin", "3").unwrap()).await)]), "the creates, sorted");
     assert_eq!(at.most.load(Ordering::SeqCst), 4, "the further node-admin's create ran with the nodes'");
 }
 
@@ -3104,7 +3118,7 @@ async fn each_meshs_section_is_sent_to_its_mesh_primary_at_once() {
     assert_eq!(ended, DriveEnd::Terminal);
     let mut ran = r.ran.0.lock().unwrap().clone();
     ran.sort();
-    assert_eq!(ran, vec![rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "3").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh3.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh3.node", "3").unwrap())]);
+    assert_eq!(ran, sorted(vec![rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh2.node", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh2.node", "3").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh3.node", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh3.node", "3").unwrap()).await)]));
     let mut lanes: Vec<(rdm_core::framing::Birth, String)> = r.dispatch.sections.lock().unwrap().iter().map(|(e, l, _)| (e.clone(), l.clone())).collect();
     lanes.sort_by(|a, b| a.1.cmp(&b.1));
     assert_eq!(lanes, vec![(r.birth("mesh2.node-admin", "1").await, "mesh2".to_string()), (r.birth("mesh3.node-admin", "1").await, "mesh3".to_string())], "each mesh-primary was sent its mesh's section, in its mesh's lane");
@@ -3136,7 +3150,7 @@ async fn a_section_that_fails_stops_no_other_and_the_same_operation_failing_twic
     }
     match frames.last() {
         Some(Read::Terminal(BuildReply::Failed { operation, step, reason, .. })) => {
-            assert_eq!((operation.clone(), step.as_str()), (rdm_core::OperationId::location("node.create", &PathName::new("mesh3.node", "2").unwrap()), "WaitForBind"), "the terminal names the second failure's operation and step");
+            assert_eq!((operation.clone(), step.as_str()), (rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh3.node", "2").unwrap()).await), "WaitForBind"), "the terminal names the second failure's operation and step");
             assert!(reason.contains(r#"path "mesh3.node", name "2" did not report where it bound"#), "the step's own reason: {reason}");
         }
         other => panic!("the stream ends Failed {{ step, reason }}: {other:?}; frames {frames:?}"),
@@ -3144,7 +3158,7 @@ async fn a_section_that_fails_stops_no_other_and_the_same_operation_failing_twic
     assert!(!frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { .. }))), "no Blocked frame reaches the caller: {frames:?}");
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().state, BuildState::Failed, "the Build record is Failed");
     let ran = r.ran.0.lock().unwrap().clone();
-    assert!([rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "3").unwrap())].iter().all(|k| ran.iter().any(|r| r == k)), "mesh2's section completed: {ran:?}");
+    assert!([rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh2.node", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh2.node", "3").unwrap()).await)].iter().all(|k| ran.iter().any(|r| r == k)), "mesh2's section completed: {ran:?}");
     let sent: Vec<(String, u32)> = r.dispatch.sections.lock().unwrap().iter().map(|(_, l, a)| (l.clone(), *a)).collect();
     assert_eq!(sent.iter().filter(|(l, _)| l == "mesh3").map(|(_, a)| *a).collect::<Vec<_>>(), vec![1, 2], "mesh3's section was sent again, as its lane's next attempt, once: {sent:?}");
 }
@@ -3192,12 +3206,12 @@ fn a_member_create_that_fails_once_is_created_by_the_next_attempt_and_the_build_
     assert_eq!(p.state, BuildState::Complete, "one failed create does not fail the Build");
     let mut ran = ran;
     ran.sort();
-    assert_eq!(ran, vec![rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "4").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "5").unwrap())], "the failed create ran again and no completed create did");
+    assert_eq!(ran, sorted(vec![rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "2").unwrap()).cloned().expect("the Build creates the node")), rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "3").unwrap()).cloned().expect("the Build creates the node")), rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "3").unwrap()).cloned().expect("the Build creates the node")), rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "4").unwrap()).cloned().expect("the Build creates the node")), rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "5").unwrap()).cloned().expect("the Build creates the node"))]), "the failed create ran again and no completed create did");
     let spans = cap.spans();
     let runs = reconciles(&spans);
     eprintln!("cell trace_id={trace_id} reconcile spans {runs:?}");
     assert!(runs.iter().any(|(a, o, _, inc)| a == "1" && o == "handed-off" && inc.contains(r#"WaitForBind failed: path "mesh1.node", name "3""#)), "attempt 1 is handed back with the failed create's reason: {runs:?}");
-    assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "converged" && *ops == format!("{:?}", [rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap())])), "attempt 2 runs the failed create alone and converges: {runs:?}");
+    assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "converged" && *ops == format!("{:?}", [rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "3").unwrap()).cloned().expect("the Build creates the node"))])), "attempt 2 runs the failed create alone and converges: {runs:?}");
 }
 
 /// CONTRACT (Q245, Q252; node-rpc-envelope.md: "A failure is `Failed { step, reason }`", "Only a
@@ -3234,18 +3248,18 @@ fn a_member_create_that_fails_on_the_next_attempt_too_ends_the_build_failed_nami
     assert_eq!(dispatched, vec![(expected_executor.clone(), 1), (expected_executor.clone(), 2)], "no third attempt is claimed");
     match frames.last() {
         Some(Read::Terminal(BuildReply::Failed { attempt, operation, step, reason, .. })) => {
-            assert_eq!((*attempt, operation.clone(), step.as_str()), (2, rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), "WaitForBind"), "the terminal names the failed operation and step");
+            assert_eq!((*attempt, operation.clone(), step.as_str()), (2, rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "3").unwrap()).cloned().expect("the Build creates the node")), "WaitForBind"), "the terminal names the failed operation and step");
             assert!(reason.contains(r#"path "mesh1.node", name "3" did not report where it bound"#), "the step's own reason: {reason}");
         }
         other => panic!("the stream ends Failed {{ step, reason }}: {other:?}; frames {frames:?}"),
     }
     assert!(!frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { .. }))), "no Blocked frame reaches the caller: {frames:?}");
     let count = |k: &rdm_core::OperationId| ran.iter().filter(|r| *r == k).count();
-    assert_eq!(count(&rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap())), 2, "the failed create is run by attempt 1 and once more by attempt 2: {ran:?}");
-    assert!([rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "4").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "5").unwrap())].iter().all(|k| count(k) == 1), "the completed creates ran once: {ran:?}");
+    assert_eq!(count(&rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "3").unwrap()).cloned().expect("the Build creates the node"))), 2, "the failed create is run by attempt 1 and once more by attempt 2: {ran:?}");
+    assert!([rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "2").unwrap()).cloned().expect("the Build creates the node")), rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "4").unwrap()).cloned().expect("the Build creates the node")), rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "5").unwrap()).cloned().expect("the Build creates the node"))].iter().all(|k| count(k) == 1), "the completed creates ran once: {ran:?}");
     let runs = reconciles(&spans);
     eprintln!("cell trace_id={trace_id} reconcile spans {runs:?}");
-    assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "failed" && *ops == format!("{:?}", [rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap())])), "attempt 2 runs the create alone and fails: {runs:?}");
+    assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "failed" && *ops == format!("{:?}", [rdm_core::OperationId::node("node.create", &p.topology.created_id(&PathName::new("mesh1.node", "3").unwrap()).cloned().expect("the Build creates the node"))])), "attempt 2 runs the create alone and fails: {runs:?}");
     let healed: Vec<String> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-create-failed" && s["attributes"]["operation"] == "node.create" && s["attributes"]["operation_subject"].as_str().is_some_and(|o| o.contains(r#"path: "mesh1.node", name: "3""#))).map(|s| s["attributes"]["attempt"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(healed, ["1"], "one heal attempt: only attempt 1's failure hands back");
     assert!(spans.iter().all(|s| s["name"] != "rdm.node_admin.build.update.via-stalled"), "nothing stalls");
@@ -3342,7 +3356,7 @@ async fn a_section_whose_mesh_primary_is_unreached_stalls_the_drive_and_frames_n
         other => panic!("a section whose mesh-primary is unreached holds the Build: {other:?}"),
     }
     let ran = r.ran.0.lock().unwrap().clone();
-    assert!([rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh2.node", "3").unwrap())].iter().all(|k| ran.iter().any(|r| r == k)), "mesh2's section completed: {ran:?}");
+    assert!([rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh2.node", "2").unwrap()).await), rdm_core::OperationId::node("node.create", &r.created(&PathName::new("mesh2.node", "3").unwrap()).await)].iter().all(|k| ran.iter().any(|r| r == k)), "mesh2's section completed: {ran:?}");
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the held section frames no Blocked to the caller");
 }
 
@@ -3356,7 +3370,7 @@ impl OperationRunner for DeleteDuring {
         let builds = &self.0.1;
         let grow = builds.read_build(build).await.unwrap();
         let at = builds.newest_accepted_at_ms().await.unwrap().unwrap_or(0) + 1;
-        let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), submitted_change: Some(TopologyChange::DeleteFabric), submitted_at_ms: at };
+        let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), submitted_change: Some(BuildChange::DeleteFabric), source: None, submitted_at_ms: at };
         rdm_admin::build_state::accept(&**builds, &delete, Some(build), "mesh1.node-admin.1", "accepted").await.unwrap();
         *self.1.lock().unwrap() = Some(delete.build_id);
         self.0.0.lock().unwrap().push(op.key());
@@ -4093,8 +4107,8 @@ async fn build_drive_step_faults_recover_or_fail_as_the_page_specifies() {
     assert_eq!(
         *r.ran.0.lock().unwrap(),
         vec![
-            rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()),
-            rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()),
+            rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await),
+            rdm_core::OperationId::node("node.create", &r.created(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await),
         ],
         "completed operation is not re-run after mid-run cut and hand-back"
     );

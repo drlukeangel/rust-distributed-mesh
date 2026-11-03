@@ -205,7 +205,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
         }
     }
     if let Some((path, _)) = &last {
-        deleted = match estate.nodes_obj().await.delete(&path).await {
+        deleted = match estate.delete_node(&path).await {
             Ok(mut stream) => {
                 let accepted = stream.accepted().cloned().expect("the call opened a Build");
                 let (mut frames, mut end) = (Vec::new(), None);

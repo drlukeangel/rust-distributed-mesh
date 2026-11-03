@@ -2535,8 +2535,8 @@ mod tests {
             StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::Ready },
             StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-6:mesh1.node.1") },
             StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-7:mesh1.node.1") },
-            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.node", "1").unwrap()) },
-            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.node", "1").unwrap()) },
+            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::node("node.stop", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) },
+            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::node("node.stop", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) },
             StatusRequest::DeleteMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") },
             StatusRequest::MeshDeleted {
                 mesh_id: MeshId::mint(),
@@ -2552,7 +2552,7 @@ mod tests {
             StatusRequest::Reserved13 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("commit-state:fabric1") },
             StatusRequest::Reserved14 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("open-traffic:fabric1") },
             StatusRequest::Reserved15 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("open-traffic:fabric1") },
-            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.start", &crate::PathName::new("mesh1.node", "1").unwrap()) },
+            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::node("node.start", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) },
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
             StatusRequest::Reserved34 { node_id: NodeId::mint(), config: Default::default(), revision: 1 },
@@ -2588,7 +2588,7 @@ mod tests {
             assert_eq!(Status::decode_request(&Status::encode_request(&q).unwrap()).unwrap(), q);
         }
         // A declaration naming the operation that produced its state (i146 Q36).
-        let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: Some(DeclaredOperation { operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.node", "1").unwrap()) }) };
+        let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: Some(DeclaredOperation { operation: crate::OperationId::node("node.stop", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) }) };
         assert_eq!(Status::decode_request(&Status::encode_request(&named).unwrap()).unwrap(), named);
     }
 

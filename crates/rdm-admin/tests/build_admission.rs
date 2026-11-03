@@ -5,7 +5,8 @@
 //! submission is held inside its durable write, after it passed its check, and the second is
 //! polled once while the first is held. Nothing here depends on timing.
 
-use rdm_admin::accepted::{AcceptedStore, FabricTopology, TopologyChange};
+use rdm_admin::accepted::{AcceptedStore, FabricTopology};
+use rdm_core::build::BuildChange;
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{
     BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, AttemptOpened, MemoryBuildStateAdapter,
@@ -127,7 +128,7 @@ async fn rig() -> (Arc<Held>, Arc<ControlPlane>) {
     (held, Arc::new(cp))
 }
 
-fn add_rpc() -> TopologyChange {
+fn add_rpc() -> BuildChange {
     TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }
 }
 

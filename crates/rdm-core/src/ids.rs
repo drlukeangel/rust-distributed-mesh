@@ -46,6 +46,12 @@ pub fn fixture_crockford60(label: &str) -> String {
     encode_crockford60(h)
 }
 
+/// A fixture's fixed node.id for the node at `at`: the same path and name give the same node.id, so two
+/// fixtures that build one operation's key separately agree. Never used outside fixtures.
+pub fn fixture_node_id(at: &crate::PathName) -> crate::NodeId {
+    crate::NodeId::parse(&fixture_crockford60(&format!("{}\u{1f}{}", at.path, at.name))).expect("a fixture id is canonical")
+}
+
 /// Mint a canonical id: 60 bits from the OS CSPRNG, nothing else feeds it.
 pub(crate) fn mint_crockford60() -> String {
     encode_crockford60(rand::random::<u64>())

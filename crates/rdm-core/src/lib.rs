@@ -93,7 +93,7 @@ pub use connections::{
 pub use digest::{GossipStats, MemberStatus, MeshDigest, MeshNode, NodeLoad, NodeState};
 pub use dto::{Accepted, BuildState, BuildView, ClientError, FabricDesired, MeshDesired, StepView};
 #[doc(hidden)]
-pub use ids::fixture_crockford60;
+pub use ids::{fixture_crockford60, fixture_node_id};
 pub use ids::{BuildId, BuildIdLog, ChangeId, ConnectionId, DeploymentId, EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, OperationOccurrenceId, CROCKFORD60_LEN, ID_FORMAT};
 pub use lifecycle::{LifecycleOp, StateHook, DELETED_RETENTION};
 pub use names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};

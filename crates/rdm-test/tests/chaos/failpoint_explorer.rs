@@ -168,7 +168,7 @@ impl Run {
 
     /// `node.delete` of `node`, accepted: the stream of the Build that runs it.
     async fn delete(&self, node: &PathName) -> WorkflowStream {
-        self.estate.nodes_obj().await.delete(node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {node:?}: {e}"))
+        self.estate.delete_node(node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {node:?}: {e}"))
     }
 
     /// The Build a workflow call opened or joined.
@@ -697,8 +697,8 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
     let ack = door.arm(id, spec.clone()).await;
     let request = {
         let nodes = Nodes::new(run.estate.carrier_at(&door.location()).await);
-        let (based_on, request) = run.estate.create_node_request("mesh1", "node").await;
-        tokio::spawn(async move { nodes.create_named(based_on, request).await })
+        let request = run.estate.create_node_request("mesh1", "node").await;
+        tokio::spawn(async move { nodes.create(vec![request]).await })
     };
     let held = door.wait_held(id).await;
     let build_id = held["hit"]["build_id"].as_str().expect("the cut names the Build").to_string();

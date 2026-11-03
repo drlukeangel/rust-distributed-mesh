@@ -28,7 +28,7 @@ fn admin(name: PathName) -> Admin {
 /// The Build storage holds Build `id` through attempt `attempts`, converged: the store's current Build.
 async fn stored(store: &MemoryBuildStateAdapter, id: &BuildId, attempts: u32) {
     let executor_birth = rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
-    store.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+    store.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 }).await.unwrap();
     for attempt in 1..=attempts {
         if attempt > 1 {
             store.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Delete, action: None, opened_by: rdm_core::NodeId::parse("400000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
@@ -95,7 +95,7 @@ async fn a_build_with_a_record_far_past_one_message_is_read_whole() {
     let id = BuildId::mint();
     stored(&store, &id, 1).await;
     let reason = "x".repeat(9_000);
-    let failed = BuildStepReceipt { mesh: None, build_id: id.clone(), attempt: 1, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()), step: "WaitForNodeReady".into(), outcome: StepOutcome::Failed { reason: reason.clone(), code: rdm_core::outcome::Code::DeadlineExceeded }, output: None, executor: None };
+    let failed = BuildStepReceipt { mesh: None, build_id: id.clone(), attempt: 1, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())), step: "WaitForNodeReady".into(), outcome: StepOutcome::Failed { reason: reason.clone(), code: rdm_core::outcome::Code::DeadlineExceeded }, output: None, executor: None };
     store.append_step_receipt(&failed).await.unwrap();
     let joiner = admin(PathName::new("mesh2.node-admin", "1").unwrap());
     *joiner.floor.lock().unwrap() = Some((id.clone(), 1));

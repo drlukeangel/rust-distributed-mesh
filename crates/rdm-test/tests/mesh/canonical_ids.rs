@@ -139,7 +139,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
 
     // Replacement of a node: removed, then created again at the same path.
     let replaced = node_ids[&PathName::new("mesh1.node", "2").unwrap()].clone();
-    let mut removal = estate.nodes_obj().await.delete(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh1.node.2: {e}"));
+    let mut removal = estate.delete_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh1.node.2: {e}"));
     Estate::complete(&mut removal).await;
     build(&estate, &shape(&["mesh1", "mesh2"], 2)).await;
     let regrown = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await);
@@ -157,7 +157,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
             (mesh2.len() == 1 && alive).then(|| mesh2[0].clone())
         })
         .await;
-    let mut last_delete = estate.nodes_obj().await.delete(&last).await.unwrap_or_else(|e| panic!("the node.delete of mesh2's last admin {last:?} was refused: {e}"));
+    let mut last_delete = estate.delete_node(&last).await.unwrap_or_else(|e| panic!("the node.delete of mesh2's last admin {last:?} was refused: {e}"));
     Estate::complete(&mut last_delete).await;
     estate.settles_to_named(&names(&["mesh1"], 2), Duration::from_secs(30)).await;
     build(&estate, &shape(&["mesh1", "mesh2"], 2)).await;

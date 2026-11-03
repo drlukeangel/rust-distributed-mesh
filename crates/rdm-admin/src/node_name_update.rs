@@ -103,12 +103,6 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
 /// outcome the reply's name.
 #[allow(clippy::too_many_arguments)]
 pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool, req: &StatusRequest) -> StatusReply {
-    update_in_build_context(me, me_id, view, storage, doors, deleted, left, req, &crate::accepted::RenameIntent::Ordinary).await
-}
-
-/// The same immutable-path validator, with replacement intent only from the pinned Build runner.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn update_in_build_context(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool, req: &StatusRequest, intent: &crate::accepted::RenameIntent) -> StatusReply {
     let StatusRequest::UpdateName { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateName only") };
     let span = tracing::info_span!(
         "rdm.node_admin.name.update.via-writer",
@@ -120,7 +114,7 @@ pub(crate) async fn update_in_build_context(me: &PathName, me_id: &rdm_core::Nod
         async {
             // A snapshot of the view: no read lock is held across the row write's I/O.
             let now = view.read().await.clone();
-            rename(me, me_id, &now, storage, doors, deleted, left, node_id, incarnation, name, intent, &span).await
+            rename(me, me_id, &now, storage, doors, deleted, left, node_id, incarnation, name, &span).await
         },
         span.clone(),
     )
@@ -184,7 +178,6 @@ async fn rename(
     node_id: &rdm_core::NodeId,
     incarnation: &rdm_core::IncarnationId,
     name: &PathName,
-    intent: &crate::accepted::RenameIntent,
     span: &tracing::Span,
 ) -> StatusReply {
     // A subject this receiver does not hold is the receiver's own fact (`SubjectUnknown`), never a
@@ -243,7 +236,7 @@ async fn rename(
         let Some(moved) = doors.moved.get() else {
             return rdm_core::reply::status::not_ready(format!("{me_id}: its view does not take a moved row yet; the rename of {} to path={to_path:?} name={to_name:?} is refused and nothing is written", held.node_id));
         };
-        let moved_row = crate::node_rows::move_row_with_intent(storage, door.written(), me, &held, &from, &to, intent).await;
+        let moved_row = crate::node_rows::move_row(storage, door.written(), me, &held, &from, &to).await;
         match moved_row {
             Ok(_) => {}
             Err(RenameRefused::NameHeld(h)) => return rdm_core::reply::status::name_held(h.location(), h.by),

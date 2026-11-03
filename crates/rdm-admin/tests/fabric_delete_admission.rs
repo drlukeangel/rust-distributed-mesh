@@ -3,7 +3,8 @@
 //! nothing"; fabric-delete.md "Precondition"). Every cell reads the Build log it decides from: nothing
 //! here depends on timing.
 
-use rdm_admin::accepted::{AcceptedStore, FabricTopology, TopologyChange};
+use rdm_admin::accepted::{AcceptedStore, FabricTopology};
+use rdm_core::build::BuildChange;
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::control_plane::{ControlPlane, Refusal};
 use rdm_admin::model::*;
@@ -90,7 +91,7 @@ async fn a_fabric_delete_before_the_first_ready_interrupts_the_build_in_progress
         }
     }
     let before = r.facts().await;
-    let delete = r.cp.submit("test", TopologyChange::DeleteFabric).await.unwrap_or_else(|e| panic!("fabric.delete is admitted before the first ready while a Build is in progress: {e:?}"));
+    let delete = r.cp.submit("test", BuildChange::DeleteFabric).await.unwrap_or_else(|e| panic!("fabric.delete is admitted before the first ready while a Build is in progress: {e:?}"));
     assert_ne!(delete.build_id, grow.build_id, "the delete is a Build of its own");
     assert_eq!((delete.attempt, delete.mesh.as_deref()), (1, None));
     assert_eq!(r.facts().await, before + 1, "the delete's acceptance is the one fact written");
@@ -111,16 +112,16 @@ async fn a_fabric_delete_before_the_first_ready_interrupts_the_build_in_progress
 async fn a_second_fabric_delete_resumes_the_first_in_progress_or_failed_and_accepts_no_build() {
     use rdm_admin::build_state::{AttemptOutcome, BuildAttemptReceipt};
     let r = rig(ScopeStatus::Pending).await;
-    let first = r.cp.submit("test", TopologyChange::DeleteFabric).await.unwrap_or_else(|e| panic!("fabric.delete is admitted: {e:?}"));
+    let first = r.cp.submit("test", BuildChange::DeleteFabric).await.unwrap_or_else(|e| panic!("fabric.delete is admitted: {e:?}"));
     let before = r.facts().await;
-    let again = r.cp.submit("test", TopologyChange::DeleteFabric).await.unwrap_or_else(|e| panic!("a second fabric.delete resumes the first: {e:?}"));
+    let again = r.cp.submit("test", BuildChange::DeleteFabric).await.unwrap_or_else(|e| panic!("a second fabric.delete resumes the first: {e:?}"));
     assert_eq!((&again.build_id, again.attempt), (&first.build_id, 1), "the second delete answers the first at its attempt");
     assert_eq!(r.facts().await, before, "nothing is accepted");
     running(&r, &first.build_id, 1).await;
     let failed = BuildAttemptReceipt { build_id: first.build_id.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "mesh.delete:x: a member did not end within its bound".into(), code: rdm_core::outcome::Code::DeadlineExceeded }, mesh: None };
     r.builds.append_attempt_receipt(&failed).await.unwrap();
     let before = r.facts().await;
-    let resumed = r.cp.submit("test", TopologyChange::DeleteFabric).await.unwrap_or_else(|e| panic!("a fabric.delete after the first's attempt failed resumes it: {e:?}"));
+    let resumed = r.cp.submit("test", BuildChange::DeleteFabric).await.unwrap_or_else(|e| panic!("a fabric.delete after the first's attempt failed resumes it: {e:?}"));
     assert_eq!((&resumed.build_id, resumed.attempt), (&first.build_id, 2), "the failed delete is resumed at its next attempt");
     assert_eq!(r.facts().await, before, "nothing is accepted");
 }

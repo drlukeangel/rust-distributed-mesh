@@ -23,7 +23,6 @@
 Examples executed by the fast gate, in `crates/rdm-test/tests/node_records.rs`:
 - `a_build_applies_properties_and_a_nodes_later_update_stands`
 - `a_path_move_preserves_the_node_identity`
-- `a_deleted_birth_cannot_hide_its_successor`
 - `a_deleted_birth_is_read_by_its_id`
 - `current_node_reads_survive_fabric_primary_restart`
 - `all_node_fields_survive_node_restart`

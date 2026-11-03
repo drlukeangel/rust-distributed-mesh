@@ -113,12 +113,12 @@ impl Caller {
     }
 }
 
-/// The replace steps of `p` (lifecycles/node-replace.md: one Build of node primitives) submitted to
-/// the fabric-primary the admin at `entry` names, over the `node` objects: the Build it runs on, and
-/// the caller's reply stream read to its end on a task of its own: its frames, how a stream that
-/// broke before its terminal ended, and, when the stream ended `FabricPrimaryMoved`, the Build followed on at
-/// the admin it named as soon as it is named.
-async fn replace_by_steps(estate: &Estate, entry: &rdm_client::PathName, p: &PathName) -> (String, tokio::task::JoinHandle<Followed>) {
+/// The replace of `p` (lifecycles/node-replace.md): the node commands that free its name, then the
+/// successor's Create submitted to the fabric-primary the admin at `entry` names, over the `node`
+/// objects: the Build it runs on, and the caller's reply stream read to its end on a task of its own:
+/// its frames, how a stream that broke before its terminal ended, and, when the stream ended
+/// `FabricPrimaryMoved`, the Build followed on at the admin it named as soon as it is named.
+async fn replace_of(estate: &Estate, entry: &rdm_client::PathName, p: &PathName) -> (String, tokio::task::JoinHandle<Followed>) {
     use rdm_client::Nodes;
     let peers = estate.peers().await;
     let nodes = Nodes::new(peers.carrier_at(entry.clone()));
@@ -129,7 +129,9 @@ async fn replace_by_steps(estate: &Estate, entry: &rdm_client::PathName, p: &Pat
     }
     let node = p.clone();
     let subject = estate.node_view(p).await;
-    let mut stream = nodes.steps(rdm_test::steps::replace(&node, &subject.mesh, &subject.r#type).expect("valid replacement fixture name")).await.expect("the replace steps were accepted");
+    rdm_test::replace::free_the_name(estate, &node).await.unwrap_or_else(|e| panic!("the node commands that free {node:?}: {e}"));
+    let successor = rdm_core::build::Nodes { path: node.path.clone(), name: node.name.clone(), mesh: subject.mesh.clone(), r#type: subject.r#type.clone(), storage_persistence: None, executable: Some(estate.executables.of(&subject.r#type)), tags: Default::default(), config: Default::default() };
+    let mut stream = nodes.create(vec![successor]).await.expect("the successor's Create was accepted");
     let build = stream.accepted().expect("the call opened a Build").build_id.to_string();
     let caller = Caller { peers, entry: entry.clone(), kind: stream.kind().clone(), accepted: stream.accepted().cloned().expect("the call opened a Build") };
     let frames = tokio::spawn(async move {
@@ -513,7 +515,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     let h_id = s(&node(&nodes, &h_name)["node_id"]);
     let h_path = h_name.clone();
     estate.enter(&h_path).await;
-    let (build, outer) = replace_by_steps(&estate, &h_path, &p).await;
+    let (build, outer) = replace_of(&estate, &h_path, &p).await;
     // Sampled while the hand-over runs: no admin's view ever shows two fabric primaries.
     let mut worst = 0usize;
     let until = std::time::Instant::now() + Duration::from_secs(120);

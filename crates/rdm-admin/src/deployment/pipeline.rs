@@ -921,6 +921,9 @@ pub struct CreateRequest {
     pub predecessor: Option<crate::storage::BirthRef>,
     /// The admitted operation identity, unchanged by allocation or recipe lowering.
     pub operation: rdm_core::OperationId,
+    /// The node.id the create allocates (D58): the one the Build record names for the node, or the one
+    /// the primary minted when it decided a recovery's re-create. `AllocateIdentity` mints no other.
+    pub node_id: NodeId,
     /// The owning mesh supplied by the Build or exact predecessor.
     pub mesh: String,
     /// The type supplied by the same source.
@@ -1490,13 +1493,6 @@ impl DeploymentPipeline<'_> {
         self.create_with_row_for(req, row_for, pre_node_ready, before_launch).await
     }
 
-    /// `create_with` for a Build's create of a replace's successor at the name its predecessor
-    /// released (`RowFor::Successor`, node-replace.md step 3): a fresh data dir, its row inheriting
-    /// the predecessor's config and tags.
-    pub(crate) async fn create_successor_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>) -> Result<Created, PipelineError> {
-        self.create_with_row_for(req, crate::node_rows::RowFor::Successor, pre_node_ready, None).await
-    }
-
     /// `create_with` for a Build's replacement of a member at its own path (`RowFor::Replacement`,
     /// build-deployment.md §3): over the kept data dir or a fresh one, its row's config and tags its
     /// entry's (`req.entry`, Q305).
@@ -1731,7 +1727,7 @@ impl DeploymentPipeline<'_> {
         };
         let id: Identity = self
             .step(run, CreateStep::AllocateIdentity.name(), async {
-                Ok(written_before.unwrap_or_else(|| Identity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() }))
+                Ok(written_before.unwrap_or_else(|| Identity { node_id: req.node_id.clone(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() }))
             })
             .await?;
         // The birth's address, bound for its deployment: the birth a run continues binds the address it
@@ -1800,7 +1796,7 @@ impl DeploymentPipeline<'_> {
 
                 // A replace's successor takes its entry's config and tags, never its predecessor's (Q305).
                 let (tags, config) = match (of, &req.entry) {
-                    (crate::node_rows::RowFor::Create | crate::node_rows::RowFor::Successor | crate::node_rows::RowFor::Replacement, Some(e)) => (e.tags.clone(), e.config.clone()),
+                    (crate::node_rows::RowFor::Create | crate::node_rows::RowFor::Replacement, Some(e)) => (e.tags.clone(), e.config.clone()),
                     _ => Default::default(),
                 };
                 step_span.record("awaiting", "create-row");
@@ -2841,23 +2837,6 @@ impl DeploymentPipeline<'_> {
         self.step(&mut run, "PinPropertyTarget", decide).await
     }
 
-    /// A property of `node` a Build applies in place (build.md §1, "The Build applies the diff") as the
-    /// Build operation `operation` (`node.config.update:<path>`, `node.tag.create:<path>`,
-    /// `node.tag.delete:<path>`): its one step `step`, the put at the node's mesh-primary, then
-    /// `Complete`. No runtime is touched.
-    pub fn apply_in_place<'a, F>(&'a self, build_id: &'a BuildId, attempt: u32, node: &'a PathName, operation: rdm_core::OperationId, step: &'static str, put: F) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>>
-    where
-        F: std::future::Future<Output = Result<(), String>> + Send + 'a,
-    {
-        use tracing::Instrument;
-        let span = self.pipeline_span("update", Some(build_id), node, attempt);
-        Box::pin(async move {
-            let mut run = self.begin(Some(build_id), attempt, node, operation).await?;
-            self.step(&mut run, step, put).await?;
-            self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await
-        }
-        .instrument(span))
-    }
 }
 
 #[cfg(test)]
@@ -2932,12 +2911,12 @@ mod tests {
     }
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
-        BuildStepReceipt { mesh: None, build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), attempt, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), step: step.into(), outcome, output: None, executor: None }
+        BuildStepReceipt { mesh: None, build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), attempt, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), step: step.into(), outcome, output: None, executor: None }
     }
 
     #[test]
     fn ready_requires_a_complete_receipt_for_each_runtime_prerequisite_of_this_run() {
-        let op = &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "1").unwrap());
+        let op = &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "1").unwrap()));
         let all: Vec<BuildStepReceipt> = READY_PREREQUISITES.iter().map(|s| receipt(1, s.name(), StepOutcome::Complete)).collect();
         assert!(ready_prerequisites_missing(&all, &BuildId::parse("3qcfk1kq47m9").unwrap(), &None, op, 1).is_empty());
         // One lost receipt is named.
@@ -2945,7 +2924,7 @@ mod tests {
         assert_eq!(ready_prerequisites_missing(&lost, &BuildId::parse("3qcfk1kq47m9").unwrap(), &None, op, 1), vec!["MakeRuntimeFactAvailableToBirth"]);
         // Another operation's receipts are not this run's.
         let other: Vec<_> = all.iter().cloned().map(|mut r| {
-            r.operation = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap());
+            r.operation = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap()));
             r
         }).collect();
         assert_eq!(ready_prerequisites_missing(&other, &BuildId::parse("3qcfk1kq47m9").unwrap(), &None, op, 1).len(), 4);
@@ -3046,7 +3025,7 @@ mod tests {
     /// A Build accepted in `builds` for a cell: mesh1 rooted, nothing else.
     async fn accepted_build(builds: &crate::build_state::MemoryBuildStateAdapter) -> BuildId {
         let build_id = BuildId::mint();
-        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 }).await.unwrap();
         build_id
     }
 
@@ -3374,7 +3353,7 @@ mod tests {
         builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: rdm_core::framing::Birth { node_id: template.launcher.node_id.clone(), incarnation: template.launcher.incarnation.clone() } }).await.unwrap();
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let create = |node: PathName| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &node), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: node.path.clone(), name: node.name.clone(), spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let create = |node: PathName| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&node)), node_id: (rdm_core::fixture_node_id(&node)).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: node.path.clone(), name: node.name.clone(), spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let _ = pipeline.create(&create(PathName::new("mesh1.node", "1").unwrap())).await.map(|_| ()).expect_err("the provider launches nothing");
         template.roots.replace(vec![a, b]);
         let _ = pipeline.create(&create(PathName::new("mesh1.node", "2").unwrap())).await.map(|_| ()).expect_err("the provider launches nothing");
@@ -3488,7 +3467,7 @@ mod tests {
         builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: rdm_core::framing::Birth { node_id: template.launcher.node_id.clone(), incarnation: template.launcher.incarnation.clone() } }).await.unwrap();
         let timeouts = Timeouts { join: Duration::from_millis(1500), ready: Duration::from_millis(300), ..Timeouts::default() };
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let err = pipeline.create(&req).await.map(|_| ()).expect_err("nothing answers Ready: the create ends at WaitForNodeReady");
         let steps: Vec<(String, StepOutcome)> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| (r.step, r.outcome)).collect();
         assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "WaitForMeshJoin completes from the accepted report with no digest in any view: {err}; receipts {steps:?}");

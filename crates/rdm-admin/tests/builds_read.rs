@@ -40,7 +40,7 @@ fn topology(rpcs: u32) -> FabricTopology {
 /// and its verdict.
 async fn build(log: &MemoryBuildStateAdapter, id: &BuildId, at: u64, t: FabricTopology, receipts: &[(rdm_core::OperationId, StepOutcome)], verdict: AttemptOutcome) {
     let executor_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: t, submitted_change: None, submitted_at_ms: at }).await.unwrap();
+    log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: t, submitted_change: None, source: None, submitted_at_ms: at }).await.unwrap();
     log.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
     for (operation, outcome) in receipts {
         let receipt = BuildStepReceipt { build_id: id.clone(), attempt: 1, operation: operation.clone(), step: "Complete".into(), outcome: outcome.clone(), output: None, executor: Some(executor_birth.clone()), mesh: None };
@@ -101,10 +101,10 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
     tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap().block_on(async {
         let log = Arc::new(MemoryBuildStateAdapter::new());
         let (b1, b2, b3) = (BuildId::mint(), BuildId::mint(), BuildId::mint());
-        build(&log, &b1, 1, topology(1), &[(rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "1").unwrap()), StepOutcome::Complete)], AttemptOutcome::Converged).await;
-        build(&log, &b2, 2, topology(300), &[(rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap()), StepOutcome::Complete)], AttemptOutcome::Converged).await;
+        build(&log, &b1, 1, topology(1), &[(rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "1").unwrap())), StepOutcome::Complete)], AttemptOutcome::Converged).await;
+        build(&log, &b2, 2, topology(300), &[(rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap())), StepOutcome::Complete)], AttemptOutcome::Converged).await;
         let failed = StepOutcome::Failed { reason: "the launch of mesh1.node.4 exited 1".into(), code: rdm_core::outcome::Code::FailedPrecondition };
-        build(&log, &b3, 3, topology(4), &[(rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), StepOutcome::Complete), (rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "4").unwrap()), failed)], AttemptOutcome::Failed { reason: "node.create failed for path mesh1.node, name 4".into(), code: rdm_core::outcome::Code::FailedPrecondition }).await;
+        build(&log, &b3, 3, topology(4), &[(rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap())), StepOutcome::Complete), (rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "4").unwrap())), failed)], AttemptOutcome::Failed { reason: "node.create failed for path mesh1.node, name 4".into(), code: rdm_core::outcome::Code::FailedPrecondition }).await;
         assert_eq!(log.current_build().await.unwrap().into_build_id(), Some(b2.clone()), "the setup: b2 is the current Build, the failed b3 skipped");
 
         let (ep, fp, _router) = fabric_primary(log.clone()).await;

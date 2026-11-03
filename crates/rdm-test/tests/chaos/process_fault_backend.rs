@@ -318,7 +318,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let recovery_for = |path: &PathName, reason: &str, operation: &str| -> Value {
         reconciles
             .iter()
-            .find(|r| attr(r, "reason") == reason && rdm_test::estate::plans_operation(r, operation, &rdm_core::OperationSubject::Location(path.clone())))
+            .find(|r| attr(r, "reason") == reason && (if operation == "node.create" { rdm_test::estate::plans_a_create(r) && attr(r, "operations").contains("action: \"node.delete\"") } else { rdm_test::estate::planned_operations(r).iter().any(|op| op.contains(&format!("action: {operation:?}"))) }))
             .cloned()
             .cloned()
             .unwrap_or_else(|| panic!("a {reason} attempt of {build_id} running {operation} at {path:?}: {reconciles:?}"))
@@ -330,11 +330,11 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
         let lost_id = rdm_core::NodeId::parse(&s(&lost["node_id"])).expect("a settled node id");
         let planned = rdm_test::estate::planned_operations(rec);
         let is = |op: &String, action: &str, subject: rdm_core::OperationSubject| op.contains(&format!("action: {action:?}")) && op.contains(&format!("subject: {:?}", Some(subject)));
-        assert!(planned.len() == 2 && is(&planned[0], "node.delete", rdm_core::OperationSubject::Node(lost_id.clone())) && is(&planned[1], "node.create", rdm_core::OperationSubject::Location(path.clone())), "the recovery's two operations, in order: {rec}");
+        assert!(planned.len() == 2 && is(&planned[0], "node.delete", rdm_core::OperationSubject::Node(lost_id.clone())) && planned[1].contains("action: \"node.create\""), "the recovery's two operations, in order: {rec}");
     }
     for path in [&kill, &admin] {
         assert!(
-            named(&spans, "rdm.node_admin.build.update.via-reconcile").iter().all(|r| !(attr(r, "reason") == "proven-drift" && (rdm_test::estate::plans_operation(r, "node.create", &rdm_core::OperationSubject::Location((*path).clone())) || attr(r, "operations").contains(&format!("{:?}", path))))),
+            named(&spans, "rdm.node_admin.build.update.via-reconcile").iter().all(|r| !(attr(r, "reason") == "proven-drift" && (rdm_test::estate::plans_a_create(r) || attr(r, "operations").contains(&format!("{:?}", path))))),
             "the Fabric's drift never repairs {path:?}: its mesh-primary recovers it"
         );
         let mesh_primary = s(&nodes0.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh1's primary")["node_id"]);

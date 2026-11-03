@@ -510,6 +510,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         time: rafka_time.clone(),
     };
     let investigated = crate::node_investigation::NodeInvestigatedWriter { events: events.clone(), on_node_investigated: on_node_investigated.clone() };
+    // The Build-level events this admin writes as the fabric-primary, `rdm.build.started`,
+    // `rdm.build.dispatched` and `rdm.build.ended`, by this birth; each Build notice is sent from its
+    // event's write (build.md §5, fabric-node-hooks.md).
+    let build_notices = build_notices.writing_to(events.clone());
     // The records this admin writes, as it holds them: every write of a node, mesh or Fabric record
     // starts from its copy here (storage-whole-records.md, "The rule"), its first writes at boot too.
     let caches = crate::record_cache::Caches::default();
@@ -1312,7 +1316,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             // Day 0's shape is the bootstrap admin alone; its row records what it runs.
                                             topology: crate::accepted::FabricTopology::root_on(&cfg.fabric, &cfg.mesh, mesh_id.clone(), &cfg.topology_storage_provider),
                                             submitted_change: None,
-                                            submitted_at_ms: rafka_time.now_ms(),
+                                            source: None, submitted_at_ms: rafka_time.now_ms(),
                                         };
                                         // The fabric-primary claims the Fabric's identity at Day 0 (node-identity-and-state.md
                                         // §2.8; fabric-create.md).

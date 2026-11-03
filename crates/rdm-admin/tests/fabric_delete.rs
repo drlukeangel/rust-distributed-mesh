@@ -26,7 +26,8 @@
 use rdm_admin::node_rows::WriteRecord as _;
 use rdm_admin::node_rows::RecordAt as _;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rdm_admin::accepted::{compile, plan_for_build, AcceptedStore, FabricTopology, TopologyChange};
+use rdm_admin::accepted::{compile, plan_for_build, AcceptedStore, FabricTopology};
+use rdm_core::build::BuildChange;
 use rdm_admin::admin::Records;
 use rdm_admin::build::{BuildId, BuildOperation};
 use rdm_admin::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
@@ -154,14 +155,13 @@ fn live_roster(records: &[Node]) -> Result<Vec<RosterBirth>, String> {
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
         // The record a create wrote: the node's row and its birth.
-        let mut row = NodeRow { replacement_from: None, r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
+        let mut row = NodeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
                 path: n.path.clone(), name: n.name.clone(),
                 node_id: n.node_id.clone(),
                 status: NodeStatus::Ready,
                 allocated: None,
                 renamed_from: None,
-                inherited_by: None,
-                executable: None,
+                    executable: None,
                 births: Vec::new(),
                 predecessor: None,
                 mesh_id: None,
@@ -172,7 +172,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
             row.birth_mut(incarnation, &n.location());
         }
         storage.write_record(&row).await.unwrap();
-        assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::location("node.create", &n.location()), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+        assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.name)), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
         let h = handle(50_000);
         storage
             .put_runtime(&RuntimeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(),
@@ -230,8 +230,8 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     rows_written(&nodes_storage, &rows_m1, &[m1_a1.clone(), m1_r1.clone()]).await;
     rows_written(&nodes_storage, &rows_m2, &[m2_a1.clone(), m2_r1.clone()]).await;
 
-    // Compile TopologyChange::DeleteFabric and accept the Build.
-    let deleted_topology = compile(&initial, &TopologyChange::DeleteFabric, &*observed.read().await).expect("TopologyChange::DeleteFabric compiles to an empty/deleted topology");
+    // Compile BuildChange::DeleteFabric and accept the Build.
+    let deleted_topology = compile(&initial, &BuildChange::DeleteFabric, &*observed.read().await).expect("BuildChange::DeleteFabric compiles to an empty/deleted topology");
     assert!(deleted_topology.meshes.is_empty(), "a deleted fabric topology names no meshes: {deleted_topology:?}");
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
@@ -241,7 +241,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // The fabric-primary's door reads the node records its writers wrote (boot.rs: one nodes store),
     // never a birth from the gossip view (Q197).
     crate::bind_store(&cp, nodes_storage.clone(), &*observed.read().await).await;
-    let opened = cp.submit("POST /api/build", TopologyChange::DeleteFabric).await.expect("DeleteFabric is accepted as a Build");
+    let opened = cp.submit("POST /api/build", BuildChange::DeleteFabric).await.expect("DeleteFabric is accepted as a Build");
     let build_id = opened.build_id;
     builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: m1_a1.birth().unwrap() }).await.unwrap();
 
@@ -501,7 +501,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", id1.clone()), submitted_change: Some(TopologyChange::DeleteFabric), submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", id1.clone()), submitted_change: Some(BuildChange::DeleteFabric), source: None, submitted_at_ms: 0 })
             .await
             .unwrap();
         let op_m2 = operation(&id2);
@@ -598,7 +598,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", id1.clone()), submitted_change: Some(TopologyChange::DeleteFabric), submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", id1.clone()), submitted_change: Some(BuildChange::DeleteFabric), source: None, submitted_at_ms: 0 })
             .await
             .unwrap();
         let op_m2 = operation(&id2);
@@ -833,7 +833,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
 
 
         // Caller & Driver: typed caller submits DeleteFabric; the fabric-primary drives it as one Build.
-        let opened = cp.submit("POST /api/build", TopologyChange::DeleteFabric).await.expect("DeleteFabric is accepted as one Build");
+        let opened = cp.submit("POST /api/build", BuildChange::DeleteFabric).await.expect("DeleteFabric is accepted as one Build");
         let build_id = opened.build_id;
         builds
             .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),

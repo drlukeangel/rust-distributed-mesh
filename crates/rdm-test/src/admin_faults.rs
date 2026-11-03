@@ -41,8 +41,8 @@ use tracing::Instrument;
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CutSpec {
     /// A deployment-pipeline or Build step: the step's work is done and its receipt is not yet
-    /// durable. `operation` matches an action prefix; `node` matches the structured subject.
-    /// Known nodes use IDs; pre-allocation subjects carry separate path and name.
+    /// durable. `operation` matches an action prefix; `node` matches the structured subject; `at`
+    /// matches a create of the node at a path and name, the node.id its Build record names there (D58).
     Receipt {
         /// The step name.
         step: String,
@@ -50,6 +50,8 @@ pub enum CutSpec {
         #[serde(default)] operation: Option<String>,
         /// The operation's explicit subject.
         #[serde(default)] node: Option<rdm_core::OperationSubject>,
+        /// The path and name of the node a create's receipt creates.
+        #[serde(default)] at: Option<rdm_core::PathName>,
         /// The receipt is a Failed one (the step's work ended Failed and its receipt is not yet
         /// durable); a Complete one when false.
         #[serde(default)] failed: bool,
@@ -185,6 +187,8 @@ pub enum Probe {
         attempt: u32,
         /// Whether the receipt is a Failed one.
         failed: bool,
+        /// The path and name the Build record names the receipt's node.id created at, for a create.
+        at: Option<rdm_core::PathName>,
     },
     /// A lifecycle event about to be published.
     Event {
@@ -289,8 +293,8 @@ impl CutSpec {
     fn matches(&self, p: &Probe) -> bool {
         let node_is = |want: &Option<String>, got: &str| want.as_deref().is_none_or(|w| got == w);
         match (self, p) {
-            (CutSpec::Receipt { step, operation, node, failed }, Probe::Receipt { step: s, operation: o, failed: f, .. }) => {
-                failed == f && step == s && operation.as_deref().is_none_or(|prefix| o.action.starts_with(prefix)) && node.as_ref().is_none_or(|wanted| o.subject.as_ref() == Some(wanted))
+            (CutSpec::Receipt { step, operation, node, at, failed }, Probe::Receipt { step: s, operation: o, failed: f, at: a, .. }) => {
+                failed == f && step == s && operation.as_deref().is_none_or(|prefix| o.action.starts_with(prefix)) && node.as_ref().is_none_or(|wanted| o.subject.as_ref() == Some(wanted)) && at.as_ref().is_none_or(|wanted| a.as_ref() == Some(wanted))
             }
             (CutSpec::Event { event, node }, Probe::Event { event: e, op }) => event == e && node.as_ref().is_none_or(|wanted| wanted == &op.node_id),
             (CutSpec::AcceptedBuild, Probe::Accepted { .. }) => true,
@@ -571,8 +575,15 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
         self.faults.receipts_seen.fetch_add(1, Ordering::SeqCst);
         let failed = receipt.outcome != StepOutcome::Complete;
+        // A create's receipt names the node by the node.id the Build record minted for it (D58).
+        let at = match &receipt.operation.subject {
+            Some(rdm_core::OperationSubject::Node(id)) if receipt.operation.action == "node.create" => {
+                self.inner.read_build(&receipt.build_id).await.ok().and_then(|b| b.topology.created.iter().find(|(_, created)| created == id).map(|(at, _)| at.clone()))
+            }
+            _ => None,
+        };
         self.faults
-            .hold(Probe::Receipt { step: receipt.step.clone(), operation: receipt.operation.clone(), build_id: receipt.build_id.to_string(), attempt: receipt.attempt, failed })
+            .hold(Probe::Receipt { step: receipt.step.clone(), operation: receipt.operation.clone(), build_id: receipt.build_id.to_string(), attempt: receipt.attempt, failed, at })
             .await;
         self.inner.append_step_receipt(receipt).await
     }
