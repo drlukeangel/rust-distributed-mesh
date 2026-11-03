@@ -243,13 +243,13 @@ mod tests {
             "mesh2.node.1 is not the first node-admin of mesh2"
         );
         let create_m2_admin = BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh2".into(),
-            node_id: rdm_core::fixture_node_id(&m2_admin_path), node: m2_admin_path,
+            node_id: rdm_core::fixture_node_id(&m2_admin_path), path: m2_admin_path.path.clone(), name: m2_admin_path.name.clone(),
             over: None,
             executable: None,
             entry: None,
         };
         let create_m2_rpc = BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh2".into(),
-            node_id: rdm_core::fixture_node_id(&m2_rpc_path), node: m2_rpc_path,
+            node_id: rdm_core::fixture_node_id(&m2_rpc_path), path: m2_rpc_path.path.clone(), name: m2_rpc_path.name.clone(),
             over: None,
             executable: None,
             entry: None,

@@ -185,10 +185,12 @@ impl CallerDecision {
 pub(crate) struct AtlasRow {
     pub(crate) mesh: String,
     pub(crate) r#type: String,
-    /// The pair the record's last move came from (node-name-update.md "Claim and move": the
-    /// destination record's `renamed_from` names the source); `None` when no rename moved it.
-    pub(crate) moved_from: Option<PathName>,
-    pub(crate) name: PathName,
+    /// The name the record's last move came from, at its unchanged path (node-name-update.md "Check
+    /// and move": the record's `renamed_from` names it); `None` when no rename moved it.
+    pub(crate) moved_from: Option<String>,
+    pub(crate) path: String,
+    /// The name, beside its path.
+    pub(crate) name: String,
     pub(crate) node_id: NodeId,
     pub(crate) incarnation: Option<IncarnationId>,
     /// The status the ops left the birth in.
@@ -212,14 +214,13 @@ impl AtlasRow {
 
 impl AtlasRow {
     /// The accepted entry a rename moved this node off, when `accepted` does not name the pair its
-    /// record stands at now: its replacement provenance first, else the source its record's last move
-    /// names. `None` while the accepted topology names the pair, or when no rename moved the record.
+    /// record stands at now: the name its record's last move came from, at its unchanged path. `None` while the accepted topology names the pair, or when no rename moved the record.
     /// A pair is resolved through its name claim to this record (query.md §1), never by its spelling.
     pub(crate) fn entry_left(&self, accepted: &crate::accepted::FabricTopology) -> Option<PathName> {
         if accepted.contains(&self.location()) {
             return None;
         }
-        self.moved_from.as_ref()
+        self.moved_from.clone().map(|name| PathName { path: self.path.clone(), name })
     }
 }
 
@@ -582,7 +583,8 @@ impl Atlas {
             }
             t.nodes.retain(|n| n.location() != r.location());
             t.nodes.push(crate::model::Node {
-                name: r.name.clone(),
+                renamed_from: None,
+                path: r.path.clone(), name: r.name.clone(),
                 r#type: r.r#type.clone(),
                 mesh: r.mesh.clone(),
                 node_id: r.node_id.clone(),
@@ -616,7 +618,7 @@ impl Atlas {
     pub(crate) fn answer(&self, n: &mut crate::model::Node, row: Option<&NodeRow>) -> bool {
         let held = self.held.lock().unwrap();
         if let Some(r) = row.filter(|r| r.node_id == n.node_id && r.status != NodeStatus::Withdrawn) {
-            n.name = r.name.clone();
+            { let at = r.location(); n.path = at.path; n.name = at.name; }
         }
         let effect = n.incarnation_id.as_ref().and_then(|i| held.effects.get(&Birth { node_id: n.node_id.clone(), incarnation: i.clone() })).map(|e| e.lifecycle);
         match effect {
@@ -654,7 +656,7 @@ impl Atlas {
             return false;
         }
         if let Some(r) = row.filter(|r| r.node_id == n.node_id && r.status != NodeStatus::Withdrawn) {
-            n.name = r.name.clone();
+            { let at = r.location(); n.path = at.path; n.name = at.name; }
             let of_birth = r.newest_birth().is_none_or(|b| Some(&b.incarnation_id) == n.incarnation_id.as_ref());
             let live = matches!(r.status, NodeStatus::Starting | NodeStatus::Pending | NodeStatus::Ready | NodeStatus::ConnectionsDeleting | NodeStatus::ConnectionsDeleted);
             let silent = live && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead);

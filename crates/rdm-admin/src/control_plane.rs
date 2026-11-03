@@ -318,7 +318,7 @@ impl ControlPlane {
                     let mut paths = Vec::with_capacity(node_ids.len());
                     for id in node_ids {
                         match crate::accepted::birth_of_node_id(&observed, id) {
-                            Some(n) => paths.push(n.name.clone()),
+                            Some(n) => paths.push(n.location()),
                             None => {
                                 let reject = BuildReject::UnknownNodeId { node_id: id.clone() };
                                 outer.in_scope(|| reject_span(route, &reject));
@@ -389,7 +389,7 @@ impl ControlPlane {
             // its change removes, never a node it does not touch (build.md §1): a stopped node renamed
             // `<name>-old` is no path of any Build. A birth with no incarnation cannot be pinned.
             let mut pinned = Vec::new();
-            for n in crate::accepted::surplus_births(&topology, &observed).filter(|n| current.topology.contains(&n.name)) {
+            for n in crate::accepted::surplus_births(&topology, &observed).filter(|n| current.topology.contains(&n.location())) {
                 match crate::build::PinnedBirth::of(n) {
                     Some(birth) => pinned.push((n.location(), birth)),
                     None => return Err(not_live(&outer, route, &n.location(), n.status, "the node holds no incarnation id to pin its delete to")),
@@ -713,7 +713,7 @@ impl ControlPlane {
             Some(project) => project().await,
             None => self.topology.read().await.clone(),
         };
-        crate::accepted::birth_of_node_id(&t, node_id).map(|n| n.name.clone())
+        crate::accepted::birth_of_node_id(&t, node_id).map(|n| n.location())
     }
 
     /// Whether `path` names a birth the accepted topology never names there, deleted by the next attempt
@@ -1160,8 +1160,8 @@ mod tests {
         // its mesh's records, pre-checks its successor over its own view and refuses by name
         // (node-primary-update.md step 2; D64). The fabric-primary decides nothing for it from its projection.
         assert!(last_admin(&PathName::new("mesh1.node-admin", "1").unwrap(), "stop", &t, "mesh2").is_none(), "the stop of another mesh's primary is that primary's own pre-check");
-        assert!(crate::executor::role_move(&crate::build::BuildOperation::StopNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node: only.clone(), node_id: t.node(&only).unwrap().node_id.clone(), from_incarnation: t.node(&only).unwrap().incarnation_id.clone().unwrap() }, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
-        assert_eq!(crate::executor::role_move(&crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh1".into(), r#type: "node-admin".into(), birth: t.node(&only).and_then(crate::build::PinnedBirth::of), node: only, exited: None }, &t), None, "the delete of mesh1's only node skips the role move");
+        assert!(crate::executor::role_move(&crate::build::BuildOperation::StopNode { mesh: "mesh1".into(), r#type: "node-admin".into(), path: only.path.clone(), name: only.name.clone(), node_id: t.node(&only).unwrap().node_id.clone(), from_incarnation: t.node(&only).unwrap().incarnation_id.clone().unwrap() }, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
+        assert_eq!(crate::executor::role_move(&crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh1".into(), r#type: "node-admin".into(), birth: t.node(&only).and_then(crate::build::PinnedBirth::of), path: only.path.clone(), name: only.name.clone(), exited: None }, &t), None, "the delete of mesh1's only node skips the role move");
         assert_eq!(refusal(PathName::new("mesh2.node-admin", "1").unwrap(), "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
     }
 
@@ -1248,7 +1248,7 @@ mod tests {
         let mut held = with(PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", gone);
         held.created.clear();
         assert_eq!(named_executable_refusal(&current, &held, ProviderKind::Process, &[]).await, None);
-        assert_eq!(BuildReject::ExecutableRefused { node: PathName::new("root", "x").unwrap(), detail: "y".into() }.reason(), "executable-refused");
+        assert_eq!(BuildReject::ExecutableRefused { path: "root".into(), name: "x".into(), detail: "y".into() }.reason(), "executable-refused");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1260,7 +1260,7 @@ mod tests {
         for (p, r#type, b) in created {
             m.nodes.insert(p.clone());
             next.created.push((p.clone(), crate::model::NodeId::mint()));
-            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: r#type.to_string(), path: p.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: Some(b.clone()), tags: Default::default(), config: Default::default() });
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: r#type.to_string(), path: p.path.clone(), name: p.name.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: Some(b.clone()), tags: Default::default(), config: Default::default() });
         }
         (current, next)
     }

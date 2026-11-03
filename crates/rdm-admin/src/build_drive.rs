@@ -162,17 +162,17 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
     let key = op.key();
     match op {
         BuildOperation::ShutdownMesh { mesh, .. } => vec![PrecedingUpdate { run, mesh: mesh.clone(), operation: update_operation(PrimaryRole::FabricPrimary, &key), primary: None }],
-        BuildOperation::DeleteLiveNode { node, exited: None, .. }
-        | BuildOperation::DeleteConnections { node, .. }
-        | BuildOperation::StopNode { node, .. }
+        BuildOperation::DeleteLiveNode { exited: None, .. }
+        | BuildOperation::DeleteConnections { .. }
+        | BuildOperation::StopNode { .. }
             if op.r#type().as_deref().is_some_and(rdm_core::is_node_admin) =>
         {
             [PrimaryRole::MeshPrimary, PrimaryRole::FabricPrimary].into_iter().map(|role| PrecedingUpdate { run, mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(role, &key), primary: op.subject() }).collect()
         }
         // Any other node type's primary, commanded by its mesh-primary (node-primary-update.md, "Commander").
-        BuildOperation::DeleteLiveNode { node, exited: None, .. }
-        | BuildOperation::DeleteConnections { node, .. }
-        | BuildOperation::StopNode { node, .. } => {
+        BuildOperation::DeleteLiveNode { exited: None, .. }
+        | BuildOperation::DeleteConnections { .. }
+        | BuildOperation::StopNode { .. } => {
             vec![PrecedingUpdate { run, mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(PrimaryRole::of_type(&op.r#type().expect("a node operation has a type")), &key), primary: op.subject() }]
         }
         _ => Vec::new(),

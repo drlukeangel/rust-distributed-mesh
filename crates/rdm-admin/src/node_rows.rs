@@ -1012,7 +1012,7 @@ pub async fn record_at(storage: &dyn NodesStorage, name: &PathName) -> Result<Op
 pub(crate) async fn predecessor_by_id(storage: &dyn NodesStorage, original: &PathName, birth: &crate::storage::BirthRef) -> Result<NodeRow, String> {
     let row = storage.node(&birth.node_id).await.map_err(|e| format!("predecessor node {} could not be read: {e}", birth.node_id))?
         .ok_or_else(|| format!("admitted predecessor node {} has no record", birth.node_id))?;
-    if row.name != *original
+    if row.location() != *original
         || row.newest_birth().is_none_or(|held| held.incarnation_id != birth.incarnation_id) {
         return Err(format!("predecessor node {} does not match the admitted birth and original location", birth.node_id));
     }
@@ -1373,7 +1373,7 @@ pub enum RenameRefused {
 /// `node.name.update` is one write path, `crate::node_name_update`). Answers what it did and the
 /// record written, if it wrote one.
 pub async fn move_row(storage: &dyn NodesStorage, written: &WrittenRows, me: &PathName, record: &Node, from: &PathName, to: &PathName) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
-    if from.path != to.path || record.name.path != to.path {
+    if from.path != to.path || record.path != to.path {
         return Err(RenameRefused::Unwritten("a node's path is immutable; nothing is written".into()));
     }
     PathName::new(&to.path, &to.name).map_err(|error| RenameRefused::Unwritten(error.to_string()))?;
@@ -1397,7 +1397,7 @@ pub async fn move_row(storage: &dyn NodesStorage, written: &WrittenRows, me: &Pa
     let mut row = held.unwrap_or_else(|| NodeRow::new(from.clone(), record.mesh.clone(), &record.r#type, node_id.clone(), record.status));
     { let at = to.clone(); row.path = at.path; row.name = at.name; }
     row.allocated = None;
-    row.renamed_from = Some(from.clone());
+    row.renamed_from = Some(from.name.clone());
     written.put(storage, &row).await.map_err(|e| RenameRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: nodes.storage refused the record of {node_id} at path {to_path:?}, name {to_name:?}: {e}", me_path = &me.path, me_name = &me.name, to_path = &to.path, to_name = &to.name)))?;
     Ok((Moved::Renamed, Some(row)))
 }
@@ -1451,7 +1451,7 @@ mod tests {
                 let mut old = NodeRow::new(old_name, "mesh1", "node", NodeId::mint(), if retained { NodeStatus::Stopped } else { NodeStatus::Deleted });
                 old.executable = Some(rdm_core::binding::Binding { launch_id: "old-launch".into(), executable: "/old-executable".into(), sha256: "old-sha".into(), image: None });
                 old.storage_persistence = Some(rdm_core::meta::StoragePersistence::Ephemeral);
-                old.birth_mut(&IncarnationId::mint(), &old.name.clone());
+                old.birth_mut(&IncarnationId::mint(), &old.location());
                 storage.put_node(&old).await.unwrap();
                 let id = NodeId::mint();
                 let config = BTreeMap::from([("new-config".into(), "new-value".into())]);
@@ -1485,7 +1485,7 @@ mod tests {
             old.executable = Some(rdm_core::binding::Binding { launch_id: "previous-launch".into(), executable: "/previous-executable".into(), sha256: "previous-sha".into(), image: None });
             old.storage_persistence = Some(rdm_core::meta::StoragePersistence::Ephemeral);
             let incarnation = IncarnationId::mint();
-            old.birth_mut(&incarnation, &old.name.clone());
+            old.birth_mut(&incarnation, &old.location());
             storage.put_node(&old).await.unwrap();
             let id = NodeId::mint();
             let allocation = Allocation { predecessor: Some(crate::storage::BirthRef { node_id: old.node_id.clone(), incarnation_id: incarnation }), build_id: Some(rdm_core::BuildId::mint()), operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&name)), incarnation: IncarnationId::mint(), deployment_id: crate::model::DeploymentId::mint() };
@@ -1545,8 +1545,8 @@ mod tests {
         let renamed = location.renamed().unwrap();
         move_row(&storage, &written, &location, &record, &location, &renamed).await.unwrap();
         let after = storage.node(&record.node_id).await.unwrap().unwrap();
-        assert_eq!(after.name.path, location.path);
-        assert_eq!(after.name.name, "worker-old");
+        assert_eq!(after.path, location.path);
+        assert_eq!(after.name, "worker-old");
     }
 
     // @feature: node-records

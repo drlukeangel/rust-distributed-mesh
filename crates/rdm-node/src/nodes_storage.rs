@@ -245,7 +245,7 @@ pub struct NodeRow {
     /// (`rdm_admin::node_rows::finish_release`); once that key no longer holds the node it says nothing,
     /// so it is never cleared. A row no rename wrote carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub renamed_from: Option<PathName>,
+    pub renamed_from: Option<String>,
     /// The executable binding the node runs, beside its config (node-replace.md step 3: "the row
     /// records it beside `config`"): written at the create's claim with the binding that create
     /// launches, kept by every later write of the row, a `Deleted` row's included, and seeded from the

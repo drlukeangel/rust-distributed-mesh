@@ -178,15 +178,8 @@ pub fn held_admins<'a>(mesh: &str, target: Option<&PathName>, t: &'a Topology) -
 /// Why no admin executes `op` in view `t`: the mesh's held node-admins by name and status, or
 /// that the view names no admin at all.
 pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
-    let node = match op {
-        BuildOperation::CreateNode { node, .. }
-        | BuildOperation::DeleteLiveNode { node, .. }
-        | BuildOperation::DeleteConnections { node, .. }
-        | BuildOperation::StopNode { node, .. }
-        | BuildOperation::StartNode { node, .. }
-        | BuildOperation::DeleteNode { node, .. }
- => node,
-        _ => return format!("{:?}: no admin holds the primary role that executes it in this view", op.key()),
+    let Some(node) = op.node() else {
+        return format!("{:?}: no admin holds the primary role that executes it in this view", op.key());
     };
     let Some(mesh) = op.mesh() else { return format!("{:?} has no subject mesh", op.key()) };
     let held: Vec<String> = held_admins(mesh, Some(&node), t).into_iter().map(|n| format!("node {} ({:?})", n.node_id, n.status)).collect();
@@ -272,11 +265,12 @@ pub fn role_move(op: &BuildOperation, t: &Topology) -> Option<RoleMove> {
         let primary = t.fabric_primary().filter(|fp| fp.mesh == *mesh)?.clone();
         return Some(RoleMove { primary, mesh_role: false, fabric_role: true, node_type_role: false, successor: None });
     }
-    let (node, delete) = match op {
-        BuildOperation::DeleteLiveNode { node, exited: None, .. } => (node, true),
-        BuildOperation::DeleteConnections { node, .. } | BuildOperation::StopNode { node, .. } => (node, false),
+    let delete = match op {
+        BuildOperation::DeleteLiveNode { exited: None, .. } => true,
+        BuildOperation::DeleteConnections { .. } | BuildOperation::StopNode { .. } => false,
         _ => return None,
     };
+    let node = op.node()?;
     let admitted = op.subject()?;
     let subject = t.node_subject(&admitted)?;
     if !rdm_core::is_node_admin(&subject.r#type) {
@@ -766,7 +760,7 @@ mod tests {
     }
 
     fn create(n: PathName, mesh: &str, r#type: &str) -> BuildOperation {
-        BuildOperation::CreateNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: rdm_core::fixture_node_id(&n.clone()), node: n.clone(), over: None, executable: None, entry: None }
+        BuildOperation::CreateNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: rdm_core::fixture_node_id(&n.clone()), path: n.path.clone(), name: n.name.clone(), over: None, executable: None, entry: None }
     }
 
     fn expected(t: &Topology, location: &PathName) -> String {
@@ -792,7 +786,7 @@ mod tests {
     fn a_members_recovery_is_executed_by_its_mesh_primary_a_secondary_node_admins_included() {
         let recovery = |n: PathName, mesh: &str, r#type: &str| {
             let (node, from) = (n.clone(), crate::build::ExitedBirth { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint() });
-            [BuildOperation::DeleteLiveNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node: node.clone(), exited: Some(from.clone()), birth: None }, BuildOperation::CreateNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: rdm_core::fixture_node_id(&node), node, over: Some(from), executable: None, entry: None }]
+            [BuildOperation::DeleteLiveNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), path: node.path.clone(), name: node.name.clone(), exited: Some(from.clone()), birth: None }, BuildOperation::CreateNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: rdm_core::fixture_node_id(&node), path: node.path.clone(), name: node.name.clone(), over: Some(from), executable: None, entry: None }]
         };
         let recovered_by = |n: PathName, mesh: &str, r#type: &str, t: &Topology| {
             let who: Vec<String> = recovery(n.clone(), mesh, r#type).iter().map(|op| who(op, t)).collect();
@@ -841,9 +835,9 @@ mod tests {
         for n in moved.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && rdm_core::is_node_admin(&n.r#type)) {
             n.is_primary = n.location() == m2;
         }
-        assert_eq!(who(&BuildOperation::StopNode { mesh: "mesh2".to_owned(), r#type: "node-admin".into(), node: p2.clone(), node_id: moved.node(&p2).unwrap().node_id.clone(), from_incarnation: moved.node(&p2).unwrap().incarnation_id.clone().unwrap() }, &moved), expected(&moved, &m2), "once the role moved, the new mesh primary executes the former primary's stop");
-        let connections = |t: &Topology, n: PathName, mesh: &str, r#type: &str| BuildOperation::DeleteConnections { mesh: mesh.to_owned(), r#type: r#type.to_string(), node: n.clone(), node_id: t.node(&n).map(|x| x.node_id.clone()).unwrap_or_else(crate::model::NodeId::mint), from_incarnation: t.node(&n).and_then(|x| x.incarnation_id.clone()).unwrap_or_else(crate::model::IncarnationId::mint) };
-        let stop = |t: &Topology, n: PathName, mesh: &str, r#type: &str| BuildOperation::StopNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node: n.clone(), node_id: t.node(&n).map(|x| x.node_id.clone()).unwrap_or_else(crate::model::NodeId::mint), from_incarnation: t.node(&n).and_then(|x| x.incarnation_id.clone()).unwrap_or_else(crate::model::IncarnationId::mint) };
+        assert_eq!(who(&BuildOperation::StopNode { mesh: "mesh2".to_owned(), r#type: "node-admin".into(), path: p2.path.clone(), name: p2.name.clone(), node_id: moved.node(&p2).unwrap().node_id.clone(), from_incarnation: moved.node(&p2).unwrap().incarnation_id.clone().unwrap() }, &moved), expected(&moved, &m2), "once the role moved, the new mesh primary executes the former primary's stop");
+        let connections = |t: &Topology, n: PathName, mesh: &str, r#type: &str| BuildOperation::DeleteConnections { mesh: mesh.to_owned(), r#type: r#type.to_string(), path: n.path.clone(), name: n.name.clone(), node_id: t.node(&n).map(|x| x.node_id.clone()).unwrap_or_else(crate::model::NodeId::mint), from_incarnation: t.node(&n).and_then(|x| x.incarnation_id.clone()).unwrap_or_else(crate::model::IncarnationId::mint) };
+        let stop = |t: &Topology, n: PathName, mesh: &str, r#type: &str| BuildOperation::StopNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), path: n.path.clone(), name: n.name.clone(), node_id: t.node(&n).map(|x| x.node_id.clone()).unwrap_or_else(crate::model::NodeId::mint), from_incarnation: t.node(&n).and_then(|x| x.incarnation_id.clone()).unwrap_or_else(crate::model::IncarnationId::mint) };
         assert_eq!(who(&connections(&t, PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node"), &t), expected(&t, &PathName::new("mesh2.node-admin", "1").unwrap()), "a member's node.connection.delete is its mesh primary's");
         assert_eq!(who(&stop(&t, PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node"), &t), expected(&t, &PathName::new("mesh2.node-admin", "1").unwrap()), "a member's stop is its mesh primary's");
         assert_eq!(who(&connections(&t3, m2.clone(), "mesh2", "node-admin"), &t3), expected(&t3, &p2), "a non-primary admin's node.connection.delete is its mesh primary's");
@@ -917,8 +911,8 @@ mod tests {
         // Alone, the fabric primary has no successor: nobody executes its delete.
         let mut alone = mm(false);
         crate::election::resolve(&mut alone.nodes);
-        let fp = alone.fabric_primary().unwrap().name.clone();
-        assert_eq!(executor_for(&BuildOperation::DeleteLiveNode { mesh: "mesh1".to_owned(), r#type: "node-admin".into(), node: fp.clone(), exited: None, birth: alone.node(&fp).and_then(crate::build::PinnedBirth::of) }, &alone), None);
+        let fp = alone.fabric_primary().unwrap().location();
+        assert_eq!(executor_for(&BuildOperation::DeleteLiveNode { mesh: "mesh1".to_owned(), r#type: "node-admin".into(), path: fp.path.clone(), name: fp.name.clone(), exited: None, birth: alone.node(&fp).and_then(crate::build::PinnedBirth::of) }, &alone), None);
     }
 
     /// CONTRACT (#3016; elections §5: a primary proven gone "hands the role to the lowest

@@ -671,7 +671,7 @@ pub(crate) async fn with_entries(builds: &dyn crate::build_state::BuildStateAdap
     let entry_of = |node: &PathName| held.topology.node_spec(node).map(crate::build::EntrySpec::of);
     for op in &mut plan.operations {
         match op {
-            BuildOperation::CreateNode { node, entry, .. } => *entry = entry_of(node),
+            BuildOperation::CreateNode { path, name, entry, .. } => *entry = entry_of(&PathName { path: path.clone(), name: name.clone() }),
             _ => {}
         }
     }
@@ -1001,7 +1001,7 @@ mod tests {
         let plan_with_create = RunPlan {
             operations: vec![
                 BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(),
-                    node_id: rdm_core::fixture_node_id(&node_path.clone()), node: node_path.clone(),
+                    node_id: rdm_core::fixture_node_id(&node_path), path: node_path.path.clone(), name: node_path.name.clone(),
                     over: None,
                     executable: None,
                     entry: None,

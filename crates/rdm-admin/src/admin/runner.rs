@@ -1498,13 +1498,15 @@ impl AdminRunner {
             BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor_birth(), self.node_id.as_str(), build_id, attempt, op).await.map_err(Into::into),
             // A replacement's create of a replaced member: over its predecessor's kept data dir, launching
             // the binding the Build fixed (build-deployment.md §3).
-            BuildOperation::CreateNode { node, node_id, over: Some(from), executable: Some(executable), .. } => {
+            BuildOperation::CreateNode { path: node_path, name: node_name, node_id, over: Some(from), executable: Some(executable), .. } => {
+                let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), sha256 = %executable.sha256);
                 self.create_replacement(&*builds, build_id, attempt, node, from, node_id, executable).instrument(span).await
             }
-            BuildOperation::CreateNode { node, node_id, over: Some(from), executable: None, .. } => self.create_over_exited(&*builds, build_id, attempt, node, from, node_id).await,
-            BuildOperation::CreateNode { node, node_id, over: None, executable, entry, .. } => self.create_node(build_id, lane, attempt, node, node_id, executable.as_ref(), entry.as_ref(), crate::node_rows::RowFor::Create, operation).await,
-            BuildOperation::StartNode { r#type, mesh, node, node_id, from_incarnation } => {
+            BuildOperation::CreateNode { path: node_path, name: node_name, node_id, over: Some(from), executable: None, .. } => self.create_over_exited(&*builds, build_id, attempt, &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }, from, node_id).await,
+            BuildOperation::CreateNode { path: node_path, name: node_name, node_id, over: None, executable, entry, .. } => self.create_node(build_id, lane, attempt, &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }, node_id, executable.as_ref(), entry.as_ref(), crate::node_rows::RowFor::Create, operation).await,
+            BuildOperation::StartNode { r#type, mesh, path: node_path, name: node_name, node_id, from_incarnation } => {
+                let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, node_id = %node_id, incarnation_id = %from_incarnation.as_str());
                 self.start_stopped(Some(build_id), attempt, node, &crate::build::PinnedBirth { r#type: r#type.clone(), mesh: mesh.clone(), node_id: node_id.clone(), incarnation: from_incarnation.clone() }, operation).instrument(span).await
             }
@@ -2346,10 +2348,10 @@ mod tests {
         let rpc: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let pinned = PinnedBirth { mesh: "mesh1".into(), r#type: "node".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let ops = [
-            BuildOperation::DeleteLiveNode { r#type: "node".into(), mesh: "mesh1".into(), node: rpc.clone(), exited: None, birth: Some(pinned.clone()) },
-            BuildOperation::StopNode { r#type: "node".into(), mesh: "mesh1".into(), node: rpc.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
-            BuildOperation::DeleteConnections { r#type: "node".into(), mesh: "mesh1".into(), node: rpc.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
-            BuildOperation::StartNode { r#type: "node".into(), mesh: "mesh1".into(), node: rpc.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
+            BuildOperation::DeleteLiveNode { r#type: "node".into(), mesh: "mesh1".into(), path: rpc.path.clone(), name: rpc.name.clone(), exited: None, birth: Some(pinned.clone()) },
+            BuildOperation::StopNode { r#type: "node".into(), mesh: "mesh1".into(), path: rpc.path.clone(), name: rpc.name.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
+            BuildOperation::DeleteConnections { r#type: "node".into(), mesh: "mesh1".into(), path: rpc.path.clone(), name: rpc.name.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
+            BuildOperation::StartNode { r#type: "node".into(), mesh: "mesh1".into(), path: rpc.path.clone(), name: rpc.name.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
         ];
 
         // 1. Not-yet-held birth in the executor's view: every operation ends Incomplete, and no

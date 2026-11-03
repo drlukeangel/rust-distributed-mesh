@@ -102,8 +102,10 @@ pub enum BuildOperation {
     },
     /// Create a node at `node` (node-create.md).
     CreateNode {
-        /// The node to create.
-        node: PathName,
+        /// The node's path.
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The node.id the fabric-primary minted for the node when it accepted the Build, written in
         /// the Build record ([`crate::accepted::FabricTopology::created`]): the create allocates no
         /// other (D58).
@@ -253,7 +255,7 @@ impl BuildOperation {
     /// The accepted path and name, when this operation carries location metadata.
     pub fn node(&self) -> Option<PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::DeleteLiveNode { node, .. } => Some(node),
+            Self::CreateNode { path, name, .. } | Self::DeleteConnections { path, name, .. } | Self::StopNode { path, name, .. } | Self::StartNode { path, name, .. } | Self::DeleteNode { path, name, .. } | Self::DeleteLiveNode { path, name, .. } => Some(PathName { path: path.clone(), name: name.clone() }),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } => None,
         }
     }
@@ -281,9 +283,9 @@ impl BuildOperation {
     }
 
     /// The node a create operation makes (`create-node`); `None` for any other operation.
-    pub fn created_node(&self) -> Option<&PathName> {
+    pub fn created_node(&self) -> Option<PathName> {
         match self {
-            Self::CreateNode { node, .. } => Some(node),
+            Self::CreateNode { path, name, .. } => Some(PathName { path: path.clone(), name: name.clone() }),
             _ => None,
         }
     }
@@ -531,8 +533,10 @@ pub enum BuildReject {
     },
     /// The node is not one the fabric holds (build.md §4.4 gate 4).
     UnknownNode {
-        /// The node.
-        node: PathName,
+        /// The node's path.
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// The node is not live.
     NodeNotLive {
@@ -729,8 +733,10 @@ pub enum BuildReject {
     },
     /// A Create names a path and name a node already holds (build.md §1, §4.4).
     NameHeld {
-        /// The node.
-        node: PathName,
+        /// The node's path.
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// A Create names a path and name outside the name grammar.
     InvalidNodeName {
@@ -789,8 +795,8 @@ impl fmt::Display for BuildReject {
             Self::MeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` needs at least one node-admin"),
             Self::UnknownMesh { mesh } => write!(f, "mesh `{mesh}` is not in the fabric"),
             Self::MeshIdUnknown { mesh } => write!(f, "mesh `{mesh}` is held, but no member has stated its id: its shutdown cannot be keyed"),
-            Self::UnknownNode { node } => write!(f, "node (path `{}`, name `{}`) is not in the fabric", node.path, node.name),
-            Self::NodeNotLive { node } => write!(f, "node (path `{}`, name `{}`) is not live", node.path, node.name),
+            Self::UnknownNode { path, name } => write!(f, "node (path `{path}`, name `{name}`) is not in the fabric"),
+            Self::NodeNotLive { path, name } => write!(f, "node (path `{}`, name `{}`) is not live", path, name),
             Self::WouldLeaveMeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` would be left without a node-admin in the accepted topology"),
             Self::MeshAlreadyExists { mesh } => write!(f, "mesh `{mesh}` already exists"),
             Self::FabricMismatch { requested, fabric } => write!(f, "Build names fabric `{requested}`, this is `{fabric}`"),
@@ -804,20 +810,20 @@ impl fmt::Display for BuildReject {
                 f,
                 "node (path `{}`, name `{}`) is in mesh `{mesh}`, which this fabric-primary has not heard for {unheard_ms} ms: a peer mesh held unheard is held as a mesh, and its nodes are not restarted, replaced or deleted from here until it is heard again", path, name
             ),
-            Self::NodeNotStopped { node, found } => write!(f, "node (path `{}`, name `{}`) is not the birth the stopped-node collector selected at its delete's admission: {found}; nothing is deleted from the scan's decision", node.path, node.name),
-            Self::ReferencedByOpenBuild { node, build_id } => write!(f, "node (path `{}`, name `{}`)'s stopped birth is referenced by open Build {build_id}: it keeps it, and the stopped-node collector deletes nothing it holds", node.path, node.name),
+            Self::NodeNotStopped { path, name, found } => write!(f, "node (path `{}`, name `{}`) is not the birth the stopped-node collector selected at its delete's admission: {found}; nothing is deleted from the scan's decision", path, name),
+            Self::ReferencedByOpenBuild { path, name, build_id } => write!(f, "node (path `{}`, name `{}`)'s stopped birth is referenced by open Build {build_id}: it keeps it, and the stopped-node collector deletes nothing it holds", path, name),
             Self::LastAdmin { refusal, .. } | Self::NoSecondary { refusal, .. } => f.write_str(refusal),
             Self::NoNodeListed => write!(f, "the request lists no node: a fabric with no mesh is fabric.delete, never a topology request; nothing is accepted"),
             Self::TopologyStorageProviderNotRegistered { provider, registered } => write!(f, "the request names topology_storage_provider `{provider}`, which the fabric-primary's wiring does not register (it registers: {}): nothing is accepted and nothing moved", registered.join(", ")),
             Self::TopologyStorageProviderNotOpened { provider, detail } => write!(f, "the request names topology_storage_provider `{provider}`, which the fabric-primary's wiring registers and cannot open ({detail}): nothing is accepted and nothing moved"),
-            Self::NodeNamedTwice { node } => write!(f, "the request names (path `{}`, name `{}`) twice: each node is listed once", node.path, node.name),
-            Self::UnknownType { node, r#type } => write!(f, "(path `{}`, name `{}`) names type `{}`, which is neither `node` nor `node-admin` and which the fabric does not declare; nothing is accepted", node.path, node.name, r#type),
-            Self::ExecutableMissing { node } => write!(f, "(path `{}`, name `{}`) is created by the request and its create spec names no executable: every created node names the executable it runs; nothing is accepted", node.path, node.name),
-            Self::ExecutableRefused { node, detail } => write!(f, "the executable the request names for (path `{}`, name `{}`) is refused: {detail}; nothing is accepted", node.path, node.name),
-            Self::TagsRefused { node, detail } => write!(f, "the tags the request names for (path `{}`, name `{}`) are refused: {detail}; nothing is accepted", node.path, node.name),
+            Self::NodeNamedTwice { path, name } => write!(f, "the request names (path `{}`, name `{}`) twice: each node is listed once", path, name),
+            Self::UnknownType { path, name, r#type } => write!(f, "(path `{}`, name `{}`) names type `{}`, which is neither `node` nor `node-admin` and which the fabric does not declare; nothing is accepted", path, name, r#type),
+            Self::ExecutableMissing { path, name } => write!(f, "(path `{}`, name `{}`) is created by the request and its create spec names no executable: every created node names the executable it runs; nothing is accepted", path, name),
+            Self::ExecutableRefused { path, name, detail } => write!(f, "the executable the request names for (path `{}`, name `{}`) is refused: {detail}; nothing is accepted", path, name),
+            Self::TagsRefused { path, name, detail } => write!(f, "the tags the request names for (path `{}`, name `{}`) are refused: {detail}; nothing is accepted", path, name),
             Self::UnknownNodeId { node_id } => write!(f, "node {node_id}: no live birth holds this node.id (deleted, or replaced by a new birth at its path and name); nothing is accepted"),
-            Self::NameHeld { node } => write!(f, "(path `{}`, name `{}`) is already held by a node; nothing is accepted", node.path, node.name),
             Self::InvalidNodeName { path, name, detail } => write!(f, "(path `{path}`, name `{name}`) is outside the name grammar: {detail}; nothing is accepted"),
+            Self::NameHeld { path, name } => write!(f, "(path `{path}`, name `{name}`) is already held by a node; nothing is accepted"),
             Self::NodeSpecMismatch { mesh, missing, extra } => write!(
                 f,
                 "mesh `{mesh}`: every indexed location carries exactly one matching create spec; missing {missing:?}, inconsistent {extra:?}"
@@ -870,6 +876,6 @@ mod tests {
     #[test]
     fn only_a_create_operation_names_the_node_it_creates() {
         let node: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
-        assert_eq!(BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh2".into(), node_id: rdm_core::fixture_node_id(&node.clone()), node: node.clone(), over: None, executable: None, entry: None }.created_node(), Some(&node));
+        assert_eq!(BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh2".into(), node_id: rdm_core::fixture_node_id(&node), path: node.path.clone(), name: node.name.clone(), over: None, executable: None, entry: None }.created_node(), Some(node));
     }
 }
