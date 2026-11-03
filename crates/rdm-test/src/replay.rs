@@ -111,7 +111,7 @@ pub enum ManifestError {
     ShapesDisagree,
     /// A fault is scheduled at an operation index the scenario does not have.
     FaultStepOutOfRange { before_operation: usize, operations: usize },
-    /// A fault names a node that is not an rpc node of a declared mesh.
+    /// A fault names a node that is not a node of a declared mesh.
     FaultTargetUnknown(PathName),
     /// The owner's provider differs from the scenario's.
     ProviderDisagrees { owner: String, scenario: String },
@@ -129,7 +129,7 @@ impl fmt::Display for ManifestError {
             Self::Scenario(e) => write!(f, "replay manifest scenario is invalid: {e}"),
             Self::ShapesDisagree => write!(f, "replay manifest shapes differ from the scenario's meshes"),
             Self::FaultStepOutOfRange { before_operation, operations } => write!(f, "fault scheduled before operation {before_operation}, the scenario has {operations}"),
-            Self::FaultTargetUnknown(n) => write!(f, "fault targets {n:?}, which is no rpc node of the declared meshes"),
+            Self::FaultTargetUnknown(n) => write!(f, "fault targets {n:?}, which is no node of the declared meshes"),
             Self::ProviderDisagrees { owner, scenario } => write!(f, "replay manifest owner.provider `{owner}` differs from the scenario's `{scenario}`"),
         }
     }
@@ -194,7 +194,7 @@ impl ReplayManifest {
     }
 }
 
-/// The fault schedule a seed derives for a scenario: one restart of a seeded rpc node before a
+/// The fault schedule a seed derives for a scenario: one restart of a seeded node before a
 /// seeded operation. The same seed and scenario always derive the same schedule.
 pub fn schedule_from_seed(seed: u64, scenario: &Scenario) -> Vec<ScheduledFault> {
     let nodes: Vec<PathName> = scenario.meshes.iter().flat_map(|m| (1..=m.count(rdm_core::NODE)).map(move |n| PathName::new(format!("{}.node", m.name), n.to_string()).expect("declared scenario location"))).collect();

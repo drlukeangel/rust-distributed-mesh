@@ -54,7 +54,7 @@ fn attr_u64(sp: &Value, k: &str) -> u64 {
     sp["attributes"][k].as_str().and_then(|v| v.parse().ok()).unwrap_or(u64::MAX)
 }
 
-/// A mesh of two node-admins and two rpc nodes.
+/// A mesh of two node-admins and two nodes.
 fn mesh(name: &str) -> (&str, u32, u32) {
     (name, 2, 2)
 }

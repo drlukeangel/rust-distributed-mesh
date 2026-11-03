@@ -3,7 +3,7 @@
 //! member `PendingReconnect` at once when a command to it was never sent"; step 2: "Half a floor after
 //! the mark it runs node investigation").
 //!
-//! CONTRACT: in a one-mesh estate at a 60 s staleness floor, an rpc node's exact runtime
+//! CONTRACT: in a one-mesh estate at a 60 s staleness floor, a node's exact runtime
 //! is hung (every task but the leader held, so it neither gossips nor answers). At once the caller asks
 //! the mesh-primary (here the fabric-primary too) for `node.config.update` of that node: the
 //! mesh-primary's own `ApplyNodeConfig` to the hung birth spends its attempts with no answer, and the

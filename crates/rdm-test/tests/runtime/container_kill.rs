@@ -1,7 +1,7 @@
 //! i143 container proof (PRD §12.2), the kill cell: product=mesh, feature=mesh-runtime,
 //! subfeature=container-kill, rung=MN, provider=container.
 //!
-//! A real container kill (`docker kill`, SIGKILL to the container's init) of an rpc node. The
+//! A real container kill (`docker kill`, SIGKILL to the container's init) of a node. The
 //! mesh-primary hears the birth fall silent, proves it gone by its exact runtime's own terminal
 //! status (the provider inspecting the immutable container id in its control domain), opens the
 //! next attempt of the accepted Build, and that attempt re-creates the node at the same path and name in
@@ -62,9 +62,9 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
 
     let before = estate.node_value(&location()).await;
     assert_eq!(before["provider"], "container", "{before}");
-    let killed = estate.container_of(&location()).await.expect("the rpc node runs in a container labelled with its fabric and node ID");
+    let killed = estate.container_of(&location()).await.expect("the node runs in a container labelled with its fabric and node ID");
     assert_eq!(killed.len(), 64, "the immutable container id: {killed}");
-    let survivor = estate.container_of(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await.expect("the other rpc node's container");
+    let survivor = estate.container_of(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await.expect("the other node's container");
 
     // The real kill: SIGKILL to the container's init, from outside every admin.
     estate.fabric_ready();

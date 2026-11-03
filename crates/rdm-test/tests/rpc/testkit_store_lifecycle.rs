@@ -53,7 +53,7 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
     assert_eq!(r["op"], op, "{out}");
 }
 
-/// mesh1 with one node-admin and two rpc nodes, through the rectifier: the estate and the Build that
+/// mesh1 with one node-admin and two nodes, through the rectifier: the estate and the Build that
 /// accepted the shape.
 async fn estate(cell: &str) -> (Estate, rdm_client::BuildId) {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
@@ -217,7 +217,7 @@ async fn testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows
     let other_target = format!("path:{}", serde_json::to_string(&other()).unwrap());
     estate.holds_departure(&other(), "mesh1", &s(&first["node_id"])).await;
     let gone = estate.probe(&["resolve", "--target", &other_target, "--query", &exact_old]);
-    assert_eq!(gone["reply"]["resolution"], "gone", "the other rpc node holds the old birth's departure: {gone}");
+    assert_eq!(gone["reply"]["resolution"], "gone", "the other node holds the old birth's departure: {gone}");
     let holder = estate.probe(&["resolve", "--target", &other_target, "--query", &path]);
     assert_eq!(holder["reply"]["resolution"], "found", "{holder}");
     assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current primary is the replacement: {holder}");

@@ -183,7 +183,7 @@ const REMOVED_SPANS: [&str; 5] = ["rdm.node_admin.mesh.update.via-probe", "rdm.n
 /// "(A mesh none of whose node-admins can be reached is this page's case with no successor named: the
 /// fabric-primary investigates the lost mesh-primary and re-creates it at its path.name, Q335.)"
 /// CONTRACT (Q335; states.md: "**Fabric:** `pending` -> `ready`."): a peer mesh has one node-admin, its
-/// mesh-primary, and it is killed (exact SIGKILL) while the mesh's rpc nodes live. The election names no
+/// mesh-primary, and it is killed (exact SIGKILL) while the mesh's nodes live. The election names no
 /// successor. The fabric-primary's primary watch runs node investigation on the lost birth, reads its
 /// verdict (the runtime exited) and submits its node recovery; with no node-admin left in the mesh the
 /// fabric-primary executes it, and the node-admin is re-created at its path.name with a new node.id, the
@@ -336,7 +336,7 @@ async fn a_mesh_primary_heard_again_before_the_floor_is_never_investigated_and_n
 }
 
 /// CONTRACT (R-S3, same status, fresh proof): a peer mesh loses its primary node-admin (exact SIGKILL)
-/// while its other node-admin and its rpc nodes live. The survivor is ELECTED primary; nothing is created. It
+/// while its other node-admin and its nodes live. The survivor is ELECTED primary; nothing is created. It
 /// adopts the mesh's existing status without inventing a transition and re-sends the checklist's down op to
 /// its planned births. The killed primary is still a planned birth of the accepted Build, so the
 /// elected primary's checklist names it as missing (a named hold, no timer) and republishes nothing.

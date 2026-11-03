@@ -41,7 +41,7 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
         .filter(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary)
         .map(|n| (n.name, n.node_id, n.incarnation_id.expect("launched victim")))
         .min_by(|a, b| a.0.cmp(&b.0))
-        .expect("an rpc node of mesh2");
+        .expect("a node of mesh2");
 
     estate.kill_node(&victim.0).await;
 

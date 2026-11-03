@@ -93,7 +93,7 @@ async fn canary_cell(cell: &str, provider: &str) -> Value {
     facts
 }
 
-/// CONTRACT: on real processes, an RPC node restarted through Build is the same node, in the same
+/// CONTRACT: on real processes, a node restarted through Build is the same node, in the same
 /// process, under the same incarnation, endpoint and port (stop then start on the stopped process);
 /// the value written before the restart is read back from its own data dir; a request cut before it
 /// finished is NotSent and never applied; the restart's Build -> reconcile -> node -> step -> start
@@ -131,7 +131,7 @@ async fn seed_cell(cell: &str, provider: &str) {
     let after = estate_dir(cell).join("nodes-after.json");
     let nodes: Value = serde_json::from_str(&std::fs::read_to_string(&after).expect("nodes-after.json")).unwrap();
     let ready = |kind: &str| nodes.as_array().unwrap().iter().filter(|n| n["type"] == kind && n["status"] == "ready").count();
-    assert_eq!((ready("node-admin"), ready("node")), (2, 3), "the seed shape is MN = 2 admins + 3 rpc nodes: {nodes}");
+    assert_eq!((ready("node-admin"), ready("node")), (2, 3), "the seed shape is MN = 2 admins + 3 nodes: {nodes}");
     write_result(
         cell,
         &json!({
@@ -156,7 +156,7 @@ async fn seed_runner_completes_every_operation_on_container() {
 }
 
 /// One MN estate whose initial Build settled and whose fabric first reached ready, and a second
-/// Build (two more rpc nodes) accepted and still reconciling: the estate and the stream that follows it.
+/// Build (two more nodes) accepted and still reconciling: the estate and the stream that follows it.
 /// The Build in flight is a second one, accepted after the Day-0 Build completed (Q170).
 async fn estate_with_build_in_flight(cell: &str) -> (Estate, BuildStream) {
     let estate = Estate::bootstrap(owner(cell, "restart-refusals"), "fabric1", "mesh1").await;

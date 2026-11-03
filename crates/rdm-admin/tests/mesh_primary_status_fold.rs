@@ -54,7 +54,7 @@ fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool, fabri
     n
 }
 
-/// mesh1 with two admins (`mesh1.node-admin.1` primary of mesh1 and the fabric) and one rpc node.
+/// mesh1 with two admins (`mesh1.node-admin.1` primary of mesh1 and the fabric) and one node.
 fn view(mesh_id: &MeshId, fabric_id: &FabricId) -> Topology {
     Topology {
         fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },

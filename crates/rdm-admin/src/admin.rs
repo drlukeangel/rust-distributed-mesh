@@ -736,7 +736,7 @@ mod tests {
         let row = async |d: &MeshDigest| newest_of(&*refusing.inner, d).await.expect("the member's record carries its birth");
         let (a, r) = (row(&admin).await, row(&rpc).await);
         assert_eq!((a.is_primary, a.is_fabric_primary), (Some(3), None), "the mesh-primary's own row records is_primary at its revision");
-        assert_eq!((r.is_primary, r.is_fabric_primary), (Some(2), None), "the rpc node's row records is_primary at its revision");
+        assert_eq!((r.is_primary, r.is_fabric_primary), (Some(2), None), "the node's row records is_primary at its revision");
         assert_eq!(refusing.inner.node(&rpc.node.node_id).await.unwrap().and_then(|r| r.mesh_id), Some(mesh_id("mesh1")), "the record names its mesh by id");
         task.abort();
     }
@@ -3186,7 +3186,7 @@ mod tests {
     /// records the node's row"; the mesh-primary is the sole author of member status): a mesh-primary announces the role of each other node type of its mesh the election fills
     /// with a birth its record does not name (a first election, a primary proven gone), at the next
     /// revision over that record, and nothing while the record names the living primary. No other admin
-    /// announces a node-type primary role. Must NOT happen: an rpc node-type primary role that no record holds, so a
+    /// announces a node-type primary role. Must NOT happen: a node-type primary role that no record holds, so a
     /// lower NodeId that later becomes Ready displaces the living primary.
     #[tokio::test]
     async fn a_mesh_primary_announces_each_node_type_primary_the_election_fills_in_its_mesh() {
@@ -3205,7 +3205,7 @@ mod tests {
         digest_view.primaries.take(FabricPrimary, &primary_of(&me, 1));
         let me_birth = (&me.node.node_id, &me.node.incarnation);
         let node_type_said = |said: &[(rdm_core::PrimaryRole, rdm_core::Primary)]| said.iter().filter(|(s, _)| matches!(s, NodePrimary(_))).map(|(s, h)| (s.clone(), h.node_id.to_string(), h.revision)).collect::<Vec<_>>();
-        // A first election: no record of the rpc node type, the lowest Ready fills it at revision 1.
+        // A first election: no record of the node type, the lowest Ready fills it at revision 1.
         let decided = incumbency_of(&digest_view, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         let said = role_announcements(&t, "mesh1", me_birth, &decided);
@@ -3774,7 +3774,7 @@ mod tests {
 
         let primary = rdm_core::Primary { mesh: "mesh1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), revision: 1 };
         digest_view.primaries.take(rdm_core::PrimaryRole::NodePrimary("node".into()), &primary);
-        assert_eq!(due(&mut wake), Some("primaries"), "the rpc nodes' node-type primary record taken");
+        assert_eq!(due(&mut wake), Some("primaries"), "the nodes' node-type primary record taken");
         wake.seen();
 
         // The pruner's sweep, past the floor: the birth unheard since it was recorded.

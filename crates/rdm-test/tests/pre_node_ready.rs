@@ -1,7 +1,7 @@
 //! `pre_node_ready` (i143.e12.s20): the one hook an app supplies to be born full. RDM runs
 //! it after the join is accepted, the topology installed and the mesh channel joined, and gates
 //! Ready on it. The authority here is the rig's admin side, serving a test app's pull behind the
-//! gate of its own hook; the node is a real in-process rpc node.
+//! gate of its own hook; the node is a real in-process node.
 
 use crate::common::{admin_side_serving, AdminSide, Spans};
 use rdm_core::digest::MeshDigest;
@@ -32,7 +32,7 @@ fn rows() -> Vec<Row> {
 }
 
 /// An authority (the rig's admin side) in `status`, its pull gate closed, and the launch of one
-/// rpc node it deployed.
+/// node it deployed.
 async fn birth(status: MemberStatus) -> Birth {
     let primary = PullServer::new(rows());
     let fabric = FabricId::mint();

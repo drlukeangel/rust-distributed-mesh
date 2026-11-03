@@ -30,7 +30,7 @@ fn ready(n: &rdm_client::NodeView) -> bool {
     n.status == NodeStatus::Ready
 }
 
-/// Bootstraps mesh1 and builds 1 more node-admin and 2 rpc nodes, all ready, on a fabric ready.
+/// Bootstraps mesh1 and builds 1 more node-admin and 2 nodes, all ready, on a fabric ready.
 async fn small_estate(test: &str) -> Estate {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
@@ -68,7 +68,7 @@ async fn poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid() {
     estate.stop().await;
 }
 
-/// CONTRACT: a netfault cut drops UDP between one rpc node and the rest of the estate; while it
+/// CONTRACT: a netfault cut drops UDP between one node and the rest of the estate; while it
 /// holds, the admin's view stops hearing the node; when the cut is dropped, the node is heard and
 /// ready again with the same node id. Needs nft as root or through `sudo -n`.
 #[tokio::test(flavor = "multi_thread")]

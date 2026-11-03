@@ -3,7 +3,7 @@
 //! cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's
 //! manifest, rpc ledger and every process's spans land under it).
 //!
-//! The estate: mesh1 (one node-admin, one rpc node) and mesh2 (one node-admin, two rpc nodes),
+//! The estate: mesh1 (one node-admin, one node) and mesh2 (one node-admin, two nodes),
 //! settled through a Build; every birth joined its maker with `JoinNode` and read the maker's
 //! topology with `GetTopology`.
 
@@ -79,7 +79,7 @@ fn topology_frames(frames: &[Value]) -> Vec<Value> {
     frames.iter().filter(|f| f["frame"] != "primaries" && f["frame"] != "rafka-time").cloned().collect()
 }
 
-/// CONTRACT: an ordinary member (an rpc node, neither a primary nor a maker) answers
+/// CONTRACT: an ordinary member (a node, neither a primary nor a maker) answers
 /// `GetTopology` with the fabric topology it holds: its own mesh and the other mesh, each at its
 /// publisher and `topology_version`, as `Started`, one snapshot per mesh, the primaries and
 /// rafka-time it holds (`Primaries`, `RafkaTime`), `End`. A read naming the

@@ -290,14 +290,14 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     // The rebirth is drift recovery's, once the killed runtime is proven exited: wait for the
     // count, then for the roles.
     estate
-        .until_view_at(&admin1, "drift recovery restores three live rpc nodes", rdm_transport::topology::staleness_floor() * 2 + Duration::from_secs(30), |views| {
+        .until_view_at(&admin1, "drift recovery restores three live nodes", rdm_transport::topology::staleness_floor() * 2 + Duration::from_secs(30), |views| {
             (views.iter().filter(|n| n.mesh == "mesh1" && n.r#type == "node" && n.status == NodeStatus::Ready).count() == 3).then_some(())
         })
         .await;
     let nodes = settle(&estate, &admin1, "the node type is back at its desired count").await;
     estate.artifact("settled-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "live": nodes, "all": estate.node_values().await}));
     assert!(!nodes.iter().any(|n| n["node_id"] == killed_id.as_str()), "the killed birth {killed_id} is not live again: {nodes:#?}");
-    assert_eq!(nodes.iter().filter(|n| n["mesh"] == "mesh1" && n["type"] == "node").count(), 3, "three live rpc nodes: {nodes:#?}");
+    assert_eq!(nodes.iter().filter(|n| n["mesh"] == "mesh1" && n["type"] == "node").count(), 3, "three live nodes: {nodes:#?}");
     steady(&estate, &admin1, "the node type is back at its desired count", hold).await;
 
     // legal removal of the primary -> the next-lowest succeeds
@@ -318,7 +318,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     steady(&estate, &admin1, "after removal", hold).await;
 
     // The partition (Q111, Q122): one host, one store; no side's outcome is pinned, each is read from the
-    // trace. Side A holds the fabric-primary (the mesh's primary too) and one rpc node; side B the rest.
+    // trace. Side A holds the fabric-primary (the mesh's primary too) and one node; side B the rest.
     let nodes = estate.node_values().await;
     let admin_p = primary_of(&nodes, &admin).unwrap();
     let admin2 = location(nodes.iter().find(|n| n["type"] == "node-admin" && n["node_id"] != admin_p.as_str()).unwrap());
@@ -419,10 +419,10 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     assert!(own("rdm.mesh.election.resolve.via-fabric-recompute", "fabric_primary"), "day 0: fabric primary");
     assert!(announced(&spans, &rpc, &succ_id, &killed_id), "the successor to the killed primary was announced");
     assert!(announced(&spans, &rpc, &succ2_id, &removed_id), "the successor to the removed primary was announced");
-    // The restart's node.primary.update moved the rpc-node primary to the next-lowest ready NodeId,
+    // The restart's node.primary.update moved the node primary to the next-lowest ready NodeId,
     // which installed itself and answered (node-primary-update.md step 4).
     let role_moved_at = primary_updated(&spans, &rpc, &rdm_core::OperationId::primary_update(rdm_core::PrimaryRole::NodePrimary("node".into()), &stop_operation), &succ_r_id)
-        .unwrap_or_else(|| panic!("{succ_r:?} ({succ_r_id}) installed itself as the rpc-node primary before the restart of {rpc_p}"));
+        .unwrap_or_else(|| panic!("{succ_r:?} ({succ_r_id}) installed itself as the node primary before the restart of {rpc_p}"));
     // The restarted node never took its role back while the primary lived: from the restart's role move
     // until the kill. Before that move the node type's first election (no primary record) names the lowest
     // ready NodeId as each member of the forming MN becomes ready, which may move the role from the

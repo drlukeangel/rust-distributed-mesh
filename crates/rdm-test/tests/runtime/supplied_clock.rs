@@ -155,15 +155,15 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
 
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
     let nodes = estate.settled_views(&[("mesh1", 1, 1)]).await;
-    let target = nodes.iter().find(|n| n.r#type == "node").expect("rpc node");
+    let target = nodes.iter().find(|n| n.r#type == "node").expect("node");
     let node_id = &target.node_id;
     let fabric_view = estate.fabric_view().await;
     let fabric = fabric_view.id.clone();
     let mesh1_id = fabric_view.meshes.iter().find(|m| m.name == "mesh1").and_then(|m| m.id.clone()).expect("the fabric view names mesh1's id");
 
-    // The real frames: several heartbeats of the rpc node's one birth, and a MeshTopology publication.
+    // The real frames: several heartbeats of the node's one birth, and a MeshTopology publication.
     let observer = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
-    until_arrival("the observer decodes six heartbeats of the rpc node and a MeshTopology publication", Duration::from_secs(60), &observer.arrivals, || {
+    until_arrival("the observer decodes six heartbeats of the node and a MeshTopology publication", Duration::from_secs(60), &observer.arrivals, || {
         let members = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { .. }));
         (observer.heartbeats_of(node_id).len() >= 6 && members).then_some(())
     })
@@ -217,7 +217,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     estate.stop().await;
     let spans = estate.spans();
     let subscribed: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-subscribe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node_id.as_str()).collect();
-    assert!(!subscribed.is_empty(), "the rpc node's real topology view subscribed ({} spans read)", spans.len());
+    assert!(!subscribed.is_empty(), "the node's real topology view subscribed ({} spans read)", spans.len());
     let result = json!({
         "cell": CELL,
         "observer_heartbeats_before_forgery": before.iter().map(row).collect::<Vec<_>>(),

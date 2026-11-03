@@ -401,7 +401,7 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
 }
 
 /// CONTRACT (Q167 R-RD7: the node is `node.connection.get`'s address, the filter matches the connection
-/// rows): an rpc node answers `node.connection.get { node }` of its exact birth itself, with exactly the
+/// rows): a node answers `node.connection.get { node }` of its exact birth itself, with exactly the
 /// connections it holds (its latest Direct per destination that is connected and its active
 /// Proxies), named by the minted ids `node.connection.delete` names, its route to its admin among
 /// them; the answer names the node by the name it holds. `[destination: mesh1.node-admin.1] [kind:
@@ -492,7 +492,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         let _ = std::fs::remove_dir_all(&root);
         launch.node_id.clone()
     });
-    assert!(spans.0.lock().unwrap().values().any(|(n, _, f)| n == "rdm.node_admin.node.serve.via-connection-get" && f.get("node").map(String::as_str) == Some(rpc_id.as_str())), "node.connection.get served by the rpc node");
+    assert!(spans.0.lock().unwrap().values().any(|(n, _, f)| n == "rdm.node_admin.node.serve.via-connection-get" && f.get("node").map(String::as_str) == Some(rpc_id.as_str())), "node.connection.get served by the node");
 }
 
 /// The fields of every span named `name` that `node` opened, as the cell's capture holds them.

@@ -327,7 +327,7 @@ fn status_of(r: &NodeRow) -> String {
 fn fields(r: &NodeRow) -> Value {
     let b = r.newest_birth();
     json!({
-        "node_id": r.node_id, "name": r.name, "kind": r.r#type, "mesh": r.mesh, "mesh_id": r.mesh_id, "status": r.status,
+        "node_id": r.node_id, "name": r.name, "type": r.r#type, "mesh": r.mesh, "mesh_id": r.mesh_id, "status": r.status,
         "incarnation_id": b.map(|b| &b.incarnation_id), "declared": b.map(|b| &b.declared), "operations": b.map(|b| &b.operations),
         "silence": b.and_then(|b| b.silence), "data_dir_lost": b.and_then(|b| b.data_dir_lost.as_ref()), "data_dir_unreadable": b.and_then(|b| b.data_dir_unreadable.as_ref()),
         "cert": b.and_then(|b| b.cert.as_ref()), "signing_cert": b.and_then(|b| b.signing_cert.as_ref()),
@@ -396,7 +396,7 @@ fn now_ns() -> u64 {
 
 /// The fields a node's record keeps across a change of its mesh-primary (i150 R12; Q323: the successor
 /// writes the same record at the node id): identity, executable and storage ([`fields`]).
-const KEPT: [&str; 11] =["node_id", "name", "kind", "mesh", "mesh_id", "incarnation_id", "executable", "storage_persistence", "topology_storage_provider", "initial_properties", "allocated"];
+const KEPT: [&str; 11] =["node_id", "name", "type", "mesh", "mesh_id", "incarnation_id", "executable", "storage_persistence", "topology_storage_provider", "initial_properties", "allocated"];
 
 // @feature: node-records
 /// CONTRACT (i150 R1, e1; node-identity-and-state.md "A path is a path": "Replacement renames the
@@ -566,13 +566,13 @@ async fn a_deleted_birth_is_read_by_its_id() {
 // @feature: node-records
 /// CONTRACT (i150 R12, R13; e2; node-config-update.md "Deferred application and startup": "Existing
 /// durable properties and application recognition survive startup"): every field of a node survives
-/// its restart, compared whole, not sampled. An rpc node of mesh1 holding no role updates its own
+/// its restart, compared whole, not sampled. A node of mesh1 holding no role updates its own
 /// config and is tagged.
 /// 1. Stopped then started (the same birth): node.get lists every field as before but the measured
 ///    load and gossip counts and the member cert its start's join issues afresh (fabric-certs.md
 ///    "Every JoinNode issues a fresh member cert"), its property record is the same record, and its lifecycle record differs
 ///    only by the stop and start it recorded and that fresh cert. 2. Killed: the node recovered at the pair (a new node id
-///    over the inherited data dir) lists the same pair, kind, mesh, config, tags, executable, storage,
+///    over the inherited data dir) lists the same pair, type, mesh, config, tags, executable, storage,
 ///    data dir and endpoint key; its own property record holds the config and tags; its
 ///    lifecycle record carries the same identity fields and names its predecessor. Must NOT happen: a
 ///    field reset by a restart.
@@ -582,7 +582,7 @@ async fn all_node_fields_survive_node_restart() {
     let mut estate = estate_at(Estate::bootstrap(owner_of(test, "all-fields"), "fabric1", "mesh1").await, &[("mesh1", 1, 2)]).await;
     // The subject holds no role: a primary's stop hands its role over first (node-stop.md "Primary"),
     // so its `is_primary` is not a field a stop and start keeps.
-    let first = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh1" && n.r#type == "node" && !n.is_primary).expect("an rpc node of mesh1 that holds no role");
+    let first = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh1" && n.r#type == "node" && !n.is_primary).expect("a node of mesh1 that holds no role");
     let subject = first.name.clone();
     own_update(&estate, &first, "listener.data=127.0.0.1:45005");
     let labels: BTreeSet<String> = ["rabbit".to_string()].into();
@@ -626,14 +626,14 @@ async fn all_node_fields_survive_node_restart() {
     // 2. Forced exit: recovered at the pair as a new node over the inherited data dir.
     estate.kill_node(&subject).await;
     let recovered = estate.until_node(&subject, "a recovered node is ready at the pair", crate::node_recovery_due(), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
-    let changed = differing(&before, &recovered, &["name", "kind", "mesh", "config", "tags", "executable", "storage_persistence", "topology_storage_provider", "data_dir", "endpoint_id", "properties"]);
+    let changed = differing(&before, &recovered, &["name", "type", "mesh", "config", "tags", "executable", "storage_persistence", "topology_storage_provider", "data_dir", "endpoint_id", "properties"]);
     assert!(changed.is_empty(), "the recovered node lists every retained field: {changed:#?}");
     assert!(recovered.transport_addr.is_some(), "the recovered node lists the address it bound: {recovered:?}");
     let recovered_properties = wait_for("the recovered node's own property record", Duration::from_secs(30), || async { estate.node_properties(&recovered.node_id) }).await;
     assert_eq!((&recovered_properties.config, &recovered_properties.tags), (&properties.config, &properties.tags), "the recovered node's own record holds the config and tags");
     let recovered_record = latest(&estate, &recovered.node_id).await.expect("the recovered node's record");
     let recovered_lifecycle = fields(&recovered_record);
-    let changed = differing(&lifecycle, &recovered_lifecycle, &["name", "kind", "mesh", "mesh_id", "executable", "storage_persistence", "topology_storage_provider"]);
+    let changed = differing(&lifecycle, &recovered_lifecycle, &["name", "type", "mesh", "mesh_id", "executable", "storage_persistence", "topology_storage_provider"]);
     assert!(changed.is_empty(), "the recovered node's record keeps every retained field: {changed:#?}");
     assert_eq!(recovered_record.predecessor.as_ref().map(|p| &p.node_id), Some(&before.node_id), "the recovered record names its predecessor: {recovered_record:?}");
     estate.artifact("all-fields.json", &json!({"before": before, "started": started, "recovered": recovered, "lifecycle": lifecycle, "recovered_lifecycle": recovered_lifecycle}));
@@ -658,7 +658,7 @@ async fn takeover_survives_mesh_primary_restart() {
     let mut estate = estate_at(Estate::bootstrap(owner_of(test, "takeover"), "fabric1", "mesh1").await, &[("mesh1", 1, 0), ("mesh2", 3, 1)]).await;
     let views = estate.node_views().await;
     let a = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2's primary");
-    let member = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").cloned().expect("mesh2's rpc node");
+    let member = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").cloned().expect("mesh2's node");
     let mut recorded: BTreeMap<NodeId, Value> = BTreeMap::new();
     for n in views.iter().filter(|n| n.mesh == "mesh2") {
         recorded.insert(n.node_id.clone(), fields(&latest(&estate, &n.node_id).await.unwrap_or_else(|| panic!("{:?}'s record under A", n.name))));

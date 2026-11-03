@@ -7,7 +7,7 @@ use rdm_test::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
-/// A profile's shape (load-testing.md "Profiles"): meshes, node-admins and rpc nodes per mesh.
+/// A profile's shape (load-testing.md "Profiles"): meshes, node-admins and nodes per mesh.
 struct Profile {
     name: &'static str,
     meshes: u32,
@@ -485,7 +485,7 @@ fn throughput_rows(rows: &mut Rows, route: &str, rates: &mut [f64]) {
 }
 
 /// M9 (load-testing.md: "connection open latency and bytes per second, Direct and Proxy, N sources x M
-/// destinations; 60 s; reported, no target"). Direct: in each mesh (an rpc node holds its own mesh's
+/// destinations; 60 s; reported, no target"). Direct: in each mesh (a node holds its own mesh's
 /// births, never another mesh's), rpc.1 and rpc.2 to rpc.6 and rpc.7, each source's destinations in turn,
 /// every source at once; each pair's measure is its open (a cold Direct dial) and its 4 streams of
 /// 512 KiB its throughput. Proxy: in each mesh, rpc.3 to rpc.5 through
@@ -497,7 +497,7 @@ async fn data_plane(estate: &Estate, meshes: &[String], rpcs: u32, rows: &mut Ro
     const BYTES: u32 = 512 * 1024;
     let (probe, entry) = (estate.probe_handle(), estate.entry_birth());
     if rpcs < 7 {
-        println!("[load] M9: the data plane needs seven rpc nodes a mesh, this profile has {rpcs}: not measured");
+        println!("[load] M9: the data plane needs seven nodes a mesh, this profile has {rpcs}: not measured");
         return;
     }
     let nodes = estate.node_views().await;
@@ -683,7 +683,7 @@ enum Run {
     /// M10: M7 and M8 over this long at the largest passing profile, read for growth.
     Soak(Duration),
     /// M9: the data plane, Direct and Proxy, N sources x M destinations; reported, no target. The
-    /// estate's rpc nodes register the testkit's app protocol (its knob written before they launch).
+    /// estate's nodes register the testkit's app protocol (its knob written before they launch).
     DataPlane,
 }
 
@@ -705,7 +705,7 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", if evidence { &[] } else { &[("RDM_EVIDENCE_DIR", "")] }).await;
     let admin_up = t0.elapsed();
     if run == Run::DataPlane {
-        // Every rpc node the Build launches registers the app protocol, a carrier included.
+        // Every node the Build launches registers the app protocol, a carrier included.
         let root = estate.bootstrap_data_dir("mesh1").parent().expect("the estate root holds the data dirs").to_path_buf();
         std::fs::write(root.join(rdm_test::node::APP_PROTOCOL_PROXY_KNOB), b"").unwrap();
     }
@@ -801,7 +801,7 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     }
 
     // M3: a node's change to the last node-admin's own view holding it (load-testing.md M3): a node.stop
-    // of one rpc node, from its Complete to every node-admin's own topology (node.topology.get) holding it
+    // of one node, from its Complete to every node-admin's own topology (node.topology.get) holding it
     // stopped, then its node.start to every node-admin holding it ready; 20 samples each (100 in a
     // samples run, the target then on p99).
     let admins: Vec<rdm_core::PathName> = meshes.iter().flat_map(|m| (1..=p.admins).map(move |i| rdm_core::PathName::new(format!("{m}.node-admin"), i.to_string()).unwrap())).collect();
@@ -869,7 +869,7 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     }
 
     if run == Run::Baseline {
-        // M4: a SIGKILLed rpc node, kills spread across every mesh: the kill to its re-created birth Ready in
+        // M4: a SIGKILLed node, kills spread across every mesh: the kill to its re-created birth Ready in
         // every node-admin's own view; with evidence, the kill to the first stale mark of it
         // (`via-member-stale`) and that mark to Ready on their own; 10 kills.
         let (mut to_ready, mut to_mark, mut mark_to_ready) = (Vec::new(), Vec::new(), Vec::new());

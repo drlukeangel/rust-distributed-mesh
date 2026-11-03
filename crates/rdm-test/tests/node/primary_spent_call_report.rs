@@ -5,12 +5,12 @@
 //! mesh-primary the fabric-primary runs it").
 //!
 //! CONTRACT: in a two-mesh estate at a 60 s staleness floor (mesh1 holds the fabric-primary alone;
-//! mesh2 its mesh-primary and one rpc node), mesh2's mesh-primary's exact runtime is hung (it neither
-//! gossips nor answers). At once the caller asks mesh2's rpc node for `fabric.get`, which it forwards to
+//! mesh2 its mesh-primary and one node), mesh2's mesh-primary's exact runtime is hung (it neither
+//! gossips nor answers). At once the caller asks mesh2's node for `fabric.get`, which it forwards to
 //! its mesh-primary: that call spends its attempts with no answer, and the member reports it to the
 //! fabric-primary (`rdm.mesh.node.update.via-call-failed-report`, outcome `answered`, `primary_above`
 //! the fabric-primary). The fabric-primary marks the mesh-primary
-//! (`rdm.node_admin.node.update.via-call-failed`, sender the rpc node, outcome `marked`), and its
+//! (`rdm.node_admin.node.update.via-call-failed`, sender the node, outcome `marked`), and its
 //! primary watch investigates it from that mark (`rdm.node_admin.primary.update.via-investigation`,
 //! trigger `call-failed`), before the birth's silence alone would have started it (a floor after the
 //! hold). Must NOT happen: no report, a report to anyone but the fabric-primary, no mark, or the first
@@ -63,7 +63,7 @@ async fn a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_prim
     let views = estate.node_views().await;
     let fp = one(&views, "a fabric-primary", |n| n.is_fabric_primary);
     let mp = one(&views, "mesh2's mesh-primary", |n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary);
-    let rpc = one(&views, "mesh2's rpc node", |n| n.mesh == "mesh2" && n.r#type == "node");
+    let rpc = one(&views, "mesh2's node", |n| n.mesh == "mesh2" && n.r#type == "node");
     let (fp_id, mp_id, rpc_id) = (fp.node_id.to_string(), mp.node_id.to_string(), rpc.node_id.to_string());
 
     // The hold: mesh2's mesh-primary neither gossips nor answers from here.

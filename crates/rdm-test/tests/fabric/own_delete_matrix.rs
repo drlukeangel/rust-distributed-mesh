@@ -212,7 +212,7 @@ async fn a_two_mesh_fabrics_primary_left_after_fabric_deleted_is_deleted_by_its_
 
 /// CONTRACT (node-stop.md "Primary": "A target that is a primary hands over first ... With no successor
 /// the stop is refused by name before anything moves"; fabric-delete.md "After completion": the one call
-/// left is the fabric-primary's own node.delete): a one-mesh fabric {1 node-admin, 1 rpc node} completes
+/// left is the fabric-primary's own node.delete): a one-mesh fabric {1 node-admin, 1 node} completes
 /// fabric.delete, the fabric-primary alive and alone. Its node.stop, node.restart and
 /// node.connection.delete are each refused by name, `unknown-node` (the delete took it out of the
 /// accepted topology): none is run by itself as its own executor, which would leave a stopped
@@ -240,7 +240,7 @@ async fn after_fabric_deleted_the_fabric_primarys_own_stop_and_connections_delet
 
 /// CONTRACT (node-delete.md: "Caller / executor: Typed caller / accepted node-admin executor"; steps
 /// 1-4; mesh-delete.md "Executor": the mesh-primary; node-stop.md "Primary": a target that is a primary
-/// hands over first and is stopped by its successor): a one-mesh fabric {3 node-admins, 1 rpc node}.
+/// hands over first and is stopped by its successor): a one-mesh fabric {3 node-admins, 1 node}.
 /// node.delete of an admin that is no primary is executed by the mesh-primary: node.deleted, its runtime
 /// exited inside the bound. Then node.delete of the fabric-primary mesh1.node-admin.1, also mesh1's primary,
 /// which has a successor: it hands over first and the successor executes the delete, never itself:
@@ -280,11 +280,11 @@ async fn an_ordinary_admins_delete_and_the_fabric_primarys_delete_with_a_success
 /// anything moves"; a node.delete that would leave a mesh with members and no node-admin is refused by
 /// name, `would-leave-mesh-without-admin`, at acceptance (control_plane); mesh-delete.md step 7:
 /// a mesh-primary is deleted by its own node.delete only after its mesh.delete, the fabric-primary
-/// executing): a two-mesh fabric, mesh1 {1 node-admin, 1 rpc node} holding the fabric-primary and mesh2
-/// {2, 1}. node.delete of the fabric-primary, its mesh's only admin beside an rpc node, is refused
+/// executing): a two-mesh fabric, mesh1 {1 node-admin, 1 node} holding the fabric-primary and mesh2
+/// {2, 1}. node.delete of the fabric-primary, its mesh's only admin beside a node, is refused
 /// `would-leave-mesh-without-admin` by name. node.delete of mesh2's admin that is no primary is executed by mesh2's primary:
 /// node.deleted, its runtime exited inside the bound. node.delete of mesh2's primary, now its mesh's only
-/// admin beside an rpc node, is refused `would-leave-mesh-without-admin` by name, naming mesh2. What must NOT happen: a
+/// admin beside a node, is refused `would-leave-mesh-without-admin` by name, naming mesh2. What must NOT happen: a
 /// mesh-primary or the fabric-primary deleting itself while its mesh has members, or a refusal that
 /// moves a primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -379,7 +379,7 @@ async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, 
 
 /// CONTRACT (node-stop.md "Primary": "A target that is a primary hands over first by node.primary.update
 /// (node.fabric-primary.update for the fabric-primary) and is stopped by its successor"; node-start.md;
-/// Q183): a one-mesh fabric {2 node-admins, 1 rpc node}. node.stop of the fabric-primary
+/// Q183): a one-mesh fabric {2 node-admins, 1 node}. node.stop of the fabric-primary
 /// mesh1.node-admin.1 hands over to mesh1.node-admin.2 first, which executes the stop: the same birth stopped,
 /// its process alive. node.start makes it rejoin as the same birth. node.stop of the fabric-primary
 /// it handed over to hands over first again, and its node.start completes, the same node running after.
@@ -392,7 +392,7 @@ async fn in_a_one_mesh_fabric_the_fabric_primarys_stops_and_starts_are_executed_
 }
 
 /// CONTRACT (as the one-mesh row; node-primary-update.md "The fabric-primary"): the same in a two-mesh
-/// fabric, mesh1 {2 node-admins, 1 rpc node} holding the fabric-primary and mesh2 {1, 1}.
+/// fabric, mesh1 {2 node-admins, 1 node} holding the fabric-primary and mesh2 {1, 1}.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn in_a_two_mesh_fabric_the_fabric_primarys_stops_and_starts_are_executed_by_its_successor() {
     let test = "in_a_two_mesh_fabric_the_fabric_primarys_stops_and_starts_are_executed_by_its_successor";
@@ -401,7 +401,7 @@ async fn in_a_two_mesh_fabric_the_fabric_primarys_stops_and_starts_are_executed_
 
 /// CONTRACT (fabric-delete.md steps 1-4 as the demo estate's teardown runs them, `scripts/demo-estate.sh
 /// down`: `rdm-rpc-probe fabric-delete` at the Day-0 admin, then `rdm-rpc-probe node-delete` of the
-/// fabric-primary from outside): a two-mesh fabric of two node-admins and an rpc node each. The probe's
+/// fabric-primary from outside): a two-mesh fabric of two node-admins and a node each. The probe's
 /// fabric.delete completes; its node.delete of the fabric-primary answers node.deleted; the
 /// fabric-primary's runtime exits inside the stop's bound of that call's acceptance, and the estate's
 /// own stop then finds nothing to kill. What must NOT happen: the teardown leaving a runtime for the

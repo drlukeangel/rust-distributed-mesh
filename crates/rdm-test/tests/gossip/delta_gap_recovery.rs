@@ -4,11 +4,11 @@
 //! manifest, rpc ledger and every process's spans land under it) at the test cadence (staleness
 //! 3 s, gossip 500 ms).
 //!
-//! The estate: mesh1 (one node-admin, one rpc node) and mesh2 (one node-admin, two rpc nodes),
+//! The estate: mesh1 (one node-admin, one node) and mesh2 (one node-admin, two nodes),
 //! settled through a Build. An observer joins the backbone and mesh1's channel and decodes the
 //! real frames.
 //!
-//! CONTRACT: one change in mesh2 (an rpc node held by a tracer, so the provider reads it running, then released) is one `MeshTopologyDelta` on mesh1's
+//! CONTRACT: one change in mesh2 (a node held by a tracer, so the provider reads it running, then released) is one `MeshTopologyDelta` on mesh1's
 //! channel, from the version mesh1's primary last published, and the ordinary member of mesh1
 //! applies it at exactly that base. A member cut off from every peer while mesh2 changes hears
 //! the stripped full mesh1's primary replays when it is heard again, and holds the version the
@@ -36,7 +36,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const CELL: &str = "mesh_member_recovers_delta_gap_from_own_primary";
-/// The member whose gap is read: mesh1's rpc node. Its topology spans name it by its node id.
+/// The member whose gap is read: mesh1's node. Its topology spans name it by its node id.
 fn member_at() -> rdm_core::PathName {
     Estate::path("mesh1.node", "1")
 }
@@ -173,7 +173,7 @@ fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
         .collect()
 }
 
-/// A held rpc node: every task of its exact runtime but the leader held by a tracer, so it is silent
+/// A held node: every task of its exact runtime but the leader held by a tracer, so it is silent
 /// while the provider reads it running and node investigation tickles it rather than deciding at its
 /// inspect (a whole-process SIGSTOP reads `os-stopped`, the verdict at once, and re-creates the node,
 /// node-investigation.md step 2, Q273). Released on drop: a held node is never left held.
@@ -215,7 +215,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let mesh1_id = fabric_view.meshes.iter().find(|m| m.name == "mesh1").and_then(|m| m.id.clone()).expect("the fabric view names mesh1's id");
 
     let observer = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
-    // The held rpc node is mesh2's rpc node that is not its rpc primary: a primary unheard past the
+    // The held node is mesh2's node that is not its rpc primary: a primary unheard past the
     // staleness floor is superseded by the lowest Ready node of its type (fabric-node-lifecycle-elections.md),
     // a second change the healthy control below does not make. Which of the two holds the primary is the
     // NodeIds' draw (the lowest complete NodeId), so it is read from the settled view.
@@ -223,14 +223,14 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         .iter()
         .find(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary)
         .map(|n| n.name.clone())
-        .unwrap_or_else(|| panic!("mesh2 holds an rpc node that is not its rpc primary: {nodes:?}"));
+        .unwrap_or_else(|| panic!("mesh2 holds a node that is not its rpc primary: {nodes:?}"));
     let held = &held;
     let mut hold = Held { rt: rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&estate.data_dir(held).await)).unwrap_or_else(|r| panic!("{held:?}: no exact runtime published: {r:?}")), hung: None };
 
     // Joined: the observer is a new neighbour of mesh1's primary, which puts the stripped full of
     // every source it has published into the Mesh.
     // The backbone mesh topology carries loads: a member's load is its own digest's, so the first backbone
-    // topology published before mesh2's rpc nodes published theirs carries none yet.
+    // topology published before mesh2's nodes published theirs carries none yet.
     until_arrival("the observer hears mesh2's forwarded full on mesh1's channel and the backbone mesh topology carrying loads", Duration::from_secs(60), &observer.arrivals, || {
         let backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { mesh, digests, .. } if mesh == "mesh2" && digests.iter().any(|d| d.in_flight.is_some())));
         (!observer.forwarded_fulls_of("mesh2").is_empty() && backbone).then_some(())
@@ -283,12 +283,12 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let deltas_before = observer.deltas_of("mesh2").len();
     let t_change_a = now_ns();
     hold.hold();
-    let delta_a = until_arrival("the observer hears the delta for the held rpc node", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").get(deltas_before).copied()).await;
+    let delta_a = until_arrival("the observer hears the delta for the held node", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").get(deltas_before).copied()).await;
     // Stay a while longer: nothing else changes, so nothing else is sent.
     tokio::time::sleep(Duration::from_secs(5)).await;
     let after_a = observer.deltas_of("mesh2");
     assert_eq!(after_a.len(), deltas_before + 1, "one remote change is one delta: {after_a:?}");
-    assert_eq!((delta_a.3, delta_a.4), (0, 1), "the held rpc node left the projection: one removal and nothing else: {delta_a:?}");
+    assert_eq!((delta_a.3, delta_a.4), (0, 1), "the held node left the projection: one removal and nothing else: {delta_a:?}");
     assert_eq!(delta_a.1, baseline_version, "base_version is the version mesh1's primary last published into mesh1");
     assert_eq!(delta_a.2, delta_a.1 + 1, "one move, one version");
     let applied_a = wait_for("the member applies it at exactly its base", Duration::from_secs(30), || async {
@@ -367,8 +367,8 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let cut = Partition::start(&ports_of(&[("mesh1.node", "1")]), &others).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the member's traffic: {why}"));
     let cut_at = now_ns();
     hold.hold();
-    let delta_e = until_arrival("the observer hears the delta for the held rpc node while the member is cut", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").into_iter().find(|d| d.0 > cut_at)).await;
-    // The held rpc node, released, re-entered through node.mesh.join (Q87): its Pending and its
+    let delta_e = until_arrival("the observer hears the delta for the held node while the member is cut", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").into_iter().find(|d| d.0 > cut_at)).await;
+    // The held node, released, re-entered through node.mesh.join (Q87): its Pending and its
     // Ready were deltas of their own after the one the member applied at the baseline. The
     // member applied every one of them (no gap) before the cut, and the delta heard during the cut
     // follows the latest the member applied.

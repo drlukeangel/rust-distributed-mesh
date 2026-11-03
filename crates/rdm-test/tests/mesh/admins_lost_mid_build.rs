@@ -60,7 +60,7 @@ fn births(nodes: &[rdm_client::NodeView]) -> BTreeMap<PathName, String> {
     nodes.iter().map(|n| (n.name.clone(), n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default())).collect()
 }
 
-/// The Build that reconciles the fabric to `mesh2` with `r2` rpc nodes beside `mesh1`.
+/// The Build that reconciles the fabric to `mesh2` with `r2` nodes beside `mesh1`.
 fn shape(r2: u32) -> FabricDesired {
     FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", 3)]), MeshDesired::of("mesh2", [("node-admin", 2), ("node", r2)])] }
 }

@@ -52,7 +52,7 @@ fn capture(test: &str) -> rdm_transport::EvidenceCapture {
     rdm_transport::EvidenceCapture::start(&dir, "rafka-chaos-kit").expect("the cell's evidence file can be created")
 }
 
-/// mesh1 with two node-admins and three rpc nodes, all ready.
+/// mesh1 with two node-admins and three nodes, all ready.
 async fn estate(test: &str) -> Estate {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
@@ -87,8 +87,8 @@ async fn back_ready(estate: &Estate, node: &PathName, node_id: &NodeId) -> NodeV
     estate.until_node(node, &format!("{node:?} ready again as the same node"), SETTLE, |n| n.filter(|n| ready(n) && n.node_id == *node_id).cloned()).await
 }
 
-/// CONTRACT: a burst kill signals two rpc nodes' exact runtimes together, each acknowledged by its
-/// exit; the third rpc node and the fabric-primary node-admin (protected) are untouched; the view
+/// CONTRACT: a burst kill signals two nodes' exact runtimes together, each acknowledged by its
+/// exit; the third node and the fabric-primary node-admin (protected) are untouched; the view
 /// stops holding either victim's birth as ready. What must NOT happen: a signal to a protected or
 /// unnamed process.
 #[test]
@@ -121,7 +121,7 @@ fn burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest() {
         .expect("the burst applies");
         assert!(done.killed.iter().all(|k| k.exited), "{done:?}");
         assert!(gone(a.pid) && gone(b.pid), "both victims exited");
-        assert!(!gone(spared.pid) && !gone(protected.pid), "the spared rpc node and the protected fabric primary still run");
+        assert!(!gone(spared.pid) && !gone(protected.pid), "the spared node and the protected fabric primary still run");
         for (name, birth) in [(rpc("1"), &births[0]), (rpc("2"), &births[1])] {
             estate.until_node(&name, &format!("{name:?}'s birth no longer ready in the view"), SETTLE, |n| n.filter(|n| !ready(n) || n.node_id != birth.0 || n.incarnation_id != birth.1).map(|_| ())).await;
         }
@@ -159,7 +159,7 @@ fn disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal() {
     });
 }
 
-/// CONTRACT: a partition subset cuts two rpc nodes from every other node: while it stands the view
+/// CONTRACT: a partition subset cuts two nodes from every other node: while it stands the view
 /// stops holding either as ready; the fabric-primary is protected and refused by name; when the cut
 /// is dropped both are ready again as the same nodes.
 #[test]
@@ -193,7 +193,7 @@ fn partition_subset_cuts_a_node_set_from_the_rest_until_healed() {
     });
 }
 
-/// CONTRACT: a link between one rpc node and the rest flaps three times, each cut shorter than the
+/// CONTRACT: a link between one node and the rest flaps three times, each cut shorter than the
 /// staleness floor and healed between; afterwards the same node is ready with the same node id and
 /// the estate holds no ghost birth. Each cut and each heal leaves a span.
 #[test]
@@ -233,7 +233,7 @@ fn link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth() {
     });
 }
 
-/// CONTRACT: inbound UDP to one rpc node is dropped while its own sends are not: the view stops
+/// CONTRACT: inbound UDP to one node is dropped while its own sends are not: the view stops
 /// holding it as ready; when the drop is removed it is ready again as the same node.
 #[test]
 fn firewall_inbound_deafens_one_node_until_healed() {

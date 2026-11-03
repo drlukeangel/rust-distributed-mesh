@@ -91,7 +91,7 @@ fn attr<'a>(sp: &'a Value, k: &str) -> &'a str {
     sp["attributes"][k].as_str().unwrap_or_default()
 }
 
-/// mesh1 with `admins` node-admins and `rpcs` rpc nodes, through the rectifier.
+/// mesh1 with `admins` node-admins and `rpcs` nodes, through the rectifier.
 async fn estate(cell: &str, admins: u32, rpcs: u32) -> Estate {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", admins, rpcs)]).await;
@@ -124,12 +124,12 @@ async fn attempt_of(estate: &Estate, id: &str) -> u64 {
 /// CONTRACT (#2783): the process fault backend acts on the exact runtime a birth published
 /// (provider control domain + pid + start token), never on a pid alone, and the rectifier recovers
 /// the current birth. A forged start token (a recycled pid) is refused by name with the process
-/// untouched. A held rpc node (every task but the leader held by a tracer, so the provider reads it
+/// untouched. A held node (every task but the leader held by a tracer, so the provider reads it
 /// running: a SIGSTOP of the whole process reads `os-stopped`, which node investigation decides at its
 /// inspect and re-creates, Q273) is alive and silent: the OS acknowledges the hold, the
 /// view stops calling it ready, calls to it never complete, and no replacement, re-attempt or new
 /// birth follows; the thaw returns the SAME birth, which serves the value stored before the hold
-/// (the semantic wedge detector judges it). A killed rpc node is recovered by its mesh-primary
+/// (the semantic wedge detector judges it). A killed node is recovered by its mesh-primary
 /// (node-recovery.md): on the provider's exact exited verdict it submits one recovery as the next
 /// attempt of the SAME Build (reason recovery, operations `node.delete:<path>` then `node.create:<path>`,
 /// no Build minted); the exited instance is deleted before the new join, and a new
@@ -250,7 +250,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     rec.check("the primaries equal the public candidates' after the thaw", roles_after, detail_after);
     ev.reconciliation = Some(rec);
 
-    // ---- Kill: the exact runtime of another rpc node exits; the rectifier recovers the path.
+    // ---- Kill: the exact runtime of another node exits; the rectifier recovers the path.
     let kill_rt = published(&estate, &kill).await;
     let kill_dir = estate.data_dir(&kill).await;
     let killed = kill_rt.apply(Fault::Kill(estate.fabric_ready())).expect("the exact runtime is killed");
@@ -323,7 +323,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
             .cloned()
             .unwrap_or_else(|| panic!("a {reason} attempt of {build_id} running {operation} at {path:?}: {reconciles:?}"))
     };
-    // The rpc node and the secondary node-admin: each its mesh-primary's recovery (node-recovery.md,
+    // The node and the secondary node-admin: each its mesh-primary's recovery (node-recovery.md,
     // mesh-recovery.md:8-9).
     let (rpc_rec, admin_rec) = (recovery_for(&kill, "recovery", "node.create"), recovery_for(&admin, "recovery", "node.create"));
     for (rec, path, lost) in [(&rpc_rec, &kill, kill_n), (&admin_rec, &admin, &admin_n)] {

@@ -56,7 +56,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
         estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     }
     let incumbent_admin = Estate::path("mesh1.node-admin", "1");
-    // Build A: three rpc nodes, launched by the bootstrap admin. The accepted Build is never
+    // Build A: three nodes, launched by the bootstrap admin. The accepted Build is never
     // history: it is forgotten only once a later Build is current.
     let a = estate.reconcile_shape("fabric1", &[("mesh1", 1, 3)]).await.build_id;
     let nodes = estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;

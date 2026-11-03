@@ -61,7 +61,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         let (sender,_rx)=topic.split();
         let (restarted,started,deleted,rpc_primary)=(birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1),birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 2),birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", 3),birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node", 4));
         let (stop,delete)=(operation(&started,"stop"),operation(&deleted,"delete"));
-        // The version the read serves carries the rpc node-type primary record its publisher put in it:
+        // The version the read serves carries the `node` type primary record its publisher put in it:
         // a read serves a version's content as published, never records taken since (gossip.md §3.1).
         let full=vec![own.clone(),restarted.clone(),started.clone(),MeshDigest{is_primary:Some(10),..rpc_primary.clone()}];
         assert!(matches!(server_topology_view.take_read_chunk(Chunk{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:None,topology_version:100,snapshot_id:1,chunk_index:0,chunk_count:1,digests:full.clone(),in_flight:vec![],deleted:vec![delete.clone()]},"mesh1"),Taken::Installed(_)));

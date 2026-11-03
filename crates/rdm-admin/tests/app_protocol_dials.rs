@@ -1,7 +1,7 @@
 //! Why missed: no cell paired a birth that made no JoinNode, as the DIALER, with an acceptor that
 //! judges certs. `admin_app_alpns.rs` has the Day-0 admin only accept, under `Wiring::no_certs()`, so
 //! its member dialer passes on the bytes `b"cert-v1"` by name; `member_cert.rs` dials between two
-//! launched rpc nodes, each holding its join's cert; `rdm-test`'s `member_cert_admin.rs` asserted the
+//! launched nodes, each holding its join's cert; `rdm-test`'s `member_cert_admin.rs` asserted the
 //! Day-0 root's `member_cert == None` as the contract (the gap held as a passing cell); and no admin
 //! executable (`rdm-node-admin`, `faulted-node-admin`, the demo's `rshape-node-admin`, each
 //! `rdm_admin::entry::run_on`) can take its app protocols' `Connections`, so no estate ever had an admin
@@ -308,7 +308,7 @@ fn an_ordinary_node_holds_its_joins_member_cert_and_its_app_protocol_dials_are_a
 
 /// CONTRACT (fabric-certs.md §On a connection; node-connections-admit.md, Failure and receipts): the
 /// Day-0 root and a node it launched dial each other on a registered app ALPN, each admitted on the
-/// other's root: the Day-0 admin to an rpc node of its own mesh, and back.
+/// other's root: the Day-0 admin to a node of its own mesh, and back.
 #[test]
 fn the_day0_root_and_an_ordinary_node_it_launched_dial_each_other_on_an_app_protocol() {
     rt().block_on(async {

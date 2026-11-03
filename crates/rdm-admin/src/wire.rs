@@ -230,7 +230,7 @@ impl From<&TopologyChange> for WireChange {
         match c {
             TopologyChange::ReconcileFabric { desired } => Self::ReconcileFabric { desired: desired.into() },
             TopologyChange::ReconcileMesh { desired } => Self::ReconcileMesh { desired: desired.into() },
-            TopologyChange::AddNode { mesh, r#type: node_kind } => Self::AddNode { mesh: mesh.clone(), r#type: node_kind.clone() },
+            TopologyChange::AddNode { mesh, r#type } => Self::AddNode { mesh: mesh.clone(), r#type: r#type.clone() },
             TopologyChange::RemoveNode { node } => Self::RemoveNode { node: node.clone() },
             TopologyChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             TopologyChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh: mesh.clone() },
@@ -245,7 +245,7 @@ impl From<WireChange> for TopologyChange {
         match c {
             WireChange::ReconcileFabric { desired } => Self::ReconcileFabric { desired: desired.into() },
             WireChange::ReconcileMesh { desired } => Self::ReconcileMesh { desired: desired.into() },
-            WireChange::AddNode { mesh, r#type: node_kind } => Self::AddNode { mesh, r#type: node_kind },
+            WireChange::AddNode { mesh, r#type } => Self::AddNode { mesh, r#type },
             WireChange::RemoveNode { node } => Self::RemoveNode { node },
             WireChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             WireChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh },

@@ -1,4 +1,4 @@
-//! The declare probe: a testkit-only oracle on op `0x72` that makes the executing rpc node
+//! The declare probe: a testkit-only oracle on op `0x72` that makes the executing node
 //! declare its own lifecycle state to an authority over the real `Status` protocol and hands the
 //! typed reply back.
 //!

@@ -36,7 +36,7 @@ fn start_ns(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
 
-/// mesh1 {1 node-admin, 2 rpc nodes}, settled and ready; the rpc member that holds no
+/// mesh1 {1 node-admin, 2 nodes}, settled and ready; the rpc member that holds no
 /// role (its stop moves no role first) and its exact runtime.
 async fn mesh_with_a_member(test: &str) -> (Estate, PathName, ExactRuntime) {
     let estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[]).await;
@@ -133,7 +133,7 @@ async fn hold_until_recovered(estate: &Estate, path: &PathName) -> Held {
 /// is"; node-delete.md: the immediate terminate is "Explicit delete only, never recovery, which respects
 /// suspension"; node-investigation.md "Spans": node.runtime.inspect's own; node-runtime-inspect.md "Its
 /// span is the evidence"): two meshes, the fabric-primary in mesh1, mesh2 with two node-admins and one
-/// rpc node. mesh2's mesh-primary mesh2.node-admin.1 is held by the operating system (SIGSTOP, acknowledged
+/// node. mesh2's mesh-primary mesh2.node-admin.1 is held by the operating system (SIGSTOP, acknowledged
 /// `T`) and stays held through the fabric-primary's investigation of it: the investigation ends
 /// `os-stopped` (`rdm.node_admin.primary.update.via-investigation`), the fabric-primary's own inspection
 /// of the held runtime is a `rdm.node_admin.node.resolve.via-provider-inspection` span naming

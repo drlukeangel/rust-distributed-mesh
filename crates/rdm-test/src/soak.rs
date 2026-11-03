@@ -126,8 +126,8 @@ pub struct Config {
 }
 
 impl Config {
-    /// Two meshes of two node-admins and three rpc nodes; a mesh holds 2..=3 node-admins and
-    /// 3..=4 rpc nodes.
+    /// Two meshes of two node-admins and three nodes; a mesh holds 2..=3 node-admins and
+    /// 3..=4 nodes.
     pub fn mm(seed: u64, secs: u64, floor: Duration, backbone: Duration, tickle_ladder: Duration) -> Self {
         Self {
             seed,

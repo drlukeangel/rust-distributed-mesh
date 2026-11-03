@@ -52,10 +52,10 @@ fn requests_match_the_frozen_two_variant_wire_schema() {
             NodePrimaryUpdateRequest::PrimaryUpdate { primaries: vec![("node-admin".into(), primary(), successor(), 4), fabric_entry()], build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o") },
             format!("00 02 0a 6e6f64652d61646d696e {PRIMARY} {SUCCESSOR} 04 06 666162726963 {PRIMARY} {SUCCESSOR} 08 0162 02 016f 00 00 00"),
         ),
-        // variant 1 | type "rpc-node" | build_id | run | operation | successor none (a node-admin's command)
-        (NodePrimaryUpdateRequest::UpdatePrimary { r#type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: None }, "01 08 7270632d6e6f6465 0162 02 016f 00 00 00 00".to_string()),
+        // variant 1 | type "node" | build_id | run | operation | successor none (a node-admin's command)
+        (NodePrimaryUpdateRequest::UpdatePrimary { r#type: "node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: None }, "01 04 6e6f6465 0162 02 016f 00 00 00 00".to_string()),
         // variant 1 | ... | successor some: the birth the mesh-primary's pre-check named (Q129)
-        (NodePrimaryUpdateRequest::UpdatePrimary { r#type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: Some(successor()) }, format!("01 08 7270632d6e6f6465 0162 02 016f 00 00 00 01 {SUCCESSOR}")),
+        (NodePrimaryUpdateRequest::UpdatePrimary { r#type: "node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: Some(successor()) }, format!("01 04 6e6f6465 0162 02 016f 00 00 00 01 {SUCCESSOR}")),
     ];
     for (q, hex) in fixtures {
         assert_eq!(NodePrimaryUpdate::encode_request(&q).unwrap(), bytes(&hex), "{q:?}");

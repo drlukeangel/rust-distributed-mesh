@@ -220,7 +220,7 @@ fn a_blocked_direct_node_rpc_dial_ends_not_sent_and_a_carrier_of_the_sources_mes
 // @feature: connections
 /// CONTRACT (states.md "Stopped nodes": "Stopped: in the system with its identity kept, receiving no
 /// traffic, silent on gossip and not advancing"; connections.md §9.4: the node's one reconciler):
-/// rpc node mesh1.node.1's Direct dials toward mesh1.node.2 on the app protocol are blocked, so its one
+/// node mesh1.node.1's Direct dials toward mesh1.node.2 on the app protocol are blocked, so its one
 /// dial lands a `Direct Failed` whose next attempt is due one backoff later. mesh1.node.1 stops before
 /// that due time (its stop's span `rdm.mesh.node.update.via-leave-shutdown`). Past the due time and two
 /// reconciler ticks past it, the stopped node has dialled nothing: no

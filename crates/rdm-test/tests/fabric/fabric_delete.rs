@@ -289,8 +289,8 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
 /// existing bounds and their launch evidence is retained ... When every open attempt of the interrupted
 /// Build has ended, its run receives `Failed { step, reason }` naming the delete"): on a fabric the Day-0
 /// Build brought to ready (the Day-0 Build launches no node, and no other Build is accepted
-/// before its ready), a Build growing mesh1 by two rpc nodes is held by the fabric-primary's
-/// fault door inside the launch of the first, and fabric.delete is accepted. The second rpc node's create
+/// before its ready), a Build growing mesh1 by two nodes is held by the fabric-primary's
+/// fault door inside the launch of the first, and fabric.delete is accepted. The second node's create
 /// was admitted with the first (Q245: a mesh's member creates run at once). Released, the launch ends
 /// within its bound and its create's receipts stand; no create opens after the acceptance; the growth's
 /// run receives `Failed` naming the delete, and the teardown deletes the launched runtimes with the rest.
@@ -302,7 +302,7 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
     door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "node": {"Location": Estate::path("mesh1.node", "1")}})).await;
     let grown = [MeshDesired::of("mesh1", [("node-admin", 1), ("node", 2)])];
-    let mut grow = estate.submit_named("mesh1 grown to two rpc nodes", |current, executables| current.resized(&grown, false, executables)).await;
+    let mut grow = estate.submit_named("mesh1 grown to two nodes", |current, executables| current.resized(&grown, false, executables)).await;
     let grow_id = grow.build_id().to_string();
     let held = door.wait_held("launch").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(grow_id.as_str()), "the growth is held inside mesh1.node.1's launch: {held}");
@@ -357,7 +357,7 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
     let ids = ids_of(&estate).await;
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
     door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "node": {"Location": Estate::path("mesh1.node", "2")}})).await;
-    let grow = estate.submit_named("one more rpc node in mesh1", |current, executables| current.with_one_more("mesh1", "node", executables)).await;
+    let grow = estate.submit_named("one more node in mesh1", |current, executables| current.with_one_more("mesh1", "node", executables)).await;
     let grow_id = grow.build_id().to_string();
     let held = door.wait_held("launch").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(grow_id.as_str()), "the growth is held inside mesh1.node.2's launch: {held}");

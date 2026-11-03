@@ -3,9 +3,9 @@
 //! only. A node silent past the staleness floor is an event raised where that clock is read, the
 //! topology view's pruner (`rdm.mesh.topology.update.via-member-stale`), never a poll of the view.
 //!
-//! CONTRACT: in a one-mesh estate (two node-admins, two rpc nodes), once the fabric is ready and
+//! CONTRACT: in a one-mesh estate (two node-admins, two nodes), once the fabric is ready and
 //! nothing happens, no admin rebuilds its view on a poll: every `rdm.node_admin.topology.update.via-view-rebuild`
-//! names the event that made it due, and none is `poll`. Then a non-primary rpc node is SIGKILLed with
+//! names the event that made it due, and none is `poll`. Then a non-primary node is SIGKILLed with
 //! nothing else happening: its mesh-primary's pruner marks it stale, that mark makes the mesh-primary's
 //! view rebuild due (`woken = silence`) in the same sweep, and the node is recovered: a new birth,
 //! ready, at its separate path and name. What must NOT happen: a view rebuilt on a poll, or a SIGKILLed node
@@ -51,7 +51,7 @@ async fn an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_mark
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
     let nodes = estate
-        .until_view("two ready node-admins and two ready rpc nodes, one rpc node not a primary", Duration::from_secs(60), |views| {
+        .until_view("two ready node-admins and two ready nodes, one node not a primary", Duration::from_secs(60), |views| {
             let v = Estate::values(views);
             let ready = v.iter().filter(|n| n["status"] == "ready").count();
             (ready == 4 && v.iter().any(|n| n["type"] == "node" && n["is_primary"] != true)).then_some(v)
@@ -60,7 +60,7 @@ async fn an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_mark
     let mp_row = nodes.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh1's primary");
     let mp = s(&mp_row["node_id"]);
     let mp_location: rdm_core::PathName = serde_json::from_value(mp_row["name"].clone()).expect("structured location");
-    let victim_node = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] != true).expect("an rpc node that is no primary").clone();
+    let victim_node = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] != true).expect("a node that is no primary").clone();
     let (victim, victim_id) = (serde_json::from_value::<rdm_core::PathName>(victim_node["name"].clone()).expect("structured location"), s(&victim_node["node_id"]));
 
     // Nothing happens: the estate formed, and it is left alone for a while.
@@ -72,7 +72,7 @@ async fn an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_mark
     estate.kill_node(&victim).await;
     let killed_at = now_ns();
     estate
-        .until_view(&format!("a new birth at {victim:?} restores two ready rpc nodes"), floor + Duration::from_secs(60), |views| {
+        .until_view(&format!("a new birth at {victim:?} restores two ready nodes"), floor + Duration::from_secs(60), |views| {
             let ready: Vec<_> = views.iter().filter(|n| n.r#type == "node" && n.status == NodeStatus::Ready).collect();
             (ready.len() == 2 && !ready.iter().any(|n| n.node_id.to_string() == victim_id)).then_some(())
         })

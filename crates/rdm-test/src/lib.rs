@@ -26,7 +26,7 @@
 //!         test: "a_fabric_of_two_meshes_reaches_ready".into(),
 //!     };
 //!     let estate = Estate::bootstrap(owner, "fabric1", "mesh1").await;
-//!     // mesh1 with one node-admin, mesh2 with one node-admin and one rpc node.
+//!     // mesh1 with one node-admin, mesh2 with one node-admin and one node.
 //!     estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
 //!     estate.until_fabric_ready(Duration::from_secs(120)).await;
 //! }

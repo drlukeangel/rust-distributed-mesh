@@ -4,7 +4,7 @@
 //! estate's own manifest, rpc ledger and every process's spans land under it, feature
 //! `i143-2941`, test the cell's name) at the test cadence (staleness 3 s, gossip 500 ms).
 //!
-//! The estate: one mesh, one node-admin, two rpc nodes. One rpc node is restarted through Build
+//! The estate: one mesh, one node-admin, two nodes. One node is restarted through Build
 //! by the admin that launched it; the restarted birth's own entry pull and its mesh-channel join are
 //! read from its spans, against the admin's serve span, by the birth's own records.
 

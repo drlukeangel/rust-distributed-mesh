@@ -88,7 +88,7 @@ async fn a_two_mesh_fabric_is_ready_once_every_mesh_is_ready() {
 }
 
 /// CONTRACT: a two-mesh fabric whose meshes each hold the product role nodes (a broker, a gateway
-/// and a compute) changes to ready exactly as the rpc-node fabric does: once every mesh is.
+/// and a compute) changes to ready exactly as the node fabric does: once every mesh is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_two_mesh_fabric_of_role_nodes_is_ready_once_every_mesh_is_ready() {
     let test = "a_two_mesh_fabric_of_role_nodes_is_ready_once_every_mesh_is_ready";
@@ -100,7 +100,7 @@ async fn a_two_mesh_fabric_of_role_nodes_is_ready_once_every_mesh_is_ready() {
 /// CONTRACT: the mesh-primary of a role-node mesh dies and the election names its mesh's other admin
 /// mesh-primary. Each role node of that mesh (broker, gateway, compute) sees the mesh-primary move to
 /// another birth, owes its state again (the `via-mesh-primary-moved` span, naming the new mesh-primary) and
-/// declares it to the new mesh-primary (`via-declare-own`, definitive), the same re-owe the rpc node
+/// declares it to the new mesh-primary (`via-declare-own`, definitive), the same re-owe the node
 /// makes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_names() {
@@ -390,7 +390,7 @@ async fn every_build_sends_one_started_then_one_ended_and_a_resizes_ending_follo
 /// committed facts (Q61); no connections row, since it originated no data-plane connection (connections.md
 /// "The data plane is the connections log", R-CR6).
 ///
-/// After the first ready a growth Build adds mesh2 (its node-admin and an rpc node) and an rpc
+/// After the first ready a growth Build adds mesh2 (its node-admin and a node) and an rpc
 /// node to mesh1, and each of its writers writes straight to the store: mesh2's primary its Mesh record,
 /// mesh2.node.1 the connection it originates to mesh1.node.1. `fabric/` has one writer, the
 /// fabric-primary (R14 item 2); the Fabric row carries no pointer to the newest Build (R-BI3): the growth
@@ -467,7 +467,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let fp_id = s(&nodes[0]["node_id"]);
     addressed("mesh1", &fp_id).await;
 
-    // The growth Build, accepted after the first ready (Q170), adds mesh2 and an rpc node to
+    // The growth Build, accepted after the first ready (Q170), adds mesh2 and a node to
     // mesh1: every row its nodes write goes straight to the store.
     let shape = |m: &str, rpc: u32| MeshDesired::of(m, [("node-admin", 1), ("node", rpc)]);
     let second = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1", 1), shape("mesh2", 1)] }).await.build_id.to_string();
@@ -560,7 +560,7 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
     let build = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])] }).await.build_id.to_string();
     until_fabric(&estate, ScopeStatus::Ready, Some(build.as_str()), Duration::from_secs(60)).await;
     let nodes = estate.node_views().await;
-    let rpc = nodes.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node").expect("RPC fixture");
+    let rpc = nodes.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node").expect("the `node` fixture");
     let primary = nodes.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
     estate.stop().await;
     let spans = estate.spans();
@@ -573,9 +573,9 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
     let entered = change.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-every-mesh-ready").unwrap_or_else(|| panic!("every mesh was ready under {build}"));
     let announced = named(&spans, "rdm.mesh.primary.update.via-announcement")
         .into_iter()
-        .filter(|a| a["attributes"]["role"] == "rpc_node-primary" && a["attributes"]["via"] == "own" && a["attributes"]["node"] == primary.node_id.as_str())
+        .filter(|a| a["attributes"]["role"] == "node-primary" && a["attributes"]["via"] == "own" && a["attributes"]["node"] == primary.node_id.as_str())
         .min_by_key(|a| start(a))
-        .expect("the mesh-primary announced mesh1's rpc_node primary");
+        .expect("the mesh-primary announced mesh1's `node` primary");
     // The Day-0 Build: the first Build whose change found every mesh ready, and its attempt's claim. The
     // attempt is claimed when the claim decision ends (its in-flight row and its claim written): the
     // fabric-primary's reaction is measured from there, the claim's own reads and writes are not the wait.
@@ -588,10 +588,10 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
     let claim_decision_ms = (claim_decided as i128 - start(day0_claimed) as i128) / 1_000_000;
     let (to_checklist, to_announced, claim_to_checklist) = (ms(ready, entered), ms(ready, announced), (start(day0_entered) as i128 - claim_decided as i128) / 1_000_000);
     estate.artifact("gaps.json", &json!({ "ready_to_every_mesh_ready_ms": to_checklist, "ready_to_announced_ms": to_announced, "day0_claim_to_every_mesh_ready_ms": claim_to_checklist, "day0_claim_decision_ms": claim_decision_ms, "gossip_interval_ms": gossip.as_millis() as u64 }));
-    eprintln!("ready -> every mesh ready {to_checklist} ms, ready -> rpc_node-primary announced {to_announced} ms, Day-0 claim decided -> every mesh ready {claim_to_checklist} ms (the claim decision itself {claim_decision_ms} ms; gossip interval {} ms)", gossip.as_millis());
+    eprintln!("ready -> every mesh ready {to_checklist} ms, ready -> node-primary announced {to_announced} ms, Day-0 claim decided -> every mesh ready {claim_to_checklist} ms (the claim decision itself {claim_decision_ms} ms; gossip interval {} ms)", gossip.as_millis());
     let bound = (gossip / 4).as_millis() as i128;
     assert!(claim_to_checklist < bound, "the Day-0 fabric found every mesh ready {claim_to_checklist} ms after its Build's attempt was claimed (the claim decision ended), not within {bound} ms: it waited for the gossip interval");
     assert!(to_checklist < bound, "the fabric found every mesh ready {to_checklist} ms after mesh1.node.1's ready was applied, not within {bound} ms: it waited for the gossip interval");
-    assert!(to_announced < bound, "the rpc_node primary was announced {to_announced} ms after mesh1.node.1's ready was applied, not within {bound} ms: it waited for the gossip interval");
+    assert!(to_announced < bound, "the `node` primary was announced {to_announced} ms after mesh1.node.1's ready was applied, not within {bound} ms: it waited for the gossip interval");
     estate.record_trace_url(&s(&entered["trace_id"]));
 }

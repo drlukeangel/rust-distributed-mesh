@@ -4,7 +4,7 @@
 //!
 //! The fixture view: `mesh1` has the fabric-primary `mesh1.node-admin.1`, its mesh primary
 //! `mesh1.node-admin.2` (so a node of `mesh1` is executed by an admin that is not the fabric-primary),
-//! and `mesh1.node.1`. The Build grows `mesh1` by one rpc node.
+//! and `mesh1.node.1`. The Build grows `mesh1` by one node.
 
 use rdm_admin::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rdm_admin::build::{BuildId, BuildOperation, FabricDesired, MeshDesired};
@@ -580,7 +580,7 @@ impl OperationRunner for Lands {
 /// Two meshes: the fabric-primary `mesh1.node-admin.1` is mesh1's primary too, so it executes mesh1's
 /// members; mesh2's in its role admin is proven exited and its other admin is held but silent
 /// (PendingReconnect), so no admin executes mesh2's work in this view. The Build grows mesh1 by one
-/// rpc node and restores mesh2's two admins.
+/// node and restores mesh2's two admins.
 async fn held_successor_rig(lands: bool) -> Rig {
     let mut t = view();
     for n in t.nodes.iter_mut() {
@@ -601,7 +601,7 @@ async fn held_successor_rig(lands: bool) -> Rig {
 
 /// CONTRACT (elections §5, the same-mesh successor; R-A2: cross-mesh only when
 /// every node-admin of the mesh is proven lost): a run of the fabric-primary is cut before a later operation no
-/// admin executes in its view. The fabric-primary runs mesh1's rpc node and stops there: mesh2's
+/// admin executes in its view. The fabric-primary runs mesh1's node and stops there: mesh2's
 /// admins are not carried by the run, and the drive stalls naming mesh2's held admin, whose role the
 /// rest waits for.
 #[tokio::test]
@@ -618,7 +618,7 @@ async fn a_run_is_cut_before_an_operation_of_a_mesh_whose_admin_is_held_and_the_
 
 /// CONTRACT (node-rpc-envelope.md "Build, op `0x20`": "no completed step runs twice"): what a run
 /// completed is read from the Build's step receipts, never from the view. The fabric-primary's run of
-/// mesh1's rpc node is cut before mesh2's work and handed back to it; its view has not heard the new
+/// mesh1's node is cut before mesh2's work and handed back to it; its view has not heard the new
 /// node yet. The next claim does not dispatch the completed operation again: the drive dispatches
 /// once and stalls naming mesh2's held admin.
 #[tokio::test]
@@ -656,7 +656,7 @@ impl OperationRunner for Records {
 /// Complete receipt is durable on the executor that wrote it"; the stream reply is the authority and
 /// progress waits on no gossip): an executor on another host writes its receipts on its own log, and
 /// the fabric-primary's log holds them only once the Build topic carries them. mesh1's primary
-/// `mesh1.node-admin.2` runs mesh1's rpc node, and its run is cut before mesh2's work and handed back.
+/// `mesh1.node-admin.2` runs mesh1's node, and its run is cut before mesh2's work and handed back.
 /// Neither the fabric-primary's log nor its view holds the new node yet; the `Complete` frame on the
 /// run's stream says it completed, and the drive plans from that: the completed operation is not
 /// dispatched again, and the drive stalls naming mesh2's held admin.
@@ -1414,7 +1414,7 @@ fn a_leave_that_ends_incomplete_with_nothing_changed_claims_one_attempt_per_chan
     assert_eq!(dispatched, vec![(expected_executor.clone(), 1), (expected_executor.clone(), 2), (expected_executor.clone(), 3)], "three attempts for three states of the world, not one per pass");
 }
 
-/// Adds `mesh3` (a Mesh record and its primary and one rpc node) to the rig's view: a mesh the leave
+/// Adds `mesh3` (a Mesh record and its primary and one node) to the rig's view: a mesh the leave
 /// of `mesh2` does not act on.
 async fn add_mesh3(r: &Rig) {
     let mut t = r.env.topology.write().await;
@@ -1427,7 +1427,7 @@ async fn add_mesh3(r: &Rig) {
 /// `world()`: the first operation left, the Build's receipts, the members of the mesh that operation
 /// acts on by birth, status and primary, whether the fabric holds ready): a member change in a mesh the
 /// next attempt's first operation does not act on claims no attempt. The leave of `mesh2` ends
-/// incomplete; `mesh3`'s primary changes status, its rpc node is born again and its primary moves, and
+/// incomplete; `mesh3`'s primary changes status, its node is born again and its primary moves, and
 /// the drive stays idle through each: no claim, no dispatch, one via-stalled span. A change of `mesh2`'s
 /// own primary then claims the next attempt.
 /// Must NOT happen: an attempt claimed for a change in another mesh.
@@ -3165,7 +3165,7 @@ async fn at_once(fails: Option<PathName>) -> (Rig, Arc<AtOnce>) {
     at_once_to(fails, 2, 5).await
 }
 
-/// [`at_once`], mesh1 grown to `admins` node-admins and `rpcs` rpc nodes.
+/// [`at_once`], mesh1 grown to `admins` node-admins and `rpcs` nodes.
 async fn at_once_to(fails: Option<PathName>, admins: u32, rpcs: u32) -> (Rig, Arc<AtOnce>) {
     at_once_failing(fails, usize::MAX, admins, rpcs).await
 }
@@ -3189,7 +3189,7 @@ async fn at_once_failing(fails: Option<PathName>, times: usize, admins: u32, rpc
 }
 
 /// CONTRACT (Q245): the member creates of a mesh that one admin executes run at once, never one after
-/// another. mesh1 grows by four rpc nodes; its mesh primary runs the four creates together.
+/// another. mesh1 grows by four nodes; its mesh primary runs the four creates together.
 #[tokio::test]
 async fn a_meshs_member_creates_run_at_once() {
     let (r, at) = at_once(None).await;
@@ -3226,7 +3226,7 @@ async fn a_further_node_admin_is_created_with_its_meshs_other_nodes() {
     let mut ran = r.ran.0.lock().unwrap().clone();
     ran.sort();
     assert_eq!(ran, vec![rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node-admin", "3").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "4").unwrap())]);
-    assert_eq!(at.most.load(Ordering::SeqCst), 4, "the further node-admin's create ran with the rpc nodes'");
+    assert_eq!(at.most.load(Ordering::SeqCst), 4, "the further node-admin's create ran with the nodes'");
 }
 
 /// The fixture view with mesh2 and mesh3 beside mesh1, each its own mesh-primary's: `mesh1.node-admin.1` is the
@@ -3239,7 +3239,7 @@ fn three_meshes() -> Topology {
     }
 }
 
-/// CONTRACT (Q250): a Build grows mesh2 and mesh3, each by two rpc nodes, each mesh's nodes its own
+/// CONTRACT (Q250): a Build grows mesh2 and mesh3, each by two nodes, each mesh's nodes its own
 /// mesh-primary's to create. The fabric-primary sends each mesh-primary its section at once, each an attempt
 /// of that mesh's lane: the two sections' creates run together, and the Build completes. Must NOT happen:
 /// mesh3's creates waiting for mesh2's attempt to end.

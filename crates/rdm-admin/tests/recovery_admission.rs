@@ -24,7 +24,7 @@ fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool) -> No
     n
 }
 
-/// One mesh of two node-admins and two rpc nodes, every one of them in the accepted Build.
+/// One mesh of two node-admins and two nodes, every one of them in the accepted Build.
 fn view() -> Topology {
     let exited = node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", false);
     Topology {

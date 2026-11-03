@@ -2,9 +2,9 @@
 //! `scripts/i143-acceptance-gate.sh i143-rg2-chaos-process`, which exports `I143_ACCEPTANCE_DIR`
 //! and whose command sets `RDM_ARTIFACTS_DIR` at the test cadence (staleness 3 s, gossip 500 ms).
 //!
-//! The estate: two meshes of two node-admins and two rpc nodes each, settled through a Build.
+//! The estate: two meshes of two node-admins and two nodes each, settled through a Build.
 //!
-//! CONTRACT: forwarded topology carries topology, never liveness. An ordinary node (an rpc node)
+//! CONTRACT: forwarded topology carries topology, never liveness. An ordinary node (a node)
 //! holds a peer mesh's members as topology: across 60 s with nothing changing, and across a cut of
 //! every UDP path between the meshes, it never marks a peer mesh silent. A node-admin judges a
 //! peer mesh from the backbone alone: it marks the mesh silent in the cut and learns it again
@@ -59,7 +59,7 @@ fn silent_since(spans: &[Value], since: u64) -> Vec<(String, String)> {
     named(spans, "rdm.mesh.topology.update.via-mesh-silent").into_iter().filter(|sp| at(sp) >= since).map(|sp| (attr(sp, "node"), attr(sp, "mesh"))).collect()
 }
 
-/// CONTRACT: see the module docs. No rpc node marks any mesh silent in 60 s of nothing changing
+/// CONTRACT: see the module docs. No node marks any mesh silent in 60 s of nothing changing
 /// nor in a cut that outlasts the forwarded staleness floor; every node-admin marks the peer mesh
 /// silent in the cut and learns it again after the heal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

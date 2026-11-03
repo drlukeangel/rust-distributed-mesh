@@ -8,8 +8,8 @@
 //! Build records, read from its store root (Q292) and awaited through the shared `build_log::log_fact`. The spans an estate exports are the flame of each cell; no cell asserts behaviour
 //! from them.
 //!
-//! The estate: `mesh1` (two node-admins, one rpc node) holds the fabric-primary role, and `mesh2`
-//! (two node-admins, two rpc nodes) is run by its own primary, so a node of `mesh2` is executed by
+//! The estate: `mesh1` (two node-admins, one node) holds the fabric-primary role, and `mesh2`
+//! (two node-admins, two nodes) is run by its own primary, so a node of `mesh2` is executed by
 //! an admin that is not the fabric-primary and every Build crosses a real `build.attempt.run`.
 
 use iroh::SecretKey;
@@ -145,10 +145,10 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     named(spans, name)
 }
 
-/// The rpc node of `mesh2` that holds no role: executed by `mesh2`'s own primary with no preceding
+/// The node of `mesh2` that holds no role: executed by `mesh2`'s own primary with no preceding
 /// role move, so its stop is one attempt (`accepted.attempt`).
 async fn secondary_node(estate: &Estate) -> PathName {
-    estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary).map(|n| n.name).min().expect("an rpc node of mesh2 holding no primary role")
+    estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary).map(|n| n.name).min().expect("a node of mesh2 holding no primary role")
 }
 
 /// CONTRACT (acceptance 1): `node.stop` over `0x20` is one call. The stream is `Started`, a frame
@@ -262,7 +262,7 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
 /// reattachment": "`build.get [id: build_id]` for the receipts, then the outer stream again, resuming from the
 /// receipts"): a watched Build whose connection closes mid-stream is reattached by its build id, each
 /// reattachment a `build.get [id]` and then the outer stream again, and ends `Complete`, the run it watched
-/// left running: no second attempt, no step receipted twice. The Build grows mesh2 by an rpc node; its
+/// left running: no second attempt, no step receipted twice. The Build grows mesh2 by a node; its
 /// watcher reads the first frame, then every connection of the watching client is closed, the stream's
 /// with them. Must NOT happen: the watcher ending on the break, a reattachment that reads no receipts,
 /// a second attempt, a step run twice.
@@ -504,7 +504,7 @@ async fn suspended_executor_withholding(test: &str, withhold: bool) -> Suspended
     Suspended { estate, carrier, node, subject_id, executor, successor, fabric_primary, accepted, stream, door, rt, node_id, data_dir, ticks }
 }
 
-/// CONTRACT (node-start.md step 2, Q249): mesh2's primary carries a start of the stopped mesh2 rpc node,
+/// CONTRACT (node-start.md step 2, Q249): mesh2's primary carries a start of the stopped mesh2 node,
 /// clears the birth's stop mark at the start's join, and is held before it publishes the clear (it
 /// withholds its mesh's topology while it carries the start), then os-stopped. The next attempt's
 /// executor, (path mesh2.node-admin, name 2), reissues the start; the birth answers it `AlreadyApplied` (no `NodeJoined`),
@@ -1232,7 +1232,7 @@ async fn a_restored_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its_
 }
 
 /// CONTRACT (Q30): a launch whose executable hash outlasts the QUIC idle timeout keeps every open
-/// connection of its admin alive. `rpc_node` is bound to an executable that `exec`s the rpc node and
+/// connection of its admin alive. `rpc_node` is bound to an executable that `exec`s the node and
 /// is padded to 8 GiB (sparse: its zeros cost the hash CPU, not disk), so the launching admin's re-hash of it
 /// (`rdm.node_admin.deployment.resolve.via-executable-hash`) runs longer than the staleness floor,
 /// the QUIC idle timeout (node-rpc.md §21), on a bootstrap admin whose runtime has one worker. The
@@ -1246,7 +1246,7 @@ async fn a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_co
     let test = "a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_connection_alive";
     let sha = candidate_sha();
     let mut set = binding_set(&sha);
-    let real = set.bindings.iter().find(|b| b.launch_id == "node").expect("the rpc node is bound").executable.clone();
+    let real = set.bindings.iter().find(|b| b.launch_id == "node").expect("the node is bound").executable.clone();
     let dir = std::env::temp_dir().join(format!("q30-bound-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     std::fs::create_dir_all(&dir).unwrap();
     let wrapper = dir.join("rdm-rpc-node-padded");
@@ -1272,7 +1272,7 @@ async fn a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_co
     let spans = estate.spans();
     let floor_ms = rdm_core::cadence::staleness_floor().as_millis() as u64;
     let hashes: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.resolve.via-executable-hash").into_iter().filter(|sp| s(&sp["attributes"]["launch_id"]) == "node").collect();
-    assert!(!hashes.is_empty(), "the rpc node's launch re-hashed its executable");
+    assert!(!hashes.is_empty(), "the node's launch re-hashed its executable");
     for h in &hashes {
         let elapsed: u64 = s(&h["attributes"]["elapsed_ms"]).parse().unwrap_or(0);
         assert!(elapsed > floor_ms, "the hash outlasts the idle timeout ({floor_ms} ms), or the cell proves nothing: {h}");

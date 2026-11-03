@@ -2229,7 +2229,7 @@ mod tests {
     }
 
     /// CONTRACT (rdm#151): a refusal is shared by the launches that awaited it, each refused by
-    /// name: four launches at once (a broker, a gateway, a compute node and an rpc node) of one file
+    /// name: four launches at once (a broker, a gateway, a compute node and a node) of one file
     /// under one sha its bytes do not hash to are each refused naming the file, the bound sha, the
     /// file's sha and its own launch id; the file is read once (one `refused`, three
     /// `refused-shared`). Must NOT happen: a launch answered Ok, or refused naming another launch's id.

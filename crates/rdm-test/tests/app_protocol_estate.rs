@@ -3,7 +3,7 @@
 //! Why missed: no estate ever had a node-admin open or accept an app-protocol connection. An admin
 //! executable (`rdm-node-admin`, `faulted-node-admin`, the demo's `rshape-node-admin`) runs
 //! `rdm_admin::entry::run_on`, which never hands the embedding its `Running`, so no admin process can
-//! take its app protocols' `Connections`; the testkit's rpc node registered no app protocol; and the
+//! take its app protocols' `Connections`; the testkit's node registered no app protocol; and the
 //! in-process cells that did have an admin on an app ALPN (`rdm-admin`'s `admin_app_alpns.rs`) had it
 //! only accept, with no certs. The Day-0 root's missing member cert (Rafka 141: its dial refused
 //! `no-credential`) was reachable by no cell.
@@ -11,9 +11,9 @@
 //! The estate: the Day-0 node-admin runs in this process (the only admin that can take its app
 //! protocol's `Connections`, as an embedding's own node-admin does), holding the testkit's root, with the
 //! testkit's app protocol registered (`rdm_test::node::APP_PROTOCOL`); every other node is a process a
-//! Build created, its rpc nodes registering the same protocol through the root's knob file. Both
-//! directions are dialed between the Day-0 admin and an rpc node, in a one-mesh fabric (the rpc node
-//! restarted too) and in a two-mesh fabric (an rpc node of the mesh another admin leads).
+//! Build created, its nodes registering the same protocol through the root's knob file. Both
+//! directions are dialed between the Day-0 admin and a node, in a one-mesh fabric (the node
+//! restarted too) and in a two-mesh fabric (a node of the mesh another admin leads).
 
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
@@ -245,9 +245,9 @@ fn run(cell: &str, body: impl FnOnce(PathBuf) -> std::pin::Pin<Box<dyn std::futu
 
 // @feature: connections
 /// CONTRACT (fabric-certs.md §When a cert is issued, §On a connection; node-connections-admit.md): in a
-/// one-mesh fabric the Day-0 node-admin dials an rpc node of its mesh on a registered app protocol and is
-/// admitted (its stream answered by the node's app), and the rpc node's dial to the Day-0 admin is
-/// admitted; after the rpc node's `node.stop then node.start` (the same birth, its start's join issuing it a fresh cert, and its drop record of the Day-0 admin dialled again, connections.md §7) both
+/// one-mesh fabric the Day-0 node-admin dials a node of its mesh on a registered app protocol and is
+/// admitted (its stream answered by the node's app), and the node's dial to the Day-0 admin is
+/// admitted; after the node's `node.stop then node.start` (the same birth, its start's join issuing it a fresh cert, and its drop record of the Day-0 admin dialled again, connections.md §7) both
 /// directions are admitted again. A second node-admin stopped and started as the same birth installs a
 /// fresh member cert at its start's join. Must NOT happen: the Day-0 admin refused `no-credential` (Rafka 141).
 #[test]
@@ -255,7 +255,7 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
     run("app-protocol-one-mesh", |dir| {
         Box::pin(async move {
             let d = day0(&dir).await;
-            // Two rpc nodes: a restart of the type primary hands the role to the other first (node-stop.md "Primary": a sole one is refused no-secondary).
+            // Two nodes: a restart of the type primary hands the role to the other first (node-stop.md "Primary": a sole one is refused no-secondary).
             d.reconcile(&[MeshDesired::of("mesh1", [("node-admin", 2), ("node", 2)])]).await;
             let rpc: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
             d.until_ready(&rpc).await;
@@ -304,9 +304,9 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
 
 // @feature: connections
 /// CONTRACT (fabric-certs.md §When a cert is issued: "a new mesh's first node-admin is deployed"; §On a
-/// connection): in a two-mesh fabric the Day-0 node-admin (mesh1's, the fabric-primary) and an rpc node
+/// connection): in a two-mesh fabric the Day-0 node-admin (mesh1's, the fabric-primary) and a node
 /// of mesh2, launched by mesh2's own admin, dial each other on a registered app protocol and are
-/// admitted both ways; so are the Day-0 admin and mesh1's rpc node. Must NOT happen: a dial across the
+/// admitted both ways; so are the Day-0 admin and mesh1's node. Must NOT happen: a dial across the
 /// meshes refused for a cert of another chain, or the Day-0 admin refused `no-credential`.
 #[test]
 fn the_day0_admin_and_rpc_nodes_of_both_meshes_dial_each_other_on_an_app_protocol_in_a_two_mesh_fabric() {

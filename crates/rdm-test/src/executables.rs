@@ -74,8 +74,7 @@ fn sha256_once(path: &Path) -> Result<String, String> {
 /// testkit application's declared type's, [`crate::test_app::types`], else RDM's
 /// [`StoragePersistence::of_type`]), no tags, no config, and `executable`.
 pub fn created_spec(path: PathName, mesh: &str, r#type: &str, executable: Binding) -> NodeSpec {
-    let declared = crate::test_app::types();
-    let storage_persistence = rdm_core::NodeType::of(&declared, r#type).map_or_else(|| StoragePersistence::of_type(r#type), |t| t.storage_persistence);
+    let storage_persistence = crate::test_app::storage_of(r#type);
     NodeSpec { path, mesh: mesh.into(), r#type: r#type.to_string(), storage_persistence, executable: Some(executable), tags: Default::default(), config: Default::default() }
 }
 

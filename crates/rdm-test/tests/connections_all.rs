@@ -277,7 +277,7 @@ fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_a
 }
 
 /// CONTRACT (R24, Luke Q11: "the same variant at every Status door that can lack a handler for a
-/// request it receives: the rpc node's, the node-admin's and the test rig's"): the test rig's admin
+/// request it receives: the node's, the node-admin's and the test rig's"): the test rig's admin
 /// side serves state check-ins and declarations only. A `fabric.get` reaching its Status door is
 /// answered `RequestNotHandled` naming the request, decided by dispatch alone, on the admin side's
 /// reject span `rdm.node.status.reject.via-request-not-handled` naming the request and the admin side.

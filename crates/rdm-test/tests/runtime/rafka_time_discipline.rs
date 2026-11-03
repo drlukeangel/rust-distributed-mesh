@@ -1,7 +1,7 @@
 //! Rafka-time discipline process cell (i143.e12.s21): a node whose rafka-time is put off its
 //! authority's is brought back to it by the heartbeats the authority already publishes.
 //!
-//! The cell runs a two-mesh fabric of two node-admins and two rpc nodes per mesh. Three rpc nodes
+//! The cell runs a two-mesh fabric of two node-admins and two nodes per mesh. Three nodes
 //! carry a scenario-recorded knob (`rdm_test::rafka_time_knob_dir`), applied by the
 //! testkit executable once the node has adopted its authority's time:
 //!

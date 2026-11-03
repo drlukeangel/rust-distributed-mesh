@@ -1,7 +1,7 @@
 //! i143.e4.s16 functional: `WaitForNodeReady` begins only over committed
 //! runtime prerequisites (PRD §5.3).
 //!
-//! A real rpc node is created through the process pipeline while the Build
+//! A real node is created through the process pipeline while the Build
 //! state loses one prerequisite's receipt, as an append that failed would.
 //! The pipeline refuses Ready naming that step and never asks the node
 //! whether it is ready; with every receipt kept, the same pipeline completes.
@@ -104,7 +104,7 @@ impl NodeObserver for Counting<'_> {
     }
 }
 
-/// Create toward one rpc node with `lose`'s receipts never kept; returns the pid of the runtime it launched.
+/// Create toward one node with `lose`'s receipts never kept; returns the pid of the runtime it launched.
 async fn create_losing(lose: Option<&'static str>) -> u32 {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;

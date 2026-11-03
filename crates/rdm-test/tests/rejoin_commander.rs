@@ -35,7 +35,7 @@ pub(crate) async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, 
     }
 }
 
-/// The cell's mesh: `primary` launched the rpc node `running` (`mesh1.node.1`, Ready at its
+/// The cell's mesh: `primary` launched the node `running` (`mesh1.node.1`, Ready at its
 /// primary); `commander` (`mesh1.node-admin.2`) never says anything on the mesh channel, so the node's
 /// heartbeat view holds no digest of it, while the primary carries it in the member projection the
 /// node installed (`_carried`). The commander reaches the node by its exact birth (`target`).
@@ -209,7 +209,7 @@ fn a_stopped_node_whose_heartbeat_view_lacks_its_commander_starts_and_joins_it_t
 /// CONTRACT (R-UC1, Luke 2026-10-12, rulings page: "A stopped node told to start joins back over the
 /// endpoint and path of the call that commanded it. It holds no record of the commander, and never
 /// needs one. The `commander-unrecorded` refusal is an identity check inside a workflow, so it goes.
-/// Who answered is learned from the join answer. No new field on `StartNode`."): the rpc node is
+/// Who answered is learned from the join answer. No new field on `StartNode`."): the node is
 /// stopped and started by an admin of its mesh that no record the node holds names (neither its
 /// heartbeat view nor any projection it installed: an admin born after its stop). The stop is
 /// answered `Stopped` and the start `Started`: the start joined the admin through the call's endpoint
@@ -373,7 +373,7 @@ fn a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call() {
 
 /// CONTRACT (fabric-node-hooks.md "Outcomes and the gate": a Blocked hook runs again only when its
 /// `retry_on` occurs; node-start.md step 2: the stopped node holds no record of the commander and
-/// learns who answered from the join answer): an rpc node is stopped and started by an admin no
+/// learns who answered from the join answer): a node is stopped and started by an admin no
 /// record it holds names, and its hook answers `Blocked { PrimaryAddressed }` after that start. The
 /// commander then addresses the node with a down op (a probe): the hook runs again at once, passes,
 /// and the node is Ready. The primary is known by the endpoint of the call it answered

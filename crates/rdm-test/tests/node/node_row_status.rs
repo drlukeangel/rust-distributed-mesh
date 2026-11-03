@@ -48,7 +48,7 @@ fn row_status(root: &Path, node_id: &str) -> String {
 
 /// CONTRACT: every node of a ready fabric has `ready` on its durable row, as
 /// stored. Through `node.connection.delete { All }`, `node.stop`, `node.start` and `node.delete` of one
-/// rpc node, its row says, once each call completes, `connections-deleted`, `stopped`,
+/// node, its row says, once each call completes, `connections-deleted`, `stopped`,
 /// `ready` and `deleted`; and its mesh-primary wrote on its row each status "Who sets each
 /// state" names, from the node's frame or its own receipt (one
 /// `rdm.node_admin.node.update.via-row-status` span each, `written`; states.md and the paragraph after
@@ -73,8 +73,8 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let ready: Vec<(String, String)> = views.iter().map(|v| (v.node_id.to_string(), row_status(&root, v.node_id.as_str()))).collect();
     assert!(ready.iter().all(|(_, s)| s == "ready"), "every node of a ready fabric is ready on its row: {ready:?}");
 
-    // The rpc node that is not its type's primary: a primary is stopped only after node.primary.update.
-    let subject = views.iter().find(|v| v.r#type == "node" && !v.is_primary).unwrap_or_else(|| panic!("mesh1 holds an rpc node that is not its type's primary: {views:?}"));
+    // The node that is not its type's primary: a primary is stopped only after node.primary.update.
+    let subject = views.iter().find(|v| v.r#type == "node" && !v.is_primary).unwrap_or_else(|| panic!("mesh1 holds a node that is not its type's primary: {views:?}"));
     let (path, node_id): (PathName, String) = (subject.name.clone(), subject.node_id.to_string());
     let nodes = estate.nodes_obj().await;
 

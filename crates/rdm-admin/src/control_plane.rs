@@ -1638,7 +1638,7 @@ mod tests {
     /// secondary of type <type> in mesh <mesh>` ... the commanding workflow fails with that reason";
     /// "a mesh's sole broker ... cannot be stopped or restarted until a secondary is Ready"):
     /// mesh1.node.1 holds mesh1's rpc role with mesh1.node.2 beside it, and mesh2.node.1 is mesh2's sole
-    /// rpc node. The stop of mesh1.node.1 moves its role first (`executor::role_move` names it) and no
+    /// node. The stop of mesh1.node.1 moves its role first (`executor::role_move` names it) and no
     /// admin executes the stop until it has; the stop of mesh1.node.2, which holds no role, moves nothing
     /// and its mesh's primary executes it. The Build door admits a stop of mesh1.node.1 and refuses a
     /// stop of mesh2.node.1 by name with Q7's text; its delete, by the node.delete route or the
@@ -1666,7 +1666,7 @@ mod tests {
         for action in ["stop"] {
             match last_admin(&PathName::new("mesh2.node", "1").unwrap(), action, &t) {
                 Some(reject) => assert_eq!((reject.reason(), reject.to_string().as_str()), ("no-secondary", "cannot transfer: no secondary of type node in mesh mesh2"), "{action}"),
-                None => panic!("{action} of mesh2's sole rpc node is refused by name"),
+                None => panic!("{action} of mesh2's sole node is refused by name"),
             }
         }
         let delete_sole = crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh2".into(), r#type: "node".into(), node: PathName::new("mesh2.node", "1").unwrap(), exited: None, birth: None };

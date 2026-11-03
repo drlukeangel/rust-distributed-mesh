@@ -21,7 +21,7 @@ pub enum OpOwner {
     Core,
     /// A product family (e.g. Rafka), named.
     Product(String),
-    /// RDM's proof testkit: served only by the testkit rpc node, never by a
+    /// RDM's proof testkit: served only by the testkit node, never by a
     /// product binary, and only on an op in [`TESTKIT_OPS`].
     Testkit,
 }

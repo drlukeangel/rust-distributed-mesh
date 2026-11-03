@@ -302,7 +302,7 @@ pub enum TopologyChange {
         /// The mesh's desired counts.
         desired: MeshDesired,
     },
-    /// `POST /api/nodes/spawn`: one more node of `node_kind` in `mesh`.
+    /// `POST /api/nodes/spawn`: one more node of `type` in `mesh`.
     AddNode {
         /// The mesh to add the node to.
         mesh: String,
@@ -721,10 +721,10 @@ pub fn compile_against(current: &FabricTopology, change: &TopologyChange, observ
             let mesh = next.meshes.get_mut(&desired.name).ok_or_else(|| BuildReject::UnknownMesh { mesh: desired.name.clone() })?;
             resize(mesh, desired, observed);
         }
-        TopologyChange::AddNode { mesh, r#type: node_kind } => {
+        TopologyChange::AddNode { mesh, r#type } => {
             let m = next.meshes.get_mut(mesh).ok_or_else(|| BuildReject::UnknownMesh { mesh: mesh.clone() })?;
             let mut grown = m.desired();
-            *grown.count_mut(&(*node_kind)) += 1;
+            *grown.count_mut(r#type) += 1;
             resize(m, &grown, observed);
         }
         TopologyChange::RemoveNode { node } => {
@@ -2778,8 +2778,8 @@ mod tests {
     /// rows, observed state and its receipts ... an attempt interrupted halfway finishes the remaining
     /// ... the same way"; §1: the ordering rules "become the reconciler's rules for replacement work in
     /// any Build"): every entry names executable "b"; mesh1's members are replaced non-primary admin
-    /// first, then its primary admin, then its rpc primary, the rpc node already on "b" left alone; mesh2's
-    /// only rpc node is replaced like any member (R5). Each replacement is node.delete of the birth the
+    /// first, then its primary admin, then its rpc primary, the node already on "b" left alone; mesh2's
+    /// only node is replaced like any member (R5). Each replacement is node.delete of the birth the
     /// view holds, then node.create at its path over that birth, carrying its entry's executable.
     /// Resumed: a member whose delete is receipted owes its create alone, never a create of the generic
     /// loop; a create receipted after it leaves nothing; a successor live on its entry's sha whose create
@@ -3190,7 +3190,7 @@ mod tests {
 
     /// CONTRACT (build.md §1, "The Build applies the diff" and "the last write wins"; node-config-update.md:
     /// "It is admitted at any time (Q166) ... never refused because a Build is running"): a Reconcile
-    /// whose attempt 1 created mesh1.node.1 (its entry's config {}) and whose rpc node then wrote its own
+    /// whose attempt 1 created mesh1.node.1 (its entry's config {}) and whose node then wrote its own
     /// bound port into its config through `node.config.update`, plans its attempt 2 with no
     /// `node.config.update` of mesh1.node.1 and no other operation: the node keeps its write, nothing is
     /// created or deleted. A later Build whose entry names another config applies it. Must NOT happen:

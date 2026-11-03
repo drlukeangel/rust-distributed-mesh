@@ -1,4 +1,4 @@
-//! The restart canary (i143 PRD §5): an RPC node restarted by node.stop then node.start through Build
+//! The restart canary (i143 PRD §5): a node restarted by node.stop then node.start through Build
 //! (Q183: node.restart is removed) is the same node, the same process, under the same incarnation,
 //! endpoint key and port (nothing is deployed), serves the value written before the stop from its own
 //! data dir, resets an unfinished request with 499, and leaves a Build -> deployment -> node chain
@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 const SETTLE: Duration = Duration::from_secs(120);
-// The canary restarts the rpc node-type primary (`is_primary == true`).
+// The canary restarts the `node` type primary (`is_primary == true`).
 
 fn ready(node: &Value) -> bool {
     node["status"] == "ready"
@@ -30,14 +30,14 @@ async fn runtime_of(estate: &Estate, node: &PathName) -> Value {
 pub async fn restart_canary(owner: Owner) -> Value {
     let estate = Estate::bootstrap(owner, "fabric1", "mesh1").await;
 
-    // 1. MN = 2 node-admins + 3 RPC nodes, through node-admin Build only.
+    // 1. MN = 2 node-admins + 3 nodes, through node-admin Build only.
     let shape = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", 3)])] };
     estate.artifact("build-request.json", &json!({"call": "build.create", "desired": shape}));
     let birth_build = estate.reconcile(&shape).await.build_id.to_string();
     estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
 
-    // 2. Select the rpc node-type primary (lowest node_id) and Put{key=41, value="before-restart"} by ExactNode.
-    let (node_type_primary, before) = estate.until_view("rpc node-type primary", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node" && n.is_primary).map(|n| (n.name.clone(), serde_json::to_value(n).unwrap()))).await; let node_name = &node_type_primary;
+    // 2. Select the `node` type primary (lowest node_id) and Put{key=41, value="before-restart"} by ExactNode.
+    let (node_type_primary, before) = estate.until_view("`node` type primary", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node" && n.is_primary).map(|n| (n.name.clone(), serde_json::to_value(n).unwrap()))).await; let node_name = &node_type_primary;
     let node_id = before["node_id"].as_str().expect("node_id").to_string();
     let exact = format!("exact:{node_id}");
     let put = estate.probe(&["put", "--target", &exact, "--key", "41", "--value", "before-restart"]);
@@ -118,7 +118,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
 
     // 11. OTLP evidence: Build -> node operation -> step -> the node's own span, linked by ParentSpanId,
     // for the stop and for the start. A span is exported once it ends, by each process's own exporter:
-    // the chain is exported when the node's start (the rpc node's span), each call's request span and
+    // the chain is exported when the node's start (the node's span), each call's request span and
     // each call's reconcile (the executor's outermost span, ending after the node operation and every
     // step under it) are.
     let (stop_op, start_op) = ("node.stop", "node.start");
@@ -162,14 +162,14 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let handoff_dispatch = named(&spans, "rdm.node_admin.build.update.via-dispatch")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["attempt"] == opened_attempt.as_str())
-        .expect("the attempt opened by the stop call dispatched the rpc-node primary's node.primary.update");
-    assert_eq!(handoff_dispatch["attributes"]["outcome"], "handed-off", "the rpc-node primary's node.primary.update attempt ended handed-off: {handoff_dispatch}");
+        .expect("the attempt opened by the stop call dispatched the node primary's node.primary.update");
+    assert_eq!(handoff_dispatch["attributes"]["outcome"], "handed-off", "the node primary's node.primary.update attempt ended handed-off: {handoff_dispatch}");
     assert_eq!(handoff_dispatch["parent_span_id"], rest["span_id"], "the hand-off dispatch is a child of the stop call's request span: {handoff_dispatch}");
     let primary_update = named(&spans, "rdm.node_admin.primary.update.via-command")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["run"] == opened_attempt.as_str() && s["attributes"]["primary_node_id"] == node_id.as_str())
-        .expect("rdm.node_admin.primary.update.via-command for the stopped rpc-node primary");
-    assert_eq!(primary_update["attributes"]["outcome"], "updated", "node.primary.update moved the rpc-node primary before the stop: {primary_update}");
+        .expect("rdm.node_admin.primary.update.via-command for the stopped node primary");
+    assert_eq!(primary_update["attributes"]["outcome"], "updated", "node.primary.update moved the node primary before the stop: {primary_update}");
     assert!(descends_from(&spans, primary_update, handoff_dispatch), "node.primary.update descends from the hand-off attempt's dispatch span");
     let chain = |call: &Value, op: &str, steps: &[&str]| {
         let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile")

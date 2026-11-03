@@ -581,8 +581,8 @@ fn member_primary(m: &Member, revision: u64) -> Primary {
 const RPC: &str = "node";
 
 /// P is mesh1's mesh-primary (revision 3), X is mesh2's and the fabric-primary (revision 7). B1
-/// (`mesh1.node.1`) is mesh1's rpc-node primary at revision 2; B2 (`mesh1.node.2`) is that type's other
-/// node, born only when `with_b2`; every node's view holds the other rpc node Ready.
+/// (`mesh1.node.1`) is mesh1's node primary at revision 2; B2 (`mesh1.node.2`) is that type's other
+/// node, born only when `with_b2`; every node's view holds the other node Ready.
 struct TypeFabric {
     p: Admin,
     x: Admin,
@@ -906,8 +906,8 @@ fn an_update_whose_successor_is_unheard_fails_by_name_with_the_investigations_ve
 /// mesh-primary is commander and writer, and the primary only makes the call"; step 2: the writer
 /// pre-checks; steps 4-5; node-rpc-envelope.md: "the mesh-primary commands another type's primary the same
 /// way, `successor` the exact birth its pre-check named"): P, mesh1's mesh-primary, commands B1, mesh1's
-/// rpc-node primary, naming B2. B1 calls B2, and answers P with B2's node.primary.updated, which P
-/// installs: P, B1 and B2 hold B2 rpc-node primary of mesh1 at 3. P finished no writes for it: a non-admin
+/// node primary, naming B2. B1 calls B2, and answers P with B2's node.primary.updated, which P
+/// installs: P, B1 and B2 hold B2 node primary of mesh1 at 3. P finished no writes for it: a non-admin
 /// primary has no mesh rows, and B2's row is recorded from its digest.
 #[test]
 fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_found_and_the_primary_calls_it() {
@@ -918,7 +918,7 @@ fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_fo
         let f = type_fabric(true).await;
         let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
-        let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await.expect("mesh1's rpc-node primary moves");
+        let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await.expect("mesh1's node primary moves");
         assert_eq!(revisions, vec![entry("node", &f.b1.resolved, &f.b2().resolved, 3)]);
         assert_eq!(f.p.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
         assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
@@ -953,7 +953,7 @@ fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_o
 /// CONTRACT (CLAUDE.md "commands go down": fabric-primary -> mesh-primary -> node; node-primary-update.md
 /// Commander: "a command the fabric-primary originates for one of them reaches it as a forwarded command
 /// through the mesh-primary, never directly"): X, the fabric-primary, commands the update of mesh1's
-/// rpc-node primary: its command goes to P, mesh1's mesh-primary, which commands B1. X installs B2's answer.
+/// node primary: its command goes to P, mesh1's mesh-primary, which commands B1. X installs B2's answer.
 #[test]
 fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
     let cap = trace_capture("fabric-handover");
@@ -972,8 +972,8 @@ fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
 }
 
 /// CONTRACT (node-primary-update.md "No-successor cases": "refused by name, `cannot transfer: no
-/// secondary of type <type> in mesh <mesh>`"; step 2: the writer's pre-check): mesh1 has one rpc node,
-/// B1. P's command of its update fails by that text before B1 is commanded; B1 stays the rpc-node primary.
+/// secondary of type <type> in mesh <mesh>`"; step 2: the writer's pre-check): mesh1 has one node,
+/// B1. P's command of its update fails by that text before B1 is commanded; B1 stays the node primary.
 #[test]
 fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() {
     let cap = trace_capture("fabric-handover");
@@ -983,7 +983,7 @@ fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() 
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
         let r = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await;
         assert!(matches!(&r, Err(Reply::Failed { reason, .. }) if reason == "cannot transfer: no secondary of type node in mesh mesh1"), "{r:?}");
-        assert_eq!(f.p.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "B1 stays the rpc-node primary");
+        assert_eq!(f.p.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "B1 stays the node primary");
         let _ = &f.x;
     });
 }

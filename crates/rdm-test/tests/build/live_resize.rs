@@ -1,7 +1,7 @@
 //! i143.e3.s4 process E2E: live resize above and back to the floor (PRD §10).
 //!
 //! On running fabrics, each resize is one `build.create`:
-//! - MN rpc nodes 3 -> 5 -> 4 -> 7 -> 3, then node-admins 2 -> 3 -> 2;
+//! - MN nodes 3 -> 5 -> 4 -> 7 -> 3, then node-admins 2 -> 3 -> 2;
 //! - MM: mesh1 and mesh2 grow and shrink independently.
 //!
 //! After every step, from public surfaces only:

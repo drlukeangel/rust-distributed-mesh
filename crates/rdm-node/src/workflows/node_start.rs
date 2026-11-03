@@ -25,7 +25,7 @@
 //! 4. Once the hook passed (step 4), in the start itself, or in the task a blocked or spawned hook runs
 //!    on in:
 //!    - `rdm.mesh.node.update.via-build-floor`: the kind's Build floor, on every start (a node-admin
-//!      reads the Build's committed records it is missing from storage, Q292; an rpc node owes none).
+//!      reads the Build's committed records it is missing from storage, Q292; a node owes none).
 //!      It reads no topology;
 //!    - `rdm.mesh.node.update.via-topology-taken`: then one `GetTopology` from the authority that
 //!      answered the join, the final startup read, with no conditional source version (`since: None`):

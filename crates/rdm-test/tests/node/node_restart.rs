@@ -20,7 +20,7 @@ fn attr(sp: &Value, k: &str) -> String {
     }
 }
 
-/// CONTRACT: an RPC node restarted through Build, node.stop then node.start on the stopped process: the same
+/// CONTRACT: a node restarted through Build, node.stop then node.start on the stopped process: the same
 /// node id, incarnation, endpoint key and port, the same process; it still serves the value written
 /// before the restart from its own data dir, resets an unfinished request with 499 (NotSent), and
 /// leaves a Build -> node operation -> start step -> start span chain linked by ParentSpanId.

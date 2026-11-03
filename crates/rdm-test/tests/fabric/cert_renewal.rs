@@ -139,7 +139,7 @@ fn deployed(by: &Running, launch: &Launch) {
     });
 }
 
-/// mesh1's rpc node `ordinal`, deployed by `by`, with the product ALPN registered, started and joined.
+/// mesh1's node `ordinal`, deployed by `by`, with the product ALPN registered, started and joined.
 async fn member(by: &Running, store: &Path, ordinal: &str) -> RunningNode {
     let dir = cell_dir(&format!("rpc-{ordinal}"));
     let name = PathName::new("mesh1.node", ordinal).unwrap();

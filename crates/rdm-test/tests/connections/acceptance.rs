@@ -163,8 +163,8 @@ fn start(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
 
-/// One mesh, `{mesh1: 2 node-admins, 3 rpc nodes}`, every rpc node registering the testkit's app
-/// protocol proxied through an rpc node carrier (`node::APP_PROTOCOL_PROXY_KNOB`), its
+/// One mesh, `{mesh1: 2 node-admins, 3 nodes}`, every node registering the testkit's app
+/// protocol proxied through a node carrier (`node::APP_PROTOCOL_PROXY_KNOB`), its
 /// streams echoed; the source holds the carrier's and the destination's births.
 async fn born(cell: &str) -> Estate {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
@@ -577,7 +577,7 @@ async fn refused_dial(estate: &Estate, name: &PathName, target_name: &PathName, 
 /// back ... the connection is closed", Failure: "A dialer that writes no cert within the floor is
 /// `no-credential`", Spans: "`rdm.node.connection.reject.via-refused` (the same, plus `reason`) on the
 /// acceptor", Never: "no status set, no frame published, no mark on any node"; connections.md §12): a
-/// dial on a live rpc node's registered app protocol presenting empty bytes is refused `no-credential`:
+/// dial on a live node's registered app protocol presenting empty bytes is refused `no-credential`:
 /// the dialer reads the verdict by name, the acceptor's span names the reason, its own path.name and
 /// the alpn, and the acceptor stays ready. The dialer is a key the acceptor's topology view
 /// does not name, so the span names its key and no `Refused` row is written for it (admit.rs `refuse`;
@@ -601,7 +601,7 @@ async fn a_dial_presenting_no_member_cert_is_refused_no_credential_on_the_accept
 /// key and the CA's against a root of the node's set", Result `ca-bad-signature`; fabric-certs.md "On
 /// a connection": "the acceptor reads the dialer's member cert ... verifies it ... and admits or drops
 /// the connection"): a dial presenting a member cert correctly signed under another fabric's root (its
-/// own CA and issuer) is refused `ca-bad-signature` by a live rpc node, whose root set is its launch's;
+/// own CA and issuer) is refused `ca-bad-signature` by a live node, whose root set is its launch's;
 /// the dialer reads the reason and the acceptor's span names it. Must NOT happen: a cert of another
 /// fabric admitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

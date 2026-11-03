@@ -5,7 +5,7 @@
 //! and a mesh the fabric-primary cannot reach "is recovered once the cut heals (Q118)"; lead decision
 //! D22, 2026-11-02: a mesh-primary behind a cut fails its recovery by name and recovers after the heal).
 //!
-//! CONTRACT: in a two-mesh estate (two node-admins and two rpc nodes each, the fabric-primary mesh1.node-admin.1)
+//! CONTRACT: in a two-mesh estate (two node-admins and two nodes each, the fabric-primary mesh1.node-admin.1)
 //! every UDP path between mesh2's primary and mesh1's nodes is dropped (mesh2's other nodes still reach both
 //! sides, so no mesh is unheard), and the provider kills mesh2.node.1's runtime. Mesh2's primary's submits of
 //! that birth's recovery fail while the cut holds, each by name: its outcome names the report of the birth's

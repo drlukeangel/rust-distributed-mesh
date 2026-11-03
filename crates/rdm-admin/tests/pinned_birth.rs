@@ -25,7 +25,7 @@ fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool) -> No
     n
 }
 
-/// mesh1: its admin, the fabric-primary, and two rpc nodes.
+/// mesh1: its admin, the fabric-primary, and two nodes.
 fn view() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },

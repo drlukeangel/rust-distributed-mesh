@@ -228,11 +228,11 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     estate.shutdown().await;
 }
 
-/// A two-mesh fabric of the faulted node-admin with the role kinds bound, each mesh two node-admins, a
+/// A two-mesh fabric of the faulted node-admin with the role types bound, each mesh two node-admins, a
 /// broker, two gateways and a compute node, ready.
 async fn role_fabric(test: &str) -> Estate {
     let sha = candidate_sha();
-    let estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set_with_roles(&sha), &sha, &["broker", "gateway", "compute"], &[]).await.expect("the faulted-admin binding set with the role kinds is accepted");
+    let estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set_with_roles(&sha), &sha, &["broker", "gateway", "compute"], &[]).await.expect("the faulted-admin binding set with the role types is accepted");
     let mesh = |m: &str| MeshDesired::of(m, [("node-admin", 2), ("broker", 1), ("gateway", 2), ("compute", 1)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
     let want: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| [("node-admin", "1"), ("node-admin", "2"), ("broker", "1"), ("gateway", "1"), ("gateway", "2"), ("compute", "1")].map(|(group, name)| PathName::new(format!("{m}.{group}"), name).unwrap())).collect();
@@ -491,8 +491,8 @@ async fn members(estate: &Estate) -> BTreeMap<PathName, Member> {
     out
 }
 
-/// The request that names, for every path the read lists, `next` of its kind, and the executables it
-/// names: each kind's current executable copied with one byte appended.
+/// The request that names, for every path the read lists, `next` of its type, and the executables it
+/// names: each type's current executable copied with one byte appended.
 async fn every_path_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec<NodeSpec>, BTreeMap<String, Binding>) {
     let (based_on, mut request) = read_request(estate).await;
     let mut next: BTreeMap<String, Binding> = BTreeMap::new();
@@ -505,14 +505,14 @@ async fn every_path_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec
 }
 
 /// `name` at its `(path, name)` again, Ready as a new node (new node.id and incarnation), running
-/// `next`; a `Persistent` path's successor (a node-admin's, a broker's: their kinds' default storage) over
+/// `next`; a `Persistent` path's successor (a node-admin's, a broker's: their types' default storage) over
 /// its predecessor's data dir with its endpoint key, an `Ephemeral` path's over a newly allocated data dir
 /// with a new endpoint key (build-deployment.md §3).
 async fn replaced(estate: &Estate, name: &PathName, was: &Member, next: &Binding) {
     let now = estate.until_node(name, &format!("{name:?} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != was.view.node_id).cloned()).await;
     assert_ne!(now.incarnation_id, was.view.incarnation_id, "{name:?}: a new birth");
     assert_eq!(exe_of(estate, name).await, next.executable, "{name:?} runs the executable its entry names");
-    if matches!(NodeSpec::default_for(was.view.name.clone(), &was.view.mesh, &was.view.r#type).storage_persistence, rdm_core::meta::StoragePersistence::Persistent { .. }) {
+    if matches!(rdm_test::test_app::storage_of(&was.view.r#type), rdm_core::meta::StoragePersistence::Persistent { .. }) {
         assert_eq!(now.endpoint_id, was.view.endpoint_id, "{name:?}: its endpoint key kept, loaded from its kept data dir");
         assert_eq!(estate.data_dir(name).await, was.data_dir, "{name:?}: created over its kept data dir");
     } else {
@@ -524,8 +524,8 @@ async fn replaced(estate: &Estate, name: &PathName, was: &Member, next: &Binding
 /// CONTRACT (build-deployment.md §3: "The successor's storage follows its create spec's `storage`: `Persistent`
 /// inherits the predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one"; proposal
 /// executable-bindings-at-create.md §4: "of an `Ephemeral` gateway: a fresh data dir"): a mesh of two
-/// node-admins and two rpc nodes (an rpc node's path `Ephemeral`, its kind's default) has one rpc node's
-/// executable replaced by a request naming another. The rpc node comes back at its `(path, name)` as a new
+/// node-admins and two nodes (a node's path `Ephemeral`, its type's default) has one node's
+/// executable replaced by a request naming another. The node comes back at its `(path, name)` as a new
 /// node.id and incarnation on the new executable, over a newly allocated data dir with a new endpoint key;
 /// its predecessor's data dir is left where it was. Must NOT happen: the successor created over its
 /// predecessor's data dir or loading its endpoint key.
@@ -590,13 +590,13 @@ async fn follow_across_replacement(estate: &Estate, stream: rdm_client::BuildStr
 /// state is set"; proposal executable-bindings-at-create.md §4: "a request replacing every node of a
 /// two-mesh fabric: Complete only after the ready state is set (Q154)"; "the fabric-primary's
 /// own replacement moving it once"; "a one-broker mesh's broker replaced: one `node.delete` then the
-/// create, no refusal at any step"): a fabric of two meshes, two node-admins and one rpc node in each, and a
+/// create, no refusal at any step"): a fabric of two meshes, two node-admins and one node in each, and a
 /// request naming another build for every path. Every node comes back at its `(path, name)` as a new node.id
 /// and incarnation running the executable its entry names, each node-admin over its kept data dir with its
 /// endpoint key. In each mesh its non-primary node-admin is deleted before its primary one, and node-admins
-/// before its rpc node; each node is created once. mesh1 holds the fabric-primary: the caller's stream ends
+/// before its node; each node is created once. mesh1 holds the fabric-primary: the caller's stream ends
 /// `FabricPrimaryMoved` once, and the same build_id completes at the new fabric-primary, which holds the
-/// fabric ready under the Build. Each mesh's only rpc node is replaced by its `node.delete`, the
+/// fabric ready under the Build. Each mesh's only node is replaced by its `node.delete`, the
 /// whole stop inside it, with no standalone connections delete or mesh leave and no `no-secondary` refusal.
 /// Moved from the removed operation's `a_two_mesh_fabric_rolls_every_member_onto_the_set_at_its_path_over_its_kept_data_dir`
 /// and `a_mesh_with_one_admin_gains_a_second_first_and_its_only_rpc_node_is_replaced_with_no_update` (its
@@ -635,13 +635,13 @@ async fn a_request_replacing_every_nodes_executable_moves_the_fabric_primary_onc
         let (secondary, primary) = (admin(false), admin(true));
         let deleted = |n: &PathName| steps.iter().position(|r| r.operation == OperationId::node("node.delete", &before[n].view.node_id) && r.step == "NodeDeleted").unwrap_or_else(|| panic!("{n:?} is deleted: {steps:?}"));
         assert!(deleted(&secondary) < deleted(&primary), "{mesh}: its non-primary admin {secondary:?} is replaced before its primary {primary:?}");
-        let rpc = before.values().find(|m| m.view.mesh == mesh && m.view.r#type == "node").expect("mesh rpc node");
+        let rpc = before.values().find(|m| m.view.mesh == mesh && m.view.r#type == "node").expect("mesh node");
         assert!(deleted(&primary) < deleted(&rpc.view.name), "{mesh}: node-admins before the other types");
         for (n, _) in before.iter().filter(|(_, m)| m.view.mesh == mesh) {
             assert_eq!(receipts_of(&steps, &OperationId::location("node.create", n), "Complete").len(), 1, "{n:?} is created once");
         }
         let rpc_delete: Vec<&str> = steps.iter().filter(|r| r.operation == OperationId::node("node.delete", &rpc.view.node_id)).map(|r| r.step.as_str()).collect();
-        assert!(rpc_delete.contains(&"StopNode") && rpc_delete.contains(&"TerminateRuntime"), "{mesh}: its only rpc node's node.delete composes the whole stop: {rpc_delete:?}");
+        assert!(rpc_delete.contains(&"StopNode") && rpc_delete.contains(&"TerminateRuntime"), "{mesh}: its only node's node.delete composes the whole stop: {rpc_delete:?}");
     }
     assert!(!steps.iter().any(|r| r.operation.action == "node.connection.delete" || r.operation.action == "node.mesh.leave"), "no standalone connections delete or mesh leave precedes a delete");
     estate.stop().await;

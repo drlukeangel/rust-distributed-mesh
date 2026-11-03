@@ -14,10 +14,10 @@
 //! start's root span (`rdm.mesh.node.create.via-boot` for a first start,
 //! `rdm.mesh.node.update.via-start` for a start after a stop), and each step begins only after the
 //! step before it has closed: a node-admin's first start (launched by another admin), the same
-//! node-admin's start after its stop, an rpc node's first start and the same rpc node's start after
+//! node-admin's start after its stop, a node's first start and the same node's start after
 //! its stop. The steps are the join (`via-join-admitted`), the mesh channel, node.joined
 //! (`via-topology-joined`), the `pre_node_ready` attempt (`via-pre-node-ready-attempt`), the Build
-//! floor (`via-build-floor`, run on every start: an rpc node holds no Build log and owes none), the
+//! floor (`via-build-floor`, run on every start: a node holds no Build log and owes none), the
 //! topology (`via-topology-taken`, its reply's rafka-time adopted in it) and the report
 //! (`via-ready`). Each start makes exactly one `GetTopology` (op 0x1E), inside its topology step, and
 //! adopts the rafka-time of that one reply; every topology read the authority serves these nodes is
@@ -246,10 +246,10 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         let admin = start_with(admin_cfg, Wiring { node_hooks: passing(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
         until_ready("mesh1.node-admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
 
-        // An rpc node's first start: launched by the root.
+        // A node's first start: launched by the root.
         let rpc_launch = launch_by(&root, PathName::new("mesh1.node", "1").unwrap(), "node", &rpc_dir, &root_dir, vec![]);
         let _ = root.runner.joins.expect(deployed(&rpc_launch, None));
-        let rpc = rdm_test::node::start_pre_node_ready(&rpc_launch, passing(), |b, _| b).await.expect("the rpc node comes up");
+        let rpc = rdm_test::node::start_pre_node_ready(&rpc_launch, passing(), |b, _| b).await.expect("the node comes up");
         until_ready("mesh1.node.1 (first start)", || {
             let mut d = rpc.digest.clone();
             d.status = *rpc.status.lock().unwrap();
@@ -264,17 +264,17 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         assert_eq!(started, StatusReply::Started, "the launched admin starts after its stop");
         until_ready("mesh1.node-admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
 
-        // The rpc node's stop and its start after the stop, commanded by the root over Node RPC.
-        assert!(matches!(command(&root, &rpc_launch, &stop(&rpc_launch)).await, StatusReply::Stopped { .. }), "the rpc node stops");
+        // The node's stop and its start after the stop, commanded by the root over Node RPC.
+        assert!(matches!(command(&root, &rpc_launch, &stop(&rpc_launch)).await, StatusReply::Stopped { .. }), "the node stops");
         let _ = root.runner.joins.expect(deployed(&rpc_launch, Some(&rpc_launch.name)));
-        let started = tokio::time::timeout(WRONG, command(&root, &rpc_launch, &start(&rpc_launch))).await.expect("the rpc node's start answers");
-        assert_eq!(started, StatusReply::Started, "the rpc node starts after its stop");
+        let started = tokio::time::timeout(WRONG, command(&root, &rpc_launch, &start(&rpc_launch))).await.expect("the node's start answers");
+        assert_eq!(started, StatusReply::Started, "the node starts after its stop");
 
         let paths = [
             ("node-admin first start", steps_under(&spans, admin_launch.node_id.as_str(), FIRST_START)),
             ("node-admin start after stop", steps_under(&spans, admin_launch.node_id.as_str(), AFTER_STOP)),
-            ("rpc node first start", steps_under(&spans, rpc_launch.node_id.as_str(), FIRST_START)),
-            ("rpc node start after stop", steps_under(&spans, rpc_launch.node_id.as_str(), AFTER_STOP)),
+            ("node first start", steps_under(&spans, rpc_launch.node_id.as_str(), FIRST_START)),
+            ("node start after stop", steps_under(&spans, rpc_launch.node_id.as_str(), AFTER_STOP)),
         ];
         let report: Vec<String> = paths.iter().map(|(path, steps)| format!("{path}: {steps:?}")).collect();
         for (path, steps) in &paths {

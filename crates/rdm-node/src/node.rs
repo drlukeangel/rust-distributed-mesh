@@ -1,4 +1,4 @@
-//! The rpc node runtime: bind the assigned endpoint, serve Node RPC, join
+//! The node runtime: bind the assigned endpoint, serve Node RPC, join
 //! fabric topology, publish the digest.
 
 use rdm_core::launch::Launch;
@@ -956,7 +956,7 @@ fn spawn_publisher(topology_view: &TopologyView, digest: &MeshDigest, status: &A
     })
 }
 
-/// How an rpc node or role node leaves its mesh when stopped and joins it again when started
+/// How a node or role node leaves its mesh when stopped and joins it again when started
 /// (`node_self::Session`): the parts it was born with, kept for the rejoin.
 struct NodeSession {
     r#type: String,
@@ -1031,7 +1031,7 @@ impl crate::node_self::Session for NodeSession {
 }
 
 impl NodeSession {
-    /// This rpc node's channel entry inside `node.mesh.join`, for its start and its standalone join
+    /// This node's channel entry inside `node.mesh.join`, for its start and its standalone join
     /// alike: the row's name and config the join answer handed are held before the node re-enters its
     /// topic or says anything (a node renamed while stopped publishes its row's name, R-JN1), and only
     /// then are its connections recorded (`rows`), under the handed name.
@@ -1060,7 +1060,7 @@ impl NodeSession {
     }
 }
 
-/// An rpc node's start after its stop, as it plugs into `node.start`: it rejoins the admin that
+/// A node's start after its stop, as it plugs into `node.start`: it rejoins the admin that
 /// commanded the start, through the parts it was born with.
 struct AfterStop<'a> {
     session: &'a NodeSession,
@@ -1176,7 +1176,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
     }
 }
 
-/// An rpc node's steps after its hook: it reaches the peers of its mesh the topology names, owes no
+/// A node's steps after its hook: it reaches the peers of its mesh the topology names, owes no
 /// Build floor (it holds no Build log), and reports through [`Becoming`].
 struct RpcAfterHook {
     fabric_id: rdm_core::FabricId,
@@ -1820,8 +1820,8 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 }
 
 
-/// Serve `Status` on an rpc node: the downward exact-node operations, answered once this node
-/// has joined (until then `NotReady`). An rpc node is never a primary: every upward declaration and
+/// Serve `Status` on a node: the downward exact-node operations, answered once this node
+/// has joined (until then `NotReady`). A node is never a primary: every upward declaration and
 /// every mesh or fabric operation is refused by name, and a `node.get`, `mesh.get` or `fabric.get`
 /// it receives is forwarded to its own mesh-primary ([`forward_read`]; query.md §1, Q243). A `NodeLeft`, never
 /// sent, is refused as every receiver refuses it ([`crate::node_self::refuse_node_left`]).
@@ -1895,7 +1895,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             match req {
                 // node.cert.renew: its issuing authority installs a fresh member cert on this birth.
                 StatusRequest::RenewCert { cert, .. } => Ok(me.own.renew_cert(&cert)),
-                // node.roots.update: an rpc node keeps no root secret; only the public set is installed.
+                // node.roots.update: a node keeps no root secret; only the public set is installed.
                 StatusRequest::UpdateRoots { node_id, incarnation, roots, phase, .. } => {
                     let node = me.digest.node.node_id.to_string();
                     Ok(crate::roots_update::install_roots(&me.data_connections, &node, &node_id, &incarnation, &roots, phase, false))

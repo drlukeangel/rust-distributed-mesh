@@ -28,7 +28,7 @@ fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, status: NodeStatus, 
     n
 }
 
-/// Two meshes: mesh1 (the fabric-primary's) with an admin and two rpc nodes, rpc.1 in `rpc1`, and
+/// Two meshes: mesh1 (the fabric-primary's) with an admin and two nodes, rpc.1 in `rpc1`, and
 /// mesh2 with its admin.
 fn view(rpc1: NodeStatus) -> Topology {
     Topology {

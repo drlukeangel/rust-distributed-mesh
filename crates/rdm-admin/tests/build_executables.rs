@@ -225,6 +225,10 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
         let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), held.clone(), &executor, "mesh1")
         .await
         .unwrap();
+        // The Fabric record declares the `gateway` type step 3 creates, as Day 0 writes RDM_NODE_TYPES on it.
+        let mut record = accepted.storage().fabric().await.unwrap().expect("the seeded Fabric record");
+        record.types = vec![rdm_core::NodeType { name: "gateway".into(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None }];
+        accepted.storage().put_fabric(&record).await.unwrap();
         let topology = Arc::new(RwLock::new(t.clone()));
         let store = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
         let mut recorded = Recorded::new();

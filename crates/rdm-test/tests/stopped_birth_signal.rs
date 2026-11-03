@@ -3,7 +3,7 @@
 //! node.delete"; node-identity-and-state.md: "SIGINT and SIGTERM run the node's own stop steps", the
 //! signal stop of a live node).
 //!
-//! The mesh's primary is a real Day-0 node-admin in this process; it launches an rpc node and commands
+//! The mesh's primary is a real Day-0 node-admin in this process; it launches a node and commands
 //! its stop. Its own process: the cell holds process-wide state (the stopped process's flag).
 
 use rdm_admin::admin::{start_with, AdminConfig, Running};
@@ -100,7 +100,7 @@ async fn stop(root: &Running, launch: &Launch) -> StatusReply {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: an rpc node stopped by its mesh-primary's `StopNode` keeps its process live, and the
+/// CONTRACT: a node stopped by its mesh-primary's `StopNode` keeps its process live, and the
 /// termination signal that follows (a delete's `TerminateRuntime`) ends its process without running its stop
 /// again: its `node.connection.delete { All }` ran once, at the command, nothing is owed on the
 /// signal, and its mesh-primary holds it `Stopped`.
@@ -128,14 +128,14 @@ fn a_stopped_births_signal_runs_no_second_stop() {
         let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node", "1").unwrap(), &rpc_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
-        let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the rpc node comes up");
+        let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the node comes up");
         until_ready("mesh1.node.1", || {
             let mut d = rpc.digest.clone();
             d.status = *rpc.status.lock().unwrap();
             d
         })
         .await;
-        assert!(matches!(stop(&root, &launch).await, StatusReply::Stopped { .. }), "the rpc node stops");
+        assert!(matches!(stop(&root, &launch).await, StatusReply::Stopped { .. }), "the node stops");
 
         // The signal a role binary takes: its process ends.
         tokio::time::timeout(WRONG, rpc.stop()).await.expect("the stopped node's process ends on its signal");
@@ -169,7 +169,7 @@ fn exported(dir: &std::path::Path) -> Vec<serde_json::Value> {
 
 // @feature: node-lifecycle
 /// CONTRACT (Luke 2026-10-27, i143-3209 inbox 0001: a node stop "should take less than a second", its
-/// declaration delivered, with no `CANCELLED` `caller-gone` tail): a live rpc node's signal stop runs
+/// declaration delivered, with no `CANCELLED` `caller-gone` tail): a live node's signal stop runs
 /// node-stop.md's steps as its own subject (Q55), owes `ConnectionsDeleting` and then `Stopped` to its
 /// mesh-primary (node-stop.md step 4: "an owed message ... sent whether or not the stop call's stream is
 /// still open"), over the connection to its mesh-primary its transport cut spares (node-stop.md
@@ -198,7 +198,7 @@ fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
         let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node", "1").unwrap(), &rpc_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
-        let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the rpc node comes up");
+        let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the node comes up");
         until_ready("mesh1.node.1", || {
             let mut d = rpc.digest.clone();
             d.status = *rpc.status.lock().unwrap();

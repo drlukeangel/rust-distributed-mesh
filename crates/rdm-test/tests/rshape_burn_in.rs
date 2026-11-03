@@ -3278,7 +3278,7 @@ async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName,
 async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, scenario: &str) -> Value {
     assert_ne!(*node, st.fp_name(), "REFUSED: the fabric-primary is never killed; it leaves only through a deleting Build");
     let n = st.nodes.iter().find(|n| location(n) == *node).unwrap_or_else(|| panic!("{node:?} is not in the settled view")).clone();
-    assert_ne!(n["type"], "node-admin", "REFUSED: {node:?} is a node-admin; a node recovery cell kills a broker, gateway, compute or rpc node");
+    assert_ne!(n["type"], "node-admin", "REFUSED: {node:?} is a node-admin; a node recovery cell kills a broker, gateway, compute or node");
     let (old_id, old_inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
     let fabric_build = s(&st.fabric["build_id"]);
     let dir_old = f.estate.data_dir(node).await;

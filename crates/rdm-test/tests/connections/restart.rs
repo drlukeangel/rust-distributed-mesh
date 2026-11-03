@@ -25,7 +25,7 @@ fn s(v: &Value) -> String {
     }
 }
 
-/// As `connections_acceptance`'s estate: one mesh of 2 node-admins and 3 rpc nodes.
+/// As `connections_acceptance`'s estate: one mesh of 2 node-admins and 3 nodes.
 async fn born(cell: &str) -> Estate {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let root = estate.bootstrap_data_dir("mesh1").parent().expect("the estate root holds the data dirs").to_path_buf();

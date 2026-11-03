@@ -13,7 +13,7 @@
 //! then forgotten: it resolves `Unknown`. A deleted node never returns; a
 //! replacement is a new logical node at the same path.
 //!
-//! The process composition (node-admin's running state, the rpc node's) feeds
+//! The process composition (node-admin's running state, the node's) feeds
 //! it: [`LiveNodeResolver::apply`] for each current birth it holds,
 //! [`LiveNodeResolver::depart`] for each departure. Neither the topology view nor
 //! Node RPC depends on the other.

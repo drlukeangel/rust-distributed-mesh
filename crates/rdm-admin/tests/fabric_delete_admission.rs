@@ -19,7 +19,7 @@ fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool, fabri
     n
 }
 
-/// Two meshes of two node-admins each, two rpc nodes in mesh1 and one in mesh2. `mesh1.node-admin.1` holds
+/// Two meshes of two node-admins each, two nodes in mesh1 and one in mesh2. `mesh1.node-admin.1` holds
 /// the fabric-primary role and mesh1's, `mesh2.node-admin.1` holds mesh2's, `mesh1.node.1` mesh1's rpc role with
 /// `mesh1.node.2` its secondary: a stop, restart or replace of `mesh1.node.1` moves its role by
 /// node.primary.update and is not refused for want of a secondary (proposal Part C1, Q7). The fabric

@@ -112,7 +112,7 @@ mod tests {
         assert!(shortfall(&d, &t, &HashSet::new()).is_empty());
         let unrelated = [(crate::model::NodeId::mint(), t.nodes[2].incarnation_id.clone().unwrap())].into();
         assert!(shortfall(&d, &t, &unrelated).is_empty(), "an equal incarnation on another node is not this birth's inspection");
-        // Its runtime inspected and exited: one rpc node short.
+        // Its runtime inspected and exited: one node short.
         let exited: HashSet<_> = [(t.nodes[2].node_id.clone(), t.nodes[2].incarnation_id.clone().unwrap())].into();
         let s = shortfall(&d, &t, &exited);
         assert_eq!(s, vec![Shortfall { mesh: "mesh1".into(), r#type: "node".into(), desired: 3, present: 2, exited: vec![(t.nodes[2].node_id.clone(), t.nodes[2].incarnation_id.clone().unwrap())] }]);
@@ -131,7 +131,7 @@ mod tests {
         let t = view(vec![node(crate::model::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", R), node(crate::model::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", R), old.clone()]);
         assert!(unheard(&t).is_empty());
         let exited: HashSet<_> = [(old.node_id.clone(), old.incarnation_id.clone().unwrap())].into();
-        assert!(shortfall(&desired(1, 1), &t, &exited).is_empty(), "one rpc node present of one accepted");
+        assert!(shortfall(&desired(1, 1), &t, &exited).is_empty(), "one node present of one accepted");
     }
 
     #[test]

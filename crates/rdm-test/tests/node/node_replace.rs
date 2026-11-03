@@ -100,7 +100,7 @@ async fn born_at(estate: Estate, shape: &[(&str, u32, u32)], settle: Duration) -
     estate.until_fabric_ready(SETTLE).await;
     (estate, born.build_id.to_string())
 }
-/// mesh1 with two node-admins and three rpc nodes, through the rectifier; the birth Build's id.
+/// mesh1 with two node-admins and three nodes, through the rectifier; the birth Build's id.
 async fn estate(test: &str) -> (Estate, String) {
     fabric_of(test, &[("mesh1", 2, 3)], Duration::from_secs(60)).await
 }
@@ -122,7 +122,7 @@ async fn recovery_span(estate: &Estate, node: &PathName, node_id: &Value) -> Val
     .await
 }
 
-/// The member under test in a two-mesh estate: an rpc node holding no role, of the mesh that does NOT hold the
+/// The member under test in a two-mesh estate: a node holding no role, of the mesh that does NOT hold the
 /// fabric-primary, so its mesh-primary is not the fabric-primary; that mesh-primary's view row; and
 /// the fabric-primary's view row.
 fn member_and_primaries(nodes: &[Value]) -> (PathName, Value, Value) {
@@ -130,7 +130,7 @@ fn member_and_primaries(nodes: &[Value]) -> (PathName, Value, Value) {
     let mesh = if primary["mesh"] == "mesh1" { "mesh2" } else { "mesh1" };
     let mesh_primary = nodes.iter().find(|n| n["mesh"] == mesh && n["type"] == "node-admin" && n["is_primary"] == true).expect("the node's mesh-primary").clone();
     assert_ne!(mesh_primary["node_id"], primary["node_id"], "the member's mesh-primary is not the fabric-primary");
-    // The member is an rpc node holding no role: a node-type primary runs node.primary.update before its
+    // The member is a node holding no role: a node-type primary runs node.primary.update before its
     // own node.connection.delete, stop or delete (lifecycles/node-connections-delete.md step 0), which
     // is not the member workflow these cells follow.
     let member = nodes.iter().filter(|n| n["mesh"] == mesh && n["type"] == "node" && n["is_primary"] != true).map(location).min().expect("an rpc member of the mesh that holds no primary role");
@@ -336,7 +336,7 @@ async fn recovery_receipts_held(estate: &Estate, build: &str, mesh: &str, exited
     recovery_receipts(&serde_json::to_value(held).expect("a Build view serializes"), mesh, exited, at, attempt).expect("the receipts were just held")
 }
 
-/// CONTRACT: a rpc node whose mesh transport stops for good exits (reserved code 4, recorded in
+/// CONTRACT: a node whose mesh transport stops for good exits (reserved code 4, recorded in
 /// its data dir). Its mesh-primary (node-recovery.md), not the fabric-primary, proves the exit:
 /// it marks the node TRUE OFFLINE, asks the provider about the exact runtime, and on Exited reports
 /// the drift up as `build.create { Change(Recover) }` keyed on the exited birth (node-recovery.md
@@ -506,7 +506,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
 }
 
 /// CONTRACT (node-recovery.md): every other unplanned exit is a recovery like the transport stop.
-/// A rpc node killed with SIGKILL leaves no recorded reason: its mesh-primary, which in a one-mesh
+/// A node killed with SIGKILL leaves no recorded reason: its mesh-primary, which in a one-mesh
 /// fabric is also the fabric-primary, marks it TRUE OFFLINE, proves the exit from the provider alone
 /// (no exit code) and opens one recovery keyed on the exited birth at its own door, the next attempt
 /// of mesh1's lane of the accepted Build (no Build minted; R-BI7: the lane is the mesh's whoever else
@@ -2845,7 +2845,7 @@ async fn failed_steps(nodes: &Nodes, steps: Vec<Step>) -> String {
 /// records it beside `config`"; node-recovery.md "Retained": "config and the executable (both seeded
 /// from the deleted row: a recovered node runs the bin its row records, never the recovering
 /// admin's)"; build-deployment.md §2: every create names its executable): the fabric is born on
-/// binding set A (`rpc_node` = the built rpc node), every path named on set A's executable of its kind,
+/// binding set A (`rpc_node` = the built node), every path named on set A's executable of its kind,
 /// and mesh1's and mesh2's admins alike launch set A's. A Create binding, a copy the set does not name, is the Create step of a
 /// replace steps of `mesh1.node.1` (run by mesh1's admin) and of `mesh2.node.1` (run by mesh2's admin):
 /// both successors run that copy. `mesh1.node.1` is then killed and recovered over its inherited data
@@ -2861,7 +2861,7 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
         .await
         .expect("binding set A is accepted");
     let rpc_a = set_a.bindings.iter().find(|b| b.launch_id == "node").cloned().expect("set A binds rpc_node");
-    // A copy of the rpc node's bytes at its own path: the one the Build fixes.
+    // A copy of the node's bytes at its own path: the one the Build fixes.
     let execs = estate.root.join("execs");
     std::fs::create_dir_all(&execs).unwrap();
     let fixed = execs.join("rpc-node-fixed");
@@ -2869,8 +2869,8 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
     let binding = Binding { launch_id: "node".into(), sha256: sha256_file(&fixed).unwrap(), executable: fixed.clone(), image: None };
     let shape = [("mesh1", 1, 2), ("mesh2", 1, 2)];
     let estate = born_at(estate, &shape, Duration::from_secs(90)).await.0;
-    assert_eq!(exe_of(&estate, &Estate::path("mesh1.node", "2")).await, rpc_a.executable, "mesh1's admin launches set A's rpc node, the one its path names");
-    assert_eq!(exe_of(&estate, &Estate::path("mesh2.node", "2")).await, rpc_a.executable, "mesh2's admin launches set A's rpc node, the one its path names");
+    assert_eq!(exe_of(&estate, &Estate::path("mesh1.node", "2")).await, rpc_a.executable, "mesh1's admin launches set A's node, the one its path names");
+    assert_eq!(exe_of(&estate, &Estate::path("mesh2.node", "2")).await, rpc_a.executable, "mesh2's admin launches set A's node, the one its path names");
 
     let nodes = objects(&estate).await;
     let with_binding = |node: &PathName, mesh: &str, b: &Binding| -> Vec<Step> {
@@ -3035,7 +3035,7 @@ async fn completed_recovery_span(estate: &Estate, node: &PathName, node_id: &Val
 /// CONTRACT (node-recovery.md "Execution": "Two recoveries at once never meet: the fabric-primary's one
 /// writer turn orders their opens, each mesh's lane is numbered on its own"; build.md §5.1: the
 /// fabric-primary writes every Build record; R-BI7: one attempt in flight per mesh, not per fabric; Q118):
-/// one rpc node of mesh1 and one of mesh2 are killed (kill -9) in the same instant. Each mesh-primary
+/// one node of mesh1 and one of mesh2 are killed (kill -9) in the same instant. Each mesh-primary
 /// investigates and submits its own member's recovery; the fabric-primary opens both, one in each mesh's
 /// lane, both are claimed and run at the same time, and both members are re-created as new births. The
 /// Build's two lanes each hold their own attempt's node.delete (TerminateRuntime first) and node.create

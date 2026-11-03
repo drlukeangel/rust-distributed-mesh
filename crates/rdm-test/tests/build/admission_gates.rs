@@ -78,7 +78,7 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
 
     // 1. Gate: The receiver is the fabric-primary -> `not-fabric-primary`, naming the fabric-primary,
     //    which redirects the carrier to `mesh1.node-admin.1`, where Gate 7 (`A primary's stop, connections
-    //    delete or delete has a successor`) refuses stopping the sole rpc-node with `no-secondary`.
+    //    delete or delete has a successor`) refuses stopping the sole node with `no-secondary`.
     let views = estate.node_views().await;
     let non_fp = views.iter().find(|n| n.r#type == "node-admin" && !n.is_fabric_primary).expect("other admin");
     let fp = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
@@ -88,7 +88,7 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
         .stop(&rdm_core::PathName::new("mesh1.node", "1").unwrap())
         .await
         .err()
-        .expect("stop of sole rpc-node must be refused");
+        .expect("stop of sole node must be refused");
     match primary_stop_err {
         CallEnd::Rejected { reason, .. } => {
             assert_eq!(reason, "no-secondary");

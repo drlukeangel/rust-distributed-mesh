@@ -4,12 +4,12 @@
 //! - The value is captured once, at the bootstrap: the bootstrap admin reads each declared value from
 //!   its own environment at its start, as it reads the fabric's root. Every node-admin RDM launches is
 //!   written them beside the root, in the custody document (`RDM_DECLARED_SECRETS`), so whichever admin
-//!   runs a create can launch the named kinds.
+//!   runs a create can launch the named types.
 //! - Every admin keeps the values beside its data dir ([`KEPT_FILE`]), as it keeps the root
 //!   (`ca-secret`), and reads them back on a start from disk without a launcher. A replace and an executable
 //!   replacement launch from the launching admin's copy, so the value never changes while the fabric runs:
 //!   changing it is a new fabric.
-//! - A value is set in the process environment of the named kinds only, and every declared name is
+//! - A value is set in the process environment of the named types only, and every declared name is
 //!   withheld from what a process runtime inherits.
 //! - A value is held as [`SecretHex`] from its read to the spawn, and written to no row, Build record,
 //!   receipt, launch record or span (deployment-provider.md §2.3); RDM's own diagnostics are scrubbed
@@ -87,7 +87,7 @@ impl DeclaredSecrets {
         self.declared.iter().filter_map(|d| Some((d.clone(), self.values.get(&d.name)?.clone()))).collect()
     }
 
-    /// The values set in the environment of a runtime of `kind`: those whose declaration names it.
+    /// The values set in the environment of a runtime of `type`: those whose declaration names it.
     pub fn set_on(&self, r#type: &str) -> BTreeMap<String, SecretHex> {
         self.declared.iter().filter(|d| d.types.iter().any(|t| t == r#type)).filter_map(|d| Some((d.name.clone(), self.values.get(&d.name)?.clone()))).collect()
     }
@@ -168,8 +168,8 @@ pub fn refuse_rdm_names(declared: &[DeclaredSecret], provider: &str) -> Result<(
 mod tests {
     use super::*;
 
-    fn declared(name: &str, kinds: &[String]) -> DeclaredSecret {
-        DeclaredSecret { name: name.into(), types: kinds.to_vec() }
+    fn declared(name: &str, types: &[String]) -> DeclaredSecret {
+        DeclaredSecret { name: name.into(), types: types.to_vec() }
     }
 
     fn dir() -> std::path::PathBuf {
@@ -202,10 +202,10 @@ mod tests {
     /// CONTRACT (Q150): the bootstrap admin reads each declared value from its own environment and
     /// keeps it beside its data dir; a launched admin from its launch's custody document, never its
     /// environment; an admin whose data dir keeps the values reads them from there, never its launch or
-    /// its environment, so the value never changes; a value is set on the named kinds only, every
+    /// its environment, so the value never changes; a value is set on the named types only, every
     /// declared name is withheld, and the debug form names no value.
     #[test]
-    fn declared_values_are_read_once_kept_beside_the_data_dir_and_set_on_the_named_kinds_only() {
+    fn declared_values_are_read_once_kept_beside_the_data_dir_and_set_on_the_named_types_only() {
         let decl = vec![declared("APP_KEY", &["broker".to_string(), "gateway".to_string()]), declared("APP_ADMIN_KEY", &["node-admin".to_string()]), declared("APP_UNSET", &["broker".to_string()])];
         let env = |k: &str| match k {
             "APP_KEY" => Some("bootstrap,value=\nwith a newline".to_string()),

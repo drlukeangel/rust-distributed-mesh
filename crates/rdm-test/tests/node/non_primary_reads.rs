@@ -1,5 +1,5 @@
 //! Where a read sent to a node that is not a primary is answered (query.md §1; Q224, Q243): only a
-//! primary keeps an atlas, so a node that is not a primary, a node-admin or an rpc node, forwards a get
+//! primary keeps an atlas, so a node that is not a primary, a node-admin or a node, forwards a get
 //! to its own mesh-primary and nowhere else; the mesh-primary answers it from its atlas or carries it up
 //! to the fabric-primary.
 
@@ -41,10 +41,10 @@ fn birth_of(n: &NodeView) -> ExactBirth {
 }
 
 /// The two meshes the cells read: mesh1 holds the fabric-primary alone; mesh2 holds its mesh-primary, a
-/// node-admin that is not a primary and one rpc node. The fabric-primary carries the tag `red`; the rpc
+/// node-admin that is not a primary and one node. The fabric-primary carries the tag `red`; the rpc
 /// node the tag `blue` and the config `zone=eu-1`, each written on its row by its mesh-primary and never
 /// gossiped (Q203). Returns the estate, entered at the fabric-primary, with the fabric-primary,
-/// mesh2's mesh-primary, mesh2's other node-admin and mesh2's rpc node, once the fabric-primary answers
+/// mesh2's mesh-primary, mesh2's other node-admin and mesh2's node, once the fabric-primary answers
 /// every row.
 async fn two_meshes_tagged(test: &str) -> (Estate, NodeView, NodeView, NodeView, NodeView, BTreeMap<String, String>) {
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
@@ -56,7 +56,7 @@ async fn two_meshes_tagged(test: &str) -> (Estate, NodeView, NodeView, NodeView,
     let fp = views.iter().find(|n| n.is_fabric_primary).cloned().unwrap_or_else(|| panic!("a fabric-primary: {views:#?}"));
     let mp = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
     let other = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && !n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's node-admin that is not a primary: {views:#?}"));
-    let rpc = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").cloned().unwrap_or_else(|| panic!("mesh2's rpc node: {views:#?}"));
+    let rpc = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").cloned().unwrap_or_else(|| panic!("mesh2's node: {views:#?}"));
     assert_eq!(fp.mesh, "mesh1", "the fabric-primary is mesh1's: {fp:?}");
 
     // Commands go down: each tag and the config is sent to the fabric-primary, which sends it to the
@@ -82,7 +82,7 @@ async fn two_meshes_tagged(test: &str) -> (Estate, NodeView, NodeView, NodeView,
 // @feature: node-lifecycle
 /// CONTRACT (query.md §1: "a node that is not a primary forwards a get to its own mesh-primary and
 /// nowhere else"; Q243): mesh2's node-admin that is not a primary keeps no atlas. `node.get [mesh2,
-/// blue]` sent to it answers the rpc node's record with its tag and its config, row-only properties no
+/// blue]` sent to it answers the node's record with its tag and its config, row-only properties no
 /// gossip view holds: forwarded to mesh2's mesh-primary (`rdm.node_admin.node.serve.via-forward` at the
 /// node-admin, naming mesh2's mesh-primary, the fabric-primary not named), which answers from its atlas.
 /// `node.get [red]`, naming no mesh, answers the fabric-primary by its tag: forwarded to mesh2's
@@ -124,11 +124,11 @@ async fn a_node_admin_that_is_not_a_primary_forwards_nodes_get_to_its_mesh_prima
 
 // @feature: node-lifecycle
 /// CONTRACT (query.md §1: "a node that is not a primary forwards a get to its own mesh-primary and
-/// nowhere else"; Q243): mesh2's rpc node keeps no atlas. `node.get [mesh2, blue]` sent to it answers
+/// nowhere else"; Q243): mesh2's node keeps no atlas. `node.get [mesh2, blue]` sent to it answers
 /// its own record with its tag and its config: forwarded to mesh2's mesh-primary
-/// (`rdm.node.node.serve.via-forward` at the rpc node naming mesh2's mesh-primary), which answers from
+/// (`rdm.node.node.serve.via-forward` at the node naming mesh2's mesh-primary), which answers from
 /// its atlas. `node.get [red]`, naming no mesh, answers the fabric-primary by its tag through mesh2's
-/// mesh-primary. Its own `node.connection.get` stays its own. Must NOT happen: the rpc node refusing the get
+/// mesh-primary. Its own `node.connection.get` stays its own. Must NOT happen: the node refusing the get
 /// (`RequestNotHandled`) or sending it to the fabric-primary itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_rpc_node_forwards_nodes_get_to_its_mesh_primary() {
@@ -142,7 +142,7 @@ async fn an_rpc_node_forwards_nodes_get_to_its_mesh_primary() {
     let no_mesh = at_rpc.get(&Filter::new().eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("node.get [red] at {:?}: {e:?}", rpc.name));
     assert_eq!(ids(&no_mesh), [fp.node_id.to_string()], "a read naming no mesh reaches the fabric-primary's atlas through mesh2's mesh-primary");
     let connections = rdm_client::Connections::new(estate.peers().await.carrier_for(rpc.node_id.clone())).get(&birth_of(&rpc), &Filter::new()).await;
-    assert!(connections.is_ok(), "node.connection.get of the rpc node is its own: {connections:?}");
+    assert!(connections.is_ok(), "node.connection.get of the node is its own: {connections:?}");
 
     estate.stop().await;
     let spans = estate.spans();

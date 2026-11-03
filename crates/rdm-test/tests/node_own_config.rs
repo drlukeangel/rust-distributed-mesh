@@ -119,7 +119,7 @@ async fn a_nodes_own_config_is_read_from_its_record_at_both_primaries() {
     let mut estate = rdm_test::estate::Estate::bootstrap(estate_owner(cell), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
-    let node_id = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").expect("mesh2 rpc node").node_id.clone();
+    let node_id = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").expect("mesh2 node").node_id.clone();
     let target = format!("exact:{node_id}");
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let out = estate.probe(&["own-config", "--target", &target, "--value", "listener.data=127.0.0.1:45005"]);
@@ -142,7 +142,7 @@ async fn a_nodes_own_config_is_read_from_its_record_at_both_primaries() {
 /// CONTRACT (Q227: the fabric-primary of a single mesh with nobody to pull from reads the node
 /// records; fabric-recovery.md "Nothing alive"; node-config-update.md "Build application": "True
 /// recovery inherits the predecessor's acknowledged properties."): mesh1's fabric-primary, its only
-/// node-admin (one rpc node beside it, so its store names a node and Q200's Day 0 is not this case),
+/// node-admin (one node beside it, so its store names a node and Q200's Day 0 is not this case),
 /// changes its own config, is lost, and a person starts a node-admin again on its data dir (fabric
 /// recovery, a new birth at its path and name). The new birth's config is the changed map, read from
 /// the lost birth's own part of its record in nodes.jsonl by the recovery's claim, and the new birth

@@ -132,7 +132,7 @@ pub fn executable_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     p.canonicalize().unwrap()
 }
 
-/// The estate's executables: the faulted node-admin, and the testkit rpc node the admin launches.
+/// The estate's executables: the faulted node-admin, and the testkit node the admin launches.
 pub fn binding_set(sha: &str) -> BindingSet {
     let exe = |name: &str| executable_in(&bin_dir(), name);
     let bind = |id: &str, name: &str| {

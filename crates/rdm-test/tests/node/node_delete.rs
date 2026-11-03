@@ -1,14 +1,14 @@
 //! i143 process E2E: removing one node is a lifecycle op with two events (i143.e6.s10).
 //!
 //! From public surfaces and span evidence only, on an MM estate: mesh1 (two admins, two rpc
-//! nodes) and mesh2 (one admin, two rpc nodes). `node.delete` of mesh2.node.2 reaches the
+//! nodes) and mesh2 (one admin, two nodes). `node.delete` of mesh2.node.2 reaches the
 //! fabric-primary, which accepts a Build without the node; mesh2's primary claims the attempt
 //! and executes the deletion.
 //!
 //! 1. Before the executor starts, the node is routable everywhere. Once it holds the operation
 //!    it publishes `NodeDeleting`: the node stays found and live in every view and stops being
 //!    routable. Only after the provider proved the runtime terminal does it publish
-//!    `NodeDeleted`: a peer mesh's rpc node then answers `Gone` for the old id, `Unknown` for
+//!    `NodeDeleted`: a peer mesh's node then answers `Gone` for the old id, `Unknown` for
 //!    the path (no holder) and for an id nobody saw, and still `Found` for the surviving node.
 //! 2. A node born after the events learns the departure from the retained mesh topology, never
 //!    having heard an event.
@@ -26,12 +26,12 @@ use rdm_test::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// The node deleted: mesh2's second rpc node.
+/// The node deleted: mesh2's second node.
 fn victim() -> PathName {
     Estate::path("mesh2.node", "2")
 }
 
-/// The peer mesh's rpc node that witnesses the departure.
+/// The peer mesh's node that witnesses the departure.
 fn witness_node() -> PathName {
     Estate::path("mesh1.node", "1")
 }
@@ -71,7 +71,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let exact_victim = format!("exact:{victim_id}");
     estate.artifact("nodes-before.json", &json!(before));
 
-    // The peer mesh's rpc node holds mesh2's nodes through the forwarded mesh topology.
+    // The peer mesh's node holds mesh2's nodes through the forwarded mesh topology.
     estate.witness_holds_birth(&witness_at, &victim_at).await;
     let found = estate.probe(&["resolve", "--target", &witness, "--query", &exact_victim]);
     assert_eq!(resolution(&found), "found", "{found}");
@@ -118,7 +118,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     estate.artifact("resolutions.json", &json!({"gone": gone, "path": path, "survivor": survivor, "never": never}));
 
     // 2. A node born after the events learns the departure from the retained mesh topology.
-    let mut spawn = estate.create_node("mesh1", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
+    let mut spawn = estate.create_node("mesh1", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node in mesh1: {e}"));
     Estate::complete(&mut spawn).await;
     let late = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 1)]).await);
     let newcomer = late.iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
@@ -127,7 +127,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert_eq!(resolution(&late_gone), "gone", "the newcomer holds the departure it never heard as an event: {late_gone}");
     // And one born into the executor's own mesh, which learns it from its own primary's
     // overlays rather than a forwarded mesh topology.
-    let mut spawn2 = estate.create_node("mesh2", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
+    let mut spawn2 = estate.create_node("mesh2", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node in mesh2: {e}"));
     Estate::complete(&mut spawn2).await;
     let late2 = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 2)]).await);
     let newcomer2 = late2.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
@@ -280,13 +280,13 @@ fn unix_nanos() -> u64 {
 /// CONTRACT (node-delete.md step 4: "The surviving executor emits node.deleted on the caller stream
 /// from the Exited evidence and records the complete delete receipt. The exited node cannot publish
 /// its own terminal proof or serve that stream"; "NodeDeleting / NodeDeleted are peer
-/// dissemination"): mesh1 (one admin, one rpc node) and mesh2 (two admins, two rpc nodes), every
+/// dissemination"): mesh1 (one admin, one node) and mesh2 (two admins, two nodes), every
 /// node-admin the testkit's faulted node-admin. `node.delete` of mesh2.node.2 is executed by mesh2's
 /// primary P. The fault door holds P at the `deleted` event cut: the victim's runtime is proven
 /// terminal and the NodeDeleted receipt (its row Deleted inside) is durable, and NodeDeleted is not
 /// yet published. Once mesh2's other admin NA2 holds that receipt in its own Build log, P is killed
 /// at the hold. The surviving executor publishes NodeDeleted for the victim's exact birth, the peer
-/// mesh's rpc node retains the departure, and the removal's caller stream ends Complete. Must NOT
+/// mesh's node retains the departure, and the removal's caller stream ends Complete. Must NOT
 /// happen: the deleted birth held in a view for good because the one executor that would have
 /// published its departure exited between the receipt and the publish.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

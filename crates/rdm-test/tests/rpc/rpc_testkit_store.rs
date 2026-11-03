@@ -66,7 +66,7 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     let gone = estate.probe(&["delete", "--target", &path, "--key", "42"]);
     landed_on(&gone, &first, "delete");
     assert_eq!(gone["reply"]["result"], json!({"found": false}), "the key was already deleted: {gone}");
-    // The other rpc node holds none of it.
+    // The other node holds none of it.
     let other_view = estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
     let other_target = format!("exact:{}", other_view["node_id"].as_str().unwrap());
     let other = estate.probe(&["get", "--target", &other_target, "--key", "41"]);
@@ -155,7 +155,7 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     // The Build stopped the predecessor and renamed it `<name>-old` at the unchanged path; its node.delete there is the
     // Build's step that appends lifecycle status `Deleted`; its ID and history remain, and NodeDeleted publishes departure (node-rpc.md:
     // Gone comes only from NodeDeleted). A node's own live resolver knows more: that delete published the old
-    // birth's departure, so the other rpc node answers Gone for the old id, the new primary for
+    // birth's departure, so the other node answers Gone for the old id, the new primary for
     // the path, and Unknown for an id nobody ever saw.
     let other = other_target.as_str();
     estate.holds_departure(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", recovered["node_id"].as_str().unwrap()).await;

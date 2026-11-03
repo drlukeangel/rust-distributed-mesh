@@ -35,6 +35,12 @@ pub fn types() -> Vec<rdm_core::NodeType> {
     ]
 }
 
+/// The storage a node of `type` takes when its create states none: the declared type's ([`types`]),
+/// else RDM's ([`StoragePersistence::of_type`](rdm_core::meta::StoragePersistence::of_type)).
+pub fn storage_of(r#type: &str) -> rdm_core::meta::StoragePersistence {
+    rdm_core::NodeType::of(&types(), r#type).map_or_else(|| rdm_core::meta::StoragePersistence::of_type(r#type), |t| t.storage_persistence.clone())
+}
+
 /// [`types`] as `RDM_NODE_TYPES` carries them.
 pub fn types_document() -> String {
     serde_json::to_string(&types()).expect("node types encode as JSON")
@@ -44,10 +50,10 @@ pub fn types_document() -> String {
 /// only.
 pub const DECLARED_SECRET: &str = "TESTKIT_DECLARED_SECRET";
 
-/// The kinds [`DECLARED_SECRET`] is set on.
+/// The types [`DECLARED_SECRET`] is set on.
 pub const DECLARED_TYPES: [&str; 2] = ["broker", "gateway"];
 
-/// The kind the testkit application declares listeners on (Q151).
+/// The type the testkit application declares listeners on (Q151).
 pub const LISTENER_TYPE: &str = "gateway";
 
 /// The listeners the testkit application declares on [`LISTENER_TYPE`], as Rafka's gateway names its

@@ -399,7 +399,7 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     Served { router, carrier: BuildCarrier::new(client, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()), door }
 }
 
-/// `node.create` of mesh1's next rpc node, named on its executable (proposal
+/// `node.create` of mesh1's next node, named on its executable (proposal
 /// executable-bindings-at-create.md rule 1: the complete-topology request, the count expanded at the
 /// door), over `nodes`, built from what `served`'s door reads.
 async fn create_rpc(nodes: &Nodes, served: &Served) -> Result<WorkflowStream, CallEnd> {

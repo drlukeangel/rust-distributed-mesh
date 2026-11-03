@@ -112,16 +112,16 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
         (Malformed { kind: MalformedKind::Corrupt }, "0802"),
         (Unauthorized { reason: "u".into() }, "090175"),
         (Started, "0a"),
-        (Stored { mesh: "m".into(), mesh_id: None, nodes: vec![StoredNode { mesh: "m".into(), r#type: "node".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), name: rdm_core::PathName::new("m.node", "1").unwrap(), endpoint_id: rdm_core::EndpointId("k".into()), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 01 6d 00 01 01 6d 01 0c 30 34 72 61 6a 30 39 70 33 7a 70 37 05 6d 2e 72 70 63 01 31 01 6b 0c 79 72 7a 34 39 6a 33 30 33 79 68 34 00 7f 00 00 01 50"),
+        (Stored { mesh: "m".into(), mesh_id: None, nodes: vec![StoredNode { mesh: "m".into(), r#type: "node".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), name: rdm_core::PathName::new("m.node", "1").unwrap(), endpoint_id: rdm_core::EndpointId("k".into()), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 01 6d 00 01 01 6d 04 6e 6f 64 65 0c 30 34 72 61 6a 30 39 70 33 7a 70 37 06 6d 2e 6e 6f 64 65 01 31 01 6b 0c 79 72 7a 34 39 6a 33 30 33 79 68 34 00 7f 00 00 01 50"),
         (Primaries { kind: PrimaryKind::FabricPrimary, primary: Primary { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 2 }, gone: false }, "0c 01 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 02 00"),
         (Primaries { kind: PrimaryKind::MeshPrimary, primary: Primary { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 300 }, gone: true }, "0c 00 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 ac02 01"),
-        (Stored { mesh: "m".into(), mesh_id: Some(rdm_core::MeshId::parse("04raj09p3zp7").unwrap()), nodes: vec![StoredNode { mesh: "m".into(), r#type: "node".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), name: rdm_core::PathName::new("m.node", "1").unwrap(), endpoint_id: rdm_core::EndpointId("k".into()), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 016d 01 0c 303472616a303970337a7037 01 01 6d 01 0c 303472616a303970337a7037 05 6d2e7270630131 016b 0c79727a34396a333033796834 00 7f000001 50"),
+        (Stored { mesh: "m".into(), mesh_id: Some(rdm_core::MeshId::parse("04raj09p3zp7").unwrap()), nodes: vec![StoredNode { mesh: "m".into(), r#type: "node".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), name: rdm_core::PathName::new("m.node", "1").unwrap(), endpoint_id: rdm_core::EndpointId("k".into()), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 016d 01 0c 303472616a303970337a7037 01 01 6d 04 6e6f6465 0c 303472616a303970337a7037 06 6d2e6e6f64650131 016b 0c79727a34396a333033796834 00 7f000001 50"),
         (RafkaTime { ms: 1_000, kind: None }, "0d e807 00"),
         (RafkaTime { ms: 300, kind: Some(PrimaryKind::FabricPrimary) }, "0d ac02 01 01"),
         (RafkaTime { ms: 7, kind: Some(PrimaryKind::MeshPrimary) }, "0d 07 01 00"),
         // Q234: the reader's own whole row, a `NodeView` in its field order (its trailing properties Read,
         // Q318), and nothing after it: a node record carries no revision (i150 D10; durable format moved).
-        (OwnRow { node: own_row() }, "0e 05 6d2e727063 01 31 01 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 00 00 00 00 \
+        (OwnRow { node: own_row() }, "0e 06 6d2e6e6f6465 01 31 04 6e6f6465 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 00 00 00 00 \
             0000000000000000000000000000000000000000000000000000000000000000 00 00 00 00 00"),
     ];
     for (r, hex) in fixtures {
@@ -167,7 +167,7 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
     };
     let r = TopologyReply::Snapshot { mesh: "mesh1".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![ProjectionEntry::from(&d)], in_flight: vec![], deleted: vec![] };
     let hex = "00 05 6d65736831 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
-        0c 313132333435363738396162 05 6d65736831 01 0c 303132333435363738396162 09 6d657368312e727063 01 31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
+        0c 313132333435363738396162 05 6d65736831 04 6e6f6465 0c 303132333435363738396162 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
         01 00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
         00 \
         02 \

@@ -1795,7 +1795,7 @@ pub enum StatusReply {
         connections: Vec<ConnectionId>,
     },
     /// `node.mesh.joined`: the exact birth joined its mesh channel(s) and published its first
-    /// `Digest` heartbeat (`[Own]` for an rpc-node or storage-node, `[Own, Backbone]` for a
+    /// `Digest` heartbeat (`[Own]` for any other node, `[Own, Backbone]` for a
     /// node-admin).
     ///
     /// Position 49 on the wire.
@@ -1808,7 +1808,7 @@ pub enum StatusReply {
         joined: Vec<WhichMesh>,
     },
     /// `node.mesh.left`: the exact birth left its mesh channel(s), its endpoint still bound
-    /// (`[Own]` for an rpc-node or storage-node, `[Own, Backbone]` for a node-admin). Never sent on
+    /// (`[Own]` for any other node, `[Own, Backbone]` for a node-admin). Never sent on
     /// this op since node.mesh.leave moved to NodeCommand 0x22 (Q205): the mesh-primary's in-process
     /// carry of the leave answers it ([`crate::node_command::NodeCommandReply::MeshLeft`] on the wire).
     ///

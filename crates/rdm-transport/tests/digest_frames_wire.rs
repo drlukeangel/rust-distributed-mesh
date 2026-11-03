@@ -24,13 +24,13 @@ fn digest(status: &str) -> MeshDigest {
     .unwrap()
 }
 
-/// The digest's wire shape: fabric id, node (node id, path.name, endpoint id, transport address
+/// The digest's wire shape: fabric id, node (mesh, type (a string), node id, path.name, endpoint id, transport address
 /// (variant V4, four address bytes, port), incarnation, supersedes, runtime), then `node_state` at
 /// position 2 (`Joining` = 0), admin API base, digest_seq, emitted_at, data dir, mesh id, in flight,
 /// load, gossip, held hash, then the primary revision and the fabric-primary revision (gossip.md
 /// "A primary change on gossip"; absent: one `00` each).
 const WIRE_DIGEST: &str = "0c 313132333435363738396162 \
-    05 6d65736831 01 0c 303132333435363738396162 09 6d657368312e727063 01 31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
+    05 6d65736831 04 6e6f6465 0c 303132333435363738396162 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
     00 \
     00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00";
 
@@ -108,7 +108,7 @@ fn the_largest_complete_message_golden_fits_max_frame() {
     let frame = Frame::Digest { digest: d };
     // The existing literal digest prefix through node_state; Some API string has a two-byte
     // postcard length (3600 = 0x90 0x1c), then sequence, stamp and all remaining empty fields.
-    let mut data = bytes("00 0c313132333435363738396162 05 6d65736831 01 0c303132333435363738396162 09 6d657368312e727063 01 31 016b 007f00000150 0c79727a34396a333033796834 0000 00 01 901c");
+    let mut data = bytes("00 0c313132333435363738396162 05 6d65736831 04 6e6f6465 0c303132333435363738396162 0a 6d657368312e6e6f6465 01 31 016b 007f00000150 0c79727a34396a333033796834 0000 00 01 901c");
     data.extend(std::iter::repeat_n(b'x', 3600));
     data.extend(bytes("07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"));
     let expected = golden(&frame, &data);
@@ -148,7 +148,7 @@ fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling() {
     d.admin_api_base = Some("x".repeat(3500));
     let frame = Frame::Digest { digest: d };
     // 3500 = postcard unsigned varint 0xac 0x1b. All other domain positions stand.
-    let mut data = bytes("00 0c313132333435363738396162 05 6d65736831 01 0c303132333435363738396162 09 6d657368312e727063 01 31 016b 007f00000150 0c79727a34396a333033796834 0000 00 01 ac1b");
+    let mut data = bytes("00 0c313132333435363738396162 05 6d65736831 04 6e6f6465 0c303132333435363738396162 0a 6d657368312e6e6f6465 01 31 016b 007f00000150 0c79727a34396a333033796834 0000 00 01 ac1b");
     data.extend(std::iter::repeat_n(b'x', 3500));
     data.extend(bytes("07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"));
     let expected = crate::gossip_wire::golden_with_trace(&frame, &data, Some(PARENT), Some(STATE));

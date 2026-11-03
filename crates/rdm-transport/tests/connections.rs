@@ -2432,9 +2432,9 @@ async fn a_protocol_with_proxy_false_never_consumes_a_proxy_even_when_one_is_hel
 }
 
 /// CONTRACT (connections.md §6): the carriers a source asks are of a node type its protocol's carrier list
-/// names. An rpc node holding an Active Direct to the destination is never picked for a protocol whose
+/// names. A node holding an Active Direct to the destination is never picked for a protocol whose
 /// list names only the gateway kind: beside a gateway the gateway carries, and alone it leaves the
-/// source's NotSent standing. Must NOT happen: the rpc node asked to carry the connection.
+/// source's NotSent standing. Must NOT happen: the node asked to carry the connection.
 #[tokio::test]
 async fn a_carrier_outside_the_protocols_list_is_never_picked() {
     let alpns = [gateway_alpn(ALPN_A)];
@@ -2468,7 +2468,7 @@ async fn a_carrier_outside_the_protocols_list_is_never_picked() {
     let (dialer_l, _) = lone.registry.connections(ALPN_A).unwrap().split();
     let err = dialer_l.open(&dest.birth).await.expect_err("no node of a kind the list names stands for this source");
     assert!(matches!(err, ConnectError::NotSent { .. }), "with no eligible carrier the Direct's NotSent stands: {err:?}");
-    assert_eq!(outside_admitter.calls.load(Ordering::SeqCst), 0, "the rpc node, outside the protocol's list, was never asked to carry");
+    assert_eq!(outside_admitter.calls.load(Ordering::SeqCst), 0, "the node, outside the protocol's list, was never asked to carry");
 
     source.shutdown().await;
     outside.shutdown().await;

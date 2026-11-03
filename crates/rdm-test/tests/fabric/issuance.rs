@@ -89,7 +89,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let spans = estate.spans();
     let root: VerifyingKey = certs::decode_key(&std::fs::read_to_string(&ca).unwrap_or_else(|e| panic!("the bootstrap admin keeps the fabric's root at {}: {e}", ca.display()))).unwrap_or_else(|e| panic!("{}: {e}", ca.display())).verifying_key();
 
-    // Every rpc node holds a cert for exactly its birth, verifying to its issuer and the issuer to the root.
+    // Every node holds a cert for exactly its birth, verifying to its issuer and the issuer to the root.
     let issued = named(&spans, "rdm.node_admin.cert.create.via-join");
     for location in [PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh2.node", "1").unwrap()] {
         let view = views.iter().find(|v| v.name == location).expect("the node is in the view");

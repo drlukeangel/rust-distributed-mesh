@@ -3,7 +3,7 @@
 //! cadence (staleness 3 s, gossip 500 ms), `RDM_ARTIFACTS_DIR` set.
 //!
 //! The estate: bootstrap (Day 0 mesh1 with one admin), then one Build of mesh1 with three node-admins
-//! and no rpc node.
+//! and no node.
 
 use rdm_test::estate::{Estate, Owner};
 
@@ -19,7 +19,7 @@ fn owner(test: &str) -> Owner {
 }
 
 /// CONTRACT: the reduced stem of the mesh-create race, with nothing withheld: bootstrap, one Build of
-/// mesh1 with three node-admins and no rpc node, and the Build completes with both joining admins Ready.
+/// mesh1 with three node-admins and no node, and the Build completes with both joining admins Ready.
 /// The joiner hydrates its Build's facts from the store root, so the Build is never left waiting on an admin that
 /// reports Pending. Run in a loop of thousands by the release campaign (`RG6_STEM_RUNS` is the loop's
 /// own count, not read here: each run is one process).

@@ -1,6 +1,6 @@
 //! A node birth serving the commands of its owning mesh-admin: `node.connection.delete`,
 //! `node.stop` and `node.start` (node-connections-delete.md, node-stop.md, node-start.md). Every node
-//! kind runs this one logic over its own surface: an rpc node, a role node and a node-admin differ
+//! kind runs this one logic over its own surface: a node, a role node and a node-admin differ
 //! only in how they refuse new work, how they publish and how they leave and rejoin the mesh (their
 //! [`Session`]).
 //!
@@ -186,7 +186,7 @@ pub trait Session: Send + Sync {
 }
 
 /// Declares a state this birth entered to its mesh-primary, with the operation that produced it when
-/// one did (i146 Q36). An rpc node owes it when this is called, in that order (Q210), and the future
+/// one did (i146 Q36). A node owes it when this is called, in that order (Q210), and the future
 /// ends once its call ended.
 pub type Declare = Arc<dyn Fn(NodeState, Option<rdm_core::status::DeclaredOperation>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
@@ -1550,7 +1550,7 @@ pub fn request_not_handled(receiver: &str, req: &StatusRequest) -> StatusReply {
     rdm_core::reply::not_handled(req.op().to_string())
 }
 
-/// The refusal of a `NodeLeft` call at any receiver, a node-admin or an rpc node (node-rpc-envelope.md,
+/// The refusal of a `NodeLeft` call at any receiver, a node-admin or a node (node-rpc-envelope.md,
 /// "Node stop command pair": "NodeLeft keeps its position and is never sent; a receiver refuses it by
 /// name"). A stop's completion is its `Stopped` reply, so no command is open that a node-left call
 /// completes: it is `RejectedUnmatchedCompletion { field: "command" }`, `expected` what the receiver

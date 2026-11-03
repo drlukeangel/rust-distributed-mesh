@@ -118,18 +118,18 @@ impl rdm_node::storage_backend::NodeStorageBackend for TargetRefusedByKnob {
 /// connection's streams answered by [`echo_streams`].
 pub const APP_PROTOCOL: &[u8] = b"rdm-test/echo/1";
 
-/// The file, under the root that holds an estate's data dirs, that has its rpc nodes register
+/// The file, under the root that holds an estate's data dirs, that has its nodes register
 /// [`APP_PROTOCOL`].
 pub const APP_PROTOCOL_KNOB: &str = "app-protocol.knob";
 
 /// The directory, under the root that holds an estate's data dirs, of the node-row knob: a file named
-/// by an rpc node's node ID whose text is another node's node ID has that node read the other's
+/// by a node's node ID whose text is another node's node ID has that node read the other's
 /// row from the nodes storage ([`watch_node_row_knob`]).
 pub fn node_row_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join("node-row-knob")
 }
 
-/// The rpc node `launch` names reads another node's row when the estate's root holds its node-row
+/// The node `launch` names reads another node's row when the estate's root holds its node-row
 /// knob ([`node_row_knob_dir`]`/<node-id>`): looked at every 200 ms for the process's life, the knob
 /// is taken (removed), the row it names is read once through `read` (`RunningNode::node_row`), and the
 /// answer is written beside it as `<node-id>.answer`, JSON: `outcome` (`found`, `none` or `refused`)
@@ -160,8 +160,8 @@ pub fn watch_node_row_knob(launch: &Launch, read: rdm_node::node::NodeRowRead) {
     });
 }
 
-/// The file, under the root that holds an estate's data dirs, that has its rpc nodes register
-/// [`APP_PROTOCOL`] proxied through an rpc node carrier (connections.md §6, §7): a Direct open
+/// The file, under the root that holds an estate's data dirs, that has its nodes register
+/// [`APP_PROTOCOL`] proxied through a node carrier (connections.md §6, §7): a Direct open
 /// that ends `NotSent` proves a Proxy through a carrier.
 pub const APP_PROTOCOL_PROXY_KNOB: &str = "app-protocol-proxy.knob";
 
@@ -170,7 +170,7 @@ pub fn app_protocol() -> rdm_transport::connections::Alpn {
     rdm_transport::connections::Alpn { name: APP_PROTOCOL.to_vec(), proxy: false, carriers: vec!["node".to_string()] }
 }
 
-/// [`app_protocol`], proxied through an rpc node carrier.
+/// [`app_protocol`], proxied through a node carrier.
 pub fn app_protocol_proxy() -> rdm_transport::connections::Alpn {
     rdm_transport::connections::Alpn { proxy: true, ..app_protocol() }
 }
@@ -180,7 +180,7 @@ pub fn app_protocol_knob(launch: &Launch) -> bool {
     app_protocol_for(launch).is_some()
 }
 
-/// The app protocol `launch`'s root asks its rpc nodes to register: proxied under
+/// The app protocol `launch`'s root asks its nodes to register: proxied under
 /// [`APP_PROTOCOL_PROXY_KNOB`], not under [`APP_PROTOCOL_KNOB`], none without either.
 pub fn app_protocol_for(launch: &Launch) -> Option<rdm_transport::connections::Alpn> {
     let root = launch.data_dir.parent()?;

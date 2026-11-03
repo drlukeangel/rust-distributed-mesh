@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 const SETTLE: Duration = Duration::from_secs(120);
-/// The rpc node the cells stop and start.
+/// The node the cells stop and start.
 fn node_at() -> PathName {
     Estate::path("mesh1.node", "1")
 }
@@ -167,7 +167,7 @@ async fn stop_then_start(test: &str, node: &PathName) {
     let received = of_node("rdm.node_admin.node.update.via-stop-received");
     assert_eq!(received.len(), 1, "the stop stream's stopped is recorded once: {received:#?}");
     // A node's own declaration of `state` naming an operation of `kind`, whichever kind of node made it:
-    // an rpc node's `via-declare-own`, a node-admin's declarer's `via-declare` (i146 Q37: one rule for
+    // a node's `via-declare-own`, a node-admin's declarer's `via-declare` (i146 Q37: one rule for
     // every node, node-status.md "Status report").
     let declared_of = |state: &str, kind: &str| -> Vec<&Value> {
         let own = named(&spans, "rdm.node_rpc.status.update.via-declare-own").into_iter().filter(move |sp| sp["attributes"]["state"] == state);
@@ -539,7 +539,7 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
 /// it (`via-join` `admitted_as`); the node installs the answer's name before it publishes
 /// (`via-join-admitted` `installed`, then `via-ready` under that name). The stream carries
 /// `node.joined`, `node.started` and ends `Complete`; every admin lists the same birth
-/// `ready` at `mesh1.node-admin.old.3`, and the rpc node holds it publishing that name. What must
+/// `ready` at `mesh1.node-admin.old.3`, and the node holds it publishing that name. What must
 /// NOT happen: an admin listing the stopped birth at `mesh1.node-admin.3`, the start refused (`UnknownNode`,
 /// `JoinMismatch("name")`), or a span of the started node after its join naming `mesh1.node-admin.3`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -562,7 +562,7 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
     assert_ne!(primary.name, path, "the stopped admin is not mesh1's primary");
     let admins: Vec<NodeView> = mesh.iter().filter(|n| n.name != path && n.r#type == "node-admin").cloned().collect();
     assert!(admins.iter().any(|n| n.name != primary.name), "an admin that performs no rename: {admins:?}");
-    let rpc = mesh.iter().find(|n| n.r#type == "node").cloned().expect("the rpc node");
+    let rpc = mesh.iter().find(|n| n.r#type == "node").cloned().expect("the node");
     let pid = estate.pid_of(&path).await;
 
     // The predecessor's half of a replace: its connections, its mesh, its name live, then its stop.
@@ -812,7 +812,7 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
 /// CONTRACT (node-stop.md step 6: "A stopped node leaves the stopped status only through node.start or
 /// node.delete"; states.md "Stopped nodes": "stopped is not live and is still present"; a completed
 /// operation is never planned again): in mesh2, a peer mesh of the fabric-primary mesh1.node-admin.1,
-/// `node.stop` of mesh2.node.1, then `node.delete` of another rpc node of mesh2 (the Build that removes
+/// `node.stop` of mesh2.node.1, then `node.delete` of another node of mesh2 (the Build that removes
 /// its path). The delete Build plans that path's delete and at most once the stopped path's create, whose
 /// check reaches the stopped birth, holds it and receipts the create `Complete`; no attempt plans it
 /// again and the attempts are bounded; the delete's operation completes and its path is listed no more;
@@ -841,14 +841,14 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     let before = view_of(&estate.nodes_obj().await, &stopped_path).await;
     assert!(before.stopped && before.status == NodeStatus::Stopped, "node.get lists {stopped_path:?} stopped: {before:?}");
 
-    // The other path: an rpc node of mesh2 that is not its node-type primary, so its delete moves no primary.
+    // The other path: a node of mesh2 that is not its node-type primary, so its delete moves no primary.
     let mesh2 = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("node.get [mesh]");
     let other = mesh2
         .iter()
         .filter(|n| n.r#type == "node" && n.name != stopped_path && !n.is_primary)
         .map(|n| (n.name.clone(), n.node_id.clone()))
         .max()
-        .unwrap_or_else(|| panic!("mesh2 lists another rpc node that is not its primary: {mesh2:?}"));
+        .unwrap_or_else(|| panic!("mesh2 lists another node that is not its primary: {mesh2:?}"));
     let (other, other_id) = other;
     let mut stream = nodes.delete(&other).await.expect("the delete was accepted");
     let build_id = stream.accepted().build_id.to_string();
@@ -898,9 +898,9 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
 }
 
 /// CONTRACT (states.md:16, Q240; "Resize and executable replacement"): a stopped birth holds neither its
-/// mesh's ready nor the fabric's checklist. mesh1 {1 node-admin, 1 rpc node} and mesh2 {1 node-admin,
-/// 2 rpc nodes}, ready; `node.stop` of mesh2's rpc node that is not its node-type primary completes;
-/// then a resize grows mesh2 to 3 rpc nodes. The resize Build ends Complete, the fabric-primary's change
+/// mesh's ready nor the fabric's checklist. mesh1 {1 node-admin, 1 node} and mesh2 {1 node-admin,
+/// 2 nodes}, ready; `node.stop` of mesh2's node that is not its node-type primary completes;
+/// then a resize grows mesh2 to 3 nodes. The resize Build ends Complete, the fabric-primary's change
 /// enters ready under that Build, and the stopped birth is untouched: still stopped, the same birth
 /// and the same live process. Its later `node.start` runs its gates as before the ruling: joined, started,
 /// Complete, and the same birth is ready again.
@@ -918,12 +918,12 @@ async fn a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_
     let fabric_primary = estate.fabric_view().await.fabric_primary.expect("the ready fabric names its fabric-primary");
     let nodes = estate.nodes_obj().await;
     let mesh2 = nodes.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("node.get [mesh]");
-    // The rpc node that is not mesh2's rpc node-type primary, so its stop moves no primary.
+    // The node that is not mesh2's `node` type primary, so its stop moves no primary.
     let stopped_path = mesh2
         .iter()
         .find(|n| n.r#type == "node" && !n.is_primary)
         .map(|n| n.name.clone())
-        .unwrap_or_else(|| panic!("mesh2 lists an rpc node that is not its primary: {mesh2:?}"));
+        .unwrap_or_else(|| panic!("mesh2 lists a node that is not its primary: {mesh2:?}"));
     let stopped_name = stopped_path.clone();
     let pid = estate.pid_of(&stopped_name).await;
 
@@ -933,7 +933,7 @@ async fn a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_
     let before = view_of(&estate.nodes_obj().await, &stopped_path).await;
     assert!(before.stopped && before.status == NodeStatus::Stopped, "node.get lists {stopped_name:?} stopped: {before:?}");
 
-    // The resize: mesh2 grows by one rpc node while the stopped birth rests.
+    // The resize: mesh2 grows by one node while the stopped birth rests.
     let mut stream = estate.submit_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 1, 3)]).await;
     let build_id = stream.build_id().to_string();
     let mut built = Vec::new();
@@ -951,8 +951,8 @@ async fn a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_
     estate.until_fabric_ready_at(&fabric_primary, SETTLE).await;
     let grown = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("node.get [mesh]");
     let rpc: Vec<&NodeView> = grown.iter().filter(|n| n.r#type == "node").collect();
-    assert_eq!(rpc.len(), 3, "mesh2 holds three rpc nodes: {grown:?}");
-    assert!(rpc.iter().filter(|n| n.name != stopped_path).all(|n| n.status == NodeStatus::Ready), "every rpc node of mesh2 that is not stopped is ready: {grown:?}");
+    assert_eq!(rpc.len(), 3, "mesh2 holds three nodes: {grown:?}");
+    assert!(rpc.iter().filter(|n| n.name != stopped_path).all(|n| n.status == NodeStatus::Ready), "every node of mesh2 that is not stopped is ready: {grown:?}");
     let held = view_of(&estate.nodes_obj().await, &stopped_path).await;
     assert!(held.stopped && held.status == NodeStatus::Stopped, "{stopped_name:?} is still stopped after the resize: {held:?}");
     assert_eq!((&held.node_id, &held.incarnation_id), (&before.node_id, &before.incarnation_id), "the stopped birth is the same birth");
@@ -1005,7 +1005,7 @@ fn unix_nanos() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("after the Unix epoch").as_nanos() as u64
 }
 
-/// mesh1 {1 node-admin, 1 rpc node} and mesh2 {`admins` node-admins, 1 rpc node}, settled and
+/// mesh1 {1 node-admin, 1 node} and mesh2 {`admins` node-admins, 1 node}, settled and
 /// ready, through the typed objects: the fabric-primary is mesh1.node-admin.1.
 async fn two_meshes(test: &str, admins: u32) -> (Estate, Vec<NodeView>) {
     settled_two_meshes(Estate::bootstrap(owner(test), "fabric1", "mesh1").await, admins).await
@@ -1108,7 +1108,7 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
 /// CONTRACT (the approved proposal Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12:
 /// "`node.primary.update` commanded for a node type with no other node of that type in the mesh is refused
 /// by name, `cannot transfer: no secondary of type <type> in mesh <mesh>`"): mesh2 has one
-/// node-admin and an rpc node. `node.stop` of mesh2.node-admin.1 is refused `last-admin` with exactly
+/// node-admin and a node. `node.stop` of mesh2.node-admin.1 is refused `last-admin` with exactly
 /// `cannot transfer: no secondary of type node-admin in mesh mesh2`, under
 /// `rdm.node_admin.build.reject.via-last-admin`. No node.primary.update is commanded or run, and every
 /// node keeps its birth and its primaries.
@@ -1145,7 +1145,7 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
 /// mesh-primary Ready is refused the same way, naming both searches ... a single-admin
 /// single-mesh fabric's primary ... cannot be stopped or restarted until a secondary is Ready";
 /// Part C2 step 3's text): mesh1.node-admin.1 is the fabric's only node-admin, holding mesh1's role and the
-/// fabric-primary role, beside one rpc node. Its `node.stop` and its `node.restart` are each refused
+/// fabric-primary role, beside one node. Its `node.stop` and its `node.restart` are each refused
 /// `last-admin` with exactly `cannot transfer fabric-primary: no other node-admin Ready in mesh
 /// mesh1, no other mesh-primary Ready`, one `rdm.node_admin.build.reject.via-last-admin` per
 /// call. Every node keeps its birth and its primaries (node.get). The stop is not run: no stop-node
@@ -1192,7 +1192,7 @@ async fn a_stop_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_mo
 /// CONTRACT (i146 Q37; node-status.md "Status report"; node-stop.md steps 4-5; node-primary-update.md
 /// steps 5-8; the role taker's RoleFold, R14): a stopped birth's stop is published NodeStopped once,
 /// by the mesh primary that applied its Stopped, and a move of its mesh's role publishes it no second
-/// time. In a fabric of two meshes, mesh2's rpc node that is not its node-type primary is stopped: it stops, declares its Stopped naming the
+/// time. In a fabric of two meshes, mesh2's node that is not its node-type primary is stopped: it stops, declares its Stopped naming the
 /// stop, and mesh2's primary publishes NodeStopped. Then mesh2's primary is stopped: its Build moves
 /// mesh2's role to mesh2's other admin first, which folds the mesh's status rows (the stopped birth's
 /// Stopped among them), and the old primary's own stop declares its Stopped naming that stop to the new
@@ -1211,8 +1211,8 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
     let admin_of = |primary: bool| views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary == primary).map(|n| n.name.clone()).expect("mesh2 has two admins");
     let (primary, successor) = (admin_of(true), admin_of(false));
     assert!(!views.iter().any(|n| n.name == primary && n.is_fabric_primary), "mesh2's primary is not the fabric primary: the entry admin stays put");
-    // The rpc node that is not its node type's primary: its stop moves no role of its own.
-    let stopped_birth = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary).cloned().expect("mesh2 has an rpc node that is not its node type's primary");
+    // The node that is not its node type's primary: its stop moves no role of its own.
+    let stopped_birth = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary).cloned().expect("mesh2 has a node that is not its node type's primary");
     let stopped_node = stopped_birth.name.clone();
     let nodes = estate.nodes_obj().await;
 
@@ -1283,7 +1283,7 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
 
 /// CONTRACT (i146 Q39; node-status.md "Status report"; node-primary-update.md steps 5-8): a node's
 /// declaration is owed to the primary of its mesh's primary role, and the role moving is its one
-/// retargeting. In a fabric of two meshes, mesh2's non-primary rpc node is restarted while mesh2's
+/// retargeting. In a fabric of two meshes, mesh2's non-primary node is restarted while mesh2's
 /// primary holds the restart's node.started unanswered at its status door (the fault door's
 /// declaration cut): the restart's wait for the node's readiness fails naming the node.started its
 /// primary never took, the node live and its declaration owed. Then mesh2's primary is stopped,
@@ -1425,7 +1425,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
 /// an owed message (Node RPC §43) sent whether or not the stop call's stream is still open"; node-rpc.md
 /// §43, "Owed messages: delivery is the runtime's"; step 5 and Q49: whichever of the stopped frame and the
 /// declaration reaches the mesh-primary first is applied, and the other answers `AlreadyApplied`):
-/// mesh2's rpc node is stopped while mesh2's primary holds the node's `Stopped` declaration unanswered at
+/// mesh2's node is stopped while mesh2's primary holds the node's `Stopped` declaration unanswered at
 /// its status door (the fault door's declaration cut) and holds the stop stream's `stopped` unrecorded
 /// (its event cut), and that primary is then SIGKILLed: the role moves to mesh2's other admin, and the
 /// stopped node, which left its mesh's channel at its transport cut, hears neither the death nor the
@@ -1444,8 +1444,8 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
     estate.until_fabric_ready(SETTLE).await;
     let primary = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.name.clone()).expect("mesh2's primary");
     assert!(!views.iter().any(|n| n.name == primary && n.is_fabric_primary), "mesh2's primary is not the fabric-primary: the entry admin stays put");
-    // The rpc node of mesh2 that holds no role: a primary's stop moves its role first.
-    let node: PathName = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary).map(|n| n.name.clone()).expect("mesh2 has an rpc node that holds no primary role");
+    // The node of mesh2 that holds no role: a primary's stop moves its role first.
+    let node: PathName = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary).map(|n| n.name.clone()).expect("mesh2 has a node that holds no primary role");
     let node_s = node.clone();
     let nodes = estate.nodes_obj().await;
     let before = view_of(&estate.nodes_obj().await, &node).await;
@@ -1498,7 +1498,7 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
 
 /// CONTRACT (node-stop.md steps 2-4; node-mesh-leave.md; i146 Q55: "a signal stop is node.stop's own
 /// steps"): a node-admin that is not its mesh's primary is sent SIGTERM. It runs node.stop's steps as
-/// its own subject, as an rpc node does: the whole `node.connection.delete { All }` under
+/// its own subject, as a node does: the whole `node.connection.delete { All }` under
 /// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` (`via-stop`, operation `signal`), its connections-deleting
 /// owed to its mesh-primary; `node.mesh.leave` (`via-leaving`), its own mesh and the backbone each
 /// left (`via-left` own and backbone), its Node RPC pool cut (`via-stop-transport-cut`); its `Stopped`
@@ -1562,7 +1562,7 @@ async fn a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped() {
 }
 
 /// CONTRACT (node-start.md "If join fails after start": `CommandAccepted`, then `Failed { step, reason,
-/// code }`, nothing downstream; node-stop.md steps 2-4; node-mesh-leave.md): a stopped rpc node's
+/// code }`, nothing downstream; node-stop.md steps 2-4; node-mesh-leave.md): a stopped node's
 /// commanded start fails at a step (its `pre_node_ready` hook answers Failed). The birth is stopped again,
 /// as it was, through node.stop's own steps, each naming the start's operation: the whole
 /// `node.connection.delete { All }` (`via-stop`), its tasks held, `node.mesh.leave` (`via-leaving`,
@@ -1657,7 +1657,7 @@ async fn signal_stop_with_primary_held(test: &str, bound_ms: &str, release_after
 }
 
 /// CONTRACT (Q210, node-rpc.md section 43: "a signal stop waits for the queue within Q206's bound and its
-/// outcome span"; node-connections-delete.md): an rpc node holds owed declarations to its mesh-primary (its
+/// outcome span"; node-connections-delete.md): a node holds owed declarations to its mesh-primary (its
 /// mesh-primary is held, answering nothing) when it receives SIGTERM. Its stop waits for them: its process is
 /// still alive after the signal and for as long as the mesh-primary stays silent, inside
 /// `RDM_CONNECTIONS_DELETE_DEADLINE_MS`. The mesh-primary continued inside the declaration call's attempts
@@ -1819,7 +1819,7 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
 /// node.connection.delete's own rules; its receipt is ... `Deadline { last_in_flight, closed, held }` at its
 /// bound (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`)"; CLAUDE.md, that env var: the bound "on a signal stop alike:
 /// how long in-flight handlers may finish before the node leaves"): the fabric-primary serves mesh2's
-/// primary's claim of the drift attempt it opened for a killed mesh2 rpc node, and the testkit's
+/// primary's claim of the drift attempt it opened for a killed mesh2 node, and the testkit's
 /// claimed-attempt cut holds that claim, so the call it serves never ends. The fabric-primary receives
 /// SIGTERM. It leaves by its own signal stop within the bound's steps: its connections delete ends at the
 /// bound, its leave waits for the unsettled call at most the bound, names it, and closes, and its
@@ -1842,7 +1842,7 @@ async fn a_fabric_primary_serving_a_held_claim_leaves_on_its_signal_within_the_b
     let rows = estate.node_values().await;
     let (fp_id, mesh2_primary_id) = (id_of(&rows, &fp), id_of(&rows, &Estate::path("mesh2.node-admin", "1")));
     fp_door.arm("held-claim", serde_json::json!({"kind": "claimed-attempt"})).await;
-    // mesh2's primary reads its killed rpc node exited and submits its recovery; the fabric-primary opens the
+    // mesh2's primary reads its killed node exited and submits its recovery; the fabric-primary opens the
     // attempt, and mesh2's primary's claim of it is held at the fabric-primary.
     estate.kill_node(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).await;
     let claimed = fp_door.wait_held("held-claim").await;

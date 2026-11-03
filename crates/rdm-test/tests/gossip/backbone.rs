@@ -54,12 +54,12 @@ fn owner(test: &str) -> Owner {
 /// One estate at a time: two MM fabrics on one host halve each one's CPU.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// The fabric `fabric` with `mesh1` of two admins and `rpc1` rpc nodes, and `mesh2` of two of each.
+/// The fabric `fabric` with `mesh1` of two admins and `rpc1` nodes, and `mesh2` of two of each.
 fn shape(fabric: &str, rpc1: u32) -> FabricDesired {
     FabricDesired { fabric: fabric.into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", rpc1)]), MeshDesired::of("mesh2", [("node-admin", 2), ("node", 2)])] }
 }
 
-/// MM with two admins and two rpc nodes per mesh, settled.
+/// MM with two admins and two nodes per mesh, settled.
 async fn mm(estate: &Estate, fabric: &str) -> Vec<Value> {
     estate.reconcile(&shape(fabric, 2)).await;
     let want: BTreeSet<PathName> = ["mesh1", "mesh2"]
@@ -141,7 +141,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     let admins: Vec<String> = nodes.iter().filter(|n| n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
 
     // 1. Every ordinary node learns both meshes...
-    wait_for("every rpc node holds both meshes", Duration::from_secs(30), || {
+    wait_for("every node holds both meshes", Duration::from_secs(30), || {
         let spans = estate.spans();
         let rpcs = rpcs.clone();
         async move { rpcs.iter().all(|n| ["mesh1", "mesh2"].iter().all(|m| verdicts(&spans, n, m).as_deref() == Some("learned"))).then_some(()) }
@@ -194,7 +194,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     }
 
     // 3 + 5. Lose mesh2's admin primary: its successor publishes mesh2 and
-    // forwards mesh1, and mesh2's rpc nodes hold mesh1 again.
+    // forwards mesh1, and mesh2's nodes hold mesh1 again.
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let old = primary(&nodes, "mesh2");
     let (old_name, old_id) = (s(&old["node_id"]), s(&old["node_id"]));
@@ -307,7 +307,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     let mut estate = Estate::bootstrap(owner("gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_heals_to_one_birth_per_path"), "fabric2", "mesh1").await;
     let nodes = mm(&estate, "fabric2").await;
     let rpcs2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node").map(|n| s(&n["node_id"])).collect();
-    wait_for("mesh2's rpc nodes hold mesh1", Duration::from_secs(30), || {
+    wait_for("mesh2's nodes hold mesh1", Duration::from_secs(30), || {
         let spans = estate.spans();
         let rpcs2 = rpcs2.clone();
         async move { rpcs2.iter().all(|n| verdicts(&spans, n, "mesh1").as_deref() == Some("learned")).then_some(()) }
@@ -366,7 +366,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
         .filter(|sp| start(sp) > cut_at && attr(sp, "mesh") == "mesh1" && rpcs2.contains(&attr(sp, "node")))
         .map(|sp| attr(sp, "node"))
         .collect();
-    assert!(lost.is_empty(), "with {p1} and {p2} cut apart, mesh2's rpc nodes kept mesh1: {lost:?}");
+    assert!(lost.is_empty(), "with {p1} and {p2} cut apart, mesh2's nodes kept mesh1: {lost:?}");
 
     // 7. Isolate mesh1's non-primary admin past the silence window and ask it for a Build: it refuses it.
     // Isolated, it cannot tell its own cut from the fabric-primary's loss: it may run fabric recovery, whose

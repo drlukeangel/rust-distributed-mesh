@@ -21,7 +21,7 @@ fn acceptance_dir(cell: &str) -> PathBuf {
     dir
 }
 
-/// Two meshes of 2 node-admins and 2 rpc nodes; a mesh holds 1..=3 admins and 1..=4 rpc nodes.
+/// Two meshes of 2 node-admins and 2 nodes; a mesh holds 1..=3 admins and 1..=4 nodes.
 fn initial(network_faults: bool) -> Model {
     let bounds = BTreeMap::from([(NodeClass::NodeAdmin, ClassBounds { min: 1, max: 3 }), (NodeClass::RpcNode, ClassBounds { min: 1, max: 4 })]);
     Model::new(&[("mesh1", 2, 2), ("mesh2", 2, 2)], bounds, Capabilities { network_faults })
@@ -146,7 +146,7 @@ fn action_generator_replays_seed_preserves_legal_sequence() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// The planted rule of the shrinker cell: a proof key written to an rpc node of mesh2 that this
+/// The planted rule of the shrinker cell: a proof key written to a node of mesh2 that this
 /// sequence grew, and that node then restarted.
 fn grown_written_restarted(rule: &str) -> impl Fn(&Model, &[Action]) -> Result<(), Failure> + '_ {
     move |initial, actions| {
@@ -229,7 +229,7 @@ fn action_shrinker_preserves_failure_returns_minimal_legal_sequence() {
             removals.push(json!({"rows": [i, i + width], "removed": removed, "without_them": why}));
         }
     }
-    // The story the rule names survives: a grow of a mesh2 rpc node, a write to it, its restart last.
+    // The story the rule names survives: a grow of a mesh2 node, a write to it, its restart last.
     let kinds: Vec<&str> = shrunk.minimized.iter().map(kind).collect();
     assert!(kinds.contains(&"grow") && kinds.contains(&"store-put") && kinds.last() == Some(&"restart"), "{:?}", shrunk.minimized);
     assert_eq!(shrunk.failure.step, shrunk.minimized.len() - 1, "the rule breaks at the last row: {}", shrunk.failure);

@@ -63,7 +63,7 @@ fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool) -> No
     n
 }
 
-/// The observed fabric: mesh1 with two admins and one rpc node.
+/// The observed fabric: mesh1 with two admins and one node.
 fn observed() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
@@ -236,7 +236,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     let a = admin(&root, &a_birth).await;
     let b = admin(&root, &b_birth).await;
 
-    // A accepts the Build through its control plane: grow mesh1 to 3 rpc nodes.
+    // A accepts the Build through its control plane: grow mesh1 to 3 nodes.
     // A holds a settled accepted Build of what is observed: the one the change compiles against.
     // The settled Build A is seeded into the fabric's builds store, which its control plane moves.
     let seed = rdm_admin::build::BuildId::mint();

@@ -247,7 +247,7 @@ fn span_row(sp: &Value, keys: &[&str]) -> Value {
 }
 
 /// CONTRACT (#2784; Q4, as ruled for the process partition cell; Q111, Q122): on a real Docker estate of
-/// two meshes (two node-admins and two rpc nodes each), every container of the mesh that does not hold
+/// two meshes (two node-admins and two nodes each), every container of the mesh that does not hold
 /// the fabric-primary is silenced against the rest of the estate (a packet filter in each container's
 /// own network namespace) past the staleness floor, then released. Throughout, every view
 /// sampled holds at most one primary per (mesh, type) and at most one fabric-primary, and the
@@ -364,7 +364,7 @@ async fn container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_pe
     })).unwrap()).unwrap();
 }
 
-/// CONTRACT (#2784; Q111, Q181, Q188): the same silence on ONE rpc node of the peer mesh without the
+/// CONTRACT (#2784; Q111, Q181, Q188): the same silence on ONE node of the peer mesh without the
 /// fabric-primary. The node alone goes unheard; no call reaches it by any route. Its mesh-primary's node
 /// investigation does not reach it, and node-recovery.md step 3 decides: "Any other verdict (`running`,
 /// `os-stopped`, `exited`, `unproven`): the recovery below, at once" (Q181: a silent node is replaced;
@@ -418,7 +418,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let id_at = |at: &PathName| node_in(&nodes, at).map(|n| s(&n["node_id"])).unwrap_or_default();
     let isolated_ids: BTreeSet<String> = isolated_names.iter().map(id_at).collect();
     let fabric_primary_id = id_at(&fabric_primary);
-    let target = node_in(&nodes, &Estate::path(&format!("{cut_mesh}.node"), "1")).cloned().expect("the isolated mesh's rpc node");
+    let target = node_in(&nodes, &Estate::path(&format!("{cut_mesh}.node"), "1")).cloned().expect("the isolated mesh's node");
     let (target_name, target_id, target_inc) = (location(&target), s(&target["node_id"]), s(&target["incarnation_id"]));
     let carrier = Estate::path(&format!("{kept_mesh}.node"), "1");
     let carrier_id = id_at(&carrier);
@@ -936,9 +936,9 @@ async fn mesh_id_of(estate: &Estate, mesh: &str) -> String {
 
 const LOSS_CELL: &str = "container_peer_mesh_lost_recovers_under_same_mesh_id";
 
-/// CONTRACT (#2784): on a real Docker estate of two meshes (two node-admins and two rpc nodes each)
+/// CONTRACT (#2784): on a real Docker estate of two meshes (two node-admins and two nodes each)
 /// the peer mesh that does not hold the fabric-primary role loses both node-admins at once (`docker kill` of the
-/// exact container ids) while its two rpc nodes run. The provider shows each admin not running. The
+/// exact container ids) while its two nodes run. The provider shows each admin not running. The
 /// fabric primary hears nothing of the mesh; its investigation asks the members, which cannot reach
 /// their own node-admin, and it keeps the role, opens a later attempt of the SAME accepted Build and
 /// runs the mesh-create flow for the lost mesh's first admin under its EXISTING MeshId. The second admin
@@ -948,9 +948,9 @@ const LOSS_CELL: &str = "container_peer_mesh_lost_recovers_under_same_mesh_id";
 /// claim of a missing secondary that the new mesh primary executes. The cell waits for every lane of the
 /// Build to end before it stops the estate. A mesh whose every container is gone has no member to say so and is
 /// held, no node-admin created (the process cell `a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_created`).
-/// Afterwards both admins are new births in new containers, the lost mesh's rpc nodes and the surviving
+/// Afterwards both admins are new births in new containers, the lost mesh's nodes and the surviving
 /// mesh's births are the births they were (never re-created), the current build_id is the accepted Build, no
-/// MeshId is minted, and a call to an rpc node of the recovered mesh is served. What must NOT happen: the
+/// MeshId is minted, and a call to a node of the recovered mesh is served. What must NOT happen: the
 /// fabric primary killed, a new Build or MeshId, a surviving member re-created, the role moving.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
@@ -1046,13 +1046,13 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
         assert!(!containers_after[n].is_empty() && containers_after[n] != containers_before[n], "{n:?}: runs in a new container ({} -> {})", containers_before[n], containers_after[n]);
     }
     for n in lost_names.iter().filter(|n| !lost_admins.contains(n)) {
-        assert_eq!(containers_after[n], containers_before[n], "{n:?}: the rpc node that outlived its mesh's admins runs in the container it ran in");
+        assert_eq!(containers_after[n], containers_before[n], "{n:?}: the node that outlived its mesh's admins runs in the container it ran in");
     }
     let lost_mesh_rpc_after: BTreeSet<(PathName, String)> = births(&after).into_iter().filter(|(n, _)| lost_names.contains(n) && !lost_admins.contains(n)).collect();
-    assert_eq!(lost_mesh_rpc_after, lost_mesh_rpc_births, "the lost mesh's rpc nodes were never re-created");
+    assert_eq!(lost_mesh_rpc_after, lost_mesh_rpc_births, "the lost mesh's nodes were never re-created");
 
-    // A recovered rpc node serves.
-    let target = after.iter().find(|n| location(&n) == Estate::path(&format!("{lost_mesh}.node"), "1")).cloned().expect("recovered rpc node");
+    // A recovered node serves.
+    let target = after.iter().find(|n| location(&n) == Estate::path(&format!("{lost_mesh}.node"), "1")).cloned().expect("recovered node");
     let put = estate.probe(&["put", "--target", &format!("exact:{}", s(&target["node_id"])), "--key", "lost", "--value", "after-recovery"]);
     assert_eq!(put["outcome"], "Reply", "{put}");
     assert_eq!(put["reply"]["incarnation_id"], target["incarnation_id"], "{put}");
@@ -1135,7 +1135,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
 const DELETE_CELL: &str = "container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end";
 
 /// CONTRACT (#2784, fabric loss): on a real Docker estate of two meshes (two node-admins and three
-/// rpc nodes each) the mesh that holds the fabric-primary role is lost the way a caller loses it: one
+/// nodes each) the mesh that holds the fabric-primary role is lost the way a caller loses it: one
 /// Build deletes it, executed by an admin outside it. While the Build runs, every surviving admin
 /// is asked who holds the fabric and the advertised endpoint is asked at once; an advertised
 /// endpoint is always a control endpoint of a birth of this run. Fabric authority moves to a ready
@@ -1390,7 +1390,7 @@ fn fabric_primary_of(nodes: &[Value]) -> String {
 /// node is alive and silent: the daemon acknowledges the pause and calls to it never complete; unheard
 /// past the staleness floor, node investigation reads it held and its mesh-primary re-creates it at its
 /// path with a new NodeId under the same Build (node-recovery.md step 3, Q111), which serves (the semantic
-/// wedge detector judges it). A killed rpc node and a killed node-admin that is
+/// wedge detector judges it). A killed node and a killed node-admin that is
 /// neither mesh-primary nor fabric-primary are terminal by the daemon's observed exit only, and each
 /// is a lost member of a mesh with a live mesh-primary (node-recovery.md, mesh-recovery.md:8-9): its
 /// mesh-primary submits the recovery as the next attempt of the SAME Build (reason recovery,
@@ -1509,7 +1509,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     rec.check("the primaries equal the public candidates' after the release", roles_after, detail_after);
     ev.reconciliation = Some(rec);
 
-    // ---- Kill: the exact container of another rpc node exits; the rectifier recovers the path.
+    // ---- Kill: the exact container of another node exits; the rectifier recovers the path.
     let kill_c = ExactContainer::of(&estate, &kill).await.expect("the killed node's container");
     let killed = kill_c.apply(Fault::Kill(estate.fabric_ready())).expect("the exact container is killed");
     assert!(killed.exited && killed.exit_code == 137, "the daemon observed the SIGKILL exit: {killed:?}");
@@ -1631,7 +1631,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
 
 const HELD_CELL: &str = "container_node_silenced_past_the_floor_is_terminated_and_re_created_at_once";
 
-/// CONTRACT (node-recovery.md step 3, Q111; i143 Q50's flame): an rpc node whose container runs but is
+/// CONTRACT (node-recovery.md step 3, Q111; i143 Q50's flame): a node whose container runs but is
 /// silenced against the rest of the estate is unheard past the staleness floor; its mesh-primary's node
 /// investigation reads it `running`, and the recovery at once terminates its exact container
 /// (`TerminateRuntime`, nothing waits for a proof) and re-creates the path as a new birth (a new node.id)
@@ -1651,7 +1651,7 @@ async fn container_node_silenced_past_the_floor_is_terminated_and_re_created_at_
     let nodes = values(&estate.settled_views(&[("mesh1", 2, 2)]).await);
     let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("the view names a fabric primary");
     // The silenced node holds no node-type primary role: its termination moves none.
-    let target = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] != true).cloned().expect("an rpc node that holds no primary role");
+    let target = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] != true).cloned().expect("a node that holds no primary role");
     let (name, id) = (location(&target), s(&target["node_id"]));
     let old_dir = s(&target["data_dir"]);
     let container = estate.container_of(&name).await.unwrap_or_else(|| panic!("{name:?}: no running container"));

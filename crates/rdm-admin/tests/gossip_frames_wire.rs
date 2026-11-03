@@ -221,7 +221,7 @@ fn facts() -> Vec<BuildFact> {
                     Step::Update { node: node.clone(), name: node.renamed().unwrap() },
                     Step::Stop { node: node.renamed().unwrap() },
                     // The executable the Build fixes rides the positional wire with every field written.
-                    Step::Create { mesh: "mesh1".into(), r#type: "node".into(), node: node.clone(), executable: Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/opt/rpc-node".into(), sha256: "ab".repeat(32), image: None }) },
+                    Step::Create { mesh: "mesh1".into(), r#type: "node".into(), node: node.clone(), executable: Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/opt/node".into(), sha256: "ab".repeat(32), image: None }) },
                     Step::Delete { node: node.renamed().unwrap() },
                 ],
                 pinned: vec![(node, pin)],

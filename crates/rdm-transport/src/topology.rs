@@ -6146,7 +6146,7 @@ mod tests {
     /// and its next `MeshTopology` projection carries it, its normal publication"; lifecycles/node-primary-update.md
     /// step 5): a member of mesh1 holds the primary records its mesh-primary's projection carries, its own
     /// birth's among them, though the projection's copy of its own digest is older than the one it holds.
-    /// Must NOT happen: an rpc node whose mesh-primary named it the rpc-node primary holding no record
+    /// Must NOT happen: a node whose mesh-primary named it the `node` primary holding no record
     /// of it.
     #[test]
     fn a_member_holds_the_primary_records_its_mesh_primarys_projection_carries() {

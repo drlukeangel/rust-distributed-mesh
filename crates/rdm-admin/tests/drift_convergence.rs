@@ -14,7 +14,7 @@
 //! own Build door (`ControlPlane::open_recovery`) and run by its own executor in its mesh's drift lane
 //! (`build_run::run_recovery`), with no fabric-primary taking part.
 //!
-//! The cells: an exited rpc node is recovered once by its mesh-primary, whatever its exit code;
+//! The cells: an exited node is recovered once by its mesh-primary, whatever its exit code;
 //! a silent node whose runtime runs opens no attempt and is never replaced; a lost mesh-primary admin and a lost fabric-primary admin are
 //! recovered by the right executor; members unheard through a lost forwarder are targeted, never
 //! duplicated; a path the view does not hold but where a runtime runs is held. After every
@@ -181,10 +181,10 @@ struct Estate {
 
 const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 3), ("mesh2", 2, 3)];
 
-/// An rpc node of `mesh` that holds no role in the view (the lowest name among them).
+/// A node of `mesh` that holds no role in the view (the lowest name among them).
 async fn secondary_rpc(e: &Estate, mesh: &str) -> PathName {
     let t = e.view.read().await;
-    t.nodes.iter().filter(|n| n.mesh == mesh && n.r#type == "node" && !n.is_primary).map(|n| n.name.clone()).min().expect("an rpc node holding no primary role")
+    t.nodes.iter().filter(|n| n.mesh == mesh && n.r#type == "node" && !n.is_primary).map(|n| n.name.clone()).min().expect("a node holding no primary role")
 }
 
 /// Every path of the accepted shape born, live, held in the view and the topology view; roles elected.
@@ -639,7 +639,7 @@ impl Estate {
 /// dispatches nothing and the fabric lane is untouched.
 /// Exactly the lost path has a new node (new node.id), `path_investigation::target` probes nothing and nothing else is
 /// created.
-/// An rpc node's recovery by its mesh-primary reopens nothing: the Build stays Complete and the application is sent no Build
+/// A node's recovery by its mesh-primary reopens nothing: the Build stays Complete and the application is sent no Build
 /// notice (fabric-node-hooks.md `on_build_started`, `on_build_ended`; Q256, Q258).
 #[tokio::test]
 async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_else_is_created() {
@@ -667,12 +667,12 @@ async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_el
     assert_eq!((after.build_id, after.attempt, after.state), (before.build_id, before.attempt, BuildState::Complete), "the fabric lane is untouched");
     let lane = e.lane("mesh1").await;
     assert_eq!((lane.attempt, lane.state), (1, BuildState::Complete), "mesh1's lane: {lane:?}");
-    // An rpc node's recovery by its mesh-primary reopens nothing (Q256, Q258): the fabric-primary's pass finds no Build in
+    // A node's recovery by its mesh-primary reopens nothing (Q256, Q258): the fabric-primary's pass finds no Build in
     // progress, the Build stays Complete, and the application is sent no Build notice.
     e.converge().await;
     assert_eq!(e.builds.current().await.unwrap().unwrap().state, BuildState::Complete, "the Build stays completed");
     let told = e.told.settled(0).await;
-    assert!(told.is_empty(), "an rpc node's recovery by its mesh-primary sends no on_build_started or on_build_ended: {told:?}");
+    assert!(told.is_empty(), "a node's recovery by its mesh-primary sends no on_build_started or on_build_ended: {told:?}");
 }
 
 /// CONTRACT (node-recovery.md "Steps", "Failure and receipts"; rdm-code-conformance.md §2 item 4): a

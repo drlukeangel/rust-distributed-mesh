@@ -350,7 +350,7 @@ pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTop
     build_id
 }
 
-/// mesh1 with one admin and one rpc node: what the smoke deploys toward.
+/// mesh1 with one admin and one node: what the smoke deploys toward.
 pub fn add_node() -> FabricTopology {
     FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])))].into() }
 }
@@ -363,7 +363,7 @@ pub enum Smoke {
 }
 
 /// The e2.s3 smoke for the provider `spawn_type` names (the
-/// `MESH_SPAWN_TYPE` value): one rpc node deployed through every create
+/// `MESH_SPAWN_TYPE` value): one node deployed through every create
 /// step, every receipt present, every step span attributed.
 /// Removes every container and the network of one fabric when dropped, however the test ends.
 pub struct ContainerFabricCleanup(pub String);

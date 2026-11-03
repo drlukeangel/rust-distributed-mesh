@@ -113,7 +113,7 @@ pub enum Action {
     /// The provider holds the node's runtime in place (alive and silent) until the view marks it
     /// unheard, then releases it: the same birth comes back.
     Wedge { node: PathName },
-    /// One testkit-store operation on an rpc node.
+    /// One testkit-store operation on a node.
     Store(Operation),
 }
 

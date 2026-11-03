@@ -78,7 +78,7 @@ impl fmt::Display for ScenarioError {
             Self::UnknownShape(s) => write!(f, "shape `{s}` is not SN, MN or MM"),
             Self::ShapeMismatch { shape, reason } => write!(f, "meshes are below the {shape} floor: {reason}"),
             Self::UnknownProvider(p) => write!(f, "provider `{p}` is not process or container"),
-            Self::UnknownTarget(t) => write!(f, "target {t:?} names no rpc node of the declared meshes"),
+            Self::UnknownTarget(t) => write!(f, "target {t:?} names no node of the declared meshes"),
             Self::AmbiguousGet { key } => write!(f, "get on key {key} must say exactly one of `equals` or `absent: true`"),
         }
     }
@@ -91,8 +91,8 @@ impl Scenario {
         Ok(s)
     }
 
-    /// SN/MN/MM are floors (PRD §1.12-13): SN = 1 admin + 1 rpc node,
-    /// MN = 2 admins + 3 rpc nodes, MM = two MN meshes.
+    /// SN/MN/MM are floors (PRD §1.12-13): SN = 1 admin + 1 node,
+    /// MN = 2 admins + 3 nodes, MM = two MN meshes.
     pub fn validate(&self) -> Result<(), ScenarioError> {
         if self.version != 1 {
             return Err(ScenarioError::UnsupportedVersion(self.version));

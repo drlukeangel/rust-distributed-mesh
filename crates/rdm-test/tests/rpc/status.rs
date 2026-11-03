@@ -2,7 +2,7 @@
 //! from public surfaces (`node.get` at the authority, `rdm-rpc-probe`'s `declare` oracle on the
 //! node) and the estate's span evidence only.
 //!
-//! 0. Born ready, every rpc node declares `Ready` to its mesh-primary by itself
+//! 0. Born ready, every node declares `Ready` to its mesh-primary by itself
 //!    (i143.e4.s11), and the non-primary admin declares its own to its mesh-primary: the
 //!    authority's view shows them as `declared` before any probe asks.
 //! 1. The node's `Ready` asked again through the oracle: `AlreadyApplied` (one logical
@@ -144,7 +144,7 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
 }
 
 /// CONTRACT (R24, Luke Q11: "dispatch the request to its implementation; if this endpoint has no
-/// implementation for it, answer request not handled here"): an rpc node's Status door has no handler
+/// implementation for it, answer request not handled here"): a node's Status door has no handler
 /// for an upward declaration. The declare probe makes `mesh1.node.2` declare its state straight to
 /// `mesh1.node.1`, which answers `RequestNotHandled` naming the request (`declare-node-state`), decided by
 /// dispatch alone, on its reject span `rdm.node.status.reject.via-request-not-handled` (`request`, and
@@ -159,7 +159,7 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
     let node = format!("exact:{}", rpc2["node_id"].as_str().unwrap());
     let to = format!("exact:{}", rpc1["node_id"].as_str().unwrap());
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting"]);
-    assert_eq!(declared(&r).0, "request-not-handled", "an rpc node answers a declaration it has no handler for not handled here: {r}");
+    assert_eq!(declared(&r).0, "request-not-handled", "a node answers a declaration it has no handler for not handled here: {r}");
     estate.stop().await;
     let spans = estate.spans();
     let rejected: Vec<&Value> = named(&spans, "rdm.node.status.reject.via-request-not-handled").into_iter().filter(|sp| sp["attributes"]["node"] == rpc1["node_id"]).collect();
@@ -167,7 +167,7 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
     assert_eq!(rejected[0]["attributes"]["request"], "declare-node-state", "{}", rejected[0]);
     let trace = rejected[0]["trace_id"].as_str().unwrap_or_default().to_string();
     assert!(r["traceparent"].as_str().is_some_and(|tp| tp.contains(&trace)), "the reject span is in the probe's trace: {r} {}", rejected[0]);
-    println!("request not handled at an rpc node: http://192.168.68.99:16687/trace/{trace}");
+    println!("request not handled at a node: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
 }
 

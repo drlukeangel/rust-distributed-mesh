@@ -1,18 +1,18 @@
 //! i143.e4.s16 process E2E: a successor manages births it never launched
 //! (rafka-v2 #2850).
 //!
-//! Build A completes (the bootstrap admin launches three rpc nodes). Only then is
+//! Build A completes (the bootstrap admin launches three nodes). Only then is
 //! the successor admin born, so it never holds A's receipts: the Build topic hands
 //! a new admin only active Builds. The launching admin is killed. From public
 //! surfaces only:
 //! - the successor holds the mesh and the fabric, and its view advertises
-//!   every rpc node's data dir (current birth metadata, from the topology view);
+//!   every node's data dir (current birth metadata, from the topology view);
 //! - it restarts one of A's births (same node id and incarnation) and
 //!   deletes another (its runtime is gone), from the runtime each birth
 //!   publishes with its topology view, never from Build history.
 //!
 //! Evidence: the bootstrap admin's ready span names its own self-adopted
-//! runtime (day 0); each rpc node's ready span names the runtime its provider
+//! runtime (day 0); each node's ready span names the runtime its provider
 //! recorded; the successor's `rdm.node_admin.runtime.update.via-adopt`
 //! names the same locator fingerprint, `source = self-published-topology`,
 //! and the successor as adopter and executor.
@@ -53,7 +53,7 @@ fn alive(pid: u64) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_successor_manages_births_it_never_launched() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    // Build A: the bootstrap admin launches three rpc nodes; A completes.
+    // Build A: the bootstrap admin launches three nodes; A completes.
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 3)]).await;
     let a_births = estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
     // Only now is the successor born: A is no longer active.

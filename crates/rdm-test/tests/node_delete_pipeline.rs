@@ -55,7 +55,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
         let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
 
-        let delete_build = publish_build(&builds, add_node()).await; // the Build names the path: an rpc node's meta is Ephemeral
+        let delete_build = publish_build(&builds, add_node()).await; // the Build names the path: a node's meta is Ephemeral
         pipeline
             .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: delete_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
             .await

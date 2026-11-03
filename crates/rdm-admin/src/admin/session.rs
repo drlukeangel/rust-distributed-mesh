@@ -485,7 +485,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         // is owed afresh to its mesh's primary, before its declarer runs again. It is owed with or without
         // a start stream reporting it: frame and declaration apply once (node-start.md step 5; Q49).
         s.declarer.begin_own_cycle(&me, &s.incarnation.as_str(), &self.operation);
-        // Back on its channels, this admin reports NodeJoined, as an rpc node does: the start finishes on
+        // Back on its channels, this admin reports NodeJoined, as a node does: the start finishes on
         // its direct calls and the admin is back in gossip whenever gossip gets there. Its mesh-primary
         // recorded its Pending at the accepted join report (node-mesh-join.md steps 9 and 10, Q97).
         if let Some(progress) = &self.progress {

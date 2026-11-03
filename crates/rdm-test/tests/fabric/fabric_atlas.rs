@@ -43,7 +43,7 @@ fn id_of(n: &Value) -> rdm_core::NodeId {
     serde_json::from_value(n["node_id"].clone()).expect("a node id")
 }
 
-/// Two meshes, the fabric-primary in mesh1 and two node-admins and two rpc nodes in mesh2, the fabric
+/// Two meshes, the fabric-primary in mesh1 and two node-admins and two nodes in mesh2, the fabric
 /// ready and the typed objects entered at the fabric-primary. mesh2's nodes, each a node view: the rpc
 /// node that is not its type's primary, the rpc type's primary, the node-admin that is not the
 /// mesh-primary, then the mesh-primary (a primary's stop moves its primary first).
@@ -314,7 +314,7 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
 /// CONTRACT (node-name-update.md step 1: "an admin that is not the fabric-primary carries it to the
 /// fabric-primary ... The fabric-primary sends the command to the node's mesh-primary ... and, on its
 /// answer that the row moved, writes the new name to the node in its atlas"; Q197, Q203, Q204:
-/// node reads answer from the atlas and each op writes it): a live rpc node of mesh2, its connections
+/// node reads answer from the atlas and each op writes it): a live node of mesh2, its connections
 /// deleted and off its mesh, is renamed `.old` by a caller's `node.name.update` sent directly to mesh2's
 /// primary, answered `NameUpdated`; the fabric-primary's node read, at once and with no wait, lists the
 /// birth at the new name and none at the old. mesh2's primary carried the call up

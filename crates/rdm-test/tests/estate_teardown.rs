@@ -67,9 +67,9 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
 }
 
 /// CONTRACT (i146 Q55, Luke 2026-10-17: "an estate stop with SIGTERM to every process at once ends
-/// every rpc node before the SIGKILL, each having reported connections-deleting, left its mesh and
+/// every node before the SIGKILL, each having reported connections-deleting, left its mesh and
 /// sent Stopped, nothing gossiped by the stopping node"): a fabric of one mesh, two node-admins and
-/// three rpc nodes is stopped with SIGTERM to every process at once. Each rpc node runs node-stop.md
+/// three nodes is stopped with SIGTERM to every process at once. Each node runs node-stop.md
 /// steps 2-4 as its own subject and waits on no answer: it owes its connections-deleting to its
 /// mesh-primary, leaves its mesh (its gossip neighbours left, its Node RPC pool cut), then owes its
 /// stopped state, in that order, and its process ends before the estate's bound. Must NOT happen: a
@@ -81,7 +81,7 @@ async fn an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
     let rpc: Vec<String> = estate.node_values().await.iter().filter(|n| n["type"] == "node").filter_map(|n| n["node_id"].as_str().map(str::to_string)).collect();
-    assert_eq!(rpc.len(), 3, "three rpc nodes: {rpc:?}");
+    assert_eq!(rpc.len(), 3, "three nodes: {rpc:?}");
 
     let killed = estate.stop().await;
     assert_eq!(killed, Vec::<u32>::new(), "every runtime ended by its own stop before the bound's SIGKILL");

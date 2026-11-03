@@ -3,7 +3,7 @@
 //!
 //! This is process composition: the topology view (`rafka-mesh-transport`) and Node
 //! RPC (`rafka-node-rpc`) never depend on each other. Every process that
-//! calls Node RPC (node-admin, the rpc node) builds one [`ProcessNodeRpc`] on
+//! calls Node RPC (node-admin, the node) builds one [`ProcessNodeRpc`] on
 //! its endpoint when it starts, holds it in its running state and hands it to
 //! every caller by clone; nothing builds a resolver or a client per call.
 

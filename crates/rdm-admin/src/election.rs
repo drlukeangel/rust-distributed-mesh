@@ -788,7 +788,7 @@ mod tests {
     }
 
     /// The fabric-primary `mesh1.node-admin.1` (a1, NodeId 500…), mesh1's primary too, recorded at revision 1;
-    /// mesh1's standby a2, a Ready rpc node r1 whose node type's recorded primary r2 is unheard, and mesh2's
+    /// mesh1's standby a2, a Ready node r1 whose node type's recorded primary r2 is unheard, and mesh2's
     /// primary b1.
     fn recovering() -> (Incumbency, Vec<Node>) {
         let mut inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1), primary("mesh2", "100000000000", "b1", 1)]);
@@ -814,7 +814,7 @@ mod tests {
         let check = |nodes: &[Node], case: &str| {
             assert_eq!(fabric_name(nodes), None, "{case}: nobody is fabric-primary");
             assert_eq!(mesh_primary(nodes, "mesh1"), None, "{case}: no node-admin of mesh1 is elected");
-            assert_eq!(rpc_primary(nodes, "mesh1"), Some(PathName::new("mesh1.node", "1").unwrap()), "{case}: mesh1's rpc nodes elect as ever");
+            assert_eq!(rpc_primary(nodes, "mesh1"), Some(PathName::new("mesh1.node", "1").unwrap()), "{case}: mesh1's nodes elect as ever");
             assert_eq!(mesh_primary(nodes, "mesh2"), Some(PathName::new("mesh2.node-admin", "1").unwrap()), "{case}: mesh2 keeps its primary");
         };
         resolve_with(&mut nodes, &inc);
@@ -933,7 +933,7 @@ mod tests {
         assert_eq!(mesh_primary(&fresh, "mesh2"), Some(PathName::new("mesh2.node-admin", "2").unwrap()));
     }
 
-    // ---- Every node type keeps a primary record (proposal Part B1, R-MT1: "same for NA as it is for RPC node"). ----
+    // ---- Every node type keeps a primary record (proposal Part B1, R-MT1: "same for NA as it is for node"). ----
 
     fn rpc_primary(nodes: &[Node], mesh: &str) -> Option<PathName> {
         nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.r#type == "node").map(|n| n.name.clone())
@@ -946,7 +946,7 @@ mod tests {
     }
 
     /// CONTRACT (Part B1, elections §5 "a living primary keeps its role; a lower-NodeId candidate that
-    /// later becomes Ready never displaces it"): an rpc node type whose primary record names a living birth
+    /// later becomes Ready never displaces it"): a node type whose primary record names a living birth
     /// keeps that primary against a lower Ready NodeId of the node type, as the node-admin type does.
     /// Must NOT happen: the node type recomputed to its lowest Ready NodeId each checklist, so a role that
     /// node.primary.update moved to mesh1.node.2 falls back to mesh1.node.1 on the next projection.
@@ -969,8 +969,8 @@ mod tests {
     }
 
     /// CONTRACT (module docs, "A primary whose record names a birth this view has not heard keeps its
-    /// role vacant for it"): an rpc node type's record naming a birth this view has not heard leaves the
-    /// node type with no primary. Must NOT happen: the lowest Ready rpc node advertised as primary while
+    /// role vacant for it"): a node type's record naming a birth this view has not heard leaves the
+    /// node type with no primary. Must NOT happen: the lowest Ready node advertised as primary while
     /// the record names another living primary.
     #[test]
     fn an_rpc_primary_recorded_but_unheard_is_held_vacant_for_it() {

@@ -4,7 +4,7 @@
 //! manifest, rpc ledger and every process's spans land under it, feature `i143-2902`, test the
 //! cell's name) at the test cadence (staleness 3 s, gossip 500 ms).
 //!
-//! The estate: two meshes of two node-admins and two rpc nodes each, settled through a Build. All
+//! The estate: two meshes of two node-admins and two nodes each, settled through a Build. All
 //! UDP between the two meshes' processes is dropped (an nftables table, `crate::netfault::Partition`); no
 //! process is cut from a member of its own mesh. The held-member repair of `gossip.md` §6 is read
 //! from the `rdm.mesh.connection.update.via-refeed` spans (`reason = stale-held-member`) and from
@@ -143,7 +143,7 @@ async fn drop_cut(partition: Partition) -> u64 {
 /// `dead`, any death, tombstone, departure, rebirth or provider terminate (every process lives
 /// on with its NodeId, incarnation and pid), or a deleted birth named by a later attempt. After
 /// the cut is dropped every admin holds every pre-cut member ready, the same roles and the same
-/// fabric primary, and every node hears the peer mesh again. A rpc node then deleted through a
+/// fabric primary, and every node hears the peer mesh again. A node then deleted through a
 /// Build leaves the held set (its departure is the one lifecycle effect of the run, for exactly
 /// that birth) and a second cut, whose attempts on the peer mesh's node-admins complete whole
 /// repair windows, never names its NodeId. One non-primary node-admin of the peer mesh is then deleted the same way (that mesh keeps its primary admin) and a third cut shows no attempt naming its NodeId or name while attempts on the remaining peer admins continue once per window.
@@ -255,7 +255,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         assert!(holds_all(&view, &own), "{name:?} still holds its own mesh ready during the cut: {view:#?}");
     }
     // Ordinary nodes hold the peer mesh as topology (R-G2): nothing they hear is liveness, so no
-    // rpc node ever marks a mesh silent, in the cut or before it.
+    // node ever marks a mesh silent, in the cut or before it.
     let ordinary: BTreeSet<String> = nodes.iter().filter(|n| n["type"] == "node").map(|n| s(&n["node_id"])).collect();
     let ordinary_silent: Vec<&(String, String)> = silent.iter().filter(|(o, _)| ordinary.contains(o)).collect();
     assert!(ordinary_silent.is_empty(), "an ordinary node never marks a mesh silent for want of forwarded frames: {ordinary_silent:?}");
@@ -319,8 +319,8 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     assert_eq!(advertised_fabric_primaries(&after).len(), 1);
     let _ = (&fabric_primary_before, t_start);
 
-    // ---- deletion: a rpc node is deleted through a Build (a legal removal, never an admin)
-    let victim = after.iter().find(|n| n["type"] == "node" && n["mesh"] == "mesh2" && n["is_primary"] == false).cloned().expect("a non-primary rpc node of mesh2");
+    // ---- deletion: a node is deleted through a Build (a legal removal, never an admin)
+    let victim = after.iter().find(|n| n["type"] == "node" && n["mesh"] == "mesh2" && n["is_primary"] == false).cloned().expect("a non-primary node of mesh2");
     let (victim_name, victim_id) = (location(&victim), s(&victim["node_id"]));
     let delete_at = now_ns();
     let mut delete = estate.nodes_obj().await.delete(&victim_name).await.unwrap_or_else(|e| panic!("the node.delete of {victim_name:?} was refused: {e}"));

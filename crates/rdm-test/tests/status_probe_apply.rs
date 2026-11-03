@@ -1,4 +1,4 @@
-//! The downward exact-node operations at a live rpc node (the 0x1B wire change): a node-admin probes
+//! The downward exact-node operations at a live node (the 0x1B wire change): a node-admin probes
 //! the exact birth and gets its current state; `node.connection.delete { All }` answers
 //! `node.connections.deleted` with its receipt, and the reserved `Reserved6` is refused by name;
 //! `ApplyNodeState` is refused with the held state; a stale incarnation is refused with the one held; an
@@ -15,7 +15,7 @@ use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{NodeState, Status, StatusReply, StatusRequest};
 
-/// CONTRACT: at a live rpc node, from its mesh's node-admin: `ProbeNodeState` answers `Current`
+/// CONTRACT: at a live node, from its mesh's node-admin: `ProbeNodeState` answers `Current`
 /// with the node's state and changes nothing; `DeleteConnections { All }` answers `ConnectionsDeleted`
 /// with an `Established` receipt; the reserved `Reserved6` is refused by name and starts nothing;
 /// `ApplyNodeConfig` answers `Applied` and the node's own topology answer carries the config on its

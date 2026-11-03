@@ -106,7 +106,7 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
     estate.enter(&fp).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     // Control is back at the restored fabric-primary: it accepts a change and completes it.
-    let mut spawn = estate.create_node("mesh2", "node").await.unwrap_or_else(|e| panic!("the restored fabric-primary refused node.create of an rpc node in mesh2: {e}"));
+    let mut spawn = estate.create_node("mesh2", "node").await.unwrap_or_else(|e| panic!("the restored fabric-primary refused node.create of a node in mesh2: {e}"));
     Estate::complete(&mut spawn).await;
     estate.settles_to(&[("mesh1", 2, 3), ("mesh2", 2, 4)], Duration::from_secs(60)).await;
 
@@ -144,7 +144,7 @@ async fn a_member_whose_runtime_exited_is_replaced() {
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.kill_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
     estate
-        .until_view("a new birth restores two ready rpc nodes", rdm_transport::topology::staleness_floor() + Duration::from_secs(60), |views| {
+        .until_view("a new birth restores two ready nodes", rdm_transport::topology::staleness_floor() + Duration::from_secs(60), |views| {
             let ready: Vec<_> = views.iter().filter(|n| n.r#type == "node" && n.status == NodeStatus::Ready).collect();
             (ready.len() == 2 && !ready.iter().any(|n| n.node_id == gone.node_id && n.incarnation_id == gone.incarnation_id)).then_some(())
         })

@@ -4,7 +4,7 @@
 //! estate's manifest and every process's spans land under it, feature `i143-2938`, test the
 //! cell's name).
 //!
-//! The estate is one mesh, `{mesh1: 2 node-admins, 3 rpc nodes}`, born by a Build. The source is
+//! The estate is one mesh, `{mesh1: 2 node-admins, 3 nodes}`, born by a Build. The source is
 //! `mesh1.node.1`, the carrier `mesh1.node.2`, the destination `mesh1.node.3`. A Proxy is seeded on
 //! the source through the testkit originate door (`record-proxy`): the door runs the writer's own
 //! observer path for the Direct Failed observation and writes `Proxy Connected` naming the births
@@ -56,7 +56,7 @@ fn now_ns() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
 }
 
-/// The born estate: two node-admins and three rpc nodes, every one ready.
+/// The born estate: two node-admins and three nodes, every one ready.
 async fn born(cell: &str) -> Estate {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;

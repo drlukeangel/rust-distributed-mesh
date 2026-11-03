@@ -27,8 +27,8 @@ fn s(v: &Value) -> String {
 /// realized/observed state and computes remaining work"; node-delete.md, node-create.md): the
 /// realized state a Build plans from counts a birth the previous Build deleted as gone from the
 /// moment its deletion completed (the `NodeDeleted` receipt, the exited verdict), whether or not the
-/// planner's gossip view has dropped it yet. A node.delete of an rpc node completes; a node.create of
-/// an rpc node in the same mesh is accepted at once, inside the window before the fabric-primary's
+/// planner's gossip view has dropped it yet. A node.delete of a node completes; a node.create of
+/// a node in the same mesh is accepted at once, inside the window before the fabric-primary's
 /// view drops the deleted birth. The create plans the birth at the lowest free ordinal, the deleted
 /// path, and the path is born once as a new node.id, ready. What must NOT happen: the
 /// create's attempt reconciled with no operation and the Build complete with nothing born, a second

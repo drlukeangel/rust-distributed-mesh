@@ -4,7 +4,7 @@
 //! memory storage backend (`rdm_admin::storage_backend::MemoryBackend`) runs the node lifecycle with
 //! every durable read and write of its own going through the six boundaries it opened. Built with the
 //! file backend off (`--no-default-features`), the file store is absent from this executable; built
-//! with it on, the admin still opens nothing but the memory boundaries. The rpc node the admin launches
+//! with it on, the admin still opens nothing but the memory boundaries. The node the admin launches
 //! is the gate's `rdm-node`, whose own connections rows are its node backend's (the file one).
 
 use rdm_admin::admin::{start_on, AdminConfig};
@@ -25,7 +25,7 @@ const WRONG: Duration = Duration::from_secs(120);
 
 /// The runtimes the cell's admin launched (every process whose `RDM_STORE_DIR` is the cell's store
 /// dir) end when the cell does, a cell that panics included: the admin runs in this process, and
-/// the rpc nodes it launched are processes of their own.
+/// the nodes it launched are processes of their own.
 struct Launched(PathBuf);
 
 impl Drop for Launched {
@@ -128,7 +128,7 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 /// node.restart, build.get, from the scenario crate, file feature off) is the runtime proof"; node.restart
 /// is removed, Q183: its node.stop then node.start is the stop and start below): a
 /// Day-0 node-admin started on the memory storage backend comes up ready in both roles, its storage
-/// step spanned `writes_to = "memory"`; `node.create` of two rpc nodes in mesh1 completes and lists
+/// step spanned `writes_to = "memory"`; `node.create` of two nodes in mesh1 completes and lists
 /// them ready; once the fabric has first reached ready, `node.stop` of the
 /// first stops it (its node-type primary role moving to the second) and `node.start` brings it back; before
 /// that, a Reconcile changing mesh1.node.1's config alone completes and its `UpdateConfig` step of
@@ -137,7 +137,7 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 /// create's Build answers it Complete with its step receipts. Through all of it the admin
 /// writes nothing of its own to disk:
 /// its data dir holds no store (no `nodes/`, no `attempt-context/`), and every file under the fabric's
-/// store dir is the rpc node's own `connections/` rows. Must NOT happen: a row of the admin's
+/// store dir is the node's own `connections/` rows. Must NOT happen: a row of the admin's
 /// fabric, mesh, node, status or Build state on the file store.
 #[test]
 fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing_to_the_file_store() {
@@ -179,15 +179,15 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         Estate::until_complete(&mut carrier.resubmit(&day_zero, 1).await.unwrap_or_else(|e| panic!("the admin does not stream its Day-0 Build {day_zero}: {e}"))).await;
 
         // Each create names its path and the executable it runs (proposal executable-bindings-at-create.md
-        // rule 1): the complete topology with one more rpc node, read from the admin now.
+        // rule 1): the complete topology with one more node, read from the admin now.
         let executables = Executables::testkit("process");
-        // Both rpc nodes in one node.create: a stop moves the stopped node's node-type primary role to a
+        // Both nodes in one node.create: a stop moves the stopped node's node-type primary role to a
         // secondary of its type.
         let current = Current::read(&carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
         let mut two_more = current.counts_of("mesh1");
         *two_more.counts.entry("node".into()).or_insert(0) += 2;
         let request = current.resized(&[two_more], false, &executables);
-        let created = Estate::workflow("node.create of two rpc nodes in mesh1", nodes.create_named(current.based_on, request).await).await;
+        let created = Estate::workflow("node.create of two nodes in mesh1", nodes.create_named(current.based_on, request).await).await;
         until_status(&nodes, &node, NodeStatus::Ready).await;
         until_status(&nodes, &rdm_core::PathName::new("mesh1.node", "2").unwrap(), NodeStatus::Ready).await;
         until_fabric_ready(&fabrics).await;
@@ -219,7 +219,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
     let _ = capture.flush(Duration::from_secs(10));
 
     // The admin's own durable state never reached a file: its data dir holds no store, and the store
-    // dir holds the rpc node's own connection facts only (its lines of the root's connections.jsonl,
+    // dir holds the node's own connection facts only (its lines of the root's connections.jsonl,
     // the root its store opened, with the root's layout marker).
     for store in ["nodes", "attempt-context"] {
         assert!(!data_dir.join(store).exists(), "the memory admin wrote {store}/ in its data dir {}", data_dir.display());

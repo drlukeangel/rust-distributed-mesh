@@ -840,10 +840,10 @@ fn primaries_detail_after_str(nodes: &[Value]) -> String {
 /// never by how long it has been quiet.
 async fn silent_case(run: &Run) {
     let floor = rdm_transport::topology::staleness_floor();
-    let id = "silent-runtime:hang-rpc-node";
+    let id = "silent-runtime:hang-node";
     let mut ev = Evidence::new(Family::SilentRuntime, id);
     let nodes = run.estate.node_values().await;
-    let target = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] == false && n["status"] == "ready").cloned().unwrap_or_else(|| panic!("a ready non-primary rpc node: {nodes:?}"));
+    let target = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] == false && n["status"] == "ready").cloned().unwrap_or_else(|| panic!("a ready non-primary node: {nodes:?}"));
     let (name, node_id, incarnation) = (location(&target), s(&target["node_id"]), s(&target["incarnation_id"]));
     let exact = format!("exact:{node_id}");
     let pid = run.estate.pid_of(&name).await;
@@ -940,12 +940,12 @@ async fn silent_case(run: &Run) {
 }
 
 /// CONTRACT (#2782): real stalls of a real estate (mesh1 with two node-admins, both the testkit's
-/// faulted admin, and rpc nodes), each held and released through its own door or signal, are judged
+/// faulted admin, and nodes), each held and released through its own door or signal, are judged
 /// by the semantic detector, never by a timeout. Cuts: a deployment step (create `WaitForBind`), a
 /// removal step held at its receipt (delete `NodeDeleting`, the node deleting and not routable),
 /// the accepted Build durable, and current from then on (the
 /// fabric-primary admin held), a joining admin held at its Ready gate on the provider domain and another
-/// held at the topology read it makes while it hydrates (node-start.md step 4), and a non-primary rpc node
+/// held at the topology read it makes while it hydrates (node-start.md step 4), and a non-primary node
 /// frozen in place (its tasks but the leader held by a tracer). Each: the
 /// injector acknowledged the active fault and named it; progress read three times (a Build's
 /// receipts and attempt on every admin, the current Build; a frozen node's process state, CPU use and the
@@ -1023,7 +1023,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         false,
     )
     .await;
-    // Two rpc nodes, so the frozen one is not its node type's primary nor the only one; then the frozen node.
+    // Two nodes, so the frozen one is not its node type's primary nor the only one; then the frozen node.
     run.plain_create("node").await;
     run.plain_create("node").await;
     silent_case(&run).await;

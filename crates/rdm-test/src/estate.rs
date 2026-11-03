@@ -314,7 +314,7 @@ pub fn binary(name: &str) -> PathBuf {
     assert!(
         p.exists(),
         "RED: binary `{name}` is not built at {} — the generic Mesh product does not exist yet \
-         (node-admin: i143.e1/e2; rpc node + probe: i143.e7.s3)",
+         (node-admin: i143.e1/e2; node + probe: i143.e7.s3)",
         p.display()
     );
     if let Err(why) = binary_is_fresh(name, &p) {

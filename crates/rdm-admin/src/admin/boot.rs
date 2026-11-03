@@ -163,7 +163,7 @@ impl Running {
     }
 
     /// Stop on this process's signal (i146 Q55; node-stop.md steps 2-4), this admin its own subject: the
-    /// one stop sequence an rpc node's signal runs ([`crate::node_self::NodeSelf::stop_on_signal`]). The
+    /// one stop sequence a node's signal runs ([`crate::node_self::NodeSelf::stop_on_signal`]). The
     /// Build executor, every Build's drive and every attempt run this admin executes stop first
     /// ([`Self::stop_reconciling`]; an attempt it was running is continued by the Build's next attempt).
     /// Then the whole `node.connection.delete { All }` under the birth's bound, its connections-deleting

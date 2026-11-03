@@ -32,7 +32,7 @@ fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool, fabri
     n
 }
 
-/// One mesh: two node-admins (`fabric` holds the fabric-primary role) and three rpc nodes; `mesh1.node.1`
+/// One mesh: two node-admins (`fabric` holds the fabric-primary role) and three nodes; `mesh1.node.1`
 /// and `mesh1.node.2` are stopped (Leaving, the process alive).
 fn view(fabric: &PathName) -> Topology {
     let mut nodes = vec![node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", *fabric == PathName::new("mesh1.node-admin", "1").unwrap(), *fabric == PathName::new("mesh1.node-admin", "1").unwrap()), node(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", *fabric == PathName::new("mesh1.node-admin", "2").unwrap(), *fabric == PathName::new("mesh1.node-admin", "2").unwrap()), node(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", true, false)];

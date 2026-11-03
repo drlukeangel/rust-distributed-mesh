@@ -98,7 +98,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<NodeId> {
         BuildOperation::Step { step, .. } => node_op_executor(step.node(), op, t),
         // A member node of any kind is born by its own mesh's primary admin (the fabric primary when
         // the mesh has none): the rule names no role, so a product's kinds get the same executor as
-        // the proof product's rpc node. A mesh's missing node-admin is created by that mesh's primary
+        // the proof product's node. A mesh's missing node-admin is created by that mesh's primary
         // node-admin, its claim targeted at the fabric primary (node-admin-lifecycle.md §4.3); the
         // fabric primary creates only the first admin of a mesh that has none.
         BuildOperation::CreateNode { node, .. } => mesh_executor(op.mesh()?, None, t),

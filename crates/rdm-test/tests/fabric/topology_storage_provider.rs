@@ -8,7 +8,7 @@
 //! `file` when unset; a change is `fabric.storage.update` to the fabric-primary, its own workflow and
 //! never a Build, recorded as its `rdm.storage.*` events; a Build never changes it.
 //!
-//! Every estate here runs the testkit's faulted node-admin and rpc node, each registering RDM's `file`
+//! Every estate here runs the testkit's faulted node-admin and node, each registering RDM's `file`
 //! backend and the testkit's second provider, [`TOPOLOGY_STORAGE_TARGET`], a file backend at a place of
 //! its own beside the fabric's store dir (`rdm_test::test_app::topology_storage_dir`).
 
@@ -42,13 +42,13 @@ fn owner(test: &str) -> Owner {
     Owner { product: "mesh".into(), feature: "storage".into(), subfeature: "topology-storage-provider".into(), rung: "MM".into(), provider: "process".into(), test: test.into() }
 }
 
-/// A fabric of the faulted node-admin and the testkit rpc node, its Day-0 admin given `env`.
+/// A fabric of the faulted node-admin and the testkit node, its Day-0 admin given `env`.
 async fn estate_with(test: &str, env: &[(&str, &str)]) -> Estate {
     let sha = candidate_sha();
     Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &[], env).await.expect("the faulted-admin binding set is accepted")
 }
 
-/// Two meshes: mesh1 with two node-admins and an rpc node, mesh2 with one of each.
+/// Two meshes: mesh1 with two node-admins and a node, mesh2 with one of each.
 fn two_meshes() -> FabricDesired {
     FabricDesired {
         fabric: "fabric1".into(),
@@ -136,7 +136,7 @@ fn nodes_write(views: &[NodeView], provider: &str) {
 /// `file` when unset"; i149 R1): on a two-mesh fabric started with no provider named, `fabric.get`
 /// answers `file` with no previous provider, and every node's row, as `mesh.nodes.get` answers it,
 /// carries the provider it writes, `file`, beside its `storage_persistence`, two properties under two
-/// names: a node-admin's `persistent { disposition: preserve }`, an rpc node's `ephemeral`. Must NOT
+/// names: a node-admin's `persistent { disposition: preserve }`, a node's `ephemeral`. Must NOT
 /// happen: a node or the fabric naming no provider, or the two properties read as one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_customer_reads_each_nodes_topology_provider() {
@@ -659,7 +659,7 @@ async fn a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read() 
     role_node_restart("a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read", Ends::Switched).await;
 }
 
-/// One mesh: its node-admin and an rpc node, so the store names a node beside the admin's own birth
+/// One mesh: its node-admin and a node, so the store names a node beside the admin's own birth
 /// and the admin's loss is a fabric recovery, not Q200's Day 0.
 fn one_mesh() -> FabricDesired {
     FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])] }
@@ -1186,7 +1186,7 @@ const NODES: &str = rdm_admin::store_root::NODES_FILE;
 /// The node created after a change, by a Build that omits the provider (Q166).
 fn grown_location() -> PathName { PathName::new("mesh1.node", "2").unwrap() }
 
-/// A fabric of the faulted node-admin and the testkit rpc node on the deployment provider `provider`
+/// A fabric of the faulted node-admin and the testkit node on the deployment provider `provider`
 /// (`process` or `container`), grown to [`two_meshes`], every node ready.
 async fn two_mesh_estate_on(test: &str, provider: &str) -> (Estate, Vec<NodeView>) {
     let sha = candidate_sha();
@@ -1204,7 +1204,7 @@ async fn two_mesh_estate_on(test: &str, provider: &str) -> (Estate, Vec<NodeView
     (estate, views)
 }
 
-/// [`two_meshes`] with mesh1 grown by one rpc node, [`grown_location`].
+/// [`two_meshes`] with mesh1 grown by one node, [`grown_location`].
 fn grown() -> FabricDesired {
     let mut fabric = two_meshes();
     fabric.meshes[0].counts.insert("node".into(), 2);
@@ -1433,7 +1433,7 @@ async fn a_customer_returns_to_a_previous_topology_provider() {
 /// The container provider's cells: opt-in, the container-proof step (`RDM_CONTAINER_PROOF=1`, or
 /// `RDM_REQUIRE_CONTAINER=1`); otherwise each skips by name. Each is ignored by name until a role node's
 /// container reaches the testkit's second provider: run opted in at 17fbf387e, every node-admin moved
-/// onto `test-target` and each rpc node refused its move, `refusing to start: <estate>/store-test-target:
+/// onto `test-target` and each node refused its move, `refusing to start: <estate>/store-test-target:
 /// the store_dir (RDM_STORE_DIR) cannot be used`, its mesh-primary replying `unblocked` with the node
 /// left on `file` and writing there after the switch.
 mod container {

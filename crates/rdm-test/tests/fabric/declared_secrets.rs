@@ -2,12 +2,12 @@
 //! container (the container cells in [`container`], opt-in).
 //!
 //! The declared secrets (Q150 §0.1; deployment-provider.md §2.3): an application's wiring declares each
-//! per-process variable by name with the node kinds it is set on. The bootstrap admin reads each value
+//! per-process variable by name with the node types it is set on. The bootstrap admin reads each value
 //! once from its own environment; every node-admin RDM launches is written them beside the root, in the
-//! custody document (`RDM_DECLARED_SECRETS`, `{"v":1,"declared":[{"name","kinds","value"}]}`); every
+//! custody document (`RDM_DECLARED_SECRETS`, `{"v":1,"declared":[{"name","types","value"}]}`); every
 //! admin keeps them beside its data dir (`declared-secrets`) and reads them back on a start without a
 //! launcher, so the value never changes while the fabric runs. A value is set in the process
-//! environment of the named kinds only, and no process inherits a declared name from its launcher. A
+//! environment of the named types only, and no process inherits a declared name from its launcher. A
 //! declared name RDM sets or passes through, and a name declared twice, are refused at the admin's
 //! start by name, naming the fabric's provider, with nothing bootstrapped. RDM's diagnostics carry no
 //! value: a failing child's last words are scrubbed of every declared value and RDM's four secrets
@@ -68,7 +68,7 @@ fn container_opted_in(what: &str) -> bool {
     true
 }
 
-/// A fabric of the faulted node-admin with the role kinds bound, its bootstrap admin started with the
+/// A fabric of the faulted node-admin with the role types bound, its bootstrap admin started with the
 /// declared secret's `value` in its own environment.
 async fn estate_holding(test: &str, provider: &str, value: &str) -> Estate {
     let sha = candidate_sha();
@@ -80,11 +80,11 @@ async fn estate_holding(test: &str, provider: &str, value: &str) -> Estate {
     }
     Estate::bootstrap_on_with_env(owner(test, provider), "fabric1", "mesh1", &set, &sha, &["node", "broker", "gateway", "compute"], &[(DECLARED_SECRET, value)])
         .await
-        .expect("the faulted-admin binding set with the role kinds is accepted")
+        .expect("the faulted-admin binding set with the role types is accepted")
 }
 
-/// A mesh of two node-admins and one node of each other kind.
-fn mesh_of_every_kind(name: &str) -> MeshDesired {
+/// A mesh of two node-admins and one node of each other type.
+fn mesh_of_every_type(name: &str) -> MeshDesired {
     MeshDesired::of(name, [("node-admin", 2), ("node", 1), ("broker", 1), ("gateway", 1), ("compute", 1)])
 }
 
@@ -94,7 +94,7 @@ fn environ(node: &str, pid: u64) -> BTreeMap<String, String> {
     raw.split(|b| *b == 0).filter_map(|e| std::str::from_utf8(e).ok()?.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect()
 }
 
-/// Every node the estate's view holds but the bootstrap admin (the value's source), with its kind, its
+/// Every node the estate's view holds but the bootstrap admin (the value's source), with its type, its
 /// data dir and its process's environment.
 async fn environs(estate: &Estate) -> Vec<(String, String, PathBuf, BTreeMap<String, String>)> {
     let bootstrap_id = estate.node_view(&bootstrap()).await.node_id;
@@ -107,14 +107,14 @@ async fn environs(estate: &Estate) -> Vec<(String, String, PathBuf, BTreeMap<Str
     out
 }
 
-/// The declared secret's value the custody document `doc` carries, with its kinds.
+/// The declared secret's value the custody document `doc` carries, with its types.
 fn custody_value(doc: &str) -> Option<(String, Value)> {
     let doc: Value = serde_json::from_str(doc).ok()?;
     if doc["v"] != 1 {
         return None;
     }
     let entry = doc["declared"].as_array()?.iter().find(|e| e["name"] == DECLARED_SECRET)?.clone();
-    Some((entry["value"].as_str()?.to_string(), entry["kinds"].clone()))
+    Some((entry["value"].as_str()?.to_string(), entry["types"].clone()))
 }
 
 /// The declared value the custody document in `env` (`RDM_DECLARED_SECRETS`) carries.
@@ -123,11 +123,11 @@ fn custody_of(env: &BTreeMap<String, String>) -> Option<String> {
 }
 
 /// The declared value the admin's data dir `dir` keeps (`declared-secrets`), checked to name the
-/// declared kinds.
+/// declared types.
 fn kept_in(dir: &Path) -> Option<String> {
-    let (value, kinds) = custody_value(&std::fs::read_to_string(dir.join(KEPT)).ok()?)?;
+    let (value, types) = custody_value(&std::fs::read_to_string(dir.join(KEPT)).ok()?)?;
     let want: Vec<&str> = DECLARED_TYPES.to_vec();
-    assert_eq!(kinds, json!(want), "{}: the kept custody document names the declared kinds", dir.display());
+    assert_eq!(types, json!(want), "{}: the kept custody document names the declared types", dir.display());
     Some(value)
 }
 
@@ -168,18 +168,18 @@ fn carriers(dirs: &[PathBuf], value: &str, permitted: impl Fn(&Path) -> bool) ->
 }
 
 /// Cells 1 and 2 (Q150): on `provider`, a declared secret set in the bootstrap admin's environment
-/// reaches the named kinds' processes, with its value unchanged, and no other process: a launched
-/// node-admin (not a named kind) carries the custody document `RDM_DECLARED_SECRETS` and keeps it beside
-/// its data dir, and never the app's name; an rpc node and a compute node (not named) carry neither.
-async fn a_declared_secret_reaches_only_the_named_kinds(test: &str, provider: &str) {
+/// reaches the named types' processes, with its value unchanged, and no other process: a launched
+/// node-admin (not a named type) carries the custody document `RDM_DECLARED_SECRETS` and keeps it beside
+/// its data dir, and never the app's name; a node and a compute node (not named) carry neither.
+async fn a_declared_secret_reaches_only_the_named_types(test: &str, provider: &str) {
     let value = fresh_value();
     let mut estate = estate_holding(test, provider, &value).await;
-    let mesh1 = mesh_of_every_kind("mesh1");
+    let mesh1 = mesh_of_every_type("mesh1");
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] }).await;
     let want: BTreeSet<rdm_core::PathName> = [("node-admin", "1"), ("node-admin", "2"), ("node", "1"), ("broker", "1"), ("gateway", "1"), ("compute", "1")].into_iter().map(|(group, name)| rdm_core::PathName::new(format!("mesh1.{group}"), name).unwrap()).collect();
     estate.settles_to_named(&want, SETTLE).await;
     let seen = environs(&estate).await;
-    estate.artifact("kinds.json", &json!(seen.iter().map(|(n, k, _, env)| (n.clone(), json!({ "kind": k, "holds": env.get(DECLARED_SECRET) == Some(&value), "custody": custody_of(env).is_some() }))).collect::<BTreeMap<_, _>>()));
+    estate.artifact("types.json", &json!(seen.iter().map(|(n, k, _, env)| (n.clone(), json!({ "type": k, "holds": env.get(DECLARED_SECRET) == Some(&value), "custody": custody_of(env).is_some() }))).collect::<BTreeMap<_, _>>()));
     assert_eq!(seen.len(), want.len() - 1, "every node but the bootstrap admin is read: {:?}", seen.iter().map(|(n, ..)| n).collect::<Vec<_>>());
     assert_eq!(kept_in(&estate.bootstrap_data_dir("mesh1")).as_deref(), Some(value.as_str()), "the bootstrap admin keeps the value it read beside its data dir");
     for (name, r#type, dir, env) in &seen {
@@ -201,8 +201,8 @@ async fn a_declared_secret_reaches_only_the_named_kinds(test: &str, provider: &s
 
 /// CONTRACT (Q150 cells 1, 2; process provider).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_declared_secret_reaches_only_the_named_kinds_processes() {
-    a_declared_secret_reaches_only_the_named_kinds("a_declared_secret_reaches_only_the_named_kinds_processes", "process").await;
+async fn a_declared_secret_reaches_only_the_named_types_processes() {
+    a_declared_secret_reaches_only_the_named_types("a_declared_secret_reaches_only_the_named_types_processes", "process").await;
 }
 
 /// Cells 4 and 5 (Q150): on `provider`, a create a launched admin runs sets the declared value. In a
@@ -230,10 +230,10 @@ async fn a_launched_admins_create_sets_the_value_and_no_file_carries_it(test: &s
     assert!(launching.mesh == "mesh2" && launching.r#type == "node-admin" && by != bootstrap_id, "the broker was launched by mesh2's launched admin: {launcher:?}");
     let admin = environ(by.as_str(), estate.pid_of(&launching.name).await);
     assert_eq!(custody_of(&admin).as_deref(), Some(value.as_str()), "{by}, which ran the create, holds the custody document (permitted)");
-    assert!(!admin.contains_key(DECLARED_SECRET), "{by} is not a named kind: its process holds no {DECLARED_SECRET}");
+    assert!(!admin.contains_key(DECLARED_SECRET), "{by} is not a named type: its process holds no {DECLARED_SECRET}");
     assert_eq!(broker.get(DECLARED_SECRET), Some(&value), "mesh2.broker.1 holds the declared value {by} launched it with");
     let compute = environ(estate.node_view(&rdm_core::PathName::new("mesh2.compute", "1").unwrap()).await.node_id.as_str(), estate.pid_of(&rdm_core::PathName::new("mesh2.compute", "1").unwrap()).await);
-    assert!(!compute.contains_key(DECLARED_SECRET) && !compute.contains_key(ENV_DECLARED_SECRETS), "mesh2.compute.1 is not a named kind");
+    assert!(!compute.contains_key(DECLARED_SECRET) && !compute.contains_key(ENV_DECLARED_SECRETS), "mesh2.compute.1 is not a named type");
     let mut admin_dirs = vec![estate.bootstrap_data_dir("mesh1")];
     for n in views.iter().filter(|n| n.r#type == "node-admin" && n.node_id != bootstrap_id) {
         admin_dirs.push(PathBuf::from(estate.data_dir(&n.name).await));
@@ -258,12 +258,12 @@ async fn a_launched_admins_create_sets_the_declared_value_and_no_file_of_the_run
 }
 
 /// Q150 §0.1 ("read back on a start from disk without a launcher"): on `provider`, the bootstrap admin
-/// reads the value from its environment once and keeps it beside its data dir; it launches an rpc node,
+/// reads the value from its environment once and keeps it beside its data dir; it launches a node,
 /// so the store names a node beside its own birth and its loss is a fabric recovery, not Q200's Day 0;
 /// every node-admin is lost; a person starts a node-admin again on that data dir with no launcher and
 /// without the value in its environment (fabric recovery); the broker it then creates holds the value
 /// unchanged.
-async fn an_admin_started_again_from_its_data_dir_launches_the_named_kinds_with_the_value(test: &str, provider: &str) {
+async fn an_admin_started_again_from_its_data_dir_launches_the_named_types_with_the_value(test: &str, provider: &str) {
     assert!(std::env::var(DECLARED_SECRET).is_err(), "the cell's own environment holds no {DECLARED_SECRET}: the restarted admin is started without it");
     let value = fresh_value();
     let mut estate = estate_holding(test, provider, &value).await;
@@ -289,16 +289,16 @@ async fn an_admin_started_again_from_its_data_dir_launches_the_named_kinds_with_
     assert_eq!(launcher.node_id, estate.node_view(&restarted).await.node_id, "the broker was launched by the admin started again on {}", data_dir.display());
     assert_eq!(broker.get(DECLARED_SECRET), Some(&value), "the broker the restarted admin launched holds the value kept beside its data dir, unchanged");
     let compute = environ(estate.node_view(&rdm_core::PathName::new("mesh1.compute", "1").unwrap()).await.node_id.as_str(), estate.pid_of(&rdm_core::PathName::new("mesh1.compute", "1").unwrap()).await);
-    assert!(!compute.contains_key(DECLARED_SECRET), "mesh1.compute.1 is not a named kind");
+    assert!(!compute.contains_key(DECLARED_SECRET), "mesh1.compute.1 is not a named type");
     assert_eq!(kept_in(&data_dir).as_deref(), Some(value.as_str()), "the kept value is unchanged");
     estate.stop().await;
 }
 
 /// CONTRACT (Q150 §0.1, the value's life; process provider).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_kinds_with_the_value_processes() {
-    let test = "an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_kinds_with_the_value_processes";
-    an_admin_started_again_from_its_data_dir_launches_the_named_kinds_with_the_value(test, "process").await;
+async fn an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_types_with_the_value_processes() {
+    let test = "an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_types_with_the_value_processes";
+    an_admin_started_again_from_its_data_dir_launches_the_named_types_with_the_value(test, "process").await;
 }
 
 /// A bootstrap admin of `provider` whose wiring declares `declared` is refused at its start, and
@@ -357,7 +357,7 @@ fn a_name_declared_twice_refuses_the_start_and_bootstraps_nothing() {
 }
 
 /// Q150 §0.1 (redaction: RDM's own diagnostics scrubbed before they reach a receipt or a span): on
-/// `provider`, a node-admin child launched with the declared secret set on its kind, RDM's four secrets
+/// `provider`, a node-admin child launched with the declared secret set on its type, RDM's four secrets
 /// in its launch (`RDM_CA_SECRET`, `RDM_ISSUING_KEY`, `RDM_FABRIC_CA_KEY`, `RDM_DECLARED_SECRETS`)
 /// prints every one of them and exits before it binds. The create fails at `WaitForBind` with the
 /// child's own last words, and neither the step's failure, its Failed receipt, any span the run
@@ -497,14 +497,14 @@ fn a_child_that_fails_after_printing_its_secrets_leaves_no_trace_of_them_in_the_
 mod container {
     use super::*;
 
-    /// CONTRACT (Q150 cells 1, 2; container provider: the value reaches a named kind through `-e K`,
+    /// CONTRACT (Q150 cells 1, 2; container provider: the value reaches a named type through `-e K`,
     /// the value in the docker client's environment, and a container inherits nothing).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_declared_secret_reaches_only_the_named_kinds_containers() {
+    async fn a_declared_secret_reaches_only_the_named_types_containers() {
         if !container_opted_in("declared secrets") {
             return;
         }
-        a_declared_secret_reaches_only_the_named_kinds("a_declared_secret_reaches_only_the_named_kinds_containers", "container").await;
+        a_declared_secret_reaches_only_the_named_types("a_declared_secret_reaches_only_the_named_types_containers", "container").await;
     }
 
     /// CONTRACT (Q150 cells 4, 5; container provider).
@@ -524,12 +524,12 @@ mod container {
     /// network: the host cannot bind it ("mesh address 172.20.255.254:0: Failed to bind sockets").
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "a host-process node-admin started again on a container fabric's data dir cannot bind the inherited container address (admin/boot.rs inherited arm)"]
-    async fn an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_kinds_with_the_value_containers() {
+    async fn an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_types_with_the_value_containers() {
         if !container_opted_in("declared secrets") {
             return;
         }
-        let test = "an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_kinds_with_the_value_containers";
-        an_admin_started_again_from_its_data_dir_launches_the_named_kinds_with_the_value(test, "container").await;
+        let test = "an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_types_with_the_value_containers";
+        an_admin_started_again_from_its_data_dir_launches_the_named_types_with_the_value(test, "container").await;
     }
 
     /// CONTRACT (Q150 §0.1, redaction; container provider: the child's last words are the daemon's

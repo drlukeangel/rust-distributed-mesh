@@ -20,7 +20,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A topology of mesh1's admin and `rpcs` rpc nodes, each carrying a config of 256 bytes, so the
+/// A topology of mesh1's admin and `rpcs` nodes, each carrying a config of 256 bytes, so the
 /// topology takes more than one reply frame's chunk.
 fn topology(rpcs: u32) -> FabricTopology {
     let mut t = FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap());
@@ -134,7 +134,7 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
             let held_receipts: Vec<(rdm_core::OperationId, bool)> = held.steps.iter().map(|s| (s.operation.clone(), s.outcome == StepOutcome::Complete)).collect();
             assert_eq!(receipts, held_receipts, "{}'s receipts are its log's", got.build_id);
         }
-        assert_eq!(every[1].nodes.len(), 301, "b2's topology: mesh1.node-admin.1 and 300 rpc nodes");
+        assert_eq!(every[1].nodes.len(), 301, "b2's topology: mesh1.node-admin.1 and 300 nodes");
         assert_eq!((every[0].phase, every[0].steps.len()), (BuildPhase::Failed, 2), "b3 failed part-way, both its receipts read: {:?}", every[0]);
 
         // One pair each: the current Build, the failed one, one by id, and an id not held.

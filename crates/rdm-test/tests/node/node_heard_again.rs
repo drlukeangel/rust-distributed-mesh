@@ -6,7 +6,7 @@
 //! that is off its channel it commands node.mesh.join"), node-mesh-join.md step 10 (the commanded join
 //! continues into node.start steps 3 to 5), fabric-node-hooks.md "Where it runs".
 //!
-//! CONTRACT: in a one-mesh estate (two node-admins, two rpc nodes) an rpc node and the node-admin that
+//! CONTRACT: in a one-mesh estate (two node-admins, two nodes) a node and the node-admin that
 //! is not the mesh-primary each have their exact runtime hung (every task but the leader in a tracer's
 //! stop, so the provider reads it `running`: a SIGSTOP reads `os-stopped`, which node investigation's
 //! inspect takes as its verdict and recovery re-creates, Q273) past the staleness floor and released. While held, the view marks the birth `PendingReconnect` (or
@@ -141,7 +141,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
 
-    // An rpc node, then the node-admin that is not the mesh-primary: every node follows the path.
+    // A node, then the node-admin that is not the mesh-primary: every node follows the path.
     let rpc = estate.node_view(&PathName::new("mesh1.node", "2").unwrap()).await;
     let admin = estate.node_views().await.into_iter().find(|n| n.r#type == "node-admin" && !n.is_primary && !n.is_fabric_primary).expect("an admin holding neither primary role");
     let rpc_node_id = rpc.node_id.to_string();

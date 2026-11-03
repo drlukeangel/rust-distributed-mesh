@@ -41,10 +41,10 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         (ProbeNodeState { node_id: node(), incarnation: birth() }, "030c3031323334353637383961620c397763707266677776746879"),
         (ApplyMeshState { mesh_id: mesh(), mesh_name: "mesh1".into(), state: MeshState::Pending, changed_at_rafka_ms: 300 }, "040c313132333435363738396162056d6573683100ac02"),
         (ApplyFabricEvent { fabric_id: fabric(), event: FabricEvent::Ready }, "050c32313233343536373839616200"),
-        (Reserved6 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.node.1") }, "060c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31000000"),
-        (Reserved7 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.node.1") }, "070c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31000000"),
-        (StopNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop-node:mesh1.node.1") }, "080c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011573746f702d6e6f64653a6d657368312e7270632e31000000"),
-        (NodeLeft { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop-node:mesh1.node.1") }, "090c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011573746f702d6e6f64653a6d657368312e7270632e31000000"),
+        (Reserved6 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.node.1") }, "060c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720117647261696e2d6e6f64653a6d657368312e6e6f64652e31000000"),
+        (Reserved7 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.node.1") }, "070c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720117647261696e2d6e6f64653a6d657368312e6e6f64652e31000000"),
+        (StopNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop-node:mesh1.node.1") }, "080c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011673746f702d6e6f64653a6d657368312e6e6f64652e31000000"),
+        (NodeLeft { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop-node:mesh1.node.1") }, "090c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011673746f702d6e6f64653a6d657368312e6e6f64652e31000000"),
         (DeleteMesh { mesh_id: mesh(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("shutdown-mesh:1123456789ab") }, "0a0c3131323334353637383961620c796e6835673262717a663472011a73687574646f776e2d6d6573683a313132333435363738396162000000"),
         (
             MeshDeleted {
@@ -63,13 +63,13 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         (Reserved13 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("commit-state:fabric1") }, "0d0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720114636f6d6d69742d73746174653a66616272696331000000"),
         (Reserved14 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("open-traffic:fabric1") }, "0e0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201146f70656e2d747261666669633a66616272696331000000"),
         (Reserved15 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("open-traffic:fabric1") }, "0f0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201146f70656e2d747261666669633a66616272696331000000"),
-        (StartNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("start-node:mesh1.node.1") }, "100c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011673746172742d6e6f64653a6d657368312e7270632e31000000"),
+        (StartNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("start-node:mesh1.node.1") }, "100c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011773746172742d6e6f64653a6d657368312e6e6f64652e31000000"),
         (UpdateNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "110c3031323334353637383961620c39776370726667777674687901016b0176"),
         // node_id | incarnation | config (len 1: "k" "v") | revision 3 (P1)
         (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c3031323334353637383961620c39776370726667777674687901016b0176"),
-        (ApplyNodeName { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap() }, "130c3031323334353637383961620c397763707266677776746879096d657368312e7270630131"),
+        (ApplyNodeName { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap() }, "130c3031323334353637383961620c3977637072666777767468790a6d657368312e6e6f64650131"),
         // node_id | incarnation | name "1.old" (the name only, never its path)
-        (UpdateName { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "1-old").unwrap() }, "140c3031323334353637383961620c397763707266677776746879096d657368312e72706305312d6f6c64"),
+        (UpdateName { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "1-old").unwrap() }, "140c3031323334353637383961620c3977637072666777767468790a6d657368312e6e6f646505312d6f6c64"),
         (DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "150c3031323334353637383961620c39776370726667777674687901010c333132333435363738396162"),
         (GetNodes { select: NodeSelect::Mesh("mesh1".into()) }, "1601056d65736831"),
         (GetMeshes { mesh: Some("mesh1".into()) }, "1701056d65736831"),
@@ -80,9 +80,9 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         // node_id | incarnation | scope Labels (1) (len 1: "red")
         (DeleteTags { node_id: node(), incarnation: birth(), scope: TagScope::Labels(["red".to_string()].into()) }, "1b0c3031323334353637383961620c397763707266677776746879010103726564"),
         // node_id | incarnation | build_id | attempt 1 | operation "join-mesh:mesh1.node.1"
-        (JoinMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("join-mesh:mesh1.node.1") }, "1c0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201156a6f696e2d6d6573683a6d657368312e7270632e31000000"),
+        (JoinMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("join-mesh:mesh1.node.1") }, "1c0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201166a6f696e2d6d6573683a6d657368312e6e6f64652e31000000"),
         // node_id | incarnation | build_id | attempt 1 | operation "leave-mesh:mesh1.node.1"
-        (LeaveMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("leave-mesh:mesh1.node.1") }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201166c656176652d6d6573683a6d657368312e7270632e31000000"),
+        (LeaveMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("leave-mesh:mesh1.node.1") }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201176c656176652d6d6573683a6d657368312e6e6f64652e31000000"),
         // node_id | incarnation | cert (len 3) (i145 e3, node.cert.renew)
         (RenewCert { node_id: node(), incarnation: birth(), cert: vec![1, 2, 3] }, "1e0c3031323334353637383961620c39776370726667777674687903010203"),
         // node_id | incarnation | key "ab" | cert "cd" (node.issuer.update)
@@ -110,8 +110,8 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
             reason: "r".into(),
         }, concat!(
             "26",
-            "0c303132333435363738396162", "0c397763707266677776746879", "096d657368312e7270630131",
-            "0c303132333435363738396162", "0c397763707266677776746879", "096d657368312e7270630132",
+            "0c303132333435363738396162", "0c397763707266677776746879", "0a6d657368312e6e6f64650131",
+            "0c303132333435363738396162", "0c397763707266677776746879", "0a6d657368312e6e6f64650132",
             "0172",
         )),
         // fabric.storage.update (storage.md §2 "Changing it"), appended last at position 39:
@@ -171,7 +171,7 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
             Nodes { nodes: vec![node_view()] },
             concat!(
                 "2101",
-                "096d657368312e7270630131", "01", "056d65736831", "0c303132333435363738396162", "010165", "010c397763707266677776746879",
+                "0a6d657368312e6e6f64650131", "046e6f6465", "056d65736831", "0c303132333435363738396162", "010165", "010c397763707266677776746879",
                 "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304", "0103726564", "01047469657204676f6c64", "00", "00",
                 // types and held lengths, and the fixed 32-byte held hash.
                 "00", "00", "0000000000000000000000000000000000000000000000000000000000000000",
@@ -336,7 +336,7 @@ fn the_largest_mesh_deleted_fits_the_request_ceiling() {
     assert_eq!(Status::decode_request(&bytes).unwrap(), request);
 }
 
-/// One node as a `node.get` answer carries it: an rpc node with its birth, provider, address, load
+/// One node as a `node.get` answer carries it: a `node` with its birth, provider, address, load
 /// and gossip stats, a tag and a config entry, the optional fields it lacks absent.
 fn node_view() -> NodeView {
     NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),

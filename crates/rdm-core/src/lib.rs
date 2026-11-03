@@ -22,7 +22,7 @@
 //! let name = PathName::new("mesh1.node", "2").expect("a path and name");
 //! assert_eq!((name.path.as_str(), name.name.as_str()), ("mesh1.node", "2"));
 //!
-//! // `node.get` of mesh1's ready rpc nodes: AND across pairs, any-of within a pair.
+//! // `node.get` of mesh1's ready nodes: AND across pairs, any-of within a pair.
 //! let filter = Filter::new().eq("mesh", ["mesh1"]).eq("type", ["node"]).eq("status", ["ready"]);
 //! assert_eq!(filter.refusal(Entity::Nodes), None);
 //! ```

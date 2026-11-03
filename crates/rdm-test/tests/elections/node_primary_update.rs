@@ -4,7 +4,7 @@
 //! a mesh-primary change reaches the other mesh; with no node-admin of its mesh available to the backbone
 //! the fabric-primary is taken over at the decision step and handed back after the heal.
 //!
-//! Each cell runs a two-mesh fabric of two node-admins and three rpc nodes per mesh. A cell that
+//! Each cell runs a two-mesh fabric of two node-admins and three nodes per mesh. A cell that
 //! kills the fabric primary is permitted by R-P1; no other cell kills a fabric-primary node-admin.
 
 use rdm_core::PathName;
