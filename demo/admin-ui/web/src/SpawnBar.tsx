@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, pathNameText, type ManagedType } from "./api";
+import { api, type ManagedType } from "./api";
 
 /// What node-admin manages. Each button submits one Build to node-admin; the
 /// UI never starts or stops a runtime itself.
@@ -17,11 +17,11 @@ export function SpawnBar() {
     setMsg(m);
     setTimeout(() => setMsg(""), 6000);
   };
-  const run = async (key: string, what: string, f: () => Promise<{ build_id: string; attempt: number }>) => {
+  const run = async (key: string, what: string, f: () => Promise<{ build_id: string }>) => {
     setBusy(key);
     try {
       const r = await f();
-      note(`${what}: build ${r.build_id} attempt ${r.attempt}`);
+      note(`${what}: build ${r.build_id}`);
     } catch (e) {
       note(`${what} refused: ${reason(e)}`);
     } finally {

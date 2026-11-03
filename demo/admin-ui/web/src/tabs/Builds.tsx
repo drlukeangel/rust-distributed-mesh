@@ -1,34 +1,42 @@
 import { useEffect, useState } from "react";
-import { api, type BuildView, type Builds as B } from "../api";
+import { api, type BuildEnded, type BuildView, type Builds as B } from "../api";
 
 const outcomeText = (o: unknown) => {
   if (o === "complete") return "complete";
   if (o && typeof o === "object" && "failed" in o) return `failed: ${JSON.stringify((o as { failed: unknown }).failed)}`;
   return JSON.stringify(o);
 };
-const stateColor = (s: string) => (s === "complete" || s === "converged" ? "var(--ok)" : s === "failed" ? "var(--err)" : "var(--warn)");
+/// The Build's end as its last `rdm.build.ended` says it (Q346): complete, incomplete naming each
+/// section it did not finish, or failed: it could not start.
+const endedText = (e: BuildEnded) => {
+  if (e === null) return "not ended";
+  if (e === "complete") return "complete";
+  if ("incomplete" in e) return `incomplete: ${e.incomplete.sections.map((s) => `${s.mesh} ${s.op} ${s.step}: ${s.reason}`).join("; ")}`;
+  return `failed: ${e.failed.reason}`;
+};
+const stateColor = (s: string) => (s === "complete" ? "var(--ok)" : s === "failed" || s === "incomplete" ? "var(--err)" : "var(--warn)");
 
 function BuildCard({ b, current }: { b: BuildView; current: boolean }) {
-  const attempts = Array.from(new Set(b.steps.map((s) => s.attempt))).sort((x, y) => x - y);
+  const meshes = Array.from(new Set([...b.sections, ...b.steps.map((s) => s.mesh)])).sort();
   return (
     <div className="card" style={{ marginBottom: 12 }} data-testid={`build-${b.build_id}`}>
       <div className="row" style={{ marginBottom: 6 }}>
         <span className="mono" style={{ fontWeight: 600 }}>{b.build_id}</span>
         <span className="pill" style={{ borderColor: stateColor(b.state), color: stateColor(b.state) }}>{b.state}</span>
         {current && <span className="pill" style={{ borderColor: "var(--accent)", color: "var(--accent)" }}>accepted topology</span>}
-        <span className="muted mono">{Object.keys(b.change ?? {})[0] ?? "—"} · reason {b.reason} · attempt {b.attempt} · executor {b.executor ?? "—"}</span>
-        <span className="muted mono">{new Date(b.time).toLocaleTimeString()}</span>
+        <span className="muted mono">{b.nodes} nodes · {b.runs} runs · {b.steps.length} step events</span>
+        <span className="muted mono">{b.time ? new Date(b.time).toLocaleTimeString() : "—"}</span>
       </div>
-      {b.last_failure && <div style={{ color: "var(--err)" }} className="mono">last failure: {b.last_failure}</div>}
-      {attempts.length === 0 && <div className="muted">no step receipts yet</div>}
-      {attempts.map((a) => {
-        const ops = Array.from(new Set(b.steps.filter((s) => s.attempt === a).map((s) => s.operation)));
+      {b.ended !== null && b.ended !== "complete" && <div style={{ color: "var(--err)" }} className="mono">{endedText(b.ended)}</div>}
+      {meshes.length === 0 && <div className="muted">no section dispatched yet</div>}
+      {meshes.map((mesh) => {
+        const ops = Array.from(new Set(b.steps.filter((s) => s.mesh === mesh).map((s) => s.op)));
         return (
-          <div key={a} style={{ marginTop: 6 }}>
-            <div className="muted mono">attempt {a} · {ops.length} operations</div>
+          <div key={mesh} style={{ marginTop: 6 }}>
+            <div className="muted mono">section {mesh} · {ops.length} operations</div>
             {ops.map((op) => {
-              const steps = b.steps.filter((s) => s.attempt === a && s.operation === op);
-              const failed = steps.filter((s) => s.outcome !== "complete");
+              const steps = b.steps.filter((s) => s.mesh === mesh && s.op === op);
+              const failed = steps.filter((s) => s.state !== "complete");
               return (
                 <details key={op} style={{ paddingLeft: 14 }}>
                   <summary className="mono" style={{ fontSize: 12 }}>
@@ -39,7 +47,7 @@ function BuildCard({ b, current }: { b: BuildView; current: boolean }) {
                   </summary>
                   {steps.map((s, i) => (
                     <div key={i} className="mono" style={{ fontSize: 11, paddingLeft: 16 }}>
-                      {s.step} · <span style={{ color: s.outcome === "complete" ? "var(--ok)" : "var(--err)" }}>{outcomeText(s.outcome)}</span>
+                      {s.step} · <span style={{ color: s.state === "complete" ? "var(--ok)" : "var(--err)" }}>{outcomeText(s.state)}</span>
                     </div>
                   ))}
                 </details>

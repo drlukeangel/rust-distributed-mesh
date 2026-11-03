@@ -62,7 +62,7 @@ pub async fn overview(admin: &Admin) -> Value {
         .unwrap_or_default();
     let build = match text(&fabric, "build_id") {
         Some(id) => match BuildId::parse(&id) {
-            Ok(id) => admin.build(&id).await.ok().map(|b| brief(&receipts(&b))),
+            Ok(id) => admin.build(&id).await.ok().map(|b| brief(&build_view(&b))),
             Err(_) => None,
         },
         None => None,
@@ -78,13 +78,36 @@ pub async fn overview(admin: &Admin) -> Value {
     })
 }
 
-/// A Build's header as the tabs draw it.
-fn receipts(b: &rdm_client::Build) -> Value {
-    json!({ "build_id": b.build_id.to_string(), "phase": format!("{:?}", b.phase), "attempt": b.attempt, "reason": b.reason, "executor": b.executor, "last_failure": b.last_failure, "steps": b.steps.len() })
+/// A Build as the tabs draw it, from what `build.get` carries (build.md §5): its state, its topology's
+/// node count, its events in event.id order and its end. Its time is its first event's (the
+/// `rdm.build.started` of its first run); `sections` are the meshes the fabric-primary dispatched a
+/// section to; `steps` are its `rdm.build.step` events; `ended` is the `state` of its last
+/// `rdm.build.ended` (`complete`, `incomplete { sections }` or `failed { reason, code }`, Q346).
+fn build_view(b: &rdm_client::Build) -> Value {
+    let of = |t: &'static str| events_of(b, t);
+    let steps: Vec<Value> = of("rdm.build.step").map(|e| json!({ "mesh": e["data"]["mesh"], "op": e["data"]["op"], "step": e["data"]["step"], "state": e["data"]["state"], "subject": e["subject"], "time": e["time"] })).collect();
+    let sections: Vec<Value> = of("rdm.build.dispatched").map(|e| e["data"]["mesh"].clone()).collect();
+    json!({
+        "build_id": b.build_id.to_string(),
+        "state": format!("{:?}", b.phase).to_lowercase(),
+        "current": b.current,
+        "nodes": b.nodes.len(),
+        "time": b.events.first().map_or(Value::Null, |e| e["time"].clone()),
+        "runs": of("rdm.build.started").count(),
+        "sections": sections,
+        "steps": steps,
+        "ended": of("rdm.build.ended").last().map_or(Value::Null, |e| e["data"]["state"].clone()),
+    })
 }
 
+/// The events of `b` of type `t`, in event.id order.
+fn events_of<'a>(b: &'a rdm_client::Build, t: &'static str) -> impl Iterator<Item = &'a Value> + 'a {
+    b.events.iter().filter(move |e| e["type"] == t)
+}
+
+/// The header's line of the current Build: its id, state and end.
 fn brief(v: &Value) -> Value {
-    json!({ "build_id": v["build_id"], "state": v["phase"], "attempt": v["attempt"], "reason": v["reason"], "executor": v["executor"] })
+    json!({ "build_id": v["build_id"], "state": v["state"], "time": v["time"], "ended": v["ended"] })
 }
 
 /// The nodes with their role labels, and every connection fact each node answers for its own exact
@@ -143,7 +166,7 @@ pub async fn builds(admin: &Admin, submitted: &[String]) -> Value {
     for id in ids.iter().take(20) {
         let Ok(parsed) = BuildId::parse(id) else { continue };
         if let Ok(b) = admin.build(&parsed).await {
-            out.push(receipts(&b));
+            out.push(build_view(&b));
         }
     }
     json!({"current": current, "builds": out})

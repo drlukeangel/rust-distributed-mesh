@@ -1,7 +1,6 @@
 //! The multi-mesh soak driver (i143.e9.s2, rafka-v2 #2787): continuous testkit-store operations,
 //! recorded in the operation ledger, while the action model generates legal random topology and
-//! fault actions that run as Builds the node-admin rectifier executes or as provider faults on
-//! exact runtimes.
+//! fault actions that run as Builds, as node commands or as provider faults on exact runtimes.
 //!
 //! One seed is the whole schedule: [`crate::model::generate`] draws every action (one per round,
 //! from the model state the previous rounds produced), the traffic stream draws its own targets
@@ -17,11 +16,14 @@
 //! - [`crate::elections`]: the roles a view advertises equal the ones the public candidates
 //!   compute.
 //!
-//! Topology actions are Node RPC workflows on the typed objects (grow = `node.create`, shrink =
-//! `node.delete`, restart = `node.restart`, hand-off = the delete of the mesh's role-holding
-//! node-admin then a create into the freed ordinal), each awaited on its reply stream. A
-//! restart or a re-birth is confirmed from the Build's own receipts (`AllocateIdentity`, read
-//! through the [`BuildRead`] the test binary hands the driver) before anything is judged.
+//! Topology actions are Node RPC calls on the typed objects, each awaited on its reply stream: grow
+//! = `node.create` and shrink = `node.delete`, each a Build; restart = `node.stop` then `node.start`,
+//! node commands that belong to no Build (Q183, Q342); hand-off = the delete of the mesh's
+//! role-holding node-admin then a create into the freed ordinal, two Builds. A Build's re-birth is
+//! confirmed from the Build's end and its `rdm.build.step` events (`AllocateIdentity` of the node.id
+//! its record names at the path, read through the [`BuildRead`] the test binary hands the driver), a
+//! node recovery's from the view and the recovery's `rdm.node.investigated` event, before anything
+//! is judged.
 //!
 //! The fabric-primary node-admin is never signalled, killed, held or silenced: a fault that names
 //! it is redrawn and the redraw is recorded. It leaves only through a hand-off Build. The
@@ -543,10 +545,9 @@ const BUILD_IN_PROGRESS_BOUND: Duration = Duration::from_secs(120);
 
 /// `submit`, submitted again while it is refused `build-in-progress` (one Build at a time, build.md
 /// §1): a caller that must go after the Build in flight follows it to its end and submits again
-/// (`CallEnd::BuildInProgress`). An attempt the fabric opens itself between rounds, a recovery or the
-/// termination of a returned birth, is that Build in flight. A domain answer: asked again after the
-/// one schedule's next delay (node-rpc.md §43), within [`BUILD_IN_PROGRESS_BOUND`]; any other refusal,
-/// or the bound passed, is the call's.
+/// (`CallEnd::BuildInProgress`). A Build another caller submitted between rounds is that Build in
+/// flight. A domain answer: asked again after the one schedule's next delay (node-rpc.md §43), within
+/// [`BUILD_IN_PROGRESS_BOUND`]; any other refusal, or the bound passed, is the call's.
 async fn after_build_in_progress<T, F, Fut>(mut submit: F) -> Result<T, CallEnd>
 where
     F: FnMut() -> Fut,
@@ -565,9 +566,8 @@ where
     }
 }
 
-/// The Build and attempt a workflow call opened, as a round row records them.
-/// The Build and attempt a call opened, as a round row records them; `null` for a node command
-/// (node.stop, node.start), which belongs to no Build (Q342).
+/// The Build a call opened, as a round row records it; `null` for a node command (node.stop,
+/// node.start), which belongs to no Build (Q342).
 fn accepted_json(a: Option<&Accepted>) -> Value {
     match a {
         Some(a) => json!({"build_id": a.build_id.to_string()}),
@@ -649,60 +649,51 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
     Some((agreeing, unheard_at))
 }
 
-/// How the driver reads Build `id` as the fabric's Build records hold it, as the JSON the Build projection
-/// serializes to (`attempt`, `state`, `last_failure`, `steps` with each receipt's `output`). The read is the test
-/// binary's: the records are read from the fabric's store root and folded (`build_state::read_committed`,
-/// `build_state::fold`, Q292), which the scenario crate's shipped code cannot link
-/// (`tools/mesh-audit/src/deps.rs`, rule 4), and `build.get` carries no output.
+/// How the driver reads Build `id` as the fabric's Build records and its events hold it, as the JSON the
+/// Build view serializes to (build.md §5): `state` (`pending`, `running`, `complete`, `incomplete`,
+/// `failed`), `topology` with the node.id it `created` at each path (D58), `steps` (one per
+/// `rdm.build.step` event: `mesh`, `operation`, `step`, `outcome`, `subject`, `source`), `failure` and
+/// `unfinished`. The read is the test binary's: the records and the events are read from the fabric's
+/// store root and folded (`build_state::read_committed`, `BuildProjection::of`, Q292), which the
+/// scenario crate's shipped code cannot link (`tools/mesh-audit/src/deps.rs`, rule 4).
 pub type BuildRead = for<'a> fn(&'a Estate, &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send + 'a>>;
 
-/// The birth a round's operation produced at `path`, from the Build's own receipts: the last
-/// completed `AllocateIdentity` for an operation on `path` in an attempt after `after_attempt`.
-/// `Ok(None)` while the Build has not completed it; `Err` names a failed Build.
-async fn born_at(estate: &Estate, read: BuildRead, build_id: &str, path: &PathName, after_attempt: u64, lane: Option<(&str, u64)>) -> Result<Option<(String, String)>, String> {
+/// The node.id Build `build_id` created at `path`, once the Build ended `complete` with the
+/// `AllocateIdentity` step of the create its record names there ended `complete` ([`created_at`]); the
+/// birth's incarnation is the view's. `Ok(None)` while the Build runs; `Err` names a Build that ended
+/// `failed` or `incomplete` (Q346), or one that completed with no such create.
+async fn born_at(estate: &Estate, read: BuildRead, build_id: &str, path: &PathName) -> Result<Option<String>, String> {
     let b = read(estate, build_id).await;
-    // A loss's recovery runs in its mesh's drift lane when that mesh's primary opens it (R-BI7: the
-    // lane's attempts are numbered per mesh, and nothing of a lane moves the Build's own fields): the
-    // lane past the attempt it held before the action, with its own AllocateIdentity.
-    if let Some((mesh, lane_after)) = lane {
-        let l = &b["lanes"][mesh];
-        if num(&l["attempt"]) > lane_after {
-            match l["state"].as_str() {
-                Some("failed") => return Err(format!("attempt {} of {mesh}'s lane of Build {build_id} failed: {}", num(&l["attempt"]), l["last_failure"])),
-                Some("complete") => {
-                    if let Some(birth) = allocated_at(&l["steps"], &b["topology"]["created"], path, lane_after) {
-                        return Ok(Some(birth));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    // A Build still reporting an attempt up to `after_attempt` is reporting an earlier attempt's
-    // state: this operation's attempt has not been claimed here yet.
-    if num(&b["attempt"]) <= after_attempt && after_attempt > 0 {
-        return Ok(None);
-    }
     match b["state"].as_str() {
-        Some("failed") => return Err(format!("Build {build_id} failed: {}", b["last_failure"])),
+        Some("failed") => return Err(format!("Build {build_id} ended failed: {}", b["failure"])),
+        Some("incomplete") => return Err(format!("Build {build_id} ended incomplete: {}", b["unfinished"])),
         Some("complete") => {}
         _ => return Ok(None),
     }
-    Ok(allocated_at(&b["steps"], &b["topology"]["created"], path, after_attempt))
+    created_at(&b, path).map(Some).ok_or_else(|| format!("Build {build_id} ended complete and no AllocateIdentity of a create at {path:?} ended complete: {}", b["steps"]))
 }
 
-/// The birth the last complete `AllocateIdentity` for `path` past attempt `after` names in `steps`: the
-/// create keyed by the node.id the Build record's `created` names at `path` (D58).
-fn allocated_at(steps: &Value, created: &Value, path: &PathName, after: u64) -> Option<(String, String)> {
-    let id: rdm_core::NodeId = created.as_array()?.iter().find(|e| e[0]["path"] == path.path.as_str() && e[0]["name"] == path.name.as_str()).and_then(|e| serde_json::from_value(e[1].clone()).ok())?;
-    let key = rdm_core::OperationId::node("node.create", &id);
-    steps
-        .as_array()
+/// The node.id the Build view `b` created at `path`: the id its record's `created` names there (D58),
+/// when that create's `AllocateIdentity` step event (`node.create:<node.id>`) ended `complete`.
+fn created_at(b: &Value, path: &PathName) -> Option<String> {
+    let id: rdm_core::NodeId = b["topology"]["created"].as_array()?.iter().find(|e| e[0]["path"] == path.path.as_str() && e[0]["name"] == path.name.as_str()).and_then(|e| serde_json::from_value(e[1].clone()).ok())?;
+    let op = rdm_core::OperationId::node("node.create", &id).to_string();
+    b["steps"].as_array()?.iter().any(|st| st["operation"] == op.as_str() && st["step"] == "AllocateIdentity" && st["outcome"] == "complete").then(|| id.to_string())
+}
+
+/// The `rdm.node.investigated` events of the exact birth `(node.id, incarnation)` on the estate's
+/// fabric store root (build.md §5; node-investigation.md: the primary that investigated writes its
+/// verdict as one event), each its `data`: `incarnation`, `path`, `name`, `verdict` and `next`
+/// (`rejoin`, or `recreate`: node recovery, never a Build, Q342).
+fn investigated(estate: &Estate, birth: &(String, String)) -> Vec<Value> {
+    let file = estate.fabric_store_root().join(rdm_admin::store_root::EVENTS_FILE);
+    rdm_admin::store_log::read_file(&file)
+        .unwrap_or_default()
         .into_iter()
-        .flatten()
-        .filter(|st| st["step"] == "AllocateIdentity" && st["outcome"] == "complete" && num(&st["attempt"]) > after && serde_json::from_value::<rdm_core::OperationId>(st["operation"].clone()).ok().is_some_and(|o| o == key))
-        .last()
-        .map(|st| (s(&st["output"]["node_id"]), s(&st["output"]["incarnation"])))
+        .map(|l| l.record)
+        .filter(|e| e["type"] == "rdm.node.investigated" && e["subject"] == birth.0.as_str() && e["data"]["incarnation"] == birth.1.as_str())
+        .map(|e| e["data"].clone())
+        .collect()
 }
 
 /// Every live admin's view holds exactly `birth` at `path`, ready, and the replaced
@@ -817,53 +808,30 @@ fn fabric_primaries(nodes: &[Value]) -> String {
     crate::elections::advertised_fabric_primaries(nodes).join(",")
 }
 
-/// The Build attempts gained since `before` that acted on the birth at `path`, each with its
-/// receipts, keyed by lane (`fabric`, or the mesh of a drift lane, whose attempts it numbers itself:
-/// R-BI7) and attempt. An attempt acts on the birth when a receipt of it creates, deletes, restarts or
-/// stops the node at `path` (`node.create:<path>`, `node.delete:<path>` and its `TerminateRuntime`, ...):
-/// what a terminate or a replacement of the birth writes. A gained attempt with no such receipt did
-/// nothing to it: the hand-back of the fabric-primary role, an attempt of the current Build
-/// (fabric-recovery.md step 4, Q96), and the next attempt its returning primary claims after its
-/// HandedOff (build.md) among them.
-fn acted_on(before: &Value, after: &Value, location: &PathName, birth: &(String, String)) -> BTreeMap<(Option<String>, u64), Vec<String>> {
-    const ACTS: [&str; 4] = ["node.create", "node.delete", "node.restart", "node.stop"];
-    let pinned = |pin: &Value| pin["node_id"] == birth.0 && pin["incarnation"] == birth.1;
-    let mut out: BTreeMap<(Option<String>, u64), Vec<String>> = BTreeMap::new();
-    let mut scan = |lane: Option<&str>, projection: &Value, from: u64| {
-        for st in projection["steps"].as_array().into_iter().flatten().filter(|st| num(&st["attempt"]) > from) {
-            assert_eq!(st["build_id"], after["build_id"], "receipt belongs to another Build");
-            assert_eq!(st["mesh"].as_str(), lane, "receipt belongs to another lane");
-            assert!(num(&st["attempt"]) <= num(&projection["attempt"]), "receipt is ahead of the claimed attempt");
-            let op: rdm_core::OperationId = serde_json::from_value(st["operation"].clone()).expect("Build receipts carry structured operation identities");
-            if !ACTS.contains(&op.action.as_str()) { continue; }
-            let action = &projection["attempt_actions"][num(&st["attempt"]).to_string()];
-            let acts = match &op.subject {
-                Some(rdm_core::OperationSubject::Birth { node_id, incarnation }) => node_id.as_str() == birth.0 && incarnation.as_str() == birth.1,
-                Some(rdm_core::OperationSubject::Node(id)) if id.as_str() == birth.0 => {
-                    if action.is_null() {
-                        let pin = after["topology"]["pinned"].as_array().into_iter().flatten().map(|entry| &entry[1]).find(|pin| pin["node_id"] == birth.0).expect("node lifecycle receipt needs an immutable topology pin when no attempt action exists");
-                        pinned(pin)
-                    } else {
-                        assert!(action["node_id"].is_string() && action["from_incarnation"].is_string(), "node lifecycle receipt needs an explicit admitted birth");
-                        action["node_id"] == birth.0 && action["from_incarnation"] == birth.1
-                    }
-                }
-                _ => false,
-            };
-            if acts {
-                out.entry((lane.map(str::to_owned), num(&st["attempt"]))).or_default().push(format!("{} {} {}", st["operation"], s(&st["step"]), st["outcome"]));
+/// What acted on the exact birth `(node.id, incarnation)` since the Build view `before`, each as one row:
+/// every `rdm.build.step` event Build `after` gained since `before` (the same Build, its steps in
+/// event.id order) whose subject is the birth's node.id and whose operation creates, deletes, stops or
+/// starts it (build.md §5), and every `rdm.node.investigated` event of the birth, of `investigated`, whose
+/// `next` is `recreate`: node recovery re-creates it, its mesh-primary's own workflow and never a Build
+/// (node-recovery.md, Q111, Q342). A step on another node, a role move among them, did nothing to it;
+/// an investigation whose `next` is `rejoin` commands the same birth back.
+fn acted_on(before: &Value, after: &Value, investigated: &[Value], birth: &(String, String)) -> Vec<String> {
+    const ACTS: [&str; 4] = ["node.create", "node.delete", "node.stop", "node.start"];
+    let mut out = Vec::new();
+    if before["build_id"] == after["build_id"] {
+        let from = before["steps"].as_array().map_or(0, Vec::len);
+        for st in after["steps"].as_array().into_iter().flatten().skip(from) {
+            let op = s(&st["operation"]);
+            let action = op.split(':').next().unwrap_or_default();
+            if st["subject"] == birth.0.as_str() && ACTS.contains(&action) {
+                out.push(format!("Build {} mesh {}: {op} {} {}", s(&after["build_id"]), s(&st["mesh"]), s(&st["step"]), st["outcome"]));
             }
         }
-    };
-    scan(None, after, num(&before["attempt"]));
-    for (mesh, lane) in after["lanes"].as_object().into_iter().flatten() {
-        scan(Some(mesh), lane, num(&before["lanes"][mesh.as_str()]["attempt"]));
+    }
+    for e in investigated.iter().filter(|e| e["next"] == "recreate" && e["incarnation"] == birth.1.as_str()) {
+        out.push(format!("node recovery: investigated {} at {}.{}, verdict {}, next {}", birth.0, s(&e["path"]), s(&e["name"]), s(&e["verdict"]), s(&e["next"])));
     }
     out
-}
-
-fn acted_rows(acted: &BTreeMap<(Option<String>, u64), Vec<String>>) -> Vec<String> {
-    acted.iter().map(|((lane, a), r)| format!("{} attempt {a}: {}", lane.as_ref().map(|mesh| format!("mesh {mesh:?}")).unwrap_or_else(|| "fabric".into()), r.join("; "))).collect()
 }
 
 /// A mesh made unheard by every other mesh, until its Heal row.
@@ -1331,15 +1299,12 @@ impl Driver {
     async fn execute(&mut self, action: &Action, nodes: &[Value], round: usize, entry: &mut Value) -> Result<(), Broken> {
         let expected = expected_counts(&self.model);
         let before = (self.read)(&self.estate, &self.build_id).await;
-        let attempt_before = num(&before["attempt"]);
         let node_json = |p: &PathName| nodes.iter().find(|n| location(n) == *p).cloned();
-        // The exact birth the action removes, and the Build whose receipts name the birth that
-        // replaces it (with the attempt it must come after).
+        // The exact birth the action removes, and the Build whose create names the node that replaces
+        // it; none when node recovery replaces it, which is never a Build (Q342).
         let mut removed: Option<(PathName, (String, String))> = None;
-        let mut watch: Option<(String, u64)> = None;
-        // The drift lane a loss's recovery may run in, with the attempt it held before the action.
-        let mut lane_watch: Option<(String, u64)> = None;
-        // A restarted birth: the same node id and incarnation come back ready (node-restart.md).
+        let mut watch: Option<String> = None;
+        // A restarted birth: the same node id and incarnation come back ready (node-stop.md "Kept").
         let mut restarted: Option<(PathName, (String, String))> = None;
         let mut deleted_node_id: Option<String> = None;
         // A birth held while its runtime ran: it comes back as itself.
@@ -1397,15 +1362,14 @@ impl Driver {
                 }
                 let (b2, old) = self.delete_then_create(&n, entry).await?;
                 removed = Some((location(&n), old));
-                watch = Some((b2, 0));
+                watch = Some(b2);
                 deleted_node_id = Some(s(&n["node_id"]));
             }
             Action::Kill { node } => {
+                // Node recovery re-creates the killed birth at its path and name under a new node.id
+                // (node-recovery.md): its mesh-primary's own workflow, never a Build (Q342).
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node:?} is not in the view")))?;
                 removed = Some((node.clone(), (s(&n["node_id"]), s(&n["incarnation_id"]))));
-                watch = Some((self.build_id.clone(), attempt_before));
-                let mesh = s(&n["mesh"]);
-                lane_watch = Some((mesh.clone(), num(&before["lanes"][mesh.as_str()]["attempt"])));
                 deleted_node_id = Some(s(&n["node_id"]));
                 no_build_for_drift = true;
                 self.kill(node, entry).await?;
@@ -1470,9 +1434,10 @@ impl Driver {
         if !self.silenced.is_empty() {
             return Ok(());
         }
-        // Converge: the birth sequence is confirmed before anything is judged: the operation's
-        // Build (or the fault's attempt) completes; its AllocateIdentity names the new birth at the
-        // path; every live admin holds exactly that birth ready and the replaced one nowhere; every
+        // Converge: the birth sequence is confirmed before anything is judged: the operation's Build
+        // ends complete with the create of the node.id its record names at the path, or node recovery
+        // puts a birth of a new node.id at the path (its `rdm.node.investigated` event recorded with the
+        // round); every live admin holds exactly that birth ready and the replaced one nowhere; every
         // live admin holds the same births.
         let until = Instant::now() + CONVERGE;
         let mut held_wait: Option<Instant> = None;
@@ -1480,8 +1445,16 @@ impl Driver {
             if relocate_control(&mut self.estate, &self.known).await.is_some() {
                 let view = self.estate.node_values().await;
                 self.publish_view(&view);
+                let ready_at = |path: &PathName, id: Option<&str>, not: &str| view.iter().find(|n| location(n) == *path && n["status"] == "ready" && n["node_id"] != not && id.is_none_or(|id| n["node_id"] == id)).map(|n| (s(&n["node_id"]), s(&n["incarnation_id"])));
                 let born = match (&watch, &removed) {
-                    (Some((b, after)), Some((path, _))) => born_at(&self.estate, self.read, b, path, *after, lane_watch.as_ref().map(|(m, a)| (m.as_str(), *a))).await.map_err(|f| broken("build-completes", f))?,
+                    (Some(b), Some((path, old))) => born_at(&self.estate, self.read, b, path).await.map_err(|f| broken("build-completes", f))?.and_then(|id| ready_at(path, Some(&id), &old.0)),
+                    (None, Some((path, old))) => {
+                        let born = ready_at(path, None, &old.0);
+                        if born.is_some() {
+                            entry["investigated"] = json!(investigated(&self.estate, old));
+                        }
+                        born
+                    }
                     _ => None,
                 };
                 let sequence_done = match (&removed, &born, &gone) {
@@ -1506,7 +1479,7 @@ impl Driver {
                         }
                     }
                     (Some(_), None, _) => {
-                        entry["waiting_on"] = json!("the Build has not completed the rebirth");
+                        entry["waiting_on"] = json!("no ready birth of another node.id at the path yet: the Build has not ended complete, or node recovery has not re-created it");
                         false
                     }
                     (None, _, Some(path)) => match gone_everywhere(&self.estate, path).await {
@@ -1574,11 +1547,11 @@ impl Driver {
                 let now_nodes = self.estate.node_values().await;
                 match judge_held_birth(&now_nodes, &inc.0, &inc.1) {
                     HeldBirth::Ready => break,
-                    // A recovery whose attempt acted on the held path after the release read (its verdict,
+                    // A recovery that acted on the held birth after the release read (its verdict,
                     // `os-stopped` read while held, is the one decision: node-investigation.md, Q273) replaced
                     // it: a recreate read late, never silence replacing a running runtime.
                     HeldBirth::Replaced => {
-                        let late = acted_rows(&acted_on(&before, &(self.read)(&self.estate, &self.build_id).await, path, inc));
+                        let late = acted_on(&before, &(self.read)(&self.estate, &self.build_id).await, &investigated(&self.estate, inc), inc);
                         if late.is_empty() {
                             return Err(broken("silence-is-not-death", format!("{path:?} came back as another birth than {inc:?}: silence replaced a running runtime")));
                         }
@@ -1601,7 +1574,7 @@ impl Driver {
                 return Err(broken("deleted-node-is-not-dispatched", format!("a call to the deleted node {old} was dispatched: {r}")));
             }
         }
-        // A loss opens attempts of the accepted Build, never a Build.
+        // A loss is recovered by node recovery, never a Build (Q342): the current Build stays.
         let fabric = self.estate.try_fabric_view().await.map_err(|end| broken("fabric-build-id-readable", format!("fabric.get at the entry admin {:?}: {end}", self.estate.admin)))?;
         let now_build = fabric.build_id.unwrap_or_default();
         if no_build_for_drift && now_build != self.build_id {
@@ -1612,7 +1585,7 @@ impl Driver {
     }
 
     /// A workflow stream to its `Complete`, within 120 s; a stream that ends `FabricPrimaryMoved` (a planned fabric-primary
-    /// hand-off) is followed at the new role. The Build and attempt the call opened, as the round row records them.
+    /// hand-off) is followed at the new role. The Build the call opened, as the round row records it.
     async fn await_build(&mut self, mut stream: WorkflowStream) -> Result<Value, Broken> {
         let accepted = stream.accepted().cloned();
         let what = match &accepted {
@@ -1703,7 +1676,7 @@ impl Driver {
     /// the semantic wedge detector, release it. The same birth must come back.
     async fn wedge(&mut self, n: &Value, round: usize, before: &Value, entry: &mut Value) -> Result<(), Broken> {
         let path = location(n);
-        let attempt_before = num(&before["attempt"]);
+        let birth = (s(&n["node_id"]), s(&n["incarnation_id"]));
         let container = self.estate.owner.provider == "container";
         let is_rpc = serves_testkit_store(n);
         let exact = format!("exact:{}", s(&n["node_id"]));
@@ -1839,11 +1812,11 @@ impl Driver {
         let (roles_during, detail_during) = primaries(&nodes_during);
         let during = nodes_during.iter().find(|x| location(x) == path).cloned();
         let build_during = (self.read)(&self.estate, &self.build_id).await;
-        let attempt_during = num(&build_during["attempt"]);
-        // What the gained attempts did to the held birth: only one that terminated, deleted, created
-        // or restarted it replaced it; a hand-back's attempts moved a role (fabric-recovery.md step 4).
-        let acted_during = acted_on(before, &build_during, &path, &(s(&n["node_id"]), s(&n["incarnation_id"])));
-        entry["attempts"] = json!({"build": [attempt_before, attempt_during], "acted_on_held": acted_rows(&acted_during)});
+        // What acted on the held birth while it was held: a step of the current Build on its node.id, or
+        // node recovery's re-create (its `rdm.node.investigated` event, `next` `recreate`); a step on
+        // another node, a role move among them, did nothing to it (fabric-recovery.md step 4).
+        let acted_during = acted_on(before, &build_during, &investigated(&self.estate, &birth), &birth);
+        entry["acted_on_held"] = json!({"build_steps": [before["steps"].as_array().map_or(0, Vec::len), build_during["steps"].as_array().map_or(0, Vec::len)], "acted": acted_during});
         let alive = hold_rt.as_ref().map(|r| r.check().is_ok()).unwrap_or(true);
         let replaced = during.as_ref().is_none_or(|x| x["node_id"] != n["node_id"]);
         let released = release();
@@ -1862,7 +1835,7 @@ impl Driver {
         // A recovery that has acted on the held birth by the release (since Q273 an `os-stopped` runtime is
         // a verdict and is recovered within seconds: node-investigation.md) is read to its end: the path is
         // back only as the replacement, never as the birth being deleted.
-        // Read at each poll, never once at the release: a recovery that opens its attempt in the same
+        // Read at each poll, never once at the release: a recovery whose verdict is written in the same
         // instant as the release (its verdict reached as the hold ends) acts on the held birth after
         // the release, so the held birth's brief return as itself is not the end; the path is back only
         // as the replacement once any recovery has acted.
@@ -1870,17 +1843,17 @@ impl Driver {
             let est = &self.estate;
             let held_rt = hold_rt.clone();
             let back = wait_for_opt(&format!("{path:?} ready as its own birth, or as its replacement with the held runtime ended"), floor * 2 + Duration::from_secs(60), || async {
-                let acting = !acted_rows(&acted_on(before, &(self.read)(est, &self.build_id).await, &path, &(s(&n["node_id"]), s(&n["incarnation_id"])))).is_empty();
+                let acting = !acted_on(before, &(self.read)(est, &self.build_id).await, &investigated(est, &birth), &birth).is_empty();
                 est.node_value_opt(&path).await.filter(|x| {
                     x["status"] == "ready" && ((x["incarnation_id"] == inc.as_str() && !acting) || (x["node_id"] != n["node_id"] && held_rt.as_ref().is_none_or(|r| r.check().is_err())))
                 })
             })
             .await;
             let back = back.ok_or_else(|| broken("silence-is-not-death", format!("{path:?} is neither back as {inc} nor replaced with the held runtime ended after the release")))?;
-            // A recovery that acted after the held birth was read back as itself (its attempt opened
+            // A recovery that acted after the held birth was read back as itself (its verdict written
             // between that read and this one) is read to its end too: the path is back as the
             // replacement.
-            let acted_since = !acted_rows(&acted_on(before, &(self.read)(est, &self.build_id).await, &path, &(s(&n["node_id"]), s(&n["incarnation_id"])))).is_empty();
+            let acted_since = !acted_on(before, &(self.read)(est, &self.build_id).await, &investigated(est, &birth), &birth).is_empty();
             if back["node_id"] == n["node_id"] && acted_since {
                 wait_for_opt(&format!("{path:?} replaced with the held runtime ended, a recovery having acted"), floor * 2 + Duration::from_secs(60), || async {
                     est.node_value_opt(&path).await.filter(|x| x["status"] == "ready" && x["node_id"] != n["node_id"] && held_rt.as_ref().is_none_or(|r| r.check().is_err()))
@@ -1927,24 +1900,24 @@ impl Driver {
         });
         let mut rec = Reconciliation::default();
         let build_after = (self.read)(&self.estate, &self.build_id).await;
-        let acted_after = acted_rows(&acted_on(before, &build_after, &path, &(s(&n["node_id"]), s(&n["incarnation_id"]))));
+        let acted_after = acted_on(before, &build_after, &investigated(&self.estate, &birth), &birth);
         if recreated {
             // The re-created node is a new node over a newly allocated data dir (Q111: the data dir
             // follows the verdict; `os-stopped` is not `exited`): it serves at the path, and only the
-            // recovery's attempts acted on the held birth.
+            // recovery's re-create acted on the held birth.
             if is_rpc {
                 rec.check("the re-created node serves at the path", kept["outcome"] == "Reply" && kept["reply"]["executing_node"] == back["node_id"], kept.to_string());
             }
-            rec.check("only node recovery acted on the held birth", !acted_after.is_empty(), format!("attempt {attempt_before} -> {}: {acted_after:?}", num(&build_after["attempt"])));
+            rec.check("only node recovery acted on the held birth: its rdm.node.investigated event names recreate", !acted_after.is_empty() && acted_after.iter().all(|r| r.starts_with("node recovery")), format!("{acted_after:?}"));
         } else {
             if is_rpc {
                 rec.check("the value stored before the hold is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-hold"}), kept.to_string());
                 rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == n["incarnation_id"] && kept["reply"]["executing_node"] == n["node_id"], kept.to_string());
             }
             rec.check(
-                "no Build attempt gained since the hold began terminated, deleted, created or restarted the held birth",
+                "nothing since the hold began deleted, created, stopped or started the held birth: no Build step on its node.id and no node recovery re-create",
                 acted_after.is_empty(),
-                format!("attempt {attempt_before} -> {}: {acted_after:?}", num(&build_after["attempt"])),
+                format!("{acted_after:?}"),
             );
         }
         rec.check("the primaries equal the public candidates' after the release", roles_after, detail_after);
@@ -2304,8 +2277,8 @@ mod tests {
     /// CONTRACT (build.md §1, one Build at a time; `CallEnd::BuildInProgress`: a caller that must go
     /// after the Build in flight follows it and submits again): a workflow call refused
     /// `build-in-progress` is submitted again until it is accepted, and any other refusal is the
-    /// call's at once. Must NOT happen: a round broken by an attempt the fabric opened itself between
-    /// rounds (the routing and randomized soaks at 14034530d: `node.delete` refused while a returned
+    /// call's at once. Must NOT happen: a round broken by a Build in flight that another caller submitted
+    /// between rounds (the routing and randomized soaks at 14034530d: `node.delete` refused while a returned
     /// birth's termination ran).
     #[tokio::test(start_paused = true)]
     async fn a_call_refused_build_in_progress_is_submitted_again_and_any_other_refusal_is_the_calls() {
@@ -2375,91 +2348,64 @@ mod tests {
         assert!(held_unheard_in(&[fp, row("mesh1", "300000000000", false, false, "pending_reconnect")]).is_none(), "the fabric-primary's own mesh is never held");
     }
 
-    /// The Build as the driver reads it in the floors soak on `b6695529` (seed 1431101, step 33):
-    /// mesh1.broker.2 born by attempt 1; attempt 5, the hand-back of the fabric-primary role to mesh1.node-admin.1
-    /// (`via-proven-drift` scope `handback: the fabric-primary role to mesh1.node-admin.1`), HandedOff; attempt 6,
-    /// mesh1.node-admin.1's claim after it (`via-claim-decision` won, `via-reconcile` converged with no
-    /// operation). Neither writes a receipt under an operation naming mesh1.broker.2.
+    /// The held birth of the floors soak on `b6695529` (seed 1431101, step 33): mesh1.broker.2.
     fn held_fixture() -> (PathName, (String, String)) {
         (PathName::new("mesh1.broker", "2").unwrap(), ("100000000000".into(), "200000000000".into()))
     }
 
-    fn lifecycle_operation(action: &str, id: &str, incarnation: &str) -> rdm_core::OperationId {
-        rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth {
-            node_id: rdm_core::NodeId::parse(id).unwrap(), incarnation: rdm_core::IncarnationId::parse(incarnation).unwrap(),
-        })
+    /// One `rdm.build.step` event of Build `a00000000000` as the Build view lists it (build.md §5).
+    fn step(mesh: &str, action: &str, node_id: &str, step: &str) -> Value {
+        let op = rdm_core::OperationId::node(action, &rdm_core::NodeId::parse(node_id).unwrap()).to_string();
+        json!({ "build_id": "a00000000000", "mesh": mesh, "operation": op, "step": step, "outcome": "complete", "subject": node_id, "source": "mesh1.node-admin.1" })
     }
 
-    fn b6695529_build(attempt: u64, lanes: Value) -> Value {
-        let (location, _) = held_fixture();
-        let mut value = json!({
-            "build_id": "a00000000000",
-            "attempt": attempt,
-            "steps": [
-                { "attempt": 1, "operation": rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&location)), "step": "AllocateIdentity", "outcome": "complete",
-                  "output": { "node_id": "100000000000", "incarnation": "200000000000", "deployment_id": "300000000000" } },
-            ],
-            "lanes": lanes,
-        });
-        for receipt in value["steps"].as_array_mut().unwrap() {
-            receipt["build_id"] = json!("a00000000000"); receipt["mesh"] = Value::Null;
-        }
-        for (mesh, lane) in value["lanes"].as_object_mut().unwrap() {
-            for receipt in lane["steps"].as_array_mut().into_iter().flatten() {
-                receipt["build_id"] = json!("a00000000000"); receipt["mesh"] = json!(mesh);
-            }
-        }
-        value
+    fn build(steps: Vec<Value>) -> Value {
+        json!({ "build_id": "a00000000000", "state": "running", "steps": steps })
     }
 
+    /// CONTRACT (build.md §5: a Build's progress is its `rdm.build.step` events; node-recovery.md: node
+    /// recovery is never a Build, Q342, and its verdict is one `rdm.node.investigated` event): what acted
+    /// on a held birth is a step the current Build gained on its node.id that creates, deletes, stops or
+    /// starts it, or node recovery's `recreate` of that exact birth. Must NOT happen: a role move, a step
+    /// on another node, a step the Build held before the hold, or a `rejoin` read as acting on it.
     #[test]
-    #[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
-    fn a_hand_back_attempt_does_nothing_to_a_held_birth() {
-        let (location, birth) = held_fixture();
-        let before = b6695529_build(5, json!({ "mesh1": { "attempt": 2 } }));
-        assert!(acted_on(&before, &b6695529_build(6, json!({ "mesh1": { "attempt": 2 } })), &location, &birth).is_empty());
-        let mut handed = b6695529_build(6, json!({}));
-        handed["steps"].as_array_mut().unwrap().push(json!({ "build_id": "a00000000000", "mesh": null, "attempt": 6, "operation": lifecycle_operation("node.fabric-primary.update", &birth.0, &birth.1), "step": "Complete", "outcome": "complete" }));
-        assert!(acted_on(&before, &handed, &location, &birth).is_empty(), "a role move is not the birth's lifecycle");
-        let recovered = b6695529_build(6, json!({ "mesh1": {
-            "attempt": 3,
-            "attempt_actions": {"3": {"action": "recover", "path": location, "node_id": birth.0, "from_incarnation": birth.1}},
-            "steps": [
-                { "attempt": 2, "operation": lifecycle_operation("node.delete", "400000000000", &birth.1), "step": "TerminateRuntime", "outcome": "complete" },
-                { "attempt": 3, "operation": lifecycle_operation("node.delete", &birth.0, &birth.1), "step": "TerminateRuntime", "outcome": "complete" },
-                { "attempt": 3, "operation": rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&location)), "step": "AllocateIdentity", "outcome": "complete",
-                  "output": { "node_id": "500000000000", "incarnation": "600000000000", "deployment_id": "700000000000" } },
-            ]
-        } }));
-        let acted = acted_on(&before, &recovered, &location, &birth);
-        assert_eq!(acted.keys().cloned().collect::<Vec<_>>(), vec![(Some("mesh1".to_string()), 3)]);
-        assert_eq!(acted[&(Some("mesh1".to_string()), 3)].len(), 2, "its terminate and creation are both evidenced");
-        assert!(acted[&(Some("mesh1".to_string()), 3)].iter().any(|e| e.contains("node.create") && e.contains("Location")), "structured operation evidence is retained");
-        let mut replaced = b6695529_build(6, json!({}));
-        replaced["steps"].as_array_mut().unwrap().push(json!({ "build_id": "a00000000000", "mesh": null, "attempt": 6, "operation": lifecycle_operation("node.delete", &birth.0, &birth.1), "step": "TerminateRuntime", "outcome": "complete" }));
-        assert_eq!(acted_on(&before, &replaced, &location, &birth)[&(None, 6)].len(), 1);
-        assert!(acted_on(&before, &replaced, &location, &(birth.0.clone(), "800000000000".into())).is_empty(), "same ID with another incarnation is another birth");
-        assert!(acted_on(&before, &replaced, &location, &("900000000000".into(), birth.1.clone())).is_empty(), "same incarnation text at another ID is another birth");
-        // No current row participates: later rename, allocation clearing or deletion cannot erase this proof.
-        assert_eq!(acted_on(&before, &recovered, &location, &birth), acted);
-    }
-    #[test]
-    fn a_mesh_named_fabric_has_a_separate_receipt_scope() {
-        let (location, birth) = held_fixture();
-        let before = b6695529_build(5, json!({"fabric": {"attempt": 5}}));
-        let receipt = json!({"attempt": 6, "operation": lifecycle_operation("node.delete", &birth.0, &birth.1), "step": "TerminateRuntime", "outcome": "complete"});
-        let mut after = b6695529_build(6, json!({"fabric": {"attempt": 6, "steps": [receipt.clone()]}}));
-        let mut root_receipt = receipt;
-        root_receipt["build_id"] = after["build_id"].clone();
-        root_receipt["mesh"] = Value::Null;
-        after["steps"].as_array_mut().unwrap().push(root_receipt);
-        let acted = acted_on(&before, &after, &location, &birth);
-        assert_eq!(acted.len(), 2);
-        assert_eq!(acted[&(None, 6)].len(), 1);
-        assert_eq!(acted[&(Some("fabric".into()), 6)].len(), 1);
-        let rows = acted_rows(&acted);
-        assert!(rows[0].starts_with("fabric attempt 6:"));
-        assert!(rows[1].starts_with("mesh \"fabric\" attempt 6:"));
+    fn only_a_step_on_the_held_node_or_its_recovery_acts_on_a_held_birth() {
+        let (_, birth) = held_fixture();
+        let before = build(vec![step("mesh1", "node.create", &birth.0, "AllocateIdentity")]);
+        assert!(acted_on(&before, &before, &[], &birth).is_empty(), "a step the Build held before the hold");
+        let moved = build(vec![step("mesh1", "node.create", &birth.0, "AllocateIdentity"), step("mesh1", "node.fabric-primary.update", &birth.0, "Complete"), step("mesh1", "node.delete", "400000000000", "TerminateRuntime")]);
+        assert!(acted_on(&before, &moved, &[], &birth).is_empty(), "a role move and a step on another node do nothing to it");
+        let deleted = build(vec![step("mesh1", "node.create", &birth.0, "AllocateIdentity"), step("mesh1", "node.delete", &birth.0, "TerminateRuntime")]);
+        let rows = acted_on(&before, &deleted, &[], &birth);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].contains("node.delete:100000000000") && rows[0].contains("TerminateRuntime"), "{rows:?}");
+        let other = json!({ "build_id": "b00000000000", "steps": deleted["steps"] });
+        assert!(acted_on(&before, &other, &[], &birth).is_empty(), "another Build's steps are not gained by this one");
+        let verdict = |inc: &str, next: &str| json!({ "incarnation": inc, "path": "mesh1.broker", "name": "2", "verdict": "os-stopped", "next": next });
+        assert!(acted_on(&before, &before, &[verdict(&birth.1, "rejoin")], &birth).is_empty(), "a rejoin commands the same birth back");
+        assert!(acted_on(&before, &before, &[verdict("800000000000", "recreate")], &birth).is_empty(), "another incarnation is another birth");
+        let recovered = acted_on(&before, &before, &[verdict(&birth.1, "recreate")], &birth);
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        assert!(recovered[0].starts_with("node recovery") && recovered[0].contains("os-stopped"), "{recovered:?}");
     }
 
+    /// CONTRACT (D58: the fabric-primary mints the node.id of each create at acceptance and writes it in
+    /// the record; build.md §5): the node.id a Build created at a path is the one its record's `created`
+    /// names there, once that create's `AllocateIdentity` step event ended `complete`. Must NOT happen:
+    /// a create of another path, or one whose step failed, read as the birth.
+    #[test]
+    fn the_birth_a_build_created_is_the_node_id_its_record_names_once_its_allocation_completed() {
+        let (path, birth) = held_fixture();
+        let created = json!([[{"path": path.path, "name": path.name}, birth.0], [{"path": "mesh1.broker", "name": "3"}, "300000000000"]]);
+        let mut b = build(vec![step("mesh1", "node.create", "300000000000", "AllocateIdentity")]);
+        b["topology"] = json!({ "created": created });
+        assert_eq!(created_at(&b, &path), None, "only another path's create completed");
+        let mut failed = step("mesh1", "node.create", &birth.0, "AllocateIdentity");
+        failed["outcome"] = json!({ "failed": { "reason": "launch refused", "code": "FAILED_PRECONDITION" } });
+        b["steps"].as_array_mut().unwrap().push(failed);
+        assert_eq!(created_at(&b, &path), None, "its allocation failed");
+        b["steps"].as_array_mut().unwrap().push(step("mesh1", "node.create", &birth.0, "AllocateIdentity"));
+        assert_eq!(created_at(&b, &path), Some(birth.0.clone()));
+        assert_eq!(created_at(&b, &PathName::new("mesh1.broker", "4").unwrap()), None, "the record creates nothing there");
+    }
 }

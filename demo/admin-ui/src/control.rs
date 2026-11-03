@@ -1,6 +1,6 @@
 //! The Admin UI's topology routes: thin front doors to node-admin (PRD §4,
 //! i143.e1.s6). A route that adds or removes nodes submits one Build over Node RPC through the typed
-//! objects of `rafka-node-admin-client` and answers `202 {"build_id","attempt"}`; a node command
+//! objects of `rafka-node-admin-client` and answers `202 {"build_id"}`; a node command
 //! (a stop, a start) is never a Build and answers `200 {"terminal"}` once it ends; either way a
 //! refusal answers with node-admin's named reason. The UI never starts or stops a runtime itself.
 //!
@@ -108,10 +108,10 @@ fn client(c: &Control) -> Result<&Admin, Response> {
 
 fn answer(c: &Control, what: &str, r: Result<Accepted, CallEnd>, node: Option<&PathName>, mesh: Option<&str>) -> Response {
     match r {
-        Ok(Accepted { build_id, attempt }) => {
+        Ok(Accepted { build_id }) => {
             c.events.submitted(what, &build_id, node, mesh);
             tracing::info!(%build_id, "{what} submitted to node-admin");
-            (StatusCode::ACCEPTED, Json(json!({ "build_id": build_id, "attempt": attempt }))).into_response()
+            (StatusCode::ACCEPTED, Json(json!({ "build_id": build_id }))).into_response()
         }
         Err(CallEnd::Rejected { reason, detail }) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": reason, "detail": detail }))).into_response(),
         Err(e @ CallEnd::BuildInProgress { .. }) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "build-in-progress", "detail": e.to_string() }))).into_response(),
