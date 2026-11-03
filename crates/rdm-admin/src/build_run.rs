@@ -75,11 +75,14 @@ pub struct RunLog {
     mesh: String,
     state: Mutex<RunState>,
     wake: Notify,
+    /// Whether the fabric-primary runs it in its own drive pass: its step writes are Build calls of the
+    /// fabric-primary, refused once the role moved (fabric-recovery.md step 4).
+    fabric_primarys: std::sync::atomic::AtomicBool,
 }
 
 impl RunLog {
     fn new(build_id: &BuildId, mesh: &str) -> Arc<Self> {
-        Arc::new(Self { build_id: build_id.to_string(), mesh: mesh.to_string(), state: Mutex::new(RunState::default()), wake: Notify::new() })
+        Arc::new(Self { build_id: build_id.to_string(), mesh: mesh.to_string(), state: Mutex::new(RunState::default()), wake: Notify::new(), fabric_primarys: Default::default() })
     }
 
     /// A step's `rdm.build.step` event is written: its frame. A repeat of a step already framed with
@@ -217,6 +220,12 @@ impl SectionRuns {
         self.runs.lock().unwrap().remove(&(build_id.to_string(), mesh.to_string()));
     }
 
+    /// Whether the fabric-primary runs a section of `build_id` here in its own drive pass.
+    fn run_by_the_fabric_primary(&self, build_id: &BuildId) -> bool {
+        let id = build_id.to_string();
+        self.runs.lock().unwrap().iter().any(|((b, _), log)| *b == id && log.fabric_primarys.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
     /// Run `run` as a task of its own, unless this admin runs sections no longer ([`Self::stop`]):
     /// `false`, and nothing is spawned.
     fn spawn(&self, run: impl std::future::Future<Output = ()> + Send + 'static) -> bool {
@@ -261,12 +270,23 @@ pub struct FramedBuilds {
     /// Where this admin writes each step's event, and this admin's own mesh (a step that names no mesh
     /// is its own); none in a rig with no events store, where steps are framed only.
     steps: Option<(crate::events_storage::EventsWriter, String)>,
+    /// The fabric-primary check a step of the fabric-primary's own run passes before it is written
+    /// (node-rpc-envelope.md "Refusals and bounds"): refused `RoleYielded` once the record names
+    /// another live birth; none for an admin that drives no Build.
+    role: Option<Arc<crate::fabric_builds::FabricBuildStateAdapter>>,
 }
 
 impl FramedBuilds {
     /// `inner` with frames into `runs`.
     pub fn new(inner: Arc<dyn BuildStateAdapter>, runs: Arc<SectionRuns>) -> Self {
-        Self { inner, runs, steps: None }
+        Self { inner, runs, steps: None, role: None }
+    }
+
+    /// [`Self::new`], a step of a run the fabric-primary runs in its own drive pass written only while
+    /// `role`'s record still names this admin (fabric-recovery.md step 4: a returning fabric-primary's
+    /// Build calls are refused, and it stops on its first read after the heal).
+    pub fn checked_by(self, role: Arc<crate::fabric_builds::FabricBuildStateAdapter>) -> Self {
+        Self { role: Some(role), ..self }
     }
 
     /// [`Self::new`], each step this admin runs written as its `rdm.build.step` event through `events`,
@@ -328,6 +348,9 @@ impl BuildStateAdapter for FramedBuilds {
     async fn write_step(&self, step: &StepWrite) -> Result<(), BuildStateError> {
         let mesh = self.mesh_of(step);
         let op = step.operation.to_string();
+        if let Some(role) = self.role.as_ref().filter(|_| self.runs.run_by_the_fabric_primary(&step.build_id)) {
+            role.target_check().await?;
+        }
         if let Some((events, _)) = &self.steps {
             let state = step.outcome.state();
             let span = tracing::info_span!("rdm.node_admin.build.update.via-step-event", build_id = %step.build_id.log(), mesh = %mesh, op = %op, step = %step.step, state = ?state, event_id = tracing::field::Empty);
@@ -487,6 +510,9 @@ impl RunDoor {
         if !created {
             let (replay, reader) = log.attach();
             return Attached::Live { disposition: Disposition::Reattached, replay, reader };
+        }
+        if under.is_some() {
+            log.fabric_primarys.store(true, std::sync::atomic::Ordering::SeqCst);
         }
         let reader = log.reader();
         // The run's turn of the admin's gate: under the drive pass that runs it here, begun now; for a

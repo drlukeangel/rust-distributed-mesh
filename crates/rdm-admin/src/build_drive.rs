@@ -954,6 +954,11 @@ impl DriveEnv {
                             let mesh = op.mesh().unwrap_or(&self.me_mesh).to_string();
                             sections.entry(mesh.clone()).or_insert_with(|| UnfinishedSection { mesh, operation: op.key().to_string(), step: "fabric.delete".into(), reason: crate::build_run::bounded_reason(reason.clone()), code: rdm_core::outcome::Code::Aborted });
                         }
+                        // Every operation ran, and the fabric change it waits on never completes: the
+                        // fabric is never ready again under the delete (Q154).
+                        if sections.is_empty() && changes_the_fabric(&p) {
+                            sections.insert(self.me_mesh.clone(), UnfinishedSection { mesh: self.me_mesh.clone(), operation: "fabric.change".into(), step: "fabric.delete".into(), reason: crate::build_run::bounded_reason(reason.clone()), code: rdm_core::outcome::Code::Aborted });
+                        }
                         let terminal = if p.state == BuildState::Pending { rdm_core::reply::build::failed(id.to_string(), crate::build_run::bounded_reason(reason), rdm_core::outcome::Code::Aborted) } else { rdm_core::reply::build::incomplete(id.to_string(), sections.into_values().collect()) };
                         return self.end(&me, drive, terminal, &span).await;
                     }

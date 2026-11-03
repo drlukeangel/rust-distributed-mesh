@@ -876,10 +876,12 @@ async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_
 /// durable and paused (SIGSTOP). From the backbone, mesh2.node-admin.1 records the transition, takes both
 /// roles and is held by its own fault door as it starts deleting mesh1 in process, before the paused
 /// fabric-primary's own delete. The fabric-primary is resumed (SIGCONT) and its door released: its roster
-/// write lands. It reads the transfer (its view names mesh2.node-admin.1 the fabric-primary) and its drive
-/// of the delete ends on that read; the executor is released and finishes the teardown, mesh1 and the
-/// returned fabric-primary deleted, mesh2 last, fabric.deleted reported. The delete's events as the
-/// executor folds them are the ones it held at the transfer, then none the returned fabric-primary wrote.
+/// write, in flight before its first read past the heal, may land. It reads the transfer (its view names
+/// mesh2.node-admin.1 the fabric-primary): its drive of the delete ends on that read, and its step writes
+/// after it are refused RoleYielded, so its section stops there; the executor is released and finishes
+/// the teardown, mesh1 and the returned fabric-primary deleted, mesh2 last, fabric.deleted reported. The
+/// delete's events as the executor folds them are the ones it held at the transfer, then at most that
+/// in-flight roster of the returned fabric-primary's.
 /// What must NOT happen: the returning fabric-primary's write read as the delete's progress, its drive
 /// dispatching or a section of it run after the read, the teardown left unfinished, or a runtime left
 /// beside the executor.
@@ -924,8 +926,11 @@ async fn a_fabric_primary_paused_through_the_transfer_is_ignored_refused_stale_a
     let held = transferred.events.len();
     assert_eq!(receipts.events.get(..held), Some(&transferred.events[..]), "the events the executor held at the transfer stand as they were: {:?}", listed(&receipts));
     let returned_writer = format!("/{}/", id_in(&ids, "mesh1.node-admin", "1"));
+    // The returned fabric-primary's step writes after its first read past the heal are refused
+    // RoleYielded and its section stops; a write it had in flight before that read (mesh2's roster,
+    // released with its door) may land, and nothing it writes after that read does.
     let late: Vec<&Value> = receipts.events[held..].iter().filter(|e| e["source"].as_str().is_some_and(|s| s.contains(&returned_writer))).collect();
-    assert!(late.is_empty(), "the returning fabric-primary's writes are ignored: no event after the transfer is its: {late:#?}");
+    assert!(late.iter().all(|e| e["data"]["step"] == rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER), "after the transfer the returned fabric-primary writes at most the roster it had in flight, and no later step: {late:#?}");
     assert_eq!(count(&receipts, |o| action_of(o) == "mesh.delete", rdm_admin::mesh_delete::STEP_MESH_DELETED), 2, "each mesh is deleted once: {:?}", listed(&receipts));
     assert_eq!(count(&receipts, |o| action_of(o) == "fabric.delete", "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
     assert!(!alive(paused), "the returned fabric-primary is deleted with its mesh");
