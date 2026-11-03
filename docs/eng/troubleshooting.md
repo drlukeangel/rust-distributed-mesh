@@ -77,7 +77,7 @@ When RDM refuses a call, rejects a frame or command, or returns an `Unknown` ver
 | `rdm.node_admin.status.reject.via-node-left` | `crates/rdm-node/src/node_self.rs:1530` | A reserved `NodeLeft` position on `Status` (`0x1B`) was refused by name because `node.mesh.leave` never sends `NodeLeft` as a `Status` RPC call. | [Node RPC envelope](../architecture/node-rpc-envelope.md), [node.mesh.leave](../architecture/lifecycles/node-mesh-leave.md) |
 | `rdm.node_admin.status.reject.via-own-mesh-primary` | `crates/rdm-admin/src/admin/boot.rs:2370` | This node-admin is its own mesh's primary, so there is no separate mesh-primary to report its state to over `Status` (`0x1B`). | [Node status](../architecture/lifecycles/node-status.md), [Elections](../architecture/fabric-node-lifecycle-elections.md) |
 | `rdm.node_admin.status.reject.via-reserved-position` | `crates/rdm-node/src/node_self.rs:1499` | A reserved `Status` (`0x1B`) position was refused by name because it is never a call and starts nothing. | [Node RPC envelope](../architecture/node-rpc-envelope.md), [Node status](../architecture/lifecycles/node-status.md) |
-| `rdm.node.status.reject.via-request-not-handled` | `crates/rdm-node/src/node_self.rs:1512` | A `Status` (`0x1B`) door received a request variant for which it has no handler. | [Node RPC envelope](../architecture/node-rpc-envelope.md), [Node status](../architecture/lifecycles/node-status.md) |
+| `rdm.node.status.reject.via-request-not-handled` | `crates/rdm-node/src/node_self.rs:1512` | A `Status` (`0x1B`) service received a request variant for which it has no handler. | [Node RPC envelope](../architecture/node-rpc-envelope.md), [Node status](../architecture/lifecycles/node-status.md) |
 
 ## Node, mesh, cert, and deployment lifecycles
 

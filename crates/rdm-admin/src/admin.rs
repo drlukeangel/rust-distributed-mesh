@@ -2373,18 +2373,18 @@ mod tests {
     }
 
     /// CONTRACT (node-rpc-envelope.md, "Node RPC readiness gate": "A node-admin waits until its Status
-    /// authority is filled and its view holds it"): the admin's Node RPC door opens with the first view
+    /// authority is filled and its view holds it"): the admin's readiness gate opens with the first view
     /// installed that holds its exact birth once the authority is filled, whichever task installs that
     /// view, so nothing that reads the installed view (the declarer that tells its primary it is ready
-    /// among them) sees its own birth while its door still refuses. A view without the birth, one
+    /// among them) sees its own birth while its readiness gate still refuses. A view without the birth, one
     /// holding another birth of its name, and any view while the authority is not filled leave the
-    /// door closed. Must NOT happen: the door opened only by the view-rebuild task, which starts after
+    /// readiness gate closed. Must NOT happen: the readiness gate opened only by the view-rebuild task, which starts after
     /// the declarer and a Build-log catch-up, so the admin declares itself ready to its primary while
     /// its router answers every state command NotReady (gate red at b24a4303,
-    /// fabric_states__rounds trace 95adb727: mesh1.node-admin.2 declared Ready at 788604, its door
+    /// fabric_states__rounds trace 95adb727: mesh1.node-admin.2 declared Ready at 788604, its readiness gate
     /// opened at 788637, and mesh1.node-admin.1's three commit-state sends had all come back NotReady).
     #[tokio::test]
-    async fn an_admins_door_opens_with_the_first_installed_view_that_holds_its_exact_birth() {
+    async fn an_admins_readiness_gate_opens_with_the_first_installed_view_that_holds_its_exact_birth() {
         let me = digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
         let primary = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2397,14 +2397,14 @@ mod tests {
         other.node.incarnation = IncarnationId::mint();
         let opened = || ready.load(std::sync::atomic::Ordering::SeqCst);
         records.install_projected(&topology, || view(&[primary.clone(), me.clone()])).await;
-        assert!(!opened(), "the authority is not filled: the door stays closed");
+        assert!(!opened(), "the authority is not filled: the readiness gate stays closed");
         filled.store(true, std::sync::atomic::Ordering::SeqCst);
         records.install_projected(&topology, || view(&[primary.clone()])).await;
-        assert!(!opened(), "a view without this admin's birth leaves the door closed");
+        assert!(!opened(), "a view without this admin's birth leaves the readiness gate closed");
         records.install_projected(&topology, || view(&[primary.clone(), other.clone()])).await;
         assert!(!opened(), "another birth of its name is not this admin's birth");
         records.install_projected(&topology, || view(&[primary.clone(), me.clone()])).await;
-        assert!(opened(), "the first installed view holding its exact birth, the authority filled, opens the door");
+        assert!(opened(), "the first installed view holding its exact birth, the authority filled, opens the readiness gate");
     }
 
     fn primary_of(d: &MeshDigest, revision: u64) -> rdm_core::Primary {

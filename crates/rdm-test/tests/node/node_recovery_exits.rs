@@ -104,7 +104,7 @@ fn member_and_primaries(nodes: &[Value]) -> (PathName, Value, Value) {
     (member, mesh_primary, primary)
 }
 
-/// The exact runtime `node`'s birth published in its data dir: the fault door acts on it alone.
+/// The exact runtime `node`'s birth published in its data dir: the fault service acts on it alone.
 async fn exact_runtime(estate: &Estate, node: &PathName) -> ExactRuntime {
     let dir = estate.data_dir(node).await;
     ExactRuntime::published(Path::new(&dir)).unwrap_or_else(|r| panic!("{node:?}: no exact runtime published in {dir}: {r:?}"))
@@ -183,7 +183,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     let data_dir = estate.data_dir(node_path).await;
     let others: Vec<(PathName, String)> = nodes.iter().filter(|n| !rdm_test::estate::is_location(&n, &node_path)).map(|n| (location(n), s(&n["node_id"]))).collect();
 
-    // The real transport-stop path: the testkit door marks the transport stopped; the process exits through it.
+    // The real transport-stop path: the testkit service marks the transport stopped; the process exits through it.
     let builds = estate.build_ids().await;
     let marked = estate.probe(&["stop-transport", "--target", &rdm_test::estate::path_target(node_path), "--key", "x"]);
     assert_eq!(marked["outcome"], "Reply", "{marked}");
@@ -1193,7 +1193,7 @@ async fn a_superseded_birth_that_comes_back_is_refused_reported_and_killed() {
 /// (its Digest, or a declaration, refused). Mesh2's primary decides it from its atlas by its (path, name):
 /// another birth is there, so the caller is deleted; not the fabric-primary, it verifies at the root
 /// with `fabric.atlas.get` first, which agrees; it reports the caller to the fabric-primary for
-/// `node.terminate`. One `via-refused-caller` span per decision names the door, the
+/// `node.terminate`. One `via-refused-caller` span per decision names its `via`, the
 /// decision, the root's answer and the outcome. What must NOT happen: the caller refused and nothing
 /// decided, the caller re-admitted over the re-created birth, its process left running, or the path
 /// left with any live birth but the re-created one.
@@ -1226,7 +1226,7 @@ async fn a_re_created_birth_that_comes_back_is_deleted_by_its_path_name_verified
     for d in &decisions {
         assert!(d["node_path"] == "mesh2.node-admin" && d["node_name"] == "1", "mesh2's primary decides its own mesh's caller: {facts}");
         assert!(d["subject_path"] == node.path.as_str() && d["subject_name"] == node.name.as_str(), "decided at the caller's (path, name): {facts}");
-        assert!(d["door"] == "digest" || d["door"] == "declaration", "decided at a door a refused caller comes through, its Digest or its declaration: {facts}");
+        assert!(d["via"] == "digest" || d["via"] == "declaration", "decided at a service a refused caller comes through, its Digest or its declaration: {facts}");
         assert_eq!(d["decision"], "delete-path-held", "another birth is at the path: the caller is deleted: {facts}");
         assert_eq!(d["root"], "agrees", "the fabric-primary's atlas agrees: {facts}");
     }

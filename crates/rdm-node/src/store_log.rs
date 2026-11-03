@@ -708,14 +708,14 @@ impl StoreLog {
         let caller = caller_span();
         let parent = tracing::Span::current();
         #[cfg(feature = "testkit-store")]
-        let door = read_door::take(&self.0.path, caller);
+        let cut = read_cut::take(&self.0.path, caller);
         let inner = self.0.clone();
         // The caller's dispatcher, so the spans this read records on the blocking pool are its caller's.
         let dispatch = tracing::dispatcher::get_default(|d| d.clone());
         let unended = blocking_io(move || tracing::dispatcher::with_default(&dispatch, || {
             #[cfg(feature = "testkit-store")]
-            if let Some(door) = &door {
-                door.admit_wait();
+            if let Some(cut) = &cut {
+                cut.admit_wait();
             }
             let _one = match inner.reading.try_lock() {
                 Ok(one) => one,
@@ -727,8 +727,8 @@ impl StoreLog {
             };
             let _by = ReadingBy::begin(&inner, caller, reader);
             #[cfg(feature = "testkit-store")]
-            if let Some(door) = door {
-                door.hold();
+            if let Some(cut) = cut {
+                cut.hold();
             }
             inner.read_held(kind, caller, reader, &parent)
         }))
@@ -811,18 +811,18 @@ impl StoreLog {
         blocking_io(move || {
             let mut guard = guard;
             #[cfg(feature = "testkit-store")]
-            let door = write_door::take(&inner.path, &subject);
+            let cut = write_cut::take(&inner.path, &subject);
             #[cfg(not(feature = "testkit-store"))]
             let _ = &subject;
             #[cfg(feature = "testkit-store")]
-            if let Some(door) = door.as_ref().filter(|d| !d.after()) {
-                tracing::dispatcher::with_default(&dispatch, || door.hold());
+            if let Some(cut) = cut.as_ref().filter(|d| !d.after()) {
+                tracing::dispatcher::with_default(&dispatch, || cut.hold());
             }
             tracing::dispatcher::with_default(&dispatch, || inner.fold_before_append(caller, &parent))?;
             let appended = inner.append_new(&mut *guard, id, obj);
             #[cfg(feature = "testkit-store")]
-            if let Some(door) = door.as_ref().filter(|d| d.after() && appended.is_ok()) {
-                tracing::dispatcher::with_default(&dispatch, || door.hold());
+            if let Some(cut) = cut.as_ref().filter(|d| d.after() && appended.is_ok()) {
+                tracing::dispatcher::with_default(&dispatch, || cut.hold());
             }
             appended
         })
@@ -1116,17 +1116,17 @@ impl Inner {
 
 
 
-/// The testkit's door on a store file's tail read (feature `testkit-store`, for rdm-test; absent from
+/// The testkit's cut on a store file's tail read (feature `testkit-store`, for rdm-test; absent from
 /// production builds): armed for a file and the span a read is called under, it holds the first such
 /// read on its blocking call, before the file's read until the cell admits it, then inside the read
 /// itself until the cell releases it. Every other read of the file passes.
 #[cfg(feature = "testkit-store")]
-pub mod read_door {
+pub mod read_cut {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
-    /// One armed door.
-    pub struct Door {
+    /// One armed cut.
+    pub struct Cut {
         file: PathBuf,
         under: &'static str,
         at: Mutex<Opened>,
@@ -1134,37 +1134,37 @@ pub mod read_door {
         entered: tokio::sync::watch::Sender<bool>,
     }
 
-    /// How far the cell has opened a door.
+    /// How far the cell has opened a cut.
     #[derive(Default)]
     struct Opened {
-        /// The held read may take the file's read ([`Door::admit`]).
+        /// The held read may take the file's read ([`Cut::admit`]).
         admitted: bool,
-        /// The held read may end ([`Door::release`]).
+        /// The held read may end ([`Cut::release`]).
         released: bool,
     }
 
-    fn armed() -> &'static Mutex<Vec<Arc<Door>>> {
-        static ARMED: OnceLock<Mutex<Vec<Arc<Door>>>> = OnceLock::new();
+    fn armed() -> &'static Mutex<Vec<Arc<Cut>>> {
+        static ARMED: OnceLock<Mutex<Vec<Arc<Cut>>>> = OnceLock::new();
         ARMED.get_or_init(Default::default)
     }
 
     /// Hold the first tail read of a file whose path ends with `file` that is called under a span
-    /// named `under`: before it takes the file's read until [`Door::admit`], so no other read of the
-    /// file waits behind it until then, then inside the read until [`Door::release`].
-    pub fn arm(file: &Path, under: &'static str) -> Arc<Door> {
-        let door = Arc::new(Door { file: file.to_path_buf(), under, at: Mutex::new(Opened::default()), changed: Condvar::new(), entered: tokio::sync::watch::Sender::new(false) });
-        armed().lock().unwrap().push(door.clone());
-        door
+    /// named `under`: before it takes the file's read until [`Cut::admit`], so no other read of the
+    /// file waits behind it until then, then inside the read until [`Cut::release`].
+    pub fn arm(file: &Path, under: &'static str) -> Arc<Cut> {
+        let cut = Arc::new(Cut { file: file.to_path_buf(), under, at: Mutex::new(Opened::default()), changed: Condvar::new(), entered: tokio::sync::watch::Sender::new(false) });
+        armed().lock().unwrap().push(cut.clone());
+        cut
     }
 
-    /// The door armed for a read of `path` called under `caller`, taken: it holds this read only.
-    pub(crate) fn take(path: &Path, caller: &'static str) -> Option<Arc<Door>> {
+    /// The cut armed for a read of `path` called under `caller`, taken: it holds this read only.
+    pub(crate) fn take(path: &Path, caller: &'static str) -> Option<Arc<Cut>> {
         let mut armed = armed().lock().unwrap();
         let at = armed.iter().position(|d| path.ends_with(&d.file) && d.under == caller)?;
         Some(armed.remove(at))
     }
 
-    impl Door {
+    impl Cut {
         /// On the read's blocking call, before it takes the file's read: wait for the admission.
         pub(crate) fn admit_wait(&self) {
             let mut at = self.at.lock().unwrap();
@@ -1193,7 +1193,7 @@ pub mod read_door {
             let _ = self.entered.subscribe().wait_for(|e| *e).await;
         }
 
-        /// Let the held read take the file's read, where it is held until [`Door::release`].
+        /// Let the held read take the file's read, where it is held until [`Cut::release`].
         pub fn admit(&self) {
             self.at.lock().unwrap().admitted = true;
             self.changed.notify_all();
@@ -1209,11 +1209,11 @@ pub mod read_door {
 }
 
 /// A test-only hold of one store append, while its ordering lock is owned by the disk job: before
-/// the line is written ([`write_door::arm`], a provider completion delayed), or after it is written
-/// and fsynced and before its caller is answered ([`write_door::arm_after`], the persistence boundary
+/// the line is written ([`write_cut::arm`], a provider completion delayed), or after it is written
+/// and fsynced and before its caller is answered ([`write_cut::arm_after`], the persistence boundary
 /// a process is terminated at). Dropping the caller does not release this hold or the append lock.
 #[cfg(feature = "testkit-store")]
-pub mod write_door {
+pub mod write_cut {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
@@ -1228,7 +1228,7 @@ pub mod write_door {
     }
 
     /// A one-shot fault handle; dropping it releases the blocked append, even on test failure.
-    pub struct Door(Arc<Held>);
+    pub struct Cut(Arc<Held>);
 
     fn armed() -> &'static Mutex<Vec<Arc<Held>>> {
         static ARMED: OnceLock<Mutex<Vec<Arc<Held>>>> = OnceLock::new();
@@ -1237,33 +1237,33 @@ pub mod write_door {
 
     /// Hold the first append to this exact file and subject before it is written. Other files and subjects
     /// are unaffected.
-    pub fn arm(file: &Path, subject: &str) -> Door {
+    pub fn arm(file: &Path, subject: &str) -> Cut {
         armed_at(file, subject, false)
     }
 
     /// Hold the first append to this exact file and subject once it is written and fsynced, before its
     /// caller is answered: a process terminated while it is held has persisted the line and answered
     /// nothing.
-    pub fn arm_after(file: &Path, subject: &str) -> Door {
+    pub fn arm_after(file: &Path, subject: &str) -> Cut {
         armed_at(file, subject, true)
     }
 
-    fn armed_at(file: &Path, subject: &str, after: bool) -> Door {
+    fn armed_at(file: &Path, subject: &str, after: bool) -> Cut {
         let held = Arc::new(Held {
             file: file.to_path_buf(), subject: subject.into(), after, released: Mutex::new(false),
             changed: Condvar::new(), entered: tokio::sync::watch::Sender::new(false),
         });
         armed().lock().unwrap().push(held.clone());
-        Door(held)
+        Cut(held)
     }
 
-    pub(super) fn take(file: &Path, subject: &str) -> Option<Door> {
+    pub(super) fn take(file: &Path, subject: &str) -> Option<Cut> {
         let mut all = armed().lock().unwrap();
         let at = all.iter().position(|d| d.file == file && d.subject == subject)?;
-        Some(Door(all.remove(at)))
+        Some(Cut(all.remove(at)))
     }
 
-    impl Door {
+    impl Cut {
         pub(super) fn after(&self) -> bool {
             self.0.after
         }
@@ -1297,7 +1297,7 @@ pub mod write_door {
         }
     }
 
-    impl Drop for Door {
+    impl Drop for Cut {
         fn drop(&mut self) { self.release(); }
     }
 }

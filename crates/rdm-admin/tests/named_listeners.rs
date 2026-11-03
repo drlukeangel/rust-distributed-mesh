@@ -135,7 +135,7 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
 
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<SocketAddr>>> = Arc::default();
-        let installed_for_door = installed.clone();
+        let installed_for_service = installed.clone();
         let nodes_storage: Arc<dyn NodesStorage> = Arc::new(MemoryNodesStorage::default());
         let written_rows = Arc::new(WrittenRows::default());
 
@@ -164,7 +164,7 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
             }) },
             types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| {
-                installed_for_door
+                installed_for_service
                     .lock()
                     .unwrap()
                     .push(d.node.transport_addr)

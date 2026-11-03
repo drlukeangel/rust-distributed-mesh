@@ -169,14 +169,14 @@ async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command
     let primary = mesh.iter().find(|n| n.r#type == "node-admin" && n.is_primary).cloned().expect("node.get names mesh1's primary");
     let successor = mesh.iter().find(|n| rdm_core::is_node_admin(&n.r#type) && !n.is_primary).cloned().expect("mesh1's other node-admin");
     let me = primary.node_id.to_string();
-    // The one connections-delete call, streamed: its completion is the door's `ConnectionsDeleted`.
+    // The one connections-delete call, streamed: its completion is the `NodeCommandService`'s `ConnectionsDeleted`.
     let completed = |scope: rdm_core::status::ConnectionScope| {
         let (nodes, name) = (&nodes, primary.location());
         async move {
             let mut stream = nodes.delete_connections(&name, &scope).await.unwrap_or_else(|e| panic!("node.connection.delete of {name:?} refused: {e}"));
             let frames = Estate::frames_of(&mut stream).await;
             assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
-            stream.completion().cloned().expect("the door's terminal frame")
+            stream.completion().cloned().expect("the `NodeCommandService`'s terminal frame")
         }
     };
 

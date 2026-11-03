@@ -56,7 +56,7 @@ pub struct NodeRows {
     /// This admin's view, read at each write to decide whether it is the writer of the row's mesh.
     view: Arc<RwLock<Topology>>,
     storage: Arc<dyn NodesStorage>,
-    /// The config door a seeded birth is told its config through (`crate::node_config`).
+    /// The `NodeConfigs` a seeded birth is told its config through (`crate::node_config`).
     configs: Option<crate::node_config::NodeConfigsSlot>,
     /// Per mesh whose rows this admin writes, the births its views have held in that tenure: each
     /// row is written once, when a view first holds it, and a later view install that holds it
@@ -82,7 +82,7 @@ impl NodeRows {
 
 /// The node records this admin writes, as it holds them (storage-whole-records.md, "The rule"): per
 /// node, the whole record it last wrote or found the node holding, the copy every write of that node's
-/// record starts from. The writer of a mesh's rows, its config door, its status authority, its offline
+/// record starts from. The writer of a mesh's rows, its `NodeConfigs`, its status authority, its offline
 /// tick and its cert renewal share this one copy, so a fact one of them writes is on the record the
 /// next one writes. Each node's record is mutated under that node's own lock, from the read of the
 /// copy through the whole write and the replacement of the copy, so two updates of one node never
@@ -438,13 +438,13 @@ impl NodeRows {
         self
     }
 
-    /// Share `written`, the record the config door holds its puts in, as this writer's record.
+    /// Share `written`, the record the `NodeConfigs` holds its puts in, as this writer's record.
     pub fn with_written(mut self, written: Arc<WrittenRows>) -> Self {
         self.written = written;
         self
     }
 
-    /// Tell each birth whose row is seeded its config through `configs`, the config door.
+    /// Tell each birth whose row is seeded its config through `configs`, the `NodeConfigs`.
     pub fn with_configs(mut self, configs: crate::node_config::NodeConfigsSlot) -> Self {
         self.configs = Some(configs);
         self
@@ -699,7 +699,7 @@ impl NodeRows {
     pub async fn seed_at_arrival(&self, d: &rdm_core::MeshDigest) -> Result<(), String> {
         let me = self.writer_check(&d.node.mesh, &d.node.location()).await.map_err(|e| e.to_string())?;
         let configs = self.configs.as_ref().and_then(|slot| slot.get());
-        let _one = match configs { Some(door) => Some(door.one_at_a_time().await), None => None };
+        let _one = match configs { Some(configs) => Some(configs.one_at_a_time().await), None => None };
         let seeded = match self.put_seeded(&me, &d.node.location(), &d.node.mesh, &d.node.r#type, &d.node.node_id, crate::admin::node_status(d.status), &BTreeMap::new(), None, None, &std::collections::BTreeSet::new(), None, RowFor::Arrival, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
             RowCreated::Written { .. } => "seeded",
             RowCreated::HeldByNode(_) => "held",
@@ -835,7 +835,7 @@ impl NodeRows {
         for mesh in meshes {
             let took = !writes_for(prev, me, &mesh);
             // The tenure began with this install (every member arrives), or before this admin
-            // installed any view through this door (the births `prev` holds were held already).
+            // installed any view through these rows (the births `prev` holds were held already).
             let tenure = held.entry(mesh.clone()).or_insert_with(|| if took { HashSet::new() } else { births(prev, &mesh) });
             if took {
                 tenure.clear();
@@ -1281,7 +1281,7 @@ pub async fn take_inherited_name(storage: &dyn NodesStorage, written: &WrittenRo
 /// holder is NameHeld, never overwritten). The bootstrap admin, `node_id` at
 /// `name`, is its mesh's primary from its birth and the only admin of its fabric, so it is the writer of
 /// its own row; the row is the first write of its birth, made before anything else of it is written or
-/// published. It is the create door's write ([`RowFor::Create`]), the record
+/// published. It is the node.create's write ([`RowFor::Create`]), the record
 /// `Pending`, one `rdm.node_admin.node.create.via-node-row` span, `moment` `create`.
 /// Another node's live record at the name is `NameHeld` naming it, and nothing is written. The record
 /// carries `executable`, the binding the bootstrap admin's birth runs (build-deployment.md §2.3), as a
@@ -1293,7 +1293,7 @@ pub async fn create_day0_row(storage: &dyn NodesStorage, written: &WrittenRows, 
 /// The adoption launch's first write of its own record at its new `(path, name)` under an in-force fabric.delete (Q159;
 /// fabric-recovery.md "Nothing alive": "the adoption launch is created at a new path and name of the
 /// node-admin type in an existing, not-yet-deleted mesh ... this is the one create a delete admits"): the
-/// create door's write ([`RowFor::Create`]), the first write of its birth, operation `fabric-recovery`,
+/// node.create's write ([`RowFor::Create`]), the first write of its birth, operation `fabric-recovery`,
 /// one `rdm.node_admin.node.create.via-node-row` span, `moment` `create`. Another node's live record at the
 /// name is `NameHeld` naming it, and nothing is written.
 pub async fn create_adopted_row(storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, mesh: &str, node_id: &NodeId) -> Result<RowCreated, RowRefused> {

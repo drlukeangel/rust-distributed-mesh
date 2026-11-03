@@ -174,10 +174,10 @@
       "layer": "process",
       "cells": [
         {
-          "name": "bootstrap_admin_receives_pending_before_own_mesh_attempt",
+          "name": "bootstrap_admin_receives_pending_before_its_own_meshs_section",
           "source": "crates/rdm-test/tests/mesh/bootstrap_pending.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt/estate cargo test -p rdm-test --test main bootstrap_pending::bootstrap_admin_receives_pending_before_own_mesh_attempt -- --exact",
-          "dir": "target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt"
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_its_own_meshs_section/estate cargo test -p rdm-test --test main bootstrap_pending::bootstrap_admin_receives_pending_before_its_own_meshs_section -- --exact",
+          "dir": "target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_its_own_meshs_section"
         },
         {
           "name": "a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending",

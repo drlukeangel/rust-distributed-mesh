@@ -1535,13 +1535,13 @@ pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> Sta
     rdm_core::reply::status::rejected_unmatched_completion("command".into(), RETIRED_PAIR_IS_RESERVED.into(), reported)
 }
 
-/// The answer of a Status door that has no handler for `req` (R24, Luke Q11): `RequestNotHandled`
+/// The answer of a Status service that has no handler for `req` (R24, Luke Q11): `RequestNotHandled`
 /// naming the request, decided by dispatch alone, never by node type, role or sender, on the
-/// receiver's reject span `rdm.node.status.reject.via-request-not-handled`. `receiver` is the door's
+/// receiver's reject span `rdm.node.status.reject.via-request-not-handled`. `receiver` is the service's
 /// held name. Nothing is done.
 pub fn request_not_handled(receiver: &str, req: &StatusRequest) -> StatusReply {
     tracing::info_span!("rdm.node.status.reject.via-request-not-handled", node = %receiver, request = req.op(), "otel.kind" = "internal")
-        .in_scope(|| tracing::info!("this Status door has no handler for the request: not handled here, nothing done"));
+        .in_scope(|| tracing::info!("this Status service has no handler for the request: not handled here, nothing done"));
     rdm_core::reply::not_handled(req.op().to_string())
 }
 
@@ -1882,7 +1882,7 @@ mod tests {
     /// "`node.connection.get { node }` at this birth: the connections it holds now that match every pair
     /// of `filter`, under the name it holds"
     /// CONTRACT: docs/architecture/node-rpc-envelope.md:242
-    /// "The answer of a Status door that has no handler for `req`: `RequestNotHandled` naming the request"
+    /// "The answer of a Status service that has no handler for `req`: `RequestNotHandled` naming the request"
     /// CONTRACT: docs/architecture/deployment-provider.md:62
     /// "`MakeRuntimeFactAvailableToBirth`: the runtime reads the RuntimeFact record the provider wrote
     /// in its data_dir"

@@ -1,6 +1,6 @@
 //! The generic control API (PRD §7; mesh-control-plane.md §2).
 //!
-//! Every topology route is a front door that submits one [`BuildChange`]
+//! Every topology route submits one [`BuildChange`]
 //! to the fabric-primary, which compiles it once against the accepted topology
 //! into the next complete Build, persists it, which makes it the current Build, and
 //! answers `202 {"build_id"}`. A stop or a start changes no topology and is no Build:
@@ -68,7 +68,7 @@ pub struct ControlPlane {
     /// Woken on every accepted Build on this
     /// admin: the reconcile loop runs its next pass on it (`ReconcileWake`).
     pub build_submitted: Arc<Notify>,
-    /// The fabric's change told of a Build this admin accepted, before the door answers it: a resize, a
+    /// The fabric's change told of a Build this admin accepted, before the `BuildService` answers it: a resize, a
     /// Create or a Delete, puts the fabric back to pending inside the acceptance (states.md,
     /// Resize and a new executable), and the
     /// view this admin answers from holds it. Set once by the admin that owns the change.
@@ -426,14 +426,14 @@ impl ControlPlane {
                 time: self.time.now_ms().max(newest.max(current.time) + 1),
             };
             // The Build is current the moment it is durable in the builds store: nothing else is written.
-            // It is the door's last write: the reconcile loop drives a current Build at once, and its first
+            // It is the `BuildService`'s last write: the reconcile loop drives a current Build at once, and its first
             // step can move the fabric-primary role (a delete of this admin's own mesh), which refuses every gated
-            // write after it, so the door answers the Build it accepted whatever the drive does next.
+            // write after it, so the `BuildService` answers the Build it accepted whatever the drive does next.
             let me = self.held_name().await;
             crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), self.node_id.get().ok_or_else(|| Refusal::Unavailable("accepting admin ID is not bound".into()))?.as_str(), "accepted").await.map_err(Refusal::State)?;
             tracing::info!(build_id = %build_id.log(), "build accepted");
             // A resize, a Create or a Delete, puts the fabric back to pending (states.md): the change takes
-            // the accepted Build before the door answers it and before the executor is woken.
+            // the accepted Build before the `BuildService` answers it and before the executor is woken.
             if let Some(resize) = self.resize.get() {
                 resize().await;
             }

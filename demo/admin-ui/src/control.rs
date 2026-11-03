@@ -1,4 +1,4 @@
-//! The Admin UI's topology routes: thin front doors to node-admin (PRD §4,
+//! The Admin UI's topology routes: thin routes to node-admin (PRD §4,
 //! i143.e1.s6). A route that adds or removes nodes submits one Build over Node RPC through the typed
 //! objects of `rafka-node-admin-client` and answers `202 {"build_id"}`; a node command
 //! (a stop, a start) is never a Build and answers `200 {"terminal"}` once it ends; either way a

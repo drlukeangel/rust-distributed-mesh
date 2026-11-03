@@ -1,6 +1,6 @@
 //! The harness's executables and the Builds it names (build.md §1): every node a Create adds names its
 //! executable. A cell's counts are expanded here into named nodes, reading the current topology, as
-//! Rafka's door expands its per-type input before the typed call, into a Create of what is added and a
+//! Rafka's API expands its per-type input before the typed call, into a Create of what is added and a
 //! Delete of what is removed ([`Current::change_to`]): RDM is never handed a count by the harness, and
 //! nothing it launches is taken from a directory with no sha.
 //!
@@ -307,8 +307,8 @@ mod tests {
         request.iter().map(|s| s.location()).collect()
     }
 
-    /// CONTRACT (proposal executable-bindings-at-create.md rule 1, "the door expands a count into named
-    /// paths with configs, reading the current topology for the ordinals"; `accepted::resize`): a grow
+    /// CONTRACT (proposal executable-bindings-at-create.md rule 1: the product's API expands a count into
+    /// named paths with configs, reading the current topology for the ordinals; `accepted::resize`): a grow
     /// takes the lowest free ordinals and names each created path's executable; a held path keeps its
     /// entry's executable, else the one its row records; a shrink drops the highest ordinal that is not
     /// the type's primary; a whole-fabric shape leaves out a mesh it does not list, a mesh's own shape

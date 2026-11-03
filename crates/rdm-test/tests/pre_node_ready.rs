@@ -268,7 +268,7 @@ fn a_first_start_whose_hook_answered_pending_is_ready_once_a_later_attempt_passe
 /// the hook's own reason. It serves `node.connection.delete { All }` (`ConnectionsDeleted`); the
 /// deletion at its admission cancels the hook, which is not called again, and the node never
 /// publishes Ready. What must NOT happen: `Current` or `NotReady` for a pending node's probe (the
-/// executor could not name its reason, or would take its door for it), or `NotReady` for a lifecycle
+/// executor could not name its reason, or would take its readiness gate for it), or `NotReady` for a lifecycle
 /// command (s15).
 #[test]
 fn a_pending_node_answers_status_and_connections_delete_and_its_hook_ends() {

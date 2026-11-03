@@ -1186,7 +1186,7 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
     let build_complete = now_nanos();
     // mesh-delete.md steps 5–7: mesh.deleted leaves its reporting primary alive.
     // The caller deletes that exact held final primary in a separate node.delete, once the view it
-    // enters through has every other node of the deleted mesh gone: the delete's door reads that view.
+    // enters through has every other node of the deleted mesh gone: the delete's `MeshDeleteService` reads that view.
     for name in containers_before.keys().filter(|n| n.path.starts_with(&format!("{lost_mesh}.")) && **n != primary) {
         estate.until_node(name, &format!("{name:?} gone from the view after mesh.deleted"), Duration::from_secs(30), |n| n.is_none().then_some(())).await;
     }

@@ -211,7 +211,7 @@ impl Day0 {
         assert_eq!(String::from_utf8_lossy(&answered), format!("echo {}: from the Day-0 admin", node.node_id), "{:?}'s app answered the Day-0 admin's admitted connection", node.name);
     }
 
-    /// `node` dials the Day-0 admin on the app protocol through its originate door: admitted, its stream
+    /// `node` dials the Day-0 admin on the app protocol through its originate service: admitted, its stream
     /// echoed by the admin's app.
     async fn dialed_by(&self, node: &ResolvedNode) {
         let me = self.running.birth().node_id.clone();
@@ -226,7 +226,7 @@ impl Day0 {
                 }
                 other => panic!("{:?}'s dial to the Day-0 admin on an app protocol failed: {other:?}", node.name),
             },
-            other => panic!("the originate door of {:?} ended {other:?}", node.name),
+            other => panic!("the originate service of {:?} ended {other:?}", node.name),
         }
     }
 

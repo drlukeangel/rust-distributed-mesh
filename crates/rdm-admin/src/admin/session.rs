@@ -119,7 +119,7 @@ pub struct TopologyObserver {
     /// This admin's `StatusService`, once it holds a view: a start begins a new cycle of the birth's
     /// declared states.
     pub status_service: crate::status_rpc::StatusServiceSlot,
-    /// This admin's 0x21 door, once it holds a view: node.primary.update goes through it.
+    /// This admin's `PrimaryUpdate`, once it holds a view: node.primary.update goes through it.
     pub primary_update: crate::primary_update::PrimaryUpdateSlot,
     /// The births a command never reached for a reachability reason, marked `PendingReconnect` at
     /// once for the mesh primary's tick (node-tickle.md step 1).
@@ -167,7 +167,7 @@ impl TopologyObserver {
 /// heartbeat's), one `ProbeNodeState` to that node over `client`. A Status `Pending` answer is the
 /// hook's reason, named with the node and no attempt counter; a `StartFailed` at
 /// `node.pre-node-ready` is the start that ended Failed, with the hook's last reason. Every other
-/// answer names nothing and frames nothing: a `NotReady` is the subject's door or handler not serving
+/// answer names nothing and frames nothing: a `NotReady` is the subject's readiness gate or handler not serving
 /// yet (node-rpc-envelope.md, "NotReady ... is never a hook blocker"), and the step waits on; so does
 /// a node that answers its state (`Current`, `CurrentStopped`), a stale incarnation, or a call that
 /// ends unanswered: why it is not Ready is the Ready check's to report.

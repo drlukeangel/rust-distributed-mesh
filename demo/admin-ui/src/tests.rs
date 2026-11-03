@@ -1,4 +1,4 @@
-//! The Tests tab's door: `/api/tests/*` is forwarded verbatim to the test runner
+//! The Tests tab's routes: `/api/tests/*` is forwarded verbatim to the test runner
 //! (`rdm-test-runner`, the RDM root workspace's `tools/test-runner`) named by `RDM_TEST_RUNNER_URL`.
 //! The UI starts no process; the runner does the inventory, the runs and the evidence.
 

@@ -579,7 +579,7 @@ pub struct StatusService {
     /// it takes the declarations of the node re-created at the target's path and name, which its own node.create
     /// waits on (build.md §5.3).
     pub fabric_recovery: Arc<OnceLock<crate::fabric_recovery::Reader>>,
-    /// This admin's `node.config.update` door, served while it holds a mesh's primary role (the writer
+    /// This admin's `NodeConfigs`, served while it holds a mesh's primary role (the writer
     /// of that mesh's rows); filled once the admin's node-RPC client exists.
     pub configs: crate::node_config::NodeConfigsSlot,
     /// This admin's re-publish of its presence on the channel it is on (its digest published, no
@@ -936,14 +936,14 @@ impl StatusService {
     pub async fn update_name(&self, req: &StatusRequest) -> StatusReply {
         let StatusRequest::UpdateName { node_id, incarnation, .. } = req else { unreachable!("update_name is called for UpdateName only") };
         let me = self.held_name().await;
-        // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
+        // The mesh-primary writes the record through its `NodeConfigs`, the one place its record changes take turns at.
         let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
-        let doors = crate::node_name_update::NameDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename, rejoin: &self.rejoin };
-        crate::node_name_update::update(&me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), req).await
+        let service = crate::node_name_update::NodeNameUpdateService { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename, rejoin: &self.rejoin };
+        crate::node_name_update::update(&me, &self.node_id, &self.topology, &*self.nodes_storage, service, deleted.as_ref(), req).await
     }
 
     /// `node.config.update` (`UpdateNodeConfig`) of a Build's create spec at this admin, in-process
-    /// (build.md §1, "The Build applies the diff"): the one config door, the spec's `storage` and
+    /// (build.md §1, "The Build applies the diff"): the one `NodeConfigs`, the spec's `storage` and
     /// `placement` written onto the row with the map.
     pub async fn update_config_from_spec(&self, req: &StatusRequest, storage: rdm_core::meta::StoragePersistence) -> StatusReply {
         let me = self.held_name().await;
@@ -3968,7 +3968,7 @@ mod tests {
     /// at this admin's path can be the deleted birth's, live and in its role, and this admin's own row is
     /// absent. The authority finds itself by the node id it was born with: it decides nothing from
     /// the deleted birth's role and refuses naming the true reason, "a view holding this admin"; a
-    /// node command naming its node id goes on to the subject's own door (`NodeSelf::serve`, which
+    /// node command naming its node id goes on to the subject's own `NodeSelf` (`NodeSelf::serve`, which
     /// checks the exact birth itself), here not yet filled. What must NOT happen: a member's
     /// declaration `Applied` on the deleted birth's mesh-primary role, or a node command naming this
     /// admin refused as "not the subject node itself".
@@ -4007,13 +4007,13 @@ mod tests {
 
         let stop = StatusRequest::JoinMesh { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), operation: rdm_core::OperationId::node("node.mesh.join", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap())), primary: None };
         let reply = service.apply(Some(owner.clone()), &stop).await;
-        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a JoinMesh naming this admin's node id reaches the subject's own door: {reply:?}");
+        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a JoinMesh naming this admin's node id reaches the subject's own NodeSelf: {reply:?}");
     }
 
     /// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who sent a frame or call: a Node RPC
     /// handler is addressed by target node id + op"): a call naming this admin from an endpoint its view holds no birth for is decided
     /// for the subject it names, as one from an admin it holds is. A node command naming this admin's
-    /// exact birth reaches the subject's own door (`NodeSelf::serve`, here not yet filled, so
+    /// exact birth reaches the subject's own `NodeSelf` (`NodeSelf::serve`, here not yet filled, so
     /// `NotReady` by name), and a probe naming it is answered by the subject. The direction refusals
     /// stay: a command naming another birth of this admin is `RejectedStaleIncarnation`. What must
     /// NOT happen: `SenderNotSubject` "unknown peer", or a probe of the subject answered as if this
@@ -4033,7 +4033,7 @@ mod tests {
         let incarnation = me.incarnation_id.clone().unwrap();
         let stop = StatusRequest::JoinMesh { node_id: me.node_id.clone(), incarnation: incarnation.clone(), operation: rdm_core::OperationId::node("node.mesh.join", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap())), primary: None };
         let reply = service.apply(None, &stop).await;
-        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a JoinMesh from a stranger reaches the subject's own door: {reply:?}");
+        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a JoinMesh from a stranger reaches the subject's own NodeSelf: {reply:?}");
         let probe = StatusRequest::ProbeNodeState { node_id: me.node_id.clone(), incarnation: incarnation.clone() };
         let reply = service.apply(None, &probe).await;
         assert!(matches!(&reply, R::Current { node_id, state: NodeState::Ready, .. } if *node_id == me.node_id), "a probe from a stranger is answered by the subject: {reply:?}");

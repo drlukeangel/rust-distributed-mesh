@@ -218,7 +218,7 @@ async fn a_cancelled_property_caller_cannot_release_an_unresolved_write() {
     let writer = NodePropertyWriter::new(store.clone(), || "file".into());
     let initial = properties();
     let shown = Arc::new(Mutex::new(Vec::new()));
-    let door = rdm_node::store_log::write_door::arm(
+    let cut = rdm_node::store_log::write_cut::arm(
         &dir.join(rdm_node::store_root::NODES_FILE),
         initial.birth.node_id.as_str(),
     );
@@ -234,7 +234,7 @@ async fn a_cancelled_property_caller_cannot_release_an_unresolved_write() {
             )
             .await
     });
-    door.entered().await;
+    cut.entered().await;
     caller.abort();
     assert!(caller.await.unwrap_err().is_cancelled());
     let (next, seed, published) = (writer.clone(), initial.clone(), shown.clone());
@@ -252,7 +252,7 @@ async fn a_cancelled_property_caller_cannot_release_an_unresolved_write() {
         shown.lock().unwrap().is_empty(),
         "unresolved writes must not be installed"
     );
-    door.release();
+    cut.release();
     let complete = later.await.unwrap().unwrap().record;
     assert_eq!(complete.config["first"], "durable");
     assert!(complete.tags.contains("later"));
@@ -555,7 +555,7 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
         .register("target", Arc::new(FileNodeBackend::at(&destination)));
     let handle = NodeStorageHandle::open(&providers, &launch, &rdm_transport::clock::RafkaTime::unadopted()).await.unwrap();
     let writer = NodePropertyWriter::new(handle.nodes(), || "file".into());
-    let door = rdm_node::store_log::write_door::arm(
+    let cut = rdm_node::store_log::write_cut::arm(
         &source
             .join(launch.fabric_id.as_str())
             .join(rdm_node::store_root::NODES_FILE),
@@ -572,7 +572,7 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
         )
         .await
     });
-    door.entered().await;
+    cut.entered().await;
     caller.abort();
     assert!(caller.await.unwrap_err().is_cancelled());
     let moving = handle.clone();
@@ -588,7 +588,7 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
         !moved.is_finished(),
         "the cancelled caller's actual put still owns old-provider admission"
     );
-    door.release();
+    cut.release();
     moved.await.unwrap().unwrap();
     let old = FileNodesStorage::open(&source, &StoreRoot::open(&source, &launch.fabric_id).unwrap(), "mesh1", &rdm_node::store_log::LogWriter::mint())
         .await

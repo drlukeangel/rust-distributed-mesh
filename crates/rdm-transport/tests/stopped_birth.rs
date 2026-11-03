@@ -303,8 +303,8 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         }
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let refused: Vec<&Value> = named(&spans, "rdm.mesh.topology.reject.via-stopped-birth").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
-        assert!(refused.iter().any(|s| attr(s, "door") == "heartbeat" && attr(s, "digest_seq") == "2"), "the late heartbeat is refused by name: {refused:#?}");
-        assert!(refused.iter().any(|s| attr(s, "door") == "projection" && attr(s, "held_version") == v1.to_string() && attr(s, "topology_version") == v1.to_string()), "the projection entry from before the stop is refused naming both versions: {refused:#?}");
+        assert!(refused.iter().any(|s| attr(s, "via") == "heartbeat" && attr(s, "digest_seq") == "2"), "the late heartbeat is refused by name: {refused:#?}");
+        assert!(refused.iter().any(|s| attr(s, "via") == "projection" && attr(s, "held_version") == v1.to_string() && attr(s, "topology_version") == v1.to_string()), "the projection entry from before the stop is refused naming both versions: {refused:#?}");
         let ended: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-stop-ended-in-projection").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
         assert_eq!(ended.len(), 1, "the member ended the stop once, at the ordered move: {ended:#?}");
         assert_eq!((attr(ended[0], "node"), attr(ended[0], "held_version"), attr(ended[0], "topology_version"), attr(ended[0], "status")), ("mesh1.node.2".to_string(), v2.to_string(), v3.to_string(), "Pending".to_string()));
@@ -317,7 +317,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         assert_eq!(statuses, vec![format!("Ready@{v1}"), format!("Pending@{v3}"), format!("Ready@{v4}")], "the member's statuses of the birth come from the projection alone");
         let mut lines = String::new();
         for (what, s) in refused.iter().map(|s| ("refused", *s)).chain(ended.iter().map(|s| ("ended", *s))).chain(joined.iter().map(|s| ("joined", *s))).chain(delta.iter().map(|s| ("delta", *s))) {
-            lines.push_str(&format!("{what} {} {} door={} held_version={} topology_version={} digest_seq={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "door"), attr(s, "held_version"), attr(s, "topology_version"), attr(s, "digest_seq")));
+            lines.push_str(&format!("{what} {} {} via={} held_version={} topology_version={} digest_seq={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "via"), attr(s, "held_version"), attr(s, "topology_version"), attr(s, "digest_seq")));
         }
         std::fs::write(dir.join("trace-ids.txt"), lines).unwrap();
     });

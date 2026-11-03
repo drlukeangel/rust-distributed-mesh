@@ -406,7 +406,7 @@ mod tests {
 
 /// CONTRACT: the rename ratchet reads non-test code only, by the one rule every non-test scan
 /// shares: a `#[cfg(test)]` item is skipped and nothing else. A test double's forward of
-/// `.release_node_name(` inside a `#[cfg(test)]` module is not a rename door; a real door below an
+/// `.release_node_name(` inside a `#[cfg(test)]` module is not a rename call site; a real call site below an
 /// item-level `#[cfg(test)]` (a gated helper, not the test module) is still read and refused.
 #[test]
 fn one_rename_write_path_reads_only_non_test_code() {
@@ -426,7 +426,7 @@ fn one_rename_write_path_reads_only_non_test_code() {
 }
 
 #[test]
-fn one_rename_write_path_fails_a_release_outside_move_row_or_a_second_rename_door() {
+fn one_rename_write_path_fails_a_release_outside_move_row_or_a_second_rename_call_site() {
     let t = Planted::of_tree();
     t.write("crates/rdm-admin/src/planted.rs", "async fn take(s: &dyn NodesStorage, n: &PathName, by: &NodeId) { let _ = s.release_node_name(n, by).await; }\n");
     let v = only(check(t.root()), Ratchet::OneRenameWritePath);

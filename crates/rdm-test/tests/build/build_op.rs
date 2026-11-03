@@ -21,7 +21,7 @@ use rdm_core::build::{Build, BuildReply, BuildRequest, StepResult};
 use rdm_core::context::CallContext;
 use rdm_core::outcome::RpcOutcome;
 use rdm_test::estate::{named, wait_for, Estate, Owner};
-use rdm_test::faults::{binding_set, candidate_sha, Door};
+use rdm_test::faults::{binding_set, candidate_sha, FaultClient};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -511,9 +511,9 @@ fn knob_attempts(knob: &std::path::Path, node: &rdm_core::PathName, reason: &str
 /// `Send`, so it answers Pending for the same reason many times; none of those reruns frames anything.
 /// A changed reason frames once more; when the hook passes the node is Ready, the step completes and
 /// the Build is `Complete` with no further Pending. The Builds that birthed the shape, whose nodes
-/// register no hook (plain Pending until Ready, a node-admin's door answering `NotReady` until its
-/// authority is filled), frame no Pending: a `NotReady` is the door not serving yet and never a hook's
-/// answer. What must NOT happen: a Pending frame for a plain Pending node or a door's `NotReady`, a
+/// register no hook (plain Pending until Ready, a node-admin's readiness gate answering `NotReady` until its
+/// authority is filled), frame no Pending: a `NotReady` is the readiness gate not open yet and never a hook's
+/// answer. What must NOT happen: a Pending frame for a plain Pending node or a readiness gate's `NotReady`, a
 /// repeat for an unchanged reason, or a Pending frame after the hook passed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pending_node_is_framed_once_per_reason_and_its_build_completes_when_the_hook_passes() {

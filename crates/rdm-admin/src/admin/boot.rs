@@ -76,7 +76,7 @@ impl Running {
         self.data_connections.connections(alpn)
     }
 
-    /// The birth this admin runs under: its digest's node, the birth its Node RPC door opens for.
+    /// The birth this admin runs under: its digest's node, the birth its readiness gate opens for.
     pub fn birth(&self) -> MeshNode {
         self.digest.lock().unwrap().node.clone()
     }
@@ -139,11 +139,11 @@ impl Running {
         self.pre_node_ready.lock().unwrap().clone()
     }
 
-    /// Stop executing and reconciling: no Build attempt and no drift
+    /// Stop executing and reconciling: no Build's drive pass, section run or drift
     /// recovery starts after this. A fabric shutdown does this first, so the
     /// runtimes it stops are not recovered as proven drift. The reconcile loop ends, and so does
     /// every Build's drive it started, whose own passes would otherwise plan and begin the Build's
-    /// next attempt, and every section run this admin executes, a run a drive dispatched before the
+    /// next pass, and every section run this admin executes, a run a drive dispatched before the
     /// stop included, whose executor would otherwise begin its operations after it. It returns once
     /// each of them has ended.
     pub async fn stop_reconciling(&self) {
@@ -156,7 +156,7 @@ impl Running {
     /// Stop on this process's signal (i146 Q55; node-stop.md steps 2-4), this admin its own subject: the
     /// one stop sequence a node's signal runs ([`crate::node_self::NodeSelf::stop_on_signal`]). The
     /// Build executor, every Build's drive and every section run this admin executes stop first
-    /// ([`Self::stop_reconciling`]; an attempt it was running is continued by the Build's next attempt).
+    /// ([`Self::stop_reconciling`]; a section it was running is continued by the Build's next drive pass).
     /// Then the whole `node.connection.delete { All }` under the birth's bound, its connections-deleting
     /// owed to its mesh-primary; its tasks held; its last mesh topology before the cut carrying itself
     /// Leaving when it is its mesh's primary; `node.mesh.leave`, its own mesh and the backbone left and
@@ -1493,8 +1493,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 > = Arc::new(std::sync::OnceLock::new());
                                 let configs_slot: crate::node_config::NodeConfigsSlot =
                                     Arc::new(std::sync::OnceLock::new());
-                                // The record the writer of this admin's mesh rows holds, shared with its config door: a config
-                                // put through the door is what the node's next row carries (`crate::node_rows::WrittenRows`).
+                                // The record the writer of this admin's mesh rows holds, shared with its `NodeConfigs`: a config
+                                // put through `NodeConfigs` is what the node's next row carries (`crate::node_rows::WrittenRows`).
                                 let written = records.caches.nodes.clone();
                                 let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), written.clone());
                                 configs.uses_records(topology_storage.nodes(), { let handle = topology_storage.clone(); move || handle.provider() }, topology_view.clone());
@@ -1572,7 +1572,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         me_id: node_id.clone(),
                                     }));
                             }
-                            // The Node RPC door: opened by the first view installed that holds this admin's exact birth
+                            // The readiness gate: opened by the first view installed that holds this admin's exact birth
                             // once the authority above is filled, whichever task installs it.
                             {
                                 let status_service = status_service.clone();
@@ -2568,7 +2568,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }));
                                                 }
                                                 // A refused caller (Q207) is decided by its path and name and this admin's atlas, and acts
-                                                // through this recovery submitter's terminate report and the heard-again door.
+                                                // through this recovery submitter's terminate report and the `HeardAgain`.
                                                 // Its verification at the root is owed to the fabric-primary the view names, sent again
                                                 // on each view installed (rdm#177).
                                                 let stores: crate::current_record::RecordStoresSource = {
@@ -2953,7 +2953,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         renewals.set_marks(records.unreachable.clone());
                                         {
                                             // The fabric-primary's own node.roots.update, in process: the set installed on its own birth, the
-                                            // root's secret it rides with kept as the door keeps it (fabric-ca-renew.md).
+                                            // root's secret it rides with kept as `node.roots.update` keeps it (fabric-ca-renew.md).
                                             let (own_roots, roots_issuer, roots_me, roots_id) = (own_commands.clone(), issuer.clone(), node_id.to_string(), node_id.clone());
                                             renewals.set_own_roots(Arc::new(move |incarnation: &rdm_core::IncarnationId, roots: &[String], phase: rdm_core::status::RootsPhase, secret: Option<rdm_core::status::RootSecretHex>| {
                                                 let Some(registry) = own_roots.get().and_then(|o| o.registry()) else {

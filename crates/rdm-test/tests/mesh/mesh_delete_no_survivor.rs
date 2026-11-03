@@ -56,7 +56,7 @@ async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_
     let leaving: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-accepted-roster").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == run.mesh2_id && sp["attributes"]["step"] == "LeavingRoster" && start_ns(sp) >= run.resubmitted_ns).collect();
     assert!(!leaving.is_empty() && leaving.iter().all(|sp| sp["attributes"]["source"] == "records-resumed" && attr_u(sp, "roster") == 4), "the created admin reads the roster from the mesh's records, the lost primary's LeavingRoster event standing: {leaving:?}");
     let resumed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-retained-receipts").into_iter().filter(|sp| sp["attributes"]["operation"] == outer && s(&sp["attributes"]["mesh_id"]) == run.mesh2_id && start_ns(sp) >= run.resubmitted_ns).collect();
-    // The door held rpc.2 and rpc.1 stopped, neither with a TerminateRuntime event: the lost primary's
+    // The fault service held rpc.2 and rpc.1 stopped, neither with a TerminateRuntime event: the lost primary's
     // finished delete is the one that stands, and both ordinary members run under the created admin.
     // The new mesh-primary itself is no tier member.
     assert!(

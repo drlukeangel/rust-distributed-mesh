@@ -51,7 +51,7 @@ impl<K: Eq + Hash + Clone, V: Clone> RecordCache<K, V> {
 }
 
 /// The records this admin writes, as it holds them: its node records (shared with the writer of its
-/// mesh's rows and its config door), its mesh records and the Fabric record.
+/// mesh's rows and its `NodeConfigs`), its mesh records and the Fabric record.
 #[derive(Debug, Clone, Default)]
 pub struct Caches {
     /// The node records.

@@ -27,12 +27,12 @@ use rdm_transport::{CallOptions, NodeTarget, RouteChoice};
 use rdm_core::status::{NotPrimary, StatusReply, StatusRequest};
 use tokio::sync::RwLock;
 
-/// What a mesh-primary's `node.name.update` acts through: the door its record changes take turns at
+/// What a mesh-primary's `node.name.update` acts through: the `NodeConfigs` its record changes take turns at
 /// (`crate::node_config::NodeConfigs`: the writer's held record and the client it tells births
 /// through), its view's take of a moved row, its own name decision for a rename of itself, and the
 /// command of a renamed node's rejoin.
-pub struct NameDoors<'a> {
-    /// The config door: `None` until this admin's node-RPC client exists.
+pub struct NodeNameUpdateService<'a> {
+    /// The `NodeConfigs`: `None` until this admin's node-RPC client exists.
     pub configs: Option<&'a crate::node_config::NodeConfigs>,
     /// This admin's view taking a moved row.
     pub moved: &'a crate::status_rpc::RowMoved,
@@ -63,10 +63,10 @@ pub enum Routed {
 #[allow(clippy::too_many_arguments)]
 pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, configs: Option<&crate::node_config::NodeConfigs>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> Routed {
     let StatusRequest::UpdateName { node_id, name, .. } = req else { unreachable!("routed is called for UpdateName only") };
-    let Some(door) = configs else { return Routed::Here };
+    let Some(configs) = configs else { return Routed::Here };
     let mut first = view.read().await.clone();
     if sent_by == crate::node_config::SentBy::Caller && !first.is_fabric_primary(me_id) {
-        match door.forward_up(me, me_id, &first, view, req).await {
+        match configs.forward_up(me, me_id, &first, view, req).await {
             crate::node_config::Up::Answered(reply) => return Routed::Answered(reply),
             crate::node_config::Up::InProcess(now) => first = now,
             crate::node_config::Up::Unanswered(why) => return Routed::Answered(crate::node_config::Up::unanswered(why)),
@@ -82,7 +82,7 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
         mesh_primary = tracing::field::Empty, atlas = tracing::field::Empty, route = tracing::field::Empty, sends = tracing::field::Empty,
         outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
-    let down = tracing::Instrument::instrument(door.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
+    let down = tracing::Instrument::instrument(configs.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
     let reply = match down {
         crate::node_config::Down::Answered(reply) => reply,
         // The call down ended with its attempts spent: the caller is told by name.
@@ -106,7 +106,7 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
 /// Serve an `UpdateName` at the admin `me` (born `me_id`): one span holds the whole command, its
 /// outcome the reply's name.
 #[allow(clippy::too_many_arguments)]
-pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, req: &StatusRequest) -> StatusReply {
+pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, service: NodeNameUpdateService<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, req: &StatusRequest) -> StatusReply {
     let StatusRequest::UpdateName { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateName only") };
     let span = tracing::info_span!(
         "rdm.node_admin.name.update.via-writer",
@@ -118,7 +118,7 @@ pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
         async {
             // A snapshot of the view: no read lock is held across the row write's I/O.
             let now = view.read().await.clone();
-            rename(me, me_id, &now, storage, doors, deleted, node_id, incarnation, name, &span).await
+            rename(me, me_id, &now, storage, service, deleted, node_id, incarnation, name, &span).await
         },
         span.clone(),
     )
@@ -168,7 +168,7 @@ async fn rename(
     me_id: &rdm_core::NodeId,
     now: &Topology,
     storage: &dyn NodesStorage,
-    doors: NameDoors<'_>,
+    service: NodeNameUpdateService<'_>,
     deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>,
     node_id: &rdm_core::NodeId,
     incarnation: &rdm_core::IncarnationId,
@@ -212,13 +212,13 @@ async fn rename(
     };
     span.record("to_path", to.path.as_str()).record("to_name", to.name.as_str());
     let (to_path, to_name) = (&to.path, &to.name);
-    let Some(door) = doors.configs else {
-        return rdm_core::reply::status::not_ready(format!("{me_id} has no node-RPC client yet, and so no door its record changes take turns at: the rename of {} is refused and nothing is written", held.node_id));
+    let Some(configs) = service.configs else {
+        return rdm_core::reply::status::not_ready(format!("{me_id} has no node-RPC client yet, and so no `NodeConfigs` its record changes take turns at: the rename of {} is refused and nothing is written", held.node_id));
     };
     // One change to a node record at a time, through the writer's held record: the row carries every
     // field the writer knows of it, the config and the tags included.
-    let one = door.one_at_a_time().await;
-    let known = match door.written().known_row(storage, node_id).await {
+    let one = configs.one_at_a_time().await;
+    let known = match configs.written().known_row(storage, node_id).await {
         Ok(row) => row,
         Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &format!("{me_id}: {why}: the rename of {} is refused and nothing is written", held.node_id)),
     };
@@ -228,10 +228,10 @@ async fn rename(
         return rdm_core::reply::status::bounded_rejected_name("a node's path is immutable; only its name may change, and nothing is claimed or written");
     }
     if from != to {
-        let Some(moved) = doors.moved.get() else {
+        let Some(moved) = service.moved.get() else {
             return rdm_core::reply::status::not_ready(format!("{me_id}: its view does not take a moved row yet; the rename of {} to path={to_path:?} name={to_name:?} is refused and nothing is written", held.node_id));
         };
-        let moved_row = crate::node_rows::move_row(storage, door.written(), me, &held, &from, &to).await;
+        let moved_row = crate::node_rows::move_row(storage, configs.written(), me, &held, &from, &to).await;
         match moved_row {
             Ok(_) => {}
             Err(RenameRefused::NameHeld(h)) => return rdm_core::reply::status::name_held(h.location(), h.by),
@@ -242,10 +242,10 @@ async fn rename(
     }
     let done = StatusReply::NameUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
     // The live birth takes the row's name. This admin itself takes it through its own name
-    // decision in-process, as its config door applies its own config: it never calls itself.
+    // decision in-process, as its `NodeConfigs` applies its own config: it never calls itself.
     let applied = if held.node_id == *me_id {
         span.record("apply", "in-process");
-        match doors.rename.get() {
+        match service.rename.get() {
             Some(rename) => {
                 let (_, decision) = rename(to.clone()).await;
                 Ok(crate::node_name::reply(&decision))
@@ -255,20 +255,20 @@ async fn rename(
     } else {
         span.record("apply", "direct");
         let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
-        NodeRpc::new(door.client()).name_apply(&birth, &RouteChoice::Direct, &to, &CallOptions::default()).await
+        NodeRpc::new(configs.client()).name_apply(&birth, &RouteChoice::Direct, &to, &CallOptions::default()).await
     };
     let (answered, detail) = match applied {
         Ok(r @ (StatusReply::Applied | StatusReply::AlreadyApplied)) => {
             span.record("answered", r.name());
             // A stopped node rejoins at its start, this admin is on its own mesh: done. A live node
             // rejoins its mesh under the name now (Q347), commanded down by this mesh-primary once the
-            // record door is released: the join's arrival takes the same turn.
+            // `NodeConfigs` turn is released: the join's arrival takes the same turn.
             if held.stopped || held.node_id == *me_id {
                 span.record("rejoin", if held.stopped { "at-start" } else { "in-process" });
                 return done;
             }
             drop(one);
-            let Some(rejoin) = doors.rejoin.get() else {
+            let Some(rejoin) = service.rejoin.get() else {
                 span.record("rejoin", "no-runner");
                 return rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), "not-ready", &format!("{me_id} moved the row to path={to_path:?} name={to_name:?} and the birth took it; this admin has no runner yet to command its node.mesh.join; a resubmit resends the apply and the join"));
             };
@@ -384,7 +384,7 @@ mod tests {
         let moved = crate::status_rpc::RowMoved::default();
         let rename_slot = crate::status_rpc::Rename::default();
         let rejoin_slot = crate::status_rpc::Rejoin::default();
-        let doors = || NameDoors { configs: None, moved: &moved, rename: &rename_slot, rejoin: &rejoin_slot };
+        let service = || NodeNameUpdateService { configs: None, moved: &moved, rename: &rename_slot, rejoin: &rejoin_slot };
 
         // 1. Stale incarnation -> RejectedStaleIncarnation
         let stale_req = StatusRequest::UpdateName {
@@ -393,7 +393,7 @@ mod tests {
             name: subject.location().with_name("renamed").unwrap(),
         };
         assert_eq!(
-            update(&admin1.location(), &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), &stale_req).await,
+            update(&admin1.location(), &admin1.node_id, &view, &storage, service(), Some(&clean_rec), &stale_req).await,
             StatusReply::RejectedStaleIncarnation { held: inc.clone() }
         );
 
@@ -404,7 +404,7 @@ mod tests {
             name: subject.location().with_name("renamed").unwrap(),
         };
         assert!(matches!(
-            update(&admin2.location(), &admin2.node_id, &view, &storage, doors(), Some(&clean_rec), &valid_req).await,
+            update(&admin2.location(), &admin2.node_id, &view, &storage, service(), Some(&clean_rec), &valid_req).await,
             StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }
         ));
 
@@ -415,7 +415,7 @@ mod tests {
             name: PathName { path: subject.path.clone(), name: "Bad_Name".into() },
         };
         assert!(matches!(
-            update(&admin1.location(), &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), &bad_name_req).await,
+            update(&admin1.location(), &admin1.node_id, &view, &storage, service(), Some(&clean_rec), &bad_name_req).await,
             StatusReply::RejectedName { .. }
         ));
     }

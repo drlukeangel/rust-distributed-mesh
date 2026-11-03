@@ -2,7 +2,7 @@
 //! path and name exists currently; if it does it should delete the caller; if it doesn't it should check
 //! atlas; if it's needed it should re-admit; if it's not it should delete."
 //!
-//! One decision for every primary and every door a caller birth it does not hold comes through (a
+//! One decision for every primary and every service a caller birth it does not hold comes through (a
 //! status declaration refused `SubjectUnknown`, a deleted birth's Digest heard again, a join report
 //! refused `JoinMismatch` because the row at its path and name holds another node): decided from
 //! the caller's record and the record at its `(path, name)`, read through the reader (query.md §1), and
@@ -29,14 +29,14 @@ use crate::atlas::{CallerDecision, Atlas};
 use crate::model::{IncarnationId, NodeId, NodeStatus, PathName};
 
 /// What a refused caller's decision acts through: this admin's recovery submitter (the terminate
-/// report) and its heard-again door (the re-admission), filled once both exist.
+/// report) and its `HeardAgain` (the re-admission), filled once both exist.
 pub struct RefusedCallers {
     pub(crate) node_id: NodeId,
     pub(crate) recovery: crate::admin::RecoverySubmitter,
     pub(crate) heard_again: crate::heard_again::HeardAgainSlot,
     /// Each refused birth's decision, by `(node_id, incarnation)`: `None` while it is being decided, the
     /// decision and its outcome once the birth is deleted and its runtime terminated. A deleted birth
-    /// stays deleted (Q217): a later refusal of it, at any door, is answered by that one decision.
+    /// stays deleted (Q217): a later refusal of it, at any service, is answered by that one decision.
     decided: Mutex<BTreeMap<(String, String), Option<(CallerDecision, String)>>>,
     /// Where the caller's record and the record at its `(path, name)` are read through (query.md §1).
     stores: crate::current_record::RecordStoresSource,
@@ -60,13 +60,13 @@ impl RefusedCallers {
         let _ = self.views.set(views);
     }
 
-    /// Decide the caller birth `(node_id, incarnation)` refused at `door` (`declaration`, `digest` or `join`)
+    /// Decide the caller birth `(node_id, incarnation)` refused at `via` (`declaration`, `digest` or `join`)
     /// and act on it, once per birth: one `rdm.node_admin.node.update.via-refused-caller` span naming the
     /// decision, whether the fabric-primary verified it, and what was done. The decision; the one already
     /// made, with no new span, for a birth deleted and terminated; `None` while one for the birth is in
     /// flight. Any other end (a re-admission, a termination that failed, nothing done) is decided again
     /// at the birth's next refusal.
-    pub(crate) async fn decide(&self, atlas: &Atlas, door: &'static str, node_id: &NodeId, incarnation: &IncarnationId) -> Option<(CallerDecision, String)> {
+    pub(crate) async fn decide(&self, atlas: &Atlas, via: &'static str, node_id: &NodeId, incarnation: &IncarnationId) -> Option<(CallerDecision, String)> {
         let key = (node_id.to_string(), incarnation.as_str().to_string());
         {
             let mut decided = self.decided.lock().unwrap();
@@ -81,7 +81,7 @@ impl RefusedCallers {
         let me = self.recovery.held_name();
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-refused-caller",
-            node_path = %me.path, node_name = %me.name, door, node_id = %node_id, incarnation_id = %incarnation.as_str(),
+            node_path = %me.path, node_name = %me.name, via, node_id = %node_id, incarnation_id = %incarnation.as_str(),
             subject_path = tracing::field::Empty, subject_name = tracing::field::Empty, decision = tracing::field::Empty, own = tracing::field::Empty,
             root = tracing::field::Empty, fabric_primary = tracing::field::Empty, sends = tracing::field::Empty,
             needed = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
@@ -246,14 +246,14 @@ impl RefusedCallers {
 }
 
 impl Atlas {
-    /// The caller birth `(node_id, incarnation)` refused at `door`, decided and acted on by this admin's
+    /// The caller birth `(node_id, incarnation)` refused at `via`, decided and acted on by this admin's
     /// [`RefusedCallers`] once they are installed ([`Self::refused_callers`]), on its own task: the
     /// refusal is answered at once, never held on the decision.
-    pub(crate) fn refused(self: &Arc<Self>, door: &'static str, node_id: &NodeId, incarnation: &IncarnationId) {
+    pub(crate) fn refused(self: &Arc<Self>, via: &'static str, node_id: &NodeId, incarnation: &IncarnationId) {
         let Some(callers) = self.callers().cloned() else { return };
         let (atlas, node_id, incarnation) = (self.clone(), node_id.clone(), incarnation.clone());
         tokio::spawn(async move {
-            callers.decide(&atlas, door, &node_id, &incarnation).await;
+            callers.decide(&atlas, via, &node_id, &incarnation).await;
         });
     }
 }
@@ -423,7 +423,7 @@ mod tests {
         // The decision runs on its own task: it ends once its one span closes.
         let (d, spans) = decided(&capture).await;
         let d = d.unwrap_or_else(|| panic!("the `StatusService` decided the caller: {spans:?}"));
-        assert_eq!(d["door"], "declaration", "{d}");
+        assert_eq!(d["via"], "declaration", "{d}");
         assert_eq!((d["subject_path"].as_str(), d["subject_name"].as_str()), (Some("mesh1.node"), Some("2")), "decided at the caller's (path, name): {d}");
         assert_eq!(d["own"], "delete-deleted-birth", "{d}");
         assert_eq!(d["decision"], "delete-deleted-birth", "a caller whose record is deleted is deleted, never re-admitted (Q217): {d}");
@@ -538,7 +538,7 @@ mod tests {
         // The decision runs on its own task: it ends once its one span closes.
         let (d, spans) = decided(&capture).await;
         let d = d.unwrap_or_else(|| panic!("the `JoinService` decided the caller: {spans:?}"));
-        assert_eq!(d["door"], "join", "{d}");
+        assert_eq!(d["via"], "join", "{d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that joined: {d}");
         assert_eq!((d["subject_path"].as_str(), d["subject_name"].as_str()), (Some("mesh1.node"), Some("2")), "decided at the caller's (path, name): {d}");
         assert_eq!(d["decision"], "delete-path-held", "another birth is at the caller's (path, name): the caller is deleted (Q207): {d}");
@@ -645,7 +645,7 @@ mod tests {
         // The decision runs on its own task: it ends once its one span closes.
         let (d, spans) = decided(&capture).await;
         let d = d.unwrap_or_else(|| panic!("the `JoinService` decided the caller: {spans:?}"));
-        assert_eq!(d["door"], "join", "{d}");
+        assert_eq!(d["via"], "join", "{d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that joined: {d}");
         assert_eq!((d["subject_path"].as_str(), d["subject_name"].as_str()), (Some("mesh1.node"), Some("2")), "decided at the caller's (path, name): {d}");
         assert_eq!(d["decision"], "delete-deleted-birth", "the caller's own record is deleted: it is deleted, never re-admitted (Q217): {d}");
@@ -665,7 +665,7 @@ mod tests {
     /// `SubjectUnknown` at once and the caller's decision is owed to the root: nothing is asked while no
     /// view names a fabric-primary, and once a view naming it is installed the decision is verified there
     /// (its atlas holds the birth at mesh2.node-admin.1) and the caller is re-admitted (`re-admit`, root
-    /// `agrees`; the rig builds no heard-again door, so `no-heard-again`), in one decision.
+    /// `agrees`; the rig builds no `HeardAgain`, so `no-heard-again`), in one decision.
     /// Must NOT happen: the decision ended `root-unverified` with nothing deciding it again (the red: the
     /// declarer's retry ended on the refusal, the birth never declares again, and the Build's claim on it
     /// is withdrawn), or a second decision of the same birth.
@@ -699,7 +699,7 @@ mod tests {
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
-        // The fabric-primary: its door answers fabric.atlas.get from its atlas, which holds the caller's
+        // The fabric-primary: its `StatusService` answers fabric.atlas.get from its atlas, which holds the caller's
         // birth at mesh2.node-admin.1, and counts the reads.
         let fp_key = iroh::SecretKey::generate();
         let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -755,12 +755,12 @@ mod tests {
         let decisions = of(&spans);
         assert_eq!(decisions.len(), 1, "one decision of the birth: {decisions:?}");
         let d = &decisions[0];
-        assert_eq!(d["door"], "declaration", "{d}");
+        assert_eq!(d["via"], "declaration", "{d}");
         assert_eq!((d["subject_path"].as_str(), d["subject_name"].as_str()), (Some("mesh2.node-admin"), Some("1")), "decided at the caller's (path, name): {d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that declared: {d}");
         assert_eq!(d["root"], "agrees", "verified at the fabric-primary once a view names it: {d}");
         assert_eq!(d["decision"], "re-admit", "nothing else at its (path, name), its record live and the Build needing it: re-admitted (Q207): {d}");
-        assert_eq!(d["outcome"], "no-heard-again", "the rig builds no heard-again door: {d}");
+        assert_eq!(d["outcome"], "no-heard-again", "the rig builds no `HeardAgain`: {d}");
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1, "the root was read once");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -798,7 +798,7 @@ mod tests {
             rows.put_node(&r).await.unwrap();
         }
         let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, None).await;
-        // Not held: the live, needed caller is re-admitted (the rig has no heard-again door).
+        // Not held: the live, needed caller is re-admitted (the rig has no `HeardAgain`).
         let (unheld, _) = callers.decide(&atlas, "declaration", &caller.node_id, &caller_inc).await.expect("decided");
         assert_eq!(unheld.name(), "re-admit", "nothing held, its record live and needed: re-admitted (Q207)");
         // Held deleted from its recovery's verdict: deleted, whatever its record reads.

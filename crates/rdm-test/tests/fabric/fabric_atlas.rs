@@ -176,17 +176,17 @@ async fn fabrics_atlas_get_answers_every_node_the_fabric_primary_holds() {
 /// absent from the atlas at `Complete` until mesh2's gossip echoes it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_atlas_holds_a_stop_the_fabric_primary_ran_at_its_complete() {
-    use rdm_test::faults::{binding_set, candidate_sha, Door};
+    use rdm_test::faults::{binding_set, candidate_sha, FaultClient};
     let test = "the_atlas_holds_a_stop_the_fabric_primary_ran_at_its_complete";
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let targets = two_meshes(&mut estate).await;
     let (node, node_id) = (path_of(&targets[3]), id_of(&targets[3]));
-    let mut mesh2_doors = Vec::new();
+    let mut mesh2_faults = Vec::new();
     for v in estate.node_values().await.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin") {
-        mesh2_doors.push((path_of(v), Door::at(&estate, &path_of(v)).await));
+        mesh2_faults.push((path_of(v), FaultClient::at(&estate, &path_of(v)).await));
     }
-    for (_, d) in &mesh2_doors {
+    for (_, d) in &mesh2_faults {
         d.arm("atlas:no-gossip", json!({"kind": "announcement", "announcement": "aggregate-in-flight", "channel": "backbone"})).await;
     }
     let mut stop = estate.nodes_obj().await.stop(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {node:?}: {e}"));
@@ -194,8 +194,8 @@ async fn the_atlas_holds_a_stop_the_fabric_primary_ran_at_its_complete() {
     let at_complete = atlas(&estate, "R-FA2: fabric.atlas.get on the stop's Complete").await;
     let row = at_complete.node(&node_id).unwrap_or_else(|| panic!("R-FA2: the atlas holds no row of {node:?}: {at_complete:#?}"));
     assert!(row.stopped && row.accepted.is_none(), "R-FA2: on the stop's Complete the atlas holds {node:?} stopped from its own command's frames, nothing accepted on it: {row:#?}");
-    // The stopped node's door answers no release: it is stopped.
-    for (_, d) in mesh2_doors.iter().filter(|(at, _)| *at != node) {
+    // The stopped node's fault service answers no release: it is stopped.
+    for (_, d) in mesh2_faults.iter().filter(|(at, _)| *at != node) {
         d.release("atlas:no-gossip").await;
     }
     estate.stop().await;

@@ -285,7 +285,7 @@ async fn a_renamed_admin_runs_its_meshs_section_under_its_new_name() {
     let executor_birth = admin.birth().unwrap();
     let (topology, section) = mesh1_section(admin, &memory).await;
     let fabric_id = topology.read().await.fabric.id.clone();
-    let door_of = |birth: rdm_core::framing::Birth, me_name: &str| {
+    let service_of = |birth: rdm_core::framing::Birth, me_name: &str| {
         let runs = Arc::new(SectionRuns::default());
         let mut steps = rdm_admin::events_storage::EventsWriter::on(memory.events(), &fabric_id, &birth.node_id);
         steps.source.incarnation = birth.incarnation.clone();
@@ -294,7 +294,7 @@ async fn a_renamed_admin_runs_its_meshs_section_under_its_new_name() {
         let exec = Arc::new(BuildExecutor { executor: birth, builds: builds.clone(), topology: topology.clone(), runner });
         SectionRunService { me_path: "mesh1.node-admin".into(), me_name: me_name.into(), builds, exec, runs, local: memory.clone(), gate: StopGate::new(), moved: Default::default() }
     };
-    let service = door_of(executor_birth.clone(), "9");
+    let service = service_of(executor_birth.clone(), "9");
 
     // Only the name changes; the birth is the same.
     {
@@ -318,7 +318,7 @@ async fn a_renamed_admin_runs_its_meshs_section_under_its_new_name() {
 
     // Another node ID with the same incarnation is not mesh1's primary in the view: refused.
     let other_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: executor_birth.incarnation.clone() };
-    let other = door_of(other_birth.clone(), "1");
+    let other = service_of(other_birth.clone(), "1");
     let Attached::Refused(refused) = other.section_run(&build_id(), "mesh1", &CallContext::default()).await else {
         panic!("a call to an admin that is not mesh1's primary must be refused")
     };

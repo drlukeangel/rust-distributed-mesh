@@ -57,12 +57,12 @@ async fn node() -> Node {
     Node { ep, _router: router, gossip }
 }
 
-/// `mesh`'s snapshot in `served`, as the topology door holds it.
+/// `mesh`'s snapshot in `served`, as the `TopologyService` holds it.
 fn of(served: Vec<SourceSnapshot>, mesh: &str) -> SourceSnapshot {
     served.into_iter().find(|s| s.mesh == mesh).expect("the primary serves its own mesh")
 }
 
-/// The chunks of `s` as one topology read delivers them, under the door's `snapshot_id`.
+/// The chunks of `s` as one topology read delivers them, under the `TopologyService`'s `snapshot_id`.
 fn read_chunks(s: &SourceSnapshot, snapshot_id: u64) -> Vec<Chunk> {
     chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
         mesh: s.mesh.clone(),

@@ -110,7 +110,7 @@ impl NodeProtocol for CgShuffleRecord {
   a refusal is a reply variant.
 - **The six reserved variants** (`peer_unresolved`, `not_ready`, `busy`, `connections_deleting`,
   `malformed`, `unauthorized`) are variants of your reply that the codec requires. Four are refusals
-  the receiver's runtime answers before your handler runs: `not_ready` while the node's RPC door is
+  the receiver's runtime answers before your handler runs: `not_ready` while the node's readiness gate is
   unopened, `busy` at its admission bound, `connections_deleting` while the node deletes its
   connections, `malformed` when the body is too large or does not decode. `unauthorized` holds its
   codec position only: a mesh receiver never sends it, since nothing inside the mesh checks who sent

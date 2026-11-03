@@ -9,7 +9,7 @@
 //! own node id. The commander installs nothing from the answer (the fabric-primary records a
 //! mesh-primary's answer in its atlas, Q355). The only difference between node types is what a
 //! node-admin records afterwards (`is_primary`, `is_fabric_primary` on its own row, as its mesh's
-//! writer): the shared parts are here, and `rdm-admin`'s door adds the node-admin's.
+//! writer): the shared parts are here, and `rdm-admin`'s `PrimaryUpdate` adds the node-admin's.
 
 use std::sync::Arc;
 
@@ -96,11 +96,11 @@ pub struct Answered(std::sync::Mutex<std::collections::BTreeMap<(String, rdm_cor
 mod answered_tests {
     use super::*;
 
-    /// CONTRACT: retries compare the exact successor within one Build attempt; other
-    /// Builds and attempts never inherit that attempt's cached answer.
+    /// CONTRACT: retries compare the exact successor within one Build; other
+    /// Builds never inherit that Build's cached answer.
     // @feature: node-primary-update
     #[test]
-    fn handover_retry_checks_successor_and_build_attempt() {
+    fn handover_retry_checks_successor_and_build() {
         let answered = Answered::default();
         let id = NodeId::mint();
         let operation = rdm_core::OperationId::node("node.primary.update", &id);

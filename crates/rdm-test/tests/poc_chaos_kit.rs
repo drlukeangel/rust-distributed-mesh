@@ -95,39 +95,39 @@ async fn poc_netfault_cut_unhears_one_node_and_heal_restores_it() {
     estate.stop().await;
 }
 
-/// CONTRACT: the admin fault door holds a real node-admin at one named cut (the create of an rpc
+/// CONTRACT: the admin fault service holds a real node-admin at one named cut (the create of an rpc
 /// node, after DeployRuntime's work and before its receipt is durable): the Build does not complete
-/// while the cut holds, the door reports the held call, and on release the Build completes and the
+/// while the cut holds, the fault service reports the held call, and on release the Build completes and the
 /// node comes up ready. Uses the faulted-node-admin binary built by the cell runner.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
-    use rdm_test::faults::{binding_set, candidate_sha, Door};
-    let mut o = owner("poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it");
-    o.rung = "fault-door".into();
+async fn poc_admin_fault_cut_holds_a_create_at_its_receipt_and_releases_it() {
+    use rdm_test::faults::{binding_set, candidate_sha, FaultClient};
+    let mut o = owner("poc_admin_fault_cut_holds_a_create_at_its_receipt_and_releases_it");
+    o.rung = "fault".into();
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on(o, "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("faulted-admin binding set accepted");
     estate.resize_shape("fabric1", &[("mesh1", 2, 0)]).await;
     estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
-    // Either admin may execute: arm the same cut on both doors.
-    let mut doors = Vec::new();
+    // Either admin may execute: arm the same cut on both fault services.
+    let mut faults = Vec::new();
     for n in estate.node_views().await.iter().filter(|n| n.r#type == "node-admin") {
-        doors.push(Door::at(&estate, &n.location()).await);
+        faults.push(FaultClient::at(&estate, &n.location()).await);
     }
     let id = "poc:deploy-runtime";
     let spec = json!({"kind": "step-event", "step": "DeployRuntime", "operation": "node.create", "at": (rdm_core::PathName::new("mesh1.node", "1").unwrap())});
-    for d in &doors {
+    for d in &faults {
         d.arm(id, spec.clone()).await;
     }
     let desired = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", 1)])] };
     let mut stream = estate.submit(&BuildSpec::Fabric(desired)).await;
     let build = stream.build_id().to_string();
-    // The door of whichever admin executes the create reports the held call.
-    let holder = futures_lite::future::or(doors[0].wait_held(id), doors[1].wait_held(id)).await;
-    eprintln!("poc: a door holds {holder}");
+    // The fault service of whichever admin executes the create reports the held call.
+    let holder = futures_lite::future::or(faults[0].wait_held(id), faults[1].wait_held(id)).await;
+    eprintln!("poc: a fault service holds {holder}");
     let during = estate.carrier().await.build(stream.build_id()).await.unwrap_or_else(|e| panic!("build.get [id] of {build}: {e}"));
     assert_ne!(during.phase, BuildPhase::Complete, "the Build cannot complete while its step is held: {during:?}");
-    for d in &doors {
+    for d in &faults {
         d.release(id).await;
     }
     Estate::until_complete(&mut stream).await;

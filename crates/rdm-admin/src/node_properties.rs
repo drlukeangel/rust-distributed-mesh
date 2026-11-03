@@ -26,16 +26,16 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
         _ => unreachable!("tags is called for CreateTags and DeleteTags only"),
     };
     let mut first = view.read().await.clone();
-    if let (Some(door), crate::node_config::SentBy::Caller) = (configs, sent_by) {
+    if let (Some(configs), crate::node_config::SentBy::Caller) = (configs, sent_by) {
         if !first.is_fabric_primary(me_id) {
-            match door.forward_up(me, me_id, &first, view, req).await {
+            match configs.forward_up(me, me_id, &first, view, req).await {
                 crate::node_config::Up::Answered(reply) => return reply,
                 crate::node_config::Up::InProcess(now) => first = now,
                 crate::node_config::Up::Unanswered(why) => return crate::node_config::Up::unanswered(why),
             }
         }
     }
-    if let (Some(door), Some(subject)) = (configs, first.own(node_id).cloned()) {
+    if let (Some(configs), Some(subject)) = (configs, first.own(node_id).cloned()) {
         if first.is_fabric_primary(me_id) && !first.is_mesh_primary(&subject.mesh, me_id) {
             let span = tracing::info_span!(
                 "rdm.node_admin.node.update.via-fabric-primary",
@@ -43,7 +43,7 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
                 mesh_primary = tracing::field::Empty, route = tracing::field::Empty, sends = tracing::field::Empty,
                 outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
             );
-            let down = tracing::Instrument::instrument(door.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
+            let down = tracing::Instrument::instrument(configs.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
             match down {
                 crate::node_config::Down::Answered(reply) => {
                     span.record("outcome", reply.name());
@@ -151,22 +151,22 @@ async fn write(_me: &PathName, me_id: &NodeId, view: &Topology, _storage: &dyn N
         }
         Some(_) => {}
     }
-    let Some(door) = configs else {
-        return rdm_core::reply::status::not_ready(format!("{me_id} has no node-RPC client yet, and so no door its record changes take turns at: the tags of {} are not written", subject.node_id));
+    let Some(configs) = configs else {
+        return rdm_core::reply::status::not_ready(format!("{me_id} has no node-RPC client yet, and so no `NodeConfigs` its record changes take turns at: the tags of {} are not written", subject.node_id));
     };
-    if door.records().is_some() {
+    if configs.records().is_some() {
         let change = match change {
             Change::Create(labels) => rdm_node::node_records::TagChange::Create((*labels).clone()),
             Change::Delete(scope) => rdm_node::node_records::TagChange::Delete((*scope).clone()),
         };
         let reply = if node_id == me_id {
-            match door.own_tags(subject, change).await {
+            match configs.own_tags(subject, change).await {
                 Some(result) => result.map_err(|error| error.to_string()),
                 None => return rdm_core::reply::status::not_ready(format!("{me_id} has no own property writer yet")),
             }
         } else {
             let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
-            let rpc = rdm_client::NodeRpc::new(door.client());
+            let rpc = rdm_client::NodeRpc::new(configs.client());
             let options = rdm_transport::CallOptions::default();
             match change {
                 rdm_node::node_records::TagChange::Create(labels) => rpc.tags_create(node_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &options).await,
@@ -224,7 +224,7 @@ mod tests {
         let written = Arc::new(crate::node_rows::WrittenRows::default());
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[9u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
-        let door = NodeConfigs::new(client, written.clone());
+        let configs = NodeConfigs::new(client, written.clone());
 
         let set = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
 
@@ -235,7 +235,7 @@ mod tests {
             labels: set(&[".hidden"]),
         };
         assert!(matches!(
-            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &bad_req).await,
+            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&configs), SentBy::Other, &bad_req).await,
             StatusReply::RejectedTags { .. }
         ));
 
@@ -246,23 +246,23 @@ mod tests {
             labels: set(&["gold", "ssd"]),
         };
         assert!(matches!(
-            tags(&admin2.location(), &admin2.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await,
+            tags(&admin2.location(), &admin2.node_id, &view, &storage, Some(&configs), SentBy::Other, &create_req).await,
             StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }
         ));
 
-        assert!(matches!(tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await, StatusReply::NotReady { .. }));
+        assert!(matches!(tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&configs), SentBy::Other, &create_req).await, StatusReply::NotReady { .. }));
         assert!(storage.node(&admin1.node_id).await.unwrap().is_none());
         use crate::storage::NodesStorage as _;
         let records = Arc::new(crate::storage::MemoryNodesStorage::default());
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let snapshot = view.read().await.clone();
         let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", snapshot.meshes[0].id.as_ref().unwrap(), admin1.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        door.uses_records(records.clone(), || "memory".into(), channels.clone());
-        door.bound_own(&admin1, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default() }).await.unwrap();
+        configs.uses_records(records.clone(), || "memory".into(), channels.clone());
+        configs.bound_own(&admin1, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default() }).await.unwrap();
 
         // 3. Create {"gold", "ssd"} persists both labels in node-owned properties.
         assert_eq!(
-            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await,
+            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&configs), SentBy::Other, &create_req).await,
             StatusReply::TagsCreated {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),
@@ -277,7 +277,7 @@ mod tests {
             labels: set(&["gold"]),
         };
         assert_eq!(
-            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &dup_req).await,
+            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&configs), SentBy::Other, &dup_req).await,
             StatusReply::TagsCreated {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),
@@ -292,7 +292,7 @@ mod tests {
             scope: TagScope::Labels(set(&["gold", "missing"])),
         };
         assert_eq!(
-            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &del_req).await,
+            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&configs), SentBy::Other, &del_req).await,
             StatusReply::TagsDeleted {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),
@@ -305,10 +305,10 @@ mod tests {
             node_id: admin1.node_id.clone(), incarnation: admin1.incarnation_id.clone().unwrap(),
             labels: (0..32).map(|i| format!("tag-{i}")).collect(),
         };
-        assert!(matches!(tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &too_many).await, StatusReply::RejectedTags { .. }));
+        assert!(matches!(tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&configs), SentBy::Other, &too_many).await, StatusReply::RejectedTags { .. }));
         assert_eq!(records.properties(&admin1.node_id).await.unwrap().unwrap().tags, set(&["ssd"]));
         let stale = StatusRequest::CreateTags { node_id: admin1.node_id.clone(), incarnation: IncarnationId::mint(), labels: set(&["stale"]) };
-        assert!(matches!(tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
+        assert!(matches!(tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&configs), SentBy::Other, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
 
         // 6. Delete All clears the remaining tags.
         let del_all = StatusRequest::DeleteTags {
@@ -317,7 +317,7 @@ mod tests {
             scope: TagScope::All,
         };
         assert_eq!(
-            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &del_all).await,
+            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&configs), SentBy::Other, &del_all).await,
             StatusReply::TagsDeleted {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),

@@ -917,9 +917,9 @@ async fn estate_span(estate: &rdm_test::estate::Estate, name: &str, what: &str, 
 /// fabric-primary and at mesh2's primary, which wrote them on its own row: two admins on two clocks,
 /// one set of dates (rdm#112: mesh2's row held its own clock, 1 ms behind, as issued_at).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_through_that_meshs_door() {
+async fn the_fabric_primary_renews_another_meshs_primary_and_which_writes_the_dates_on_its_own_row() {
     use rdm_test::estate::Estate;
-    const CELL: &str = "the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_through_that_meshs_door";
+    const CELL: &str = "the_fabric_primary_renews_another_meshs_primary_and_which_writes_the_dates_on_its_own_row";
     let estate = Estate::bootstrap_with_env(estate_owner(CELL), "fabric1", "mesh1", &[(certs::ENV_MEMBER_CERT_TTL_SECS, "30")]).await;
     estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 0)]).await;
     let names: std::collections::BTreeSet<rdm_core::PathName> = [Estate::path("mesh1.node-admin", "1"), Estate::path("mesh2.node-admin", "1")].into_iter().collect();

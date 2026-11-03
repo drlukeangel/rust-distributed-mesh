@@ -258,7 +258,7 @@ sees only the catalog.
 | `0x72` | declare-probe | testkit | live | canonical | `Declare` |
 | `0x73` | originate | testkit | live | canonical | `Call`, `ArmFault`, `ReleaseFault`, `Snapshot`, `RecordProxy`, `Dial`, `StopTransport` |
 | `0x74` | pre-node-ready-pull | testkit | live | canonical | `Pull` |
-| `0x75` | fault-door | testkit | live | canonical | `Arm`, `Release`, `State` |
+| `0x75` | fault | testkit | live | canonical | `Arm`, `Release`, `State` |
 
 Every opcode is allocated in this table, a product's included: a product family takes the next free opcode here, as a row its product owns, before it is served, so no two families ever hold one opcode. The ledger state says whether an op may be served at all: `live` or `reserved`. The serving
 mode is the catalog entry's, not the ledger's: `canonical`, or `transitional` naming the
@@ -428,16 +428,16 @@ coordinated fixtures when that split lands.
 ## Node RPC readiness gate
 
 A stopped node's control service stays reachable through its bound endpoint
-([States](lifecycles/states.md#stopped-nodes)); that reachability is separate from this door.
+([States](lifecycles/states.md#stopped-nodes)); that reachability is separate from this gate.
 
-The router refuses every op, Ping included, with typed NotReady until the Node RPC door
-is ready. A node-admin waits until its primary is filled and its view holds it;
+The router refuses every op, Ping included, with typed NotReady until the readiness gate
+is open. A node-admin waits until its primary is filled and its view holds it;
 a node waits until it joins its mesh. The rejection span is
-`rdm.node_rpc.request.reject.via-not-ready`. This door is the generic serving gate, not a
+`rdm.node_rpc.request.reject.via-not-ready`. The readiness gate is the generic serving gate, not a
 fabric ready declaration. Source:
 `crates/rdm-transport/src/server.rs::with_ready_gate`.
 
-NotReady, on every op and from every handler, means one thing: the door or the handler cannot
+NotReady, on every op and from every handler, means one thing: the readiness gate or the handler cannot
 serve this call yet, and the reason says which. It is never a lifecycle fact about the subject.
 A caller that receives NotReady learns nothing about the subject's hook, frames no Build
 `Pending`, and its call retries on its `Send`. The subject's readiness blocker is a served answer, Status
@@ -747,7 +747,7 @@ The lifecycle op pairs in States are carried by 0x1B as separate down (command) 
 
 Status remains admissible while connections-deleting. The generic guard MUST NOT reject it before variant-specific direction, authorization, exact-birth and transition checks. `node.connection.delete { scope: All }` is the sole path into connections-deleting. ApplyNodeState is reserved and refused by name: no node status is applied downward ([node-status.md](lifecycles/node-status.md#node-status-change)). ProbeNodeState answers Current, or Pending { node_id, incarnation, reason } while the subject's [pre_node_ready](fabric-node-hooks.md#outcomes-and-the-gate) hook answered Pending: the probe served the exact node and found an active readiness blocker, answered before any republish so a polled pending node republishes nothing. Its `reason` is the hook's own text. A node whose start ended Failed answers StartFailed { step: node.pre-node-ready, reason } with the hook's last reason; the node stays Pending and its process keeps running. Running and Passed hooks answer Current. NotReady is the [readiness gate's](#node-rpc-readiness-gate) answer and never a hook blocker; the executor's WaitForNodeReady frames `Pending { WaitForNodeReady, reason }` only from Status Pending, and ends its step failed only from Status StartFailed. Declarations and mesh/fabric applies answer Applied or AlreadyApplied. ApplyNodeName, sent down by the node's mesh-primary after it wrote the renamed row ([node.name.update](lifecycles/node-name-update.md)), answers Applied once the node holds and publishes the name, AlreadyApplied for the name it already holds, and `BusyHoldingConnections { connections }` naming each connection it still holds. ConnectionsDeleting is a refusal, never the success of node.connection.delete. Idempotency is the natural key `(node_id, incarnation, state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name.
 
-Nothing inside the mesh checks who sent a frame or call. `RejectedNotPrimary` says the receiver is not the primary for the call: `ReceiverNotPrimary { needed }` when the receiver is not the primary the declaration needs, and `SubjectUnknown` when the receiver does not hold the subject at all; a primary that refuses a status declaration's caller birth `SubjectUnknown` then decides that birth by its path and name and its atlas ([node investigation](lifecycles/node-investigation.md), Q207). `RequestNotHandled { request }` means the receiver's Status door has no handler for the named request. It is decided by dispatch alone, without checking node kind, primary or sender, and performs no operation. The receiver emits `rdm.node.status.reject.via-request-not-handled` with `request` and `node`. A handler that exists may still return its defined result, including a genuine writer redirect. `SenderNotSubject` and `Unauthorized` keep their codec positions and a mesh receiver never sends them; a caller-side `PeerUnresolved` likewise.
+Nothing inside the mesh checks who sent a frame or call. `RejectedNotPrimary` says the receiver is not the primary for the call: `ReceiverNotPrimary { needed }` when the receiver is not the primary the declaration needs, and `SubjectUnknown` when the receiver does not hold the subject at all; a primary that refuses a status declaration's caller birth `SubjectUnknown` then decides that birth by its path and name and its atlas ([node investigation](lifecycles/node-investigation.md), Q207). `RequestNotHandled { request }` means the receiver's Status service has no handler for the named request. It is decided by dispatch alone, without checking node kind, primary or sender, and performs no operation. The receiver emits `rdm.node.status.reject.via-request-not-handled` with `request` and `node`. A handler that exists may still return its defined result, including a genuine writer redirect. `SenderNotSubject` and `Unauthorized` keep their codec positions and a mesh receiver never sends them; a caller-side `PeerUnresolved` likewise.
 
 ```rust
 pub enum NodeState {
@@ -1209,7 +1209,7 @@ Snapshot, Unchanged or Stored frames, then End. Snapshot uses gossip MeshTopolog
 chunking; a mesh is installed atomically only after every chunk of the same snapshot_id,
 publisher and topology_version is present. End.meshes counts each answered mesh once.
 A mesh with no published snapshot is absent unless the answerer writes its records or holds its
-births (Stored). NotReady means the RPC door is unopened, with the cause named. No answer reads the
+births (Stored). NotReady means the readiness gate is closed, with the cause named. No answer reads the
 store on the reader's behalf at its start (Q227); OwnRow is served from the node's
 record (Q237, Q323). A mesh neither held, written nor in the answerer's durable topology answers
 UnknownMesh.

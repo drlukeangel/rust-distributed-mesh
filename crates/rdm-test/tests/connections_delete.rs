@@ -115,7 +115,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         }
 
         // The node originates a data-plane connection to its admin and one to its peer (connections.md
-        // "Two planes, two words": in RDM standalone the testkit's originate door is the data plane):
+        // "Two planes, two words": in RDM standalone the testkit's originate service is the data plane):
         // the node holds a route to each, both pooled by its data-plane client.
         for (to, what) in [(admin.launcher.node_id.clone(), "the node reaches its admin"), (peer.node_id.clone(), "the node reaches the peer")] {
             match cut_seams.client.call::<Ping>(&NodeTarget::ExactNode(to), &PingRequest::Ping { payload: what.as_bytes().to_vec() }, &CallOptions::default()).await.0 {

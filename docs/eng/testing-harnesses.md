@@ -53,7 +53,7 @@ node-admin serves Node RPC only. `RDM_NODE_ADMIN_API_BIND` names the address its
 no HTTP server is bound (CLAUDE.md env table). Once serving, a node-admin prints two lines on
 stdout, which is how an estate learns where it is:
 
-- `RDM_NODE_BIRTH=<json>`: its birth, the `MeshNode` its Node RPC door serves under
+- `RDM_NODE_BIRTH=<json>`: its birth, the `MeshNode` its readiness gate opens for
   (`rdm_client::BIRTH_LINE`, `crates/rdm-client/src/peers.rs`);
 - `RDM_NODE_ADMIN_API_BASE=rdm://<node id>` (`crates/rdm-admin/src/admin/boot.rs`).
 
@@ -113,7 +113,7 @@ fails any node process of the lane's build still running after the jobs end
 **The binaries a cell runs** come from the build the cell was built with: `bin_dir()` is
 `RDM_BIN_DIR`, else the target profile directory of the test executable (`estate.rs::bin_dir`).
 The test kit's own executables are `rdm-node-admin` (from `rdm-admin`), and from `rdm-test`:
-`faulted-node-admin` (the node-admin runtime with the test kit's stall door, op `0x75`),
+`faulted-node-admin` (the node-admin runtime with the test kit's fault service, op `0x75`),
 `testkit-node` (the testkit node for the `node` type, serving the testkit store and probe families), `rdm-node` (the test kit's node executable for every
 other node type), `rdm-rpc-probe`, `rdm-scenario` and `rdm-store-root-probe`
 (`crates/rdm-test/Cargo.toml`).

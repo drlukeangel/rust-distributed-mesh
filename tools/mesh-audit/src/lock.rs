@@ -776,9 +776,9 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
         Ratchet::OneRenameWritePath => {
             // A node row moves through one writer (R13: node.update is one write path):
             // `node_rows::move_row` claims the new name and releases the old claim. Nothing else
-            // releases a node name claim, and no second rename door stands beside it.
+            // releases a node name claim, and no second rename call site stands beside it.
             // The storage layers that only forward the NodesStorage trait (its own module and the
-            // replaceable handle, i149 e2) are no door of their own.
+            // replaceable handle, i149 e2) are no call site of their own.
             let files: Vec<PathBuf> = files_in(root, RUNTIME_SOURCES).into_iter().filter(|f| !rel(root, f).ends_with(NODE_ROWS) && !rel(root, f).ends_with(NODES_STORAGE) && !rel(root, f).ends_with(STORAGE_HANDLE)).collect();
             scan_non_test_tokens(root, &files, &[".release_node_name("], ratchet, &mut out);
             scan_tokens(root, &files_in(root, &[NODE_ROWS]), &["pub async fn rename(", "fn rename_steps("], ratchet, &mut out);

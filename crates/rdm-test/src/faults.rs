@@ -1,7 +1,7 @@
-//! The fault door of a faulted node-admin, as a scenario drives it (i143.e8.s2, #2780): the testkit
-//! Node RPC op `0x75` (`crate::fault_door`), reached by the admin's separate path/name pair on the
+//! The fault service of a faulted node-admin, as a scenario drives it (i143.e8.s2, #2780): the testkit
+//! Node RPC op `0x75` (`crate::fault`), reached by the admin's separate path/name pair on the
 //! estate's Node RPC client; armed, observed and released. Shared by every cell that holds a real admin
-//! at a named cut. A cut that must be in force before the admin's Node RPC door is ready is armed from
+//! at a named cut. A cut that must be in force before the admin's readiness gate is open is armed from
 //! `<root>/faults/<name>.boot.json` instead.
 
 #![allow(missing_docs)]
@@ -10,33 +10,33 @@ use crate::estate::{bin_dir, wait_for, wait_for_observed, Estate};
 use rdm_client::binding::{sha256_file, Binding, BindingSet, Candidate};
 use rdm_client::{PathName, Peers};
 use crate::admin_faults::CutSpec;
-use crate::fault_door::{self, FaultReply, FaultRequest, FaultState};
+use crate::fault::{self, FaultReply, FaultRequest, FaultState};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// One faulted admin's fault door, reached over Node RPC by the admin's separate path/name pair.
+/// One faulted admin's fault service, reached over Node RPC by the admin's separate path/name pair.
 #[derive(Clone)]
-pub struct Door {
+pub struct FaultClient {
     pub path: String,
     /// The name, beside its path.
     pub name: String,
     peers: Arc<Peers>,
 }
 
-impl Door {
+impl FaultClient {
     /// The `(path, name)` lookup index key of path and name.
     pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
-impl Door {
-    /// The door of the faulted admin `name`, once it answers. The admin's Node RPC door answers NotReady
+impl FaultClient {
+    /// The fault client of the faulted admin `name`, once it answers. The admin's readiness gate answers NotReady
     /// until it is ready (node-rpc-envelope.md, "Node RPC readiness gate"), and an admin the estate did not
     /// start is dialled from the views the estate reads, so until then each turn reads them again.
-    pub async fn at(estate: &Estate, name: &PathName) -> Door {
-        let door = Door { path: name.path.clone(), name: name.name.clone(), peers: estate.peers().await };
-        wait_for_observed(&format!("{name:?}'s fault door answers over Node RPC"), Duration::from_secs(60), || async {
-            match door.ask(&FaultRequest::State).await {
+    pub async fn at(estate: &Estate, name: &PathName) -> FaultClient {
+        let faults = FaultClient { path: name.path.clone(), name: name.name.clone(), peers: estate.peers().await };
+        wait_for_observed(&format!("{name:?}'s fault service answers over Node RPC"), Duration::from_secs(60), || async {
+            match faults.ask(&FaultRequest::State).await {
                 Ok(FaultReply::State(_)) => Ok(()),
                 other => {
                     let _ = estate.try_node_views().await;
@@ -45,12 +45,12 @@ impl Door {
             }
         })
         .await;
-        door
+        faults
     }
 
     async fn ask(&self, req: &FaultRequest) -> Result<FaultReply, String> {
         let carrier = self.peers.carrier_at(self.location());
-        fault_door::ask(carrier.client(), carrier.target(), req).await
+        fault::ask(carrier.client(), carrier.target(), req).await
     }
 
     /// Arm `spec` (a cut as JSON: `{"kind": .., ..}`) under `id`; the acknowledgement, as JSON.
@@ -58,7 +58,7 @@ impl Door {
         let cut: CutSpec = serde_json::from_value(spec.clone()).unwrap_or_else(|e| panic!("{:?}: `{id}` is not a cut: {spec}: {e}", self.name));
         match self.ask(&FaultRequest::arm(id, cut)).await {
             Ok(FaultReply::Armed { node, id: armed, spec }) => {
-                assert_eq!(armed, id, "{:?}: the door armed another cut", self.name);
+                assert_eq!(armed, id, "{:?}: the fault service armed another cut", self.name);
                 json!({"armed": armed, "node": node, "spec": spec})
             }
             other => panic!("{:?}: arming `{id}` is acknowledged: {other:?}", self.name),
@@ -94,7 +94,7 @@ impl Door {
     pub async fn release(&self, id: &str) -> Value {
         match self.ask(&FaultRequest::Release { id: id.into() }).await {
             Ok(FaultReply::Released { node, id: released, was_held, held_ms }) => {
-                assert_eq!(released, id, "{:?}: the door released another cut", self.name);
+                assert_eq!(released, id, "{:?}: the fault service released another cut", self.name);
                 json!({"released": released, "node": node, "was_held": was_held, "held_ms": held_ms})
             }
             other => panic!("{:?}: releasing `{id}` is acknowledged: {other:?}", self.name),
@@ -102,7 +102,7 @@ impl Door {
     }
 }
 
-/// The door's state as the cells read it: `{"node", "cuts": {<id>: {"spec", "armed", "held", "released",
+/// The fault service's state as the cells read it: `{"node", "cuts": {<id>: {"spec", "armed", "held", "released",
 /// "hit", "held_for_ms", "seen_while_held"}}, "step_events_seen"}`, each hit one flat object of its fields.
 fn state_value(s: &FaultState) -> Value {
     let cuts: serde_json::Map<String, Value> = s

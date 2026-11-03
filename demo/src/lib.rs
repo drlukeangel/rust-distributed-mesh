@@ -31,7 +31,7 @@ pub fn data_alpn() -> Alpn {
     Alpn { name: b"demo/echo".to_vec(), proxy: true, carriers: vec!["gateway".into()] }
 }
 
-/// Whether `role` serves the originate door (0x73): the roles work enters through. A compute node
+/// Whether `role` serves the originate service (0x73): the roles work enters through. A compute node
 /// originates opaque calls; a gateway accepts them and routes by the supplied RDM mechanisms. A
 /// broker answers deterministic proof acknowledgements only.
 pub fn serves_originate(role: &Role) -> bool {

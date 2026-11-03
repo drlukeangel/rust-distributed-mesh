@@ -60,7 +60,7 @@ fn source_failed<T: std::fmt::Debug>(r: &Result<T, StatusReply>) -> (String, Str
 
 /// CONTRACT (mesh-delete.md step 4: the fabric-primary validates the manifest it reads from the final
 /// primary; node-rpc-envelope.md, "Mesh delete command pair"): a `MeshDeleted` whose manifest cannot be
-/// read from the final primary (its Build facts unreached, or its door not ready) is refused
+/// read from the final primary (its Build facts unreached, or its readiness gate not open) is refused
 /// `RejectedSourceFailed` naming the final primary's Build log, the fetch of the Build with the
 /// manifest reference, and the read's own failure; the leave stays open (no verdict, so nothing
 /// ends it). What must NOT happen: this admin answering its own `NotReady` for a read of another node,

@@ -10,14 +10,14 @@
 //! (lifecycles/fabric-delete.md "Precondition").
 //!
 //! Every estate runs the testkit's faulted node-admin (`faults::binding_set`), so a cell holds an
-//! executor at a cut through its fault door; a cell that needs a fabric that never reaches
+//! executor at a cut through its fault service; a cell that needs a fabric that never reaches
 //! ready holds a planned node's `pre_node_ready` (`rdm_test::write_pre_node_ready_knob`).
 
 use crate::build_log;
 use rdm_client::{BuildFrame, BuildId, BuildStream, CallEnd, Change, MeshDesired, PathName, ScopeStatus};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_core::{OperationId, OperationSubject};
-use rdm_test::faults::{binding_set, candidate_sha, Door};
+use rdm_test::faults::{binding_set, candidate_sha, FaultClient};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -309,7 +309,7 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
 /// Build has ended, its run receives `Failed { step, reason }` naming the delete"): on a fabric the Day-0
 /// Build brought to ready (the Day-0 Build launches no node, and no other Build is accepted
 /// before its ready), a Build growing mesh1 by two nodes is held by the fabric-primary's
-/// fault door inside the launch of the first, and fabric.delete is accepted. The second node's create
+/// fault service inside the launch of the first, and fabric.delete is accepted. The second node's create
 /// was admitted with the first (Q245: a mesh's member creates run at once). Released, the launch ends
 /// within its bound and its create's receipts stand; no create opens after the acceptance; the growth's
 /// run receives `Incomplete`, each section it did not finish naming the delete (Q346), and the teardown
@@ -319,18 +319,18 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
 async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after() {
     let mut estate = estate_with("a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after").await;
     let ids = ids_of(&estate).await;
-    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("launch", json!({"kind": "step-event", "step": "DeployRuntime", "operation": "node.create", "at": Estate::path("mesh1.node", "1")})).await;
+    let faults = FaultClient::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
+    faults.arm("launch", json!({"kind": "step-event", "step": "DeployRuntime", "operation": "node.create", "at": Estate::path("mesh1.node", "1")})).await;
     let grown = [MeshDesired::of("mesh1", [("node-admin", 1), ("node", 2)])];
     let mut grow = estate.submit_named("mesh1 grown to two nodes", |current, executables| current.resized(&grown, false, executables)).await;
     let grow_id = grow.build_id().to_string();
-    let held = door.wait_held("launch").await;
+    let held = faults.wait_held("launch").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(grow_id.as_str()), "the growth is held inside mesh1.node.1's launch: {held}");
 
     let mut delete = delete_admitted(&estate).await;
     let accepted_ns = now_ns();
     let id = delete.build_id().to_string();
-    door.release("launch").await;
+    faults.release("launch").await;
     let ended = terminal_of("the interrupted growth", &mut grow, SETTLE).await;
     match ended.last() {
         Some(BuildFrame::Incomplete { sections }) => assert!(!sections.is_empty() && sections.iter().all(|s| s.reason.contains(&id)), "the growth's run receives Incomplete, each unfinished section naming the delete {id}: {sections:?}"),
@@ -361,7 +361,7 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
 /// further operation and is never resumed"; fabric-recovery.md step 4: "Under an in-force fabric.delete
 /// ... the workflow re-creates and restores nothing ... the executor holds the fabric-primary's roles to
 /// the end and continues the delete"): on a two-mesh fabric (two node-admins in mesh1), the
-/// fabric-primary's growth of mesh1 is held by its fault door inside mesh1.node.2's launch, fabric.delete
+/// fabric-primary's growth of mesh1 is held by its fault service inside mesh1.node.2's launch, fabric.delete
 /// is accepted, and once mesh1.node-admin.2's log holds the acceptance the fabric-primary is killed. Fabric
 /// recovery's executor, mesh1.node-admin.2, holds the fabric-primary's roles and reads the delete as current:
 /// the growth's attempt ends once its executor's exit is read and reads `Failed` naming the delete,
@@ -376,11 +376,11 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
     let shape = [("mesh1", 2, 1), ("mesh2", 1, 1)];
     let mut estate = ready_fabric("the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outstanding_is_continued_by_its_successor", &shape).await;
     let ids = ids_of(&estate).await;
-    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("launch", json!({"kind": "step-event", "step": "DeployRuntime", "operation": "node.create", "at": Estate::path("mesh1.node", "2")})).await;
+    let faults = FaultClient::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
+    faults.arm("launch", json!({"kind": "step-event", "step": "DeployRuntime", "operation": "node.create", "at": Estate::path("mesh1.node", "2")})).await;
     let grow = estate.submit_named("one more node in mesh1", |current, executables| current.with_one_more("mesh1", "node", executables)).await;
     let grow_id = grow.build_id().to_string();
-    let held = door.wait_held("launch").await;
+    let held = faults.wait_held("launch").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(grow_id.as_str()), "the growth is held inside mesh1.node.2's launch: {held}");
     // mesh1.node.2's runtime is the one live runtime of no settled node.
     let launched: Vec<u32> = estate.live_runtimes().into_iter().filter(|(dir, _)| !ids.values().any(|id| of_node(dir, id))).map(|(_, pid)| pid).collect();
@@ -421,22 +421,22 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
 /// fabric-primary reads the delete as the current Build and continues the teardown"; fabric-delete.md
 /// "Failure": "A fabric-primary lost mid-delete is fabric recovery's: its executor continues the delete as
 /// fabric-primary and re-creates nothing"): on a two-mesh fabric, fabric.delete's executor (the
-/// fabric-primary) is held by its fault door at mesh2's primary's node.delete, after mesh2 is deleted, and
-/// killed. Fabric recovery's executor in mesh1 holds the fabric-primary's roles and runs the next attempt:
+/// fabric-primary) is held by its fault service at mesh2's primary's node.delete, after mesh2 is deleted, and
+/// killed. Fabric recovery's executor in mesh1 holds the fabric-primary's roles and continues the delete:
 /// mesh2's primary is deleted once, its row written by that executor, mesh1 is deleted, and fabric.deleted
 /// is reported. What must NOT happen: a mesh deleted twice, the lost fabric-primary re-created, the
 /// teardown left unfinished, or a runtime left beside the fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next_attempt() {
+async fn the_delete_executor_killed_after_the_first_mesh_is_finished_by_fabric_recoverys_executor() {
     let shape = [("mesh1", 2, 1), ("mesh2", 1, 1)];
-    let mut estate = ready_fabric("the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next_attempt", &shape).await;
+    let mut estate = ready_fabric("the_delete_executor_killed_after_the_first_mesh_is_finished_by_fabric_recoverys_executor", &shape).await;
     let ids = ids_of(&estate).await;
-    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("first-mesh", json!({"kind": "step-event", "step": "NodeDeleted", "operation": "node.delete", "node": delete_subject(&id_in(&ids, "mesh2.node-admin", "1"))})).await;
+    let faults = FaultClient::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
+    faults.arm("first-mesh", json!({"kind": "step-event", "step": "NodeDeleted", "operation": "node.delete", "node": delete_subject(&id_in(&ids, "mesh2.node-admin", "1"))})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
-    let held = door.wait_held("first-mesh").await;
+    let held = faults.wait_held("first-mesh").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh2's primary's node.delete: {held}");
     build_log::build_fact(&estate, &id, "mesh2's MeshDeleted", SETTLE, |b| {
         b.steps.iter().any(|r| action_of(&r.operation) == "mesh.delete" && r.step == rdm_admin::mesh_delete::STEP_MESH_DELETED)
@@ -460,7 +460,7 @@ async fn the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next
 /// one recorded transition the fabric-primary role, the lost mesh's mesh-primary role and its own mesh's,
 /// continues the teardown, reports fabric.deleted while alive, and is then deleted by an outside caller"):
 /// a one-mesh fabric's sole node-admin, the fabric-primary, accepts fabric.delete and is held by its fault
-/// door at mesh1's mesh.delete, its members still serving, and is killed: every admin is lost during the
+/// fault service at mesh1's mesh.delete, its members still serving, and is killed: every admin is lost during the
 /// delete. A person launches a node-admin at mesh1.node-admin.2, a new path.name in mesh1, over a new data
 /// dir, handed the fabric id, mesh1, the store root and the custody. Its fabric recovery holds the
 /// fabric-primary's roles under the delete by one recorded transition, its drive finishes the delete from
@@ -474,12 +474,12 @@ async fn the_sole_admin_lost_mid_delete_is_adopted_by_a_launch_at_a_new_path_nam
     let mut estate = ready_fabric("the_sole_admin_lost_mid_delete_is_adopted_by_a_launch_at_a_new_path_name_that_finishes_the_delete", &shape).await;
     let ids = ids_of(&estate).await;
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
-    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
+    let faults = FaultClient::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
+    faults.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
-    let held = door.wait_held("roster").await;
+    let held = faults.wait_held("roster").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh1's mesh.delete: {held}");
     let custody = rdm_test::test_certs::custody_of(&estate.bootstrap_data_dir("mesh1"), "mesh1");
     let store = rdm_test::estate::estate_store_dir(&estate.root);
@@ -521,7 +521,7 @@ async fn the_sole_admin_lost_mid_delete_is_adopted_by_a_launch_at_a_new_path_nam
 /// mesh-delete.md "Resume after the primary's loss" step 2: "Under an in-force fabric.delete no
 /// node-admin is created: the mesh is deleted in process at the executor holding the fabric-primary's
 /// roles"): on a two-mesh fabric whose mesh1 holds one node-admin, the fabric-primary, fabric.delete's
-/// executor is held by its fault door at mesh2's mesh.delete and killed: mesh1 is left with no node-admin.
+/// executor is held by its fault service at mesh2's mesh.delete and killed: mesh1 is left with no node-admin.
 /// From the backbone, mesh2's primary runs fabric recovery, records the transition and holds the fabric-primary role and mesh1's mesh-primary role; it deletes mesh1 in process
 /// (its serving member by node.delete, the lost fabric-primary as an unreached birth), then its own mesh2
 /// last, and reports fabric.deleted, the one runtime left for the outside caller's node.delete. What must
@@ -533,12 +533,12 @@ async fn the_backbone_executor_takes_both_roles_and_deletes_the_admin_less_mesh_
     let mut estate = ready_fabric("the_backbone_executor_takes_both_roles_and_deletes_the_admin_less_mesh_in_process", &shape).await;
     let ids = ids_of(&estate).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).expect("mesh2's id");
-    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh2_id}})).await;
+    let faults = FaultClient::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
+    faults.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh2_id}})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
-    let held = door.wait_held("roster").await;
+    let held = faults.wait_held("roster").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh2's mesh.delete: {held}");
     estate.kill_bootstrap();
 
@@ -655,7 +655,7 @@ fn fabrics_on(store: &std::path::Path) -> Vec<String> {
 /// work is the dead fabric-primary's own node.delete from outside, and nothing is created"; fabric-delete.md
 /// step 4: "A separate call from outside the fabric runs node.delete of the fabric-primary ... the caller
 /// takes its word"): a one-mesh fabric's sole node-admin, the fabric-primary, deletes mesh1 under
-/// fabric.delete; once mesh1's MeshDeleted is durable it is held by its fault door at fabric.delete's
+/// fabric.delete; once mesh1's MeshDeleted is durable it is held by its fault service at fabric.delete's
 /// Complete, before fabric.deleted, and killed. The delete is in force, no node-admin is
 /// alive and no not-yet-deleted mesh remains. Two staleness floors on, nothing has been created and no
 /// runtime of the fabric runs; a person's adoption launch at a new path.name in mesh1 is refused by name,
@@ -670,18 +670,18 @@ async fn the_fabric_primary_lost_with_no_mesh_left_leaves_only_its_own_node_dele
     let mut estate = ready_fabric("the_fabric_primary_lost_with_no_mesh_left_leaves_only_its_own_node_delete_from_outside_and_creates_nothing", &shape).await;
     let ids = ids_of(&estate).await;
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
-    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("deleted", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_MESH_DELETED, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
+    let faults = FaultClient::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
+    faults.arm("deleted", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_MESH_DELETED, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
-    let held = door.wait_held("deleted").await;
+    let held = faults.wait_held("deleted").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh1's MeshDeleted: {held}");
     // mesh1's MeshDeleted made durable; the fabric-primary is held at fabric.delete's Complete, before
     // fabric.deleted is written.
-    door.arm("next", json!({"kind": "step-event", "step": "Complete", "operation": "fabric.delete"})).await;
-    door.release("deleted").await;
-    let next = door.wait_held("next").await;
+    faults.arm("next", json!({"kind": "step-event", "step": "Complete", "operation": "fabric.delete"})).await;
+    faults.release("deleted").await;
+    let next = faults.wait_held("next").await;
     assert_eq!(next["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at fabric.delete's Complete: {next}");
     build_log::build_fact(&estate, &id, "mesh1's MeshDeleted", SETTLE, |b| {
         b.steps.iter().any(|r| on_mesh(&r.operation, "mesh.delete", &mesh_id) && r.step == rdm_admin::mesh_delete::STEP_MESH_DELETED)
@@ -728,9 +728,9 @@ async fn the_fabric_primary_lost_with_no_mesh_left_leaves_only_its_own_node_dele
 /// its own mesh is deleted last, it reports fabric.deleted alive"; "If the executor is
 /// lost, the next one in ..." the workflow; fabric-delete.md "Failure": "Once a runtime's deletion receipt
 /// is durable, nothing recovers it for being absent"): on a two-mesh fabric whose mesh1 holds one
-/// node-admin, the fabric-primary, and mesh2 two, fabric.delete's executor is held by its fault door at
+/// node-admin, the fabric-primary, and mesh2 two, fabric.delete's executor is held by its fault service at
 /// mesh2's mesh.delete and killed. From the backbone, mesh2.node-admin.1 takes both roles and deletes mesh1 in
-/// process; it is held by its own fault door once mesh1's last member is deleted (its NodeDeleted durable,
+/// process; it is held by its own fault service once mesh1's last member is deleted (its NodeDeleted durable,
 /// its delete's Complete not), before mesh1's row is written Dead or its MeshDeleted, and killed. mesh2.node-admin.2, the one node-admin left, records its own
 /// transition and finishes the teardown: mesh1 deleted once, then its own mesh2 last, fabric.deleted
 /// reported, the one runtime left for the outside caller's node.delete. What must NOT happen: the teardown
@@ -743,14 +743,14 @@ async fn the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_t
     let ids = ids_of(&estate).await;
     let mesh1_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).expect("mesh2's id");
-    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh2_id}})).await;
-    let executor = Door::at(&estate, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await;
+    let faults = FaultClient::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
+    faults.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh2_id}})).await;
+    let executor = FaultClient::at(&estate, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await;
     executor.arm("midway", json!({"kind": "step-event", "step": "Complete", "node": delete_subject(&id_in(&ids, "mesh1.node", "1"))})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
-    let held = door.wait_held("roster").await;
+    let held = faults.wait_held("roster").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh2's mesh.delete: {held}");
     estate.kill_bootstrap();
 
@@ -797,12 +797,12 @@ async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_
     let mut estate = ready_fabric("an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_next_launch_which_finishes_it", &shape).await;
     let ids = ids_of(&estate).await;
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
-    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
+    let faults = FaultClient::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
+    faults.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
-    let held = door.wait_held("roster").await;
+    let held = faults.wait_held("roster").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh1's mesh.delete: {held}");
     let custody = rdm_test::test_certs::custody_of(&estate.bootstrap_data_dir("mesh1"), "mesh1");
     let store = rdm_test::estate::estate_store_dir(&estate.root);
@@ -819,8 +819,8 @@ async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_
     let first = estate.restart_admin_with(&estate.root.join("adopted-mesh1.node-admin.2"), &env);
     assert_eq!(first, Estate::path("mesh1.node-admin", "2"), "the first launch is born at its new path.name");
     estate.enter(&first).await;
-    let first_door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await;
-    let at = first_door.wait_held("midway").await;
+    let first_faults = FaultClient::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await;
+    let at = first_faults.wait_held("midway").await;
     assert_eq!(at["hit"]["build_id"].as_str(), Some(id.as_str()), "the first launch is held midway, at mesh1.node.2's NodeDeleted: {at}");
     let first_pid = *estate.restarted_pids().last().expect("the first launch's pid");
     estate.kill_pid(first_pid);

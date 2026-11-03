@@ -869,7 +869,7 @@ impl AdminRunner {
     /// otherwise, through the create workflow: it mints a new endpoint key, writes it into that data dir
     /// and binds port 0, with a new node.id, incarnation, `endpoint_id` and `transport_addr`, no
     /// supersedes (Q358). Not through
-    /// the create door's target: the birth at the path is the exited one this recovery deleted, and
+    /// the node.create's target: the birth at the path is the exited one this recovery deleted, and
     /// the target would replace it.
     ///
     /// The exited birth is targeted here, by the create (node-recovery.md "Delete blocks the old

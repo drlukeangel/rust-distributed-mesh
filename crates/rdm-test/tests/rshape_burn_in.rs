@@ -483,14 +483,14 @@ fn action_row(c: &Call) -> Value {
     json!({"t_ms": c.started_ms, "finished_ms": c.finished_ms, "action": "rpc.call", "args": c.args, "trace_id": c.trace_id, "root_span_exported": c.root_exported})
 }
 
-/// The role nodes' connection snapshots (originate door, op 0x73), by node name.
+/// The role nodes' connection snapshots (originate service, op 0x73), by node name.
 fn snapshot(estate: &Estate, node: &PathName) -> Value {
     let c = probe_call(estate, &["snapshot", "--target", &rdm_test::estate::path_target(&node), "--key", "x"]);
     assert_eq!(c.out["outcome"], "Reply", "{node:?}: {}", c.out);
     c.out
 }
 
-/// Every role node (compute and gateway answer the snapshot door) holds, with nothing owed, a
+/// Every role node (compute and gateway answer the originate service's snapshot) holds, with nothing owed, a
 /// Connected Direct connection to the exact current birth of its mesh's primary node-admin.
 async fn converge_connections(f: &Formed, inv: &mut Invariants) -> Value {
     converge_connections_with(f, inv, true).await
@@ -1007,7 +1007,7 @@ impl RouteRun {
                 snap["own_latest_directs"].as_array().into_iter().flatten().any(|x| x["state"] == "Connected" && x["destination"]["node_id"] == d["node_id"] && x["destination"]["incarnation"] == d["incarnation_id"]).then_some(())
             })
             .await;
-            // The door's own `outcome` lowercases (`reply`); the probe prints the call's outcome as `call_outcome`.
+            // The originate service's own `outcome` lowercases (`reply`); the probe prints the call's outcome as `call_outcome`.
             assert_eq!(c.out["by"], json!(g1));
             assert_eq!(c.out["destination_node_id"], dest_id);
             assert_eq!(c.out["reply"]["executing_node"], dest_id, "{}", c.out);
@@ -1320,7 +1320,7 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
                 assert_eq!(call.out["reply"]["executing_node"], op.target_id.as_str(), "{}: the reply names the requested node", op.key);
             }
             // A reply that is a protocol refusal (the node answered `ConnectionsDeleting`): the request reached a
-            // live protocol door and was refused, so nothing was applied. A refusal carries no provenance.
+            // live protocol service and was refused, so nothing was applied. A refusal carries no provenance.
             Bucket::Reply => {
                 let refused = call.out["reply"]["result"]["refused"].as_str().unwrap_or_else(|| panic!("{}: a Reply that is neither stored nor a named refusal: {}", op.key, call.out));
                 assert!(!present, "{}: refused ({refused}) yet its value is in the final state", op.key);
@@ -4689,7 +4689,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
     let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     // The source is a compute (it originates), the carrier a gateway of its mesh (the shape's carrier kind),
-    // the destination the other mesh's gateway (it serves the originate door, so it can dial the source).
+    // the destination the other mesh's gateway (it serves the originate service, so it can dial the source).
     let (src, car, dst) = (Estate::path("mesh1.compute", "1"), Estate::path("mesh1.gateway", "1"), Estate::path("mesh2.gateway", "1"));
     let node = |n: &PathName| st.nodes.iter().find(|x| location(x) == *n).cloned().unwrap();
     let (dn, cn) = (node(&dst), node(&car));

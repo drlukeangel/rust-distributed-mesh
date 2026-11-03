@@ -249,8 +249,8 @@ impl Nodes {
     /// `All` moves a primary's roles first, then commands the exact birth. `All` is graceful closure of
     /// every open connection; `Connections` cuts exactly the named ones. The process keeps running. The
     /// stream is `node.connections.deleted`, ending `Complete`, and [`WorkflowStream::completion`] holds
-    /// the door's `ConnectionsDeleted` (what was closed, not open and held); a refusal is the call's
-    /// `Rejected`, by name. A scope that names nothing to cut is refused here as the primary's door
+    /// the `NodeCommandService`'s `ConnectionsDeleted` (what was closed, not open and held); a refusal is the call's
+    /// `Rejected`, by name. A scope that names nothing to cut is refused here as the primary's `NodeCommandService`
     /// refuses it, `rejected-connection-scope`, and nothing is sent.
     pub async fn delete_connections(&self, node: &PathName, scope: &rdm_core::status::ConnectionScope) -> Result<WorkflowStream, CallEnd> {
         if let Some(reason) = scope.refusal() {

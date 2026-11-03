@@ -1,5 +1,5 @@
 //! Testkit-only node-admin stalls: decorators over the traits a node-admin is built from, armed and
-//! released through a door, so a scenario holds a real admin at one named cut of its documented
+//! released through the fault service, so a scenario holds a real admin at one named cut of its documented
 //! Build, deployment, lifecycle and hydration sequences and releases it (i143.e8.s2).
 //!
 //! The product node-admin carries no fault code. Its `Wiring` (`rdm_admin::wiring`)
@@ -7,16 +7,16 @@
 //! the deployment provider and a `FaultedEvents`
 //! over the lifecycle events. Each decorator
 //! asks the shared [`AdminFaults`] at its one cut; an armed, matching cut holds the caller there
-//! until the door releases it. Nothing else changes: every other call passes straight through.
+//! until the fault service releases it. Nothing else changes: every other call passes straight through.
 //!
 //! A cut is one-shot: it holds the first matching call, records what held ([`AdminFaults::state`]),
-//! and after its release it is spent. The door is the testkit Node RPC op `0x75`
-//! ([`crate::fault_door`]): arm, release and state; the state is the active-injection
+//! and after its release it is spent. The fault service is the testkit Node RPC op `0x75`
+//! ([`crate::fault`]): arm, release and state; the state is the active-injection
 //! acknowledgement (`held: true` with the exact call it holds) and the observed consequence
-//! counters. A cut that must be in force before the admin's Node RPC door is ready is armed from
+//! counters. A cut that must be in force before the admin's readiness gate is open is armed from
 //! `<root>/faults/<location-index>.boot.json` ([`arm_boot_cuts`]).
 
-use crate::fault_door::{CutRow, FaultState, Hit};
+use crate::fault::{CutRow, FaultState, Hit};
 use async_trait::async_trait;
 use rdm_core::LifecycleOp;
 use rdm_admin::build::BuildId;
@@ -140,7 +140,7 @@ pub enum CutSpec {
     /// the release, every mesh-primary having replied `blocked`.
     StorageSwitch,
     /// The first append this admin makes to the store file `file` (its path) at `key`, held in the
-    /// disk job that owns the file's append lock (`rdm_node::store_log::write_door`): before the line is
+    /// disk job that owns the file's append lock (`rdm_node::store_log::write_cut`): before the line is
     /// written (a provider completion delayed: every later append to the file, and every wait for the
     /// writes this birth issued, waits behind it), or, `after`, once the line is written and fsynced and
     /// before its caller is answered (the persistence boundary a process is terminated at). A lifecycle
@@ -335,7 +335,7 @@ struct Armed {
     /// For a condition (nothing holds): its hold span, open from the first consultation until the release.
     condition_span: Option<tracing::Span>,
     /// For a store append ([`CutSpec::StoreAppend`]): the store's own hold, which its disk job enters.
-    store: Option<rdm_node::store_log::write_door::Door>,
+    store: Option<rdm_node::store_log::write_cut::Cut>,
 }
 
 /// The armed cuts of one node-admin process.
@@ -362,8 +362,8 @@ impl AdminFaults {
         let span = tracing::info_span!("rdm.testkit.fault.update.via-arm", node = %self.node_id, cut = id, spec = %serde_json::to_string(&spec).unwrap_or_default());
         span.in_scope(|| tracing::info!("cut armed"));
         let store = match &spec {
-            CutSpec::StoreAppend { file, key, after: false } => Some(rdm_node::store_log::write_door::arm(std::path::Path::new(file), key)),
-            CutSpec::StoreAppend { file, key, after: true } => Some(rdm_node::store_log::write_door::arm_after(std::path::Path::new(file), key)),
+            CutSpec::StoreAppend { file, key, after: false } => Some(rdm_node::store_log::write_cut::arm(std::path::Path::new(file), key)),
+            CutSpec::StoreAppend { file, key, after: true } => Some(rdm_node::store_log::write_cut::arm_after(std::path::Path::new(file), key)),
             _ => None,
         };
         cuts.insert(id.to_string(), Armed { spec, hit: None, held: false, released: false, release: tokio::sync::watch::channel(false).0, held_calls: 0, held_since: None, held_ms: None, seen_while_held: 0, condition_span: None, store });
@@ -377,8 +377,8 @@ impl AdminFaults {
         let c = cuts.get_mut(id).ok_or_else(|| format!("{}: no cut `{id}` is armed", self.node_id))?;
         Self::observe_store(c);
         let was_held = c.held;
-        if let Some(door) = &c.store {
-            door.release();
+        if let Some(cut) = &c.store {
+            cut.release();
             c.held = false;
             c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
         }
@@ -402,8 +402,8 @@ impl AdminFaults {
     /// A store append cut as its disk job stands now: held while the append is held there, its hit
     /// recorded the first time it is seen held.
     fn observe_store(c: &mut Armed) {
-        let (Some(door), CutSpec::StoreAppend { file, key, after }) = (&c.store, &c.spec) else { return };
-        if !c.released && door.holds() {
+        let (Some(cut), CutSpec::StoreAppend { file, key, after }) = (&c.store, &c.spec) else { return };
+        if !c.released && cut.holds() {
             c.held = true;
             c.held_since.get_or_insert_with(Instant::now);
             c.hit.get_or_insert_with(|| Hit::StoreAppend { file: file.clone(), key: key.clone(), after: *after });
@@ -768,7 +768,7 @@ pub fn boot_cuts_file(root: &std::path::Path, location: &rdm_core::PathName) -> 
 
 /// Arm what `<root>/faults/<location-index>.boot.json` lists (`[{"id": .., "kind": .., ..}]`) and remove the
 /// file: a birth at this path arms its boot cuts once, so a later birth of the same path is clean.
-/// A cut that must be in force before the admin's Node RPC door is ready (which answers NotReady
+/// A cut that must be in force before the admin's readiness gate is open (which answers NotReady
 /// until then) is armed here.
 pub fn arm_boot_cuts(faults: &AdminFaults, root: &std::path::Path, location: &rdm_core::PathName) -> Result<usize, String> {
     let file = boot_cuts_file(root, location);

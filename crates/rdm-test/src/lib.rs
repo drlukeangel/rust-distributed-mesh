@@ -6,7 +6,7 @@
 //!
 //! On every other RDM crate: it is the test kit an application's cells use, and RDM's own. An
 //! [`estate::Estate`] is one fabric of real node processes a cell starts, drives through the typed
-//! objects and reads back; the probes, proof protocols and fault doors beside it are what the cells
+//! objects and reads back; the probes, proof protocols and fault services beside it are what the cells
 //! assert with.
 //!
 //! # Example
@@ -45,7 +45,7 @@
 //! | `0x72` | `declare-probe` | [`DeclareProbe`](crate::declare_probe::DeclareProbe) | [`DeclareRequest`](crate::declare_probe::DeclareRequest) | [`DeclareReply`](crate::declare_probe::DeclareReply) |
 //! | `0x73` | `originate` | [`Originate`](crate::originate::Originate) | [`OriginateRequest`](crate::originate::OriginateRequest) | [`OriginateReply`](crate::originate::OriginateReply) |
 //! | `0x74` | `pre-node-ready-pull` | [`PreNodeReadyPull`](crate::pre_node_ready_probe::PreNodeReadyPull) | [`PullRequest`](crate::pre_node_ready_probe::PullRequest) | [`PullReply`](crate::pre_node_ready_probe::PullReply) |
-//! | `0x75` | `fault-door` | [`FaultDoor`](crate::fault_door::FaultDoor) | [`FaultRequest`](crate::fault_door::FaultRequest) | [`FaultReply`](crate::fault_door::FaultReply) |
+//! | `0x75` | `fault` | [`Fault`](crate::fault::Fault) | [`FaultRequest`](crate::fault::FaultRequest) | [`FaultReply`](crate::fault::FaultReply) |
 //!
 //! # Guide
 //!
@@ -73,7 +73,7 @@ pub mod resolve_probe;
 pub mod faults;
 pub mod originate;
 pub mod admin_faults;
-pub mod fault_door;
+pub mod fault;
 pub mod test_certs;
 pub mod test_app;
 

@@ -478,7 +478,7 @@ fn probe_bind() -> std::net::SocketAddr {
 
 /// `originate --target <source> --destination exact:<node_id> get|put --key k [--value v]`,
 /// `fault --target <source> --refuse-index N --refuse-history M | --release`, and
-/// `snapshot --target <source>`: the testkit's originate door on the source node (op 0x73).
+/// `snapshot --target <source>`: the testkit's originate service on the source node (op 0x73).
 async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     use rdm_test::originate::{Originate, OriginateReply, OriginateRequest, OriginateStoreOp};
     // A destination or carrier is a node id: `exact:<node_id>` as given, or `path:<JSON>` read as the

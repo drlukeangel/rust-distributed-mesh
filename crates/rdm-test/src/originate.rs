@@ -1,4 +1,4 @@
-//! The originate door: a testkit-only protocol on op `0x73` that asks the executing node to
+//! The originate service: a testkit-only protocol on op `0x73` that asks the executing node to
 //! make a testkit-store call of its own to a destination over its own held connections projection
 //! (`NodeRpcClient::call_connected`, connections.md §5), to arm or release its storage fault
 //! ([`crate::faults`]), and to answer a snapshot of what it holds and owes. A scenario thereby
@@ -27,7 +27,7 @@ pub fn policy() -> CarrierPolicy {
     CarrierPolicy::Proxy { carrier_type: "node".into() }
 }
 
-/// The originate door protocol on op `0x73`.
+/// The originate service protocol on op `0x73`.
 pub struct Originate;
 
 /// A testkit-store operation the originating node makes.
@@ -51,7 +51,7 @@ pub enum OriginateStoreOp {
     },
 }
 
-/// An originate door call.
+/// An originate service call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OriginateRequest {
     /// Call `destination` (a node ID) with `op`, over this node's held projection.
@@ -183,7 +183,7 @@ impl AnsweredBy {
     pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
-/// An originate door answer.
+/// An originate service answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OriginateReply {
     /// The call was made.
@@ -429,18 +429,18 @@ impl NodeProtocol for Originate {
     }
 }
 
-/// The process seams the door acts through.
+/// The process seams the originate service acts through.
 #[derive(Clone)]
 pub struct Seams {
-    /// The resolver the door acts through.
+    /// The resolver the originate service acts through.
     pub resolver: Arc<LiveNodeResolver>,
-    /// The client the door calls through.
+    /// The client the originate service calls through.
     pub client: Arc<NodeRpcClient>,
-    /// The connections writer the door records through.
+    /// The connections writer the originate service records through.
     pub connections: Arc<ConnectionsWriter>,
-    /// The storage fault the door arms and releases.
+    /// The storage fault the originate service arms and releases.
     pub fault: Arc<StorageFault>,
-    /// The name this birth holds now: every door names the node by it, per call.
+    /// The name this birth holds now: every service names the node by it, per call.
     pub name: crate::held_name::HeldName,
     /// The dial half of this node's one data-plane ALPN, set once the node runs
     /// (`node::start_with_seams_and_alpn`); unset, `Stream` is refused by name.
@@ -448,16 +448,16 @@ pub struct Seams {
     /// This node's data-plane connections registry and the name of its one data-plane ALPN, set
     /// with [`Self::data_plane`]: the testkit's Direct dial block acts on it (`BlockDirect`).
     pub data_plane_registry: Arc<std::sync::OnceLock<(rdm_transport::connections::ConnectionsRegistry, Vec<u8>)>>,
-    /// This node's own config door, set once the node runs; unset, `UpdateOwnConfig` is refused by name.
+    /// This node's own `OwnConfig`, set once the node runs; unset, `UpdateOwnConfig` is refused by name.
     pub own_config: Arc<std::sync::OnceLock<rdm_node::node::OwnConfig>>,
 }
 
-/// Serve the door on this node's own seams, with the testkit's default carrier policy ([`policy`]).
+/// Serve the originate service on this node's own seams, with the testkit's default carrier policy ([`policy`]).
 pub fn serve(b: ServerBuilder, seams: Seams, launch: &Launch) -> ServerBuilder {
     serve_with_policy(b, seams, launch, policy())
 }
 
-/// Serve the door with the carrier policy the serving application declares: a Proxy held for a
+/// Serve the originate service with the carrier policy the serving application declares: a Proxy held for a
 /// destination is the effective route only through a carrier of `policy`'s kind
 /// (`rdm_core::connections::resolve`). A shape whose carriers are not `rpc_node`s (a
 /// gateway carrying for a compute) declares its own kind here.
@@ -485,10 +485,10 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                 OriginateRequest::Throughput { destination, streams, bytes } => throughput(&by, &seams, &destination, streams, bytes).await,
                 OriginateRequest::BlockDirect { destination, blocked } => block_direct(&by, &seams, &destination, blocked),
                 OriginateRequest::UpdateOwnConfig { config } => match seams.own_config.get().cloned() {
-                    None => OriginateReply::NotReady { reason: format!("{own:?}: the node does not run yet; its own config has no door") },
-                    Some(door) => {
+                    None => OriginateReply::NotReady { reason: format!("{own:?}: the node does not run yet; its own config is not installed yet") },
+                    Some(own) => {
                         use rdm_core::status::StatusReply as R;
-                        let (outcome, config) = match door.update(config).await {
+                        let (outcome, config) = match own.update(config).await {
                             Ok(reply) => match &reply {
                                 R::ConfigUpdated { config, .. } => (reply.name().to_string(), config.clone()),
                                 R::ConfigRowRefused { .. } => (reply.name().to_string(), Default::default()),
@@ -827,11 +827,11 @@ mod tests {
         NodeConnection { id: rdm_core::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, alpn: rdm_core::connections::ALPN.to_vec(), state: ConnectionState::Connected, carrier: carrier.cloned(), reason: None, logged_at_ms: at }
     }
 
-    /// CONTRACT: the door resolves a held Proxy under the carrier policy it is served with. A
+    /// CONTRACT: the originate service resolves a held Proxy under the carrier policy it is served with. A
     /// Proxy through a gateway is the effective route under a gateway policy, and is skipped (the
     /// route stays Direct, the Proxy is not deleted) under the default rpc_node policy.
     #[test]
-    fn door_resolves_a_gateway_carried_proxy_only_under_a_gateway_policy() {
+    fn originate_resolves_a_gateway_carried_proxy_only_under_a_gateway_policy() {
         let (own, carrier, dest) = (end("compute", 1, "o1"), end("gateway", 1, "c1"), end("broker", 1, "d1"));
         let mut held = ConnectionsHeld::new();
         held.set_own_source(own.node_id.clone());

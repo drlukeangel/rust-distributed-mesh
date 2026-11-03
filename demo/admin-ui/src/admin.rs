@@ -3,7 +3,7 @@
 //! (`RDM_NODE_ADMIN_BIRTH`, the JSON after `RDM_NODE_BIRTH=`) and calls the typed objects there.
 //!
 //! Every Build the UI submits names each path's executable (proposal executable-bindings-at-create.md
-//! rule 1): the UI is the door, expanding its counts into the complete topology, built from the current
+//! rule 1): the UI is the caller, expanding its counts into the complete topology, built from the current
 //! Build `fabric.get` names and every node's row (`fabric.nodes.get`), each held path on the executable
 //! its row records and each created path on the consumer's executable of its type, found beside the
 //! UI's own executable (`rshape-node-admin`, `rshape-gateway`, `rshape-compute`, `rshape-broker`). A

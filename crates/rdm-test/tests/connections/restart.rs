@@ -41,7 +41,7 @@ async fn born(cell: &str) -> Estate {
 
 fn snapshot(estate: &Estate, node: &NodeId) -> Value {
     let out = estate.probe(&["snapshot", "--target", &format!("exact:{node}"), "--key", "x"]);
-    assert_eq!(out["outcome"], "Reply", "{node} answers the snapshot door: {out}");
+    assert_eq!(out["outcome"], "Reply", "{node} answers the originate service's snapshot: {out}");
     out
 }
 

@@ -214,7 +214,7 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
 /// CONTRACT (Luke Q9: "dispatch the request to its implementation; if this endpoint has no
 /// implementation for it, answer \"request not handled here\" ... A missing handler is not an
 /// authorization decision"): Status position 21, reserved since the caller's connections delete went to
-/// NodeCommand 0x22 (D18), reaching a node whose Status door registers no handler for it performs no
+/// NodeCommand 0x22 (D18), reaching a node whose Status service registers no handler for it performs no
 /// closure and records no state. The connection the node
 /// opened stays held in its connections log, no closure or connections-deleting span runs, no block on
 /// new application work is set (the node's next call to its admin is answered on the same entry), and

@@ -46,7 +46,7 @@ fn the_consumers_day0_admin_answers_a_gateway_and_reaches_the_broker_on_the_data
                 }
                 other => panic!("the gateway's data connection to the admin failed: {other:?}"),
             },
-            other => panic!("the gateway's originate door answered {other:?}"),
+            other => panic!("the gateway's originate service answered {other:?}"),
         }
 
         // The admin's own data connection to the broker, made after the fabric is ready: admitted.

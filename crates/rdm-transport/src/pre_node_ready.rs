@@ -89,7 +89,7 @@ impl ServerBuilder {
     /// [`ServerBuilder::serve`] for an app op that must not answer before its hook returned `Ok`: until
     /// `gate` is open the handler does not run and the caller gets the protocol's typed `NotReady`
     /// (`rdm.node_rpc.request.reject.via-pre-node-ready-not-passed`). A lifecycle op is RDM's, not the
-    /// app's, and is never served through this door.
+    /// app's, and is never served through this gate.
     pub fn serve_gated<P, F, Fut>(self, owner: OpOwner, gate: PreNodeReadyGate, f: F) -> Self
     where
         P: NodeProtocol,

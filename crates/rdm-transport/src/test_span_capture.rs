@@ -1,4 +1,4 @@
-//! The one door a unit cell of this crate installs its own span capture through: every callsite
+//! The one function a unit cell of this crate installs its own span capture through: every callsite
 //! enabled first (`crate::enable_callsites`), then the cell's layer as its own
 //! thread's subscriber, so a span the cell opens reaches it whichever thread hit its callsite first.
 

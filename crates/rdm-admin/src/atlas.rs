@@ -236,7 +236,7 @@ impl AtlasRow {
 pub struct Atlas {
     held: Mutex<Held>,
     /// What a refused caller's decision acts through (Q207), installed once this admin's recovery
-    /// submitter and heard-again door exist.
+    /// submitter and `HeardAgain` exist.
     callers: std::sync::OnceLock<Arc<crate::refused_caller::RefusedCallers>>,
     /// This admin's primary records, the ones a primary update's answer is held against
     /// ([`Atlas::primaries`]), installed with its first answer.

@@ -8,7 +8,7 @@
 //! is always `topology − observed` ([`plan`]). A stop, a start or a recovery changes no topology and
 //! is no Build: it is a node command, or the mesh-primary's own workflow.
 //!
-//! A caller names every node it adds or removes: counts are the product's door's vocabulary, expanded
+//! A caller names every node it adds or removes: counts are the product's API's vocabulary, expanded
 //! into named nodes before the typed call (build.md §1).
 
 use rdm_core::build::BuildChange;

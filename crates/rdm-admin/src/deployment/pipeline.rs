@@ -443,7 +443,7 @@ pub trait NodeObserver: Send + Sync {
     /// answered `Pending` (the subject's Status `Pending` answer to `ProbeNodeState`), or the start
     /// that ended Failed with its last reason (the subject's Status `StartFailed` at
     /// `node.pre-node-ready`). A node that is only still Pending, with neither, has none, and neither
-    /// has a node whose door answers `NotReady`: `ready` fails for it, the step waits, and nothing is
+    /// has a node whose readiness gate answers `NotReady`: `ready` fails for it, the step waits, and nothing is
     /// framed `Pending`.
     async fn ready_hook_answer(&self, _node: &Node) -> Option<crate::node_hooks::ProbeAnswer> {
         None

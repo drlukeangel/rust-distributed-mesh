@@ -139,7 +139,7 @@ async fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the
 /// CONTRACT (Q346: "A failed step fails its mesh's section, never the Build, and a Build is never
 /// reverted"; build.md §5: each step's outcome is its `rdm.build.step` event): one Build creates a node
 /// in `mesh1` and one in `mesh2`, the `mesh2` node named on a copy of the node executable. `mesh2`'s
-/// primary is held by its fault door at that create's `PrepareStorage` while the copy is removed; once
+/// primary is held by its fault service at that create's `PrepareStorage` while the copy is removed; once
 /// released, a later step of it fails by name (the executable is gone and nothing is launched),
 /// which ends `mesh2`'s section there; `mesh1`'s section finishes and its node serves. The Build ends
 /// `incomplete`, its end naming `mesh2`'s section with the failed step, and the stream's terminal is
@@ -162,16 +162,16 @@ async fn a_failed_step_ends_its_section_and_the_build_ends_incomplete() {
     std::fs::copy(&binding.executable, &doomed).expect("the executable is copied");
     binding.executable = doomed.clone();
     let (good_at, bad_at) = (rdm_core::PathName::new(&good.path, &good.name).unwrap(), rdm_core::PathName::new(&bad.path, &bad.name).unwrap());
-    let door = rdm_test::faults::Door::at(&estate, &mesh2_primary(&estate).await.location()).await;
-    door.arm("held", serde_json::json!({"kind": "step-event", "step": "PrepareStorage", "operation": "node.create", "at": bad_at})).await;
+    let faults = rdm_test::faults::FaultClient::at(&estate, &mesh2_primary(&estate).await.location()).await;
+    faults.arm("held", serde_json::json!({"kind": "step-event", "step": "PrepareStorage", "operation": "node.create", "at": bad_at})).await;
 
     let stream = estate.submit_change(Change::Create { meshes: Vec::new(), nodes: vec![good, bad] }).await;
     let build_id = stream.build_id().clone();
     let b = build_id.to_string();
-    let held = door.wait_held("held").await;
+    let held = faults.wait_held("held").await;
     assert_eq!(s(&held["hit"]["build_id"]), b, "mesh2's primary is held in the Build's create: {held}");
     std::fs::remove_file(&doomed).expect("the copy is removed while the create is held");
-    door.release("held").await;
+    faults.release("held").await;
     let ended = estate.follow_to_terminal(stream).await;
     let Some(BuildFrame::Incomplete { sections }) = ended.frames.last().cloned() else { panic!("the Build ran, so its terminal is Incomplete: {:?}", ended.frames) };
     assert_eq!(sections.iter().map(|u| u.mesh.as_str()).collect::<Vec<_>>(), vec!["mesh2"], "only mesh2's section ended short: {sections:?}");

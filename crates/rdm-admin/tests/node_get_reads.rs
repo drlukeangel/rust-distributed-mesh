@@ -146,7 +146,7 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
 }
 
 /// The fabric-primary `me`'s `StatusService` over `view`, its atlas `atlas`, its nodes store
-/// `nodes_storage` (its config door bound to it, as boot binds it) and its mesh store `meshes`; every
+/// `nodes_storage` (its `NodeConfigs` bound to it, as boot binds it) and its mesh store `meshes`; every
 /// other store in memory.
 async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atlas>, nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>, meshes: Arc<dyn rdm_admin::storage::MeshStorage>) -> rdm_admin::status_rpc::StatusService {
     let records = nodes_storage.clone();

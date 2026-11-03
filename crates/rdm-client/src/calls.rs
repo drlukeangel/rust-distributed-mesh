@@ -361,7 +361,7 @@ impl<'a> NodeRpc<'a> {
 
     /// `node.connection.delete` of the exact birth's connections named by `scope`, the caller's single
     /// call to the node's mesh-primary `mesh_primary`, directly (R-CR2, R-CR3; D18): NodeCommand 0x22
-    /// `DeleteConnections` at the primary's door, which carries the cut to the exact birth and holds the
+    /// `DeleteConnections` at the primary's `NodeCommandService`, which carries the cut to the exact birth and holds the
     /// birth's `node.connections.deleted` for its rename precondition. The answer is the stream's
     /// terminal frame (`ConnectionsDeleted`) or its refusal, by name (`RejectedConnectionScope`,
     /// `Rejected { reason }`).

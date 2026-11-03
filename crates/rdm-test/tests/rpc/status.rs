@@ -144,7 +144,7 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
 }
 
 /// CONTRACT (R24, Luke Q11: "dispatch the request to its implementation; if this endpoint has no
-/// implementation for it, answer request not handled here"): a node's Status door has no handler
+/// implementation for it, answer request not handled here"): a node's Status service has no handler
 /// for an upward declaration. The declare probe makes `mesh1.node.2` declare its state straight to
 /// `mesh1.node.1`, which answers `RequestNotHandled` naming the request (`declare-node-state`), decided by
 /// dispatch alone, on its reject span `rdm.node.status.reject.via-request-not-handled` (`request`, and

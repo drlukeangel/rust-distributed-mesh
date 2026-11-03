@@ -93,7 +93,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
         tags,
         config,
         // The fact the view folded for the silent birth (deployment-provider.md §2.5): node.get, the
-        // node.delete door and the plan read one source.
+        // node.delete and the plan read one source.
     }
 }
 

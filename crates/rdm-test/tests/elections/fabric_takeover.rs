@@ -10,7 +10,7 @@
 use rdm_core::PathName;
 use rdm_test::estate::location;
 use rdm_test::estate::{named, wait_for, Estate, Owner};
-use rdm_test::faults::{binding_set, candidate_sha, Door};
+use rdm_test::faults::{binding_set, candidate_sha, FaultClient};
 use rdm_test::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -30,7 +30,7 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-/// A faulted-admin estate (every admin serves the fault door) of `shape`, born ready.
+/// A faulted-admin estate (every admin serves the fault service) of `shape`, born ready.
 async fn estate_of(test: &str, shape: &[(&str, u32, u32)]) -> Estate {
     let sha = candidate_sha();
     let estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"], &[]).await.expect("the faulted-admin binding set is accepted");
@@ -44,7 +44,7 @@ async fn estate_of(test: &str, shape: &[(&str, u32, u32)]) -> Estate {
 /// `signal` to every process of mesh1, the Day-0 admin included. The pids signalled.
 async fn lose_mesh1(estate: &Estate, nodes: &[Value], signal: &str) -> Vec<u64> {
     for n in nodes.iter().filter(|n| n["mesh"] != "mesh1" && n["type"] == "node-admin") {
-        Door::at(estate, &location(&n)).await.arm("foreign-domain", json!({"kind": "provider-domain"})).await;
+        FaultClient::at(estate, &location(&n)).await.arm("foreign-domain", json!({"kind": "provider-domain"})).await;
     }
     let mut pids = Vec::new();
     for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && location(n) != Estate::path("mesh1.node-admin", "1")) {
@@ -70,7 +70,7 @@ async fn lose_mesh1_unproven(estate: &Estate, nodes: &[Value]) -> Vec<u64> {
     }
     pids.extend(estate.bootstrap_pid().map(u64::from));
     for n in nodes.iter().filter(|n| n["mesh"] != "mesh1" && n["type"] == "node-admin") {
-        Door::at(estate, &location(&n)).await.arm("mesh1-unproven", json!({"kind": "provider-unproven", "pids": pids})).await;
+        FaultClient::at(estate, &location(&n)).await.arm("mesh1-unproven", json!({"kind": "provider-unproven", "pids": pids})).await;
     }
     estate.fabric_ready();
     for pid in &pids {
@@ -323,7 +323,7 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &PathName, node_id: &
 /// The cut admin is a lost node of mesh2 (Q335; Q342): mesh2's primary, which reaches it through no peer,
 /// investigates it and recovers it on its verdict as its own workflow, with no Build (node-recovery.md
 /// step 3, Q111). The cut admin, mesh2's primary in its own view, recovers mesh2's rpc nodes it cannot
-/// hear; its provider is armed with the testkit's provider-terminate door, the shared-host rig's limit, so
+/// hear; its provider is armed with the testkit's provider-terminate cut, the shared-host rig's limit, so
 /// it terminates no live runtime and each of those recoveries fails by name. The views are read for mesh1 and
 /// the fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -368,7 +368,7 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
     })
     .await;
     // The cut admin reaches no live runtime: its own-mesh recoveries under the cut fail by name.
-    Door::at(&estate, &victim).await.arm("cut-admin-provider", json!({"kind": "provider-terminate"})).await;
+    FaultClient::at(&estate, &victim).await.arm("cut-admin-provider", json!({"kind": "provider-terminate"})).await;
     let cut = match Partition::start(&udp_ports(&nodes, &[victim.clone()]), &udp_ports(&nodes, &others)) {
         Ok(p) => p,
         Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
@@ -539,9 +539,9 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     // The fabric-primary's recovery of the isolated admin cannot terminate its runtime: the provider
     // refuses it by name, so the isolated admin runs on through the cut.
-    let fp_door = Door::at(&estate, fp).await;
+    let fp_faults = FaultClient::at(&estate, fp).await;
     let victim_pid = estate.pid_of(&victim).await;
-    fp_door.arm("isolated-admin-recovery", json!({"kind": "provider-terminate", "pid": victim_pid})).await;
+    fp_faults.arm("isolated-admin-recovery", json!({"kind": "provider-terminate", "pid": victim_pid})).await;
     let cut = match Partition::isolate(&udp_ports(&nodes, &[victim.clone()])) {
         Ok(p) => p,
         Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {

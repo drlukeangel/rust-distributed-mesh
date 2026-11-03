@@ -1037,7 +1037,7 @@ fn view_primary_of_both() -> Topology {
     t
 }
 
-/// The primary's own node.primary.update refused before its row, as the door refuses it with no
+/// The primary's own node.primary.update refused before its row, as `PrimaryUpdate` refuses it with no
 /// successor (`primary_update::update_primary` step 2: nothing said, cut off or written): the view is
 /// left as it is and the refusal is named as the admin's gate names a refused reply.
 struct RefusedUpdate {
@@ -1095,7 +1095,7 @@ impl Gate for RefusedUpdate {
 /// `primary-update` ends mesh1's section, and the Build ends `incomplete` naming that step and the
 /// refusal: nothing is dispatched or run and the view still names `mesh1.node-admin.1` the primary of
 /// both roles. No cut-off and no row is the refusing gate's own record here (it wrote nothing); the
-/// door's refusal writing neither is
+/// `PrimaryUpdate`'s refusal writing neither is
 /// `primary_update::a_transfer_with_no_successor_is_refused_with_q7s_exact_texts_and_nothing_moves`.
 /// Must NOT happen: the drive idle on a refusal, the update asked again, or the delete dispatched.
 #[tokio::test(start_paused = true)]

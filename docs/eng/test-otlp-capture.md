@@ -70,7 +70,7 @@ before any thread exists; a cell never sets or removes a variable
 `I143_ACCEPTANCE_DIR` when the acceptance runner exports one, else
 `target/evidence/rdm-transport`.
 
-Inside `rdm-transport`'s own unit tests, a cell installs its layer through the crate's one door,
+Inside `rdm-transport`'s own unit tests, a cell installs its layer through the crate's one function,
 `test_span_capture::install` (`crates/rdm-transport/src/test_span_capture.rs`), which enables
 every callsite first.
 

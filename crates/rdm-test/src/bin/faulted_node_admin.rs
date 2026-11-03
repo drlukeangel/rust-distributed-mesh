@@ -1,6 +1,6 @@
 //! The testkit's node-admin executable (i143.e8.s2): the public node-admin runtime under its own
-//! service name, with the testkit's stall decorators wired in and their door served on its Node RPC
-//! server (op `0x75`, `rdm_test::fault_door`). A scenario binds
+//! service name, with the testkit's stall decorators wired in and their fault service served on its Node RPC
+//! server (op `0x75`, `rdm_test::fault`). A scenario binds
 //! it as the `node_admin` launch id of an estate and holds the admin at a documented cut
 //! (`rdm_test::admin_faults`). A product binary never carries any of this.
 
@@ -21,7 +21,7 @@ async fn main() {
             std::process::exit(2)
         };
         let armed = admin_faults::arm_boot_cuts(&faults, &root, &name).unwrap_or_else(|e| fail("boot cuts", e));
-        tracing::info_span!("rdm.testkit.fault.create.via-boot", node = %cfg.node_id, node_path = %name.path, node_name = %name.name, door_op = rdm_test::fault_door::OP, boot_cuts = armed).in_scope(|| tracing::info!("boot cuts armed; the fault door is served on the Node RPC server"));
+        tracing::info_span!("rdm.testkit.fault.create.via-boot", node = %cfg.node_id, node_path = %name.path, node_name = %name.name, fault_op = rdm_test::fault::OP, boot_cuts = armed).in_scope(|| tracing::info!("boot cuts armed; the fault service is served on the Node RPC server"));
         // This executable holds the cert material every RDM node-admin does (fabric-certs.md): the root its
         // environment or data dir gives it, or its launch's issuing material. A launch's issuing cert (never
         // its key), and whether the root rode beside it (never the root), are recorded in a span, so a
@@ -41,8 +41,8 @@ async fn main() {
             .in_scope(|| tracing::info!(target: "rafka_node_rpc_testkit", "the launch's issuing material"));
         }
         let mut wiring = admin_faults::wiring(faults.clone());
-        let door = faults.clone();
-        wiring.serve_app = Some(Box::new(move |b| rdm_test::fault_door::serve(b, door)));
+        let service = faults.clone();
+        wiring.serve_app = Some(Box::new(move |b| rdm_test::fault::serve(b, service)));
         wiring.fabric_hooks = test_app::hooks();
         wiring.node_hooks = std::mem::take(&mut wiring.node_hooks).with_on_call_failed(std::sync::Arc::new(test_app::CallFailed));
         wiring.certs = rdm_admin::entry::material_or_exit("faulted-node-admin", cfg);

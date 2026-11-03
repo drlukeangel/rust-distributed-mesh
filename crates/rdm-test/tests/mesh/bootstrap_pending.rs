@@ -56,8 +56,8 @@ fn end(sp: &Value) -> u64 {
 /// must NOT happen: a member of mesh2 created before Pending, a second Pending applied, or the
 /// bootstrap admin taking a role by accepting Pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn bootstrap_admin_receives_pending_before_own_mesh_attempt() {
-    pending_contract("bootstrap_admin_receives_pending_before_own_mesh_attempt").await;
+async fn bootstrap_admin_receives_pending_before_its_own_meshs_section() {
+    pending_contract("bootstrap_admin_receives_pending_before_its_own_meshs_section").await;
 }
 
 /// CONTRACT (#2805): the same Pending contract as the PROCESS cell, on a real same-Docker-domain

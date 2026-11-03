@@ -358,7 +358,7 @@ impl AdminRunner {
         let executable = self.predecessor_executable(path, predecessor).await?;
         match self.revise_predecessor(path).await {
             crate::path_investigation::TargetOutcome::Clear { gone: None } => {}
-            other => return Err(format!("path={node_path:?} name={node_name:?} is not a path no birth held: the create door targeted {other:?}")),
+            other => return Err(format!("path={node_path:?} name={node_name:?} is not a path no birth held: the node.create targeted {other:?}")),
         }
         let hand_off = self.mesh_state_hook(mesh, state)?;
         let template = self.with_issuing_material(self.template_bound(path, mesh, "node-admin", executable, "row").await?, mesh).await?;

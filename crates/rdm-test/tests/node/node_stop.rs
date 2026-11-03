@@ -11,7 +11,7 @@ use rdm_client::{Frame, NodeEvent, NodeStatus, NodeView, Nodes};
 use rdm_core::status::StatusReply;
 use rdm_core::OperationSubject;
 use rdm_test::estate::{at_location, names_location, planned_operations, plans_operation, descends_from, named, wait_for, Estate, Owner};
-use rdm_test::faults::{binding_set, candidate_sha, Door};
+use rdm_test::faults::{binding_set, candidate_sha, FaultClient};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -309,14 +309,14 @@ async fn a_commanded_stop_streams_each_primitives_acknowledgement_and_completion
     estate.until_fabric_ready(SETTLE).await;
     let primary = views.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).expect("mesh1's primary");
     let path: PathName = node_at();
-    let door = Door::at(&estate, &primary).await;
+    let faults = FaultClient::at(&estate, &primary).await;
     let declared_id = views.iter().find(|node| node.location() == path).expect("the stopped node is in the view").node_id.clone();
-    door.arm("declaration", serde_json::json!({"kind": "declaration", "node_id": declared_id, "state": "Stopped"})).await;
+    faults.arm("declaration", serde_json::json!({"kind": "declaration", "node_id": declared_id, "state": "Stopped"})).await;
     let stopped = frames(estate.nodes_obj().await.stop(&path).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    let hit = door.wait_held("declaration").await;
+    let hit = faults.wait_held("declaration").await;
     assert_eq!(hit["hit"]["node_id"], declared_id.as_str(), "the mesh-primary holds the node's Stopped declaration: {hit}");
-    door.release("declaration").await;
+    faults.release("declaration").await;
 
     estate.stop().await;
     let spans = estate.spans();
@@ -670,14 +670,14 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
     let path: PathName = node_at();
     let before = view_of(&estate.nodes_obj().await, &path).await;
 
-    let door = Door::at(&estate, &fp).await;
-    door.arm("stopped-held", serde_json::json!({"kind": "event", "event": "stopped", "node": before.node_id})).await;
+    let faults = FaultClient::at(&estate, &fp).await;
+    faults.arm("stopped-held", serde_json::json!({"kind": "event", "event": "stopped", "node": before.node_id})).await;
     let stop = tokio::spawn({
         let nodes = estate.nodes_obj().await;
         let path = path.clone();
         async move { frames(nodes.stop(&path).await.expect("the stop was accepted")).await }
     });
-    door.wait_held("stopped-held").await;
+    faults.wait_held("stopped-held").await;
     // The stream's stopped is held at the mesh-primary: the birth is listed stopped from its own
     // declaration alone.
     let until = std::time::Instant::now() + Duration::from_secs(30);
@@ -690,8 +690,8 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     assert_eq!((stopped.status, &stopped.node_id, &stopped.incarnation_id), (NodeStatus::Stopped, &before.node_id, &before.incarnation_id), "the same birth, stopped on its row from its own declaration");
-    assert_eq!(door.cut("stopped-held").await["held"], true, "the stream's stopped is still held: {}", door.cut("stopped-held").await);
-    door.release("stopped-held").await;
+    assert_eq!(faults.cut("stopped-held").await["held"], true, "the stream's stopped is still held: {}", faults.cut("stopped-held").await);
+    faults.release("stopped-held").await;
     let stopped = stop.await.expect("the stop's call");
     assert_eq!(events(&stopped), vec![NodeEvent::ConnectionsDeleted, NodeEvent::Stopped], "{stopped:?}");
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
@@ -1300,7 +1300,7 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
 /// CONTRACT (i146 Q39; node-status.md "Status report"; node-primary-update.md steps 5-8): a node's
 /// declaration is owed to the primary of its mesh's primary role, and the role moving is its one
 /// retargeting. In a fabric of two meshes, mesh2's non-primary node is restarted while mesh2's
-/// primary holds the restart's node.started unanswered at its `StatusService` (the fault door's
+/// primary holds the restart's node.started unanswered at its `StatusService` (the fault service's
 /// declaration cut): the restart's wait for the node's readiness fails naming the node.started its
 /// primary never took, the node live and its declaration owed. Then mesh2's primary is stopped,
 /// which moves mesh2's role to mesh2's other admin first. The node hears the move: its call to the
@@ -1330,15 +1330,15 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     let nodes = estate.nodes_obj().await;
 
     // The old primary holds the node's node.started at its `StatusService`: the declaration stays owed.
-    let door = Door::at(&estate, &primary).await;
-    door.arm("declaration", serde_json::json!({"kind": "declaration", "node": node, "state": "Ready"})).await;
+    let faults = FaultClient::at(&estate, &primary).await;
+    faults.arm("declaration", serde_json::json!({"kind": "declaration", "node": node, "state": "Ready"})).await;
     let request = estate.create_node_request("mesh2", "node").await;
     let restarted = frames(nodes.create(vec![request]).await.expect("the create was accepted")).await;
     assert!(
         matches!(restarted.last(), Some(Frame::Failed { reason, .. }) if reason.contains("WaitForNodeReady") && reason.contains("it took no node.started")),
         "the first start's wait for readiness fails naming the node.started its primary never took: {restarted:?}"
     );
-    let hit = door.wait_held("declaration").await;
+    let hit = faults.wait_held("declaration").await;
     assert_eq!(hit["hit"]["node"], serde_json::to_value(&node).unwrap(), "the old primary holds the node's declaration: {hit}");
 
     // The role moves: the old primary's stop runs node.primary.update first.
@@ -1395,7 +1395,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
 /// §43, "Owed messages: delivery is the runtime's"; step 5 and Q49: whichever of the stopped frame and the
 /// declaration reaches the mesh-primary first is applied, and the other answers `AlreadyApplied`):
 /// mesh2's node is stopped while mesh2's primary holds the node's `Stopped` declaration unanswered at
-/// its `StatusService` (the fault door's declaration cut) and holds the stop stream's `stopped` unrecorded
+/// its `StatusService` (the fault service's declaration cut) and holds the stop stream's `stopped` unrecorded
 /// (its event cut), and that primary is then SIGKILLed: the role moves to mesh2's other admin, and the
 /// stopped node, which left its mesh's channel at its transport cut, hears neither the death nor the
 /// move. The stop's receipt and reply never wait for the declaration's answer: the Build's next attempt,
@@ -1421,13 +1421,13 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
     let node_id = before.node_id.to_string();
 
     // mesh2's primary holds the node's Stopped declaration unanswered and the stop stream's stopped unrecorded.
-    let door = Door::at(&estate, &primary).await;
-    door.arm("declaration", serde_json::json!({"kind": "declaration", "node_id": before.node_id, "state": "Stopped"})).await;
-    door.arm("stopped-held", serde_json::json!({"kind": "event", "event": "stopped", "node": before.node_id})).await;
+    let faults = FaultClient::at(&estate, &primary).await;
+    faults.arm("declaration", serde_json::json!({"kind": "declaration", "node_id": before.node_id, "state": "Stopped"})).await;
+    faults.arm("stopped-held", serde_json::json!({"kind": "event", "event": "stopped", "node": before.node_id})).await;
     let builds = estate.build_ids().await;
     let stop = nodes.stop(&node).await.unwrap_or_else(|e| panic!("the stop of {node_s:?} was accepted: {e:?}"));
     drop(stop);
-    let hit = door.wait_held("declaration").await;
+    let hit = faults.wait_held("declaration").await;
     assert_eq!(hit["hit"]["node_id"], before.node_id.as_str(), "mesh2's primary holds the node's Stopped declaration: {hit}");
     // The primary dies holding it: the role moves to mesh2's other admin.
     estate.kill_node(&primary).await;
@@ -1800,17 +1800,17 @@ async fn a_fabric_primary_serving_a_held_build_create_leaves_on_its_signal_withi
     estate.settles_to(&shape, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let fp_pid = estate.bootstrap_pid().expect("the Day-0 admin is the fabric-primary and the estate holds its pid") as u64;
-    let mesh2_door = Door::at(&estate, &Estate::path("mesh2.node-admin", "1")).await;
+    let mesh2_faults = FaultClient::at(&estate, &Estate::path("mesh2.node-admin", "1")).await;
     let id_of = |rows: &[Value], at: &PathName| rows.iter().find(|n| rdm_test::estate::location(n) == *at).map(|n| s(&n["node_id"])).expect("a settled row");
     let rows = estate.node_values().await;
     let fp_id = id_of(&rows, &fp);
-    mesh2_door.arm("held-create", serde_json::json!({"kind": "step-event", "step": "AllocateIdentity", "operation": "node.create"})).await;
+    mesh2_faults.arm("held-create", serde_json::json!({"kind": "step-event", "step": "AllocateIdentity", "operation": "node.create"})).await;
     // A Build adds a node to mesh2; its create's first step event is held at mesh2's primary, so the
     // caller's build.create the fabric-primary serves stays open. The caller's stream is kept open with it.
     let request = estate.create_node_request("mesh2", "node").await;
     let nodes = estate.nodes_obj().await;
     let create = tokio::spawn(async move { nodes.create(vec![request]).await.map(|_| ()) });
-    let held = mesh2_door.wait_held("held-create").await;
+    let held = mesh2_faults.wait_held("held-create").await;
     assert_eq!(s(&held["hit"]["operation"]["action"]), "node.create", "the held step is the create's, inside the build.create the fabric-primary serves: {held}");
     let signalled = std::time::Instant::now();
     assert!(std::process::Command::new("kill").args(["-TERM", &fp_pid.to_string()]).status().unwrap().success(), "kill -TERM {fp_pid}");

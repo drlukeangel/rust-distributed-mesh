@@ -93,7 +93,7 @@ impl Estate {
     }
 
     /// Make the node-admin `Estate::admin` reachable on `peers`. A birth an admin this estate started
-    /// printed is learned once, as printed: it is that process's own birth, which its door opens for
+    /// printed is learned once, as printed: it is that process's own birth, which its readiness gate opens for
     /// (node-rpc-envelope.md, "Node RPC readiness gate": the router answers NotReady until then), so the
     /// handover waits until it answers `fabric.get`. `relearn` reads the views of every node-admin the
     /// estate knows first.
@@ -103,7 +103,7 @@ impl Estate {
             self.relearn(peers).await;
         }
         if let Some(birth) = printed.iter().find(|birth| birth.location() == self.admin) {
-            self.await_door(peers, &self.admin, birth).await;
+            self.await_readiness_gate(peers, &self.admin, birth).await;
         }
     }
 
@@ -116,10 +116,10 @@ impl Estate {
         printed
     }
 
-    /// Wait until the admin `entry`, which printed `birth`, answers `fabric.get` over Node RPC: its door
+    /// Wait until the admin `entry`, which printed `birth`, answers `fabric.get` over Node RPC: its readiness gate
     /// opens for its own birth (node-rpc-envelope.md, "Node RPC readiness gate": the router answers
     /// NotReady until then).
-    async fn await_door(&self, peers: &Peers, entry: &PathName, birth: &MeshNode) {
+    async fn await_readiness_gate(&self, peers: &Peers, entry: &PathName, birth: &MeshNode) {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {
             let answer = tokio::time::timeout(std::time::Duration::from_secs(2), the_fabric(&Fabrics::new(peers.carrier_at(entry.clone())))).await;
@@ -238,12 +238,12 @@ impl Estate {
     /// Point the typed objects at the node-admin `admin`, by name. Its birth is already on `Peers` (an admin
     /// this estate started printed it; any other is listed by a view the estate read), and the entry it
     /// leaves is forgotten: a node-admin that died is never asked again. An admin that printed its birth
-    /// just now is waited for until its door opens.
+    /// just now is waited for until its readiness gate opens.
     pub async fn enter(&mut self, admin: &PathName) {
         let peers = self.peers().await;
         let printed = self.learn_printed(&peers);
         match printed.iter().rev().find(|birth| birth.location() == *admin) {
-            Some(birth) => self.await_door(&peers, admin, birth).await,
+            Some(birth) => self.await_readiness_gate(&peers, admin, birth).await,
             // Its views are read and noted. An admin whose birth the estate already holds needs no answer:
             // after a loss its reads of other meshes are carried up to a fabric-primary that may not answer
             // them yet (query.md §1), and the birth it holds is the one the calls go to.

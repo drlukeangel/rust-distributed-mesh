@@ -1,4 +1,4 @@
-//! The Chaos tab's door onto the chaos kit (`rafka-chaos`).
+//! The Chaos tab's routes onto the chaos kit (`rafka-chaos`).
 //!
 //! A fault is aimed at one node's EXACT runtime, read from the runtime record the node's birth
 //! published in its data dir, and answers with the kit's typed outcome: applied (with the OS

@@ -6,7 +6,7 @@
 //! A real estate whose `node_admin` launch id is bound to the testkit's `faulted-node-admin`: the
 //! public node-admin runtime with the testkit's stall decorators wired in through `Wiring`
 //! (`rdm_test::admin_faults`). Every stall is armed, acknowledged, observed and
-//! released through that admin's door; the Builds that trigger them are the ones a caller makes
+//! released through that admin's fault service; the Builds that trigger them are the ones a caller makes
 //! (`node.create` / `node.delete` / `build.create` accepted by the fabric-primary ->
 //! executor reconcile -> node operation -> deployment pipeline), driven through the typed objects over
 //! Node RPC. The Build is read as the fabric's Build records hold it, from its store root (Q292,
@@ -19,7 +19,7 @@ use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
 use rdm_admin::deployment::pipeline::{AdoptStep, CreateStep, DeleteStep};
 use rdm_test::estate::{at_location, named, Estate, Owner};
-use rdm_test::faults::{binding_set, candidate_sha, Door};
+use rdm_test::faults::{binding_set, candidate_sha, FaultClient};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -97,7 +97,7 @@ fn acceptance_dir() -> PathBuf {
     }
 }
 
-// ---- the door: rdm_test::faults::Door ----------------------------------------------------
+// ---- the fault client: rdm_test::faults::FaultClient-------------------------------------------
 
 // ---- reading the estate -----------------------------------------------------------------------------
 
@@ -151,9 +151,9 @@ fn row(h: Hold, group: &str, id: &str, spec: &Value, release_ack: Value, after: 
 
 struct Run {
     estate: Estate,
-    /// The directory holding every node's data dir and the faults' doors.
+    /// The directory holding every node's data dir and the faults' clients.
     root: PathBuf,
-    doors: std::sync::Mutex<BTreeMap<PathName, Door>>,
+    faults: std::sync::Mutex<BTreeMap<PathName, FaultClient>>,
     rows: std::sync::Mutex<Vec<Value>>,
     /// Every Build the run made, with the runs it must have at the end.
     builds: std::sync::Mutex<Vec<(String, u64)>>,
@@ -167,10 +167,10 @@ impl Run {
         build_log::build_value(&self.estate, id).await
     }
 
-    /// the current build_id as the fabric primary holds it: `fabric.get` at the admin behind its door.
+    /// the current build_id as the fabric primary holds it: `fabric.get` at the admin behind its fault client.
     async fn fabric_build_id(&self) -> String {
-        let door = self.fabric_door().await;
-        let at = door.location();
+        let faults = self.fabric_faults().await;
+        let at = faults.location();
         self.estate.fabric_view_at(&at).await.unwrap_or_else(|| panic!("{at:?} does not answer fabric.get for this estate's Fabric")).build_id.unwrap_or_default()
     }
 
@@ -224,16 +224,16 @@ impl Run {
         b.push((id.to_string(), runs));
     }
 
-    /// `node` as the admin behind `door` holds it.
-    async fn node_from(&self, door: &Door, node: &PathName) -> Option<Value> {
-        self.estate.node_values_at(&door.location()).await.into_iter().find(|n| location(n) == *node)
+    /// `node` as the admin behind `faults` holds it.
+    async fn node_from(&self, faults: &FaultClient, node: &PathName) -> Option<Value> {
+        self.estate.node_values_at(&faults.location()).await.into_iter().find(|n| location(n) == *node)
     }
 
     /// Await the fact `holds` of Build `id` as the fabric's Build records hold it, the records the admin
-    /// behind `door` reads (Q292). A Build they hold as failed fails the cell with the Build.
-    async fn build_fact(&self, door: &Door, id: &str, fact: &str, holds: impl Fn(&rdm_admin::build_state::BuildProjection) -> bool) -> Value {
+    /// behind `faults` reads (Q292). A Build they hold as failed fails the cell with the Build.
+    async fn build_fact(&self, faults: &FaultClient, id: &str, fact: &str, holds: impl Fn(&rdm_admin::build_state::BuildProjection) -> bool) -> Value {
         let build = build_log::build_fact(&self.estate, id, fact, Duration::from_secs(120), |b| {
-            assert!(b.state != BuildState::Failed, "Build {id} failed at {:?}: {b:#?}", door.name);
+            assert!(b.state != BuildState::Failed, "Build {id} failed at {:?}: {b:#?}", faults.name);
             holds(b)
         })
         .await
@@ -241,9 +241,9 @@ impl Run {
         serde_json::to_value(build).expect("a Build view serializes")
     }
 
-    /// Wait until the admin behind `door` holds Build `id` complete.
-    async fn build_complete(&self, door: &Door, id: &str) -> Value {
-        self.build_fact(door, id, "complete", |b| b.state == BuildState::Complete).await
+    /// Wait until the admin behind `faults` holds Build `id` complete.
+    async fn build_complete(&self, faults: &FaultClient, id: &str) -> Value {
+        self.build_fact(faults, id, "complete", |b| b.state == BuildState::Complete).await
     }
 
     /// A healthy create of `kind` in `mesh1`: the node, ready, and its Build complete.
@@ -265,12 +265,12 @@ impl Run {
         id
     }
 
-    /// The cut `id` on `door` holds a call of Build `build_id`: read the Build while it holds.
+    /// The cut `id` on `faults` holds a call of Build `build_id`: read the Build while it holds.
     /// `expect_done` is the receipts of `operation` the Build must hold now (none: not asserted);
     /// `runtimes` the runtimes of a node alive now.
     #[allow(clippy::too_many_arguments)]
-    async fn hold(&self, door: &Door, id: &str, arm_ack: Value, build_id: &str, operation: &Op, expect_done: Option<Vec<String>>, runtimes: Option<(&PathName, usize)>) -> Hold {
-        let held = door.wait_held(id).await;
+    async fn hold(&self, faults: &FaultClient, id: &str, arm_ack: Value, build_id: &str, operation: &Op, expect_done: Option<Vec<String>>, runtimes: Option<(&PathName, usize)>) -> Hold {
+        let held = faults.wait_held(id).await;
         if !held["hit"]["build_id"].is_null() {
             assert_eq!(held["hit"]["build_id"], build_id, "`{id}` holds a call of the Build that triggered it: {held}");
         }
@@ -289,7 +289,7 @@ impl Run {
             }
             None => None,
         };
-        let still = door.cut(id).await;
+        let still = faults.cut(id).await;
         assert_eq!(still["held"], true, "the injection stays active through the observation: {still}");
         let during = json!({
             "build_state": b["state"], "operation": operation.value(), "done_steps": done, "runtimes": runtimes_now,
@@ -298,20 +298,20 @@ impl Run {
         Hold { arm_ack, held, build_id: build_id.to_string(), during }
     }
 
-    /// The door of the admin named `name`, opened once.
-    async fn door_of(&self, name: &PathName) -> Door {
-        if let Some(d) = self.doors.lock().unwrap().get(name) {
+    /// The fault client of the admin named `name`, opened once.
+    async fn faults_of(&self, name: &PathName) -> FaultClient {
+        if let Some(d) = self.faults.lock().unwrap().get(name) {
             return d.clone();
         }
-        let d = Door::at(&self.estate, name).await;
-        self.doors.lock().unwrap().insert(name.clone(), d.clone());
+        let d = FaultClient::at(&self.estate, name).await;
+        self.faults.lock().unwrap().insert(name.clone(), d.clone());
         d
     }
 
     /// The admin that executes the operations on `mesh`'s members: the mesh's admin primary.
-    async fn member_door(&self, mesh: &str) -> Door {
+    async fn node_faults(&self, mesh: &str) -> FaultClient {
         let primary = self.primary_where(&format!("{mesh} has an admin primary"), |n| n.r#type == "node-admin" && n.mesh == mesh && n.is_primary).await;
-        self.door_of(&primary).await
+        self.faults_of(&primary).await
     }
 
     /// The node `is` names in the views, once a read answers it: a read refused not-ready while a node
@@ -325,9 +325,9 @@ impl Run {
     }
 
     /// The admin that executes everything else (mesh creation and deletion): the fabric primary.
-    async fn fabric_door(&self) -> Door {
+    async fn fabric_faults(&self) -> FaultClient {
         let primary = self.primary_where("the fabric has a primary", |n| n.is_fabric_primary).await;
-        self.door_of(&primary).await
+        self.faults_of(&primary).await
     }
 
     fn push(&self, v: Value) {
@@ -340,8 +340,8 @@ impl Run {
 
     /// After a released create: the Build is complete once, each documented step has one receipt,
     /// one runtime serves the node and the current build_id names this Build.
-    async fn after_create(&self, door: &Door, build_id: &str, node: &PathName, order: &[String]) -> Value {
-        let b = self.build_complete(door, build_id).await;
+    async fn after_create(&self, faults: &FaultClient, build_id: &str, node: &PathName, order: &[String]) -> Value {
+        let b = self.build_complete(faults, build_id).await;
         assert_eq!(b["state"], "complete", "{b}");
         assert_eq!(build_log::runs(&self.estate, build_id), ONE_RUN, "the Build ran once: {b}");
         assert!(each_step_once(&b), "no step ran twice: {b}");
@@ -358,8 +358,8 @@ impl Run {
     }
 
     /// After a released removal: complete once, each delete step once, the node gone, no runtime left.
-    async fn after_delete(&self, door: &Door, build_id: &str, node: &PathName, node_id: &str, order: &[String]) -> Value {
-        let b = self.build_complete(door, build_id).await;
+    async fn after_delete(&self, faults: &FaultClient, build_id: &str, node: &PathName, node_id: &str, order: &[String]) -> Value {
+        let b = self.build_complete(faults, build_id).await;
         assert_eq!(b["state"], "complete", "{b}");
         assert_eq!(build_log::runs(&self.estate, build_id), ONE_RUN, "the Build ran once: {b}");
         assert!(each_step_once(&b), "no step ran twice: {b}");
@@ -384,16 +384,16 @@ async fn create_step_cut(run: &Run, order: &[String], i: usize, node: &PathName)
     let id = format!("create:{step}");
     let op = Op::create(node);
     let spec = op.cut(step);
-    let door = run.member_door("mesh1").await;
-    let ack = door.arm(&id, spec.clone()).await;
+    let faults = run.node_faults("mesh1").await;
+    let ack = faults.arm(&id, spec.clone()).await;
     let mut stream = run.spawn("mesh1", "node").await;
     let build_id = Run::id_of(&stream);
     // The runtime exists once DeployRuntime's work is done.
     let runtimes = usize::from(i >= index_of(order, CreateStep::DeployRuntime.name()));
-    let h = run.hold(&door, &id, ack, &build_id, &op, Some(order[..i].to_vec()), Some((node, runtimes))).await;
-    let rel = door.release(&id).await;
+    let h = run.hold(&faults, &id, ack, &build_id, &op, Some(order[..i].to_vec()), Some((node, runtimes))).await;
+    let rel = faults.release(&id).await;
     run.complete(&mut stream).await;
-    let after = run.after_create(&door, &build_id, node, order).await;
+    let after = run.after_create(&faults, &build_id, node, order).await;
     run.note_build(&build_id, ONE_RUN);
     run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "create", "steps": order, "held_step": step}));
     run.push(row(h, "create-step", &id, &spec, rel, after));
@@ -406,18 +406,18 @@ async fn delete_step_cut(run: &Run, order: &[String], i: usize, node: &PathName)
     let node_id = run.id_at(node).await;
     let op = Op::delete(&node_id);
     let spec = op.cut(step);
-    let door = run.member_door("mesh1").await;
-    let ack = door.arm(&id, spec.clone()).await;
+    let faults = run.node_faults("mesh1").await;
+    let ack = faults.arm(&id, spec.clone()).await;
     let mut stream = run.delete(node).await;
     let build_id = Run::id_of(&stream);
     // Before StopNode asked the birth to stop it must be alive; once TerminateRuntime's work is
     // done it is dead. Between, the birth may have exited by its own stop: not asserted.
     let (mark, terminate) = (index_of(order, DeleteStep::StopNode.name()), index_of(order, DeleteStep::TerminateRuntime.name()));
     let runtimes = if i < mark { Some((node, 1)) } else if i >= terminate { Some((node, 0)) } else { None };
-    let h = run.hold(&door, &id, ack, &build_id, &op, Some(order[..i].to_vec()), runtimes).await;
-    let rel = door.release(&id).await;
+    let h = run.hold(&faults, &id, ack, &build_id, &op, Some(order[..i].to_vec()), runtimes).await;
+    let rel = faults.release(&id).await;
     run.complete(&mut stream).await;
-    let after = run.after_delete(&door, &build_id, node, &node_id, order).await;
+    let after = run.after_delete(&faults, &build_id, node, &node_id, order).await;
     run.note_build(&build_id, ONE_RUN);
     run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "delete", "steps": order, "held_step": step}));
     run.push(row(h, "delete-step", &id, &spec, rel, after));
@@ -425,7 +425,7 @@ async fn delete_step_cut(run: &Run, order: &[String], i: usize, node: &PathName)
 
 /// CONTRACT (#2780): every documented Build/deployment step,
 /// accepted-Build persistence cut, runtime publication cut and Pending gate of a real
-/// node-admin is held independently at its one point and released. For each cut: the testkit door
+/// node-admin is held independently at its one point and released. For each cut: the testkit service
 /// acknowledges the arming and then the active hold (naming the exact call that was held: Build,
 /// operation, step); while it holds, the Build holds exactly the receipts before the cut
 /// and is not complete, the later steps have not begun, and
@@ -446,7 +446,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     let set = binding_set(&sha);
     let estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let root = estate.root.clone();
-    let run = Run { estate, root, doors: Default::default(), rows: Default::default(), builds: Default::default(), span_checks: Default::default() };
+    let run = Run { estate, root, faults: Default::default(), rows: Default::default(), builds: Default::default(), span_checks: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: the mesh holds two
     // admins before any cut is armed, and either may hold the roles.
     let shape = run.estate.resize_shape("fabric1", &[("mesh1", 2, 0)]).await.build_id.to_string();
@@ -543,7 +543,7 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], delete_order: &[S
         {
             "cuts": ["day-0 first Build acceptance at boot"],
             "where": "crates/rafka-node-admin-core/src/admin.rs:1660-1661",
-            "why": "runs inside the Day-0 admin's start(), before the estate harness can reach any door: crates/rdm-test-scenario/src/estate.rs `born` removes and recreates the estate root (so no boot cut can be placed before it) and blocks on the admin's control API (so a held Day-0 start stalls the harness itself)."
+            "why": "runs inside the Day-0 admin's start(), before the estate harness can reach any fault service: crates/rdm-test-scenario/src/estate.rs `born` removes and recreates the estate root (so no boot cut can be placed before it) and blocks on the admin's control API (so a held Day-0 start stalls the harness itself)."
         }
     ]);
     let result = json!({
@@ -676,8 +676,8 @@ async fn event_cut(run: &Run, delete_order: &[String], event: &'static str, node
     let node_id = run.id_at(node).await;
     let spec = json!({"kind": "event", "event": event, "node": node_id});
     let op = Op::delete(&node_id);
-    let door = run.member_door("mesh1").await;
-    let ack = door.arm(&id, spec.clone()).await;
+    let faults = run.node_faults("mesh1").await;
+    let ack = faults.arm(&id, spec.clone()).await;
     let mut stream = run.delete(node).await;
     let build_id = Run::id_of(&stream);
     // `deleting` follows the NodeDeleting receipt, with the birth untouched; `deleted` follows the
@@ -687,16 +687,16 @@ async fn event_cut(run: &Run, delete_order: &[String], event: &'static str, node
         "deleted" => (index_of(delete_order, DeleteStep::NodeDeleted.name()) + 1, 0),
         other => panic!("{other} is not a removal event"),
     };
-    let mut h = run.hold(&door, &id, ack, &build_id, &op, Some(delete_order[..receipts].to_vec()), Some((node, runtimes))).await;
-    let view = run.node_from(&door, node).await;
+    let mut h = run.hold(&faults, &id, ack, &build_id, &op, Some(delete_order[..receipts].to_vec()), Some((node, runtimes))).await;
+    let view = run.node_from(&faults, node).await;
     // Observed, not asserted: the executor derives the open overlay from its own Build facts each
     // hierarchy checklist (`routable` goes false from the NodeDeleting receipt alone, within one checklist),
     // so the executor's view is not a witness of the publish. The witness is the event's own span,
     // started only after the release (checked on the exported spans).
     h.during["node_in_executor_view"] = view.map(|v| json!({"status": v["status"], "routable": v["routable"]})).unwrap_or(Value::Null);
-    let rel = door.release(&id).await;
+    let rel = faults.release(&id).await;
     run.complete(&mut stream).await;
-    let after = run.after_delete(&door, &build_id, node, &node_id, delete_order).await;
+    let after = run.after_delete(&faults, &build_id, node, &node_id, delete_order).await;
     run.note_build(&build_id, ONE_RUN);
     run.span_check(json!({"kind": "event", "cut": id, "span": event_span(event), "build_id": build_id}));
     run.span_check(json!({"kind": "step", "cut": format!("{id}#steps"), "hold_cut": id, "build_id": build_id, "node": node, "pipeline": "delete", "steps": delete_order, "held_step": delete_order[receipts - 1]}));
@@ -711,15 +711,15 @@ async fn event_cut(run: &Run, delete_order: &[String], event: &'static str, node
 /// it is durable), and no admin executes it; the release makes it durable, current and run. The
 /// request is made from a task, because it does not return until release.
 async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, group: &str, node: &PathName) {
-    let door = run.fabric_door().await;
+    let faults = run.fabric_faults().await;
     let previous = run.fabric_build_id().await;
-    let ack = door.arm(id, spec.clone()).await;
+    let ack = faults.arm(id, spec.clone()).await;
     let request = {
-        let nodes = Nodes::new(run.estate.carrier_at(&door.location()).await);
+        let nodes = Nodes::new(run.estate.carrier_at(&faults.location()).await);
         let request = run.estate.create_node_request("mesh1", "node").await;
         tokio::spawn(async move { nodes.create(vec![request]).await })
     };
-    let held = door.wait_held(id).await;
+    let held = faults.wait_held(id).await;
     let build_id = held["hit"]["build_id"].as_str().expect("the cut names the Build").to_string();
     // Does any admin hold, or execute, a Build whose write is held? Every admin's own log, read for a
     // few executor turns (a turn is 300 ms) while the cut holds.
@@ -744,12 +744,12 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
         "build_held_by_an_admin": false, "current_build_id": previous, "previous_build_id": previous, "accepting_request_answered": false,
     });
     let h = Hold { arm_ack: ack, held, build_id: build_id.clone(), during };
-    let rel = door.release(id).await;
+    let rel = faults.release(id).await;
     let mut accepted = request.await.unwrap().unwrap_or_else(|e| panic!("`{id}`: release did not answer the accepting request with the Build: {e}"));
     assert_eq!(Run::id_of(&accepted), build_id, "release answers the accepting request with the Build the cut named");
     assert_eq!(run.fabric_build_id().await, build_id, "`{id}`: the Build is durable once released, so it is the current Build");
     run.complete(&mut accepted).await;
-    let exec = run.member_door("mesh1").await;
+    let exec = run.node_faults("mesh1").await;
     let after = run.after_create(&exec, &build_id, node, create_order).await;
     run.note_build(&build_id, ONE_RUN);
     run.span_check(json!({"kind": "accepted", "cut": id, "build_id": build_id}));
@@ -767,16 +767,16 @@ async fn mesh_pending_cut(run: &Run, create_order: &[String]) -> String {
     let step = CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name();
     let op = Op::create(admin);
     let spec = op.cut(step);
-    let door = run.fabric_door().await;
-    let ack = door.arm(id, spec.clone()).await;
+    let faults = run.fabric_faults().await;
+    let ack = faults.arm(id, spec.clone()).await;
     let stream = run.estate.submit(&BuildSpec::CreateMesh(MeshDesired::of("mesh2", [("node-admin", 1)]))).await;
     let build_id = stream.build_id().to_string();
     let at = index_of(create_order, step);
-    let h = run.hold(&door, id, ack, &build_id, &op, Some(create_order[..at].to_vec()), Some((admin, 1))).await;
-    let rel = door.release(id).await;
+    let h = run.hold(&faults, id, ack, &build_id, &op, Some(create_order[..at].to_vec()), Some((admin, 1))).await;
+    let rel = faults.release(id).await;
     run.estate.follow(stream).await;
     // after_create holds every documented step complete once, in order, ApplyMeshPending among them.
-    let after = run.after_create(&door, &build_id, admin, create_order).await;
+    let after = run.after_create(&faults, &build_id, admin, create_order).await;
     run.note_build(&build_id, ONE_RUN);
     run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": admin, "pipeline": "create", "steps": create_order, "held_step": step}));
     run.span_check(json!({"kind": "ready-after", "cut": id, "node": admin, "blocked_detail": "Pending has not been applied", "handoff_mesh": "mesh2"}));
@@ -793,12 +793,12 @@ async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: V
     let mut spec = boot.clone();
     spec["id"] = json!(id);
     std::fs::write(rdm_test::admin_faults::boot_cuts_file(&run.root, admin), serde_json::to_vec(&json!([spec])).unwrap()).unwrap();
-    let exec = run.fabric_door().await;
+    let exec = run.fabric_faults().await;
     let mut stream = run.spawn("mesh1", "node-admin").await;
     let build_id = Run::id_of(&stream);
-    let door = Door::at(&run.estate, admin).await;
+    let faults = FaultClient::at(&run.estate, admin).await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
-    let held = door.wait_held(id).await;
+    let held = faults.wait_held(id).await;
     // The pipeline goes on while the admin boots, and stops at the step that needs the admin Ready,
     // which only the release lets complete: it must settle at `receipts_before` receipts.
     let op = Op::create(admin);
@@ -813,9 +813,9 @@ async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: V
     if let Some(v) = &view {
         assert_ne!(v["status"], "ready", "`{id}`: the held admin is not Ready: {v}");
     }
-    let during = json!({"build_state": b["state"], "operation": op.value(), "done_steps": done, "admin_in_view": view.map(|v| json!({"status": v["status"]})), "cut_still_held": door.cut(id).await["held"]});
+    let during = json!({"build_state": b["state"], "operation": op.value(), "done_steps": done, "admin_in_view": view.map(|v| json!({"status": v["status"]})), "cut_still_held": faults.cut(id).await["held"]});
     let h = Hold { arm_ack: ack, held, build_id: build_id.clone(), during };
-    let rel = door.release(id).await;
+    let rel = faults.release(id).await;
     run.complete(&mut stream).await;
     let after = run.after_create(&exec, &build_id, admin, create_order).await;
     run.note_build(&build_id, ONE_RUN);

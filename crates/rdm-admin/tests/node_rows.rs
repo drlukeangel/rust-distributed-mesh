@@ -99,7 +99,7 @@ fn view() -> Topology {
 }
 
 /// A view change as the product makes one: the projection installed through
-/// `Records::install_projected`, the one door every view change of an admin goes through.
+/// `Records::install_projected`, the one call every view change of an admin goes through.
 async fn install(records: &Records, view: &RwLock<Topology>, f: impl FnOnce(&mut Topology)) {
     let mut t = view.read().await.clone();
     f(&mut t);
@@ -359,7 +359,7 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothi
 }
 
 /// CONTRACT (R-OW1 item 2: "No bypass; a conflicting holder is NameHeld, never overwritten"): the
-/// Day-0 row of the bootstrap admin's own `(path, name)` is the create door's row. A name
+/// Day-0 row of the bootstrap admin's own `(path, name)` is the node.create's row. A name
 /// another live node's row holds is refused `NameHeld` naming the holder, and the holder's row stays
 /// exactly as it was; a free name is written `Pending` under the admin's node.id. One `via-node-row`
 /// span each, `moment` `create`, operation `fabric-create`.

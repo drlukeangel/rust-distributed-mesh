@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// The line a node-admin prints on its stdout once it has started: `RDM_NODE_BIRTH=` and, as JSON, the
-/// birth its Node RPC door serves under (node id, `(path, name)`, endpoint, address, incarnation). The
-/// process that started the admin reaches it by this line alone ([`Peers::learn_birth`]); the door
+/// birth its readiness gate opens for (node id, `(path, name)`, endpoint, address, incarnation). The
+/// process that started the admin reaches it by this line alone ([`Peers::learn_birth`]); the readiness gate
 /// answers NotReady until it opens.
 pub const BIRTH_LINE: &str = "RDM_NODE_BIRTH=";
 

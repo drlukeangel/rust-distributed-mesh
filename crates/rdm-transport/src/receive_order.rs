@@ -168,7 +168,7 @@ pub(crate) fn admit_digest(held: &rdm_core::MeshDigest, offered: &rdm_core::Mesh
     true
 }
 
-/// Name a publication's classification at the installation door. The caller holds the actual
+/// Name a publication's classification at installation. The caller holds the actual
 /// source projection lock; forwarding metadata never supplies its identity or ordering.
 pub(crate) fn publication_duplicate(frame: &'static str, identity: &str) {
     tracing::info_span!("rdm.mesh.topology.update.via-duplicate", frame, identity, outcome = "ignored")

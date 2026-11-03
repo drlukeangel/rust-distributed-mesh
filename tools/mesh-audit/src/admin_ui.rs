@@ -60,7 +60,7 @@ pub fn lifecycle_violations(root: &Path) -> Vec<String> {
                 }
             }
             if (code.contains("rafka_chaos") || code.contains("rdm_test")) && f.file_name().and_then(|n| n.to_str()) != Some("chaos.rs") {
-                out.push(format!("{}:{}: names the chaos kit outside chaos.rs; faults go through that one door", f.display(), n + 1));
+                out.push(format!("{}:{}: names the chaos kit outside chaos.rs; faults go through that one module", f.display(), n + 1));
             }
             if code.contains("Command::new") {
                 out.push(format!("{}:{}: starts a process; topology changes are Build requests to node-admin", f.display(), n + 1));

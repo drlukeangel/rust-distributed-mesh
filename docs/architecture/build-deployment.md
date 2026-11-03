@@ -17,7 +17,7 @@ node. The birth runs it for its whole life. A new executable is a new node: a Bu
 1. **Named per node.** A Build request that creates nodes names each node's create spec: the node's
    own properties, flat (Q166). The spec carries the executable: its path, its sha256 and, under the
    container provider, the image. There is no per-type default in RDM and no stored default anywhere.
-   A created path whose spec names no executable is refused by name at acceptance and nothing runs. A product's door may expand a
+   A created path whose spec names no executable is refused by name at acceptance and nothing runs. A product's API may expand a
    per-type input into per-path entries before the typed call; RDM never sees a type-level default.
 2. **Compiled at acceptance.** The fabric-primary compiles the request against the current topology.
    Every created path's entry in the accepted topology holds its executable, and the request is never

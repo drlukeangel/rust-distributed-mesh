@@ -60,7 +60,7 @@ Two planes, two words (R-CR5):
   traffic, Direct or Proxy, with its own minted id. It is what `node.connection.get` lists, what
   `node.connection.delete { All | [ids] }` closes by name, and what a rename waits on. In Rafka the
   application originates them (a gateway opening its path to a broker); in RDM standalone the
-  testkit's originate door (op `0x73`) does.
+  testkit's originate service (op `0x73`) does.
 - **The control plane is gossip and the node's control-plane Node RPC pool, and neither is a connection.** Gossip neighbours are
   the overlay links the gossip framework keeps per topic and repairs itself; the node's control-plane
   Node RPC pool is the runtime's cache of dials to exact births. Nothing writes them to this log, nothing addresses them

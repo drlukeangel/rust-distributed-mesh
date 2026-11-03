@@ -20,7 +20,7 @@ members = ["admin-ui"]
 rdm-node = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "1766eb22931b4f47405055a2b40503e17b77d29a" }
 rdm-admin = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "1766eb22931b4f47405055a2b40503e17b77d29a" }
 rdm-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "1766eb22931b4f47405055a2b40503e17b77d29a" }
-# The carrier policy this shape declares for the originate door (a gateway carries).
+# The carrier policy this shape declares for the originate service (a gateway carries).
 rdm-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "1766eb22931b4f47405055a2b40503e17b77d29a" }
 # Qualification-only: the testkit protocols 0x70-0x73 (testkit store, resolve probe, declare probe,
 # originate) the mock roles serve, and the process bring-up they act through.

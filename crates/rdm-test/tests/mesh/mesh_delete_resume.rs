@@ -2,8 +2,8 @@
 //! mid-delete (mesh-delete.md, "Resume after the primary's loss").
 //!
 //! desired {mesh1, mesh2} -> {mesh1}: the fabric-primary in mesh1 runs `mesh.delete:<mesh2 id>`.
-//! mesh2's primary is held by its fault door in tier 1 (the `StopNode` step event of rpc.2's
-//! node.delete) and SIGKILLed there by exact pid; the door dies with it. The fabric-primary's wait
+//! mesh2's primary is held by its fault service in tier 1 (the `StopNode` step event of rpc.2's
+//! node.delete) and SIGKILLed there by exact pid; the fault service dies with it. The fabric-primary's wait
 //! ends the moment its view holds the lost primary unheard (`via-final-primary-lost`), never on the
 //! handoff bound: the section ends short and the Build ends `incomplete`, what ran standing (Q346).
 //! The caller resubmits the Build by its build_id (build.md §4). The fabric-primary deletes the lost
@@ -27,7 +27,7 @@ use rdm_client::{FabricDesired, Frame, MeshDesired, PathName};
 use rdm_test::typed::BuildSpec;
 use rdm_test::estate::{at_location, names_location, named, Estate, Owner};
 use std::collections::BTreeMap;
-use rdm_test::faults::{binding_set, candidate_sha, Door};
+use rdm_test::faults::{binding_set, candidate_sha, FaultClient};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -73,7 +73,7 @@ pub(crate) enum Rpc1 {
     Stopped,
     /// Exited, its `TerminateRuntime` step event complete, the delete cut after NodeDeleted's work and
     /// before NodeDeleted's step event is durable: the Build holds the exited verdict and no
-    /// NodeDeleted, and none is published. The fault door's `step-event` cut holds BEFORE the named
+    /// NodeDeleted, and none is published. The fault service's `step-event` cut holds BEFORE the named
     /// step's event is durable (`FaultedBuilds::write_step`), so the cut that leaves TerminateRuntime
     /// durable is the next step's: NodeDeleted.
     ExitProven,
@@ -121,7 +121,7 @@ impl Run {
     }
 }
 
-/// Build {mesh1, mesh2 with `mesh2_admins` admins}, arm mesh2's primary's door at the `StopNode` step
+/// Build {mesh1, mesh2 with `mesh2_admins` admins}, arm mesh2's primary's `NodeCommandService` at the `StopNode` step
 /// event of rpc.2's node.delete (and, by `rpc1`, at rpc.1's `StopNode` event: rpc.1 stopped, its
 /// process alive, no `TerminateRuntime` event, and its NodeStopped not yet published; or at rpc.1's
 /// `NodeDeleted` event: rpc.1's exited verdict durable and no NodeDeleted), submit {mesh1}, kill the
@@ -150,43 +150,43 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let ids: BTreeMap<PathName, String> = before.iter().map(|n| (location(n), s(&n["node_id"]))).collect();
     // A member's delete is keyed by its node id (mesh-delete.md step 3).
     let member = |name: &str| json!({"Node": ids[&Estate::path("mesh2.node", name)]});
-    let door = Door::at(&estate, &lost.0).await;
+    let faults = FaultClient::at(&estate, &lost.0).await;
 
     // Held in tier 1: rpc.2's stop answered `stopped` (its node.connection.delete { All } and its
     // transport cut done, its process alive) and its StopNode step event is not yet durable, so the
     // resubmit's delete sends its stop-node again and the stopped birth answers the same.
     let cut = "leave:rpc2-StopNode";
     // A member's end is its node.delete, under node.delete's own operation (mesh-delete.md step 3).
-    door.arm(cut, json!({"kind": "step-event", "step": "StopNode", "operation": "node.delete", "node": member("2")})).await;
+    faults.arm(cut, json!({"kind": "step-event", "step": "StopNode", "operation": "node.delete", "node": member("2")})).await;
     // rpc.1's stop completed (its stop-node answered stopped: its connections deleted, its transport
     // cut, its process alive) and its delete held at that step's event: its NodeStopped, published at
     // the next step, is never published, and it has no TerminateRuntime event. Nothing any admin holds
     // names it.
     let stopped = "leave:rpc1-StopNode";
     if rpc1 == Rpc1::Stopped {
-        door.arm(stopped, json!({"kind": "step-event", "step": "StopNode", "operation": "node.delete", "node": member("1")})).await;
+        faults.arm(stopped, json!({"kind": "step-event", "step": "StopNode", "operation": "node.delete", "node": member("1")})).await;
     }
     // rpc.1's whole delete ran to its exited verdict: the runtime is terminated and its TerminateRuntime
     // event is complete, and the executor is held in NodeDeleted before its event: the Build holds the
     // exited verdict and no NodeDeleted, and `NodeDeleted` is never published.
     let exit_proven = "leave:rpc1-NodeDeleted";
     if rpc1 == Rpc1::ExitProven {
-        door.arm(exit_proven, json!({"kind": "step-event", "step": "NodeDeleted", "operation": "node.delete", "node": member("1")})).await;
+        faults.arm(exit_proven, json!({"kind": "step-event", "step": "NodeDeleted", "operation": "node.delete", "node": member("1")})).await;
     }
     let leave = estate.submit(&BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] })).await;
     let build_id = leave.build_id().clone();
     let b = build_id.to_string();
-    let held = door.wait_held(cut).await;
+    let held = faults.wait_held(cut).await;
     assert_eq!(held["hit"]["build_id"], b.as_str(), "the held step event is the delete's: {held}");
     if rpc1 == Rpc1::Stopped {
-        let held = door.wait_held(stopped).await;
+        let held = faults.wait_held(stopped).await;
         assert_eq!(held["hit"]["build_id"], b.as_str(), "the held step event is the delete's: {held}");
     }
     if rpc1 == Rpc1::ExitProven {
-        let held = door.wait_held(exit_proven).await;
+        let held = faults.wait_held(exit_proven).await;
         assert_eq!((&held["hit"]["build_id"], &held["hit"]["step"], &held["hit"]["operation"]["action"], &held["hit"]["operation"]["subject"]), (&json!(b), &json!("NodeDeleted"), &json!("node.delete"), &member("1")), "the held step event is rpc.1's NodeDeleted of the delete: {held}");
     }
-    // The door dies with the process: it is never released.
+    // The fault service dies with the process: it is never released.
     let pid = estate.pid_of(&lost.0).await;
     estate.kill_pid(u32::try_from(pid).unwrap());
     drop(leave);

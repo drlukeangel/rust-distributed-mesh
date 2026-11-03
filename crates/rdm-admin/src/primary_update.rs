@@ -130,8 +130,8 @@ pub struct PrimaryUpdate {
     /// an install, so a decision in flight completes before the primaries move.
     pub decisions: Arc<tokio::sync::Mutex<()>>,
     /// Projects this admin's view from the records it holds now. Run once an install is held, before
-    /// the call that depends on it is answered: every reader of the view (the `BuildService`, the claim
-    /// door, the drive, the executor plan, the rows writers) decides from it.
+    /// the call that depends on it is answered: every reader of the view (the `BuildService`,
+    /// the drive, the executor plan, the rows writers) decides from it.
     pub project_view: ProjectView,
     /// Finishes every write this admin issued, before its call (node-primary-update.md step 3).
     pub finish_writes: FinishWrites,

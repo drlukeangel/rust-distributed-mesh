@@ -100,7 +100,7 @@ fn alive(pid: u64) -> bool {
 /// A stop does not wait for their delivery. Committed lifecycle facts remain recoverable after the
 /// sender cuts gossip, and the executing authority updates its own view from the matching completion
 /// and publishes that fact as its author: ... the fabric-primary for a mesh's last admin"): the last
-/// admin's final mesh topology before its stop, itself stopping, is withheld (the fault door's
+/// admin's final mesh topology before its stop, itself stopping, is withheld (the fault service's
 /// `announcement` cut) and its stop cuts its transport right behind it. The deleted mesh's final state
 /// reaches every surviving mesh from the fabric-primary, which executed the delete and publishes it as
 /// the author.

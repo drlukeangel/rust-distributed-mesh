@@ -57,7 +57,7 @@ pub fn bin_dir() -> PathBuf {
     }
 }
 
-/// What a started node-admin prints before it serves: the birth its Node RPC door serves under
+/// What a started node-admin prints before it serves: the birth its readiness gate opens for
 /// (`rdm_client::BIRTH_LINE`), then its control base. The receiver gets the birth once the
 /// base line is read, or the refusal of an admin that printed its base and no birth (or a birth that
 /// does not decode). The reader goes on reading the pipe after it.
@@ -1385,7 +1385,7 @@ fn kill_estate_processes(root: &Path) {
     }
 }
 
-/// One estate's probe door: runs `rdm-rpc-probe` entered at a node-admin's birth (it reads that
+/// One estate's `ProbeHandle`: runs `rdm-rpc-probe` entered at a node-admin's birth (it reads that
 /// admin's view over Node RPC) and appends the invocation to the estate's RPC ledger
 /// (`rpc-ledger.jsonl`).
 #[derive(Clone)]

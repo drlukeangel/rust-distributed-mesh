@@ -306,7 +306,7 @@ No `Any`, downcast or giant domain enum is permitted.
 
 ## 13. Served is not ready
 
-The door that refuses every op with typed `NotReady` until the process can serve, and what `NotReady` means, are the envelope's [readiness gate](node-rpc-envelope.md#node-rpc-readiness-gate). Past the door, a served protocol can be temporarily unable to execute.
+The gate that refuses every op with typed `NotReady` until the process can serve, and what `NotReady` means, are the envelope's [readiness gate](node-rpc-envelope.md#node-rpc-readiness-gate). Past the gate, a served protocol can be temporarily unable to execute.
 
 That distinction is explicit:
 

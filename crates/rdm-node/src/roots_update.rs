@@ -7,7 +7,7 @@ use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::connections::ConnectionsRegistry;
 
 /// Install `roots` (each an ed25519 public key as hex) as the root set `registry`'s admissions are
-/// judged on, for the birth `node` (`node_id`, `incarnation`) whose door the request reached: one or
+/// judged on, for the birth `node` (`node_id`, `incarnation`) whose service the request reached: one or
 /// two roots, never none, each refused by name when it is not a key (`RejectedCert`). A set that drops
 /// a root this birth's own member cert still chains under is refused by name, `root-still-chained`
 /// (`RejectedRootStillChained`), and nothing is installed: what keeps a rotation's replacement after

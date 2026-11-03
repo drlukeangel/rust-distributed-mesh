@@ -2073,7 +2073,7 @@ impl View {
         self.digest_view.own.lock().unwrap().clone().unwrap_or_else(|| self.node.clone())
     }
 
-    /// Hold a status frame if it is newer than the one held: the one door for a status heard on a
+    /// Hold a status frame if it is newer than the one held: the one function for a status heard on a
     /// channel, replayed or answered by an entry pull. Whoever published it, a status is taken for what
     /// it carries (R-RX1); the held status orders it by its `changed_at_rafka_ms`. Every mesh status
     /// heard opens one span saying whether it was taken (gossip.md: "the held status, until the next
@@ -4888,12 +4888,12 @@ impl DigestView {
         true
     }
 
-    /// Whether `d`, arriving through `door`, is refused because its birth is stopped. Every digest of
+    /// Whether `d`, arriving via `via`, is refused because its birth is stopped. Every digest of
     /// the stopped incarnation is refused by name, whatever its status or sequence (gossip.md,
     /// "Node-stopped lifecycle overlay": the stop stays until the next lifecycle op on that exact
     /// birth). A digest of another birth of the node ends the stop and is taken by the rules of any
     /// birth.
-    fn stopped_refuses(&self, d: &MeshDigest, door: &'static str, now: Instant) -> bool {
+    fn stopped_refuses(&self, d: &MeshDigest, via: &'static str, now: Instant) -> bool {
         let held_seq = {
             let mut marks = self.stopped_marks.lock().unwrap();
             let Some(mark) = marks.get_mut(d.node.node_id.as_str()) else { return false };
@@ -4901,7 +4901,7 @@ impl DigestView {
                 None
             } else {
                 if mark.latest.as_ref().is_none_or(|(l, _, _)| d.digest_seq > l.digest_seq) && d.digest_seq > mark.held_seq {
-                    let heard = match door {
+                    let heard = match via {
                         "heartbeat" => Heard::Direct,
                         "forwarded" | "join" => Heard::Forwarded,
                         _ => Heard::Topology,
@@ -4913,10 +4913,10 @@ impl DigestView {
         };
         // The status the digest carried: a projection entry's (`topology`, `forwarded`); a heartbeat
         // and a join digest carry none.
-        let carried_status = if matches!(door, "topology" | "forwarded") { format!("{:?}", d.status) } else { String::new() };
+        let carried_status = if matches!(via, "topology" | "forwarded") { format!("{:?}", d.status) } else { String::new() };
         let Some(held_seq) = held_seq else {
             self.end_stop(d.node.node_id.as_str());
-            tracing::info_span!("rdm.mesh.topology.update.via-node-started", node_path = %d.node.path, node_name = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.as_str(), "type" = %d.node.r#type, node_state = ?d.node_state, digest_seq = d.digest_seq, door)
+            tracing::info_span!("rdm.mesh.topology.update.via-node-started", node_path = %d.node.path, node_name = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.as_str(), "type" = %d.node.r#type, node_state = ?d.node_state, digest_seq = d.digest_seq, via)
                 .in_scope(|| tracing::info!("a later birth of a stopped node is heard: the stop of the older birth is over"));
             return false;
         };
@@ -4930,7 +4930,7 @@ impl DigestView {
             entry_status = %carried_status,
             digest_seq = d.digest_seq,
             held_digest_seq = held_seq,
-            door,
+            via,
         )
         .in_scope(|| tracing::info!("a digest of a stopped birth: refused, the stop stands until its mesh-primary's node.joined"));
         true
@@ -5230,7 +5230,7 @@ impl DigestView {
             incarnation_id = %d.node.incarnation.as_str(),
             status = ?d.status,
             digest_seq = d.digest_seq,
-            door = "projection",
+            via = "projection",
             publisher = %target.publisher,
             channel = target.channel,
             held_version = target.held_version(),
@@ -5553,7 +5553,7 @@ impl DigestView {
         self.record_with(d, now, &node, "local")
     }
 
-    /// The shared heartbeat installation door, with receipt context for its outcome spans.
+    /// The shared heartbeat installation, with receipt context for its outcome spans.
     fn record_with(&self, d: MeshDigest, now: Instant, node: &str, channel: &str) -> bool {
         if self.is_deleted_at(d.node.node_id.as_str(), now) {
             reject_deleted(&d, "mesh-channel");
@@ -6621,7 +6621,7 @@ mod tests {
 
     /// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): a `NodeStopped`
     /// for the exact birth drops it from the view and keeps it unroutable; no digest of the stopped
-    /// birth brings it back, whatever its status or sequence and whichever door it arrives through
+    /// birth brings it back, whatever its status or sequence and whichever `via` it arrives through
     /// (a late `ConnectionsDeleting`, an older heartbeat, a pending one with a higher sequence). Only the
     /// mesh-primary's `node.joined` ends the stop: the birth is held again `Pending`, as the same
     /// birth, and its later heartbeat moves on from there; a departure ends the stop for good.
@@ -6727,10 +6727,10 @@ mod tests {
         assert_eq!(status(), Some(MemberStatus::Ready));
 
         let refused = spans.named("rdm.mesh.topology.reject.via-stopped-birth");
-        let projection: Vec<(String, String, String)> = refused.iter().filter(|f| f["door"] == "projection").map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect();
+        let projection: Vec<(String, String, String)> = refused.iter().filter(|f| f["via"] == "projection").map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect();
         assert!(projection.is_empty(), "the framework ignores the repeated v1 before it can reach the stopped-entry data rule: {refused:?}");
         assert!(spans.named("rdm.mesh.topology.update.via-duplicate").iter().any(|f| f["frame"] == "mesh-topology" && f["identity"].contains("topology_version=1")), "the v1 repeat is refused by identity, never re-applied");
-        assert!(refused.iter().any(|f| f["door"] == "heartbeat" && f["digest_seq"] == "3"), "{refused:?}");
+        assert!(refused.iter().any(|f| f["via"] == "heartbeat" && f["digest_seq"] == "3"), "{refused:?}");
         let ended = spans.named("rdm.mesh.topology.update.via-stop-ended-in-projection");
         assert_eq!(ended.iter().map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect::<Vec<_>>(), vec![("3".to_string(), "4".to_string(), "2".to_string())], "ended once, at v4 over the v3 held, the stop carried at v2: {ended:?}");
     }
@@ -8197,7 +8197,7 @@ mod tests {
     /// - the fabric-primary on the backbone (rafka-v2 s42's successor, scratchpad m2a1.log:390-401): it
     ///   holds mesh1.node-admin.1's v7 listing mesh1.node-admin.2 Ready and executed mesh1.node-admin.1's stop; v8,
     ///   carrying mesh1.node-admin.2's stop, is taken, so mesh1.node-admin.2 is held stopped, and mesh1.node-admin.1's
-    ///   own entry in it is refused by the stop the fabric-primary executed (`via-stopped-birth`, door
+    ///   own entry in it is refused by the stop the fabric-primary executed (`via-stopped-birth`, via
     ///   `projection`); mesh1.node-admin.3 takes the role and its full, stamped after v8, is installed;
     ///   mesh1.node-admin.1's v9, stamped before that full, is ignored by the receive path;
     /// - an own-mesh member on its mesh channel holds mesh1.node-admin.1's stop from the fabric-primary's
@@ -8260,7 +8260,7 @@ mod tests {
 
         let in_projection = spans.named("rdm.mesh.topology.reject.via-stopped-birth");
         assert_eq!(
-            in_projection.iter().filter(|f| f["door"] == "projection").map(|f| (f["node"].clone(), (f["member_path"].clone(), f["member_name"].clone()), f["topology_version"].clone())).collect::<Vec<_>>(),
+            in_projection.iter().filter(|f| f["via"] == "projection").map(|f| (f["node"].clone(), (f["member_path"].clone(), f["member_name"].clone()), f["topology_version"].clone())).collect::<Vec<_>>(),
             vec![("mesh2.node-admin.1".to_string(), ("mesh1.node-admin".to_string(), "1".to_string()), "8".to_string())],
             "the stopped publisher's own entry in v8 is refused by name at the fabric-primary, which executed its stop: {in_projection:#?}"
         );

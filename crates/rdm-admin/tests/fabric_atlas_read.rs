@@ -153,7 +153,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         nodes_storage.put_node(&rpc_row).await.unwrap();
         nodes_storage.put_node(&deleted_row).await.unwrap();
         // What fabric.atlas.get reads (query.md §1): each row's lifecycle record at its node id, written by
-        // mesh1's mesh-primary, mesh1's Mesh record, and the nodes store bound on the config door.
+        // mesh1's mesh-primary, mesh1's Mesh record, and the nodes store bound on the `NodeConfigs`.
         let meshes_storage = Arc::new(MemoryMeshStorage::default());
         rdm_admin::storage::MeshStorage::put_mesh(&*meshes_storage, &rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")).await.unwrap();
         let configs = crate::bound_configs_over(nodes_storage.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(admin_ep.clone(), Arc::new(LiveNodeResolver::default()))), Default::default())).await;

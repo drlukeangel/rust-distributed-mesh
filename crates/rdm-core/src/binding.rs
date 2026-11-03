@@ -3,7 +3,7 @@
 //! what the node's row records.
 //!
 //! A [`BindingSet`] is a consumer's executables by launch id (a node type's name; the name
-//! carries no behaviour here), built from one candidate: the input a harness or a product's door
+//! carries no behaviour here), built from one candidate: the input a harness or a product's API
 //! expands into per-path entries before the typed call. RDM keeps no set: every created path names its
 //! own binding. [`BindingSet::validate`] refuses every defect of a set by name, before anything
 //! starts. A launch re-hashes the one binding it runs ([`Binding::verify`]), so a file replaced after

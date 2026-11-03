@@ -452,12 +452,12 @@ fn thaw(rt: &ExactRuntime) {
 }
 
 /// The fabric-primary's storage-switch cut armed: the next change is held after every mesh-primary
-/// replied `blocked`, before its copy, until [`Door::release`] of `"switch"`.
-async fn hold_switch(estate: &Estate) -> rdm_test::faults::Door {
+/// replied `blocked`, before its copy, until [`FaultClient::release`] of `"switch"`.
+async fn hold_switch(estate: &Estate) -> rdm_test::faults::FaultClient {
     let fp = estate.node_views().await.into_iter().find(|n| n.is_fabric_primary).expect("fabric primary");
-    let door = rdm_test::faults::Door::at(estate, &fp.location()).await;
-    door.arm("switch", json!({"kind": "storage-switch"})).await;
-    door
+    let faults = rdm_test::faults::FaultClient::at(estate, &fp.location()).await;
+    faults.arm("switch", json!({"kind": "storage-switch"})).await;
+    faults
 }
 
 /// `fabric.storage.update` naming `provider` (storage.md §2 "Changing it"), accepted: the change's id,
@@ -890,7 +890,7 @@ async fn an_old_change_cannot_unblock_writes_for_a_new_change() {
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
     let role_id = node_id_of(&estate, &role()).await;
     // mesh2's mesh-primary holds the first change's first move command of mesh2.node.1 on its way.
-    let carrier = rdm_test::faults::Door::at(&estate, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await;
+    let carrier = rdm_test::faults::FaultClient::at(&estate, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await;
     carrier.arm("old-command", json!({"kind": "storage-step", "node": role()})).await;
     let (first, first_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
     carrier.wait_held("old-command").await;

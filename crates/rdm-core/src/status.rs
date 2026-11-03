@@ -1503,7 +1503,7 @@ pub enum StatusReply {
     /// The exact node's own answer to a probe while its `pre_node_ready` hook answered `Pending`
     /// (fabric-node-hooks.md "Outcomes and the gate"): the probe served that node and found an active
     /// readiness blocker. `reason` is the hook's own text. It is never a `NotReady`: a `NotReady` is
-    /// the door or the handler not serving yet, and says nothing of the hook. Q350 took the position
+    /// the readiness gate or the handler not serving yet, and says nothing of the hook. Q350 took the position
     /// of `Blocked`, without its retry event: the wire format moved.
     ///
     /// Position 25 on the wire.
@@ -1588,7 +1588,7 @@ pub enum StatusReply {
         receipt: Option<ConnectionsReceipt>,
     },
     /// Reserved position (D18): never sent. A scope that names nothing the birth can cut is refused
-    /// at the primary's door with NodeCommand 0x22's `Rejected`, reason `rejected-connection-scope`.
+    /// at the primary's `NodeCommandService` with NodeCommand 0x22's `Rejected`, reason `rejected-connection-scope`.
     ///
     /// Position 32 on the wire.
     Reserved32 {
@@ -1681,7 +1681,7 @@ pub enum StatusReply {
     /// The call is refused because what the receiver had to read or write to decide or commit it
     /// failed: a durable store refused a put or could not be read, its view names no party the call
     /// needs, its provider refused the runtime, or a peer's Build log could not be read. It is a runtime fact of the receiver, never a readiness answer
-    /// (`NotReady` is the door's, node-rpc-envelope.md "Node RPC readiness gate"), and nothing the call
+    /// (`NotReady` is the readiness gate's, node-rpc-envelope.md "Node RPC readiness gate"), and nothing the call
     /// would have done was done.
     ///
     /// Position 42 on the wire.

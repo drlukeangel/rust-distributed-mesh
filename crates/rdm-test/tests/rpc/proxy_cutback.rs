@@ -6,7 +6,7 @@
 //!
 //! The estate is one mesh, `{mesh1: 2 node-admins, 3 nodes}`, born by a Build. The source is
 //! `mesh1.node.1`, the carrier `mesh1.node.2`, the destination `mesh1.node.3`. A Proxy is seeded on
-//! the source through the testkit originate door (`record-proxy`): the door runs the writer's own
+//! the source through the testkit originate service (`record-proxy`): the originate service runs the writer's own
 //! observer path for the Direct Failed observation and writes `Proxy Connected` naming the births
 //! the source's topology view holds now (connections.md section 7); nothing in this repository runs
 //! the cold discovery that writes one in the product. Every call afterwards is a real call from the
@@ -85,7 +85,7 @@ fn probe(estate: &Estate, args: &[&str]) -> (Value, u64, u64) {
 
 fn snapshot(estate: &Estate, node: &NodeId) -> Value {
     let (out, _, _) = probe(estate, &["snapshot", "--target", &format!("exact:{node}"), "--key", "x"]);
-    assert_eq!(out["outcome"], "Reply", "{node} answers the snapshot door: {out}");
+    assert_eq!(out["outcome"], "Reply", "{node} answers the originate service's snapshot: {out}");
     assert_eq!(out["by_node_id"], node.as_str(), "the exact node answered: {out}");
     out
 }

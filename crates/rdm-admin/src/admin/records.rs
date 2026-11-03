@@ -322,7 +322,7 @@ pub struct Records {
     /// `declared`, never its `status`.
     pub declared: Arc<Mutex<crate::status_rpc::Declared>>,
     /// The records this admin writes, as it holds them (`crate::record_cache`): the one copy its
-    /// status authority, the writer of its mesh's rows, its config door, its offline tick and its cert
+    /// status authority, the writer of its mesh's rows, its `NodeConfigs`, its offline tick and its cert
     /// renewal start every write of a node, mesh or Fabric record from.
     pub caches: crate::record_cache::Caches,
     /// The exact births the mesh primary's offline tickle holds TRUE OFFLINE (`offline`): shown
@@ -405,7 +405,7 @@ pub struct Records {
     /// Where this admin's mesh's status rows live, read when this admin takes its mesh's role
     /// (`crate::status_rpc::RoleFold`). Set once at start.
     pub(crate) status: std::sync::OnceLock<crate::status_rpc::RoleFold>,
-    /// This admin's Node RPC door, opened by an installed view ([`ReadinessGate`]). Set once at start.
+    /// This admin's readiness gate, opened by an installed view ([`ReadinessGate`]). Set once at start.
     pub(crate) readiness_gate: std::sync::OnceLock<ReadinessGate>,
     /// This admin's place on the backbone: it holds the meshes the installed view names, each deleted
     /// or not, which its publication of a deleted mesh reads ([`Backbone::publishes_deleted_mesh_of`]).
@@ -414,7 +414,7 @@ pub struct Records {
 }
 
 /// An admin's Node RPC readiness gate (node-rpc-envelope.md, "Node RPC readiness gate": "The router
-/// refuses every op, Ping included, with typed NotReady until the Node RPC door is ready. A node-admin
+/// refuses every op, Ping included, with typed NotReady until the readiness gate is open. A node-admin
 /// waits until its Status authority is filled and its view holds it"): it opens once the authority is
 /// filled and a view this admin installs holds its exact birth, under whatever name it holds now (its
 /// join answer hands it its row's name, R-JN1), never by the name it booted under.
@@ -437,7 +437,7 @@ impl ReadinessGate {
         Self { ready, birth, status_service_filled, boot_path: boot_name.path.clone(), boot_name: boot_name.name.clone()}
     }
 
-    /// Open the door if it is closed, the authority is filled and `view` holds this admin's exact birth.
+    /// Open the readiness gate if it is closed, the authority is filled and `view` holds this admin's exact birth.
     pub(crate) fn open_if_held(&self, view: &Topology) {
         if self.ready.load(std::sync::atomic::Ordering::SeqCst) || !(self.status_service_filled)() {
             return;
@@ -515,7 +515,7 @@ impl Records {
         self.path_probe.get().cloned()
     }
 
-    /// This admin's Node RPC door (set once, at start): every view installed from now on opens it
+    /// This admin's readiness gate (set once, at start): every view installed from now on opens it
     /// once it holds the birth, and `installed`, the view in place when it is set, is checked at once.
     pub fn set_readiness_gate(&self, readiness_gate: ReadinessGate, installed: &Topology) {
         readiness_gate.open_if_held(installed);
@@ -753,8 +753,8 @@ impl Records {
         self.install(held, t).await
     }
 
-    /// Install `t` over the view `held` (its write lock held). The door opens here, before the lock is
-    /// released, so no reader of the installed view sees this admin's birth while its door refuses.
+    /// Install `t` over the view `held` (its write lock held). The readiness gate opens here, before the lock is
+    /// released, so no reader of the installed view sees this admin's birth while its readiness gate refuses.
     pub(crate) async fn install(&self, mut held: tokio::sync::RwLockWriteGuard<'_, Topology>, t: Topology) -> Topology {
         if let Some(readiness_gate) = self.readiness_gate.get() {
             readiness_gate.open_if_held(&t);

@@ -1,5 +1,5 @@
 //! The estate's handover to a node-admin it starts: the admin prints the exact birth its Node RPC
-//! door serves under, and a caller that holds only that line reaches it over Node RPC.
+//! readiness gate opens for, and a caller that holds only that line reaches it over Node RPC.
 
 use rdm_core::MeshNode;
 use rdm_client::{BuildCarrier, Fabrics};
@@ -40,14 +40,14 @@ fn spans_in(evidence: &std::path::Path) -> Vec<Value> {
 }
 
 /// CONTRACT (node-rpc-envelope.md, "Node RPC readiness gate": "The router refuses every op, Ping
-/// included, with typed NotReady until the Node RPC door is ready. A node-admin waits until its Status
+/// included, with typed NotReady until the readiness gate is open. A node-admin waits until its Status
 /// authority is filled and its view holds it"): a node-admin prints, beside its control base, the birth
 /// it runs under (`RDM_NODE_BIRTH=`: node id, path and name, endpoint, address and incarnation). It is the
-/// exact birth its boot span names and the one its door opens for
+/// exact birth its boot span names and the one its readiness gate opens for
 /// (`rdm.node_admin.node.serve.via-view-holds-birth`), and a caller that holds only that line reaches it
-/// over Node RPC: its `fabric.get`, refused NotReady until the door opens, names it the fabric-primary.
+/// over Node RPC: its `fabric.get`, refused NotReady until the readiness gate opens, names it the fabric-primary.
 /// The estate hands its typed objects to an admin it started this way; the admin's view lists the admin
-/// only once its door opens, which can be after the admin printed its base.
+/// only once its readiness gate opens, which can be after the admin printed its base.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_started_admin_is_reached_by_the_birth_it_printed() {
     let artifacts = artifacts_root().join("estate-handover").join(TEST);
@@ -105,8 +105,8 @@ async fn a_started_admin_is_reached_by_the_birth_it_printed() {
     let boot = named(&spans, "rdm.mesh.node.create.via-boot");
     let [boot] = boot.as_slice() else { panic!("one boot span, found {}", boot.len()) };
     assert_eq!((boot["attributes"]["node_id"].as_str(), boot["attributes"]["incarnation_id"].as_str()), (Some(birth.node_id.to_string().as_str()), Some(birth.incarnation.as_str())), "the printed birth is the one the boot names: {birth:?}");
-    let door = named(&spans, "rdm.node_admin.node.serve.via-view-holds-birth");
-    let [door] = door.as_slice() else { panic!("the door opens once, found {}", door.len()) };
-    assert_eq!((door["attributes"]["node_id"].as_str(), door["attributes"]["incarnation_id"].as_str(), door["attributes"]["node_path"].as_str(), door["attributes"]["node_name"].as_str()), (Some(birth.node_id.as_str()), Some(birth.incarnation.as_str()), Some(birth.path.as_str()), Some(birth.name.as_str())), "the door opens for the printed birth: {birth:?}");
+    let opened = named(&spans, "rdm.node_admin.node.serve.via-view-holds-birth");
+    let [opened] = opened.as_slice() else { panic!("the readiness gate opens once, found {}", opened.len()) };
+    assert_eq!((opened["attributes"]["node_id"].as_str(), opened["attributes"]["incarnation_id"].as_str(), opened["attributes"]["node_path"].as_str(), opened["attributes"]["node_name"].as_str()), (Some(birth.node_id.as_str()), Some(birth.incarnation.as_str()), Some(birth.path.as_str()), Some(birth.name.as_str())), "the readiness gate opens for the printed birth: {birth:?}");
     std::fs::write(artifacts.join("trace-id.txt"), boot["trace_id"].as_str().unwrap_or_default()).unwrap();
 }

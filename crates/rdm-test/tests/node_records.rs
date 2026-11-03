@@ -561,18 +561,18 @@ async fn a_start_preserves_a_newer_owed_update() {
     let a: BTreeMap<String, String> = [("owed".into(), "a".into())].into();
     let reply = config_update(&estate, &before, a).await;
     assert_eq!(reply.name(), "config-updated", "the stopped process applies update A: {reply:?}");
-    let door = rdm_test::faults::Door::at(&estate, &pair("mesh1.node-admin", "1")).await;
-    door.arm("ready-held", json!({"kind": "declaration", "node_id": before.node_id, "state": "Ready"})).await;
+    let faults = rdm_test::faults::FaultClient::at(&estate, &pair("mesh1.node-admin", "1")).await;
+    faults.arm("ready-held", json!({"kind": "declaration", "node_id": before.node_id, "state": "Ready"})).await;
     let starting = {
         let nodes = estate.nodes_obj().await;
         let subject = subject.clone();
         tokio::spawn(async move { Estate::complete(&mut nodes.start(&subject).await.expect("the start is accepted")).await })
     };
-    door.wait_held("ready-held").await;
+    faults.wait_held("ready-held").await;
     let b: BTreeMap<String, String> = [("owed".into(), "b".into())].into();
     let reply = config_update(&estate, &before, b.clone()).await;
     assert_eq!(reply.name(), "config-updated", "update B is acknowledged during the start: {reply:?}");
-    door.release("ready-held").await;
+    faults.release("ready-held").await;
     starting.await.expect("the start completes");
     let after = estate.until_node(&subject, "the node is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth starts");

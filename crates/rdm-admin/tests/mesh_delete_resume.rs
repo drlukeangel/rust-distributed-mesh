@@ -479,7 +479,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
 /// ordinary node and the other node-admin), their count, and not the one that exited nor the final
 /// primary (node-rpc-envelope.md, "Mesh delete command pair": "A stale/conflicting workflow identity or
 /// incomplete manifest is refused by name with a typed Status refusal naming the mismatch"). What
-/// must NOT happen: `NotReady`, the answer of a door that is not serving yet.
+/// must NOT happen: `NotReady`, the answer of a readiness gate that is not open yet.
 #[test]
 fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_receipt() {
     let cap = capture();
@@ -1105,7 +1105,7 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
 }
 
 /// A Build log whose executor is cut once: the `step` step event of `operation` is refused, as the fault
-/// door's `StepEvent` cut leaves it (`FaultedBuilds::write_step` holds BEFORE the step event is
+/// service's `StepEvent` cut leaves it (`FaultedBuilds::write_step` holds BEFORE the step event is
 /// durable, so the step's work is done and its step event is not). Everything else reads and writes the
 /// log it wraps.
 struct CutBuilds<'a> {

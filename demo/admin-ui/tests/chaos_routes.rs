@@ -1,4 +1,4 @@
-//! The Chaos tab's door: a fault is aimed at one exact runtime, answers a typed outcome, and is
+//! The Chaos tab's routes: a fault is aimed at one exact runtime, answers a typed outcome, and is
 //! refused by name when it is aimed at the fabric-primary (nothing is signalled).
 
 #![cfg(target_os = "linux")]

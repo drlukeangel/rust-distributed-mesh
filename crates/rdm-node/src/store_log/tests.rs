@@ -726,12 +726,12 @@ async fn capture_spans<F: std::future::Future<Output = T>, T>(f: impl FnOnce() -
 async fn a_cancelled_append_cannot_land_after_a_takeover_write() {
     let path = file("append-takeover-order");
     let store = StoreLog::open(&path, formats()).await.unwrap();
-    let door = write_door::arm(&path, "subject");
+    let cut = write_cut::arm(&path, "subject");
     let old = {
         let store = store.clone();
         tokio::spawn(async move { store.append(&writer("regained"), "rec", "rec/1", "subject", &rec("old", 1)).await })
     };
-    tokio::time::timeout(std::time::Duration::from_secs(5), door.entered()).await.expect("the old append reaches the disk boundary");
+    tokio::time::timeout(std::time::Duration::from_secs(5), cut.entered()).await.expect("the old append reaches the disk boundary");
     old.abort();
     assert!(old.await.unwrap_err().is_cancelled(), "the client wait ended");
     assert!(store.0.append.try_lock().is_err(), "the unresolved provider job still owns ordering after cancellation");
@@ -739,7 +739,7 @@ async fn a_cancelled_append_cannot_land_after_a_takeover_write() {
         let store = store.clone();
         tokio::spawn(async move { store.append(&writer("regained"), "rec", "rec/1", "subject", &rec("takeover", 2)).await })
     };
-    door.release();
+    cut.release();
     tokio::time::timeout(std::time::Duration::from_secs(5), takeover).await.unwrap().unwrap().unwrap();
     store.finish_issued_writes().await;
     drop(store);
@@ -754,14 +754,14 @@ async fn a_cancelled_append_cannot_land_after_a_takeover_write() {
 #[cfg(feature = "testkit-store")]
 #[tokio::test]
 async fn dropping_an_append_fault_releases_its_disk_job() {
-    let path = file("append-door-cleanup");
+    let path = file("append-cut-cleanup");
     let store = StoreLog::open(&path, formats()).await.unwrap();
-    let door = write_door::arm(&path, "subject");
+    let cut = write_cut::arm(&path, "subject");
     let put = {
         let store = store.clone();
         tokio::spawn(async move { store.append(&writer("cleanup"), "rec", "rec/1", "subject", &rec("value", 1)).await })
     };
-    tokio::time::timeout(std::time::Duration::from_secs(5), door.entered()).await.unwrap();
-    drop(door);
+    tokio::time::timeout(std::time::Duration::from_secs(5), cut.entered()).await.unwrap();
+    drop(cut);
     tokio::time::timeout(std::time::Duration::from_secs(5), put).await.unwrap().unwrap().unwrap();
 }

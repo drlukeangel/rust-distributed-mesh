@@ -30,7 +30,7 @@
 //! | H Proxy deletion write failure is safe and retried | `a:connections_writer::a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands`; `n:connection_writes::a_refused_connection_write_is_retried_with_backoff_until_it_lands` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
 //! | I destination/carrier incarnation | `c:connections::a_failed_direct_naming_a_superseded_destination_is_stale_evidence_and_the_call_dials` (added with its fix); `c:connections::a_stale_destination_incarnation_is_superseded`; `c:connections::a_stale_carrier_incarnation_is_superseded`; `c:connections::a_direct_fact_naming_a_superseded_destination_is_not_current`; `t:connections_integration::a_fact_naming_a_superseded_birth_still_dials_the_current_one`; `t:connections::an_open_against_another_incarnation_is_wrong_incarnation_and_never_served`; `a:connections_writer::a_failed_dial_to_the_destinations_next_birth_names_that_birth` | none | `a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and_never_carries`; `a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_never_carries` |
 //! | J carrier connection loss invalidates Proxy | `t:forward::a_carrier_whose_own_direct_to_the_target_is_not_active_refuses_connection_lost`; `t:forward::a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_disconnected`; `a:connections_writer::a_carrier_names_its_own_connection_only_when_its_latest_direct_is_not_connected` | none | `a_carrier_that_lost_its_connection_refuses_by_name_and_the_source_disconnects_the_proxy` |
-//! | K sent request is never rerouted | `t:connections_integration::an_indeterminate_alone_never_invalidates_a_proxy`; `t:routing::certainty_stays_downstream_an_indeterminate_is_never_replayed_through_another_route`; `t:certainty::reply_loss_after_a_complete_send_is_indeterminate` | none | not writable here: no process door forces a post-commit answer timeout on a carried call (Decisions) |
+//! | K sent request is never rerouted | `t:connections_integration::an_indeterminate_alone_never_invalidates_a_proxy`; `t:routing::certainty_stays_downstream_an_indeterminate_is_never_replayed_through_another_route`; `t:certainty::reply_loss_after_a_complete_send_is_indeterminate` | none | not writable here: no process cut forces a post-commit answer timeout on a carried call (Decisions) |
 //! | L #2640 independence | `t:routing::semantic_selection_is_not_connection_selection`; `t:routing::connection_changes_do_not_touch_the_selection_and_selection_changes_fabricate_no_connection_state` | none | n/a in RDM: no `orgs.topics`, route barrier or watermark exists here; the transport cells prove the selection is untouched |
 //! | §9 a spent Direct dial ends to the application (Q348) | `n:connection_reconnect::tests::an_accept_wakes_one_dial_and_a_spent_dial_is_not_made_again` | none | `a_lost_direct_whose_send_is_spent_ends_to_the_application_with_on_call_failed_and_is_not_dialled_again` |
 //!
@@ -196,7 +196,7 @@ fn block_direct(estate: &Estate, from: &PathName, to: &PathName, blocked: bool) 
 
 fn snapshot(estate: &Estate, node: &PathName) -> Value {
     let out = estate.probe(&["snapshot", "--target", &rdm_test::estate::path_target(node), "--key", "x"]);
-    assert_eq!(out["outcome"], "Reply", "{node:?} answers the snapshot door: {out}");
+    assert_eq!(out["outcome"], "Reply", "{node:?} answers the originate service's snapshot: {out}");
     out
 }
 
@@ -214,7 +214,7 @@ async fn connections_delete_ids(estate: &Estate, node: &PathName, ids: &[String]
     let mut stream = estate.nodes_obj().await.delete_connections(&target.location(), &rdm_core::status::ConnectionScope::Connections(ids)).await.unwrap_or_else(|e| panic!("node.connection.delete of {node:?} through {} refused: {e}", primary.node_id));
     let frames = Estate::frames_of(&mut stream).await;
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "{frames:?}");
-    stream.completion().cloned().expect("the door's terminal frame")
+    stream.completion().cloned().expect("the `NodeCommandService`'s terminal frame")
 }
 
 /// The carrier holds its own Direct connection to the destination on the app protocol: a stream it opened,
@@ -716,7 +716,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     let primary = mesh_primary(&estate).await;
     let carrier_client = estate.carrier().await;
     let empty = rdm_client::NodeRpc::new(carrier_client.client()).connections_delete(&primary, &birth, &rdm_core::status::ConnectionScope::Connections(vec![]), &rdm_transport::CallOptions::default()).await.expect("answered");
-    // The primary's door refuses it with 0x22's `Rejected`, reason `rejected-connection-scope` (D18).
+    // The primary's `NodeCommandService` refuses it with 0x22's `Rejected`, reason `rejected-connection-scope` (D18).
     assert!(matches!(&empty, rdm_core::node_command::NodeCommandReply::Rejected { reason, detail } if reason == "rejected-connection-scope" && detail.contains("at least one")), "an empty list is refused by name: {empty:?}");
     assert!(listed(&estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.expect("node.connection.get"), &dest_id).contains(&to_dest), "the refused scope cut nothing");
     let source = estate.node_value(&*SOURCE).await;
@@ -743,7 +743,7 @@ async fn exact_birth(estate: &Estate, node: &PathName) -> rdm_client::ExactBirth
 /// one Direct (to the carrier) and one Proxy (to the destination, through the carrier) on the app
 /// protocol. `node.connection.delete { All }` as a Build completes on `node.connections.deleted`;
 /// afterwards `node.connection.get` (Status 0x1B) still answers and lists no open connection, both
-/// drops are written under the source's name, and a new call to the source (the testkit door, op
+/// drops are written under the source's name, and a new call to the source (the testkit service, op
 /// 0x73) is refused `ConnectionsDeleting` by name. Must NOT happen: a connection still open after the
 /// completion, a drop under another name, or a new call served.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -792,7 +792,7 @@ async fn an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work
 /// primary P (not the fabric-primary) is the target of a caller's `node.connection.delete`, a node
 /// command at the primary above P, the fabric-primary. It commands P's node.primary.update
 /// (`primary.update.via-command`), P's election names the other node-admin NA2 (`via-update-primary`,
-/// successor NA2), NA2 answers node.primary.updated; only then does the command go on to NA2's door,
+/// successor NA2), NA2 answers node.primary.updated; only then does the command go on to NA2's `NodeCommandService`,
 /// and the `DeleteConnections` step runs on P under NA2 as mesh2's primary. The command completes on
 /// node.connections.deleted and every admin names NA2 mesh2's primary. Must NOT happen: a
 /// `DeleteConnections` step before NA2 answered, or P still named primary.
@@ -831,7 +831,7 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     let step = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| rdm_test::estate::at_location(sp, &p_name) && s(&sp["attributes"]["step"]) == "DeleteConnections").cloned().expect("the DeleteConnections step on P");
     assert_eq!(s(&step["attributes"]["outcome"]), "complete", "{step}");
     assert!(start(&step) >= answered["end_unix_nano"].as_u64().unwrap_or(u64::MAX), "the All ran after NA2 answered node.primary.updated: {step} {answered}");
-    let run = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| rdm_test::estate::at_location(sp, &na2_name) && s(&sp["attributes"]["subject_id"]) == p_id).cloned().unwrap_or_else(|| panic!("NA2's door ran the command"));
+    let run = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| rdm_test::estate::at_location(sp, &na2_name) && s(&sp["attributes"]["subject_id"]) == p_id).cloned().unwrap_or_else(|| panic!("NA2's NodeCommandService ran the command"));
     assert!(cmd["end_unix_nano"].as_u64().unwrap_or(0) <= start(&run), "the fabric-primary installed NA2's answer before it sent the command on: {run}");
     estate.record_trace_url(&s(&cmd["trace_id"]));
 }

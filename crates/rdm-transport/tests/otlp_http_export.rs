@@ -3,7 +3,7 @@
 //!
 //! The collector here is a bare `std::net::TcpListener` that reads each request's head and body,
 //! records the request line and content type, and answers `200`. It is the stand-in for the
-//! collector's HTTP door, not an HTTP server of the crate under test.
+//! collector's HTTP endpoint, not an HTTP server of the crate under test.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

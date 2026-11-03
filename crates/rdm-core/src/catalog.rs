@@ -123,7 +123,7 @@ pub(crate) fn core_ledger() -> Vec<LedgerEntry> {
         LedgerEntry { op: 0x72, family: "declare-probe".into(), owner: OpOwner::Testkit, state: OpState::Live },
         LedgerEntry { op: 0x73, family: "originate".into(), owner: OpOwner::Testkit, state: OpState::Live },
         LedgerEntry { op: 0x74, family: "pre-node-ready-pull".into(), owner: OpOwner::Testkit, state: OpState::Live },
-        LedgerEntry { op: 0x75, family: "fault-door".into(), owner: OpOwner::Testkit, state: OpState::Live },
+        LedgerEntry { op: 0x75, family: "fault".into(), owner: OpOwner::Testkit, state: OpState::Live },
     ]
 }
 
@@ -551,7 +551,7 @@ mod tests {
         let core: Vec<u8> = l.iter().filter(|r| r.owner == OpOwner::Core && r.state == OpState::Live).map(|r| r.op).collect();
         assert_eq!(core, vec![0x01, 0x1A], "the live core ops are exactly ping and Forward");
         let testkit: Vec<u8> = l.iter().filter(|r| r.owner == OpOwner::Testkit).map(|r| r.op).collect();
-        assert_eq!(testkit, vec![0x70, 0x71, 0x72, 0x73, 0x74, 0x75], "the testkit opcodes are the testkit store, the resolve probe, the declare probe, the originate door, the pre_node_ready pull and the fault door");
+        assert_eq!(testkit, vec![0x70, 0x71, 0x72, 0x73, 0x74, 0x75], "the testkit opcodes are the testkit store, the resolve probe, the declare probe, the originate service, the pre_node_ready pull and the fault service");
     }
 
     #[test]

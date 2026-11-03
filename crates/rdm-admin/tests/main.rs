@@ -47,7 +47,7 @@ pub fn control_plane(builds: std::sync::Arc<dyn rdm_admin::build_state::BuildSta
     cp
 }
 
-/// A config door bound to the nodes store as boot binds it (`NodeConfigs::uses_records`): a fresh
+/// A `NodeConfigs` bound to the nodes store as boot binds it (`NodeConfigs::uses_records`): a fresh
 /// nodes store, its own channels joined on an endpoint of its own.
 pub async fn bound_configs(configs: rdm_admin::node_config::NodeConfigs) -> rdm_admin::node_config::NodeConfigs {
     bound_configs_on(std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), configs).await
@@ -145,7 +145,7 @@ pub fn test_executable(r#type: &str) -> rdm_core::binding::Binding {
 }
 
 /// The request `of` names against `cp`'s view: a cell states its change as counts or paths, and the
-/// caller names every node before the typed call (build.md §1: counts are the door's vocabulary).
+/// caller names every node before the typed call (build.md §1: counts are the product's API's vocabulary).
 pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, of: impl FnOnce(&rdm_admin::topology::Topology) -> rdm_core::build::BuildChange) -> rdm_core::build::BuildChange {
     let observed = cp.topology.read().await.clone();
     of(&observed)

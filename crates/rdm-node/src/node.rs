@@ -295,7 +295,7 @@ pub struct NodeSeams {
     pub client: Arc<rdm_transport::NodeRpcClient>,
     /// This node's connections writer.
     pub connections: Arc<crate::connections_writer::ConnectionsWriter>,
-    /// The name this birth holds, read per call by every door that names it.
+    /// The name this birth holds, read per call by every service that names it.
     pub name: crate::held_name::HeldName,
 }
 
@@ -490,7 +490,7 @@ async fn start_booted(
     // This node's own connections: none at its birth, read from nowhere (Q227), then kept by what its
     // client observes of its pooled connections (connections.md sections 4.2, 9 and 10), each fact
     // appended to its connections storage (the file backend's lines of the fabric's store root, R14).
-    // The storage fault the originate door arms (testkit only): the backend's storage, decorated.
+    // The storage fault the originate service arms (testkit only): the backend's storage, decorated.
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-connections-opened", node_path = %launch.path, node_name = %launch.name, writes_to = tracing::field::Empty);
     // The topology storage provider this birth writes, the one its launch names (storage.md §2): one its
     // executable registers, else the start is refused by name. The node reaches it through its one
@@ -528,7 +528,7 @@ async fn start_booted(
     // One delivery state for the process (node-rpc.md §43): its birth mints every frame's identity,
     // and its clients and its server share the windows and the open invocations.
     let delivery = rdm_transport::Delivery::new(rdm_core::framing::Birth { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() });
-    // The name this birth holds, read per call by every door that names it: its launch's until it joins.
+    // The name this birth holds, read per call by every service that names it: its launch's until it joins.
     let held_name = crate::held_name::HeldName::of_birth(launch.location());
     // Each call of this node whose attempts are spent is told to its `on_call_failed`, when the app
     // registered one (fabric-node-hooks.md "on_call_failed"), from either of its clients.
@@ -546,7 +546,7 @@ async fn start_booted(
     // receiver (node-rpc.md §43; Q311): one slot for the process's clients.
     let call_ends = rdm_transport::CallEndsSlot::default();
     let client = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_delivery(delivery.clone()).with_call_ends(call_ends.clone())));
-    // The data plane of RDM standalone: the originate door's own client, whose dials are the
+    // The data plane of RDM standalone: the originate service's own client, whose dials are the
     // connections this node originates for traffic, each a Direct entry of its log.
     let data_plane = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()).with_delivery(delivery.clone()).with_call_ends(call_ends.clone())));
     let _ = call_ends.set(Arc::new(crate::spent_calls::ReportToPrimary::new(resolver.clone(), &client, launch.node_id.clone(), launch.incarnation.clone(), launch.location())));
@@ -676,7 +676,7 @@ async fn start_booted(
             let topology_view = TopologyView::join(&g, &ep0, &launch.fabric_id, &launch.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds, &app_types.iter().map(String::as_str).collect::<Vec<_>>()).await?;
             topology_view.set_author(&rdm_core::PublisherId { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() }, launch.supersedes.clone());
             // The name this birth holds is its topology view's (R12): its connections rows name it as their
-            // source from here on, and every door names the node by it, whatever name the join hands it
+            // source from here on, and every service names the node by it, whatever name the join hands it
             // or an `ApplyNodeName` gives it.
             {
                 let (held, birth) = (topology_view.clone(), launch.location());
@@ -1338,7 +1338,7 @@ impl NodeRowRead {
     }
 }
 
-/// A running node's own config door ([`RunningNode::config_update`]): cloneable, held by whatever task
+/// A running node's own `OwnConfig` ([`RunningNode::config_update`]): cloneable, held by whatever task
 /// puts the node's own config.
 #[derive(Clone)]
 pub struct OwnConfig {
@@ -1779,7 +1779,7 @@ fn node_state_of(s: MemberStatus) -> rdm_core::status::NodeState {
     }
 }
 
-/// The node command door (op 0x22, i144 R22; Luke Q6, Q7): a command from this birth's mesh-primary,
+/// The node command service (op 0x22, i144 R22; Luke Q6, Q7): a command from this birth's mesh-primary,
 /// answered on the command's ordered reply stream by [`crate::node_self::NodeSelf::serve_node_command`].
 /// Nothing checks who is calling (node-rpc.md §14): the caller, the birth holding the call's endpoint
 /// key in the member projection this node installed, is named in spans and is the command's commander.
@@ -1862,7 +1862,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             }
             let incarnation = match &req {
                 StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeProperties { incarnation, .. } | StatusRequest::CreateTags { incarnation, .. } | StatusRequest::DeleteTags { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. } | StatusRequest::UpdateRoots { incarnation, .. } => incarnation,
-                // No handler on this door for the request: not handled here (R24), decided by dispatch alone.
+                // No handler in this service for the request: not handled here (R24), decided by dispatch alone.
                 _ => return Ok(crate::node_self::request_not_handled(&me.digest.node.node_id.to_string(), &req)),
             };
             // The birth the call reached answers it, whatever node id it names (R-RX5); the exact

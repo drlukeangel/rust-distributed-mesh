@@ -273,10 +273,10 @@ fn a_member_the_kernel_is_killing_is_read_as_ended_by_its_terminate() {
 /// mesh2.node-admin.2 investigates it (`os-stopped`) and recovers it, its own workflow. Once the
 /// recovery's TerminateRuntime has read the held runtime `os-stopped` and left it, inside its
 /// replacement's birth, the runtime is resumed. The re-created birth holds the path and name, and the
-/// resumed birth, refused by name at the successor's doors, is decided once: deleted, its runtime
+/// resumed birth, refused by name at the successor's services, is decided once: deleted, its runtime
 /// terminated by the primary that decided it (`via-terminate-returned`). Must NOT happen: a decision
 /// `re-admit` of the resumed birth, or a second decision of it acted on (rdm#304: one birth re-admitted
-/// at the declaration door, then deleted 175 ms later).
+/// at the `StatusService`, then deleted 175 ms later).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_deleted() {
     let test = "an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_deleted";
@@ -324,6 +324,6 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
     let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-terminate-returned").into_iter().filter(|sp| attr(sp, "node_id") == node_id).collect();
     assert_eq!(terminated.len(), 1, "its runtime is terminated once, by the primary that decided it: {terminated:#?}");
     let trace = s(&decided["trace_id"]);
-    println!("the resumed birth decided {} at the {} door: http://192.168.68.99:16687/trace/{trace}", attr(decided, "decision"), attr(decided, "door"));
+    println!("the resumed birth decided {} via {}: http://192.168.68.99:16687/trace/{trace}", attr(decided, "decision"), attr(decided, "via"));
     estate.record_trace_url(&trace);
 }

@@ -50,7 +50,7 @@ pub async fn start_with_client(
     start_with_seams(launch, |b, s| register(b, s.resolver, s.client)).await
 }
 
-/// [`start_with_client`], handing `register` every process seam the testkit doors act through:
+/// [`start_with_client`], handing `register` every process seam the testkit services act through:
 /// the resolver, the client, the connections writer and the storage fault.
 pub async fn start_with_seams(
     launch: &Launch,
@@ -212,7 +212,7 @@ pub fn echo_streams(mut acceptor: rdm_transport::connections::Acceptor, own: Str
 }
 
 /// [`start_pre_node_ready`], also registering one data-plane `alpn`: its dial half handed to the
-/// originate door (`OriginateRequest::Stream`), its accept half returned.
+/// originate service (`OriginateRequest::Stream`), its accept half returned.
 pub async fn start_pre_node_ready_with_alpn(
     launch: &Launch,
     node_hooks: rdm_node::node_hooks::NodeHooks,
@@ -230,7 +230,7 @@ pub async fn start_pre_node_ready_with_alpn(
 }
 
 /// [`start_with_seams`], also registering one data-plane `alpn` (connections.md §5): its dial half is
-/// handed to the originate door (`OriginateRequest::Stream`), its accept half returned for the role to
+/// handed to the originate service (`OriginateRequest::Stream`), its accept half returned for the role to
 /// answer on.
 pub async fn start_with_seams_and_alpn(
     launch: &Launch,
@@ -269,7 +269,7 @@ async fn start_with_rafka_time_pre_node_ready_alpns(
     let fault_for_storage = fault.clone();
     let knob_fn: RafkaTimeKnobFn = Box::new(|launch, rt, boot| rafka_time_knob(launch, rt, boot));
     let own_config: Arc<std::sync::OnceLock<rdm_node::node::OwnConfig>> = Arc::new(std::sync::OnceLock::new());
-    let door = own_config.clone();
+    let own = own_config.clone();
     let running = rdm_node::node::start_on(
         launch,
         node_backend(launch),
@@ -286,7 +286,7 @@ async fn start_with_rafka_time_pre_node_ready_alpns(
                 name: ns.name,
                 data_plane,
                 data_plane_registry,
-                own_config: door,
+                own_config: own,
             };
             register(b, seams).carry::<crate::testkit_store::TestkitStore>()
         },

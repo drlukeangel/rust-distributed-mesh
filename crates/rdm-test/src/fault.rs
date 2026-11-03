@@ -1,7 +1,7 @@
-//! The fault door: a testkit-only Node RPC protocol on op `0x75` that arms, releases and reads the
+//! The fault service: a testkit-only Node RPC protocol on op `0x75` that arms, releases and reads the
 //! cuts of a faulted node-admin ([`crate::admin_faults`]). A scenario reaches the admin by its
 //! ID or an explicit path/name pair; the admin's readiness gate answers NotReady until its
-//! Node RPC door is ready, so a cut that must be in force before then is armed from
+//! readiness gate is open, so a cut that must be in force before then is armed from
 //! `<root>/faults/<location-index>.boot.json` (`admin_faults::arm_boot_cuts`). Testkit range only
 //! ([`TESTKIT_OPS`]); the testkit's own `faulted-node-admin` serves it, never a product binary.
 //!
@@ -17,11 +17,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// The fault door protocol on op [`OP`].
-pub struct FaultDoor;
+/// The fault service protocol on op [`OP`].
+pub struct Fault;
 
-/// The fault door's op tag.
-pub const OP: u8 = <FaultDoor as NodeProtocol>::OP;
+/// The fault service's op tag.
+pub const OP: u8 = <Fault as NodeProtocol>::OP;
 
 /// A cut as the wire carries it. [`CutSpec`] is the cut as a scenario writes it in JSON (a boot file,
 /// a cell's arm), internally tagged on `kind`; postcard is not self-describing and cannot decode an
@@ -47,7 +47,7 @@ enum CutWire {
     PathTarget { node: Option<PathName> },
 }
 
-/// A fault door call.
+/// A fault service call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FaultRequest {
     /// Arm `spec` under `id`.
@@ -295,7 +295,7 @@ pub struct FaultState {
     pub step_events_seen: u64,
 }
 
-/// A fault door answer.
+/// A fault service answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FaultReply {
     /// The cut is armed.
@@ -327,7 +327,7 @@ pub enum FaultReply {
     ///
     /// Position 2 on the wire.
     State(FaultState),
-    /// The door refused the call by name: the id is armed already, or no cut is armed under it.
+    /// The fault service refused the call by name: the id is armed already, or no cut is armed under it.
     ///
     /// Position 3 on the wire.
     Refused {
@@ -341,7 +341,7 @@ pub enum FaultReply {
         /// Why the peer could not be resolved.
         reason: String,
     },
-    /// The admin's Node RPC door is not ready.
+    /// The admin's readiness gate is not open.
     ///
     /// Position 5 on the wire.
     NotReady {
@@ -378,9 +378,9 @@ pub enum FaultReply {
     },
 }
 
-impl NodeProtocol for FaultDoor {
+impl NodeProtocol for Fault {
     const OP: u8 = 0x75;
-    const NAME: &'static str = "fault-door";
+    const NAME: &'static str = "fault";
     const MAX_REQUEST_FRAME_BYTES: usize = 4 * 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
     const REQUEST_VARIANTS: u32 = 3;
@@ -439,10 +439,10 @@ impl NodeProtocol for FaultDoor {
     }
 }
 
-/// Serve the door over `faults` on the admin's Node RPC server: arm, release and read its cuts. The
-/// door answers whoever calls (R-SV1): it is the testkit's own executable's.
+/// Serve the fault service over `faults` on the admin's Node RPC server: arm, release and read its cuts. The
+/// fault service answers whoever calls (R-SV1): it is the testkit's own executable's.
 pub fn serve(b: ServerBuilder, faults: Arc<AdminFaults>) -> ServerBuilder {
-    b.serve::<FaultDoor, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: FaultRequest| {
+    b.serve::<Fault, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: FaultRequest| {
         let faults = faults.clone();
         async move {
             let node = faults.node_id.to_string();
@@ -461,13 +461,13 @@ pub fn serve(b: ServerBuilder, faults: Arc<AdminFaults>) -> ServerBuilder {
     })
 }
 
-/// One call of the door at the admin `admin`, by its explicit target: the door's answer, or how the call
-/// ended, named. A NotReady answer is the admin's Node RPC door not ready yet.
+/// One call of the fault service at the admin `admin`, by its explicit target: its answer, or how the call
+/// ended, named. A NotReady answer is the admin's readiness gate not ready yet.
 pub async fn ask(client: &NodeRpcClient, admin: &NodeTarget, req: &FaultRequest) -> Result<FaultReply, String> {
-    let (out, _) = client.call::<FaultDoor>(admin, req, &CallOptions::default()).await;
+    let (out, _) = client.call::<Fault>(admin, req, &CallOptions::default()).await;
     match out {
         RpcOutcome::Reply(r) => Ok(r.into_value()),
-        other => Err(format!("the fault door call at {admin:?} ended {}: {other:?}", other.name())),
+        other => Err(format!("the fault service call at {admin:?} ended {}: {other:?}", other.name())),
     }
 }
 
@@ -475,7 +475,7 @@ pub async fn ask(client: &NodeRpcClient, admin: &NodeTarget, req: &FaultRequest)
 mod tests {
     use super::*;
 
-    /// One cut of every kind the door arms.
+    /// One cut of every kind the fault service arms.
     fn every_cut() -> Vec<CutSpec> {
         vec![
             CutSpec::StepEvent { step: "StopNode".into(), operation: Some("node.delete".into()), node: None, at: None, failed: false },
@@ -493,21 +493,21 @@ mod tests {
     }
 
     // CONTRACT: the Node RPC wire is postcard (rafka-node-rpc-contract protocol.rs): an arm carries
-    // its cut across it and the admin decodes the same cut, for every kind of cut the door arms.
+    // its cut across it and the admin decodes the same cut, for every kind of cut the fault service arms.
     #[test]
     fn an_arm_of_every_cut_kind_round_trips_on_the_wire() {
         for spec in every_cut() {
             let req = FaultRequest::arm("c", spec.clone());
-            let bytes = FaultDoor::encode_request(&req).unwrap_or_else(|e| panic!("{spec:?} does not encode: {e:?}"));
-            let back = FaultDoor::decode_request(&bytes).unwrap_or_else(|e| panic!("{spec:?} does not decode: {e:?}"));
+            let bytes = Fault::encode_request(&req).unwrap_or_else(|e| panic!("{spec:?} does not encode: {e:?}"));
+            let back = Fault::decode_request(&bytes).unwrap_or_else(|e| panic!("{spec:?} does not decode: {e:?}"));
             assert_eq!(back.cut_spec(), Some(spec));
         }
         for req in [FaultRequest::Release { id: "c".into() }, FaultRequest::State] {
-            assert_eq!(FaultDoor::decode_request(&FaultDoor::encode_request(&req).unwrap()).unwrap(), req);
+            assert_eq!(Fault::decode_request(&Fault::encode_request(&req).unwrap()).unwrap(), req);
         }
     }
 
-    // CONTRACT: every answer the door gives decodes as it was sent, the state's cuts with what they held.
+    // CONTRACT: every answer the fault service gives decodes as it was sent, the state's cuts with what they held.
     #[test]
     fn every_reply_variant_encodes_and_round_trips() {
         let row = |spec: CutSpec, hit: Option<Hit>| CutRow { spec, armed: false, held: true, released: true, hit, held_for_ms: Some(7), seen_while_held: 1 };
@@ -528,10 +528,10 @@ mod tests {
             FaultReply::Malformed { kind: MalformedKind::Corrupt },
             FaultReply::CallerRefused { reason: "r".into() },
         ];
-        assert_eq!(all.len() as u32, FaultDoor::REPLY_VARIANTS);
+        assert_eq!(all.len() as u32, Fault::REPLY_VARIANTS);
         for r in all {
-            let bytes = FaultDoor::encode_reply(&r).unwrap_or_else(|e| panic!("{r:?} does not encode: {e:?}"));
-            assert_eq!(FaultDoor::decode_reply(&bytes).unwrap_or_else(|e| panic!("{r:?} does not decode: {e:?}")), r);
+            let bytes = Fault::encode_reply(&r).unwrap_or_else(|e| panic!("{r:?} does not encode: {e:?}"));
+            assert_eq!(Fault::decode_reply(&bytes).unwrap_or_else(|e| panic!("{r:?} does not decode: {e:?}")), r);
         }
     }
 }

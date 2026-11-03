@@ -26,7 +26,7 @@ fn evidence_dir() -> PathBuf {
 }
 
 /// The node's gate as it stands once `pre_node_ready` passed: the harness runs the op's handlers, and
-/// its own not-ready check closes the runtime's door, not this gate.
+/// its own not-ready check closes the runtime's readiness gate, not this gate.
 fn passed_gate() -> PreNodeReadyGate {
     let gate = PreNodeReadyGate::new();
     gate.open();

@@ -5,7 +5,7 @@
 //! processes it creates through a Build. A gateway opens a data connection to the broker on the
 //! demo's data protocol (`rshape_consumer::data_alpn`), writes its bytes and reads what the broker's
 //! role answers (`rshape_consumer::run`: "echo <broker's node id>: <bytes>"). It does so through its originate
-//! door (op `0x73`), which the gateway role serves.
+//! service (op `0x73`), which the gateway role serves.
 //!
 //! CONTRACT (connections.md §4.1, §5 and §7): a gateway's data connection to a broker carries the bytes
 //! the gateway wrote, unchanged, and answers them from that broker: as a Direct connection, and, with
@@ -78,14 +78,14 @@ async fn estate(test: &str) -> Estate {
     estate
 }
 
-/// Ask `from`'s originate door (op `0x73`) for `request`: three attempts, each answered within 30 s.
+/// Ask `from`'s originate service (op `0x73`) for `request`: three attempts, each answered within 30 s.
 async fn originate(estate: &Estate, from: &PathName, request: &OriginateRequest) -> OriginateReply {
     let node_id = id_at(estate, from).await;
     let options = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30)), ..CallOptions::default() };
     let (outcome, _) = estate.carrier().await.client().call::<Originate>(&NodeTarget::ExactNode(node_id), request, &options).await;
     match outcome {
         RpcOutcome::Reply(reply) => reply.into_value(),
-        other => panic!("{from:?}'s originate door answered {other:?} to {request:?}"),
+        other => panic!("{from:?}'s originate service answered {other:?} to {request:?}"),
     }
 }
 

@@ -62,7 +62,7 @@ struct Rig {
     mesh_ids: BTreeMap<String, MeshId>,
     /// Inert until a cell arms it.
     withhold: Arc<ReplyWithhold>,
-    /// The nodes store the rig's config doors and served nodes write their own parts to
+    /// The nodes store the rig's `NodeConfigs` and served nodes write their own parts to
     /// (`crate::bound_configs_on`, [`node_records`]).
     records: Arc<MemoryNodesStorage>,
     /// Each renamed live birth the mesh-primary commanded back on its mesh (node-name-update.md step
@@ -220,7 +220,7 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
 }
 
 /// The node property records every birth of these cells writes its own record to and every admin
-/// door of them reads: one store for the process (each birth's node id is minted, so no two cells
+/// service of them reads: one store for the process (each birth's node id is minted, so no two cells
 /// share a record).
 fn node_records() -> Arc<MemoryNodesStorage> {
     static RECORDS: OnceLock<Arc<MemoryNodesStorage>> = OnceLock::new();
@@ -235,7 +235,7 @@ async fn props(rig: &Rig, node_id: &NodeId) -> (BTreeMap<String, String>, std::c
 }
 
 /// The config the node property record of `node_id` holds in [`node_records`] (empty when none is
-/// written): what a door other than the rig's wrote.
+/// written): what a service other than the rig's wrote.
 async fn config_of(node_id: &NodeId) -> BTreeMap<String, String> {
     use rdm_admin::storage::NodesStorage as _;
     node_records().properties(node_id).await.unwrap().map(|p| p.config).unwrap_or_default()
@@ -565,25 +565,25 @@ async fn written_by_the_node(writer: &rdm_node::node_records::NodePropertyWriter
     Some(written.unwrap_or_else(|e| panic!("the node's own put: {e}")))
 }
 
-/// mesh1's primary's config door, telling births through a client that resolves `node`.
-async fn configs_door(rig: &Rig, node: &ServedNode) {
-    configs_door_for(rig, &[node]).await
+/// mesh1's primary's `NodeConfigs`, telling births through a client that resolves `node`.
+async fn node_configs(rig: &Rig, node: &ServedNode) {
+    node_configs_for(rig, &[node]).await
 }
 
-/// mesh1's primary's config door, telling births through a client that resolves each of `nodes`.
-async fn configs_door_for(rig: &Rig, nodes: &[&ServedNode]) {
+/// mesh1's primary's `NodeConfigs`, telling births through a client that resolves each of `nodes`.
+async fn node_configs_for(rig: &Rig, nodes: &[&ServedNode]) {
     let resolver = Arc::new(StaticResolver::new());
     for node in nodes {
         resolver.insert(node.resolved.clone());
     }
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    // The door writes from the one copy of the records this admin holds, its authority's.
+    // The `NodeConfigs` writes from the one copy of the records this admin holds, its authority's.
     let _ = rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.service.caches.nodes.clone())).await));
 }
 
-/// mesh1's primary's config door, the one door its record changes take turns at, its client
+/// mesh1's primary's `NodeConfigs`, the one place its record changes take turns at, its client
 /// resolving no node: what a cell whose subject is told nothing (a stopped birth) needs.
-async fn quiet_door(rig: &Rig) {
+async fn quiet_node_configs(rig: &Rig) {
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let _ = rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), Default::default())).await));
 }
@@ -624,7 +624,7 @@ fn a_config_update_at_the_mesh_primary_ends_updated_and_the_node_carries_it() {
         let (rig, b) = rig().await;
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
         let node = serve_node(rpc1).await;
-        configs_door(&rig, &node).await;
+        node_configs(&rig, &node).await;
         let config: BTreeMap<String, String> = [("tags".to_string(), "edge,blue".to_string()), ("zone".to_string(), "a".to_string())].into();
         let client = client_of(&rig, admin2).await;
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
@@ -661,7 +661,7 @@ fn a_config_update_naming_a_node_at_its_old_row_name_is_decided_for_that_exact_b
         let old: PathName = rdm_core::PathName::new("mesh1.node", "1-old").unwrap();
         rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == rpc1.node.node_id).expect("rpc1 is in the view").name = old.name.clone();
         let node = serve_node(rpc1).await;
-        configs_door(&rig, &node).await;
+        node_configs(&rig, &node).await;
         let config: BTreeMap<String, String> = [("zone".to_string(), "d".to_string())].into();
         let client = client_of(&rig, admin2).await;
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
@@ -690,7 +690,7 @@ fn a_stopped_nodes_config_update_is_applied_by_its_bound_writer_and_keeps_its_ta
         let (rig, b) = rig().await;
         let stopped = &b["rpc2"];
         let node = serve_node(stopped).await;
-        configs_door(&rig, &node).await;
+        node_configs(&rig, &node).await;
         stopped_with_row(&rig, stopped, &["edge"]).await;
         let config: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
         let client = client_of(&rig, &b["admin2"]).await;
@@ -728,7 +728,7 @@ fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
         let refusal = format!("pre_node_ready has not passed: {}", "the store of mesh1.node.1 is still behind; ".repeat(20));
         let node = serve_node_answering(rpc1, StatusReply::NotReady { reason: refusal.clone() }).await;
-        configs_door(&rig, &node).await;
+        node_configs(&rig, &node).await;
         let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
         let client = client_of(&rig, admin2).await;
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
@@ -802,11 +802,11 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
         let (rig, _) = rig().await;
         let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let refusing = Arc::new(RefusingRecords::default());
-        let door = crate::bound_configs_over(refusing.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), Default::default())).await;
+        let configs = crate::bound_configs_over(refusing.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), Default::default())).await;
         let view = rig.topology.read().await.clone();
         let me = &rig.admin.node;
         let req = StatusRequest::UpdateNodeConfig { node_id: me.node_id.clone(), incarnation: me.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "c".to_string())].into() };
-        let reply = door.update(&me.location(), &me.node_id, &view, &MemoryNodesStorage::default(), &req).await;
+        let reply = configs.update(&me.location(), &me.node_id, &view, &MemoryNodesStorage::default(), &req).await;
         assert!(
             matches!(&reply, StatusReply::ConfigRowRefused { node, reason, .. } if *node == me.node_id.to_string() && reason.contains("disk refused the write")),
             "the store refused the put: {reply:?}"
@@ -821,8 +821,8 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
     eprintln!("trace {}: rdm.node_admin.node.update.via-config outcome=config-row-refused", spans[0].0);
 }
 
-/// A door at the admin keyed `key`, telling births through a client that resolves only `node`.
-async fn door_at(key: &SecretKey, node: &ServedNode) -> rdm_admin::node_config::NodeConfigs {
+/// A `NodeConfigs` at the admin keyed `key`, telling births through a client that resolves only `node`.
+async fn node_configs_at(key: &SecretKey, node: &ServedNode) -> rdm_admin::node_config::NodeConfigs {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(node.resolved.clone());
     // A node-admin served here is the mesh-primary the command is sent down to: its role names it, as
@@ -858,7 +858,7 @@ fn a_config_update_is_refused_by_name_at_an_admin_that_is_neither_primary_and_wr
         let view = rig.topology.read().await.clone();
         // At an admin that is neither the fabric-primary nor mesh2's primary: refused by name.
         let neither_rows = MemoryNodesStorage::default();
-        let neither = door_at(&admin2.key, &node).await;
+        let neither = node_configs_at(&admin2.key, &node).await;
         let refused = neither.serve(&admin2.node.location(), &admin2.node.node_id, &view, &rig.topology, &neither_rows, SentBy::Other, &req).await;
         let StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } = &refused else { panic!("mesh1.node-admin.2 is neither primary: {refused:?}") };
         assert!(needed.contains("fabric-primary") && needed.contains(rig.admin.node.node_id.as_str()), "the refusal names the fabric-primary: {needed}");
@@ -866,8 +866,8 @@ fn a_config_update_is_refused_by_name_at_an_admin_that_is_neither_primary_and_wr
         assert!(node.seen.lock().unwrap().is_empty(), "nothing is told by an admin that is neither primary");
         // At mesh2's primary: the row is written, then the birth is told directly.
         let mp_rows = MemoryNodesStorage::default();
-        let door = door_at(&m2admin.key, &node).await;
-        let served = door.serve(&m2admin.node.location(), &m2admin.node.node_id, &view, &rig.topology, &mp_rows, SentBy::Other, &req).await;
+        let configs = node_configs_at(&m2admin.key, &node).await;
+        let served = configs.serve(&m2admin.node.location(), &m2admin.node.node_id, &view, &rig.topology, &mp_rows, SentBy::Other, &req).await;
         assert_eq!(updated(&served), updated_of(&m2rpc, &config));
         assert_eq!(config_of(&m2rpc.node.node_id).await, config, "the node's own record holds the whole config");
         assert_eq!(
@@ -917,15 +917,15 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
             other => panic!("only the config command reaches mesh2's primary: {other:?}"),
         })
         .await;
-        let door = door_at(&rig.admin.key, &mp).await;
+        let configs = node_configs_at(&rig.admin.key, &mp).await;
         let (tick, views) = tokio::sync::watch::channel(0u64);
-        door.watch_views(views);
+        configs.watch_views(views);
         let told: BTreeMap<String, String> = [("admin_api_base".to_string(), "rdm://mesh2".to_string())].into();
         let req = StatusRequest::UpdateNodeConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: told.clone() };
         let view = rig.topology.read().await.clone();
         let rows = MemoryNodesStorage::default();
         let admin_at = rig.admin.node.location();
-        let serve = door.serve(&admin_at, &rig.admin.node.node_id, &view, &rig.topology, &rows, SentBy::Caller, &req);
+        let serve = configs.serve(&admin_at, &rig.admin.node.node_id, &view, &rig.topology, &rows, SentBy::Caller, &req);
         let land = async {
             tokio::time::timeout(Duration::from_secs(10), mp.heard.notified()).await.expect("the fabric-primary sent the command down");
             // mesh2.node-admin.1 holds the primary now, and the fabric-primary's view changes.
@@ -962,7 +962,7 @@ fn a_caller_reaches_the_nodes_mesh_primary_through_a_carrier_and_it_writes_and_a
             n.is_fabric_primary = n.node_id == admin2.node.node_id;
         }
         let node = serve_node(rpc1).await;
-        configs_door(&rig, &node).await;
+        node_configs(&rig, &node).await;
         let (carrier, _carrier_router) = carrier_admin(m2admin, &rig.resolved).await;
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(carrier);
@@ -1007,7 +1007,7 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
         let (rig, b) = rig().await;
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
         let node = serve_node(rpc1).await;
-        configs_door(&rig, &node).await;
+        node_configs(&rig, &node).await;
         let me = &rig.admin.node;
         let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
         let client = client_of(&rig, admin2).await;
@@ -1028,12 +1028,12 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
 }
 
 /// A second node-admin of the rig, `b`, holding no primary of its own unless the view says so: its own
-/// `StatusAuthority` over `rig`'s view (the views agree), served on `b`'s key, its config door telling
+/// `StatusAuthority` over `rig`'s view (the views agree), served on `b`'s key, its `NodeConfigs` telling
 /// through a client that resolves each of `resolves`. Its nodes store is its own.
 struct SecondAdmin {
     status: Arc<StatusService>,
     resolved: ResolvedNode,
-    /// What its config door's client resolves: a cell adds a birth it reaches later.
+    /// What its `NodeConfigs`' client resolves: a cell adds a birth it reaches later.
     resolver: Arc<StaticResolver>,
     /// Its atlas, fed every record its writer holds (Q224, as the boot wires it).
     atlas: Arc<rdm_admin::atlas::Atlas>,
@@ -1096,9 +1096,9 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
     SecondAdmin { status, resolved, resolver, atlas, _router: router }
 }
 
-/// The rig's admin (the fabric-primary and mesh1's primary) with its atlas and its config door telling
+/// The rig's admin (the fabric-primary and mesh1's primary) with its atlas and its `NodeConfigs` telling
 /// through a client that resolves each of `resolves`.
-async fn fabric_primary_door(rig: &Rig, resolves: &[ResolvedNode]) -> Arc<rdm_admin::atlas::Atlas> {
+async fn fabric_primary_atlas(rig: &Rig, resolves: &[ResolvedNode]) -> Arc<rdm_admin::atlas::Atlas> {
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     let _ = rig.service.atlas.set(atlas.clone());
     let resolver = Arc::new(StaticResolver::new());
@@ -1221,7 +1221,7 @@ fn a_callers_command_carried_up_while_the_fabric_primary_changes_completes_once_
     eprintln!("trace {trace}: rdm.node_admin.node.update.via-forward node=mesh1.node-admin.2 fabric_primary=mesh2.node-admin.1 sends={sends} outcome=config-updated");
 }
 
-/// CONTRACT (node-rpc-envelope.md node.tags; node-config-update.md step 1, the same door for a node's
+/// CONTRACT (node-rpc-envelope.md node.tags; node-config-update.md step 1, the same `NodeConfigs` for a node's
 /// own properties; D21): mesh1.node.1 creates its own tags with a call to the node-admin it joined
 /// through, mesh1.node-admin.2, which is not the fabric-primary: mesh1.node-admin.2 carries it up to the
 /// fabric-primary, mesh1's primary, which sends it down to the node's own writer: `TagsCreated`, the
@@ -1234,7 +1234,7 @@ fn a_nodes_own_tags_create_through_an_admin_that_is_not_the_fabric_primary_is_ca
         let (rig, b) = rig().await;
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
         let node = serve_node(rpc1).await;
-        fabric_primary_door(&rig, &[node.resolved.clone()]).await;
+        fabric_primary_atlas(&rig, &[node.resolved.clone()]).await;
         let joined = second_admin(&rig, admin2, &[rig.resolved.clone()]).await;
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(joined.resolved.clone());
@@ -1278,7 +1278,7 @@ fn a_node_admins_own_config_update_is_written_by_its_own_writer_and_nothing_trav
         let (rig, b) = rig().await;
         let admin2 = &b["admin2"];
         let joined = second_admin(&rig, admin2, &[rig.resolved.clone()]).await;
-        fabric_primary_door(&rig, &[joined.resolved.clone()]).await;
+        fabric_primary_atlas(&rig, &[joined.resolved.clone()]).await;
         let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "rdm://mesh1.node-admin.2".to_string())].into();
         let reply = tokio::time::timeout(Duration::from_secs(20), joined.status.own_config_update(admin2.node.incarnation_id.clone().unwrap(), config.clone())).await.expect("the command completes");
         assert_eq!(updated(&reply), updated_of(admin2, &config));
@@ -1396,7 +1396,7 @@ fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
     cap.run(async {
         let (rig, b) = rig().await;
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
-        quiet_door(&rig).await;
+        quiet_node_configs(&rig).await;
         let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
         let later: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:10".to_string())].into();
         let me = &rig.admin.node;
@@ -1470,7 +1470,7 @@ async fn successor_new(rig: &Rig) -> (Birth, ServedNode) {
     let b = birth(rdm_core::PathName::new("mesh1.node", "8").unwrap(), "node", "mesh1", false, false);
     rig.topology.write().await.nodes.push(b.node.clone());
     let node = serve_node(&b).await;
-    configs_door(rig, &node).await;
+    node_configs(rig, &node).await;
     (b, node)
 }
 
@@ -1482,7 +1482,7 @@ async fn successor_connections_deleted(rig: &Rig) -> (Birth, ServedNode) {
     (b.node.status, b.node.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
     rig.topology.write().await.nodes.push(b.node.clone());
     let node = serve_node_with(&b, |_| StatusReply::Applied).await;
-    configs_door(rig, &node).await;
+    node_configs(rig, &node).await;
     (b, node)
 }
 
@@ -1537,7 +1537,7 @@ async fn hold_connections_deleted(rig: &Rig, b: &Birth) {
 }
 
 /// `b` live with no connection as a rename needs it ([`hold_connections_deleted`]), its row at its
-/// name carrying `tags`; served, answering every request `Applied`, and mesh1's primary's config door
+/// name carrying `tags`; served, answering every request `Applied`, and mesh1's primary's `NodeConfigs`
 /// resolving it.
 async fn deleted_with_row(rig: &Rig, b: &Birth, tags: &[&str]) -> ServedNode {
     hold_connections_deleted(rig, b).await;
@@ -1545,7 +1545,7 @@ async fn deleted_with_row(rig: &Rig, b: &Birth, tags: &[&str]) -> ServedNode {
     let row = rdm_admin::storage::NodeRow { r#type: b.node.r#type.clone(), mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
     rig.nodes.write_record(&row).await.unwrap();
     let node = serve_node(b).await;
-    configs_door(rig, &node).await;
+    node_configs(rig, &node).await;
     node
 }
 
@@ -1777,7 +1777,7 @@ fn a_stopped_nodes_rename_is_applied_and_its_start_rejoins_it() {
         let (rig, b) = rig().await;
         let stopped = &b["rpc2"];
         let node = serve_node(stopped).await;
-        configs_door(&rig, &node).await;
+        node_configs(&rig, &node).await;
         stopped_with_row(&rig, stopped, &[]).await;
         let to: PathName = rdm_core::PathName::new("mesh1.node", "kept").unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(stopped, "kept")).await);
@@ -1877,7 +1877,7 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
             _ => StatusReply::AlreadyApplied,
         })
         .await;
-        configs_door(&rig, &node).await;
+        node_configs(&rig, &node).await;
         assert!(matches!(deleted_all(&rig, &succ).await, rdm_admin::status_rpc::CarryEnd::Deleted { .. }));
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
         let incomplete = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
@@ -1957,7 +1957,7 @@ fn node_tags_commands_and_a_config_update_before_the_fabric_first_reaches_ready_
         let (rig, b) = rig().await;
         let rpc1 = &b["rpc1"];
         let node = serve_node(rpc1).await;
-        configs_door(&rig, &node).await;
+        node_configs(&rig, &node).await;
         rig.topology.write().await.fabric.status = ScopeStatus::Pending;
         let zone: BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
         let config = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone.clone() };
@@ -2006,7 +2006,7 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
         let (rig, b) = rig().await;
         let (rpc1, rpc2) = (&b["rpc1"], &b["rpc2"]);
         let (node, rpc2_node) = (serve_node(rpc1).await, serve_node(rpc2).await);
-        configs_door_for(&rig, &[&node, &rpc2_node]).await;
+        node_configs_for(&rig, &[&node, &rpc2_node]).await;
 
         let created = reply(&call(&rig, &b["admin2"], &create_tags(rpc1, &["rabbit", "red"])).await);
         assert_eq!(created, StatusReply::TagsCreated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), already_carried: Default::default() });
@@ -2048,7 +2048,7 @@ fn a_mesh_primarys_rename_of_itself_is_applied_in_process() {
     cap.run(async {
         let (rig, b) = rig().await;
         let node = serve_node(&b["rpc1"]).await;
-        configs_door(&rig, &node).await;
+        node_configs(&rig, &node).await;
         let me = &rig.admin;
         let inc = me.node.incarnation_id.clone().unwrap();
         if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == me.node.node_id) {
@@ -2134,7 +2134,7 @@ const NODE_LEFT_EXPECTED: &str = "no command: node-left is never a call; a stopp
 /// admin holds an open stop-node of that exact birth under the same key, and it stays open: the stop's
 /// `Stopped` reply is its completion, never a node-left call. The refusal is the admin's reject span
 /// `rdm.node_admin.status.reject.via-node-left` naming the field, expected, reported, the subject (its
-/// path.name as the view holds it) and the caller. What must NOT happen: NotReady (the door is serving), the open stop completed, or a
+/// path.name as the view holds it) and the caller. What must NOT happen: NotReady (the readiness gate is open), the open stop completed, or a
 /// completion accepted.
 #[test]
 fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
@@ -2261,7 +2261,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_never_peer_unresolved() {
     let (rig, others) = rig().await;
-    quiet_door(&rig).await;
+    quiet_node_configs(&rig).await;
     let rpc2 = &others["rpc2"];
     if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == rpc2.node.node_id) {
         n.incarnation_id = None;

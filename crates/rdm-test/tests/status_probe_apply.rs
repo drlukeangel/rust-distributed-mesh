@@ -91,7 +91,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         // A stale incarnation: refused with the one held.
         let stale = StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: IncarnationId::mint() };
         assert_eq!(call(stale).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() });
-        // An upward declaration sent to the node: its Status door has no handler for it (R24, Luke Q11):
+        // An upward declaration sent to the node: its Status service has no handler for it (R24, Luke Q11):
         // not handled, never an authority refusal.
         let downward_declare = StatusRequest::DeclareNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Ready, operation: None };
         assert_eq!(call(downward_declare).await, StatusReply::RequestNotHandled { request: "declare-node-state".into() }, "a request the node has no handler for is answered not handled here");

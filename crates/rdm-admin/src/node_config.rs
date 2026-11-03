@@ -8,7 +8,7 @@ use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::status::{NotPrimary, Status, StatusReply, StatusRequest};
 use std::sync::Arc;
 
-/// A mesh-primary's config door: the client it tells a birth of its mesh through, what holds this
+/// A mesh-primary's `NodeConfigs`: the client it tells a birth of its mesh through, what holds this
 /// admin's own config (the mesh-primary is a member of its mesh and the writer of its own row too),
 /// and the lock that makes every config change one at a time.
 pub struct NodeConfigs {
@@ -18,7 +18,7 @@ pub struct NodeConfigs {
     client: Arc<NodeRpcClient>,
     one_at_a_time: tokio::sync::Mutex<()>,
     /// The record this admin's writer of its mesh's rows holds (`crate::node_rows::WrittenRows`):
-    /// each row the door puts is held there, so the node's next row carries the config put.
+    /// each row `NodeConfigs` puts is held there, so the node's next row carries the config put.
     written: Arc<crate::node_rows::WrittenRows>,
     /// The tick of this admin's installed view ([`Self::watch_views`]).
     views: std::sync::OnceLock<tokio::sync::watch::Receiver<u64>>,
@@ -109,7 +109,7 @@ pub(crate) enum Owed {
 pub type NodeConfigsSlot = Arc<std::sync::OnceLock<Arc<NodeConfigs>>>;
 
 impl NodeConfigs {
-    /// The door over `client`; `written` is the record the writer of this admin's mesh rows holds
+    /// The `NodeConfigs` over `client`; `written` is the record the writer of this admin's mesh rows holds
     /// (`NodeRows::with_written`).
     pub fn new(client: Arc<NodeRpcClient>, written: Arc<crate::node_rows::WrittenRows>) -> Self {
         Self { own_channels: Default::default(), records: Default::default(), own_properties: Default::default(), client, one_at_a_time: tokio::sync::Mutex::new(()), written, views: Default::default() }
@@ -221,7 +221,7 @@ impl NodeConfigs {
         }).await?.ok_or_else(|| format!("{me_id}: lifecycle record of {} is absent after property apply", birth.node_id))
     }
 
-    /// The client this door tells births through: the mesh-primary's node.name.update tells a birth its
+    /// The client these `NodeConfigs` tell births through: the mesh-primary's node.name.update tells a birth its
     /// name through it as well (`crate::node_name_update`).
     pub fn client(&self) -> &NodeRpcClient {
         &self.client
@@ -233,14 +233,14 @@ impl NodeConfigs {
     }
 
     /// The record this admin's writer of its mesh's rows holds: node.name.update puts its rows through it
-    /// as this door does, so each row carries every field the writer knows.
+    /// as these `NodeConfigs` do, so each row carries every field the writer knows.
     pub fn written(&self) -> &Arc<crate::node_rows::WrittenRows> {
         &self.written
     }
 
     /// The turn of one change to a node record at this mesh-primary (node-config-update.md:
     /// "every change to a node record goes through its mesh-primary's one held record, one at a
-    /// time"): this door's puts and node.name.update's take it.
+    /// time"): these `NodeConfigs`' puts and node.name.update's take it.
     pub async fn one_at_a_time(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.one_at_a_time.lock().await
     }
@@ -517,7 +517,7 @@ pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::
             let primary = match hop {
                 Hop::Down(subject) => {
                     if view.own(&subject.node_id).is_none() {
-                        // The birth left the view while its command was owed: the answer a door gives a birth it does not hold.
+                        // The birth left the view while its command was owed: the answer a service gives a birth it does not hold.
                         return Owed::Gone(view);
                     }
                     if view.is_mesh_primary(&subject.mesh, me_id) {
@@ -736,36 +736,36 @@ mod tests {
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &view.fabric.id, "mesh1", &mesh_id, admin.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
-        let door = NodeConfigs::new(client, Arc::new(crate::node_rows::WrittenRows::default()));
+        let configs = NodeConfigs::new(client, Arc::new(crate::node_rows::WrittenRows::default()));
         let records = Arc::new(MemoryNodesStorage::default());
         let storage = MemoryNodesStorage::default();
         let req = |value: &str| StatusRequest::UpdateNodeConfig {
             node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap(), config: [("source".into(), value.into())].into(),
         };
-        assert!(matches!(door.update(&admin.location(), &admin.node_id, &view, &storage, &req("unbound")).await, StatusReply::NotReady { .. }));
+        assert!(matches!(configs.update(&admin.location(), &admin.node_id, &view, &storage, &req("unbound")).await, StatusReply::NotReady { .. }));
         assert!(storage.record_at(&admin.location()).await.unwrap().is_none());
-        door.uses_records(records.clone(), || "memory".into(), channels.clone());
-        door.bound_own(&admin, rdm_core::launch::InitialProperties { config: [("old".into(), "value".into())].into(), tags: ["kept".into()].into() }).await.unwrap();
+        configs.uses_records(records.clone(), || "memory".into(), channels.clone());
+        configs.bound_own(&admin, rdm_core::launch::InitialProperties { config: [("old".into(), "value".into())].into(), tags: ["kept".into()].into() }).await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(view.clone()));
-        assert!(matches!(door.serve(&admin.location(), &admin.node_id, &view, &topology, &storage, SentBy::Caller, &req("caller")).await, StatusReply::ConfigUpdated { .. }));
+        assert!(matches!(configs.serve(&admin.location(), &admin.node_id, &view, &topology, &storage, SentBy::Caller, &req("caller")).await, StatusReply::ConfigUpdated { .. }));
         let caller = records.properties(&admin.node_id).await.unwrap().unwrap();
         assert_eq!(caller.config, [("source".into(), "caller".into())].into());
         assert_eq!(caller.tags, ["kept".into()].into());
         assert!(storage.record_at(&admin.location()).await.unwrap().is_none(), "primaries copy no properties into combined rows");
         let entry = EntryProperties { config: [("source".into(), "build".into())].into(), tags: ["build".into()].into() };
-        assert!(matches!(door.own_entry(&admin, entry.clone()).await.unwrap().unwrap(), StatusReply::Applied));
+        assert!(matches!(configs.own_entry(&admin, entry.clone()).await.unwrap().unwrap(), StatusReply::Applied));
         assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().tags, ["build".into()].into());
-        door.own_config(&admin, [("source".into(), "later".into())].into()).await.unwrap().unwrap();
+        configs.own_config(&admin, [("source".into(), "later".into())].into()).await.unwrap().unwrap();
         assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().config, [("source".into(), "later".into())].into(), "the later local map stands");
-        door.own_entry(&admin, entry).await.unwrap().unwrap();
+        configs.own_entry(&admin, entry).await.unwrap().unwrap();
         assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().config, [("source".into(), "build".into())].into(), "a Build's entry written after it replaces it");
-        let absent = door.update_with(&admin.location(), &admin.node_id, &view, &storage, &req("metadata"), Some(rdm_core::meta::StoragePersistence::Ephemeral)).await;
+        let absent = configs.update_with(&admin.location(), &admin.node_id, &view, &storage, &req("metadata"), Some(rdm_core::meta::StoragePersistence::Ephemeral)).await;
         assert!(matches!(absent, StatusReply::NodeRowRefused { .. }), "missing lifecycle metadata cannot report success: {absent:?}");
         let mut stale = req("stale");
         if let StatusRequest::UpdateNodeConfig { incarnation, .. } = &mut stale { *incarnation = IncarnationId::mint(); }
-        assert!(matches!(door.update(&admin.location(), &admin.node_id, &view, &storage, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
+        assert!(matches!(configs.update(&admin.location(), &admin.node_id, &view, &storage, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
         let mut other = view.clone(); other.nodes[0].is_primary = false;
-        assert!(matches!(door.update(&admin.location(), &admin.node_id, &other, &storage, &req("wrong-primary")).await, StatusReply::RejectedNotPrimary { .. }));
+        assert!(matches!(configs.update(&admin.location(), &admin.node_id, &other, &storage, &req("wrong-primary")).await, StatusReply::RejectedNotPrimary { .. }));
         assert_eq!(SentBy::of_writer_call(None), SentBy::Caller);
         assert_eq!(SentBy::of_writer_call(Some(&admin)), SentBy::Other);
         ep.close().await;
