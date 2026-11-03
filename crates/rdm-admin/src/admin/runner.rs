@@ -870,10 +870,10 @@ impl AdminRunner {
         // every node.create of one is: it takes the mesh's issuing material and the fabric primary's
         // Pending hand-off before it is asked to be Ready (e4.s11; node-create.md "A node-admin
         // created into a live mesh").
-        let first_admin = {
-            let t = self.topology.read().await;
-            t.first_admin_of(node, &mesh, &r#type) && crate::executor::held_admins(&mesh, Some(node), &t).is_empty()
-        };
+        // A recovery re-creates a node-admin only for a mesh with no live node-admin left to recover it
+        // (node-recovery.md "Execution", Q335): an admin of that mesh this view still holds unheard is
+        // not live, and the re-created admin, which finds none live either, waits for the hand-off.
+        let first_admin = self.topology.read().await.first_admin_of(node, &mesh, &r#type);
         let pre_node_ready = if first_admin { Some(self.mesh_state_hook(&mesh, self.held_mesh_state(&mesh))?) } else { None };
         // A recovery's create names no executable: the launch runs the one the exited birth's row records,
         // on both arms (node-recovery.md "Retained": never the recovering admin's): the new node's config

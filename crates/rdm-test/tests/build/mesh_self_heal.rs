@@ -22,7 +22,7 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-/// CONTRACT: docs/architecture/build.md:289 "the mesh-primary of the member's mesh opens the next attempt of B123 on its mesh's rows, claims and runs it itself (R-BI7); the Build stays completed, and the fabric-primary reads the attempt's verdict from the Build journal"
+/// CONTRACT (node-recovery.md "Execution": the mesh-primary of the member's mesh recovers it, its own workflow; build.md §1: a repair is never a Build or part of one, Q342): a killed member of mesh2 is recovered by mesh2's primary as a new birth at its path and name; the current Build stays completed and current, and no Build is minted or reopened for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stays_completed() {
     let shape = [("mesh1", 2, 1), ("mesh2", 2, 2)];
@@ -63,28 +63,25 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
 
     estate.stop().await;
     let spans = estate.spans();
+    // The mesh-primary self-heals its own mesh as its own workflow, never a Build or part of one
+    // (node-recovery.md "Execution"; Q342): its recovery submit, then the delete and the create of the
+    // exact birth under it, and no attempt of any Build reconciles the recovery.
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
         .filter(|sp| s(&sp["attributes"]["node_id"]) == victim.1.as_str())
         .collect();
-    assert!(
-        recoveries.iter().any(|sp| s(&sp["attributes"]["submitter"]) == mesh2_primary
-            && s(&sp["attributes"]["mesh"]) == "mesh2"
-            && s(&sp["attributes"]["build_id"]) == accepted.to_string()),
-        "mesh2's primary initiated its member's recovery in mesh2 on the current Build: {recoveries:#?}"
-    );
-    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile")
-        .into_iter()
-        .filter(|sp| {
-            s(&sp["attributes"]["executor"]) == executor.to_string()
-                && s(&sp["attributes"]["lane"]) == "mesh2"
-        })
-        .collect();
-    assert!(
-        !reconciles.is_empty()
-            && reconciles.iter().any(|sp| {
-                ["rdm.node_admin.node.delete.via-build", "rdm.node_admin.node.create.via-build"].iter().all(|name| named(&spans, name).into_iter().any(|child| child["attributes"]["node_id"] == victim.1.as_str() && child["attributes"]["incarnation_id"] == victim.2.as_str() && child["trace_id"] == sp["trace_id"] && child["parent_span_id"] == sp["span_id"]))
-            }),
-        "mesh2's primary reconciled the mesh2 recovery attempt with node.delete and node.create: {reconciles:#?}"
-    );
+    let recovery = recoveries
+        .iter()
+        .copied()
+        .find(|sp| s(&sp["attributes"]["submitter"]) == mesh2_primary && s(&sp["attributes"]["mesh"]) == "mesh2" && s(&sp["attributes"]["outcome"]) == "complete")
+        .unwrap_or_else(|| panic!("mesh2's primary recovered its member in mesh2 as its own workflow: {recoveries:#?}"));
+    for name in ["rdm.node_admin.node.delete.via-node-recovery", "rdm.node_admin.node.create.via-node-recovery"] {
+        assert!(
+            named(&spans, name).into_iter().any(|child| child["parent_span_id"] == recovery["span_id"] && child["attributes"]["node_id"] == victim.1.as_str() && child["attributes"]["incarnation_id"] == victim.2.as_str()),
+            "{name} of the exact birth runs under the recovery: {recovery}"
+        );
+    }
+    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|sp| s(&sp["attributes"]["executor"]) == executor.to_string() && s(&sp["attributes"]["lane"]) == "mesh2").collect();
+    assert!(reconciles.is_empty(), "no attempt of any Build reconciles the recovery: {reconciles:#?}");
+    estate.record_trace_url(&s(&recovery["trace_id"]));
 }
