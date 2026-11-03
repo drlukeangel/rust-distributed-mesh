@@ -20,8 +20,10 @@
 //! frame of its own record the change. The fabric-primary, the commander of a mesh-primary, records the
 //! answer in its atlas (Q355): `is_primary` on the `node_id` it names, removed from the node it sent the
 //! update to, read wherever it decides which node runs a node command (`crate::atlas::Atlas::primaries`);
+//! a mesh-primary, the commander of its mesh's other node types' primaries, records their answers in its
+//! atlas the same way, and the fabric-primary records the answer the mesh-primary streams back to it;
 //! every other node learns the new primary from gossip. The Build's next command goes to the node's
-//! mesh-primary as it stands after the update (`crate::executor::PrimariesMoved`).
+//! mesh-primary as it stands after the update, read from the atlas, never waiting on gossip.
 
 pub use crate::election::Moving;
 use crate::model::{IncarnationId, NodeId, PathName};
@@ -81,8 +83,6 @@ pub struct UpdateMemo {
     acknowledged: std::sync::Mutex<std::collections::BTreeMap<(String, rdm_core::OperationId), bool>>,
     /// What this admin answered as the successor, by operation.
     answered: Answered,
-    /// The roles the updates this admin commanded for each Build moved, as their answers name them.
-    pub moved: crate::executor::PrimariesMoved,
 }
 
 impl UpdateMemo {
@@ -197,13 +197,10 @@ impl PrimaryUpdate {
         outcome
     }
 
-    /// Hold, as the commander of `operation` in `build_id`, that the primary `primary` moved to the node
-    /// its answer names (`crate::executor::PrimariesMoved`). A node command belongs to no Build: its next
-    /// command is sent on the answer at once (`primary_commands`).
-    fn moved(&self, build_id: &str, primary: &crate::model::Node, node_id: &NodeId) {
-        if build_id != rdm_core::LifecycleOp::NO_BUILD {
-            self.memo.moved.record(build_id, crate::executor::PrimaryMoved { mesh: primary.mesh.clone(), r#type: primary.r#type.to_string(), primary: primary.node_id.clone(), node_id: node_id.clone() });
-        }
+    /// Record in this admin's atlas the answer `node_id` to the update of `primary` it sent, or the
+    /// answer streamed back to it (Q355): `is_primary` on `node_id`, removed from `primary`.
+    fn record_answer(&self, primary: &crate::model::Node, node_id: &NodeId) {
+        self.atlas.primary_updated(self.topology_view.primaries(), &primary.mesh, &primary.r#type, &primary.node_id, node_id);
     }
 
     // ---- the successor (step 4) ----
@@ -325,7 +322,7 @@ impl PrimaryUpdate {
             Err(other) => return Err(RoleMoveEnd::Refused(format!("{}: {other:?}", other.name()))),
         };
         if moving.moves_mesh_primary() {
-            self.atlas.primary_updated(self.topology_view.primaries(), self.topology_view.mesh_name(), &self.node_id, &node_id);
+            self.atlas.primary_updated(self.topology_view.primaries(), self.topology_view.mesh_name(), rdm_core::NODE_ADMIN, &self.node_id, &node_id);
         }
         if moving.moves_fabric_primary() {
             self.atlas.fabric_primary_updated(self.topology_view.primaries(), &self.node_id, &node_id);
@@ -511,10 +508,11 @@ impl PrimaryUpdate {
     /// The fabric-primary commands the primary `primary` before the Build's stop, delete or
     /// node.connection.delete of it runs: a mesh-primary directly, another node type's primary through
     /// its mesh-primary (commands go down). The answer is the primary's node.primary.updating, then its
-    /// node.primary.updated naming the new primary's node id. A mesh-primary's answer this admin records
-    /// in its atlas (Q355): `is_primary` on that node id, removed from `primary`, read wherever it
-    /// decides which node runs a node command; every other node learns it from gossip. What the update
-    /// preceded goes to the node's mesh-primary as it stands now ([`crate::executor::PrimariesMoved`]). A `Failed` answer fails the
+    /// node.primary.updated naming the new primary's node id. The answer, a mesh-primary's or the one a
+    /// mesh-primary streams back for another node type's primary, this admin records in its atlas (Q355):
+    /// `is_primary` on that node id, removed from `primary`, read wherever it decides which node runs a
+    /// node command, never waiting on gossip; every other node learns it from gossip. What the update
+    /// preceded goes to the node's mesh-primary as it stands now, read from the atlas. A `Failed` answer fails the
     /// step on the variant, never on its text; a command that does not answer leaves the step
     /// incomplete, and the next attempt sends the identical command.
     pub async fn command_update_primary(&self, primary: &crate::model::Node, build_id: &str, operation: &rdm_core::OperationId) -> Result<NodeId, crate::build_drive::RoleMoveEnd> {
@@ -524,17 +522,14 @@ impl PrimaryUpdate {
         match &r {
             Ok(node_id) => {
                 self.memo.acknowledge(build_id, operation, *node_id == self.node_id);
-                self.moved(build_id, primary, node_id);
-                // A mesh-primary's update: its answer is recorded in this admin's atlas (Q355). A node type's
-                // primary's next command goes to its mesh-primary, which the update did not move.
-                if rdm_core::is_node_admin(&primary.r#type) {
-                    self.atlas.primary_updated(self.topology_view.primaries(), &primary.mesh, &primary.node_id, node_id);
-                }
+                // The answer streamed back is recorded in this admin's atlas (Q355), a node type's primary's
+                // included: its next command goes to its mesh-primary, which the update did not move.
+                self.record_answer(primary, node_id);
                 span.record("outcome", "updated").record("detail", format!("node_id={node_id}").as_str())
             }
             Err(e) => span.record("outcome", "ended").record("detail", e.to_string().as_str()),
         };
-        span.in_scope(|| tracing::info!("the commander's node.primary.update ended: a mesh-primary's answer is recorded in its atlas"));
+        span.in_scope(|| tracing::info!("the commander's node.primary.update ended: the answer streamed back is recorded in its atlas"));
         r
     }
 
@@ -674,9 +669,10 @@ impl PrimaryUpdate {
     /// as its mesh's mesh-primary, the commander and the writer: its pre-check (step 2) from its own view
     /// names a Ready successor, none is `Failed` by name; then the command to the primary, which
     /// calls the successor it names, answered with node.primary.updated naming the successor's node id,
-    /// which this admin records nothing from (Q352): its view learns the new primary from the successor's
-    /// digest, from which it records the successor's row (step 5), and it runs the operation the update
-    /// preceded itself.
+    /// which this admin records in its atlas (Q355): `is_primary` on that node id, removed from
+    /// `primary`, read wherever it decides which node runs a node command (a section's plan included),
+    /// never waiting on gossip. It records the successor's row from the successor's digest (step 5), and
+    /// it runs the operation the update preceded itself.
     pub async fn update_node_type_primary(&self, primary: &crate::model::Node, _expected: Option<u64>, build_id: &str, operation: &rdm_core::OperationId) -> Result<NodeId, Reply> {
         let me = self.held_name();
         let span = tracing::info_span!("rdm.node_admin.primary.update.via-command-member", node_path = %me.path, node_name = %me.name, primary_path = %primary.path, primary_name = %primary.name, "type" = primary.r#type, build_id, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, outcome = tracing::field::Empty, detail = tracing::field::Empty);
@@ -684,12 +680,12 @@ impl PrimaryUpdate {
         match &r {
             Ok(node_id) => {
                 self.memo.acknowledge(build_id, operation, false);
-                self.moved(build_id, primary, node_id);
+                self.record_answer(primary, node_id);
                 span.record("outcome", "updated").record("detail", format!("node_id={node_id}").as_str())
             }
             Err(other) => span.record("outcome", other.name()).record("detail", format!("{other:?}").as_str()),
         };
-        span.in_scope(|| tracing::info!("the mesh-primary's command of a node type's primary ended: it records nothing from the answer"));
+        span.in_scope(|| tracing::info!("the mesh-primary's command of a node type's primary ended: the answer is recorded in its atlas"));
         r
     }
 

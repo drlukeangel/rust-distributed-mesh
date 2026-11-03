@@ -151,7 +151,7 @@ async fn executor(calls: &Arc<Calls>, hold: Hold) -> (SectionRunService, StopGat
     accepted.pinned = [(deleted.location(), rdm_admin::build::PinnedBirth::of(&deleted).unwrap())].into_iter().collect();
     memory.publish_accepted(&BuildAccepted { build_id: build_id(), topology: accepted, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 }).await.unwrap();
     let view = rdm_admin::topology::Topology { fabric, meshes, nodes: vec![admin, deleted] };
-    let section = rdm_admin::build_run::section_of(&memory.read_build(&build_id()).await.unwrap(), "mesh1", &view, &me, &[]);
+    let section = rdm_admin::build_run::section_of(&memory.read_build(&build_id()).await.unwrap(), "mesh1", &view, &me);
     assert_eq!(section.len(), 1, "mesh1's section is the one delete: {section:?}");
     let topology = Arc::new(tokio::sync::RwLock::new(view));
     let runs = Arc::new(SectionRuns::default());
@@ -160,7 +160,7 @@ async fn executor(calls: &Arc<Calls>, hold: Hold) -> (SectionRunService, StopGat
     let gate = StopGate::new();
     let runner = Arc::new(crate::loopback::Steps::new(Arc::new(OwnAdmin { calls: calls.clone(), gate: gate.clone(), hold }), builds.clone()));
     let exec = Arc::new(BuildExecutor { executor: executor_birth, builds: builds.clone(), topology, runner });
-    let service = SectionRunService { me_path: "mesh1.node-admin".into(), me_name: "1".into(), builds, exec, runs, local: memory.clone(), gate: gate.clone(), moved: Default::default() };
+    let service = SectionRunService { me_path: "mesh1.node-admin".into(), me_name: "1".into(), builds, exec, runs, local: memory.clone(), gate: gate.clone(), atlas: Default::default() };
     (service, gate, section)
 }
 

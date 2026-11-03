@@ -776,11 +776,6 @@ fn the_fabric_primary_commands_a_mesh_primarys_update_and_records_its_answer_in_
         for a in [&f.x, &f.p, &f.n] {
             assert_eq!(a.primary_update.topology_view.primaries().fabric(), Some(primary_of(&f.x, 7)), "{:?}: the fabric-primary stays X", a.resolved.name);
         }
-        assert_eq!(
-            f.x.primary_update.memo.moved.of("b1"),
-            vec![rdm_admin::executor::PrimaryMoved { mesh: "mesh1".into(), r#type: "node-admin".into(), primary: f.p.resolved.node_id.clone(), node_id: f.n.resolved.node_id.clone() }],
-            "X holds the move for its Build, where P's next command goes"
-        );
         assert!(spans.named(UPDATED).iter().all(|s| s["node_path"] == f.n.resolved.path && s["node_name"] == f.n.resolved.name), "no install at the commander: {:?}", spans.named(UPDATED));
         let commands = spans.named(COMMAND);
         assert_eq!(commands.iter().map(|c| (c["to"].clone(), c["outcome"].clone())).collect::<Vec<_>>(), vec![(f.p.resolved.node_id.to_string(), "updated".to_string())], "{commands:?}");
@@ -981,9 +976,10 @@ fn an_update_whose_successor_is_unheard_fails_by_name_with_the_investigations_ve
 /// pre-checks; steps 4-5; node-rpc-envelope.md: "the mesh-primary commands another type's primary the same
 /// way, `successor` the exact birth its pre-check named"): P, mesh1's mesh-primary, commands B1, mesh1's
 /// node primary, naming B2. B1 calls B2, and answers P with node.primary.updated naming B2, which P
-/// records nothing from (Q352): B1 and B2 hold B2 node primary of mesh1 at 3, P still holds B1 at 2 until
-/// B2's digest reaches it, and P holds the move for its Build. P finished no writes for it: a non-admin
-/// primary has no mesh rows, and B2's row is recorded from its digest.
+/// records in its atlas (Q355): B1 and B2 hold B2 node primary of mesh1 at 3, P's primary record still
+/// names B1 at 2 until B2's digest reaches it, and P's atlas sets `is_primary` on B2 and removes it from
+/// B1, never waiting on gossip. P finished no writes for it: a non-admin primary has no mesh rows, and
+/// B2's row is recorded from its digest.
 #[test]
 fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_found_and_the_primary_calls_it() {
     let cap = trace_capture("primary-update");
@@ -995,8 +991,10 @@ fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_fo
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
         let node_id = f.p.primary_update.update_node_type_primary(&b1, None, "b1", &op).await.expect("mesh1's node primary moves");
         assert_eq!(node_id, f.b2().resolved.node_id);
-        assert_eq!(f.p.primary_update.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "P, the commander, records nothing from the answer");
-        assert_eq!(f.p.primary_update.memo.moved.of("b1").iter().map(|m| (m.primary.clone(), m.node_id.clone())).collect::<Vec<_>>(), vec![(f.b1.resolved.node_id.clone(), f.b2().resolved.node_id.clone())]);
+        assert_eq!(f.p.primary_update.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "P, the commander, installs no primary record from the answer");
+        let mut atlas_view = f.p.primary_update.topology.read().await.clone();
+        f.p.primary_update.atlas.primaries(&mut atlas_view);
+        assert_eq!(atlas_view.node_type_primary("mesh1", RPC).map(|n| n.node_id.clone()), Some(f.b2().resolved.node_id.clone()), "P's atlas sets is_primary on B2, the answer's node_id, and removes it from B1");
         assert_eq!(f.b1.service.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2, the successor it called");
         assert_eq!(f.b2().service.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B2 installed itself");
         assert_eq!(f.p.finished(), 0, "the mesh-primary finished no writes for another type's update");

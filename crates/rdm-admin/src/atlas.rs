@@ -68,9 +68,10 @@ struct Held {
     /// The meshes this admin is primary for (Q207): its own mesh as a mesh-primary, every mesh as the
     /// fabric-primary; empty for an admin that holds no primary.
     meshes: std::collections::BTreeSet<String>,
-    /// Each mesh's mesh-primary as the answer to the node.primary.update this admin sent its
-    /// mesh-primary names it (Q355), by mesh ([`Atlas::primaries`]).
-    is_primary: BTreeMap<String, Updated>,
+    /// Each primary as the answer to a node.primary.update this admin sent, or the answer streamed
+    /// back to it, names it (Q355), by mesh and node type: a mesh's mesh-primary under the `node-admin`
+    /// type, and every other node type's primary ([`Atlas::primaries`]).
+    is_primary: BTreeMap<(String, String), Updated>,
     /// The fabric-primary as the answer to the node.fabric-primary.update this admin made names it
     /// (Q355) ([`Atlas::primaries`]).
     is_fabric_primary: Option<Updated>,
@@ -375,18 +376,26 @@ impl Atlas {
         self.held.lock().unwrap().meshes.clone()
     }
 
-    /// The answer `node.primary.updated { node_id }` to the node.primary.update this admin sent
-    /// `primary`, `mesh`'s mesh-primary (Q355; node-primary-update.md "The commander"): `is_primary` on
-    /// `node_id`, removed from `primary`, in every view this admin decides from ([`Self::primaries`]),
-    /// held against the record of `mesh`'s mesh-primary `records` holds now. A record that names
-    /// another node already carried the change here: nothing is held.
-    pub(crate) fn primary_updated(&self, records: &rdm_transport::topology::PrimaryView, mesh: &str, primary: &NodeId, node_id: &NodeId) {
-        let record = records.mesh(mesh).filter(|r| r.node_id == *primary && r.node_id != *node_id);
+    /// The answer `node.primary.updated { node_id }` to the node.primary.update of `primary`, `mesh`'s
+    /// primary of `type` (Q355; node-primary-update.md "The commander"): the fabric-primary's of a
+    /// mesh-primary (the `node-admin` type), a mesh-primary's of another node type's primary of its mesh,
+    /// and the answer the mesh-primary streams back to the fabric-primary for that update. `is_primary`
+    /// on `node_id`, removed from `primary`, in every view this admin decides from
+    /// ([`Self::primaries`]), held against the record of that role `records` holds now: this admin takes
+    /// the new primary from the answer streamed back, never waiting on gossip. A record that names
+    /// another node already carried the change here: nothing is held. The same answer again changes
+    /// nothing.
+    pub(crate) fn primary_updated(&self, records: &rdm_transport::topology::PrimaryView, mesh: &str, r#type: &str, primary: &NodeId, node_id: &NodeId) {
+        let key = (mesh.to_owned(), r#type.to_owned());
+        let record = records.node_type_primary(mesh, r#type).filter(|r| r.node_id == *primary && r.node_id != *node_id);
         let _ = self.records.set(records.clone());
         let mut held = self.held.lock().unwrap();
+        if held.is_primary.get(&key).is_some_and(|u| u.node_id == *node_id && u.record.node_id == *primary) {
+            return;
+        }
         match record {
-            Some(record) => held.is_primary.insert(mesh.to_owned(), Updated { record, node_id: node_id.clone() }),
-            None => held.is_primary.remove(mesh),
+            Some(record) => held.is_primary.insert(key, Updated { record, node_id: node_id.clone() }),
+            None => held.is_primary.remove(&key),
         };
     }
 
@@ -401,8 +410,9 @@ impl Atlas {
     }
 
     /// `t` with `is_primary` and `is_fabric_primary` as the primary updates' answers this atlas holds
-    /// set them (Q355): this admin reads a node's mesh-primary (the fabric-primary) from here wherever it
-    /// decides which node runs a node command, and in its `node.get` answer. An answer stands while this
+    /// set them (Q355): this admin reads a node's mesh-primary, every node type's primary and the
+    /// fabric-primary from here wherever it decides which node runs a node command (the Build drive and
+    /// a section's plan included), and in its `node.get` answer. An answer stands while this
     /// admin's record of the role is the one it held when the answer came. A later record replaces it
     /// (node-primary-update.md): while `t` still names the node the update was sent to, `t` was made
     /// before that record, so the role is read from the record; once `t` names another node, or the
@@ -411,15 +421,16 @@ impl Atlas {
         let Some(records) = self.records.get() else { return };
         let mut held = self.held.lock().unwrap();
         let names = |t: &Topology, id: &NodeId, fabric: bool| t.own(id).is_some_and(|n| if fabric { n.is_fabric_primary } else { n.is_primary });
-        // The node each held answer names primary in `t`: the answer's, or the record that replaced it.
-        let mut meshes: Vec<(String, NodeId, NodeId)> = Vec::new();
-        held.is_primary.retain(|mesh, u| match records.mesh(mesh) {
+        // The node each held answer names primary in `t`, by mesh and node type: the answer's, or the
+        // record that replaced it.
+        let mut roles: Vec<(String, String, NodeId, NodeId)> = Vec::new();
+        held.is_primary.retain(|(mesh, r#type), u| match records.node_type_primary(mesh, r#type) {
             Some(r) if r == u.record => {
-                meshes.push((mesh.clone(), u.node_id.clone(), u.record.node_id.clone()));
+                roles.push((mesh.clone(), r#type.clone(), u.node_id.clone(), u.record.node_id.clone()));
                 true
             }
             Some(r) if r.node_id != u.record.node_id && names(t, &u.record.node_id, false) => {
-                meshes.push((mesh.clone(), r.node_id, u.record.node_id.clone()));
+                roles.push((mesh.clone(), r#type.clone(), r.node_id, u.record.node_id.clone()));
                 true
             }
             _ => false,
@@ -433,7 +444,7 @@ impl Atlas {
             held.is_fabric_primary = None;
         }
         for n in t.nodes.iter_mut() {
-            if let Some((_, primary, old)) = meshes.iter().find(|(mesh, _, _)| *mesh == n.mesh).filter(|_| rdm_core::is_node_admin(&n.r#type)) {
+            if let Some((_, _, primary, old)) = roles.iter().find(|(mesh, r#type, _, _)| *mesh == n.mesh && *r#type == *n.r#type) {
                 if n.node_id == *primary {
                     n.is_primary = true;
                 } else if n.node_id == *old {
@@ -1143,7 +1154,7 @@ mod tests {
         records.take(PrimaryRole::MeshPrimary, &record(&old, "mesh2", 3));
         records.take(PrimaryRole::FabricPrimary, &record(&fp, "mesh1", 7));
         let atlas = TestAtlas::new();
-        atlas.primary_updated(&records, "mesh2", &old.node_id, &new.node_id);
+        atlas.primary_updated(&records, "mesh2", "node-admin", &old.node_id, &new.node_id);
         let mut t = gossip.clone();
         atlas.primaries(&mut t);
         assert_eq!(t.node_type_primary("mesh2", "node-admin").map(|n| n.node_id.clone()), Some(new.node_id.clone()), "the answer's node_id is mesh2's mesh-primary before gossip carries it");
@@ -1160,7 +1171,7 @@ mod tests {
         // Answered again, then the record names node_id at the next revision while `t`, made before it,
         // still names the old primary: the role is read from the record, and the answer stands until `t`
         // moves (node_stop: a node.get between the record and the view).
-        atlas.primary_updated(&records, "mesh2", &old.node_id, &new.node_id);
+        atlas.primary_updated(&records, "mesh2", "node-admin", &old.node_id, &new.node_id);
         records.take(PrimaryRole::MeshPrimary, &record(&new, "mesh2", 6));
         let mut lagging = gossip.clone();
         atlas.primaries(&mut lagging);
@@ -1172,7 +1183,7 @@ mod tests {
         atlas.primaries(&mut moved);
         assert!(atlas.held.lock().unwrap().is_primary.is_empty(), "the answer goes once the view names the record's primary");
         // An answer the records already carry holds nothing.
-        atlas.primary_updated(&records, "mesh2", &old.node_id, &new.node_id);
+        atlas.primary_updated(&records, "mesh2", "node-admin", &old.node_id, &new.node_id);
         assert!(atlas.held.lock().unwrap().is_primary.is_empty(), "a record naming another node than the one the update was sent to: nothing held");
         // node.fabric-primary.update of the fabric-primary: is_fabric_primary on node_id, removed from it.
         atlas.fabric_primary_updated(&records, &fp.node_id, &new.node_id);
@@ -1180,6 +1191,67 @@ mod tests {
         atlas.primaries(&mut t);
         assert_eq!(t.fabric_primary().map(|n| n.node_id.clone()), Some(new.node_id.clone()), "the answer's node_id is the fabric-primary");
         assert!(!t.own(&fp.node_id).unwrap().is_fabric_primary, "is_fabric_primary is removed from the old fabric-primary");
+    }
+
+    /// CONTRACT (node-primary-update.md, Operation contract, "The commander": "The fabric-primary records
+    /// the same way the answer the mesh-primary streams back to it. Each reads a node's mesh-primary and
+    /// every node type's primary from its atlas, from the answer streamed back, never waiting on gossip
+    /// (Q355)"; step 6: "for any other type, the mesh-primary, which runs it itself"): mesh2's broker
+    /// primary moves from mesh2.broker.1 to mesh2.broker.2, and the fabric-primary records the answer the
+    /// mesh-primary streams back, `node.primary.updated { node_id }`, in its atlas. Its view, whose gossip
+    /// still names mesh2.broker.1, names mesh2.broker.2 the broker primary, so a stop of mesh2.broker.1
+    /// moves no role again, and its delete goes to mesh2's mesh-primary, which the update did not move. A later
+    /// record of the broker role ends the answer, and another type's or mesh's role is untouched. Must
+    /// NOT happen: the stale gossip `is_primary` read after the answer (a second update of the node the
+    /// first moved), or the answer laid on mesh2's mesh-primary.
+    #[test]
+    fn an_answered_node_type_primary_update_is_read_from_the_atlas_before_gossip() {
+        use rdm_core::{Primary, PrimaryRole};
+        use crate::model::{Fabric, FabricId, Mesh, ProviderKind, ScopeStatus};
+        let node = |mesh: &str, r#type: &str, name: &str, is_primary: bool| {
+            let mut n = crate::model::Node::allocated(path(&format!("{mesh}.{type}", type = r#type), name), mesh, r#type);
+            n.node_id = NodeId::mint();
+            n.incarnation_id = Some(IncarnationId::mint());
+            n.status = NodeStatus::Ready;
+            n.is_primary = is_primary;
+            n
+        };
+        let mut fp = node("mesh1", "node-admin", "1", true);
+        fp.is_fabric_primary = true;
+        let (mp, b1, b2, g1) = (node("mesh2", "node-admin", "1", true), node("mesh2", "broker", "1", true), node("mesh2", "broker", "2", false), node("mesh2", "gateway", "1", true));
+        let gossip = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![Mesh { id: None, name: "mesh1".into(), status: ScopeStatus::Ready }, Mesh { id: None, name: "mesh2".into(), status: ScopeStatus::Ready }], nodes: vec![fp.clone(), mp.clone(), b1.clone(), b2.clone(), g1.clone()] };
+        let record = |n: &crate::model::Node, revision: u64| Primary { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), revision };
+        let records = rdm_transport::topology::PrimaryView::default();
+        records.take(PrimaryRole::MeshPrimary, &record(&mp, 3));
+        records.take(PrimaryRole::FabricPrimary, &record(&fp, 7));
+        records.take(PrimaryRole::NodePrimary("broker".into()), &record(&b1, 2));
+        records.take(PrimaryRole::NodePrimary("gateway".into()), &record(&g1, 2));
+        let b1_birth = crate::build::PinnedBirth::of(&b1).unwrap();
+        assert!(crate::executor::node_role_move(&b1_birth, false, &gossip).is_some_and(|m| m.node_type_role), "before the update the stop of mesh2.broker.1 moves its broker role first");
+        let atlas = TestAtlas::new();
+        atlas.primary_updated(&records, "mesh2", "broker", &b1.node_id, &b2.node_id);
+        let mut t = gossip.clone();
+        atlas.primaries(&mut t);
+        assert_eq!(t.node_type_primary("mesh2", "broker").map(|n| n.node_id.clone()), Some(b2.node_id.clone()), "the answer's node_id is mesh2's broker primary before gossip carries it");
+        assert!(!t.own(&b1.node_id).unwrap().is_primary, "is_primary is removed from the node the update was sent to");
+        assert_eq!(t.node_type_primary("mesh2", "node-admin").map(|n| n.node_id.clone()), Some(mp.node_id.clone()), "mesh2's mesh-primary is untouched");
+        assert_eq!(t.node_type_primary("mesh2", "gateway").map(|n| n.node_id.clone()), Some(g1.node_id.clone()), "another node type's primary is untouched");
+        assert!(crate::executor::node_role_move(&b1_birth, false, &t).is_none(), "the stop of mesh2.broker.1 moves no role again");
+        // The delete of mesh2.broker.1 goes to mesh2's mesh-primary, which runs it itself.
+        let delete = crate::build::BuildOperation::DeleteLiveNode { path: b1.path.clone(), name: b1.name.clone(), mesh: "mesh2".into(), r#type: "broker".into(), exited: None, birth: Some(b1_birth.clone()) };
+        assert_eq!(crate::executor::executor_for(&delete, &t), Some(mp.node_id.clone()), "the delete goes to mesh2's mesh-primary");
+        assert_eq!(crate::executor::executor_for(&delete, &gossip), None, "the gossip view alone would hold it for a role move");
+        // Gossip carries it at the next revision, and the view names it: the answer goes.
+        records.take(PrimaryRole::NodePrimary("broker".into()), &record(&b2, 3));
+        let mut moved = gossip.clone();
+        moved.nodes.iter_mut().for_each(|n| if n.r#type == "broker" { n.is_primary = n.node_id == b2.node_id });
+        atlas.primaries(&mut moved);
+        assert!(atlas.held.lock().unwrap().is_primary.is_empty(), "the answer goes once the view names the record's primary");
+        // The same answer again, held once: it changes nothing.
+        records.take(PrimaryRole::NodePrimary("broker".into()), &record(&b1, 4));
+        atlas.primary_updated(&records, "mesh2", "broker", &b1.node_id, &b2.node_id);
+        atlas.primary_updated(&records, "mesh2", "broker", &b1.node_id, &b2.node_id);
+        assert_eq!(atlas.held.lock().unwrap().is_primary.len(), 1, "the same answer again is held once");
     }
 
 }

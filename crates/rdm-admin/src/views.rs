@@ -160,7 +160,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
                 continue;
             }
             let Some(row) = c.row(id).await? else { continue };
-            out.push(own_row_view(view, atlas, &row, None));
+            out.push(row_view(view, atlas, &row, None));
         }
         // A (path, name) the filter names that no birth answered here stands at: the node the node
         // records' current-pair lookup names there, read at its record (query.md §1), never the gossip
@@ -173,7 +173,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             if out.iter().any(|v| v.node_id == row.node_id) {
                 continue;
             }
-            out.push(own_row_view(view, atlas, &row, None));
+            out.push(row_view(view, atlas, &row, None));
         }
     }
     out.sort_by(|a, b| a.location().cmp(&b.location()));
@@ -182,10 +182,18 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
 
 /// A node's own whole row as its mesh-primary holds it (Q234: every node property; the hydration sync's
 /// `OwnRow`): the birth `view` holds of `row`'s node, as `row` carries it and the ops left it
-/// (`atlas`), `own` the node's own part of its
+/// (`atlas`), `is_primary` and `is_fabric_primary` as the primary updates' answers `atlas` holds set
+/// them ([`Atlas::primaries`], Q355), as [`nodes`] reads them; `own` the node's own part of its
 /// record (Q333); a birth `view` does not hold yet is answered from its record alone, its addresses from
 /// `own` at that birth. Never a store read.
 pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRow, own: Option<&rdm_node::node_records::NodeProperties>) -> NodeView {
+    let mut held = view.clone();
+    atlas.primaries(&mut held);
+    row_view(&held, atlas, row, own)
+}
+
+/// [`own_row_view`] of `row` in `view`, its primaries already set from `atlas`.
+fn row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRow, own: Option<&rdm_node::node_records::NodeProperties>) -> NodeView {
     if let Some(b) = view.births().find(|n| n.node_id == row.node_id) {
         let mut n = b.clone();
         if atlas.read(&mut n, Some(row)) {

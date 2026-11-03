@@ -71,11 +71,10 @@ pub trait Gate: Send + Sync {
     async fn primaries_updated(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId) -> Result<(), String> {
         Ok(())
     }
-    /// The roles the updates this admin commanded for `build_id` moved, as their answers name them
-    /// (node-primary-update.md step 6): the drive plans the next command on them, never on gossip.
-    fn moved(&self, _build_id: &BuildId) -> Vec<crate::executor::PrimaryMoved> {
-        Vec::new()
-    }
+    /// `t` with its primaries as this admin's atlas holds them (`crate::atlas::Atlas::primaries`, Q355):
+    /// the answers to the primary updates this admin sent, and those streamed back to it
+    /// (node-primary-update.md step 6). The drive decides from this view, never waiting on gossip.
+    fn primaries(&self, _t: &mut Topology) {}
     /// The Build's `rdm.build.started` is written: the fabric's change, which names the accepted Build
     /// once it runs, decides again now.
     async fn build_started(&self, _build_id: &BuildId) {}
@@ -182,9 +181,10 @@ pub trait Dispatcher: Send + Sync {
     /// Send `mesh`'s section of `build_id` to the mesh's primary (`build.section.run`): one call,
     /// addressed to the role under the call's one retry mechanism (Q344).
     async fn dispatch(&self, build_id: &BuildId, mesh: &str, context: CallContext) -> Dispatched;
-    /// Send `mesh`'s section of `build_id` to `to`'s exact birth, the mesh-primary a node.primary.update
-    /// of this Build named while this admin's view still names the one it moved (node-primary-update.md
-    /// step 6: the next command goes to the node's commander as it stands after the update).
+    /// Send `mesh`'s section of `build_id` to `to`'s exact birth, the mesh-primary this admin's atlas
+    /// names from a node.primary.update's answer while its observed view still names the one it moved
+    /// (node-primary-update.md step 6: the next command goes to the node's mesh-primary as it stands
+    /// after the update, never waiting on gossip).
     async fn dispatch_to(&self, build_id: &BuildId, mesh: &str, _to: &rdm_core::NodeId, context: CallContext) -> Dispatched {
         self.dispatch(build_id, mesh, context).await
     }
@@ -1029,7 +1029,11 @@ impl DriveEnv {
             // The creates this Build's own ops made, as the atlas holds them: never surplus.
             let created = self.gate.atlas_created(&p).await;
             *drive.created.lock().unwrap() = created;
-            let t = self.topology.read().await.clone();
+            // The view the drive decides from, its primaries as this admin's atlas holds them (Q355):
+            // after an update it commanded, the answer streamed back names the new primary.
+            let observed = self.topology.read().await.clone();
+            let mut t = observed.clone();
+            self.gate.primaries(&mut t);
             // A mesh whose section ended short in this run is dispatched nothing more (Q344, Q346).
             let unfinished = drive.unfinished.lock().unwrap().clone();
             let ops: Vec<BuildOperation> = left(drive, &p, &t).into_iter().filter(|op| !unfinished.contains_key(op.mesh().unwrap_or(&self.me_mesh))).collect();
@@ -1051,8 +1055,7 @@ impl DriveEnv {
                 continue;
             }
             // A role the first operation moves moves first, a step of the Build (node.primary.update).
-            let moved = self.gate.moved(&drive.build_id);
-            match self.update_primaries_first(&me, drive, &ops, &t, &moved, &span).await {
+            match self.update_primaries_first(&me, drive, &ops, &t, &span).await {
                 Ok(true) => continue,
                 Ok(false) => {}
                 Err(end) => return end,
@@ -1063,7 +1066,6 @@ impl DriveEnv {
             // The sections: this admin's own (the leading operations it executes or no admin does yet),
             // and every other mesh's, by the mesh's primary.
             let mut own: Vec<BuildOperation> = Vec::new();
-            let moved = self.gate.moved(&drive.build_id);
             let mut remote: std::collections::BTreeMap<String, String> = Default::default();
             let mut held: Vec<String> = Vec::new();
             let mut own_open = true;
@@ -1078,7 +1080,7 @@ impl DriveEnv {
                     own_open = false;
                     continue;
                 }
-                match crate::executor::executor_after(op, &t, &moved) {
+                match crate::executor::executor_for(op, &t) {
                     Some(to) if to == self.birth.node_id => {
                         if own_open {
                             own.push(op.clone());
@@ -1123,9 +1125,11 @@ impl DriveEnv {
                 *dispatches += 1;
                 let (env, context) = (self.clone(), context.clone());
                 let me = me.clone();
-                // A mesh whose mesh-primary an update of this Build moved, while this view still names
-                // the one it moved: its section goes to the new one's exact birth (step 6).
-                let to = crate::executor::mesh_primary_moved(&mesh, &t, &moved).then(|| crate::executor::mesh_primary_after(&mesh, &t, &moved)).flatten();
+                // A mesh whose mesh-primary this admin's atlas names from an update's answer while the
+                // observed view still names the one it moved: its section goes to the new one's exact
+                // birth (step 6).
+                let named = |v: &Topology| v.node_type_primary(&mesh, "node-admin").map(|n| n.node_id.clone());
+                let to = named(&t).filter(|p| Some(p) != named(&observed).as_ref());
                 let runs_at = to.clone().or_else(|| crate::executor::mesh_primary(&mesh, &t).map(|b| b.node_id));
                 runs.push(Box::pin(async move {
                     env.notices.dispatched(&me, &drive.build_id, &mesh).await;
@@ -1246,15 +1250,16 @@ impl DriveEnv {
     /// The roles the first operation left moves, moved first as a step of the Build
     /// (node.primary.update): `Ok(true)` when they moved and the drive plans again, `Ok(false)` when
     /// none moves.
-    async fn update_primaries_first(&self, me: &PathName, drive: &Arc<Drive>, ops: &[BuildOperation], t: &Topology, before: &[crate::executor::PrimaryMoved], span: &tracing::Span) -> Result<bool, DriveEnd> {
+    async fn update_primaries_first(&self, me: &PathName, drive: &Arc<Drive>, ops: &[BuildOperation], t: &Topology, span: &tracing::Span) -> Result<bool, DriveEnd> {
         let Some(op) = ops.first() else { return Ok(false) };
-        let Some(m) = crate::executor::role_move_after(op, t, before) else { return Ok(false) };
+        let Some(m) = crate::executor::role_move(op, t) else { return Ok(false) };
         let id = &drive.build_id;
         let moved = self.gate.update_primaries(&m, id, &op.key()).instrument(span.clone()).await;
-        // The answer, never gossip, tells the drive the role moved (step 6): a commanded update's
-        // answer is held in `Gate::moved`, and this admin's own roles moved in its own view.
-        let after = self.topology.read().await.clone();
-        let still = still_holds(op, &m, &after, &self.gate.moved(id));
+        // The answer streamed back, never gossip, tells the drive the role moved (step 6): this admin's
+        // atlas holds it (`Gate::primaries`, Q355).
+        let mut after = self.topology.read().await.clone();
+        self.gate.primaries(&mut after);
+        let still = still_holds(op, &m, &after);
         match moved {
             Err(RoleMoveEnd::Refused(why)) => {
                 let reason = format!("path {me_path:?}, name {me_name:?}: the roles of node {} did not move before operation {}: node.primary.update was refused before its row: {why}", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name);
@@ -1287,9 +1292,10 @@ fn role_move_unfinished(drive: &Drive, me_mesh: &str, op: &BuildOperation, step:
     drive.unfinished.lock().unwrap().insert(mesh, u);
 }
 
-/// Whether view `t`, after the updates `moved` answered, still names the primary `m` moves before `op`.
-fn still_holds(op: &BuildOperation, m: &crate::executor::RoleMove, t: &Topology, moved: &[crate::executor::PrimaryMoved]) -> bool {
-    crate::executor::role_move_after(op, t, moved).is_some_and(|now| now.primary.node_id == m.primary.node_id)
+/// Whether view `t`, its primaries as this admin's atlas holds them, still names the primary `m` moves
+/// before `op`.
+fn still_holds(op: &BuildOperation, m: &crate::executor::RoleMove, t: &Topology) -> bool {
+    crate::executor::role_move(op, t).is_some_and(|now| now.primary.node_id == m.primary.node_id)
 }
 
 /// A refusal or terminal in words, for a span or a stall.

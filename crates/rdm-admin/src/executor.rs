@@ -75,83 +75,10 @@ pub fn mesh_primary(mesh: &str, t: &Topology) -> Option<rdm_core::framing::Birth
     t.nodes_of_type(mesh, "node-admin").find(|n| n.is_primary).and_then(|n| Some(rdm_core::framing::Birth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone()? }))
 }
 
-/// A primary role a node.primary.update this admin commanded for a Build moved, as the update's
-/// answer, `node.primary.updated { node_id }`, names it (node-primary-update.md step 6: the commander
-/// continues on the answer, never on gossip; the fabric-primary records a mesh-primary's answer in its
-/// atlas, Q355). The commander's view learns the new primary from gossip; until it does, the Build's
-/// next command goes to the node's mesh-primary as it stands after the update ([`executor_after`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrimaryMoved {
-    /// The mesh of the primary that moved.
-    pub mesh: String,
-    /// Its node type (`node-admin` for a mesh-primary).
-    pub r#type: String,
-    /// The node id of the primary that moved.
-    pub primary: NodeId,
-    /// The new primary's node id, as the answer names it.
-    pub node_id: NodeId,
-}
-
-/// The primary roles each Build's commanded updates moved on this admin, by Build ([`PrimaryMoved`]):
-/// written by `PrimaryUpdate` as the commander, read by the drive and by a mesh-primary's section plan.
-#[derive(Clone, Default)]
-pub struct PrimariesMoved(Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<PrimaryMoved>>>>);
-
-impl PrimariesMoved {
-    /// Hold that `moved` moved for `build_id`.
-    pub fn record(&self, build_id: &str, moved: PrimaryMoved) {
-        let mut held = self.0.lock().unwrap();
-        let of = held.entry(build_id.to_owned()).or_default();
-        if !of.contains(&moved) {
-            of.push(moved);
-        }
-    }
-
-    /// The roles `build_id`'s commanded updates moved here.
-    pub fn of(&self, build_id: &str) -> Vec<PrimaryMoved> {
-        self.0.lock().unwrap().get(build_id).cloned().unwrap_or_default()
-    }
-}
-
-/// `mesh`'s mesh-primary as it stands after the updates `moved`: the new mesh-primary an update named
-/// while view `t` still names the one it moved, else the view's.
-pub fn mesh_primary_after(mesh: &str, t: &Topology, moved: &[PrimaryMoved]) -> Option<NodeId> {
-    let held = t.node_type_primary(mesh, "node-admin").map(|n| n.node_id.clone());
-    moved
-        .iter()
-        .find(|m| m.mesh == mesh && rdm_core::is_node_admin(&m.r#type) && held.as_ref().is_none_or(|h| *h == m.primary))
-        .map(|m| m.node_id.clone())
-        .or(held)
-}
-
-/// Whether the mesh-primary of `mesh` in view `t` is one the updates `moved` moved: a command to that
-/// mesh goes to the new one's exact birth ([`mesh_primary_after`]), never to the role the view names.
-pub fn mesh_primary_moved(mesh: &str, t: &Topology, moved: &[PrimaryMoved]) -> bool {
-    mesh_primary_after(mesh, t, moved) != t.node_type_primary(mesh, "node-admin").map(|n| n.node_id.clone())
-}
-
-/// The roles `op` moves before it runs in view `t` ([`role_move`]), less those the updates `moved`
-/// already moved.
-pub fn role_move_after(op: &BuildOperation, t: &Topology, moved: &[PrimaryMoved]) -> Option<RoleMove> {
-    role_move(op, t).filter(|m| !moved.iter().any(|p| p.primary == m.primary.node_id && p.mesh == m.primary.mesh))
-}
-
-/// The admin that executes `op` in view `t` after the updates `moved` (node-primary-update.md step 6:
-/// the next command goes to the node's commander as it stands after the update): for an operation of
-/// a mesh whose mesh-primary moved, the new mesh-primary; for an operation on a node-type primary
-/// that moved, its mesh-primary, which runs it itself; else [`executor_for`].
-pub fn executor_after(op: &BuildOperation, t: &Topology, moved: &[PrimaryMoved]) -> Option<NodeId> {
-    let view = executor_for(op, t);
-    let Some(mesh) = op.mesh() else { return view };
-    let subject = op.node().and_then(|n| t.node(&n)).map(|n| n.node_id.clone());
-    let moved_here = moved.iter().find(|m| m.mesh == mesh && (view.as_ref() == Some(&m.primary) || (view.is_none() && subject.as_ref() == Some(&m.primary))));
-    match moved_here {
-        Some(_) => mesh_primary_after(mesh, t, moved),
-        None => view,
-    }
-}
-
-/// The admin that executes `op` in view `t`; `None` while no admin can.
+/// The admin that executes `op` in view `t`; `None` while no admin can. A drive or a section's plan
+/// decides from its view with its atlas's primaries set (`crate::atlas::Atlas::primaries`, Q355): after
+/// a primary update it commanded, the next command goes to the node's mesh-primary as the answer
+/// streamed back names it, never waiting on gossip (node-primary-update.md step 6).
 pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<NodeId> {
     let fabric = || t.fabric_primary().map(|n| n.node_id.clone());
     match op {

@@ -103,7 +103,7 @@ impl Loopback {
                 let topology = self.views.lock().unwrap().get(&admin.node_id).cloned().unwrap_or_else(|| self.topology.clone());
                 let runner = Arc::new(Steps { inner: self.runner.clone(), builds: builds.clone() });
                 let exec = Arc::new(BuildExecutor { executor: admin.clone(), builds: builds.clone(), topology, runner });
-                Arc::new(SectionRunService { me_path: me.path.clone(), me_name: me.name.clone(), builds, exec, runs, local: self.local.clone(), gate: rdm_admin::stop_gate::StopGate::new(), moved: Default::default() })
+                Arc::new(SectionRunService { me_path: me.path.clone(), me_name: me.name.clone(), builds, exec, runs, local: self.local.clone(), gate: rdm_admin::stop_gate::StopGate::new(), atlas: Default::default() })
             })
             .clone()
     }

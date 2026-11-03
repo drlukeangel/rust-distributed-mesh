@@ -66,8 +66,10 @@ impl crate::build_drive::Gate for RoleGate {
         Ok(())
     }
 
-    fn moved(&self, build_id: &crate::build::BuildId) -> Vec<crate::executor::PrimaryMoved> {
-        self.primary_update.memo.moved.of(build_id.as_str())
+    /// `t` with its primaries as this admin's atlas holds them (Q355): the answers to the updates it
+    /// sent, and those its mesh-primaries streamed back to it.
+    fn primaries(&self, t: &mut crate::topology::Topology) {
+        self.control.atlas.primaries(t)
     }
 
     async fn primaries_updated(&self, updates: &[crate::build_drive::PrecedingUpdate], build_id: &crate::build::BuildId) -> Result<(), String> {
