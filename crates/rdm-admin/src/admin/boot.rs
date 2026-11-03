@@ -748,7 +748,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
 
     // The mesh endpoint: gossip for the topology view and Build facts.
-    // The transport is the one every node kind binds with (`rdm_transport::endpoint::transport_config`).
+    // The transport is the one every node type binds with (`rdm_transport::endpoint::transport_config`).
     // The app's own protocols are registered Connections like every node's: one of RDM's own two
     // ALPNs among them refuses the start by name (fabric-certs.md §On a connection).
     rdm_transport::connections::validate_alpns(&wiring.alpns).map_err(|e| format!("{node_id}: an app protocol: {e}"))?;

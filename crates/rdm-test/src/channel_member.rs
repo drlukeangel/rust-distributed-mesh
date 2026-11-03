@@ -19,7 +19,7 @@ pub struct MemberAddr(iroh::EndpointAddr);
 pub struct Member {
     /// Separate descriptive path and name; the publisher uses its minted node ID.
     pub name: rdm_core::PathName,
-    /// Explicit declared node kind.
+    /// Explicit declared node type.
     pub r#type: String,
     /// Its topology view: the mesh channel joined and its declared app types held.
     pub topology_view: TopologyView,

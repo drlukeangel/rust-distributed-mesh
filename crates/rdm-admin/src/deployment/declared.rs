@@ -1,5 +1,5 @@
 //! The declared secrets (Q150): the per-process variables an application's wiring declares by name,
-//! each with the node kinds it is set on ([`rdm_core::launch::DeclaredSecret`]).
+//! each with the node types it is set on ([`rdm_core::launch::DeclaredSecret`]).
 //!
 //! - The value is captured once, at the bootstrap: the bootstrap admin reads each declared value from
 //!   its own environment at its start, as it reads the fabric's root. Every node-admin RDM launches is

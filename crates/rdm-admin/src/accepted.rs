@@ -326,7 +326,7 @@ pub enum TopologyChange {
     },
     /// `fabric.delete` (lifecycles/fabric-delete.md).
     DeleteFabric,
-    /// A stored change of the removed per-kind executable-set operation (proposal
+    /// A stored change of the removed per-type executable-set operation (proposal
     /// executable-bindings-at-create.md §1, Q157), read from the journal or a Build message as history
     /// only: it owes no replacement (the repair is a [`Self::Reconcile`] naming the executables) and
     /// nothing submits it to [`compile`]. Its set is not kept: the topology it was accepted with had
@@ -1151,7 +1151,7 @@ fn properties_owed(topology: &FabricTopology, recorded: &Recorded, steps: &[crat
 pub struct RecordedRow {
     /// Explicit mesh of this recorded birth.
     pub mesh: String,
-    /// The runtime kind recorded for this birth.
+    /// The type recorded for this birth.
     pub r#type: String,
     /// The node the row names.
     pub node_id: NodeId,
@@ -3414,7 +3414,7 @@ mod tests {
         assert!(error.contains("missing field `mesh`"), "{error}");
     }
 
-    /// The entry owns mesh and runtime kind even when its path suggests different values. JSON
+    /// The entry owns mesh and type even when its path suggests different values. JSON
     /// preserves those values and validation refuses a different owning mesh instead of moving it.
     #[test]
     fn a_complete_topology_preserves_explicit_ownership_independently_of_the_path() {

@@ -152,7 +152,7 @@ pub enum BuildChange {
         /// The deleted birth's incarnation.
         incarnation: IncarnationId,
     },
-    /// Reserved position: the removed per-kind executable-set change (proposal
+    /// Reserved position: the removed per-type executable-set change (proposal
     /// executable-bindings-at-create.md §1, Q157). Never sent; a request at this position decodes as
     /// `UnknownVariant` ([`Build::decode_request`]). A node's executable is replaced by a
     /// [`Self::Reconcile`] naming it for its path. Kept so every later change keeps its position.

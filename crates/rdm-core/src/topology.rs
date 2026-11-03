@@ -57,7 +57,7 @@ pub struct Topology;
 pub struct StoredNode {
     /// The explicitly declared owning mesh.
     pub mesh: String,
-    /// The explicitly declared runtime kind.
+    /// The explicitly declared type.
     pub r#type: String,
     /// The node's minted id.
     pub node_id: NodeId,

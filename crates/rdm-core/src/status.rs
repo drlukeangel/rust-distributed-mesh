@@ -1822,7 +1822,7 @@ pub enum StatusReply {
         left: Vec<WhichMesh>,
     },
     /// The receiving endpoint has no handler for the request (R24, Luke Q11): decided by dispatch
-    /// alone, never by node kind, role or sender; nothing is done.
+    /// alone, never by node type, role or sender; nothing is done.
     ///
     /// Position 51 on the wire.
     RequestNotHandled {

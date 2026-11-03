@@ -685,7 +685,7 @@ mod tests {
     use rdm_core::{Primary, PrimaryRole};
 
     // @feature: node-records
-    /// A digest's declared mesh and runtime kind survive the actual wire codec, primary records,
+    /// A digest's declared mesh and type survive the actual wire codec, primary records,
     /// and domain projection even when both conflict with its path spelling.
     #[test]
     fn digest_projection_preserves_explicit_ownership_and_primary_selection() {

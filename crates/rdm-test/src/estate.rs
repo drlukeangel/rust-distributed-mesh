@@ -2097,7 +2097,7 @@ mod span_reader_tests {
     }
 }
 
-/// Docker listing retains each label as its own field; cleanup orders by explicit runtime kind.
+/// Docker listing retains each label as its own field; cleanup orders by explicit type.
 fn listed_containers(fabric_id: &str, all: bool) -> Vec<Value> {
     let mut command = Command::new("docker");
     command.arg("ps");

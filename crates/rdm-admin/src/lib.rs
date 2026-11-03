@@ -12,7 +12,7 @@
 //! On `rdm-node`, `rdm-transport` and `rdm-core`: node-admin is itself a node of its mesh. An
 //! application's node-admin executable is a `main` that calls [`entry::run_with`] (or
 //! [`entry::run_on`] with its own topology storage backend), handing the admin its
-//! [`wiring::Wiring`]: its fabric hooks, its own node kinds, ops and declared secrets, and its cert
+//! [`wiring::Wiring`]: its fabric hooks, its own node types, ops and declared secrets, and its cert
 //! material. Everything else is configured from the environment.
 //!
 //! # Example

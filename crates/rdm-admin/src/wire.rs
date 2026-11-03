@@ -177,7 +177,7 @@ enum WireChange {
     CreateMesh { desired: WireMeshDesired },
     RemoveMesh { mesh: String },
     DeleteFabric,
-    /// Reserved position: the removed per-kind executable-set change (proposal
+    /// Reserved position: the removed per-type executable-set change (proposal
     /// executable-bindings-at-create.md §1). Read as the stored history it is
     /// ([`TopologyChange::Reserved`]); kept so `Reconcile` keeps its position.
     Reserved7,

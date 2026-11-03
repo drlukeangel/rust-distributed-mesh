@@ -910,7 +910,7 @@ pub struct CreateRequest {
     pub operation: rdm_core::OperationId,
     /// The owning mesh supplied by the Build or exact predecessor.
     pub mesh: String,
-    /// The runtime kind supplied by the same source.
+    /// The type supplied by the same source.
     pub r#type: String,
     /// The Build.
     pub build_id: BuildId,

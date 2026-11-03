@@ -369,12 +369,12 @@ pub struct Wiring {
     /// The app's own ops, added to the server before it is built.
     pub serve_app: Option<ServeApp>,
     /// The app's declared secrets (Q150), registered at boot: each per-process
-    /// variable by name, with the node kinds it is set on. The bootstrap admin reads each value once
+    /// variable by name, with the node types it is set on. The bootstrap admin reads each value once
     /// from its own environment; every node-admin RDM launches is written them beside the root; a value
     /// is set in the environment of the named kinds' processes only
     /// ([`crate::deployment::declared`]). A name RDM sets or passes through refuses the start by name.
     pub declared: Vec<rdm_core::launch::DeclaredSecret>,
-    /// The app's listeners (Q151), registered at boot: each product kind's listeners by
+    /// The app's listeners (Q151), registered at boot: each type's listeners by
     /// name. A create assigns each the birth's address with port 0 (`RDM_LISTENERS`); the node binds
     /// them and reports the ports at its join, which refuses a report that does not carry exactly them;
     /// they are published on the node's row. A duplicate name in a kind, a name RDM owns and a

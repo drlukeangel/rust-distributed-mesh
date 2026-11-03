@@ -1,6 +1,6 @@
 //! `node.start` (lifecycles/node-start.md, "End-to-end sequence"): the one start workflow. node.create
 //! composes it with [`StartKind::FirstStart`] (lifecycles/node-create.md, step 3); a start of a stopped
-//! node runs it with [`StartKind::AfterStop`] (node_self.rs, `StartNode`). Every node kind runs this
+//! node runs it with [`StartKind::AfterStop`] (node_self.rs, `StartNode`). Every node type runs this
 //! sequence; a kind differs only by what it plugs into each step ([`StartNode`], [`AfterHook`]), never
 //! by a copy of the sequence.
 //!
@@ -213,7 +213,7 @@ pub struct HookParts {
     pub after: Box<dyn AfterHook>,
 }
 
-/// What a node kind plugs into the steps after the hook. It is owned: the steps run inside the start
+/// What a node type plugs into the steps after the hook. It is owned: the steps run inside the start
 /// when the hook passes at its first attempt, and otherwise in the task the hook runs on in.
 #[async_trait::async_trait]
 pub trait AfterHook: Send + 'static {
@@ -246,7 +246,7 @@ pub trait AfterHook: Send + 'static {
     }
 }
 
-/// What a node kind plugs into `node.start`.
+/// What a node type plugs into `node.start`.
 #[async_trait::async_trait]
 pub trait StartNode: super::node_mesh_join::MeshJoin {
     /// What this start knows before it begins.
@@ -256,7 +256,7 @@ pub trait StartNode: super::node_mesh_join::MeshJoin {
     fn joining(&self) -> Joining;
 
     /// Whom the join goes to; called inside the join step. A start after a stop answers
-    /// [`JoinTo::Commander`], whatever the node kind.
+    /// [`JoinTo::Commander`], whatever the node type.
     async fn resolve_join_to(&mut self) -> Result<JoinTo, StartFailed>;
     /// The operation the start's join runs for, when the start was commanded with one (a start after
     /// a stop: its `node.start`; a commanded `node.mesh.join`: that command's); `None` names the kind's.
@@ -472,7 +472,7 @@ pub type JoinedSeam<E> = Box<dyn FnOnce(Option<JoinThrough>) -> BoxFut<Result<(H
 pub type HookStarted<E> = Box<dyn FnOnce(tokio::task::JoinHandle<()>) -> BoxFut<Result<(), E>> + Send>;
 
 /// A first start's plug whose steps are continuations: each step runs in the scope the previous one
-/// left, so a node kind that brings its runtime up while it starts (a node-admin hydrating its stores
+/// left, so a node type that brings its runtime up while it starts (a node-admin hydrating its stores
 /// and entering the election) holds what it built from one step to the next.
 pub struct FirstStart<E> {
     /// The immutable app types presented by the first join.

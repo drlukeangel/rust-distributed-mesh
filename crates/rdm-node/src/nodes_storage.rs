@@ -161,9 +161,9 @@ pub const BIRTHS_KEPT: usize = 2;
 /// (NodeId + IncarnationId), written once by a blind put, never rewritten.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRow {
-    /// Explicit birth ownership and runtime kind.
+    /// Explicit birth ownership and type.
     pub mesh: String,
-    /// The explicit runtime kind of this birth.
+    /// The explicit type of this birth.
     pub r#type: String,
     /// The node's minted id.
     pub node_id: NodeId,
@@ -196,7 +196,7 @@ impl RuntimeRow {
 pub struct NodeRow {
     /// The explicitly declared owning mesh.
     pub mesh: String,
-    /// The explicitly declared runtime kind.
+    /// The explicitly declared type.
     pub r#type: String,
     /// The node's `(path, name)`.
     pub name: PathName,

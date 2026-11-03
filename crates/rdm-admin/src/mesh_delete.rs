@@ -65,7 +65,7 @@ pub fn manifest_reference(build_id: &str, attempt: u32, operation: &rdm_core::Op
 pub struct RosterBirth {
     /// The explicitly declared owning mesh.
     pub mesh: String,
-    /// The explicitly declared runtime kind.
+    /// The explicitly declared type.
     pub r#type: String,
     /// The node's `(path, name)`.
     pub node: crate::model::PathName,

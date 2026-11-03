@@ -377,7 +377,7 @@ mod tests {
         );
 
         // 4. Valid member cert under mesh1 issuer and root is admitted and returns its expiry and clock,
-        // whoever presents it (reading no node kind, no primary, and no sender identity).
+        // whoever presents it (reading no node type, no primary, and no sender identity).
         let ca = CaKey::mint(&root_key, CA_CERT_TTL_SECS, 1_000);
         let issuer = IssuingKey::mint(
             &ca,

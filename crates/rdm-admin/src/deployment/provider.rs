@@ -94,7 +94,7 @@ use std::path::PathBuf;
 pub struct ResolvedNodeLaunch {
     /// The explicitly declared owning mesh of this runtime.
     pub mesh: String,
-    /// The explicitly declared node kind, independent of its pair spelling.
+    /// The explicitly declared node type, independent of its pair spelling.
     pub r#type: String,
     /// The node to run.
     pub node: PathName,

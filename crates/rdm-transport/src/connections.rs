@@ -36,7 +36,7 @@ pub struct Alpn {
     pub name: Vec<u8>,
     /// Whether this protocol may travel over a Proxy when a Direct dial provably sent nothing.
     pub proxy: bool,
-    /// The node kinds eligible to carry a Proxy for this protocol when `proxy` is `true`.
+    /// The node types eligible to carry a Proxy for this protocol when `proxy` is `true`.
     pub carriers: Vec<String>,
 }
 
@@ -89,7 +89,7 @@ pub fn validate_alpns(alpns: &[Alpn]) -> Result<(), String> {
 pub struct Birth {
     /// The explicitly declared owning mesh.
     pub mesh: String,
-    /// The explicitly declared runtime kind.
+    /// The explicitly declared type.
     pub r#type: String,
     /// The birth's `(path, name)`.
     pub name: PathName,

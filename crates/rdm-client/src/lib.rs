@@ -59,7 +59,7 @@ pub use rdm_core::filter::{Entity, Filter};
 /// The fabric, mesh, node, connection and atlas views that the query ops return.
 pub use rdm_core::views::{AtlasNodeView, AtlasView, ConnectionView, ConnectionsView, DataDirLost, DataDirUnreadable, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 /// Executable bindings: what each created path's config names (build-deployment.md), and a
-/// consumer's per-kind set a caller expands into per-path entries before the typed call.
+/// consumer's per-type set a caller expands into per-path entries before the typed call.
 pub use rdm_core::binding;
 /// A structured pair of separate path and name fields, used for composite lookups; NodeId is identity.
 pub use rdm_core::PathName;

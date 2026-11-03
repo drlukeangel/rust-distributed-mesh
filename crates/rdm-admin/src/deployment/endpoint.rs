@@ -284,7 +284,7 @@ mod tests {
         rdm_core::launch::DeclaredListeners { r#type: r#type.to_string(), names: names.iter().map(|n| n.to_string()).collect() }
     }
 
-    /// CONTRACT (Q151): a product kind's declared listeners are what `spec_for` returns for it; a kind
+    /// CONTRACT (Q151): a type's declared listeners are what `spec_for` returns for it; a kind
     /// that declares none, and a node-admin, bind none.
     #[test]
     fn spec_for_returns_a_kinds_declared_listeners() {

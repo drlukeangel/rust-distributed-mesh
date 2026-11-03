@@ -13,7 +13,7 @@ use rdm_transport::topology::TopologyView;
 use rdm_transport::{NodeRpcClient, NodeTarget};
 use tracing::Instrument as _;
 
-/// What a node kind plugs into `node.mesh.join`: the digest its report presents and how it enters
+/// What a node type plugs into `node.mesh.join`: the digest its report presents and how it enters
 /// its channels.
 #[async_trait::async_trait]
 pub trait MeshJoin: Send {

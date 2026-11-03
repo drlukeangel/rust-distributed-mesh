@@ -35,7 +35,7 @@ use tokio::sync::watch;
 pub struct Deployed {
     /// The owning mesh supplied at deployment.
     pub mesh: String,
-    /// The runtime kind supplied at deployment.
+    /// The type supplied at deployment.
     pub r#type: String,
     /// The deployed node's `(path, name)`.
     pub name: PathName,

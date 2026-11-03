@@ -6,7 +6,7 @@ use iroh::{Endpoint, RelayMode, SecretKey};
 use std::net::SocketAddr;
 use tracing::instrument::WithSubscriber;
 
-/// The one QUIC transport configuration every node kind binds with (node-admin, rpc nodes, the
+/// The one QUIC transport configuration every node type binds with (node-admin, rpc nodes, the
 /// probe, role binaries): a connection idles out after `staleness_floor()` (`RDM_STALENESS_MS`,
 /// 30 s by default) and is kept alive every `gossip_interval() / 2` (`RDM_GOSSIP_INTERVAL_MS`,
 /// 2 s by default, so 1 s). A pooled connection to a dead peer therefore closes within the
