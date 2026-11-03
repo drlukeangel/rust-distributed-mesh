@@ -88,7 +88,7 @@ fn alive(pid: u64) -> bool {
 
 /// CONTRACT: deleting the mesh that holds the fabric-primary role hands the role to a surviving mesh's
 /// primary first, then deletes the mesh. The mesh.delete ends at mesh.deleted: the fabric-primary
-/// validates the handoff and records its completion receipt, and stops nothing of mesh1's final
+/// validates the handoff and writes the MeshDeleted step event, and stops nothing of mesh1's final
 /// primary, which stays alive, publishing mesh1's topology with itself the only member and
 /// MeshStatus Dead, while every peer holds mesh1 with that one member. Its end is a separate
 /// node.delete the fabric-primary executes: node.stop, exact exited verdict, its row Deleted,
@@ -213,13 +213,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     }
     assert!(alive(final_pid), "mesh1's final primary {final_name:?} still runs while every peer holds it");
 
-    // The MeshDeleted step event, read from the live Build projection, keyed by the mesh's minted id; no
-    // MeshLeft yet.
+    // The MeshDeleted step event, read from the live Build projection, its operation
+    // `mesh.delete:<mesh_id>` keyed by the mesh's minted id; no MeshLeft yet.
+    let mesh_delete = format!("mesh.delete:{mesh1_id}");
     let steps_of = |build: &Value, step: &str| -> Vec<Value> { build["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["step"] == step).collect() };
     let build_b = build_log::build_value(&estate, &b).await;
-    let deleted_receipts = steps_of(&build_b, "MeshDeleted");
-    assert_eq!(deleted_receipts.len(), 1, "one MeshDeleted completion receipt under {b}: {build_b}");
-    assert!(deleted_receipts[0]["operation"]["action"] == "mesh.delete" && deleted_receipts[0]["operation"]["subject"]["Mesh"] == mesh1_id.as_str(), "keyed by the mesh's minted id: {}", deleted_receipts[0]);
+    let deleted_events = steps_of(&build_b, "MeshDeleted");
+    assert_eq!(deleted_events.len(), 1, "one MeshDeleted step event under {b}: {build_b}");
+    assert!(deleted_events[0]["operation"] == mesh_delete.as_str() && deleted_events[0]["outcome"] == "complete", "keyed by the mesh's minted id, complete: {}", deleted_events[0]);
     assert!(steps_of(&build_b, "MeshLeft").is_empty(), "no MeshLeft while the final primary lives: {build_b}");
 
     // The final primary's end: an ordinary node.delete, a separate call, the fabric-primary its
@@ -255,6 +256,21 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
             .await;
         }
     }
+    // mesh-left, once the final birth's exit was proven: one complete MeshLeft step event under the
+    // mesh.delete's operation. The proof set it covers, every birth of the mesh with the final
+    // primary included, is the records' and the events' (D67: a step event carries no output), read
+    // below from the spans of the manifest and of mesh-left.
+    let build_b = build_log::build_value(&estate, &b).await;
+    let left_events = steps_of(&build_b, "MeshLeft");
+    let other_events = steps_of(&build_b, "OtherMembersExited");
+    estate.stop().await;
+    let spans = estate.spans();
+    assert_eq!(other_events.len(), 1, "one OtherMembersExited step event, written by mesh1's primary: {build_b}");
+    assert!(other_events[0]["operation"] == mesh_delete.as_str() && other_events[0]["outcome"] == "complete", "{}", other_events[0]);
+    assert_eq!(left_events.len(), 1, "one MeshLeft step event under {b}: {build_b}");
+    assert!(left_events[0]["operation"] == mesh_delete.as_str() && left_events[0]["outcome"] == "complete", "keyed by the mesh's minted id, complete: {}", left_events[0]);
+    // The records are read from the fabric's store root once the estate is stopped: its files stand,
+    // and a red here is read from every process's spans.
     // R-MN1 (mesh-delete.md "Rows", steps 3 and 7): every birth of mesh1 is deleted and no row is
     // removed. Each mesh1 birth's Node record stays on the fabric's store root at its node id
     // (its lines in `nodes.jsonl` at its node id, R-SR1; storage-whole-records.md), written Deleted: the members' by
@@ -278,31 +294,17 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     assert_eq!(s(&row["record"]["mesh_id"]), mesh1_bare.clone(), "{row}");
     let lines = rdm_admin::store_log::read_file(&record_at).unwrap_or_default();
     assert!(lines.iter().any(|l| l.kind() == "mesh-record" && l.key == mesh1_bare && l.record["state"] == "deleting"), "mesh1's primary stored deleting on its mesh's record: {row}");
-    // mesh-left, once the final birth's exit was proven: one Complete MeshLeft receipt under the
-    // mesh.delete's operation, covering every birth of the mesh, the final primary included.
-    let build_b = build_log::build_value(&estate, &b).await;
-    let left_receipts = steps_of(&build_b, "MeshLeft");
-    let other_receipts = steps_of(&build_b, "OtherMembersExited");
-    estate.stop().await;
-    let spans = estate.spans();
-    assert_eq!(other_receipts.len(), 1, "one OtherMembersExited receipt, recorded by mesh1's primary: {build_b}");
-    assert_eq!(other_receipts[0]["output"]["receipts"].as_array().map(|r| r.len()), Some(3), "a terminal receipt for every birth of mesh1 but its final primary");
-    assert_eq!(left_receipts.len(), 1, "one MeshLeft receipt under {b}: {build_b}");
-    assert_eq!(left_receipts[0]["outcome"], json!("complete"), "{}", left_receipts[0]);
-    assert!(left_receipts[0]["operation"]["action"] == "mesh.delete" && left_receipts[0]["operation"]["subject"]["Mesh"] == mesh1_id.as_str(), "keyed by the mesh's minted id");
-    assert_eq!(left_receipts[0]["output"]["receipts"].as_array().map(|r| r.len()), Some(4), "a terminal receipt for every birth of mesh1, the final primary included: {}", left_receipts[0]);
 
-    // The mesh.delete Build's executor is the fabric-primary; so is the node.delete's. The run that ran
-    // `op` ends converged, or, its operations all done while the fabric it put back to pending has not
-    // changed, handed back to the fabric-primary, which completes the Build after the change (Q154).
+    // The mesh.delete Build's executor is the fabric-primary; so is the node.delete's: the section that
+    // ran `op` ended complete (Q346).
     let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile");
-    // A run's planned operations are named by action and subject.
+    // A section's operations are named by action and subject.
     let converged = |build: &str, action: &str, subject: &str| -> String {
         let r = reconciles
             .iter()
-            .find(|sp| sp["attributes"]["build_id"] == build && (sp["attributes"]["outcome"] == "converged" || sp["attributes"]["outcome"] == "handed-off") && rdm_test::estate::planned_operations(sp).iter().any(|o| o.contains(&format!("action: {action:?}")) && o.contains(subject)))
+            .find(|sp| sp["attributes"]["build_id"] == build && sp["attributes"]["outcome"] == "complete" && rdm_test::estate::planned_operations(sp).iter().any(|o| o.contains(&format!("action: {action:?}")) && o.contains(subject)))
             .cloned()
-            .unwrap_or_else(|| panic!("a reconcile ran {action} on {subject} under {build} to its end"));
+            .unwrap_or_else(|| panic!("a section ran {action} on {subject} under {build} to its end"));
         s(&r["attributes"]["executor"])
     };
     let owner_name = converged(&b, "mesh.delete", &mesh1_id);
@@ -364,7 +366,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     assert_eq!(handoff["attributes"]["outcome"], "applied", "the owner validated the mesh-deleted handoff: {handoff}");
     // The completion follows the validated handoff, at the fabric-primary that owns the mesh.delete.
     let completion = named(&spans, "rdm.node_admin.mesh.update.via-mesh-deleted-receipt").into_iter().find(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare).cloned().unwrap_or_else(|| panic!("the fabric-primary recorded mesh.deleted's completion receipt for mesh1"));
-    assert!(start_ns(&completion) >= end_ns(&handoff), "the completion receipt follows the validated handoff: {completion}");
+    assert!(start_ns(&completion) >= end_ns(&handoff), "the MeshDeleted step event follows the validated handoff: {completion}");
     assert_eq!((attr_u(&completion, "receipts"), attr_u(&completion, "roster"), s(&completion["attributes"]["final_primary_node_id"])), (3, 4, final_id.clone()), "{completion}");
     // The reconcile names the owner's birth (`<node id>/<incarnation>`); the completion its node id.
     assert_eq!(Some(s(&completion["attributes"]["executor"]).as_str()), owner_name.split('/').next(), "the mesh.delete's owner records its completion: {completion}");
@@ -382,26 +384,23 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         // member's own ConnectionsDeleting and Leaving in what it installs, and routes none of them meanwhile.
         let states: Vec<&Value> = heard(m, "via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member_path"]).starts_with("mesh1.")).collect();
         let leaving_states: Vec<&Value> = states.iter().copied().filter(|sp| matches!(s(&sp["attributes"]["status"]).as_str(), "ConnectionsDeleting" | "Leaving")).collect();
-        assert!(!leaving_states.is_empty(), "a {m} node held a mesh1 member's own connections-deleting or Leaving: {states:?}");
         assert!(leaving_states.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "a mesh1 member saying connections-deleting or Leaving is not routable at {m}: {leaving_states:?}");
-        // Each ordinary node holds a member's own state from its mesh channel or the read a gap on that
-        // channel pulls, or it skipped those versions: gossip.md §3.3 "On a mismatch it marks that source's
-        // projection desynced, stops applying its deltas, and pulls the current full fabric topology from
-        // its own current mesh-primary", "A node that installs a pulled copy older than a delta it dropped
-        // while the pull was in flight pulls again (Q130)", and "A node that missed a lifecycle event
-        // recovers it from `MeshTopology.in_flight` or `MeshTopology.deleted`, through the next delta, full
-        // or top-up". A node desynced on mesh1 while its members left installs, from its top-up, mesh1 with
-        // every one of them deleted, and holds none of their transient states.
+        // Each ordinary node holds a member's own state from what it installs, or it skipped those
+        // versions and recovered the members' ends from mesh1's `deleted`: gossip.md "A node that missed a
+        // lifecycle event recovers it from `MeshTopology.in_flight` or `MeshTopology.deleted`, through the
+        // next delta, full or top-up". A delete that ends between two of mesh1's versions it installs
+        // reaches it as the next one, mesh1 with every other member deleted, and it holds none of their
+        // transient states; which frame brought it is best-effort dissemination (R-NS2).
         for ordinary in [Estate::path(&format!("{m}.node"), "1"), Estate::path(&format!("{m}.node"), "2")] {
-            let held_here = leaving_states.iter().any(|sp| on(sp, &ids, &ordinary) && matches!(sp["attributes"]["channel"].as_str(), Some("mesh-channel" | "topology-read")));
-            let gap_at = named(&spans, "rdm.mesh.topology.update.via-gap").into_iter().filter(|sp| on(sp, &ids, &ordinary) && sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).min();
-            let topped_up: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed")
-                .into_iter()
-                .filter(|sp| on(sp, &ids, &ordinary) && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["channel"] == "topology-read" && attr_u(sp, "deleted") >= members.len() as u64 && gap_at.is_some_and(|g| start_ns(sp) >= g))
+            let held_here = leaving_states.iter().any(|sp| on(sp, &ids, &ordinary));
+            let recovered: Vec<&Value> = ["rdm.mesh.topology.update.via-snapshot-installed", "rdm.mesh.topology.update.via-delta"]
+                .iter()
+                .flat_map(|n| named(&spans, n))
+                .filter(|sp| on(sp, &ids, &ordinary) && sp["attributes"]["mesh"] == "mesh1" && attr_u(sp, "deleted") >= members.len() as u64)
                 .collect();
             assert!(
-                held_here || !topped_up.is_empty(),
-                "{ordinary:?} held a mesh1 member's own connections-deleting or Leaving from its mesh channel or a topology read, or, desynced on mesh1 (first gap {gap_at:?}), installed from its top-up mesh1 with all {} of its other members deleted: {leaving_states:?}",
+                held_here || !recovered.is_empty(),
+                "{ordinary:?} held a mesh1 member's own connections-deleting or Leaving, or installed mesh1 with all {} of its other members deleted through a delta, full or top-up: {leaving_states:?}",
                 members.len()
             );
         }
@@ -442,7 +441,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let node_deleted = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| on(sp, &ids, &final_name) && s(&sp["attributes"]["build_id"]) == c).cloned().unwrap_or_else(|| panic!("NodeDeleted was published for {final_name:?} under {c}"));
     assert!(start_ns(&node_deleted) >= final_exit, "NodeDeleted follows the exited verdict: {node_deleted}");
 
-    // mesh-left once every birth is proven exited: the receipt over all four births at the
+    // mesh-left once every birth is proven exited: MeshLeft over all four births at the
     // fabric-primary, after the final birth's exited verdict.
     let left_recorded: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left-receipt").into_iter().filter(|sp| attr_u(sp, "receipts") == 4 && attr_u(sp, "roster") == 4).collect();
     assert!(left_recorded.iter().any(|sp| start_ns(sp) >= final_exit), "the fabric-primary recorded MeshLeft over all four births after the final birth's exited verdict: {left_recorded:?}");
@@ -528,8 +527,10 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let calls: Vec<&Value> = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21).collect();
     assert!(!calls.is_empty() && calls.iter().all(|sp| descends_from(&spans, sp, &updating)), "every 0x21 call is the primary's call on its successor: {calls:?}");
 
-    // A desired change, not a recovery.
-    assert!(!named(&spans, "rdm.node_admin.build.create.via-proven-drift").iter().any(|sp| mesh1_ids.iter().any(|(_, id)| s(&sp["attributes"]["scope"]).contains(id.as_str()))), "no recovery Build names mesh1");
+    // A desired change, not a recovery: no node recovery of a mesh1 birth (node recovery is the
+    // mesh-primary's own workflow, Q342).
+    let mesh1_recovered: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| mesh1_ids.iter().any(|(_, id)| s(&sp["attributes"]["node_id"]) == *id)).collect();
+    assert!(mesh1_recovered.is_empty(), "no node recovery of a mesh1 birth: {mesh1_recovered:?}");
     let created = named(&spans, "rdm.node_admin.node.create.via-build");
     assert!(!created.iter().any(|sp| (sp["attributes"]["build_id"] == b.as_str() || sp["attributes"]["build_id"] == c.as_str()) && s(&sp["attributes"]["node_path"]).starts_with("mesh1.")), "nothing recreates a mesh1 node");
 

@@ -540,14 +540,14 @@ impl AdminRunner {
             Ok(Some(found)) => found,
             Ok(None) => return,
             Err(e) => {
-                tracing::info_span!("rdm.node_admin.mesh.reject.via-mesh-left", node_path = %me.path, node_name = %me.name, subject_path = %op.path, subject_name = %op.name, node_id = %op.node_id, reason = %format!("the mesh.delete completion index could not be read: {e}"))
-                    .in_scope(|| tracing::info!("mesh-left is not decided: the index of mesh.delete completions could not be read"));
+                tracing::info_span!("rdm.node_admin.mesh.reject.via-mesh-left", node_path = %me.path, node_name = %me.name, subject_path = %op.path, subject_name = %op.name, node_id = %op.node_id, reason = %format!("the mesh.delete of the deleted birth's mesh could not be read: {e}"))
+                    .in_scope(|| tracing::info!("mesh-left is not decided: the deleted birth's record or its mesh's mesh.delete could not be read"));
                 return;
             }
         };
-        let (build_id, operation) = found;
+        let (build_id, operation, mesh_id) = found;
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-final-birth-deleted", node_path = %me.path, node_name = %me.name, subject_path = %op.path, subject_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %build_id.log(), operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, deleted_by = %op.operation.action, deleted_by_subject = ?op.operation.subject, deleted_by_step = ?op.operation.step, outcome = tracing::field::Empty, reason = tracing::field::Empty);
-        let result = self.mesh_left_in(op, &build_id, &operation).instrument(span.clone()).await;
+        let result = self.mesh_left_in(op, &build_id, &operation, &mesh_id).instrument(span.clone()).await;
         match &result {
             Ok(outcome) => {
                 span.record("outcome", *outcome);
@@ -560,17 +560,39 @@ impl AdminRunner {
         span.in_scope(|| tracing::info!("the final primary of a deleted mesh is proven exited: mesh-left is decided"));
     }
 
-    /// The mesh.delete whose `MeshDeleted` step ended `complete` and whose `MeshLeft` did not, in the
-    /// current Build, of the mesh of `op`'s birth: that birth is the mesh's final primary, the one birth
-    /// of the mesh its records do not hold deleted (D67). `None` when no such mesh.delete is open.
-    async fn mesh_deleted_of(&self, op: &rdm_core::LifecycleOp) -> Result<Option<(crate::build::BuildId, rdm_core::OperationId)>, String> {
-        let Some(mesh_id) = self.records.meshes.lock().unwrap().get(&op.mesh).cloned() else { return Ok(None) };
+    /// The mesh.delete whose `MeshDeleted` step ended `complete` and whose `MeshLeft` did not, of the mesh
+    /// of `op`'s birth: that birth is the mesh's final primary, the one birth of the mesh its records do
+    /// not hold deleted (D67). The mesh is the one the birth's own node record names by its id (a
+    /// fabric-primary that took the role from the deleted mesh never created it, and holds no id of it
+    /// otherwise). Only a mesh whose record is deleted has one: its mesh-primary writes the mesh's record
+    /// deleted before it reports mesh.deleted (mesh-delete.md step 5). Its Build is the newest one holding
+    /// a step event of `mesh.delete:<mesh_id>`, read newest first: the final primary's own node.delete is
+    /// a Build of its own, accepted after it, so the current Build is not it. `None` when no such
+    /// mesh.delete is open.
+    async fn mesh_deleted_of(&self, op: &rdm_core::LifecycleOp) -> Result<Option<(crate::build::BuildId, rdm_core::OperationId, MeshId)>, String> {
+        let store = self.records.contacts.get().ok_or_else(|| format!("{} holds no nodes.storage to read the node record of {}", self.node_id, op.node_id))?;
+        let row = store.node(&op.node_id).await.map_err(|e| format!("the node record of {} could not be read: {e}", op.node_id))?;
+        let Some(mesh_id) = row.and_then(|r| r.mesh_id) else { return Ok(None) };
+        let mesh = self.mesh_storage.mesh(&mesh_id).await.map_err(|e| format!("the record of {} ({mesh_id}) could not be read: {e}", op.mesh))?;
+        if !mesh.is_some_and(|m| m.state == rdm_core::status::MeshState::Deleted) {
+            return Ok(None);
+        }
         let operation = crate::mesh_delete::operation(&mesh_id);
-        let Some(p) = self.builds.current().await.map_err(|e| e.to_string())? else { return Ok(None) };
-        Ok((crate::mesh_delete::owner_resume(&p.steps, &operation.to_string()) == crate::mesh_delete::OwnerResume::Deleted).then(|| (p.build_id.clone(), operation)))
+        let key = operation.to_string();
+        for id in self.builds.accepted_newest_first().await.map_err(|e| e.to_string())? {
+            let p = match self.builds.read_build(&id).await {
+                Ok(p) => p,
+                Err(crate::build_state::BuildStateError::UnknownBuild(_)) => continue,
+                Err(e) => return Err(e.to_string()),
+            };
+            if p.steps.iter().any(|s| s.operation == key) {
+                return Ok((crate::mesh_delete::owner_resume(&p.steps, &key) == crate::mesh_delete::OwnerResume::Deleted).then(|| (p.build_id.clone(), operation, mesh_id)));
+            }
+        }
+        Ok(None)
     }
 
-    async fn mesh_left_in(&self, op: &rdm_core::LifecycleOp, build_id: &crate::build::BuildId, operation: &rdm_core::OperationId) -> Result<&'static str, String> {
+    async fn mesh_left_in(&self, op: &rdm_core::LifecycleOp, build_id: &crate::build::BuildId, operation: &rdm_core::OperationId, mesh_id: &MeshId) -> Result<&'static str, String> {
         let mut steps = self.builds.read_build(build_id).await.map_err(|e| format!("{operation}: the Build {build_id} could not be read for its completion: {e}"))?.steps;
         if crate::mesh_delete::owner_resume(&steps, &operation.to_string()) == crate::mesh_delete::OwnerResume::Left {
             return Ok("already-applied");
@@ -580,11 +602,10 @@ impl AdminRunner {
         if deleted_in != *build_id {
             steps.extend(self.builds.read_build(&deleted_in).await.map_err(|e| format!("{}: the Build {deleted_in} of the node.delete could not be read for its exited verdict: {e}", op.operation))?.steps);
         }
-        let mesh_id = self.records.meshes.lock().unwrap().get(&op.mesh).cloned().ok_or_else(|| format!("{operation}: this admin holds no mesh id for {}", op.mesh))?;
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), operation: operation.clone() };
         // The proof set over the mesh's records: every birth, the final primary included, proven exited
         // by its own node.delete's events (R-MD1 item 2).
-        let roster = self.stored_roster(&op.mesh, &mesh_id, &steps).await?;
+        let roster = self.stored_roster(&op.mesh, mesh_id, &steps).await?;
         let last = roster.iter().find(|b| b.node_id == op.node_id.as_str() && b.incarnation_id == op.incarnation.as_str()).cloned().ok_or_else(|| format!("{operation}: {} {} is no birth of {}'s records", op.node_id, op.incarnation.as_str(), op.mesh))?;
         let all = crate::mesh_delete::manifest_of(&key, &roster, &last, None, &steps, true);
         if let Some((field, expected, reported)) = crate::mesh_delete::first_mismatch(&all, &roster, &last, true) {
@@ -1234,7 +1255,10 @@ mod tests {
         // The final primary's record, its birth on it, written Deleted by its own node.delete.
         let mut final_row = crate::storage::NodeRow::new(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", final_id.clone(), NodeStatus::Deleted);
         final_row.birth_mut(&final_inc, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap());
+        final_row.mesh_id = Some(mesh2_id.clone());
         runner.nodes_storage.put_node(&final_row).await.unwrap();
+        // mesh2's mesh-primary wrote the mesh's record deleted before it reported mesh.deleted.
+        crate::mesh_delete::mesh_row_deleted(&*runner.mesh_storage, &records.caches, "mesh2", &mesh2_id).await.unwrap();
         let final_birth = RosterBirth { mesh: "mesh2".into(), r#type: "node-admin".into(),
             node: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
             node_id: final_id.to_string(),
@@ -1299,10 +1323,10 @@ mod tests {
         };
         assert_eq!(
             runner.mesh_deleted_of(&op).await.unwrap(),
-            Some((build_id.clone(), outer.clone()))
+            Some((build_id.clone(), outer.clone(), mesh2_id.clone()))
         );
         runner.mesh_left_after_delete(&op).await;
-        assert_eq!(runner.mesh_left_in(&op, &build_id, &outer).await, Ok("already-applied"));
+        assert_eq!(runner.mesh_left_in(&op, &build_id, &outer, &mesh2_id).await, Ok("already-applied"));
         assert!(!records.meshes.lock().unwrap().contains_key("mesh2"));
 
         // 3. `delete_mesh` also returns `Ok(())` when `OwnerResume::Left` is reached.

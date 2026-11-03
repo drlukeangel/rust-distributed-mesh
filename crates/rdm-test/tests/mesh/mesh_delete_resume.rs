@@ -1,22 +1,25 @@
-//! i143.e12.s39 (#3066) process E2E: a mesh leave resumed after the leaving mesh's primary is lost
-//! mid-leave (R11; mesh-delete.md, "Resume after the primary's loss").
+//! i143.e12.s39 (#3066) process E2E: a mesh delete resumed after the deleting mesh's primary is lost
+//! mid-delete (mesh-delete.md, "Resume after the primary's loss").
 //!
-//! desired {mesh1, mesh2} -> {mesh1}: the fabric-primary in mesh1 owns `mesh.delete:<mesh2 id>`.
-//! mesh2's primary is held by its fault door in tier 1 (rpc.2's node.delete StopNode receipt) and
-//! SIGKILLed there by exact pid; the door dies with it. The owner's attempt ends the moment its view
-//! holds the lost primary unheard (`via-final-primary-lost`), never on the hand-off bound, and the next
-//! attempts delete the lost primary by its node.delete, amend the roster with the new final
-//! primary once it is primary (or created, when none survives), and finish at mesh.deleted: its
-//! completion covers the accepted roster plus the amendment but the new final primary, which stays
-//! alive. Its end is its own node.delete (mesh-delete.md step 7), after which MeshLeft covers every
-//! birth, both primary births included.
+//! desired {mesh1, mesh2} -> {mesh1}: the fabric-primary in mesh1 runs `mesh.delete:<mesh2 id>`.
+//! mesh2's primary is held by its fault door in tier 1 (the `StopNode` step event of rpc.2's
+//! node.delete) and SIGKILLed there by exact pid; the door dies with it. The fabric-primary's wait
+//! ends the moment its view holds the lost primary unheard (`via-final-primary-lost`), never on the
+//! handoff bound: the section ends short and the Build ends `incomplete`, what ran standing (Q346).
+//! The caller resubmits the Build by its build_id (build.md §4). The fabric-primary deletes the lost
+//! primary by its node.delete and hands the mesh's section to the new mesh-primary, which runs only
+//! the deletes without a terminal event over the mesh's records (D67: the roster is the mesh's node
+//! records at each step, and a birth this Build's node.delete deleted keeps its `Deleted` record); the
+//! Build ends `complete` at mesh.deleted, the new mesh-primary alive. Its end is its own node.delete
+//! (mesh-delete.md step 7), after which mesh-left covers every birth of the mesh's records, both
+//! primary births included.
 //!
 //! This stem is form (a): a surviving admin of mesh2 the election names. Form (b), no admin of mesh2
-//! survives and the fabric-primary creates the one node-admin the leaving mesh may gain, is
+//! survives and the fabric-primary creates the one node-admin the deleting mesh may gain, is
 //! `mesh_lifecycle__mesh_delete_no_survivor`, over the shared run and assertions here. Form (c) is
 //! form (a) with a member's delete cut right after its exited verdict: the primary is killed holding
-//! rpc.1 at its NodeDeleted receipt, so the Build holds rpc.1's exact Exited (TerminateRuntime) and
-//! no NodeDeleted.
+//! rpc.1 at its `NodeDeleted` step event, so the Build holds rpc.1's `TerminateRuntime` event complete
+//! and no `NodeDeleted`.
 
 use rdm_test::estate::location;
 use crate::build_log;
@@ -52,19 +55,27 @@ pub(crate) fn start_ns(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
 
+fn end_ns(sp: &Value) -> u64 {
+    sp["end_unix_nano"].as_u64().unwrap_or(0)
+}
+
+fn now_ns() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
+}
+
 /// Where mesh2's primary holds rpc.1 when it is killed.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Rpc1 {
     /// Not held: rpc.1's delete runs on whatever the kill finds it at.
     Free,
-    /// Stopped (its stop-node answered), its process alive: held at its StopNode receipt, with no
-    /// Exited receipt and no NodeStopped published.
+    /// Stopped (its stop-node answered), its process alive: held at its `StopNode` step event, with
+    /// no `TerminateRuntime` event and no NodeStopped published.
     Stopped,
-    /// Exited and its exact Exited receipted (TerminateRuntime), the delete cut after NodeDeleted's
-    /// work and before NodeDeleted's receipt is durable: the Build holds the exited verdict and no
-    /// NodeDeleted, and none is published. The fault door's `Receipt` cut holds BEFORE the named
-    /// receipt is durable (`FaultedBuilds::append_step_receipt`), so the cut that leaves
-    /// TerminateRuntime durable is the next step's: NodeDeleted.
+    /// Exited, its `TerminateRuntime` step event complete, the delete cut after NodeDeleted's work and
+    /// before NodeDeleted's step event is durable: the Build holds the exited verdict and no
+    /// NodeDeleted, and none is published. The fault door's `receipt` cut holds BEFORE the named
+    /// step's event is durable (`FaultedBuilds::write_step`), so the cut that leaves TerminateRuntime
+    /// durable is the next step's: NodeDeleted.
     ExitProven,
 }
 
@@ -80,32 +91,43 @@ async fn build_now(estate: &Estate, id: &str) -> Value {
 
 /// What one form's run leaves to assert on.
 pub(crate) struct Run {
+    /// The Build as the first run left it, ended short by the loss.
+    pub(crate) first: Value,
+    /// The Build after the resubmit.
     pub(crate) build: Value,
+    /// The resubmit's stream's last frame.
+    pub(crate) resumed: String,
+    /// How many runs the Build started (`rdm.build.started`).
+    pub(crate) starts: usize,
+    /// When the cell resubmitted the Build.
+    pub(crate) resubmitted_ns: u64,
     pub(crate) spans: Vec<Value>,
     pub(crate) mesh2_id: String,
     /// The lost primary: its location, node id and incarnation.
     pub(crate) lost: (PathName, String, String),
     pub(crate) b: String,
-    /// mesh2's final primary after the amendment, alive after mesh.deleted until its node.delete,
-    /// and its node id.
+    /// mesh2's mesh-primary after the resubmit, alive after mesh.deleted until its node.delete, and
+    /// its node id.
     pub(crate) last: PathName,
     pub(crate) last_id: String,
-    /// The node id of every birth settled before the leave, by location.
+    /// The node id of every birth settled before the delete, by location.
     pub(crate) ids: BTreeMap<PathName, String>,
 }
 
 impl Run {
-    /// The node id settled at `at` before the leave.
+    /// The node id settled at `at` before the delete.
     pub(crate) fn id(&self, at: &PathName) -> String {
         self.ids.get(at).cloned().unwrap_or_else(|| panic!("no birth settled at {at:?}"))
     }
 }
 
-/// Build {mesh1, mesh2 with `mesh2_admins` admins}, arm mesh2's primary's door at rpc.2's StopNode
-/// receipt (and, by `rpc1`, at rpc.1's StopNode receipt: rpc.1 stopped, its process alive, no Exited
-/// receipt, and its NodeStopped not yet published; or at rpc.1's NodeDeleted receipt: rpc.1's exit
-/// proof receipted and no NodeDeleted), submit {mesh1}, kill the held primary by exact pid once every
-/// cut holds, and wait for the Build to complete on a later attempt.
+/// Build {mesh1, mesh2 with `mesh2_admins` admins}, arm mesh2's primary's door at the `StopNode` step
+/// event of rpc.2's node.delete (and, by `rpc1`, at rpc.1's `StopNode` event: rpc.1 stopped, its
+/// process alive, no `TerminateRuntime` event, and its NodeStopped not yet published; or at rpc.1's
+/// `NodeDeleted` event: rpc.1's exited verdict durable and no NodeDeleted), submit {mesh1}, kill the
+/// held primary by exact pid once every cut holds, wait for the Build to end `incomplete`, and, once
+/// a surviving admin is mesh2's primary (`mesh2_admins` > 1), resubmit it and follow it to its
+/// terminal.
 pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: Rpc1) -> Run {
     let sha = candidate_sha();
     // Every path is named its executable; the one node-admin the fabric-primary creates for a deleting
@@ -131,58 +153,72 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let door = Door::at(&estate, &lost.0).await;
 
     // Held in tier 1: rpc.2's stop answered `stopped` (its node.connection.delete { All } and its
-    // transport cut done, its process alive) and its StopNode receipt is not yet durable, so a resumed
-    // attempt sends its stop-node again and the stopped birth answers the same receipt; the other
-    // admin (form a) is still ready.
+    // transport cut done, its process alive) and its StopNode step event is not yet durable, so the
+    // resubmit's delete sends its stop-node again and the stopped birth answers the same.
     let cut = "leave:rpc2-StopNode";
     // A member's end is its node.delete, under node.delete's own operation (mesh-delete.md step 3).
     door.arm(cut, json!({"kind": "receipt", "step": "StopNode", "operation": "node.delete", "node": member("2")})).await;
     // rpc.1's stop completed (its stop-node answered stopped: its connections deleted, its transport
-    // cut, its process alive) and its workflow held at that receipt: its NodeStopped, published at the
-    // next step, is never published, and it has no Exited receipt. Nothing any admin holds names it.
+    // cut, its process alive) and its delete held at that step's event: its NodeStopped, published at
+    // the next step, is never published, and it has no TerminateRuntime event. Nothing any admin holds
+    // names it.
     let stopped = "leave:rpc1-StopNode";
     if rpc1 == Rpc1::Stopped {
         door.arm(stopped, json!({"kind": "receipt", "step": "StopNode", "operation": "node.delete", "node": member("1")})).await;
     }
-    // rpc.1's whole delete ran to its exited verdict: the runtime is terminated, the provider's exact
-    // Exited is receipted, and the executor is held in NodeDeleted before its receipt: the Build
-    // holds the exited verdict and no NodeDeleted receipt, and `NodeDeleted` is never published.
+    // rpc.1's whole delete ran to its exited verdict: the runtime is terminated and its TerminateRuntime
+    // event is complete, and the executor is held in NodeDeleted before its event: the Build holds the
+    // exited verdict and no NodeDeleted, and `NodeDeleted` is never published.
     let exit_proven = "leave:rpc1-NodeDeleted";
     if rpc1 == Rpc1::ExitProven {
         door.arm(exit_proven, json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete", "node": member("1")})).await;
     }
-    // The leave's stream is held to the end of the run: the Build is read as the admin the estate asks
-    // holds it, and the stream's attempt ends when the primary is lost.
     let leave = estate.submit(&BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] })).await;
-    let b = leave.build_id().to_string();
+    let build_id = leave.build_id().clone();
+    let b = build_id.to_string();
     let held = door.wait_held(cut).await;
-    assert_eq!(held["hit"]["build_id"], b.as_str(), "the held receipt is the leave's: {held}");
+    assert_eq!(held["hit"]["build_id"], b.as_str(), "the held step event is the delete's: {held}");
     if rpc1 == Rpc1::Stopped {
         let held = door.wait_held(stopped).await;
-        assert_eq!(held["hit"]["build_id"], b.as_str(), "the held receipt is the leave's: {held}");
+        assert_eq!(held["hit"]["build_id"], b.as_str(), "the held step event is the delete's: {held}");
     }
     if rpc1 == Rpc1::ExitProven {
         let held = door.wait_held(exit_proven).await;
-        assert_eq!((&held["hit"]["build_id"], &held["hit"]["step"], &held["hit"]["operation"]["action"], &held["hit"]["operation"]["subject"]), (&json!(b), &json!("NodeDeleted"), &json!("node.delete"), &member("1")), "the held receipt is rpc.1's NodeDeleted of the leave: {held}");
+        assert_eq!((&held["hit"]["build_id"], &held["hit"]["step"], &held["hit"]["operation"]["action"], &held["hit"]["operation"]["subject"]), (&json!(b), &json!("NodeDeleted"), &json!("node.delete"), &member("1")), "the held step event is rpc.1's NodeDeleted of the delete: {held}");
     }
     // The door dies with the process: it is never released.
     let pid = estate.pid_of(&lost.0).await;
     estate.kill_pid(u32::try_from(pid).unwrap());
+    drop(leave);
 
-    // Attempt 1 ends once the owner's view holds the primary proven exited; a later attempt
-    // completes. The bound is below the owner's 120 s hand-off bound: a resume that waited on it is
-    // red here. Nothing here panics before the estate is stopped: every process flushes its spans on
-    // exit, and a red run is read from them.
-    let deadline = std::time::Instant::now() + Duration::from_secs(90);
-    let mut build = Value::Null;
-    while std::time::Instant::now() < deadline {
-        build = build_now(&estate, &b).await;
-        if build["state"] == "complete" && build["attempt"].as_u64().unwrap_or(0) >= 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+    // The section ends short once the fabric-primary's view holds the primary unheard, and the Build
+    // ends `incomplete`. The bound is below the fabric-primary's 120 s handoff bound: a section that
+    // waited on it is red here. Nothing here panics before the estate is stopped: every process
+    // flushes its spans on exit, and a red run is read from them.
+    let first = match build_log::build_fact(&estate, &b, "the Build ended short of complete", Duration::from_secs(90), |p| p.state.ended_short()).await {
+        Ok(p) => serde_json::to_value(p).expect("a Build view serializes"),
+        Err(end) => json!({"read_ended": end.to_string()}),
+    };
+    // A surviving admin takes mesh2's primary role by its election before the resubmit hands it the
+    // mesh's section (mesh-delete.md resume step 2: "the surviving admin the election named").
+    let mut survivor_primary = mesh2_admins == 1;
+    let elect_by = std::time::Instant::now() + Duration::from_secs(60);
+    while !survivor_primary && std::time::Instant::now() < elect_by {
+        let nodes = estate.try_node_views().await.map(|v| Estate::values(&v)).unwrap_or_default();
+        survivor_primary = nodes.iter().any(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true && n["status"] == "ready" && s(&n["node_id"]) != lost.1);
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    // mesh.delete ends at mesh.deleted: the view settles on mesh1 and mesh2's new final primary,
+    let resubmitted_ns = now_ns();
+    let resumed = if first["state"] == "incomplete" && survivor_primary {
+        match tokio::time::timeout(Duration::from_secs(150), async { estate.follow_to_terminal(estate.resubmit(&build_id).await).await }).await {
+            Ok(done) => format!("{:?}", done.frames.last()),
+            Err(_) => "no terminal within 150 s".to_string(),
+        }
+    } else {
+        format!("not resubmitted: the first run ended {}, a surviving admin primary: {survivor_primary}", s(&first["state"]))
+    };
+    let mut build = build_now(&estate, &b).await;
+    // mesh.delete ends at mesh.deleted: the view settles on mesh1 and mesh2's new mesh-primary,
     // alive; its end is its own node.delete (mesh-delete.md step 7), then the view converges on
     // mesh1 alone within gossip delay of mesh-left.
     // Each view row as (mesh, the row named), read until mesh2 is gone.
@@ -190,11 +226,13 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let mut mesh2_gone = false;
     let mut last: Option<(PathName, String)> = None;
     let mut deleted = Value::Null;
+    let mut starts = 0;
     if build["state"] == "complete" {
+        starts = estate.starts_of_build(&b).await;
         let settle = std::time::Instant::now() + Duration::from_secs(60);
         while std::time::Instant::now() < settle && last.is_none() {
-            // The lost primary's exit is recorded, not published deleted: it may still be held
-            // unheard until mesh-left. The final primary is the one mesh2 birth that is alive.
+            // The lost primary's Deleted record may still be held unheard until mesh-left. The new
+            // mesh-primary is the one mesh2 birth that is alive.
             let nodes = estate.try_node_views().await.map(|v| Estate::values(&v)).unwrap_or_default();
             let mesh2: Vec<(PathName, String)> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["status"] == "ready").map(|n| (location(n), s(&n["node_id"]))).collect();
             let deleting: Vec<&Value> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node").collect();
@@ -239,72 +277,72 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
+        build = build_now(&estate, &b).await;
     }
-    let build = if build["state"] == "complete" { build_now(&estate, &b).await } else { build };
-    drop(leave);
     estate.stop().await;
     let spans = estate.spans();
-    assert!(build["state"] == "complete" && build["attempt"].as_u64().unwrap_or(0) >= 2, "build {b} completes on an attempt after the first within 90 s: {build}");
-    let (last, last_id) = last.unwrap_or_else(|| panic!("mesh.deleted leaves mesh2's final primary alive, the one mesh2 node the view holds after build {b}"));
-    assert_eq!(deleted["state"], "complete", "the node.delete of mesh2's final primary {last:?} completes: {deleted}");
+    assert_eq!(first["state"], "incomplete", "build {b}'s first run ends incomplete on the primary's loss within 90 s, never failed: {first}");
+    assert!(survivor_primary, "a surviving admin of mesh2 is its primary within 60 s of the loss");
+    assert_eq!(build["state"], "complete", "the resubmit of build {b} completes it ({resumed}): {build}");
+    assert_eq!(starts, 2, "the submission and the one resubmit each started a run of build {b}");
+    let (last, last_id) = last.unwrap_or_else(|| panic!("mesh.deleted leaves mesh2's new mesh-primary alive, the one mesh2 node the view holds after build {b}"));
+    assert_eq!(deleted["state"], "complete", "the node.delete of mesh2's new mesh-primary {last:?} completes: {deleted}");
     assert!(view.iter().all(|(mesh, _)| mesh == "mesh1"), "the view holds no mesh2 birth after mesh-left: {view:?}");
     assert!(mesh2_gone, "mesh2 is no longer a mesh of the fabric: mesh.get [name: mesh2] answers the empty list");
-    Run { build, spans, mesh2_id, lost, b, last, last_id, ids }
+    Run { first, build, resumed, starts, resubmitted_ns, spans, mesh2_id, lost, b, last, last_id, ids }
 }
 
-/// The receipts and spans both forms share: the lost primary's exit recorded before the
-/// amendment, one amendment admitting `next`, mesh.deleted's completion over every birth but `next`,
-/// and, after `next`'s own node.delete, a MeshLeft covering the accepted roster plus it.
+/// The events and spans every form shares (mesh-delete.md, "Resume after the primary's loss"): the
+/// first run ends on the loss; in the resubmit the lost primary is deleted by its node.delete before
+/// the mesh's section goes to `next`, the new mesh-primary, which runs the deletes without a terminal
+/// event over the mesh's records (`roster` births, both primaries included); mesh.deleted's
+/// manifest covers every birth but `next`, the lost primary's exit included; and, after `next`'s own
+/// node.delete, mesh-left covers all `roster`. Answers the mesh.deleted span.
 pub(crate) fn assert_resumed(run: &Run, next: &PathName, roster: usize) -> Value {
-    let Run { build, spans, lost, b, last, last_id, ids, .. } = run;
-    assert_eq!(last, next, "mesh2's final primary alive after mesh.deleted is the amended one");
-    // The leave's receipts and spans: the Build holds one mesh.delete, its spans name the action.
-    let outer = "mesh.delete";
-    let steps: Vec<Value> = build["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["operation"]["action"] == outer).collect();
-    let step = |name: &str| -> Vec<&Value> { steps.iter().filter(|r| r["step"] == name).collect() };
-    let amended = step("RosterAmended");
-    assert_eq!(amended.len(), 1, "one RosterAmended receipt under {outer}: {build}");
-    assert_eq!(amended[0]["output"]["predecessor"]["node"], json!(lost.0), "the amendment names the lost primary: {}", amended[0]);
-    assert_eq!(s(&amended[0]["output"]["predecessor"]["incarnation_id"]), lost.2, "the amendment names the lost primary's exact birth: {}", amended[0]);
-    assert_eq!(amended[0]["output"]["final_primary"]["node"], json!(next), "the amendment admits {next:?}: {}", amended[0]);
-    let completion = step("MeshDeleted");
-    assert_eq!(completion.len(), 1, "one MeshDeleted completion under {outer}: {build}");
-    assert_eq!(completion[0]["output"]["final_primary"]["node"], json!(next), "mesh.deleted names the amended final primary: {}", completion[0]);
-    let receipted = |r: &Value| rdm_test::estate::location(r);
-    let completed: BTreeSet<PathName> = completion[0]["output"]["receipts"].as_array().cloned().unwrap_or_default().iter().map(receipted).collect();
-    assert!(completed.contains(&lost.0) && !completed.contains(next), "mesh.deleted covers the lost primary and every other birth but the alive final primary {next:?}: {completed:?}");
-    assert_eq!(completion[0]["output"]["receipts"].as_array().map(Vec::len), Some(roster - 1), "{}", completion[0]);
-    let left = step("MeshLeft");
-    assert_eq!(left.len(), 1, "one MeshLeft receipt under {outer}, after {next:?}'s own node.delete: {build}");
-    assert_eq!(left[0]["outcome"], json!("complete"), "{}", left[0]);
-    let births: BTreeSet<PathName> = left[0]["output"]["receipts"].as_array().cloned().unwrap_or_default().iter().map(receipted).collect();
-    assert!(births.contains(&lost.0) && births.contains(next), "MeshLeft covers both primary births ({:?} and {next:?}): {births:?}", lost.0);
-    assert_eq!(left[0]["output"]["receipts"].as_array().map(Vec::len), Some(roster), "one exact Exited per birth of the accepted roster plus the amendment: {}", left[0]);
+    let Run { first, build, spans, lost, b, last, last_id, ids, mesh2_id, resubmitted_ns, .. } = run;
+    let resubmitted_ns = *resubmitted_ns;
+    assert_eq!(last, next, "mesh2's mesh-primary alive after mesh.deleted is {next:?}");
+    let outer = format!("mesh.delete:{mesh2_id}");
+    // The first run's step events stand, and the resubmit writes none of them again (build.md §1).
+    let events = |build: &Value, name: &str| -> Vec<Value> { build["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["operation"] == outer.as_str() && r["step"] == name).collect() };
+    assert_eq!(events(first, "AcceptedRoster").len(), 1, "the first run wrote the AcceptedRoster event of {outer}: {first}");
+    assert!(events(first, "MeshDeleted").is_empty(), "the first run wrote no MeshDeleted: {first}");
+    assert_eq!(events(build, "AcceptedRoster").len(), 1, "the resubmit writes no second AcceptedRoster event: {build}");
+    for name in ["MeshDeleted", "MeshLeft"] {
+        let e = events(build, name);
+        assert!(e.len() == 1 && e[0]["outcome"] == "complete", "one complete {name} event of {outer}: {build}");
+    }
+    let of_mesh2 = |name: &str| -> Vec<&Value> { named(spans, name).into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == *mesh2_id).collect() };
 
-    let one = |name: &str| -> Value {
-        let v: Vec<&Value> = named(spans, name).into_iter().filter(|sp| sp["attributes"]["operation"] == outer).collect();
-        assert!(!v.is_empty(), "a {name} span for {outer}");
-        v[0].clone()
-    };
-    // Attempt 1 ends on the lost primary's loss in the owner's view, never on the timer.
-    let ended = one("rdm.node_admin.mesh.update.via-final-primary-lost");
-    assert_eq!((s(&ended["attributes"]["final_primary"]), attr_u(&ended, "attempt")), (format!("{} {}", lost.1, lost.2), 1), "attempt 1 ends on the lost primary's loss: {ended}");
-    // The lost primary's roster receipt is its own node.delete's (mesh-delete.md "Resume after the
-    // primary's loss" step 1): the fabric-primary deletes the exact unreached birth under the leave's
-    // Build, its TerminateRuntime the receipt; no receipt of it is written outside node.delete.
+    // The first run ends on the lost primary's loss in the fabric-primary's view, never on the timer.
+    let ended = of_mesh2("rdm.node_admin.mesh.update.via-final-primary-lost");
+    assert!(ended.len() == 1 && s(&ended[0]["attributes"]["final_primary"]) == format!("{} {}", lost.1, lost.2) && start_ns(ended[0]) < resubmitted_ns, "the first run ends once, on the lost primary's loss, before the resubmit: {ended:?}");
+    // Resume step 2: the lost primary is deleted by its own node.delete under the Build in the
+    // resubmit, its TerminateRuntime once.
     let lost_terminate: Vec<&Value> = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &lost.0) && sp["attributes"]["step"] == "TerminateRuntime" && s(&sp["attributes"]["build_id"]) == *b && sp["attributes"]["outcome"] == "complete").collect();
     assert_eq!(lost_terminate.len(), 1, "the lost primary {:?}'s node.delete runs its TerminateRuntime once under {b}: {lost_terminate:?}", lost.0);
-    let recorded = lost_terminate[0];
-    assert!(start_ns(&ended) <= start_ns(recorded), "the wait ends on the loss before the resume deletes it");
-    let applied: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-roster-amended").into_iter().filter(|sp| sp["attributes"]["operation"] == outer && sp["attributes"]["outcome"] == "applied").collect();
-    assert_eq!(applied.len(), 1, "the amendment was applied once: {applied:?}");
-    assert!(start_ns(recorded) <= start_ns(applied[0]), "the lost primary is deleted before the amendment");
-    assert!(named(spans, "rdm.node_admin.mesh.update.via-predecessor-exit-recorded").is_empty(), "no exit receipt is recorded outside node.delete");
-    // NodeDeleted at most once per roster birth the leave deleted (node-delete.md step 4): by the
-    // executor of its node.delete, never again by a later primary that keeps its receipt (a killed
-    // executor's publication may never reach the export; a peer that never heard it keeps the birth
-    // until mesh-left); the final primary's is its own separate node.delete's.
-    for name in births.iter().filter(|n| *n != next) {
+    let terminated = lost_terminate[0];
+    assert!(start_ns(terminated) >= resubmitted_ns, "the lost primary is deleted in the resubmit: {terminated}");
+    // Resume step 3: the mesh's section then goes to the new mesh-primary, which runs only the deletes
+    // without a terminal event, over the mesh's records.
+    let resumed: Vec<&Value> = of_mesh2("rdm.node_admin.mesh.resolve.via-retained-receipts").into_iter().filter(|sp| start_ns(sp) >= resubmitted_ns).collect();
+    assert!(!resumed.is_empty() && resumed.iter().all(|sp| attr_u(sp, "roster") == roster as u64 && start_ns(sp) >= end_ns(terminated)), "the new mesh-primary runs the deletes over the mesh's {roster} records only after the lost primary's TerminateRuntime: {resumed:?}");
+    let recaptured: Vec<&Value> = of_mesh2("rdm.node_admin.mesh.resolve.via-accepted-roster").into_iter().filter(|sp| start_ns(sp) >= resubmitted_ns && sp["attributes"]["step"] == "AcceptedRoster").collect();
+    assert!(recaptured.iter().all(|sp| sp["attributes"]["source"] == "records-resumed" && attr_u(sp, "roster") == roster as u64), "the resubmit reads the roster from the mesh's records, its event already written: {recaptured:?}");
+    // Resume step 4: mesh.deleted, validated at the fabric-primary: its manifest covers the mesh's
+    // records, every birth but the alive new mesh-primary, the lost primary's exit included.
+    let completion = of_mesh2("rdm.node_admin.mesh.update.via-mesh-deleted-receipt");
+    assert_eq!(completion.len(), 1, "mesh.deleted is recorded once: {completion:?}");
+    let completion = completion[0];
+    assert_eq!((attr_u(completion, "receipts"), attr_u(completion, "roster"), s(&completion["attributes"]["final_primary_node_id"])), ((roster - 1) as u64, roster as u64, last_id.clone()), "mesh.deleted covers every birth of the records but the new mesh-primary {next:?}: {completion}");
+    // mesh-left, after the new mesh-primary's own node.delete: every birth, both primaries included.
+    let mesh_left = of_mesh2("rdm.node_admin.mesh.update.via-mesh-left-receipt");
+    assert!(mesh_left.len() == 1 && (attr_u(mesh_left[0], "receipts"), attr_u(mesh_left[0], "roster")) == (roster as u64, roster as u64), "mesh-left covers all {roster} births once: {mesh_left:?}");
+    // NodeDeleted at most once per birth the delete deleted (node-delete.md step 4): by the executor of
+    // its node.delete, never again by a later primary (a killed executor's publication may never reach
+    // the export; a peer that never heard it keeps the birth until mesh-left); the new mesh-primary's is
+    // its own separate node.delete's.
+    for name in ids.keys().filter(|n| n.path.starts_with("mesh2.") && *n != next) {
         let published: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| at_location(sp, name) && s(&sp["attributes"]["build_id"]) == *b).collect();
         assert!(published.len() <= 1, "{name:?}'s NodeDeleted is published by its node.delete's executor alone, never again by a later primary, under {b}: {published:?}");
     }
@@ -312,95 +350,81 @@ pub(crate) fn assert_resumed(run: &Run, next: &PathName, roster: usize) -> Value
     assert_eq!(lost_published.len(), 1, "the lost primary's NodeDeleted is published once, by the executor that writes its Deleted row: {lost_published:?}");
     // The lost primary's Deleted row has one writer (node-identity-and-state.md §4.3, R-OW1): the
     // fabric-primary, acting primary of mesh2 while it holds no primary; once mesh2's election names
-    // the survivor, the new mesh-primary, which runs on the delete from the fabric-primary's exact Exited
-    // receipt (mesh-delete.md "Resume after the primary's loss" steps 1 and 3). It is never refused.
+    // the survivor, the new mesh-primary, which runs the delete on from its TerminateRuntime event
+    // (mesh-delete.md "Resume after the primary's loss" steps 2 and 3). It is never refused.
     let lost_rows: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| names_location(sp, "subject", &lost.0)).collect();
     assert!(lost_rows.iter().all(|sp| sp["attributes"]["outcome"] == "row-deleted"), "the lost primary's Deleted row is written by its mesh's one writer and never refused: {lost_rows:?}");
     let handed: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-exit-for-writer").into_iter().filter(|sp| at_location(sp, &lost.0)).collect();
     let writer = if handed.is_empty() { Estate::path("mesh1.node-admin", "1") } else { next.clone() };
     assert!(lost_rows.len() == 1 && at_location(lost_rows[0], &writer), "the lost primary's Deleted row is written once, by {writer:?}: {lost_rows:?}");
-    assert!(s(&applied[0]["attributes"]["final_primary"]).starts_with(&format!("{last_id} ")), "{}", applied[0]);
-    assert!(attr_u(applied[0], "attempt") >= 2, "the amendment belongs to a resumed attempt: {}", applied[0]);
-    let mesh_left = one("rdm.node_admin.mesh.update.via-mesh-left-receipt");
-    assert_eq!((attr_u(&mesh_left, "receipts"), attr_u(&mesh_left, "roster")), (roster as u64, roster as u64), "{mesh_left}");
     // An exit inside the mesh.delete belongs to it (node-recovery.md "Failure and receipts"): the
-    // deleted mesh's final primary submits no recovery of a mesh2 birth, the lost primary included.
+    // deleted mesh's mesh-primary submits no recovery of a mesh2 birth, the lost primary included.
     let mesh2_ids: BTreeSet<String> = ids.iter().filter(|(at, _)| at.path.starts_with("mesh2.")).map(|(_, id)| id.clone()).chain([last_id.clone()]).collect();
-    let recoveries: Vec<String> = named(spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| mesh2_ids.contains(&s(&sp["attributes"]["submitter"]))).map(|sp| format!("{} by {}: {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["submitter"]), s(&sp["attributes"]["outcome"]))).collect();
-    assert!(recoveries.is_empty(), "no recovery of a mesh2 birth is submitted by mesh2's primary: {} submissions, first {:?}", recoveries.len(), recoveries.first());
-    // A desired change, not a recovery: no drift attempt replaces or restarts a mesh2 birth.
-    let drift: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| mesh2_ids.iter().any(|id| s(&sp["attributes"]["scope"]).contains(id.as_str())) && sp["attributes"]["action"] != "none").collect();
-    assert!(drift.is_empty(), "no drift attempt acts on a mesh2 birth while the leave resumes: {drift:?}");
-    assert!(named(spans, "rdm.node_admin.mesh.reject.via-second-amendment").is_empty());
-    eprintln!("{test} trace {} build {b}", s(&applied[0]["trace_id"]), test = "mesh_delete_resume");
-    applied[0].clone()
+    let recoveries: Vec<String> = named(spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| mesh2_ids.contains(&s(&sp["attributes"]["submitter"])) || mesh2_ids.contains(&s(&sp["attributes"]["node_id"]))).map(|sp| format!("{} by {}: {}", s(&sp["attributes"]["node_id"]), s(&sp["attributes"]["submitter"]), s(&sp["attributes"]["outcome"]))).collect();
+    assert!(recoveries.is_empty(), "no recovery of a mesh2 birth is submitted: {} submissions, first {:?}", recoveries.len(), recoveries.first());
+    eprintln!("{test} build {b}: mesh.deleted trace {}, the new mesh-primary's run trace {}", s(&completion["trace_id"]), s(&resumed[0]["trace_id"]), test = "mesh_delete_resume");
+    completion.clone()
 }
 
-/// CONTRACT: mesh2's primary, killed while it holds rpc.2's StopNode receipt, is replaced as the
-/// leave's final primary by the surviving admin the election names: the fabric-primary records
-/// the lost primary's exact Exited, then one RosterAmended naming the predecessor and the
-/// survivor, and the resumed attempt finishes; MeshLeft covers the four births of the accepted
-/// roster, which already holds the survivor, both primaries included.
+/// CONTRACT: mesh2's primary, killed while it holds rpc.2's StopNode step event, ends the first run
+/// incomplete. On the resubmit the fabric-primary deletes the lost primary by its node.delete and hands
+/// mesh2's section to the surviving admin the election named, which runs the deletes without a
+/// terminal event; the Build completes, and mesh-left covers the four births of mesh2's records, both
+/// primaries included. Must NOT happen: an admin created for mesh2, or the Build failed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_admin() {
     let run = primary_lost_mid_leave("a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_admin", 2, Rpc1::Free).await;
     let survivor = Estate::path("mesh2.node-admin", if run.lost.0.name == "1" { "2" } else { "1" });
     assert_resumed(&run, &survivor, 4);
-    // The survivor admits the leave from the accepted roster plus the amendment, from its own
-    // facts or the owner's, and runs only what has no terminal receipt.
-    let outer = "mesh.delete";
-    let resumed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-retained-receipts").into_iter().filter(|sp| sp["attributes"]["operation"] == outer && attr_u(sp, "attempt") >= 2).collect();
-    assert!(!resumed.is_empty(), "the survivor resumed the leave's tiers on a later attempt");
     assert!(named(&run.spans, "rdm.node_admin.node.create.via-leaving-mesh").is_empty(), "a surviving admin needs no created one");
 }
 
-/// CONTRACT: a member's delete is done only when every step of it has its receipt, and the resumed
-/// leave runs the steps that have none, in order (mesh-delete.md, "Resume after the primary's loss"
-/// step 3: the new mesh-primary "runs only the tiers without a terminal receipt"; node-delete.md
-/// step 4: the executor records the complete delete receipt and emits node.deleted; the Build
-/// carrier: "Completed steps are not rerun"). mesh2's primary is killed holding rpc.1 at its
-/// NodeDeleted receipt (rpc.1 exited and its exact Exited receipted, no NodeDeleted) and rpc.2 at
-/// its StopNode receipt. The surviving admin the election names finishes rpc.1's delete: its
-/// receipted TerminateRuntime is reused (the runtime is not terminated again), NodeDeleted is
-/// executed and published, and the delete ends; the leave then finishes as in form (a): mesh2 holds
-/// no ordinary node in any view once mesh.deleted ends the mesh.delete, and MeshLeft covers the four
-/// births of the accepted roster. A peer that never hears NodeDeleted keeps the stopped birth until
+/// CONTRACT: a member's delete is done only when every step of it has its event, and the resubmitted
+/// delete runs the steps that have none, in order (mesh-delete.md, "Resume after the primary's loss"
+/// step 3: the new mesh-primary "runs only the tiers without a terminal event"; node-delete.md step 4;
+/// build.md §1: a step whose event ended `complete` is never run again). mesh2's primary is killed
+/// holding rpc.1 at its NodeDeleted step event (rpc.1 exited, its TerminateRuntime event complete, no
+/// NodeDeleted) and rpc.2 at its StopNode event. On the resubmit the surviving admin the election names
+/// finishes rpc.1's delete: its TerminateRuntime is reused (the runtime is not terminated again),
+/// NodeDeleted is executed and published, and the delete ends; the delete then finishes as in form (a):
+/// mesh2 holds no ordinary node in any view once mesh.deleted ends the mesh.delete, and mesh-left covers
+/// the four births of mesh2's records. A peer that never hears NodeDeleted keeps the stopped birth until
 /// mesh-left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leave_whose_primary_is_lost_after_a_members_terminate_runtime_receipt_finishes_that_members_delete_under_the_surviving_admin() {
     let run = primary_lost_mid_leave("a_leave_whose_primary_is_lost_after_a_members_terminate_runtime_receipt_finishes_that_members_delete_under_the_surviving_admin", 2, Rpc1::ExitProven).await;
     let survivor = Estate::path("mesh2.node-admin", if run.lost.0.name == "1" { "2" } else { "1" });
-    let eprint_trace = assert_resumed(&run, &survivor, 4);
-    let outer = "mesh.delete";
+    let completion = assert_resumed(&run, &survivor, 4);
     let rpc1 = Estate::path("mesh2.node", "1");
     let rpc1_id = run.id(&rpc1);
-    // The survivor's resumed attempt runs the two ordinary members: rpc.1 holds an exited verdict and is
-    // still owed its delete. The lost primary's delete is finished when the fabric-primary wrote its row
-    // (mesh2 held no primary), else owed from its exact Exited to the survivor, mesh2's one writer.
-    let resumed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-retained-receipts").into_iter().filter(|sp| sp["attributes"]["operation"] == outer && attr_u(sp, "attempt") >= 2).collect();
+    // The survivor's run in the resubmit runs the two ordinary members: rpc.1 holds an exited verdict
+    // and is still owed its delete. The lost primary's delete is finished when the fabric-primary wrote
+    // its row (mesh2 held no primary), else owed from its TerminateRuntime event to the survivor, mesh2's
+    // one writer.
+    let resumed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-retained-receipts").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == run.mesh2_id && start_ns(sp) >= run.resubmitted_ns).collect();
     let handed = !named(&run.spans, "rdm.node_admin.node.delete.via-exit-for-writer").into_iter().filter(|sp| at_location(sp, &run.lost.0)).collect::<Vec<_>>().is_empty();
-    // The receipts name births by node id.
+    // The spans name births by node id.
     let (retained, owed, remaining) = if handed { (String::new(), format!("{},{rpc1_id}", run.lost.1), 3) } else { (run.lost.1.clone(), rpc1_id.clone(), 2) };
     assert!(
         resumed.iter().any(|sp| attr_u(sp, "roster") == 4 && s(&sp["attributes"]["retained_births"]) == retained && attr_u(sp, "remaining") == remaining && s(&sp["attributes"]["delete_owed"]).split(',').collect::<BTreeSet<_>>() == owed.split(',').collect::<BTreeSet<_>>()),
-        "the resumed attempt names rpc.1 as holding an exited verdict and owed the rest of its delete (the lost primary's delete {}): {resumed:?}",
+        "the resubmit's run names rpc.1 as holding an exited verdict and owed the rest of its delete (the lost primary's delete {}): {resumed:?}",
         if handed { "owed to the survivor" } else { "finished" }
     );
-    // rpc.1's delete in the resumed attempt: its receipted TerminateRuntime is reused, never run
-    // again; its NodeDeleted is executed once.
+    // rpc.1's delete in the resubmit: its TerminateRuntime, whose event ended complete, is reused, never
+    // run again; its NodeDeleted is executed once.
     let steps = |step: &str| -> Vec<&Value> {
-        named(&run.spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &rpc1) && s(&sp["attributes"]["step"]) == step && s(&sp["attributes"]["build_id"]) == run.b && attr_u(sp, "attempt") >= 2).collect()
+        named(&run.spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &rpc1) && s(&sp["attributes"]["step"]) == step && s(&sp["attributes"]["build_id"]) == run.b && start_ns(sp) >= run.resubmitted_ns).collect()
     };
     let terminate = steps("TerminateRuntime");
-    assert!(!terminate.is_empty() && terminate.iter().all(|sp| sp["attributes"]["outcome"] == "reused"), "the resumed attempt reuses rpc.1's receipted TerminateRuntime and terminates nothing: {terminate:?}");
+    assert!(!terminate.is_empty() && terminate.iter().all(|sp| sp["attributes"]["outcome"] == "reused"), "the resubmit reuses rpc.1's TerminateRuntime and terminates nothing: {terminate:?}");
     let deleted = steps("NodeDeleted");
-    assert_eq!(deleted.len(), 1, "the resumed attempt executes rpc.1's NodeDeleted once: {deleted:?}");
+    assert_eq!(deleted.len(), 1, "the resubmit executes rpc.1's NodeDeleted once: {deleted:?}");
     assert_eq!(deleted[0]["attributes"]["outcome"], json!("complete"), "{}", deleted[0]);
-    // NodeDeleted is published, from the same pipeline run, and heard by a peer.
+    // NodeDeleted is published, from the same delete, and heard by a peer.
     let published: Vec<&Value> = named(&run.spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| at_location(sp, &rpc1) && s(&sp["attributes"]["build_id"]) == run.b).collect();
     assert_eq!(published.len(), 1, "rpc.1's NodeDeleted is published once, by the executor that finished its delete: {published:?}");
-    assert_eq!(s(&published[0]["trace_id"]), s(&deleted[0]["trace_id"]), "the publication belongs to the resumed delete's own trace");
+    assert_eq!(s(&published[0]["trace_id"]), s(&deleted[0]["trace_id"]), "the publication belongs to the resubmitted delete's own trace");
     let heard: Vec<&Value> = named(&run.spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| at_location(sp, &rpc1) || s(&sp["attributes"]["node_id"]) == rpc1_id).collect();
     assert!(!heard.is_empty(), "a peer applies rpc.1's NodeDeleted");
-    eprintln!("trace {} rpc.1 TerminateRuntime reused, NodeDeleted complete + published; amendment trace {}", s(&deleted[0]["trace_id"]), s(&eprint_trace["trace_id"]));
+    eprintln!("trace {} rpc.1 TerminateRuntime reused, NodeDeleted complete + published; mesh.deleted trace {}", s(&deleted[0]["trace_id"]), s(&completion["trace_id"]));
 }
