@@ -283,9 +283,11 @@ struct Executor {
     template: LaunchTemplate,
     joins: Arc<Joins>,
     rows: Rows,
+    /// The Build state this executor writes its step events through, as its own birth.
+    builds: rdm_admin::build_run::FramedBuilds,
 }
 
-fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
+fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str, store: &Arc<MemoryBuildStateAdapter>, fabric_id: &FabricId) -> Executor {
     let joins = Arc::new(Joins::default());
     fleet.executors.lock().unwrap().insert(key.to_string(), joins.clone());
     let launcher = rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
@@ -300,8 +302,13 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
         meshes: vec![rdm_admin::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: rdm_admin::model::ScopeStatus::Ready }],
         nodes: vec![admin.clone()],
     }));
+    let builds_store = store;
     let store: Arc<dyn rdm_admin::storage::NodesStorage> = fleet.store.clone();
     let rows = Rows(Arc::new(rdm_admin::node_rows::NodeRows::new(admin.location(), admin.node_id.clone(), view, store)));
+    let inner: Arc<dyn BuildStateAdapter> = builds_store.clone();
+    let mut events = rdm_admin::events_storage::EventsWriter::on(inner.events(), fabric_id, &launcher.node_id);
+    events.source.incarnation = launcher.incarnation.clone();
+    let builds = rdm_admin::build_run::FramedBuilds::new(inner, Arc::new(rdm_admin::build_run::SectionRuns::default())).writing_steps(events, "mesh1");
     Executor {
         template: LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
@@ -319,18 +326,19 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
         },
         joins,
         rows,
+        builds,
     }
 }
 
 impl Executor {
-    fn pipeline<'a>(&'a self, fleet: &'a Fleet, builds: &'a dyn BuildStateAdapter) -> DeploymentPipeline<'a> {
+    fn pipeline<'a>(&'a self, fleet: &'a Fleet) -> DeploymentPipeline<'a> {
         DeploymentPipeline {
             provider: fleet,
             joins: &self.joins,
             observer: fleet,
             sink: &self.rows,
             lifecycle: &NoLifecycleEvents,
-            builds,
+            builds: &self.builds,
             template: &self.template,
             timeouts: Timeouts::default(),
         }
@@ -356,9 +364,9 @@ fn request(build_id: &BuildId, node: &PathName) -> CreateRequest {
 }
 
 /// A run by `lost`, killed at `dies`.
-async fn lost_run(fleet: &Fleet, lost: &Executor, builds: &dyn BuildStateAdapter, build_id: &BuildId, node: &PathName, dies: Dies) {
+async fn lost_run(fleet: &Fleet, lost: &Executor, build_id: &BuildId, node: &PathName, dies: Dies) {
     *fleet.dies.lock().unwrap() = dies;
-    let pipeline = lost.pipeline(fleet, builds);
+    let pipeline = lost.pipeline(fleet);
     let req = request(build_id, node);
     tokio::select! {
         r = pipeline.create(&req) => panic!("the lost executor was to die mid-run, but finished: {:?}", r.map(|c| c.node.name)),
@@ -387,16 +395,18 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
     let data_root = std::env::temp_dir().join(format!("i143-2892-{}", NodeId::mint()));
     let result = cap.run(async {
         let fleet = Fleet::new();
-        let builds = rdm_admin::build_run::FramedBuilds::stepping(std::sync::Arc::new(MemoryBuildStateAdapter::new()), &FabricId::mint(), &NodeId::mint(), "mesh1");
-        let lost = executor(&fleet, &data_root, "lostadminkey");
-        let successor = executor(&fleet, &data_root, "successoradminkey");
+        let fabric_id = FabricId::mint();
+        let store = Arc::new(MemoryBuildStateAdapter::new());
+        let builds = rdm_admin::build_run::FramedBuilds::stepping(store.clone(), &fabric_id, &NodeId::mint(), "mesh1");
+        let lost = executor(&fleet, &data_root, "lostadminkey", &store, &fabric_id);
+        let successor = executor(&fleet, &data_root, "successoradminkey", &store, &fabric_id);
 
         // CONTROL: the same executor re-runs its own cut-short run: its birth is handed on.
         let own = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let build_own = accepted_build(&builds).await;
-        lost_run(&fleet, &lost, &builds, &build_own, &own, Dies::BeforeJoin).await;
+        lost_run(&fleet, &lost, &build_own, &own, Dies::BeforeJoin).await;
         let own_birth = fleet.spawns().last().cloned().expect("the lost run launched the birth");
-        let again = lost.pipeline(&fleet, &builds).create(&request(&build_own, &own)).await.unwrap_or_else(|e| panic!("control re-run: {e}"));
+        let again = lost.pipeline(&fleet).create(&request(&build_own, &own)).await.unwrap_or_else(|e| panic!("control re-run: {e}"));
         assert_eq!(fleet.spawns().len(), 1, "the executor's own re-run launches no second runtime");
         assert_eq!(again.node.node_id, own_birth.node_id, "the executor's own re-run keeps its decided identity");
         assert!(fleet.terminated.lock().unwrap().is_empty(), "nothing of the executor's own is stopped");
@@ -404,10 +414,10 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         // CONTROL: a birth that JOINED under the lost executor is handed on by the successor.
         let joined = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         let build_joined = accepted_build(&builds).await;
-        lost_run(&fleet, &lost, &builds, &build_joined, &joined, Dies::AfterJoin).await;
+        lost_run(&fleet, &lost, &build_joined, &joined, Dies::AfterJoin).await;
         let spawns_before = fleet.spawns().len();
         let joined_birth = fleet.spawns().last().cloned().unwrap();
-        let kept = successor.pipeline(&fleet, &builds).create(&request(&build_joined, &joined)).await.unwrap_or_else(|e| panic!("joined re-run: {e}"));
+        let kept = successor.pipeline(&fleet).create(&request(&build_joined, &joined)).await.unwrap_or_else(|e| panic!("joined re-run: {e}"));
         assert_eq!(fleet.spawns().len(), spawns_before, "a birth that joined is not launched again");
         assert_eq!(kept.node.node_id, joined_birth.node_id);
         assert!(fleet.running(joined_birth.pid), "a birth that joined keeps running");
@@ -415,11 +425,11 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         // THE FINDING: the lost executor's launch never joined; its seed is the lost endpoint.
         let stranded = rdm_core::PathName::new("mesh1.node", "3").unwrap();
         let build_stranded = accepted_build(&builds).await;
-        lost_run(&fleet, &lost, &builds, &build_stranded, &stranded, Dies::BeforeJoin).await;
+        lost_run(&fleet, &lost, &build_stranded, &stranded, Dies::BeforeJoin).await;
         let dead = fleet.spawns().last().cloned().unwrap();
         assert!(dead.seeds.contains("lostadminkey"), "the lost run seeded its birth with the lost admin: {}", dead.seeds);
         let spawns_before = fleet.spawns().len();
-        let redone = successor.pipeline(&fleet, &builds).create(&request(&build_stranded, &stranded)).await.unwrap_or_else(|e| panic!("successor re-run: {e}"));
+        let redone = successor.pipeline(&fleet).create(&request(&build_stranded, &stranded)).await.unwrap_or_else(|e| panic!("successor re-run: {e}"));
         let spawns = fleet.spawns();
         assert_eq!(spawns.len(), spawns_before + 1, "the successor launches the birth afresh");
         let fresh = spawns.last().unwrap();

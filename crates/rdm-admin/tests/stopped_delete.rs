@@ -305,7 +305,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         .unwrap();
     let _guard = tracing::dispatcher::set_default(&dispatch);
 
-    rt.block_on(async {
+    let (first_build, resumed) = rt.block_on(async {
         let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let builds = crate::stepping(&rdm_core::NodeId::mint(), "mesh1");
         let build_id = BuildId::mint();
@@ -493,6 +493,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
             vec![rdm_core::OperationId::node("node.stop", &node.node_id)],
             "NodeStopped must be published exactly once upon completion"
         );
+        (build_id.log().to_string(), resumed_build.log().to_string())
     });
     drop(rt);
 
@@ -514,26 +515,26 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
     assert!(
         step_spans.iter().any(|s| {
             s.get("step").map(String::as_str) == Some(DeleteStep::AwaitNodeLeft.name())
-                && s.get("attempt").map(String::as_str) == Some("1")
+                && s.get("build_id") == Some(&first_build)
                 && s.get("outcome").map(String::as_str) == Some("failed")
         }),
-        "expected failed AwaitNodeLeft span on attempt 1: {step_spans:?}"
+        "expected failed AwaitNodeLeft span of case 1's Build: {step_spans:?}"
     );
     assert!(
         step_spans.iter().any(|s| {
             s.get("step").map(String::as_str) == Some(DeleteStep::StopNode.name())
-                && s.get("attempt").map(String::as_str) == Some("5")
+                && s.get("build_id") == Some(&resumed)
                 && s.get("outcome").map(String::as_str) == Some("reused")
         }),
-        "expected reused StopNode span on attempt 5: {step_spans:?}"
+        "expected reused StopNode span of the resumed Build: {step_spans:?}"
     );
     assert!(
         step_spans.iter().any(|s| {
             s.get("step").map(String::as_str) == Some(DeleteStep::Complete.name())
-                && s.get("attempt").map(String::as_str) == Some("5")
+                && s.get("build_id") == Some(&resumed)
                 && s.get("outcome").map(String::as_str) == Some("complete")
         }),
-        "expected complete Complete span on attempt 5: {step_spans:?}"
+        "expected complete Complete span of the resumed Build: {step_spans:?}"
     );
     crate::assert_own_story(spans.iter().map(|s| s.name.as_ref()));
 }

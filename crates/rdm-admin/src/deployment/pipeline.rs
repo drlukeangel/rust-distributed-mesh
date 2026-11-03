@@ -1102,6 +1102,9 @@ enum StopAnswer {
     Answered(CommandAdmission),
     /// The birth's node record declares it Stopped: it answered an earlier stop-node `Stopped`.
     DeclaredStopped,
+    /// `AwaitNodeLeft`'s event ended complete as well: no later step reads the answer, and it claims
+    /// no admission.
+    LeftRecorded,
 }
 
 impl StopAnswer {
@@ -1110,6 +1113,7 @@ impl StopAnswer {
         match self {
             Self::Answered(a) => a.admitted(),
             Self::DeclaredStopped => true,
+            Self::LeftRecorded => false,
         }
     }
 }
@@ -2615,6 +2619,8 @@ impl DeploymentPipeline<'_> {
         // never sent again.
         if run.is_done(steps[0]) && self.declared(node, rdm_core::status::NodeState::Stopped).await {
             run.given(steps[0], &StopAnswer::DeclaredStopped);
+        } else if run.is_done(steps[0]) && run.is_done(steps[1]) {
+            run.given(steps[0], &StopAnswer::LeftRecorded);
         }
         let admission: StopAnswer = self
             .step(run, steps[0], async {
