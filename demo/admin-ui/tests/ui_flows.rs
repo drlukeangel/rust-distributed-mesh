@@ -33,7 +33,7 @@ fn stubs(dir: &std::path::Path) -> std::collections::BTreeMap<String, std::path:
     let stub = dir.join("stub-node");
     std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-    [("node-admin", stub.clone()), ("gateway", stub.clone()), ("broker", stub)].into_iter().collect()
+    [("node-admin", stub.clone()), ("gateway", stub.clone()), ("broker", stub)].into_iter().map(|(t, p)| (t.to_string(), p)).collect()
 }
 
 /// A Day-0 node-admin in this process, and the UI's typed client entered at its birth once its view names
@@ -261,7 +261,7 @@ impl ConsumerEstate {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        let executables = [("node-admin", bin.join("rshape-node-admin")), ("gateway", bin.join("rshape-gateway"))].into_iter().collect();
+        let executables = [("node-admin", bin.join("rshape-node-admin")), ("gateway", bin.join("rshape-gateway"))].into_iter().map(|(t, p): (&str, _)| (t.to_string(), p)).collect();
         let admin = Arc::new(Admin::at(&birth).await.expect("the admin's birth").with_executables(executables));
         let until = std::time::Instant::now() + Duration::from_secs(60);
         let day0 = loop {
