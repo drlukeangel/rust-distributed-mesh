@@ -71,6 +71,9 @@ pub trait Gate: Send + Sync {
     async fn primaries_updated(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId) -> Result<(), String> {
         Ok(())
     }
+    /// The Build's `rdm.build.started` is written: the fabric's change, which names the accepted Build
+    /// once it runs, decides again now.
+    async fn build_started(&self, _build_id: &BuildId) {}
     /// The Build completed.
     async fn build_completed(&self, _build_id: &BuildId) {}
     /// The Build failed.
@@ -978,6 +981,7 @@ impl DriveEnv {
                 if let Err(cause) = self.notices.started(&me, &id, &crate::build::current_context()).await {
                     return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: the rdm.build.started event of Build {id} could not be written: {cause}", me_path = &me.path, me_name = &me.name));
                 }
+                self.gate.build_started(&id).await;
                 // A new run: no section of it has ended yet.
                 drive.unfinished.lock().unwrap().clear();
                 continue;

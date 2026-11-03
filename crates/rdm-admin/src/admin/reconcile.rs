@@ -17,6 +17,8 @@ pub(crate) struct RoleGate {
     pub(crate) project: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>,
     /// The Mesh records (mesh.storage on the fabric's shared root): which meshes are deleted, for the plan.
     pub(crate) meshes: Arc<dyn crate::storage::MeshStorage>,
+    /// The fabric's change, told when a Build starts: it names the accepted Build once it runs.
+    pub(crate) fabric_states: Arc<std::sync::OnceLock<Arc<crate::fabric_status::FabricStates>>>,
 }
 
 #[async_trait::async_trait]
@@ -108,6 +110,14 @@ impl crate::build_drive::Gate for RoleGate {
             (self.project)().await;
         }
         Ok(deleted)
+    }
+
+    /// A pending fabric's change waits on the accepted Build's start (`build-not-started`): its next
+    /// turn is due at once, never a gossip interval later (states.md: a status change is sent at once).
+    async fn build_started(&self, _build_id: &crate::build::BuildId) {
+        if let Some(states) = self.fabric_states.get() {
+            states.poke_change();
+        }
     }
 
     fn fabric_ready(&self) -> bool {

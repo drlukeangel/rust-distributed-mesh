@@ -1783,7 +1783,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     builds: builds_dyn.clone(),
                                     birth: rdm_core::framing::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() },
                                     dispatcher: Arc::new(crate::build_op::RpcDispatcher { me_path: name.path.clone(), me_name: name.name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone(), send: rdm_transport::Send::default() }),
-                                    gate: Arc::new(RoleGate { builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone(), meshes: mesh_storage.clone() }),
+                                    gate: Arc::new(RoleGate { builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone(), meshes: mesh_storage.clone(), fabric_states: states_slot.clone() }),
                                     notices: build_notices.clone(),
                                     turns: stop_gate.clone(),
                                 });
