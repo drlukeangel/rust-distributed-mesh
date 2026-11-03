@@ -2767,12 +2767,12 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let recovered_by = (killed_at + Duration::from_millis(floor_ms * 7 / 2)).max(Instant::now() + Duration::from_secs(30));
     let recovered = a.stable_by(&mut f, "R3: the dead mesh-primary's path.name is re-created", &both(2), &mut inv, recovered_by).await;
     assert_eq!(s(&recovered.fabric["build_id"]), b0, "R3: recovery accepted no Build: the fabric names the formation Build");
-    let reborn = recovered.admins.iter().find(|n| location(n) == victim_name).cloned().unwrap_or_else(|| panic!("R3: {victim_name:?} stands again"));
-    assert_ne!(reborn["node_id"], victim["node_id"], "R3: node recovery re-creates the path under a new node.id (node-recovery.md, Lineage)");
+    let recreated = recovered.admins.iter().find(|n| location(n) == victim_name).cloned().unwrap_or_else(|| panic!("R3: {victim_name:?} stands again"));
+    assert_ne!(recreated["node_id"], victim["node_id"], "R3: node recovery re-creates the path under a new node.id (node-recovery.md, Lineage)");
     let investigated: Vec<Value> = crate::build_log::node_investigated(&f.estate, &victim_birth.0).into_iter().filter(|e| e["data"]["incarnation"] == victim_birth.1.as_str()).collect();
     assert!(investigated.iter().any(|e| e["data"]["next"] == "recreate"), "R3: the dead birth's investigation is one rdm.node.investigated event naming recreate (node-investigation.md): {investigated:?}");
-    a.events.push(json!({"event": "mesh-primary.death", "scenario": "R3", "victim": victim_name, "victim_node_id": victim_birth.0, "victim_incarnation_id": victim_birth.1, "survivor": survivor["name"], "survivor_node_id": survivor["node_id"], "reborn_node_id": reborn["node_id"], "investigated": investigated, "kill": kill}));
-    trail.push(json!({"after": "R3", "fabric_build_id": recovered.fabric["build_id"], "reborn_node_id": reborn["node_id"]}));
+    a.events.push(json!({"event": "mesh-primary.death", "scenario": "R3", "victim": victim_name, "victim_node_id": victim_birth.0, "victim_incarnation_id": victim_birth.1, "survivor": survivor["name"], "survivor_node_id": survivor["node_id"], "recreated_node_id": recreated["node_id"], "investigated": investigated, "kill": kill}));
+    trail.push(json!({"after": "R3", "fabric_build_id": recovered.fabric["build_id"], "recreated_node_id": recreated["node_id"]}));
     let proof = prove_path(&mut f, &mut a, &both(2), "R3 after the mesh-primary's death", &mut inv).await;
 
     // Final state, reads for the ledger, the stop.
@@ -2815,7 +2815,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
         "recovery kept the accepted Build: two restarts by node commands and the dead mesh-primary's re-create by node recovery accepted no Build, the fabric named the formation Build throughout, and the re-create was node recovery's under a new node.id",
         true,
         json!({
-            "build_id": b0, "victim": victim_name, "victim_node_id": victim_birth.0, "reborn_node_id": reborn["node_id"],
+            "build_id": b0, "victim": victim_name, "victim_node_id": victim_birth.0, "recreated_node_id": recreated["node_id"],
             "recovery_creates": recovery_creates.iter().map(|c| json!({"span_id": c["span_id"], "trace_id": c["trace_id"], "created_node_id": c["attributes"]["created_node_id"]})).collect::<Vec<_>>(),
         }),
     );
