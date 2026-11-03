@@ -48,17 +48,17 @@ async fn main() -> Result<()> {
         Some(m) => m,
         None => all
             .iter()
-            .find(|n| n.mesh != birth.mesh && n.kind == "node-admin" && n.status == NodeStatus::Ready)
+            .find(|n| n.mesh != birth.mesh && n.r#type == "node-admin" && n.status == NodeStatus::Ready)
             .map(|n| n.mesh.clone())
             .ok_or_else(|| anyhow!("no Ready peer mesh found in estate"))?,
     };
     let primary = all
         .iter()
-        .find(|n| n.mesh == peer_mesh && n.kind == "node-admin" && n.is_primary)
+        .find(|n| n.mesh == peer_mesh && n.r#type == "node-admin" && n.is_primary)
         .ok_or_else(|| anyhow!("no mesh-primary in {peer_mesh}"))?;
     let replica = all
         .iter()
-        .find(|n| n.mesh == peer_mesh && n.kind == "node-admin" && !n.is_primary)
+        .find(|n| n.mesh == peer_mesh && n.r#type == "node-admin" && !n.is_primary)
         .ok_or_else(|| anyhow!("no secondary node-admin in {peer_mesh}"))?;
 
     let admin_dir = Path::new(fp_row.data_dir.as_deref().ok_or_else(|| anyhow!("no admin data_dir"))?);

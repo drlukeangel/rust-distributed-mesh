@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     }
     let spec = nodes.iter_mut().find(|s| s.path == node).ok_or_else(|| anyhow!("the current Build names no path {path:?}, name {name:?}"))?;
     let image = spec.executable.as_ref().and_then(|b| b.image.clone());
-    spec.executable = Some(Binding { launch_id: spec.kind.name().into(), executable: executable.clone(), sha256, image });
+    spec.executable = Some(Binding { launch_id: spec.r#type.clone(), executable: executable.clone(), sha256, image });
 
     let stream = match carrier.create(Change::Reconcile { based_on, nodes}).await {
         Ok(s) => s,

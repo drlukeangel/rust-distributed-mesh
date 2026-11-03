@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
     let admin_row = all.iter().find(|n| n.name == birth.name).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", birth.name.path, birth.name.name))?;
     let member = all
         .iter()
-        .find(|n| n.kind != "node-admin" && n.status == NodeStatus::Ready)
+        .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
         .ok_or_else(|| anyhow!("no Ready role member in estate"))?;
     let admin_dir = Path::new(admin_row.data_dir.as_deref().ok_or_else(|| anyhow!("no admin data_dir"))?);
 
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
             endpoint_key: rdm_core::EndpointId(ep),
         })
         .map_err(|e| anyhow!("{e}"))?;
-    let caller = Birth { mesh: member.mesh.clone(), kind: member.kind, name: member.name.clone(), node_id: member.node_id.clone(), incarnation: inc };
+    let caller = Birth { mesh: member.mesh.clone(), r#type: member.r#type.clone(), name: member.name.clone(), node_id: member.node_id.clone(), incarnation: inc };
     let admitter = CertAdmitter::new(RootSet::new(vec![root_pub]), time.clone());
     let (expires_at, clock) = admitter.verify(&caller, b"demo/echo", &issue.bytes).map_err(|e| anyhow!(e))?;
     let empty_err = admitter.verify(&caller, b"demo/echo", &[]).unwrap_err();
@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let _ = root.runner.joins.expect(rdm_admin::join::Deployed {
-        mesh: launch.mesh.clone(), kind: launch.kind,
+        mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
         listeners: Vec::new(), name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(),
         supersedes: None, endpoint_id: rdm_core::EndpointId(key.public().to_string()), runtime: fact,
         data_dir: gw_dir.display().to_string(), last_accepted_name: None, held: false,
@@ -153,7 +153,7 @@ async fn main() -> Result<()> {
     while root.node_rpc.resolver.resolve(&NodeTarget::ExactNode(gw_node.node_id.clone())).is_err() {
         tokio::task::yield_now().await;
     }
-    let to = Birth { mesh: gw_node.mesh.clone(), kind: gw_node.kind, name: gw_node.name.clone(), node_id: gw_node.node_id.clone(), incarnation: gw_node.incarnation.clone() };
+    let to = Birth { mesh: gw_node.mesh.clone(), r#type: gw_node.r#type.clone(), name: gw_node.name.clone(), node_id: gw_node.node_id.clone(), incarnation: gw_node.incarnation.clone() };
     let (conn, srv) = tokio::try_join!(
         async { tokio::time::timeout(BOUND, dialer.open(&to)).await?.map_err(|e| anyhow!("{e}")) },
         async { tokio::time::timeout(BOUND, acceptor.accept()).await?.ok_or_else(|| anyhow!("no accept")) }

@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage: data_dir_lost_recovery [<path> <name>]")),
         _ => rows
             .iter()
-            .find(|n| n.kind != "node-admin" && !n.is_primary && n.status == NodeStatus::Ready)
+            .find(|n| n.r#type != "node-admin" && !n.is_primary && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no ready secondary role node in the estate"))?
             .clone(),
     };

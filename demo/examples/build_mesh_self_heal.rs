@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage: build_mesh_self_heal [<path> <name>]")),
         _ => all
             .into_iter()
-            .find(|n| n.mesh != birth.mesh && n.kind != "node-admin" && n.status == NodeStatus::Ready)
+            .find(|n| n.mesh != birth.mesh && n.r#type != "node-admin" && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no Ready role node in peer mesh"))?,
     };
     let mesh = target.mesh.clone();

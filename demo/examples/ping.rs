@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage ping [<path> <name>]")),
         _ => all
             .iter()
-            .find(|n| n.kind != "node-admin" && n.status == NodeStatus::Ready)
+            .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
             .map(|n| n.name.clone())
             .ok_or_else(|| anyhow!("no Ready role node found in estate"))?,
     };

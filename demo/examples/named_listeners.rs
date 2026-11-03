@@ -59,10 +59,10 @@ async fn gateway() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let launched_as = std::env::var(rdm_core::launch::ENV_NODE_TYPE).ok().and_then(|k| NodeKind::ALL.into_iter().find(|kind| kind.name() == k));
-    match launched_as {
+    let launched_as = std::env::var(rdm_core::launch::ENV_NODE_TYPE).ok();
+    match launched_as.as_deref() {
         Some("gateway") => gateway().await,
-        Some(kind) if kind != "node-admin" => Err(anyhow!("{}: this example runs node-admins and gateways only", kind.name())),
+        Some(r#type) if !rdm_core::is_node_admin(r#type) => Err(anyhow!("{}: this example runs node-admins and gateways only", r#type)),
         _ => {
             rdm_admin::entry::run_with(SERVICE, |cfg| Wiring {
                 listeners: listeners(),

@@ -562,7 +562,7 @@ pub struct Caller {
 #[async_trait::async_trait]
 impl OnNodeReady for Caller {
     async fn on_node_ready(&self, ctx: &NodeReadyCtx) {
-        if ctx.birth.kind != CALLING_TYPE {
+        if ctx.birth.r#type != CALLING_TYPE {
             return;
         }
         // The calls are the application's own task, ended by the birth's stop, and outside the

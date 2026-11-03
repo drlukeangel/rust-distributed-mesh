@@ -16,7 +16,7 @@ use rdm_client::{
     Filter, MeshDesired, MeshNode, NodeStatus, NodeView, Nodes, Peers, ProviderKind,
 };
 use rdm_core::binding::{sha256_file, Binding};
-use rdm_core::meta::{NodeSpec, PersistentDisposition, PlacementMeta, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -78,20 +78,20 @@ impl Admin {
             }
             let executable = match row.executable {
                 Some(b) => b,
-                None => self.binding(row.kind, &current.image)?,
+                None => self.binding(row.r#type, &current.image)?,
             };
             // The node's own tags and config, as its row holds them: the Build applies every property of
             // the spec that differs from the row (build.md §1), so the request names what the row holds.
-            let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(row.name.clone(), &row.mesh, row.kind, executable) };
+            let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(row.name.clone(), &row.mesh, row.r#type, executable) };
             current.paths.insert(row.name, spec);
         }
         Ok(current)
     }
 
-    /// The binding a created node of `kind` runs: the consumer's executable of the kind, hashed once,
-    /// in `image`. A kind with no executable is refused `executable-missing` before anything is sent.
+    /// The binding a created node of `type` runs: the consumer's executable of the type, hashed once,
+    /// in `image`. A type with no executable is refused `executable-missing` before anything is sent.
     fn binding(&self, r#type: &str, image: &Option<String>) -> Result<Binding, CallEnd> {
-        let executable = self.executables.get(&kind).cloned().ok_or_else(|| missing(format!("the UI has no `{}` executable: a {} path cannot be named (named: {:?})", kind.name(), kind.name(), self.executables.keys().map(|k| k.name()).collect::<Vec<_>>())))?;
+        let executable = self.executables.get(r#type).cloned().ok_or_else(|| missing(format!("the UI has no `{}` executable: a {} path cannot be named (named: {:?})", r#type, r#type, self.executables.keys().collect::<Vec<_>>())))?;
         static HASHED: OnceLock<Mutex<BTreeMap<PathBuf, String>>> = OnceLock::new();
         let known = HASHED.get_or_init(Default::default).lock().unwrap().get(&executable).cloned();
         let sha256 = match known {
@@ -106,22 +106,23 @@ impl Admin {
     }
 
     /// The complete topology with each of `meshes` resized to its counts; a mesh it leaves out is left
-    /// out (its mesh.delete) when `whole`, kept otherwise. A path's mesh and kind are its spec's.
+    /// out (its mesh.delete) when `whole`, kept otherwise. A path's mesh and type are its spec's.
     fn resized(&self, current: &Current, meshes: &[MeshDesired], whole: bool) -> Result<Vec<NodeSpec>, CallEnd> {
         let mut paths = current.paths.clone();
         if whole {
             paths.retain(|_, s| meshes.iter().any(|m| m.name == s.mesh));
         }
         for m in meshes {
-            for (kind, want) in [("node-admin", m.node_admin), ("broker", m.broker), ("gateway", m.gateway), ("compute", m.compute)] {
-                let mut have: Vec<PathName> = paths.values().filter(|s| s.mesh == m.name && s.kind == kind).map(|s| s.path.clone()).collect();
+            for r#type in ["node-admin", "broker", "gateway", "compute"] {
+                let want = m.count(r#type);
+                let mut have: Vec<PathName> = paths.values().filter(|s| s.mesh == m.name && s.r#type == r#type).map(|s| s.path.clone()).collect();
                 have.sort();
                 let keep = current.primaries.iter().find(|p| have.contains(p)).cloned();
                 while (have.len() as u32) < want {
-                    let path = (1..).map(|ordinal| PathName::numbered(&m.name, kind, ordinal)).find(|p| !paths.contains_key(p)).expect("a free generated pair");
+                    let path = (1..).map(|ordinal| PathName::numbered(&m.name, r#type, ordinal)).find(|p| !paths.contains_key(p)).expect("a free generated pair");
                     have.push(path.clone());
                     have.sort();
-                    paths.insert(path.clone(), spec(path, &m.name, kind, self.binding(kind, &current.image)?));
+                    paths.insert(path.clone(), spec(path, &m.name, r#type, self.binding(r#type, &current.image)?));
                 }
                 while (have.len() as u32) > want {
                     let drop = have.iter().rev().find(|p| Some(*p) != keep.as_ref()).or_else(|| have.last()).expect("a member to drop").clone();
@@ -135,7 +136,7 @@ impl Admin {
 
     /// The counts `current` holds of `mesh`.
     fn counts_of(current: &Current, mesh: &str) -> MeshDesired {
-        let of = |r#type: &str| current.paths.values().filter(|s| s.mesh == mesh && s.kind == kind).count() as u32;
+        let of = |r#type: &str| current.paths.values().filter(|s| s.mesh == mesh && s.r#type == r#type).count() as u32;
         MeshDesired::of(mesh, [("node-admin", of("node-admin")), ("broker", of("broker")), ("gateway", of("gateway")), ("compute", of("compute"))])
     }
 
@@ -182,7 +183,7 @@ impl Admin {
     pub async fn put_own_config(&self, key: &str, value: &str) -> Result<rdm_core::status::StatusReply, String> {
         let rows = self.rows().await.map_err(|e| format!("node.get: {e:?}"))?;
         let own = rows.iter().find(|n| n.name == self.entry && n.incarnation_id.is_some()).ok_or_else(|| format!("no row holds path {:?}, name {:?}", self.entry.path, self.entry.name))?;
-        let primary = rows.iter().find(|n| n.kind == "node-admin" && n.is_fabric_primary).ok_or_else(|| "no row names the fabric-primary".to_string())?;
+        let primary = rows.iter().find(|n| n.r#type == "node-admin" && n.is_fabric_primary).ok_or_else(|| "no row names the fabric-primary".to_string())?;
         let mut config = own.config.clone();
         config.insert(key.to_string(), value.to_string());
         let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(own.node_id.clone()), node_id: own.node_id.clone(), incarnation: own.incarnation_id.clone().expect("checked above") };
@@ -273,7 +274,7 @@ impl Admin {
         let sha256 = sha256_file(&executable).map_err(|e| missing(format!("{} could not be hashed: {e}", executable.display())))?;
         let image = current.image.clone();
         let spec = current.paths.get_mut(node).ok_or_else(|| CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("the fabric holds no live node at path {:?}, name {:?}", node.path, node.name) })?;
-        spec.executable = Some(Binding { launch_id: spec.kind.name().into(), executable, sha256, image });
+        spec.executable = Some(Binding { launch_id: spec.r#type.clone(), executable, sha256, image });
         let nodes = current.paths.into_values().collect();
         let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
@@ -302,13 +303,13 @@ struct Current {
     image: Option<String>,
 }
 
-/// The create spec of `path` in `mesh`, of `kind`, on `executable`: its storage by kind, written out
-/// (node-admins and brokers keep theirs; gateways, compute and rpc nodes are ephemeral), no placement,
-/// no tags, no config.
+/// The create spec of `path` in `mesh`, of `type`, on `executable`: its storage the demo's type's,
+/// written out (node-admins and brokers keep theirs; gateways and compute are ephemeral), no tags, no
+/// config.
 fn spec(path: PathName, mesh: &str, r#type: &str, executable: Binding) -> NodeSpec {
-    let storage_persistence = match kind {
-        "node-admin" | "broker" => StorageMeta::Persistent { disposition: PersistentDisposition::Preserve },
-        "gateway" | "compute" | "node" => StorageMeta::Ephemeral,
+    let storage_persistence = match r#type {
+        "node-admin" | "broker" => StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve },
+        _ => StoragePersistence::Ephemeral,
     };
-    NodeSpec { path, mesh: mesh.into(), kind, storage_persistence, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default(), config: Default::default() }
+    NodeSpec { path, mesh: mesh.into(), r#type: r#type.to_string(), storage_persistence, executable: Some(executable), tags: Default::default(), config: Default::default() }
 }

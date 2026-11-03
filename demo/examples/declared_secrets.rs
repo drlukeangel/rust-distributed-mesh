@@ -33,18 +33,18 @@ fn declared() -> Vec<DeclaredSecret> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // The kind the launch names (`RDM_NODE_KIND`, written by the launching admin), never read from the
+    // The type the launch names (`RDM_NODE_TYPE`, written by the launching admin), never read from the
     // node's `(path, name)`; the bootstrap admin is given none.
     let launched_as = std::env::var(ENV_NODE_TYPE).ok();
     let (path, name) = (std::env::var(ENV_NODE_PATH).unwrap_or_default(), std::env::var(ENV_NODE_NAME).unwrap_or_default());
     match launched_as.as_deref() {
-        Some(kind) if kind == "broker" => {
+        Some("broker") => {
             // The broker's own read of its secret. Its value is the application's: log only that it is held.
             let held = std::env::var(TOKEN).map_err(|_| anyhow!("path {path:?}, name {name:?} was launched without {TOKEN}"))?;
             eprintln!("path {path:?}, name {name:?}: {TOKEN} held ({} bytes)", held.len());
             rdm_node::run(rdm_node::Role { r#type: "broker".into() }, &[]).await
         }
-        Some(kind) if kind != "node-admin" => Err(anyhow!("path {path:?}, name {name:?}: this example runs node-admins and brokers only")),
+        Some(r#type) if !rdm_core::is_node_admin(r#type) => Err(anyhow!("path {path:?}, name {name:?}: this example runs node-admins and brokers only")),
         _ => {
             rdm_admin::entry::run_with(SERVICE, |cfg| Wiring {
                 declared: declared(),

@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
         _ => rows
             .iter()
             .find(|n| {
-                n.kind != "node-admin"
+                n.r#type != "node-admin"
                     && !n.is_primary
                     && n.status == NodeStatus::Ready
             })

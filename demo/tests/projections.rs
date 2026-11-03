@@ -150,7 +150,7 @@ async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
-    let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind, listeners: Vec::new(),
+    let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), listeners: Vec::new(),
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),

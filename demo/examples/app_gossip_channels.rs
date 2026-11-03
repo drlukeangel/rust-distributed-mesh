@@ -96,7 +96,7 @@ fn main() -> Result<()> {
         };
         let _ = root.runner.joins.expect(rdm_admin::join::Deployed {
             mesh: launch.mesh.clone(),
-            kind: launch.kind,
+            r#type: launch.r#type.clone(),
             listeners: Vec::new(),
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),

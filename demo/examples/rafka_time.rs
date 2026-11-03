@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
 
     let member = all
         .iter()
-        .find(|n| n.kind != "node-admin" && n.status == NodeStatus::Ready)
+        .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
         .ok_or_else(|| anyhow!("no Ready role member in estate"))?;
     let member_read = read_topology(
         carrier.client(),

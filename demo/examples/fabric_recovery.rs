@@ -52,8 +52,8 @@ async fn main() -> Result<()> {
     let fp = rows.iter().find(|n| n.is_fabric_primary).ok_or_else(|| anyhow!("no row names the fabric-primary"))?.clone();
     let executor = rows
         .iter()
-        .find(|n| n.kind == "node-admin" && n.mesh == fp.mesh && n.node_id != fp.node_id && n.status == NodeStatus::Ready)
-        .or_else(|| rows.iter().find(|n| n.kind == "node-admin" && n.mesh != fp.mesh && n.is_primary && n.status == NodeStatus::Ready))
+        .find(|n| n.r#type == "node-admin" && n.mesh == fp.mesh && n.node_id != fp.node_id && n.status == NodeStatus::Ready)
+        .or_else(|| rows.iter().find(|n| n.r#type == "node-admin" && n.mesh != fp.mesh && n.is_primary && n.status == NodeStatus::Ready))
         .ok_or_else(|| anyhow!("no surviving ready node-admin to run fabric recovery"))?
         .clone();
 
