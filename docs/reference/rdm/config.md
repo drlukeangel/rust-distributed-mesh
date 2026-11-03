@@ -36,7 +36,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (67 names)
 | `RDM_CA_SECRET` | `crates/rdm-admin/src/certs.rs` | 35 | const `ENV_CA_SECRET` | `ENV_CA_SECRET` |
 | `RDM_CA_SECRET` | `crates/rdm-admin/src/certs.rs` | 87 | fn `CertChoice::from_material` | `ENV_CA_SECRET`, argument to `get` |
 | `RDM_CA_SECRET` | `crates/rdm-admin/src/certs.rs` | 88 | fn `CertChoice::from_material` | `ENV_CA_SECRET`, argument to `present` |
-| `RDM_CA_SECRET` | `crates/rdm-admin/src/deployment/pipeline.rs` | 851 | fn `LaunchTemplate::scrub` | `ENV_CA_SECRET`, argument to `.extend` |
+| `RDM_CA_SECRET` | `crates/rdm-admin/src/deployment/pipeline.rs` | 850 | fn `LaunchTemplate::scrub` | `ENV_CA_SECRET`, argument to `.extend` |
 | `RDM_CA_SECRET` | `crates/rdm-core/src/launch.rs` | 72 | const `ENV_CA_SECRET` | literal |
 | `RDM_CA_SECRET` | `crates/rdm-core/src/launch.rs` | 94 | const `RDM_SECRETS` | `ENV_CA_SECRET` |
 | `RDM_CA_SECRET` | `crates/rdm-core/src/launch.rs` | 363 | fn `decode_issuing` | `ENV_CA_SECRET`, argument to `decode_hex` |
@@ -106,7 +106,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (67 names)
 | `RDM_FABRIC` | `crates/rdm-test/src/estate.rs` | 752 | fn `Estate::born` | in `vec!` |
 | `RDM_FABRIC` | `crates/rdm-transport/src/transport_diag.rs` | 93 | fn `header` | argument to `env` |
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-admin/src/certs.rs` | 87 | fn `CertChoice::from_material` | `ENV_FABRIC_CA_KEY`, argument to `get` |
-| `RDM_FABRIC_CA_KEY` | `crates/rdm-admin/src/deployment/pipeline.rs` | 851 | fn `LaunchTemplate::scrub` | `ENV_FABRIC_CA_KEY`, argument to `.extend` |
+| `RDM_FABRIC_CA_KEY` | `crates/rdm-admin/src/deployment/pipeline.rs` | 850 | fn `LaunchTemplate::scrub` | `ENV_FABRIC_CA_KEY`, argument to `.extend` |
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-core/src/launch.rs` | 82 | const `ENV_FABRIC_CA_KEY` | literal |
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-core/src/launch.rs` | 94 | const `RDM_SECRETS` | `ENV_FABRIC_CA_KEY` |
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-core/src/launch.rs` | 367 | fn `decode_issuing` | `ENV_FABRIC_CA_KEY`, argument to `decode_hex` |
@@ -138,7 +138,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (67 names)
 | `RDM_INCARNATION_ID` | `crates/rdm-core/src/launch.rs` | 442 | fn `Launch::to_env` | `ENV_INCARNATION`, argument to `.insert` |
 | `RDM_INCARNATION_ID` | `crates/rdm-core/src/launch.rs` | 498 | fn `Launch::from_env` | `ENV_INCARNATION`, argument to `req` |
 | `RDM_INCARNATION_ID` | `crates/rdm-transport/src/transport_diag.rs` | 96 | fn `header` | argument to `env` |
-| `RDM_INHERITED_DATA_DIR` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1933 | fn `DeploymentPipeline<'_>::create_to_ready_written_body` | argument to `.insert` |
+| `RDM_INHERITED_DATA_DIR` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1932 | fn `DeploymentPipeline<'_>::create_to_ready_written_body` | argument to `.insert` |
 | `RDM_INHERITED_DATA_DIR` | `crates/rdm-node/src/workflows/node_start.rs` | 347 | fn `node_start` | argument to `std::env::var` |
 | `RDM_ISSUING_CERT` | `crates/rdm-admin/src/certs.rs` | 87 | fn `CertChoice::from_material` | `ENV_ISSUING_CERT`, argument to `get` |
 | `RDM_ISSUING_CERT` | `crates/rdm-core/src/launch.rs` | 68 | const `ENV_ISSUING_CERT` | literal |
@@ -149,7 +149,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (67 names)
 | `RDM_ISSUING_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 434 | const `ENV_ISSUING_CERT_TTL_SECS` | literal |
 | `RDM_ISSUING_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 487 | fn `CertPolicy::from_env` | `ENV_ISSUING_CERT_TTL_SECS`, argument to `secs` |
 | `RDM_ISSUING_KEY` | `crates/rdm-admin/src/certs.rs` | 87 | fn `CertChoice::from_material` | `ENV_ISSUING_KEY`, argument to `get` |
-| `RDM_ISSUING_KEY` | `crates/rdm-admin/src/deployment/pipeline.rs` | 851 | fn `LaunchTemplate::scrub` | `ENV_ISSUING_KEY`, argument to `.extend` |
+| `RDM_ISSUING_KEY` | `crates/rdm-admin/src/deployment/pipeline.rs` | 850 | fn `LaunchTemplate::scrub` | `ENV_ISSUING_KEY`, argument to `.extend` |
 | `RDM_ISSUING_KEY` | `crates/rdm-core/src/launch.rs` | 66 | const `ENV_ISSUING_KEY` | literal |
 | `RDM_ISSUING_KEY` | `crates/rdm-core/src/launch.rs` | 94 | const `RDM_SECRETS` | `ENV_ISSUING_KEY` |
 | `RDM_ISSUING_KEY` | `crates/rdm-core/src/launch.rs` | 358 | fn `decode_issuing` | `ENV_ISSUING_KEY`, argument to `decode_hex` |
@@ -176,7 +176,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (67 names)
 | `RDM_MESH_ID` | `crates/rdm-admin/src/admin/runner.rs` | 357 | fn `AdminRunner::template_launching` | `ENV_MESH_ID`, argument to `.insert` |
 | `RDM_MESH_ID` | `crates/rdm-admin/src/admin/session.rs` | 43 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, argument to `.push` |
 | `RDM_MESH_ID` | `crates/rdm-admin/src/admin/session.rs` | 57 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, in `format!` |
-| `RDM_MESH_ID` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1918 | fn `DeploymentPipeline<'_>::create_to_ready_written_body` | `ENV_MESH_ID`, argument to `.get` |
+| `RDM_MESH_ID` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1917 | fn `DeploymentPipeline<'_>::create_to_ready_written_body` | `ENV_MESH_ID`, argument to `.get` |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 63 | const `ENV_MESH_ID` | literal |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 456 | fn `Launch::to_env` | `ENV_MESH_ID`, argument to `.insert` |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 507 | fn `Launch::from_env` | `ENV_MESH_ID`, argument to `get` |
@@ -268,7 +268,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (67 names)
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/admin/boot.rs` | 1653 | fn `start_booted` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.insert` |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/admin/records.rs` | 204 | fn `AdminConfig::from_env` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `get` |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/admin/runner.rs` | 347 | fn `AdminRunner::template_launching` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.insert` |
-| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1903 | fn `DeploymentPipeline<'_>::create_to_ready_written_body` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.get` |
+| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1902 | fn `DeploymentPipeline<'_>::create_to_ready_written_body` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.get` |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/storage_backend.rs` | 260 | fn `TopologyStorageProviders::named` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, in `format!` |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-core/src/launch.rs` | 55 | const `ENV_TOPOLOGY_STORAGE_PROVIDER` | literal |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-core/src/launch.rs` | 454 | fn `Launch::to_env` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.insert` |
