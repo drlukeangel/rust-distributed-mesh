@@ -33,7 +33,7 @@ pub struct Admin {
 fn executables_in(dir: &std::path::Path) -> BTreeMap<String, PathBuf> {
     [("node-admin", "rshape-node-admin"), ("gateway", "rshape-gateway"), ("compute", "rshape-compute"), ("broker", "rshape-broker")]
         .into_iter()
-        .map(|(kind, name)| (kind, dir.join(name)))
+        .map(|(r#type, name)| (r#type.to_string(), dir.join(name)))
         .filter(|(_, path)| path.is_file())
         .collect()
 }
@@ -78,11 +78,11 @@ impl Admin {
             }
             let executable = match row.executable {
                 Some(b) => b,
-                None => self.binding(row.r#type, &current.image)?,
+                None => self.binding(&row.r#type, &current.image)?,
             };
             // The node's own tags and config, as its row holds them: the Build applies every property of
             // the spec that differs from the row (build.md §1), so the request names what the row holds.
-            let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(row.name.clone(), &row.mesh, row.r#type, executable) };
+            let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(row.name.clone(), &row.mesh, &row.r#type, executable) };
             current.paths.insert(row.name, spec);
         }
         Ok(current)
@@ -102,7 +102,7 @@ impl Admin {
                 sha
             }
         };
-        Ok(Binding { launch_id: kind.name().into(), executable, sha256, image: image.clone() })
+        Ok(Binding { launch_id: r#type.to_string(), executable, sha256, image: image.clone() })
     }
 
     /// The complete topology with each of `meshes` resized to its counts; a mesh it leaves out is left
