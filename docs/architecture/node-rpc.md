@@ -1010,7 +1010,7 @@ Every call carries one `Send` (§34). Send immediately. Without an ack, resend t
 with the same delivery id: the next attempt at the publish cadence, then doubling with jitter, capped
 at the staleness floor; one attempt in flight per message. The receiver suppresses duplicate delivery ids, including duplicates received while the
 original invocation is executing. Before recoverable acceptance, duplicates remain pending without an
-ack. After that boundary, duplicates are acked again without invoking the handler again. Resending stops on the ack, on the receiver's re-creation or accepted removal, on explicit
+ack. After that boundary, duplicates are acked again without invoking the handler again. Sending again stops on the ack, on the receiver's re-creation or accepted removal, on explicit
 cancellation by the owning workflow, or when the attempts are spent: the call then ends to its owner
 by name (`NotSent` when no attempt crossed the commit cut, `Indeterminate` otherwise), the calling
 node's `on_call_failed` is told ([hooks](fabric-node-hooks.md#on_call_failed)), and the birth is
