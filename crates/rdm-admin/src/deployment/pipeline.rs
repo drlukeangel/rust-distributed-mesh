@@ -1432,8 +1432,8 @@ impl DeploymentPipeline<'_> {
             }
         };
         // The receipt is the step's durable commit: a step whose receipt the Build state does not
-        // write to the executor's own log (a fact with no wire shape, a targeted role, a failed local
-        // write) is not complete, and the run stops at it by name. A failed broadcast after the
+        // write to the executor's own log (a targeted role, a failed local write) is not complete,
+        // and the run stops at it by name. A failed broadcast after the
         // local write is not a refusal: the Build state names it and the step is committed.
         let Some(run_build) = run.build_id else {
             // A run that belongs to no Build writes no receipt: its step is recorded on the node record.

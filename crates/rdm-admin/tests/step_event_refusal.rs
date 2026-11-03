@@ -1,7 +1,7 @@
 //! i143.e12.s33 functional: a step whose step event the Build state refuses is not complete. The
 //! step event is the step's durable commit (node-recovery.md "Failure and receipts": durable step
 //! outcomes are `Complete` or `Failed { step, reason }`), and a step event that is not written to the
-//! executor's own log (a fact with no wire shape, a targeted role, a failed local write) fails the
+//! executor's own log (a targeted role, a failed local write) fails the
 //! step by name: its span, and the pipeline's error naming the step and the refusal. Nothing after
 //! it runs. A Build
 //! the run cannot read at its start fails the run by name before any step (CLAUDE.md: "never written"
@@ -71,8 +71,8 @@ impl TopologySink for Discard {
     fn remove_birth(&self, _: &PathName, _: &NodeId, _: &IncarnationId) {}
 }
 
-/// The Build state, refusing the step event of one step: as the fabric's adapter refuses a fact with no
-/// wire shape (`local: false`), or as a local log whose write fails (`local: true`). Every other step
+/// The Build state, refusing the step event of one step: as a Build state that refuses it
+/// (`local: false`), or as a local log whose write fails (`local: true`). Every other step
 /// is written as its event.
 struct Refuses {
     inner: std::sync::Arc<MemoryBuildStateAdapter>,
@@ -127,7 +127,7 @@ impl BuildStateAdapter for Refuses {
     }
     async fn write_step(&self, step: &rdm_admin::build_state::StepWrite) -> Result<(), BuildStateError> {
         if step.step == self.step {
-            return Err(BuildStateError::Io(if self.local { format!("the {} event of {}: this cell's disk refuses it", step.step, step.operation) } else { format!("the {} event of {} has no wire shape: this cell refuses it", step.step, step.operation) }));
+            return Err(BuildStateError::Io(if self.local { format!("the {} event of {}: this cell's disk refuses it", step.step, step.operation) } else { format!("the {} event of {}: this cell refuses it", step.step, step.operation) }));
         }
         self.steps.write_step(step).await
     }
@@ -145,7 +145,7 @@ impl Refuses {
 
 /// CONTRACT (node-recovery.md "Failure and receipts"; CLAUDE.md "an error state carries every
 /// non-leaking detail"): a standalone node.connection.delete whose `DeleteConnections` step event the Build state refuses (here
-/// as a fact with no wire shape) fails at `DeleteConnections`, the error naming the step and the refusal,
+/// as a Build state that refuses it) fails at `DeleteConnections`, the error naming the step and the refusal,
 /// under a `rdm.node_admin.deployment.reject.via-step-event-refused` span naming the Build,
 /// operation, step and refusal. Must NOT happen: the refusal swallowed and the run going on to
 /// `Complete` as if the step were committed.
@@ -191,7 +191,7 @@ async fn a_step_whose_step_event_is_refused_fails_by_name_and_the_run_stops() {
         Ok(()) => panic!("the DeleteConnections step event was refused and the node.connection.delete still reported complete: the refusal was swallowed"),
     };
     assert_eq!(err.step, "DeleteConnections", "the step whose step event was refused: {err:?}");
-    assert!(err.reason.contains("has no wire shape: this cell refuses it"), "the refusal is named in the error: {err:?}");
+    assert!(err.reason.contains("this cell refuses it"), "the refusal is named in the error: {err:?}");
     let steps: Vec<String> = builds.inner.read_build(&build_id).await.unwrap().steps.iter().map(|s| s.step.clone()).collect();
     assert!(steps.is_empty(), "nothing after the refused step ran: {steps:?}");
 
@@ -202,7 +202,7 @@ async fn a_step_whose_step_event_is_refused_fails_by_name_and_the_run_stops() {
     assert_eq!(attrs.get("step").map(String::as_str), Some("DeleteConnections"), "{attrs:?}");
     assert_eq!(attrs.get("operation").map(String::as_str), Some("node.connection.delete"), "{attrs:?}");
     assert_eq!(attrs.get("build_id"), Some(&build_id.log().to_string()), "{attrs:?}");
-    assert!(attrs.get("detail").is_some_and(|d| d.contains("has no wire shape")), "{attrs:?}");
+    assert!(attrs.get("detail").is_some_and(|d| d.contains("this cell refuses it")), "{attrs:?}");
     eprintln!("span rdm.node_admin.deployment.reject.via-step-event-refused trace_id={} {attrs:?}", spans[0].span_context.trace_id());
 }
 
