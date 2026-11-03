@@ -249,7 +249,7 @@ fn resolved(views: &[NodeView]) -> Result<Vec<ResolvedNode>, String> {
     for n in views {
         let endpoint_id = match n.endpoint_id.as_deref() {
             None => None,
-            Some(v) => Some(v.parse::<iroh::PublicKey>().map_err(|e| format!("view node {} ({:?}): endpoint_id {v:?} does not parse: {e}", n.node_id, n.name))?),
+            Some(v) => Some(v.parse::<iroh::PublicKey>().map_err(|e| format!("view node {} (path {:?}, name {:?}): endpoint_id {v:?} does not parse: {e}", n.node_id, n.path, n.name))?),
         };
         match (endpoint_id, n.transport_addr, n.incarnation_id.clone()) {
             (Some(endpoint_id), Some(transport_addr), Some(incarnation)) => out.push(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id, transport_addr, incarnation }),
@@ -300,7 +300,8 @@ fn reply(r: &TestkitStoreReply) -> Value {
     if let Some(at) = r.provenance() {
         let o = v.as_object_mut().unwrap();
         o.insert("executing_node".into(), json!(at.node_id));
-        o.insert("node".into(), json!(at.location()));
+        o.insert("path".into(), json!(at.path));
+        o.insert("name".into(), json!(at.name));
         o.insert("mesh".into(), json!(at.mesh));
         o.insert("incarnation_id".into(), json!(at.incarnation_id));
         o.insert("op".into(), json!(at.op.as_str()));
@@ -758,7 +759,7 @@ mod tests {
     fn view_node_with_unparseable_endpoint_refuses_naming_node_field_value_and_error() {
         let bad = view(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", Some("not-an-endpoint-id"), Some("127.0.0.1:9"), Some(IncarnationId::mint()));
         let err = resolved(&[born(PathName::new("mesh1.node", "1").unwrap()), bad.clone()]).unwrap_err();
-        for part in [bad.node_id.to_string(), "path: \"mesh1.node\"".into(), "name: \"2\"".into(), "endpoint_id".into(), "\"not-an-endpoint-id\"".into(), "does not parse: ".into()] {
+        for part in [bad.node_id.to_string(), "path \"mesh1.node\"".into(), "name \"2\"".into(), "endpoint_id".into(), "\"not-an-endpoint-id\"".into(), "does not parse: ".into()] {
             assert!(err.contains(&part), "the refusal names {part:?}: {err}");
         }
     }
