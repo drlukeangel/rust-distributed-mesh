@@ -11,21 +11,23 @@ declarations. Its mesh-primary writes its status and its role flags (`is_primary
 and no revision. A node that has not written yet has no properties yet.
 
 **How a node is found.** A path and a name are two separate values, and neither encodes the node's
-type. A `(path, name)` resolves through its name claim to a node id, and the reader reads that node's
-record. A read by node id reads that node's record directly, whether or not the view still holds the
-node, so a deleted node answers Deleted. The path is fixed for a node's life, and only its name
-changes, by [node.name.update](../../architecture/lifecycles/node-name-update.md); a new executable is a
-new node, a Build that adds it ([build-deployment.md §3](../../architecture/build-deployment.md)).
+type. A `(path, name)` lookup resolves the pair to a node id from the node records, and the reader
+reads that node's record. A read by node id reads that node's record directly, whether or not the
+view still holds the node, so a deleted node answers Deleted. The path is fixed for a node's life,
+and only its name changes, by [node.name.update](../../architecture/lifecycles/node-name-update.md); a
+new executable is a new node, a Build that deletes the old one and creates the new
+([build-deployment.md](../../architecture/build-deployment.md), Q345).
 
-**Builds.** A Build applies its entry's config and tags to new and existing nodes. A later attempt of the same Build repeats
-nothing, so an update the node or a caller makes afterwards stands until the next Build. A node with
-no record yet has no properties, so its entry is applied. A recovery takes its predecessor's
-acknowledged properties. A replacement takes its entry's.
+**Builds.** A Build states each node it creates whole, its config and tags included, and writes no
+property of a node it does not create: an existing node's config and tags change only through
+`node.config.update` and `node.tag.*`, the last write winning
+([build.md](../../architecture/build.md), Q236, Q342). A recovered node takes its deleted
+predecessor's config and tags ([node recovery](../../architecture/lifecycles/node-recovery.md)).
 
-**Primaries.** Leadership is as main has it (Q322). The successor installs the election's result that
-the call carries, and its mesh-primary records the role flags. There is no takeover step.
+**Primaries.** The mesh-primary records the role flags of the election's result. There is no
+takeover step.
 
 **Storage.** `NodesStorage` keeps every node's record.
-The file backend writes it to `nodes.jsonl`, and a provider move copies it.
+The file backend writes it to `nodes.jsonl`, and a storage change copies it.
 
 See the [how-to](how-to.md) for integration and the [runbook](runbook.md) for diagnosis.
