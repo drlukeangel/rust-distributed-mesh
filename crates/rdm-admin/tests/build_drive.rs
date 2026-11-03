@@ -1999,9 +1999,12 @@ fn reconciler(env: &Arc<DriveEnv>, wakes: &Wakes, hold: Option<Arc<tokio::sync::
 /// drive's run over the in-memory rig, and past three of the 300 ms arms the loop had.
 const SETTLE: Duration = Duration::from_millis(1000);
 
-/// The `rdm.node_admin.build.update.via-drive` spans of `trace_id`: one per pass that drove the Build.
-fn drive_passes(spans: &[serde_json::Value], trace_id: &str) -> usize {
-    spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-drive" && s["trace_id"] == trace_id).count()
+/// The cell's `rdm.node_admin.build.update.via-drive` spans: one per pass that drove the Build, each its
+/// own root, joined by build_id (telemetry.md §4), never a child of the event that woke it.
+fn drive_passes(spans: &[serde_json::Value]) -> usize {
+    let passes: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-drive").collect();
+    assert!(passes.iter().all(|s| s["parent_span_id"].as_str().unwrap_or("").trim_start_matches('0').is_empty()), "each drive pass is a root: {passes:?}");
+    passes.len()
 }
 
 /// CONTRACT (Q253 amended: "the wake-up is an event, never a tick"): a fabric-primary whose drive waits
@@ -2028,7 +2031,7 @@ fn an_idle_fabric_primary_with_a_waiting_drive_runs_no_reconcile_pass_without_an
     let spans = cap.spans();
     println!("trace_id={trace_id}");
     assert_eq!(passes, vec![Woken::First], "the loop's first pass is its only one while nothing happens: {passes:?}");
-    assert_eq!(drive_passes(&spans, &trace_id), 1, "the waiting Build is driven once");
+    assert_eq!(drive_passes(&spans), 1, "the waiting Build is driven once");
 }
 
 /// CONTRACT (Q253 amended: "a view install (`Records::view_tick`) ... runs one reconcile pass, which
@@ -2060,7 +2063,7 @@ fn one_view_install_runs_one_reconcile_pass() {
     let spans = cap.spans();
     println!("trace_id={trace_id}");
     assert_eq!(passes, vec![Woken::First, Woken::ViewInstalled], "one install, one pass: {passes:?}");
-    assert_eq!(drive_passes(&spans, &trace_id), 2, "the Build is driven by the first pass and the install's");
+    assert_eq!(drive_passes(&spans), 2, "the Build is driven by the first pass and the install's");
 }
 
 /// CONTRACT (Q253 amended: "a Build accepted (`build_submitted`)" runs one pass): one submit, notified as
@@ -2089,7 +2092,7 @@ fn one_submit_runs_one_reconcile_pass() {
     let spans = cap.spans();
     println!("trace_id={trace_id}");
     assert_eq!(passes, vec![Woken::First, Woken::Submitted], "one submit, one pass: {passes:?}");
-    assert_eq!(drive_passes(&spans, &trace_id), 2);
+    assert_eq!(drive_passes(&spans), 2);
 }
 
 /// CONTRACT (Q253 amended: "a fabric state change (a watch set in `set_fabric_state`)" runs one pass):
@@ -2120,7 +2123,7 @@ fn one_fabric_state_change_runs_one_reconcile_pass() {
     let spans = cap.spans();
     println!("trace_id={trace_id}");
     assert_eq!(passes, vec![Woken::First, Woken::FabricState], "one change, one pass; the same state again, none: {passes:?}");
-    assert_eq!(drive_passes(&spans, &trace_id), 2);
+    assert_eq!(drive_passes(&spans), 2);
 }
 
 /// CONTRACT (Q253 amended; the end of the Build is what the loop waits on): a drive that ends its Build runs exactly one more pass.
@@ -2146,7 +2149,7 @@ fn a_drive_that_ends_its_build_runs_one_more_reconcile_pass() {
     println!("trace_id={trace_id}");
     assert_eq!(state, BuildState::Complete, "the first pass's drive completes the Build");
     assert_eq!(passes, vec![Woken::First, Woken::DriveEnded], "the Build's end runs one more pass: {passes:?}");
-    assert_eq!(drive_passes(&spans, &trace_id), 1, "the completed Build is not driven again");
+    assert_eq!(drive_passes(&spans), 1, "the completed Build is not driven again");
 }
 
 /// CONTRACT (Q253 amended: "a change during the hand-back is read at the next event, never missed"): a
@@ -2181,7 +2184,7 @@ fn a_submit_during_a_reconcile_pass_runs_the_next_pass() {
     let spans = cap.spans();
     println!("trace_id={trace_id}");
     assert_eq!(passes, vec![Woken::First, Woken::Submitted], "the submit during the first pass runs the second, and nothing else runs: {passes:?}");
-    assert_eq!(drive_passes(&spans, &trace_id), 2);
+    assert_eq!(drive_passes(&spans), 2);
 }
 
 /// CONTRACT (Q254: the reconcile loop "wakes on events (... a provider exit)"; a drive's departure proof
@@ -2215,7 +2218,7 @@ fn a_provider_exit_runs_one_reconcile_pass() {
     let spans = cap.spans();
     println!("trace_id={trace_id}");
     assert_eq!(passes, vec![Woken::First, Woken::ProviderExit], "one exit, one pass: {passes:?}");
-    assert_eq!(drive_passes(&spans, &trace_id), 2);
+    assert_eq!(drive_passes(&spans), 2);
 }
 
 /// CONTRACT (Q254, as `a_provider_exit_runs_one_reconcile_pass`, under the container provider): a
@@ -2253,7 +2256,7 @@ fn a_container_exit_runs_one_reconcile_pass() {
     let spans = cap.spans();
     println!("trace_id={trace_id}");
     assert_eq!(passes, vec![Woken::First, Woken::ProviderExit], "one container exit, one pass: {passes:?}");
-    assert_eq!(drive_passes(&spans, &trace_id), 2);
+    assert_eq!(drive_passes(&spans), 2);
 }
 
 /// A rig whose Build waits: the view already holds the work its Build adds, and the fabric's change
@@ -2306,7 +2309,7 @@ fn an_event_whose_pass_finds_the_drive_running_runs_the_drive_again_once_it_ends
     println!("trace_id={trace_id}");
     assert_eq!(passes, vec![Woken::First, Woken::Submitted], "{passes:?}");
     assert_eq!(state, rdm_admin::build_state::BuildState::Running, "the Build waits on the fabric's change");
-    assert_eq!(drive_passes(&spans, &trace_id), 2, "the drive runs again for the submit its pass found it running for");
+    assert_eq!(drive_passes(&spans), 2, "the drive runs again for the submit its pass found it running for");
 }
 
 // @feature: on-build-started-ended
