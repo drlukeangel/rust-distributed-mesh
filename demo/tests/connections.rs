@@ -98,7 +98,7 @@ async fn id_at(estate: &Estate, node: &PathName) -> NodeId {
 /// and the broker's answer.
 async fn send(estate: &Estate, from: &PathName, payload: &str) -> (String, PathName, String) {
     match originate(estate, from, &OriginateRequest::Stream { destination: id_at(estate, &broker()).await, payload: payload.as_bytes().to_vec() }).await {
-        OriginateReply::Streamed { kind, peer, answered, .. } => (kind, peer.node, String::from_utf8_lossy(&answered).into_owned()),
+        OriginateReply::Streamed { kind, peer, answered, .. } => (kind, peer.location(), String::from_utf8_lossy(&answered).into_owned()),
         other => panic!("{from:?}'s data connection to {:?} did not carry {payload:?}: {other:?}", broker()),
     }
 }

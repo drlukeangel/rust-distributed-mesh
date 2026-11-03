@@ -51,7 +51,7 @@ impl Admin {
     pub async fn at(birth: &MeshNode) -> Result<Admin, String> {
         let peers = Arc::new(Peers::at(birth).await?);
         let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(executables_in)).unwrap_or_default();
-        Ok(Admin { peers, entry: birth.name.clone(), executables: beside })
+        Ok(Admin { peers, entry: birth.location(), executables: beside })
     }
 
     /// This admin, its Builds naming `executables` by kind.
@@ -69,21 +69,22 @@ impl Admin {
         let unread = |reason: String| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason };
         let based_on = fabric.build_id.as_deref().ok_or_else(|| unread("fabric.get names no current Build".into()))?;
         let based_on = BuildId::parse(based_on).map_err(|e| unread(format!("fabric.get names {based_on}, not a Build id: {e}")))?;
-        let accepted: BTreeSet<PathName> = self.build(&based_on).await?.nodes.into_iter().map(|spec| spec.path).collect();
+        let accepted: BTreeSet<PathName> = self.build(&based_on).await?.nodes.into_iter().map(|spec| spec.location()).collect();
         let rows = self.rows().await?;
         let mut current = Current { based_on, paths: BTreeMap::new(), primaries: BTreeSet::new(), image: (fabric.provider == ProviderKind::Container).then(|| CONTAINER_IMAGE.to_string()) };
-        for row in rows.into_iter().filter(|n| accepted.contains(&n.name) && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)) {
+        for row in rows.into_iter().filter(|n| accepted.contains(&n.location()) && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)) {
             if row.is_primary {
-                current.primaries.insert(row.name.clone());
+                current.primaries.insert(row.location());
             }
             let executable = match row.executable {
-                Some(b) => b,
-                None => self.binding(&row.r#type, &current.image)?,
+                Some(ref b) => b,
+                None => &self.binding(&row.r#type, &current.image)?,
             };
             // The node's own tags and config, as its row holds them: the Build applies every property of
             // the spec that differs from the row (build.md §1), so the request names what the row holds.
-            let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(row.name.clone(), &row.mesh, &row.r#type, executable) };
-            current.paths.insert(row.name, spec);
+            let at = row.location();
+            let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(at.clone(), &row.mesh, &row.r#type, executable.clone()) };
+            current.paths.insert(at, spec);
         }
         Ok(current)
     }
@@ -115,7 +116,7 @@ impl Admin {
         for m in meshes {
             for r#type in ["node-admin", "broker", "gateway", "compute"] {
                 let want = m.count(r#type);
-                let mut have: Vec<PathName> = paths.values().filter(|s| s.mesh == m.name && s.r#type == r#type).map(|s| s.path.clone()).collect();
+                let mut have: Vec<PathName> = paths.values().filter(|s| s.mesh == m.name && s.r#type == r#type).map(|s| s.location()).collect();
                 have.sort();
                 let keep = current.primaries.iter().find(|p| have.contains(p)).cloned();
                 while (have.len() as u32) < want {
@@ -168,7 +169,7 @@ impl Admin {
     /// cannot be read: a node's mesh is its row's, never its `(path, name)`'s.
     pub async fn mesh_of(&self, node: &PathName) -> Option<String> {
         let rows = self.rows().await.ok()?;
-        let at = || rows.iter().filter(|n| &n.name == node);
+        let at = || rows.iter().filter(|n| &n.location() == node);
         at().find(|n| !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)).or_else(|| at().next()).map(|n| n.mesh.clone())
     }
 
@@ -182,7 +183,7 @@ impl Admin {
     /// admitted at any time (Q166).
     pub async fn put_own_config(&self, key: &str, value: &str) -> Result<rdm_core::status::StatusReply, String> {
         let rows = self.rows().await.map_err(|e| format!("node.get: {e:?}"))?;
-        let own = rows.iter().find(|n| n.name == self.entry && n.incarnation_id.is_some()).ok_or_else(|| format!("no row holds path {:?}, name {:?}", self.entry.path, self.entry.name))?;
+        let own = rows.iter().find(|n| n.location() == self.entry && n.incarnation_id.is_some()).ok_or_else(|| format!("no row holds path {:?}, name {:?}", self.entry.path, self.entry.name))?;
         let primary = rows.iter().find(|n| n.r#type == "node-admin" && n.is_fabric_primary).ok_or_else(|| "no row names the fabric-primary".to_string())?;
         let mut config = own.config.clone();
         config.insert(key.to_string(), value.to_string());
@@ -308,5 +309,5 @@ fn spec(path: PathName, mesh: &str, r#type: &str, executable: Binding) -> NodeSp
         "node-admin" | "broker" => StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve },
         _ => StoragePersistence::Ephemeral,
     };
-    NodeSpec { path, mesh: mesh.into(), r#type: r#type.to_string(), storage_persistence, executable: Some(executable), tags: Default::default(), config: Default::default() }
+    NodeSpec { path: path.path.clone(), name: path.name.clone(), mesh: mesh.into(), r#type: r#type.to_string(), storage_persistence, executable: Some(executable), tags: Default::default(), config: Default::default() }
 }

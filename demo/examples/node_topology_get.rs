@@ -23,7 +23,7 @@ use rdm_transport::{CallOptions, NodeTarget};
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 #[tokio::main]
@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
     for frame in rpc.topology_get(&target, None, None, &CallOptions::default()).await? {
         match frame {
             TopologyReply::Snapshot { mesh, publisher, topology_version, chunk_index, chunk_count, digests, .. } => {
-                let nodes: Vec<String> = digests.into_iter().map(MeshDigest::from).map(|d| format!("path {:?}, name {:?} {:?}", d.node.name.path, d.node.name.name, d.status)).collect();
+                let nodes: Vec<String> = digests.into_iter().map(MeshDigest::from).map(|d| format!("path {:?}, name {:?} {:?}", d.node.path, d.node.name, d.status)).collect();
                 println!("{mesh} v{topology_version} from {publisher} (chunk {}/{chunk_count}): {nodes:?}", chunk_index + 1);
                 if chunk_index == 0 {
                     held.push((mesh, SourceVersion { publisher, topology_version }));

@@ -30,7 +30,7 @@ use rdm_core::status::ConnectionScope;
 use rdm_transport::{NodeTarget, RouteChoice};
 
 fn exact(n: &NodeView) -> Result<ExactBirth> {
-    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.name.path, n.name.name))?;
+    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
     Ok(ExactBirth {
         target: NodeTarget::ExactNode(n.node_id.clone()),
         node_id: n.node_id.clone(),
@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH")
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    let entry = birth.name.clone();
+    let entry = birth.location();
     let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
     let carrier = peers.carrier_at(entry);
     let nodes = Nodes::new(carrier.clone());
@@ -59,10 +59,10 @@ async fn main() -> Result<()> {
         _ => all
             .iter()
             .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
-            .map(|n| n.name.clone())
+            .map(|n| n.location())
             .ok_or_else(|| anyhow!("no Ready role node found in estate"))?,
     };
-    let row = all.iter().find(|n| n.name == target).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
+    let row = all.iter().find(|n| n.location() == target).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
     let primary = all
         .iter()
         .find(|n| n.mesh == row.mesh && n.r#type == "node-admin" && n.is_primary)
@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
             &ConnectionScope::All,
         )
         .await?;
-    println!("node.connection.delete {{ All }} via mesh-primary path {:?}, name {:?}: {cut:?}", primary.name.path, primary.name.name);
+    println!("node.connection.delete {{ All }} via mesh-primary path {:?}, name {:?}: {cut:?}", primary.path, primary.name);
 
     let mut stream = nodes.delete_connections(&target).await?;
     let mut saw_deleted_event = false;
@@ -117,14 +117,14 @@ async fn main() -> Result<()> {
         )
         .await?
         .into_iter()
-        .find(|n| n.name == target)
+        .find(|n| n.location() == target)
         .ok_or_else(|| anyhow!("no row for path {:?}, name {:?} after node.connection.delete", target.path, target.name))?;
     assert_eq!(after.status, NodeStatus::ConnectionsDeleted);
     assert_eq!(after.node_id, row.node_id);
     assert_eq!(after.incarnation_id, row.incarnation_id);
     println!(
         "after node.connection.delete: path={:?} name={:?} node_id={} incarnation={:?} status={:?}",
-        after.name.path, after.name.name, after.node_id, after.incarnation_id, after.status
+        after.path, after.name, after.node_id, after.incarnation_id, after.status
     );
     Ok(())
 }

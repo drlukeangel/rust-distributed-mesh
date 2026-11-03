@@ -26,7 +26,7 @@ async fn enter() -> Result<(Peers, PathName)> {
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode =
         serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 #[tokio::main]
@@ -52,21 +52,21 @@ async fn main() -> Result<()> {
         .and_then(|d| Path::new(d).parent())
         .map(|root| root.join("store"))
         .unwrap_or_else(|| std::env::temp_dir().join("rdm-store"));
-    let fresh_data_dir = std::env::temp_dir().join(format!("adopt-{}-{}", fp.name.path, fp.name.name));
+    let fresh_data_dir = std::env::temp_dir().join(format!("adopt-{}-{}", fp.path, fp.name));
 
     let base: BTreeMap<&str, String> = BTreeMap::from([
         ("RDM_FABRIC", fabric.name.clone()),
         ("RDM_FABRIC_ID", fabric.id.to_string()),
         ("RDM_MESH", fp.mesh.clone()),
-        ("RDM_NODE_PATH", fp.name.path.clone()),
-        ("RDM_NODE_NAME", fp.name.name.clone()),
+        ("RDM_NODE_PATH", fp.path.clone()),
+        ("RDM_NODE_NAME", fp.name.clone()),
         ("RDM_STORE_DIR", store_dir.display().to_string()),
         ("RDM_DATA_DIR", fresh_data_dir.display().to_string()),
     ]);
     let cfg = AdminConfig::from_env(|k| base.get(k).cloned()).map_err(|e| anyhow!(e))?;
     println!(
         "live fabric {} ({}): lost fabric-primary path {:?}, name {:?} (old node_id {})",
-        fabric.name, fabric.id, fp.name.path, fp.name.name, fp.node_id
+        fabric.name, fabric.id, fp.path, fp.name, fp.node_id
     );
     println!(
         "adoption launch config: adopt={:?}, fabric_id={} (named={}), mesh={}, new node_id={}",

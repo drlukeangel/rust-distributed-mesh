@@ -25,7 +25,7 @@ use rdm_client::{Fabrics, Filter, MeshNode, Nodes, PathName, Peers};
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 #[tokio::main]
@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
     let atlas = Fabrics::new(peers.carrier_for(fabric_primary)).atlas_get().await?;
     for n in &atlas.nodes {
         let pending = n.accepted.as_ref().map(|op| format!(", {op:?} running")).unwrap_or_default();
-        println!("  path {:?}, name {:?} {:?}{}{pending} (gossip view: {:?})", n.name.path, n.name.name, n.status, if n.stopped { " stopped" } else { "" }, n.observed);
+        println!("  path {:?}, name {:?} {:?}{}{pending} (gossip view: {:?})", n.path, n.name, n.status, if n.stopped { " stopped" } else { "" }, n.observed);
     }
     Ok(())
 }

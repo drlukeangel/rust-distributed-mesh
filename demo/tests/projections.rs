@@ -106,7 +106,7 @@ impl PreNodeReady for Hydrate {
                         installed += 1;
                     }
                 }
-                tracing::info_span!(target: "rshape", "rafka.mesh.entry.update.via-projection-pulled", path = %ctx.birth.name.path, name = %ctx.birth.name.name, accepting_primary = %accepting_primary.node_id, entity_rows = rows.len() as u64, raw_applied = installed)
+                tracing::info_span!(target: "rshape", "rafka.mesh.entry.update.via-projection-pulled", path = %ctx.birth.path, name = %ctx.birth.name, accepting_primary = %accepting_primary.node_id, entity_rows = rows.len() as u64, raw_applied = installed)
                     .in_scope(|| tracing::info!("hydrated from node-admin's cache before ready"));
                 HookOutcome::Ok
             }
@@ -129,7 +129,7 @@ async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path,
         fabric_id: d.fabric_id.clone(),
         mesh: d.node.mesh.clone(),
         r#type: r#type.to_string(),
-        name: PathName::numbered(&d.node.mesh, r#type, ordinal),
+        path: format!("{}.{}", &d.node.mesh, r#type), name: (ordinal).to_string(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -139,7 +139,7 @@ async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path,
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
         launcher: Some(rdm_core::launch::Launcher {
             mesh: d.node.mesh.clone(),
-            name: d.node.name.clone(),
+            path: d.node.path.clone(), name: d.node.name.clone(),
             node_id: d.node.node_id.clone(),
             incarnation: d.node.incarnation.clone(),
         }),
@@ -151,7 +151,7 @@ async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path,
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), listeners: Vec::new(),
-        name: launch.name.clone(),
+        path: launch.path.clone(), name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
         supersedes: None,

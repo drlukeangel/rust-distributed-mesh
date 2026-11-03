@@ -25,7 +25,7 @@ use rdm_core::build::Step;
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 /// Read a workflow's frames to its terminal: `Complete` is the only success.
@@ -46,7 +46,7 @@ async fn finish(what: &str, mut w: WorkflowStream) -> Result<()> {
 /// The node's row as the entry admin reads it now.
 async fn row(nodes: &Nodes, node: &PathName) -> Result<String> {
     let rows = nodes.get(&Filter::new().eq("path", [node.path()]).eq("name", [node.name()])).await?;
-    let n = rows.iter().find(|n| &n.name == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
+    let n = rows.iter().find(|n| &n.location() == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
     Ok(format!("{:?}, stopped {}, node id {}, incarnation {:?}", n.status, n.stopped, n.node_id, n.incarnation_id.as_ref().map(|i| i.to_string())))
 }
 
@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
     let nodes = Nodes::new(peers.carrier_at(entry));
     println!("before: {}", row(&nodes, &node).await?);
 
-    finish("delete connections, leave mesh", nodes.steps(vec![Step::DeleteConnections { node: node.clone() }, Step::LeaveMesh { node: node.clone() }]).await?).await?;
+    finish("delete connections, leave mesh", nodes.steps(vec![Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()}, Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()}]).await?).await?;
     println!("left: {}", row(&nodes, &node).await?);
 
     // Back onto the mesh: stopped, then started as the same birth.

@@ -38,12 +38,12 @@ async fn gateway() -> Result<()> {
     let _telemetry = rdm_transport::init_evidence_telemetry(SERVICE);
     let launch = rdm_node::launch_for(rdm_node::Role { r#type: "gateway".into() })?;
     let running = rdm_node::node::start_pre_node_ready(&launch, rdm_node::node_hooks::NodeHooks::none(), |b, _| b).await?;
-    let (_, bound) = running.listeners().iter().find(|(name, _)| name == CLIENT).ok_or_else(|| anyhow!("path {:?}, name {:?} was launched without its {CLIENT} listener", launch.name.path, launch.name.name))?;
+    let (_, bound) = running.listeners().iter().find(|(name, _)| name == CLIENT).ok_or_else(|| anyhow!("path {:?}, name {:?} was launched without its {CLIENT} listener", launch.path, launch.name))?;
     let std_listener = bound.try_clone()?;
     std_listener.set_nonblocking(true)?;
     let listener = tokio::net::TcpListener::from_std(std_listener)?;
-    tracing::info!(target: "example", path = %launch.name.path, name = %launch.name.name, addr = %listener.local_addr()?, "serving on the {CLIENT} listener");
-    let greeting = format!("hello from path {:?}, name {:?}\n", launch.name.path, launch.name.name);
+    tracing::info!(target: "example", path = %launch.path, name = %launch.name, addr = %listener.local_addr()?, "serving on the {CLIENT} listener");
+    let greeting = format!("hello from path {:?}, name {:?}\n", launch.path, launch.name);
     tokio::spawn(async move {
         while let Ok((mut conn, _)) = listener.accept().await {
             let greeting = greeting.clone();

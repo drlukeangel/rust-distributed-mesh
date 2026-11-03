@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH")
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    let entry = birth.name.clone();
+    let entry = birth.location();
     let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
     let carrier = peers.carrier_at(entry.clone());
     let all = Nodes::new(carrier.clone()).get(&Filter::new()).await?;
@@ -69,11 +69,11 @@ async fn main() -> Result<()> {
     .map_err(|e| anyhow!("{e:?}"))?;
     let member_time = member_read
         .rafka_time
-        .ok_or_else(|| anyhow!("path {:?}, name {:?} served no rafka_time", member.name.path, member.name.name))?;
+        .ok_or_else(|| anyhow!("path {:?}, name {:?} served no rafka_time", member.path, member.name))?;
     println!(
         "live member path {:?}, name {:?} served rafka_time: ms={} kind={:?} cert_issued_at={:?}",
-        member.name.path,
-        member.name.name,
+        member.path,
+        member.name,
         member_time.ms,
         member_time.kind,
         member.cert.as_ref().map(|c| c.issued_at)

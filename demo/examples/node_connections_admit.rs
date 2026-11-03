@@ -61,8 +61,8 @@ async fn main() -> Result<()> {
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
     let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
-    let all = Nodes::new(peers.carrier_at(birth.name.clone())).get(&Filter::new()).await?;
-    let admin_row = all.iter().find(|n| n.name == birth.name).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", birth.name.path, birth.name.name))?;
+    let all = Nodes::new(peers.carrier_at(birth.location())).get(&Filter::new()).await?;
+    let admin_row = all.iter().find(|n| n.name == birth.name).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", birth.path, birth.name))?;
     let member = all
         .iter()
         .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
@@ -81,12 +81,12 @@ async fn main() -> Result<()> {
         .issue_member(&BirthIdentity {
             node_id: member.node_id.clone(),
             incarnation: inc.clone(),
-            name: member.name.clone(),
+            path: member.path.clone(), name: member.name.clone(),
             mesh: member.mesh.clone(),
             endpoint_key: rdm_core::EndpointId(ep),
         })
         .map_err(|e| anyhow!("{e}"))?;
-    let caller = Birth { mesh: member.mesh.clone(), r#type: member.r#type.clone(), name: member.name.clone(), node_id: member.node_id.clone(), incarnation: inc };
+    let caller = Birth { mesh: member.mesh.clone(), r#type: member.r#type.clone(), path: member.path.clone(), name: member.name.clone(), node_id: member.node_id.clone(), incarnation: inc };
     let admitter = CertAdmitter::new(RootSet::new(vec![root_pub]), time.clone());
     let (expires_at, clock) = admitter.verify(&caller, b"demo/echo", &issue.bytes).map_err(|e| anyhow!(e))?;
     let empty_err = admitter.verify(&caller, b"demo/echo", &[]).unwrap_err();
@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
         .unwrap_err();
     println!(
         "CertAdmitter::verify for path {:?}, name {:?}: admitted (expires_at_ms={expires_at}, clock={clock}); empty={empty_err}; untrusted={untrusted}",
-        caller.name.path, caller.name.name
+        caller.path, caller.name
     );
 
     let dir = std::env::temp_dir().join(format!("demo-admit-{}", NodeId::mint()));
@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
         topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: config(&dir).fabric,
         fabric_id: d.fabric_id.clone(),
-        name: rdm_core::PathName::new("mesh1.gateway", "1").unwrap(),
+        path: "mesh1.gateway".into(), name: "1".into(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
         listeners: vec![],
         declared: Vec::new(),
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(rdm_core::launch::Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(rdm_core::launch::Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: gw_dir.clone(),
         store_dir: dir.clone(),
         mesh_id: d.mesh_id.clone(),
@@ -140,7 +140,7 @@ async fn main() -> Result<()> {
     };
     let _ = root.runner.joins.expect(rdm_admin::join::Deployed {
         mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        listeners: Vec::new(), name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(),
+        listeners: Vec::new(), path: launch.path.clone(), name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(),
         supersedes: None, endpoint_id: rdm_core::EndpointId(key.public().to_string()), runtime: fact,
         data_dir: gw_dir.display().to_string(), last_accepted_name: None, held: false,
     });
@@ -153,7 +153,7 @@ async fn main() -> Result<()> {
     while root.node_rpc.resolver.resolve(&NodeTarget::ExactNode(gw_node.node_id.clone())).is_err() {
         tokio::task::yield_now().await;
     }
-    let to = Birth { mesh: gw_node.mesh.clone(), r#type: gw_node.r#type.clone(), name: gw_node.name.clone(), node_id: gw_node.node_id.clone(), incarnation: gw_node.incarnation.clone() };
+    let to = Birth { mesh: gw_node.mesh.clone(), r#type: gw_node.r#type.clone(), path: gw_node.path.clone(), name: gw_node.name.clone(), node_id: gw_node.node_id.clone(), incarnation: gw_node.incarnation.clone() };
     let (conn, srv) = tokio::try_join!(
         async { tokio::time::timeout(BOUND, dialer.open(&to)).await?.map_err(|e| anyhow!("{e}")) },
         async { tokio::time::timeout(BOUND, acceptor.accept()).await?.ok_or_else(|| anyhow!("no accept")) }
@@ -166,7 +166,7 @@ async fn main() -> Result<()> {
     s_send.write_all(format!("echo {}: {}", gw_node.node_id, String::from_utf8_lossy(&req)).as_bytes()).await?;
     s_send.finish().map_err(|e| anyhow!("{e}"))?;
     let reply = String::from_utf8(c_recv.read_to_end(256).await.map_err(|e| anyhow!("{e}"))?)?;
-    println!("admitted demo/echo dial to path {:?}, name {:?} ({:?}): {reply}", srv.peer().name.path, srv.peer().name.name, conn.kind());
+    println!("admitted demo/echo dial to path {:?}, name {:?} ({:?}): {reply}", srv.peer().path, srv.peer().name, conn.kind());
     drop((conn, srv));
     gw.stop().await;
     root.topology_view.stop().await;

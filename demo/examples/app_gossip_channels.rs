@@ -42,11 +42,11 @@ fn main() -> Result<()> {
         if let Ok(json) = std::env::var("RDM_NODE_ADMIN_BIRTH") {
             let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
             let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
-            let rows = Nodes::new(peers.carrier_at(birth.name)).get(&Filter::new()).await?;
+            let rows = Nodes::new(peers.carrier_at(birth.location())).get(&Filter::new()).await?;
             let first = rows.first().ok_or_else(|| anyhow!("node.get returned no rows"))?;
             println!(
                 "live estate node path {:?}, name {:?}: types={:?} held={:?} held_hash={:?}",
-                first.name.path, first.name.name, first.types, first.held, first.held_hash
+                first.path, first.name, first.types, first.held, first.held_hash
             );
         }
 
@@ -73,7 +73,7 @@ fn main() -> Result<()> {
             fabric_id: d.fabric_id.clone(),
             mesh: "mesh1".into(),
             r#type: "broker".into(),
-            name: rdm_core::PathName::new("mesh1.broker", "1").unwrap(),
+            path: "mesh1.broker".into(), name: "1".into(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -83,7 +83,7 @@ fn main() -> Result<()> {
             seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
             launcher: Some(rdm_core::launch::Launcher {
                 mesh: d.node.mesh.clone(),
-                name: d.node.name.clone(),
+                path: d.node.path.clone(), name: d.node.name.clone(),
                 node_id: d.node.node_id.clone(),
                 incarnation: d.node.incarnation.clone(),
             }),
@@ -98,7 +98,7 @@ fn main() -> Result<()> {
             mesh: launch.mesh.clone(),
             r#type: launch.r#type.clone(),
             listeners: Vec::new(),
-            name: launch.name.clone(),
+            path: launch.path.clone(), name: launch.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
             supersedes: None,

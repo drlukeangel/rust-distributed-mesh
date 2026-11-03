@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH")
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    let entry = birth.name.clone();
+    let entry = birth.location();
     let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
     let nodes = Nodes::new(peers.carrier_at(entry.clone()));
 
@@ -50,12 +50,12 @@ async fn main() -> Result<()> {
         _ => all
             .iter()
             .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
-            .map(|n| n.name.clone())
+            .map(|n| n.location())
             .ok_or_else(|| anyhow!("no Ready role node found in estate"))?,
     };
     let before: NodeView = all
         .into_iter()
-        .find(|n| n.name == target)
+        .find(|n| n.location() == target)
         .ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
     let data_dir = before.data_dir.as_deref().ok_or_else(|| anyhow!("path {:?}, name {:?} has no data_dir", target.path, target.name))?;
     let fact = RuntimeFact::read_record(Path::new(data_dir))
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
     };
     println!(
         "before: path={:?} name={:?} node_id={} incarnation={:?} status={:?} pid={pid}",
-        before.name.path, before.name.name, before.node_id, before.incarnation_id, before.status
+        before.path, before.name, before.node_id, before.incarnation_id, before.status
     );
 
     // The member goes silent: its runtime ends through the deployment provider, as an application's own
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
                 .get(&target_filter)
                 .await?
                 .into_iter()
-                .find(|n| n.name == target)
+                .find(|n| n.location() == target)
                 .ok_or_else(|| rdm_client::CallEnd::NotFound {
                     read: "node.get",
                     detail: format!("no row for path {:?}, name {:?}", target.path, target.name),
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
     let stale = stale_res?;
     println!(
         "stale past staleness_floor: path={:?} name={:?} node_id={} incarnation={:?} status={:?}",
-        stale.name.path, stale.name.name, stale.node_id, stale.incarnation_id, stale.status
+        stale.path, stale.name, stale.node_id, stale.incarnation_id, stale.status
     );
 
     let resumed = await_fact(
@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
                 .get(&target_filter)
                 .await?
                 .into_iter()
-                .find(|n| n.name == target)
+                .find(|n| n.location() == target)
                 .ok_or_else(|| rdm_client::CallEnd::NotFound {
                     read: "node.get",
                     detail: format!("no row for path {:?}, name {:?}", target.path, target.name),
@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
     .await?;
     println!(
         "recovered after the silence: path={:?} name={:?} node_id={} incarnation={:?} status={:?}",
-        resumed.name.path, resumed.name.name, resumed.node_id, resumed.incarnation_id, resumed.status
+        resumed.path, resumed.name, resumed.node_id, resumed.incarnation_id, resumed.status
     );
     Ok(())
 }

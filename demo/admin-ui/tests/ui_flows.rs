@@ -327,7 +327,7 @@ async fn adding_resubmitting_and_replacing_a_gateway_through_the_ui_each_complet
     ready(&admin, "after the gateway's executable replaced").await;
     let sha = rdm_core::binding::sha256_file(&next).unwrap();
     let rows = admin.rows().await.expect("fabric.nodes.get");
-    let gateway = rows.iter().find(|n| (n.name.path.as_str(), n.name.name.as_str()) == ("mesh1.gateway", "1") && n.status == rdm_client::NodeStatus::Ready).unwrap_or_else(|| panic!("path mesh1.gateway, name 1 is ready: {rows:?}"));
+    let gateway = rows.iter().find(|n| (n.path.as_str(), n.name.as_str()) == ("mesh1.gateway", "1") && n.status == rdm_client::NodeStatus::Ready).unwrap_or_else(|| panic!("path mesh1.gateway, name 1 is ready: {rows:?}"));
     assert_eq!(gateway.executable.as_ref().map(|b| b.sha256.clone()), Some(sha), "the replaced gateway's row records the executable its request named: {gateway:?}");
     drop(estate);
 }

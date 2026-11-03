@@ -123,7 +123,7 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
                     }
                 }
             }
-            Some(Err(e)) => errors.push(format!("path {:?}, name {:?}: {e}", n.name.path, n.name.name)),
+            Some(Err(e)) => errors.push(format!("path {:?}, name {:?}: {e}", n.path, n.name)),
             None => {}
         }
     }

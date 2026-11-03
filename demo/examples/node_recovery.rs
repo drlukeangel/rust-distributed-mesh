@@ -28,7 +28,7 @@ async fn enter() -> Result<(Peers, PathName)> {
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode =
         serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 #[tokio::main]
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
         (Some(path), Some(name)) => {
             let name = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
             rows.iter()
-                .find(|n| n.name == name)
+                .find(|n| n.location() == name)
                 .ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", name.path, name.name))?
                 .clone()
         }
@@ -65,11 +65,11 @@ async fn main() -> Result<()> {
     let dir = target
         .data_dir
         .as_deref()
-        .ok_or_else(|| anyhow!("path {:?}, name {:?} carries no data_dir", target.name.path, target.name.name))?;
+        .ok_or_else(|| anyhow!("path {:?}, name {:?} carries no data_dir", target.path, target.name))?;
     let incarnation = target
         .incarnation_id
         .as_ref()
-        .ok_or_else(|| anyhow!("path {:?}, name {:?} carries no incarnation", target.name.path, target.name.name))?;
+        .ok_or_else(|| anyhow!("path {:?}, name {:?} carries no incarnation", target.path, target.name))?;
     let fact = RuntimeFact::read_record(Path::new(dir))
         .ok_or_else(|| anyhow!("no runtime.json in {dir}"))?
         .map_err(|e| anyhow!(e))?;
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
     let before_inspect = inspect_runtime(&provider, &fact, Some(dir), incarnation.as_str()).await;
     println!(
         "before: path {:?}, name {:?} {:?}, node_id {}, incarnation {}, data_dir {dir}, inspect {before_inspect:?}",
-        target.name.path, target.name.name, target.status, target.node_id, incarnation
+        target.path, target.name, target.status, target.node_id, incarnation
     );
 
     provider
@@ -86,9 +86,9 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| anyhow!("{e}"))?;
     let after_inspect = inspect_runtime(&provider, &fact, Some(dir), incarnation.as_str()).await;
-    println!("terminated path {:?}, name {:?}: inspect is now {after_inspect:?}; awaiting node recovery", target.name.path, target.name.name);
+    println!("terminated path {:?}, name {:?}: inspect is now {after_inspect:?}; awaiting node recovery", target.path, target.name);
 
-    let (target_name, old_id) = (target.name.clone(), target.node_id.clone());
+    let (target_name, old_id) = (target.location(), target.node_id.clone());
     let filter = Filter::new().eq("mesh", [target.mesh.clone()]);
     let recovered = await_fact(
         "node",
@@ -98,13 +98,13 @@ async fn main() -> Result<()> {
         || nodes.get(&filter),
         |list| {
             list.iter().any(|n| {
-                n.name == target_name && n.node_id != old_id && n.status == NodeStatus::Ready
+                n.location() == target_name && n.node_id != old_id && n.status == NodeStatus::Ready
             })
         },
         |list| {
             list.iter()
-                .find(|n| n.name == target_name)
-                .map(|n| format!("path {:?}, name {:?} {:?} ({})", n.name.path, n.name.name, n.status, n.node_id))
+                .find(|n| n.location() == target_name)
+                .map(|n| format!("path {:?}, name {:?} {:?} ({})", n.path, n.name, n.status, n.node_id))
                 .unwrap_or_else(|| format!("no path {:?}, name {:?}", target_name.path, target_name.name))
         },
     )
@@ -112,11 +112,11 @@ async fn main() -> Result<()> {
     let row = recovered
         .iter()
         .find(|n| n.name == target.name)
-        .ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.name.path, target.name.name))?;
+        .ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
     println!(
         "recovered: path {:?}, name {:?} {:?}, new node_id {}, incarnation {:?}, inherited data_dir {:?} (same={})",
-        row.name.path,
-        row.name.name,
+        row.path,
+        row.name,
         row.status,
         row.node_id,
         row.incarnation_id,
@@ -131,13 +131,13 @@ async fn main() -> Result<()> {
             .iter()
             .filter(|s| s.step == "Complete")
             .filter(|s| match &s.operation.subject {
-                Some(OperationSubject::Location(at)) => at == &target.name,
+                Some(OperationSubject::Location(at)) => *at == target.location(),
                 Some(OperationSubject::Node(id)) | Some(OperationSubject::Birth { node_id: id, .. }) => id == &old_id || id == &row.node_id,
                 _ => false,
             })
             .map(|s| format!("attempt {} {:?}", s.attempt, s.operation))
             .collect();
-        println!("current Build {} ({:?}): receipts for path {:?}, name {:?}: {ops:?}", b.build_id.log(), b.phase, target.name.path, target.name.name);
+        println!("current Build {} ({:?}): receipts for path {:?}, name {:?}: {ops:?}", b.build_id.log(), b.phase, target.path, target.name);
     }
     Ok(())
 }

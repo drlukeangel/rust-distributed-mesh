@@ -20,7 +20,7 @@ async fn enter() -> Result<(Peers, PathName)> {
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode =
         serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 #[tokio::main]
@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
     let target = match (args.next(), args.next()) {
         (Some(path), Some(name)) => {
             let name = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
-            rows.iter().find(|n| n.name == name).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", name.path, name.name))?
+            rows.iter().find(|n| n.location() == name).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", name.path, name.name))?
         }
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_runtime_inspect [<path> <name>]")),
         _ => rows
@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
 
     let provider = ProcessDeploymentProvider::new();
     let live = inspect_runtime(&provider, &fact, Some(dir), inc.as_str()).await;
-    println!("live member path {:?}, name {:?} ({}): {:?}", target.name.path, target.name.name, inc, live);
+    println!("live member path {:?}, name {:?} ({}): {:?}", target.path, target.name, inc, live);
 
     let mut foreign = fact.clone();
     foreign.control_domain = "process:foreign-boot:0".to_string();

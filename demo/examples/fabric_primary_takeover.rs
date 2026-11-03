@@ -25,7 +25,7 @@ async fn enter() -> Result<(Peers, PathName)> {
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode =
         serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 #[tokio::main]
@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
     let after_name = rows
         .iter()
         .find(|n| n.node_id == to_id)
-        .map(|n| n.name.clone())
+        .map(|n| n.location())
         .ok_or_else(|| anyhow!("no row holds successor {to_id}"))?;
     let after_fp = to_id;
 

@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH")
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    let entry = birth.name.clone();
+    let entry = birth.location();
     let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
     let carrier = peers.carrier_at(entry.clone());
     let nodes = Nodes::new(carrier.clone());
@@ -40,10 +40,10 @@ async fn main() -> Result<()> {
         _ => all
             .iter()
             .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
-            .map(|n| n.name.clone())
+            .map(|n| n.location())
             .ok_or_else(|| anyhow!("no Ready role node found in estate"))?,
     };
-    let row = all.iter().find(|n| n.name == target).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
+    let row = all.iter().find(|n| n.location() == target).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
 
     let req_admin = PingRequest::Ping { payload: b"ping-admin".to_vec() };
     let (out_admin, _) = carrier
@@ -71,17 +71,17 @@ async fn main() -> Result<()> {
         .call::<Ping>(&NodeTarget::ExactNode(row.node_id.clone()), &req_member, &CallOptions::default())
         .await;
     let RpcOutcome::Reply(reply_member) = out_member else {
-        return Err(anyhow!("Ping to path {:?}, name {:?} failed: {out_member:?}", row.name.path, row.name.name));
+        return Err(anyhow!("Ping to path {:?}, name {:?} failed: {out_member:?}", row.path, row.name));
     };
     let PingReply::Pong { payload: pong_member } = reply_member.into_value() else {
-        return Err(anyhow!("unexpected PingReply from path {:?}, name {:?}", row.name.path, row.name.name));
+        return Err(anyhow!("unexpected PingReply from path {:?}, name {:?}", row.path, row.name));
     };
     assert_eq!(pong_member, b"ping-member");
     println!(
         "Ping (0x{:02x}) to member path {:?}, name {:?} ({}): Pong({:?})",
         Ping::OP,
-        row.name.path,
-        row.name.name,
+        row.path,
+        row.name,
         row.node_id,
         String::from_utf8_lossy(&pong_member)
     );

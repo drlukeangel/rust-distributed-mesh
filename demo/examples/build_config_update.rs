@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 /// Every current node: a negated pair (Q306) leaves out the dead and the deleted.
@@ -45,7 +45,7 @@ async fn build(carrier: &BuildCarrier, node: &PathName, change: impl FnOnce(&mut
             spec.config = row.config.clone();
         }
     }
-    let spec = nodes.iter_mut().find(|s| s.path == *node).ok_or_else(|| anyhow!("the current Build names no path {:?}, name {:?}", node.path, node.name))?;
+    let spec = nodes.iter_mut().find(|s| s.location() == *node).ok_or_else(|| anyhow!("the current Build names no path {:?}, name {:?}", node.path, node.name))?;
     change(&mut spec.config);
     let config = spec.config.clone();
     let stream = match carrier.create(Change::Reconcile { based_on, nodes}).await {

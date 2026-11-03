@@ -30,12 +30,12 @@ fn to_end(n: &NodeView) -> Result<ConnectionEnd> {
     Ok(ConnectionEnd {
         mesh: n.mesh.clone(),
         r#type: n.r#type.clone(),
-        name: n.name.clone(),
+        path: n.path.clone(), name: n.name.clone(),
         node_id: n.node_id.clone(),
         incarnation: Some(
             n.incarnation_id
                 .clone()
-                .ok_or_else(|| anyhow!("path {:?}, name {:?} has no incarnation_id", n.name.path, n.name.name))?,
+                .ok_or_else(|| anyhow!("path {:?}, name {:?} has no incarnation_id", n.path, n.name))?,
         ),
     })
 }
@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
     let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
-    let all = Nodes::new(peers.carrier_at(birth.name)).get(&Filter::new()).await?;
+    let all = Nodes::new(peers.carrier_at(birth.location())).get(&Filter::new()).await?;
 
     let src = all
         .iter()
@@ -102,10 +102,10 @@ async fn main() -> Result<()> {
     assert_eq!(due(&plan_1, item_1.due_ms).len(), 1);
     println!(
         "ordinal 1 (path {:?}, name {:?} -> path {:?}, name {:?}): round={} backoff={}ms jitter={}ms due_ms={}",
-        src.name.path,
-        src.name.name,
-        dst.name.path,
-        dst.name.name,
+        src.path,
+        src.name,
+        dst.path,
+        dst.name,
         item_1.recovery.recovery_round,
         reconnect_backoff(1),
         deterministic_jitter(&src.node_id, &dst.node_id, 1),
@@ -118,10 +118,10 @@ async fn main() -> Result<()> {
     let item_2 = &plan_2[0];
     println!(
         "ordinal 2 (path {:?}, name {:?} -> path {:?}, name {:?}): round={} backoff={}ms jitter={}ms due_ms={}",
-        src.name.path,
-        src.name.name,
-        dst.name.path,
-        dst.name.name,
+        src.path,
+        src.name,
+        dst.path,
+        dst.name,
         item_2.recovery.recovery_round,
         reconnect_backoff(2),
         deterministic_jitter(&src.node_id, &dst.node_id, 2),

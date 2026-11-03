@@ -24,7 +24,7 @@ async fn enter() -> Result<(Peers, PathName)> {
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode =
         serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 #[tokio::main]
@@ -63,12 +63,12 @@ async fn main() -> Result<()> {
         nodes: model_nodes.clone(),
     };
 
-    let admin = model_nodes.iter().find(|n| n.name == entry).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", entry.path, entry.name))?;
+    let admin = model_nodes.iter().find(|n| n.location() == entry).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", entry.path, entry.name))?;
     let mut args = std::env::args().skip(1);
     let target = match (args.next(), args.next()) {
         (Some(path), Some(name)) => {
             let name = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
-            model_nodes.iter().find(|n| n.name == name).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", name.path, name.name))?
+            model_nodes.iter().find(|n| n.location() == name).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", name.path, name.name))?
         }
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_investigation [<path> <name>]")),
         _ => model_nodes
@@ -96,8 +96,8 @@ async fn main() -> Result<()> {
     .await;
     println!(
         "step 1 (live member path {:?}, name {:?}): verdict={} inspected={:?}",
-        target.name.path,
-        target.name.name,
+        target.path,
+        target.name,
         reached.name(),
         reached.inspected()
     );
@@ -111,8 +111,8 @@ async fn main() -> Result<()> {
     .await;
     println!(
         "step 2 (unreached birth backed by path {:?}, name {:?} runtime.json): verdict={} inspected={:?}",
-        target.name.path,
-        target.name.name,
+        target.path,
+        target.name,
         inspected.name(),
         inspected.inspected()
     );

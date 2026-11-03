@@ -25,7 +25,7 @@ use rdm_core::build::Step;
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 #[tokio::main]
@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
     let carrier = peers.carrier_at(entry);
 
     // Submit, keep the Build id, lose the stream.
-    let accepted = Nodes::new(carrier.clone()).steps(vec![Step::DeleteConnections { node: node.clone() }]).await?.accepted().clone();
+    let accepted = Nodes::new(carrier.clone()).steps(vec![Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()}]).await?.accepted().clone();
     println!("accepted: Build {} attempt {}; the stream is dropped", accepted.build_id.log(), accepted.attempt);
 
     // Reattach by id: the receipts so far, and the stream again. The receipts are every attempt's: a

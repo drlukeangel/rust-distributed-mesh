@@ -41,7 +41,7 @@ fn the_consumers_day0_admin_answers_a_gateway_and_reaches_the_broker_on_the_data
         match outcome {
             rdm_core::outcome::RpcOutcome::Reply(reply) => match reply.into_value() {
                 OriginateReply::Streamed { peer, answered, .. } => {
-                    assert_eq!(peer.node, admin(), "the gateway's data connection reaches the admin");
+                    assert_eq!(peer.location(), admin(), "the gateway's data connection reaches the admin");
                     assert_eq!(String::from_utf8_lossy(&answered), format!("echo {admin_id}: from the gateway"), "the admin's app answers the gateway's bytes");
                 }
                 other => panic!("the gateway's data connection to the admin failed: {other:?}"),

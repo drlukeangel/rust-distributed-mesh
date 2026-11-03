@@ -34,13 +34,13 @@ async fn main() -> Result<()> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH")
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    let entry = birth.name.clone();
+    let entry = birth.location();
     let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
     let carrier = peers.carrier_at(entry.clone());
     let all = Nodes::new(carrier.clone()).get(&Filter::new()).await?;
     peers.learn(&all);
 
-    let admin_row = all.iter().find(|n| n.name == entry).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", entry.path, entry.name))?;
+    let admin_row = all.iter().find(|n| n.location() == entry).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", entry.path, entry.name))?;
     let mut args = std::env::args().skip(1);
     let target_name: PathName = match (args.next(), args.next()) {
         (Some(path), Some(name)) => PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?,
@@ -48,14 +48,14 @@ async fn main() -> Result<()> {
         _ => all
             .iter()
             .find(|n| n.mesh == birth.mesh && n.r#type != "node-admin" && n.status == NodeStatus::Ready)
-            .map(|n| n.name.clone())
+            .map(|n| n.location())
             .ok_or_else(|| anyhow!("no Ready role member in {}", birth.mesh))?,
     };
-    let member = all.iter().find(|n| n.name == target_name).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", target_name.path, target_name.name))?;
+    let member = all.iter().find(|n| n.location() == target_name).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", target_name.path, target_name.name))?;
     let before_cert = member.cert.as_ref().ok_or_else(|| anyhow!("path {:?}, name {:?} has no cert view", target_name.path, target_name.name))?;
     println!(
         "before renewal on path {:?}, name {:?}: issued_at={} expires_at={:?} issuer_expires_at={:?}",
-        member.name.path, member.name.name, before_cert.issued_at, before_cert.expires_at, before_cert.issuer_expires_at
+        member.path, member.name, before_cert.issued_at, before_cert.expires_at, before_cert.issuer_expires_at
     );
 
     let admin_dir = Path::new(admin_row.data_dir.as_deref().ok_or_else(|| anyhow!("no admin data_dir"))?);
@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
     let identity = BirthIdentity {
         node_id: member.node_id.clone(),
         incarnation: inc.clone(),
-        name: member.name.clone(),
+        path: member.path.clone(), name: member.name.clone(),
         mesh: member.mesh.clone(),
         endpoint_key: EndpointId(ep),
     };
@@ -99,8 +99,8 @@ async fn main() -> Result<()> {
     assert!(stalled(&dates, dates.renew_at + floor_ms + 1, floor_ms));
     println!(
         "CertRenewed on path {:?}, name {:?}: issued_at={} renew_at={} expires_at={expires_at} stalled_past_floor={}",
-        member.name.path,
-        member.name.name,
+        member.path,
+        member.name,
         dates.issued_at,
         dates.renew_at,
         stalled(&dates, dates.renew_at + floor_ms + 1, floor_ms)

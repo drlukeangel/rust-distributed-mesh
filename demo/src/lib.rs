@@ -46,7 +46,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     let launch = launch_for(role.clone())?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
-        node_path = %launch.name.path, node_name = %launch.name.name,
+        node_path = %launch.path, node_name = %launch.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
         "type" = role.name(),
@@ -59,7 +59,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     // The replica (Q296): the broker's records log, opened before the node serves; the gateway
     // forwards to the broker primary its topology names, the view handed over once the node is up.
     let view = std::sync::Arc::new(std::sync::OnceLock::new());
-    let replica_node = replica::Node { view: view.clone(), me: launch.node_id.clone(), name: launch.name.clone(), mesh: launch.mesh.clone(), passed: replica::PassedOver::default() };
+    let replica_node = replica::Node { view: view.clone(), me: launch.node_id.clone(), name: launch.location(), mesh: launch.mesh.clone(), passed: replica::PassedOver::default() };
     // The gateway's `on_call_failed`: a forward whose attempts are spent passes that broker over, and
     // the gateway asks the next replica (fabric-node-hooks.md "on_call_failed").
     let node_hooks = match role.r#type.as_str() {
@@ -104,7 +104,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
                     // The connection itself is RDM's record (`rdm.node.connection.serve.via-admitted`,
                     // `rdm.node.connection.create.via-dial`); the role's answer is its own log line, no span of the app's.
                     let peer = conn.peer();
-                    tracing::info!(target: "rshape", node = %own, peer_path = %peer.name.path, peer_name = %peer.name.name, kind = ?conn.kind(), bytes = bytes.len(), "a data-plane stream answered");
+                    tracing::info!(target: "rshape", node = %own, peer_path = %peer.path, peer_name = %peer.name, kind = ?conn.kind(), bytes = bytes.len(), "a data-plane stream answered");
                     if send.write_all(answer.as_bytes()).await.is_err() || send.finish().is_err() {
                         break;
                     }
@@ -117,7 +117,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
     node::wait_for_signal(binary).await;
-    tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.name.path, node_name = %launch.name.name, incarnation_id = %launch.incarnation).in_scope(|| tracing::info!("stopping"));
+    tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.path, node_name = %launch.name, incarnation_id = %launch.incarnation).in_scope(|| tracing::info!("stopping"));
     running.stop().await;
     Ok(())
 }

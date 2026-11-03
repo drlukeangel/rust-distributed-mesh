@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 /// The directories `RDM_EXECUTABLE_DIRS` lists, each absolute, as every node-admin requires.
@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
             spec.config = row.config.clone();
         }
     }
-    let spec = nodes.iter_mut().find(|s| s.path == node).ok_or_else(|| anyhow!("the current Build names no path {path:?}, name {name:?}"))?;
+    let spec = nodes.iter_mut().find(|s| s.location() == node).ok_or_else(|| anyhow!("the current Build names no path {path:?}, name {name:?}"))?;
     let image = spec.executable.as_ref().and_then(|b| b.image.clone());
     spec.executable = Some(Binding { launch_id: spec.r#type.clone(), executable: executable.clone(), sha256, image });
 

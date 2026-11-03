@@ -419,7 +419,7 @@ pub struct PassOver(pub PassedOver);
 impl OnCallFailed for PassOver {
     async fn on_call_failed(&self, ctx: &CallFailedCtx) {
         let Some(receiver) = &ctx.receiver else { return };
-        tracing::info!(target: "rshape", receiver_path = %receiver.name.path, receiver_name = %receiver.name.name, receiver_node_id = %receiver.node_id, outcome = ctx.reason.name(), "on_call_failed: a call's attempts are spent; its receiver is passed over and the next replica is asked");
+        tracing::info!(target: "rshape", receiver_path = %receiver.path, receiver_name = %receiver.name, receiver_node_id = %receiver.node_id, outcome = ctx.reason.name(), "on_call_failed: a call's attempts are spent; its receiver is passed over and the next replica is asked");
         self.0 .0.send_modify(|passed| {
             passed.insert(receiver.node_id.clone(), receiver.incarnation.clone());
         });
@@ -587,7 +587,7 @@ mod tests {
     async fn on_call_failed_passes_its_receiver_over_and_a_broker_naming_it_primary_sends_the_gateway_back() {
         let passed = PassedOver::default();
         let (receiver, _) = broker();
-        let birth = |node_id: NodeId| rdm_node::node_hooks::CallFailedBirth { node_id, incarnation: IncarnationId::mint(), name: PathName::numbered("mesh1", "broker", 1) };
+        let birth = |node_id: NodeId| rdm_node::node_hooks::CallFailedBirth { node_id, incarnation: IncarnationId::mint(), path: format!("{}.{}", "mesh1", "broker"), name: (1).to_string()};
         let reason = rdm_transport::CallFailedReason::NotSent(rdm_core::outcome::NotSentReason::Deadline);
         PassOver(passed.clone()).on_call_failed(&CallFailedCtx { sender: birth(NodeId::mint()), receiver: Some(birth(receiver.clone())), reason }).await;
         assert!(passed.0.borrow().contains_key(&receiver), "the spent call's receiver is passed over");

@@ -97,7 +97,7 @@ async fn answer(mut acceptor: rdm_transport::connections::Acceptor, own: String)
             while let Ok((mut send, mut recv)) = conn.accept_bi().await {
                 let Ok(bytes) = recv.read_to_end(1 << 20).await else { break };
                 let peer = conn.peer();
-                tracing::info!(target: "rshape", node = %own, peer_path = %peer.name.path, peer_name = %peer.name.name, bytes = bytes.len(), "a data-plane stream answered by the node-admin");
+                tracing::info!(target: "rshape", node = %own, peer_path = %peer.path, peer_name = %peer.name, bytes = bytes.len(), "a data-plane stream answered by the node-admin");
                 if send.write_all(format!("echo {own}: {}", String::from_utf8_lossy(&bytes)).as_bytes()).await.is_err() || send.finish().is_err() {
                     break;
                 }
@@ -111,7 +111,7 @@ async fn answer(mut acceptor: rdm_transport::connections::Acceptor, own: String)
 async fn talk_to_brokers(started: &Started) {
     let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("type", ["broker"]).eq("status", ["ready"]);
     for broker in started.view.nodes_get(&filter).unwrap_or_default() {
-        let to = rdm_transport::connections::Birth { mesh: broker.node.mesh.clone(), r#type: broker.node.r#type.clone(), name: broker.node.name.clone(), node_id: broker.node.node_id.clone(), incarnation: broker.node.incarnation.clone() };
+        let to = rdm_transport::connections::Birth { mesh: broker.node.mesh.clone(), r#type: broker.node.r#type.clone(), path: broker.node.path.clone(), name: broker.node.name.clone(), node_id: broker.node.node_id.clone(), incarnation: broker.node.incarnation.clone() };
         let answered = async {
             let conn = started.dialer.open(&to).await.map_err(|e| format!("{e:?}"))?;
             let (mut send, mut recv) = conn.open_bi().await.map_err(|e| format!("{e:?}"))?;
@@ -121,9 +121,9 @@ async fn talk_to_brokers(started: &Started) {
             Ok::<String, String>(String::from_utf8_lossy(&bytes).into_owned())
         };
         match tokio::time::timeout(Duration::from_secs(10), answered).await {
-            Ok(Ok(answer)) => tracing::info!(target: "rshape", broker_path = %to.name.path, broker_name = %to.name.name, %answer, "the node-admin's data connection to a broker answered"),
-            Ok(Err(e)) => tracing::warn!(target: "rshape", broker_path = %to.name.path, broker_name = %to.name.name, error = %e, "the node-admin's data connection to a broker failed"),
-            Err(_) => tracing::warn!(target: "rshape", broker_path = %to.name.path, broker_name = %to.name.name, "the node-admin's data connection to a broker did not answer within 10 s"),
+            Ok(Ok(answer)) => tracing::info!(target: "rshape", broker_path = %to.path, broker_name = %to.name, %answer, "the node-admin's data connection to a broker answered"),
+            Ok(Err(e)) => tracing::warn!(target: "rshape", broker_path = %to.path, broker_name = %to.name, error = %e, "the node-admin's data connection to a broker failed"),
+            Err(_) => tracing::warn!(target: "rshape", broker_path = %to.path, broker_name = %to.name, "the node-admin's data connection to a broker did not answer within 10 s"),
         }
     }
 }

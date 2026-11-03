@@ -37,13 +37,13 @@ async fn main() -> Result<()> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH")
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    let entry = birth.name.clone();
+    let entry = birth.location();
     let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
     let carrier = peers.carrier_at(entry.clone());
     let all = Nodes::new(carrier.clone()).get(&Filter::new()).await?;
     peers.learn(&all);
 
-    let fp_row = all.iter().find(|n| n.name == entry).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", entry.path, entry.name))?;
+    let fp_row = all.iter().find(|n| n.location() == entry).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", entry.path, entry.name))?;
     let peer_mesh = match std::env::args().nth(1) {
         Some(m) => m,
         None => all
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
 
     // The CA the issuer is minted under rides with it (Q275), as cert_renewal sends it.
     let ca_key = CaKeyHex(issuer.ca_key_of(&key).unwrap_or_default());
-    let primary_inc = primary.incarnation_id.clone().ok_or_else(|| anyhow!("no incarnation_id on path {:?}, name {:?}", primary.name.path, primary.name.name))?;
+    let primary_inc = primary.incarnation_id.clone().ok_or_else(|| anyhow!("no incarnation_id on path {:?}, name {:?}", primary.path, primary.name))?;
     let req_primary = StatusRequest::UpdateIssuer {
         node_id: primary.node_id.clone(),
         incarnation: primary_inc,
@@ -91,18 +91,18 @@ async fn main() -> Result<()> {
         .call::<Status>(&NodeTarget::ExactNode(primary.node_id.clone()), &req_primary, &CallOptions::default())
         .await;
     let RpcOutcome::Reply(reply_primary) = out_primary else {
-        return Err(anyhow!("direct UpdateIssuer to path {:?}, name {:?} failed: {out_primary:?}", primary.name.path, primary.name.name));
+        return Err(anyhow!("direct UpdateIssuer to path {:?}, name {:?} failed: {out_primary:?}", primary.path, primary.name));
     };
     let StatusReply::IssuerUpdated { issuer_expires_at: exp_primary, .. } = reply_primary.into_value() else {
-        return Err(anyhow!("unexpected StatusReply from path {:?}, name {:?}", primary.name.path, primary.name.name));
+        return Err(anyhow!("unexpected StatusReply from path {:?}, name {:?}", primary.path, primary.name));
     };
     assert_eq!(exp_primary, mint.expires_at);
     println!(
         "step 1 direct node.issuer.update to mesh-primary path {:?}, name {:?} ({}): IssuerUpdated(expires_at={exp_primary})",
-        primary.name.path, primary.name.name, primary.node_id
+        primary.path, primary.name, primary.node_id
     );
 
-    let replica_inc = replica.incarnation_id.clone().ok_or_else(|| anyhow!("no incarnation_id on path {:?}, name {:?}", replica.name.path, replica.name.name))?;
+    let replica_inc = replica.incarnation_id.clone().ok_or_else(|| anyhow!("no incarnation_id on path {:?}, name {:?}", replica.path, replica.name))?;
     let req_replica = StatusRequest::UpdateIssuer {
         node_id: replica.node_id.clone(),
         incarnation: replica_inc,
@@ -120,15 +120,15 @@ async fn main() -> Result<()> {
         )
         .await;
     let RpcOutcome::Reply(reply_replica) = out_replica else {
-        return Err(anyhow!("forwarded UpdateIssuer to path {:?}, name {:?} failed: {out_replica:?}", replica.name.path, replica.name.name));
+        return Err(anyhow!("forwarded UpdateIssuer to path {:?}, name {:?} failed: {out_replica:?}", replica.path, replica.name));
     };
     let StatusReply::IssuerUpdated { issuer_expires_at: exp_replica, .. } = reply_replica.into_value() else {
-        return Err(anyhow!("unexpected StatusReply from path {:?}, name {:?}", replica.name.path, replica.name.name));
+        return Err(anyhow!("unexpected StatusReply from path {:?}, name {:?}", replica.path, replica.name));
     };
     assert_eq!(exp_replica, mint.expires_at);
     println!(
         "step 2 forwarded node.issuer.update via path {:?}, name {:?} to path {:?}, name {:?} ({}): IssuerUpdated(expires_at={exp_replica})",
-        primary.name.path, primary.name.name, replica.name.path, replica.name.name, replica.node_id
+        primary.path, primary.name, replica.path, replica.name, replica.node_id
     );
     Ok(())
 }

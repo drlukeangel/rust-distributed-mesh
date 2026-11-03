@@ -26,7 +26,7 @@ async fn enter() -> Result<(Peers, PathName)> {
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode =
         serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 #[tokio::main]
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
         (Some(path), Some(name)) => {
             let node = PathName::new(&path, &name).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
             rows.iter()
-                .find(|n| n.name == node && n.status == NodeStatus::Ready)
+                .find(|n| n.location() == node && n.status == NodeStatus::Ready)
                 .ok_or_else(|| anyhow!("no ready row for path {path:?}, name {name:?}"))?
                 .clone()
         }
@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
             .ok_or_else(|| anyhow!("no ready secondary role node in the estate"))?
             .clone(),
     };
-    let target_name = before.name.clone();
+    let target_name = before.location();
     let old_dir = before.data_dir.clone().ok_or_else(|| anyhow!("missing data_dir"))?;
     let fact = RuntimeFact::read_record(Path::new(&old_dir))
         .ok_or_else(|| anyhow!("no runtime.json in {old_dir}"))?
@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
     let handle = adopt(&provider, &fact).map_err(|e| anyhow!(e))?;
     println!(
         "before: path {:?}, name {:?} node_id={} inc={:?} endpoint={:?} data_dir={}",
-        before.name.path, before.name.name, before.node_id, before.incarnation_id, before.endpoint_id, old_dir
+        before.path, before.name, before.node_id, before.incarnation_id, before.endpoint_id, old_dir
     );
 
     provider
@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| anyhow!("{e}"))?;
     std::fs::remove_dir_all(&old_dir)?;
-    println!("terminated path {:?}, name {:?} and removed {}; awaiting recovery over fresh data_dir", before.name.path, before.name.name, old_dir);
+    println!("terminated path {:?}, name {:?} and removed {}; awaiting recovery over fresh data_dir", before.path, before.name, old_dir);
 
     let filter = Filter::new().eq("mesh", [before.mesh.clone()]);
     let old_id = before.node_id.clone();
@@ -92,25 +92,25 @@ async fn main() -> Result<()> {
         || nodes.get(&filter),
         |list| {
             list.iter().any(|n| {
-                n.name == target_name && n.node_id != old_id && n.status == NodeStatus::Ready
+                n.location() == target_name && n.node_id != old_id && n.status == NodeStatus::Ready
             })
         },
         |list| {
             list.iter()
-                .find(|n| n.name == target_name)
-                .map(|n| format!("path {:?}, name {:?} {:?} ({})", n.name.path, n.name.name, n.status, n.node_id))
+                .find(|n| n.location() == target_name)
+                .map(|n| format!("path {:?}, name {:?} {:?} ({})", n.path, n.name, n.status, n.node_id))
                 .unwrap_or_else(|| format!("no path {:?}, name {:?}", target_name.path, target_name.name))
         },
     )
     .await?;
     let after = recovered
         .iter()
-        .find(|n| n.name == target_name)
+        .find(|n| n.location() == target_name)
         .ok_or_else(|| anyhow!("missing path {:?}, name {:?}", target_name.path, target_name.name))?;
     println!(
         "after:  path {:?}, name {:?} node_id={} inc={:?} endpoint={:?} data_dir={:?} (new_dir={})",
-        after.name.path,
-        after.name.name,
+        after.path,
+        after.name,
         after.node_id,
         after.incarnation_id,
         after.endpoint_id,

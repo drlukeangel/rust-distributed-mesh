@@ -27,11 +27,11 @@ use rdm_transport::{CallOptions, NodeTarget, RouteChoice};
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 fn exact(n: &NodeView) -> Result<ExactBirth> {
-    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.name.path, n.name.name))?;
+    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
     Ok(ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation })
 }
 
@@ -60,12 +60,12 @@ async fn main() -> Result<()> {
     let fabric = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabric.get answered no fabric"))?;
     let rows = Nodes::new(carrier.clone()).get(&Filter::new()).await?;
     peers.learn(&rows);
-    let row = rows.iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds path {path:?}, name {name:?}"))?;
+    let row = rows.iter().find(|n| n.location() == node).ok_or_else(|| anyhow!("no row holds path {path:?}, name {name:?}"))?;
     let receiver = rows.iter().find(|n| n.is_fabric_primary).ok_or_else(|| anyhow!("no row names the fabric-primary"))?;
     // A carrier: the one named, else a ready node-admin of another mesh than the fabric-primary's.
     let ready_admin_elsewhere = |n: &&NodeView| n.r#type == "node-admin" && n.mesh != receiver.mesh && n.incarnation_id.is_some() && !n.stopped;
     let carrier_row = match &forced {
-        Some(c) => rows.iter().find(|n| &n.name == c).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", c.path, c.name))?,
+        Some(c) => rows.iter().find(|n| &n.location() == c).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", c.path, c.name))?,
         None => rows.iter().find(ready_admin_elsewhere).ok_or_else(|| anyhow!("{} holds no node-admin outside {} to carry the call", fabric.name, receiver.mesh))?,
     };
 
@@ -86,12 +86,12 @@ async fn main() -> Result<()> {
             Ok(reply) => reply,
             // Provably not sent: the same call through a carrier cannot run it twice.
             Err(e) if matches!(e.downcast_ref::<CallEnd>(), Some(CallEnd::NotSent { .. })) => {
-                println!("direct to path {:?}, name {:?}: {e}; carried by path {:?}, name {:?}", receiver.name.path, receiver.name.name, carrier_row.name.path, carrier_row.name.name);
+                println!("direct to path {:?}, name {:?}: {e}; carried by path {:?}, name {:?}", receiver.path, receiver.name, carrier_row.path, carrier_row.name);
                 send(via(carrier_row)).await?
             }
             Err(e) => return Err(e),
         }
     };
-    println!("node.config.update {key}={value} on path {path:?}, name {name:?} at path {:?}, name {:?}: {reply:?}", receiver.name.path, receiver.name.name);
+    println!("node.config.update {key}={value} on path {path:?}, name {name:?} at path {:?}, name {:?}: {reply:?}", receiver.path, receiver.name);
     Ok(())
 }

@@ -24,12 +24,12 @@ use std::collections::BTreeSet;
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 /// A call to a node is for its exact birth: the node id and the incarnation its row holds.
 fn exact(n: &NodeView) -> Result<ExactBirth> {
-    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.name.path, n.name.name))?;
+    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
     Ok(ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation })
 }
 
@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
     // The node's row and its mesh-primary's (of the mesh the node's row names), from one read.
     let all = nodes.get(&Filter::new()).await?;
     peers.learn(&all);
-    let row = all.iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
+    let row = all.iter().find(|n| n.location() == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
     let primary = all.iter().find(|n| n.mesh == row.mesh && n.r#type == "node-admin" && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh))?;
 
     let labels = BTreeSet::from([label.clone()]);
@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     println!("node.tag.create {label} on path {:?}, name {:?}: {created:?}", node.path, node.name);
 
     let tagged = nodes.get(&Filter::new().eq("tags", [label.clone()])).await?;
-    println!("node.get [tags: {label}]: {:?}", tagged.iter().map(|n| (&n.name.path, &n.name.name)).collect::<Vec<_>>());
+    println!("node.get [tags: {label}]: {:?}", tagged.iter().map(|n| (&n.path, &n.name)).collect::<Vec<_>>());
 
     let deleted = nodes.tags_delete(&exact(row)?, &primary.node_id, &RouteChoice::Direct, &TagScope::Labels(labels)).await?;
     println!("node.tag.delete {label} on path {:?}, name {:?}: {deleted:?}", node.path, node.name);

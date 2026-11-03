@@ -23,7 +23,7 @@ async fn enter() -> Result<(Peers, PathName)> {
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode =
         serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 #[tokio::main]
@@ -62,12 +62,12 @@ async fn main() -> Result<()> {
         nodes: model_nodes.clone(),
     };
 
-    let admin = model_nodes.iter().find(|n| n.name == entry).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", entry.path, entry.name))?;
+    let admin = model_nodes.iter().find(|n| n.location() == entry).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", entry.path, entry.name))?;
     let mut args = std::env::args().skip(1);
     let target = match (args.next(), args.next()) {
         (Some(path), Some(name)) => {
             let name = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
-            model_nodes.iter().find(|n| n.name == name).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", name.path, name.name))?
+            model_nodes.iter().find(|n| n.location() == name).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", name.path, name.name))?
         }
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_tickle [<path> <name>]")),
         _ => model_nodes
@@ -78,14 +78,14 @@ async fn main() -> Result<()> {
     let inc = target.incarnation_id.as_ref().ok_or_else(|| anyhow!("missing incarnation_id"))?;
 
     let carriers: Vec<_> = eligible_carriers(&view, target, Some(&admin.node_id))
-        .map(|c| format!("path {:?}, name {:?}", c.name.path, c.name.name))
+        .map(|c| format!("path {:?}, name {:?}", c.path, c.name))
         .collect();
     println!(
         "ladder budget={:?}, fanout={}, eligible carriers for path {:?}, name {:?}: [{}]",
         tickle_ladder_at_default_budget(),
         VIA_PEER_TICKLE_FANOUT,
-        target.name.path,
-        target.name.name,
+        target.path,
+        target.name,
         carriers.join("; ")
     );
 
@@ -99,13 +99,13 @@ async fn main() -> Result<()> {
     match tickle(target, &view, &calls).await.map_err(|e| anyhow!(e))? {
         Tickle::Reached { answer, carrier } => println!(
             "direct tickle path {:?}, name {:?}: reached(answer={}, carrier={:?}, birth_answered={})",
-            target.name.path,
-            target.name.name,
+            target.path,
+            target.name,
             answer.name(),
             carrier,
             birth_answered(Some(&answer), &target.node_id, inc)
         ),
-        Tickle::Unreached(u) => println!("direct tickle path {:?}, name {:?}: unreached({})", target.name.path, target.name.name, u.direct.name()),
+        Tickle::Unreached(u) => println!("direct tickle path {:?}, name {:?}: unreached({})", target.path, target.name, u.direct.name()),
     }
 
     let peer_carrier = eligible_carriers(&view, target, Some(&admin.node_id))
@@ -122,10 +122,10 @@ async fn main() -> Result<()> {
     };
     println!(
         "via-peer tickle path {:?}, name {:?} through path {:?}, name {:?}: end={} birth_answered={}",
-        target.name.path,
-        target.name.name,
-        peer_carrier.name.path,
-        peer_carrier.name.name,
+        target.path,
+        target.name,
+        peer_carrier.path,
+        peer_carrier.name,
         via_end.name(),
         via_ok
     );

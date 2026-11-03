@@ -21,7 +21,7 @@ async fn enter() -> Result<(Peers, PathName)> {
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode =
         serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 async fn finish(what: &str, mut w: WorkflowStream) -> Result<()> {
@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
         (Some(path), Some(name)) => {
             let name = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
             rows.iter()
-                .find(|n| n.name == name)
+                .find(|n| n.location() == name)
                 .ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", name.path, name.name))?
                 .clone()
         }
@@ -82,19 +82,19 @@ async fn main() -> Result<()> {
     };
     println!(
         "before stop: path {:?}, name {:?} status={:?} stopped={} node_id={}",
-        target.name.path, target.name.name, target.status, target.stopped, target.node_id
+        target.path, target.name, target.status, target.stopped, target.node_id
     );
 
-    finish(&format!("node.stop path {:?}, name {:?}", target.name.path, target.name.name), nodes.stop(&target.name).await?).await?;
+    finish(&format!("node.stop path {:?}, name {:?}", target.path, target.name), nodes.stop(&target.location()).await?).await?;
     let stopped_rows = nodes.get(&Filter::new().eq("mesh", [target.mesh.clone()])).await?;
     if let Some(s) = stopped_rows.iter().find(|n| n.name == target.name) {
         println!(
             "after stop:  path {:?}, name {:?} status={:?} stopped={} inc={:?}",
-            s.name.path, s.name.name, s.status, s.stopped, s.incarnation_id
+            s.path, s.name, s.status, s.stopped, s.incarnation_id
         );
     }
 
-    let target_name = target.name.clone();
+    let target_name = target.location();
     let filter = Filter::new().eq("mesh", [target.mesh.clone()]);
     await_fact(
         "node",
@@ -102,11 +102,11 @@ async fn main() -> Result<()> {
         "stopped birth collected by RDM_STOPPED_NODE_TTL sweep",
         Duration::from_secs(60),
         || nodes.get(&filter),
-        |list| list.iter().all(|n| n.name != target_name),
+        |list| list.iter().all(|n| n.location() != target_name),
         |list| {
             list.iter()
-                .find(|n| n.name == target_name)
-                .map(|n| format!("path {:?}, name {:?} {:?} (stopped={})", n.name.path, n.name.name, n.status, n.stopped))
+                .find(|n| n.location() == target_name)
+                .map(|n| format!("path {:?}, name {:?} {:?} (stopped={})", n.path, n.name, n.status, n.stopped))
                 .unwrap_or_else(|| format!("path {:?}, name {:?} collected", target_name.path, target_name.name))
         },
     )

@@ -82,7 +82,7 @@ async fn broker(
         fabric_id: d.fabric_id.clone(),
         mesh: d.node.mesh.clone(),
         r#type: "broker".into(),
-        name: rdm_core::PathName::numbered(&d.node.mesh, "broker", 1),
+        path: format!("{}.{}", &d.node.mesh, "broker"), name: (1).to_string(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -92,7 +92,7 @@ async fn broker(
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
         launcher: Some(rdm_core::launch::Launcher {
             mesh: d.node.mesh.clone(),
-            name: d.node.name.clone(),
+            path: d.node.path.clone(), name: d.node.name.clone(),
             node_id: d.node.node_id.clone(),
             incarnation: d.node.incarnation.clone(),
         }),
@@ -104,7 +104,7 @@ async fn broker(
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), listeners: Vec::new(),
-        name: launch.name.clone(),
+        path: launch.path.clone(), name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
         supersedes: None,

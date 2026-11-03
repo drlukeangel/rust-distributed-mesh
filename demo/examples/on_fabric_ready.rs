@@ -50,7 +50,7 @@ async fn verify_against_live_estate(raw_birth: &str) -> Result<(), String> {
     };
     let birth = birth_of_line(&line).ok_or("not a birth line")??;
     let peers = Peers::at(&birth).await?;
-    let carrier = peers.carrier_at(birth.name.clone());
+    let carrier = peers.carrier_at(birth.location());
 
     let fabric = Fabrics::new(carrier.clone())
         .fact("fabric ready", std::time::Duration::from_secs(30), |f| {

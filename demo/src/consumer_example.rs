@@ -528,7 +528,7 @@ impl PreNodeReady for Resume {
     async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
         match self.0.resume().await {
             Ok(resumed) => {
-                tracing::info!(target: "rshape", path = %ctx.birth.name.path, name = %ctx.birth.name.name, start_kind = ?ctx.start_kind, inherited = ctx.inherited, resumed, "the operations record is read; its pending operations' work is resumed");
+                tracing::info!(target: "rshape", path = %ctx.birth.path, name = %ctx.birth.name, start_kind = ?ctx.start_kind, inherited = ctx.inherited, resumed, "the operations record is read; its pending operations' work is resumed");
                 HookOutcome::Ok
             }
             Err(e) => HookOutcome::Failed { reason: format!("the operations record could not be read: {e}") },
@@ -591,7 +591,7 @@ impl Caller {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         for n in 1u64.. {
             tick.tick().await;
-            let (path, name) = (&ctx.birth.name.path, &ctx.birth.name.name);
+            let (path, name) = (&ctx.birth.path, &ctx.birth.name);
             pending.insert(format!("{path}-{name}-{}-{n:06}", ctx.birth.incarnation.as_str()), (format!("operation {n} of path {path:?}, name {name:?}"), Progress::ToSend));
             // Target selection: the serving kind's ready nodes in this node's mesh, as the topology
             // this node holds names them; a node that answered Unserved is passed over.
@@ -610,10 +610,10 @@ impl Caller {
                         let Some(target) = &chosen else { continue };
                         let request = WorkRequest::Submit { operation: operation.clone(), input: input.clone() };
                         let (outcome, _) = client.call::<ExampleWork>(&NodeTarget::ExactNode(target.node_id.clone()), &request, &CallOptions::default()).await;
-                        log_outcome("submit", operation, &target.name, &outcome);
+                        log_outcome("submit", operation, &target.location(), &outcome);
                         *state = match outcome {
                             RpcOutcome::Reply(reply) => match reply.into_value() {
-                                WorkReply::Accepted { .. } | WorkReply::Pending { .. } => Progress::Accepted(target.name.clone()),
+                                WorkReply::Accepted { .. } | WorkReply::Pending { .. } => Progress::Accepted(target.location()),
                                 WorkReply::Done { .. } | WorkReply::Conflict { .. } => Progress::Done,
                                 // not_ready, busy, connections_deleting, malformed: the node did not
                                 // take it; it is sent again with the next Submit.
@@ -627,7 +627,7 @@ impl Caller {
                                 Progress::ToSend
                             }
                             // Sent, its answer unknown: asked by id, never submitted blindly.
-                            RpcOutcome::Indeterminate(_) => Progress::Uncertain(target.name.clone()),
+                            RpcOutcome::Indeterminate(_) => Progress::Uncertain(target.location()),
                         };
                     }
                     Progress::Done => {}
@@ -653,7 +653,7 @@ impl Caller {
             }
             pending.retain(|_, (_, state)| !matches!(state, Progress::Done));
             if let Some(target) = chosen.as_ref().filter(|t| !unserved.contains(&t.node_id)) {
-                self.copy(&client, target.node_id.clone(), &target.name, &mut copied, &mut unserved).await;
+                self.copy(&client, target.node_id.clone(), &target.location(), &mut copied, &mut unserved).await;
             }
         }
     }

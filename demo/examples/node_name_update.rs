@@ -29,11 +29,11 @@ use rdm_transport::{NodeTarget, RouteChoice};
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.name))
+    Ok((Peers::at(&birth).await.map_err(|e| anyhow!(e))?, birth.location()))
 }
 
 fn exact(n: &NodeView) -> Result<ExactBirth> {
-    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.name.path, n.name.name))?;
+    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
     Ok(ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation })
 }
 
@@ -72,11 +72,11 @@ async fn main() -> Result<()> {
 
     let all = nodes.get(&Filter::new()).await?;
     peers.learn(&all);
-    let row = all.iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
+    let row = all.iter().find(|n| n.location() == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
     let primary = all.iter().find(|n| n.mesh == row.mesh && n.r#type == "node-admin" && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh))?;
 
     // The precondition: its connections deleted, then its mesh left.
-    finish("delete connections, leave mesh", nodes.steps(vec![Step::DeleteConnections { node: node.clone() }, Step::LeaveMesh { node: node.clone() }]).await?).await?;
+    finish("delete connections, leave mesh", nodes.steps(vec![Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()}, Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()}]).await?).await?;
 
     let reply = nodes.name_update(&exact(row)?, &primary.node_id, &RouteChoice::Direct, &renamed).await?;
     println!("node.name.update path {:?}, name {:?} -> name {:?}: {reply:?}", node.path, node.name, renamed.name);

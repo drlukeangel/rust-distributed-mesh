@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH")
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
-    let entry = birth.name.clone();
+    let entry = birth.location();
     let at = format!("path {:?}, name {:?}", entry.path, entry.name);
     let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
     let carrier = peers.carrier_at(entry.clone());
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
     let target = match (std::env::args().nth(1), std::env::args().nth(2)) {
         (Some(path), Some(name)) => {
             let node = PathName::new(&path, &name).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
-            all.into_iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds path {path:?}, name {name:?}"))?
+            all.into_iter().find(|n| n.location() == node).ok_or_else(|| anyhow!("no row holds path {path:?}, name {name:?}"))?
         }
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage: build_mesh_self_heal [<path> <name>]")),
         _ => all
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
         before_build.build_id, before_build.phase, before_build.attempt, mesh, before_lane_attempt
     );
 
-    let dir = target.data_dir.as_deref().ok_or_else(|| anyhow!("path {:?}, name {:?} has no data_dir", target.name.path, target.name.name))?;
+    let dir = target.data_dir.as_deref().ok_or_else(|| anyhow!("path {:?}, name {:?} has no data_dir", target.path, target.name))?;
     let fact = RuntimeFact::read_record(Path::new(dir))
         .ok_or_else(|| anyhow!("no runtime.json in {dir}"))?
         .map_err(|e| anyhow!(e))?;
@@ -101,19 +101,19 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow!("{e}"))?;
     println!(
         "terminated path {:?}, name {:?} ({}) in peer mesh {}; awaiting mesh-primary self-heal attempt on Build {}",
-        target.name.path, target.name.name, target.node_id, mesh, before_build.build_id
+        target.path, target.name, target.node_id, mesh, before_build.build_id
     );
 
     let old_id = target.node_id.clone();
-    let target_name = target.name.clone();
-    let filter = Filter::new().eq("path", [target_name.path()]).eq("name", [target_name.name()]);
+    let target_name = target.location();
+    let filter = Filter::new().eq("path", [target_name.path.clone()]).eq("name", [target_name.name.clone()]);
     let _ = await_fact(
         "node",
         &at,
         "peer mesh member self-healed Ready with new node_id",
         Duration::from_secs(90),
         || nodes.get(&filter),
-        |list| list.iter().any(|n| n.name == target_name && n.node_id != old_id && n.status == NodeStatus::Ready),
+        |list| list.iter().any(|n| n.location() == target_name && n.node_id != old_id && n.status == NodeStatus::Ready),
         |list| format!("{:?}", list.iter().map(|n| (&n.name, n.status, &n.node_id)).collect::<Vec<_>>()),
     )
     .await?;
