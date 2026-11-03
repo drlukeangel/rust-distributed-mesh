@@ -440,6 +440,8 @@ echo "i143-2805-process sh:scripts/i143-acceptance-gate.sh i143-2805-process" >>
 # stem stays in SCENARIO_SKIP: its estate cells are i143-2776-process's, and the external binary set
 # cell needs the consumer build only the release gate makes.
 echo "i143-2776-unit sh:scripts/i143-acceptance-gate.sh i143-2776-unit" >> $D/jobs
+# The replay manifest's estate cells, the external binary set included: release-only, after the consumer build (rdm#302).
+echo "i143-2776-process sh:scripts/i143-acceptance-gate.sh i143-2776-process" >> $D/jobs
 # connections.md §13 F, G, H on the process provider (rpc/proxy_cutback.rs); its stem stays in
 # SCENARIO_SKIP, so the sharded main job does not run it a second time.
 echo "i143-2938-process sh:scripts/i143-acceptance-gate.sh i143-2938-process" >> $D/jobs
@@ -515,7 +517,7 @@ export -f one; export O D DEPLOY SCENARIO_PKG OTEL_EXPORTER_OTLP_ENDPOINT RDM_ST
 # every job over a minute on its own (Luke 10-08: stems > 1 min run in the release suite between
 # epics). The cargo-invoking jobs (doctests, the no-default-features check) are release-only too:
 # during the stem phase they take cargo's package-cache lock that audit-tests' `cargo tree` waits on.
-RELEASE_ONLY='^(connections_restart|mesh_delete_resume|backbone|admins_lost_mid_build|mesh_delete_no_survivor|container-proof|i143-2777-container|i143-2805-container|i143-2784-chaos-container|node_type_election|rshape-[a-z-]+|i143-2777-process|i143-2780-process|node_admin_loss_recovery|peer_mesh_investigation|doctests|workspace-check|demo-admin-ui|restored_faults|node_replace|rafka_time_discipline|fabric_takeover|topology_storage_provider) '
+RELEASE_ONLY='^(connections_restart|mesh_delete_resume|backbone|admins_lost_mid_build|mesh_delete_no_survivor|container-proof|i143-2777-container|i143-2805-container|i143-2784-chaos-container|node_type_election|rshape-[a-z-]+|i143-2776-process|i143-2777-process|i143-2780-process|node_admin_loss_recovery|peer_mesh_investigation|doctests|workspace-check|demo-admin-ui|restored_faults|node_replace|rafka_time_discipline|fabric_takeover|topology_storage_provider) '
 if [ "$GATE" = fast ]; then grep -vE "$RELEASE_ONLY" $D/jobs > $D/jobs.fast && mv $D/jobs.fast $D/jobs; fi
 # Every suite job starts in the same concurrent batch. The release-only jobs are the long ones by
 # definition (above) and get the 900 s cap, so a job ends with its libtest summary and every
