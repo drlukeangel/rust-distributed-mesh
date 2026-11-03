@@ -82,8 +82,6 @@ fn own_row() -> rdm_core::views::NodeView {
         gossip: None,
         tags: Default::default(),
         config: [("k".to_string(), "v".to_string())].into(),
-        data_dir_lost: None,
-        data_dir_unreadable: None,
         types: Default::default(),
         held: Default::default(),
         held_hash: [0; 32],

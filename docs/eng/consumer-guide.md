@@ -95,7 +95,7 @@ The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/n
 |---|---|
 | small per-node settings | the node's `config` map: mine, RDM never reads it; replaced whole by `node.config.update`, a node's own (`config_update`) going up through its mesh-primary and a caller's down from the fabric-primary; a Build sets `config` and `tags` only on a node it creates and never writes a node it does not create (Q236, amended by Q342); every write is a PUT; at most 32 keys and 2048 bytes ([node-config-update.md](../architecture/lifecycles/node-config-update.md), [gossip.md §3.1](../architecture/gossip.md#31-frame-catalog)) |
 | labels to select nodes by | `tags`: see [Tags](#tags) below |
-| a node's durable data | under its `RDM_DATA_DIR`; carried across stop and start and recovery by its path's storage policy ([node-storage-runbook.md](node-storage-runbook.md)) |
+| a node's durable data | under its `RDM_DATA_DIR`. A stop and start keep it; a node re-created at the same `path` and `name` is launched on its predecessor's directory when its `storage_persistence` is `persistent` and the directory exists (`inherited` in `pre_node_ready`), on a new one otherwise. RDM never looks at what is inside: my `pre_node_ready` answers `Ok` when the data is usable, `Pending` while I wait for it, `Failed` when it is not ([storage.md §1](../architecture/storage.md#1-storage_persistence-a-nodes-own-storage)) |
 | my rows and events | my own storage, and my events on gossip ([gossip.md §8](../architecture/gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); RDM orders nothing of mine |
 | RDM's own records on my storage | the storage adapters ([build.md §5](../architecture/build.md#5-buildstateadapter)): persistence only, RDM writes whole records |
 | which backend RDM's records go to (`topology_storage_provider`), and registering mine | [topology storage provider overview](../features/topology-storage-provider/overview.md) |
@@ -151,7 +151,6 @@ count against the config cap.
 |---|---|
 | following a call, a Build or a node across processes | [telemetry.md](../architecture/telemetry.md) |
 | no node-admin is alive: bring the fabric-primary back | [fabric-recovery-runbook.md](fabric-recovery-runbook.md) |
-| a node's data dir is gone or broken | [provider-runbook.md](provider-runbook.md) |
 | a stateful node's data across stop and start, recovery, a rename and delete | [node-storage-runbook.md](node-storage-runbook.md) |
 | a storage change that stays blocked, fails before its switch, or meets a restart | [topology storage provider runbook](../features/topology-storage-provider/runbook.md) |
 | a refusal | its code and named detail: [node-rpc-envelope.md, Runtime spans](../architecture/node-rpc-envelope.md#runtime-spans); every refusal names its reason |

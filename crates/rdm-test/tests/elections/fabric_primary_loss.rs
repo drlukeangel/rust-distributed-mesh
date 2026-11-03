@@ -115,7 +115,7 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
 
 /// CONTRACT (fabric-recovery.md intro: "while any node-admin lives, the fabric-primary moves and is
 /// brought back without a person"; "The launched node-admin is a new node at the same separate path and name: a new
-/// node.id and incarnation and a new port, with the same endpoint key over the inherited data dir";
+/// node.id, incarnation, `endpoint_id` and port, over the inherited data dir or a new one (Q358)";
 /// node-admin-lifecycle.md §4.4, "fabric-primary is launched again into its own mesh"; elections §4.3:
 /// "the node-admin at the fabric-primary's separate path and name is re-created and is mesh-primary and
 /// fabric-primary again when it is Ready"; Q156: "a launch that finds a living admin is

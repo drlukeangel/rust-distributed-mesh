@@ -580,7 +580,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             identity_marker.is_file(),
             "node.delete must retain node-identity.json in the data directory"
         );
-        let retained_key = rdm_admin::deployment::pipeline::inspect_transport_key(&target_data_dir)
+        let retained_key = rdm_admin::deployment::pipeline::endpoint_id(&target_data_dir)
             .expect("endpoint key must remain intact in data_dir");
         assert_eq!(retained_key, endpoint_id);
 

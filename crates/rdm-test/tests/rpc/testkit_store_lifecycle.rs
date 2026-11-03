@@ -162,18 +162,17 @@ async fn testkit_store_node_restarts_preserves_same_node_store() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// CONTRACT (#2775; node-recovery.md: "node.delete of the exited instance, node.create at the same
-/// (path, name) over the inherited data dir, then node[2].update"): the runtime's death is answered by
-/// node recovery under the accepted Build, a new NodeId at the same (path, name) over the old birth's
-/// data dir: `path:` reaches the new primary, which serves what the old birth stored there; the old
-/// exact NodeId never follows the path:
+/// CONTRACT (#2775; node-recovery.md sequence steps 2-3; storage.md §1: "with `ephemeral` storage
+/// ... on a new one"; Q358, Q359): the runtime's death is answered by node recovery, a new NodeId and
+/// endpoint at the same (path, name) on a new data dir, a `node`'s storage being ephemeral: `path:`
+/// reaches the new node, whose store is empty; the old exact NodeId never follows the path:
 /// the probe's current-only resolver answers Unknown (NotSent), a node's own retained departure
 /// resolver answers Gone for it, Found (the replacement) for the path, Unknown for an id never
-/// seen. What must NOT happen: the replacement starting over another data dir, `exact:<old>`
+/// seen. What must NOT happen: the replacement handed the old birth's data dir, `exact:<old>`
 /// reaching the replacement, or any handler success at the old birth after its replacement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path() {
-    let cell = "testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path";
+async fn testkit_store_replacement_starts_on_a_new_data_dir_exact_old_never_follows_path() {
+    let cell = "testkit_store_replacement_starts_on_a_new_data_dir_exact_old_never_follows_path";
     let dir = acceptance_dir(cell);
     let (mut estate, build) = estate(cell).await;
     let path = format!("path:{}", serde_json::to_string(&node()).unwrap());
@@ -195,8 +194,9 @@ async fn testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows
     let replacement_dir = estate.node_view(&node()).await.data_dir.expect("the launching admin advertises the node's data dir");
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
-    assert_eq!(replacement_dir, first_dir, "node recovery creates the new node over the old birth's data dir");
-    assert_eq!(fresh["reply"]["result"], json!({"found": true, "value": "old-birth"}), "the new node serves what the old birth stored in the inherited data dir: {fresh}");
+    assert_ne!(replacement_dir, first_dir, "node recovery creates the new node on a new data dir: a `node`'s storage is ephemeral (Q359)");
+    assert_ne!(replacement["endpoint_id"], first["endpoint_id"], "a new endpoint_id (Q358)");
+    assert_eq!(fresh["reply"]["result"], json!({"found": false}), "the new node's store is empty: nothing is inherited: {fresh}");
     let old = estate.probe(&["get", "--target", &exact_old, "--key", "41"]);
     // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
     assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
@@ -234,7 +234,7 @@ async fn testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows
     // a batch provider). The put's reply named the old birth as executor (`landed_on` above); the
     // caller's span is the put's trace.
     let stored = named(&spans, "rdm.node_rpc.testkit_store.resolve.via-probe").into_iter().find(|s| s["attributes"]["op"] == "put" && s["attributes"]["target"] == path.as_str()).cloned().expect("the probe's put call span");
-    let inherited = served.iter().find(|s| s["attributes"]["node_id"] == replacement["node_id"] && s["attributes"]["op"] == "get" && s["attributes"]["outcome"] == "value").cloned().expect("the new node served the value the old birth stored");
+    let inherited = served.iter().find(|s| s["attributes"]["node_id"] == replacement["node_id"] && s["attributes"]["op"] == "get" && s["attributes"]["outcome"] == "absent").cloned().expect("the new node answered the get, holding nothing of the old birth's");
     let replace_start = replace["start_unix_nano"].as_u64().unwrap_or(0);
     let old_after: Vec<&&Value> = served.iter().filter(|s| s["attributes"]["node_id"] == first["node_id"] && s["start_unix_nano"].as_u64().unwrap_or(0) > replace_start).collect();
     assert!(old_after.is_empty(), "no handler ran at the old birth after its replacement: {old_after:?}");

@@ -42,8 +42,6 @@ pub fn node(name: PathName, mesh: &str, r#type: &str, node_id: &NodeId, endpoint
         gossip: None,
         tags: Default::default(),
         config: Default::default(),
-        data_dir_lost: None,
-        data_dir_unreadable: None,
     }
 }
 

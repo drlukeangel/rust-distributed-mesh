@@ -214,7 +214,7 @@ What each state is, and what the mesh does with it:
 |---|---|---|---|
 | `Running` | the exact runtime exists, is nonterminal and is not observed OS-suspended | the runtime is not gone; this shows neither that it answers nor that it is ready, however silent or loud the node | [node investigation](lifecycles/node-investigation.md)'s `running` verdict: a silent `Running` birth is re-created, `TerminateRuntime` first ([node recovery](lifecycles/node-recovery.md)) |
 | `OsStopped` | the operating system holds every task suspended | the exact runtime exists and is observed suspended: this shows neither exit nor a completed `node.stop`, and says nothing about whether the node would answer once the suspension ends | node investigation's `os-stopped` verdict: re-created over a newly allocated data dir; an explicit node.delete skips the stop and terminates |
-| `Exited { code }` | the exact runtime ended | the concrete runtime can no longer accept work | node investigation's `exited` verdict: re-created over the inherited data dir, `TerminateRuntime` first, which removes what the runtime left (Q145); a delete proceeds to `node.deleted` |
+| `Exited { code }` | the exact runtime ended | the concrete runtime can no longer accept work | node investigation's `exited` verdict: re-created over the predecessor's data dir when its `storage_persistence` is `persistent` and the directory exists (a newly allocated one otherwise), `TerminateRuntime` first, which removes what the runtime left (Q145); a delete proceeds to `node.deleted` |
 | `Unknown` | the inspection could not tell | neither life nor exit | node investigation's `unproven` verdict: re-created over a newly allocated data dir |
 
 `OsStopped` changes state only through the operating system. It is an answer of node.runtime.inspect and a verdict of node investigation like the others; nothing holds on it and nothing waits for it to change. An explicit `node.delete` of an OS-stopped birth stays available: it skips the Node RPC stop by name (a suspended process answers no call), runs `TerminateRuntime` on the exact handle as `terminate(Immediate)` (no graceful wait; nothing of the runtime is resumed) and continues ([node.delete](lifecycles/node-delete.md)).
@@ -253,7 +253,7 @@ The provider is driven by the DeploymentPipeline, whose steps are the Build's `r
 AllocateIdentity
 CheckName                 the mesh-primary checks the path and name against its records; NameHeld launches nothing
 AllocateEndpoints
-PrepareStorage            a fresh data_dir, or an inherited one inspected (gone / broken, §4)
+PrepareStorage            a fresh data_dir or the predecessor's, never inspected; a new endpoint key written there (§4)
 PrepareNetwork
 DeployRuntime             spawn, or find and adopt a launch a lost executor left running
 RegisterExactRuntimeHandle
@@ -280,12 +280,9 @@ A `node.delete` of a live target runs the whole [node.stop](lifecycles/node-stop
 
 A node's storage is a typed property of its Nodes schema (`storage_persistence`, its type's when the node states none; [build.md §1](build.md#1-build-is-the-only-topology-mutation-engine)); `config` is the application's map, which RDM never reads. `Tag` is an extrinsic annotation with no execution semantics. The pipeline interprets the storage and resolves concrete storage actions against exact locators; the provider interprets neither.
 
-Persistence belongs to the logical `path` and `name`, not its incarnation: Ephemeral storage is fresh for a new node; Persistent storage survives stop and start, and a new node created over an inherited data dir keeps it. Delete releases no storage; `Preserve` issues no release action.
+Persistence belongs to the logical `path` and `name`, not its node.id: Ephemeral storage is fresh for a new node; Persistent storage survives stop and start, and a new node created over an inherited data dir keeps it. Delete releases no storage; `Preserve` issues no release action.
 
-`PrepareStorage` for a recovery (R-FM2) tells **gone** from **broken** by the error, never by a guess:
-
-- **Gone.** The inherited directory itself is absent (`NotFound` on the directory). When it stays absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors (default 2, to ride out a remount), the mesh-primary records `data-dir-lost { path, since }` on the exited birth and the same recovery creates the node at the same `path` and `name` over a fresh `data_dir` beside the old path with a newly minted endpoint key (the old key is never re-minted: the key belongs to the data dir), and `pre_node_ready` runs with `inherited = false` (`RDM_INHERITED_DATA_DIR=0`; the application resyncs).
-- **Broken.** The directory exists but `node-key` is missing, unreadable or corrupt. `PrepareStorage` fails by name without minting a key, records `data-dir-unreadable { path, cause }` on the exited birth, and the mesh-primary holds the recovery (not due while the fact stands) until the key reads again, then proceeds with `inherited = true`.
+`PrepareStorage` for a recovery's create takes the predecessor's `data_dir` when the node's `storage_persistence` is `persistent` and the directory exists (`RDM_INHERITED_DATA_DIR=1`), and a newly allocated one otherwise (`RDM_INHERITED_DATA_DIR=0`). It does not look at what the directory holds: it mints a new endpoint key and writes it there as the new node's own (Q358). Whether the data is usable is the node's `pre_node_ready` answer (Q359).
 
 RDM deletes nothing on disk, ever. A node's storage default is its type's: `node-admin` Persistent, `node` Ephemeral, and a declared type its own (`RDM_NODE_TYPES`); the three-state `StoragePersistence` contract is RDM law. Normalization happens before Build acceptance; an accepted Build carries explicit per-path config, and neither pipeline nor provider applies hidden defaults.
 
@@ -304,8 +301,7 @@ RDM deletes nothing on disk, ever. A node's storage default is its type's: `node
 | `rdm.node_admin.deployment.update.via-step` | the pipeline, per step | build_id, node, step (`DeployRuntime`, `PrepareStorage`, `TerminateRuntime`, …), outcome |
 | `rdm.node_admin.node.resolve.via-provider-inspection` | the caller of node.runtime.inspect | node, node_id, incarnation_id, inspector, handle, `verdict` (`running` / `os-stopped` / `exited` / `unavailable`), exit_code, reason |
 | `rdm.node_admin.runtime.reject.via-<reason>` | adopt | `invalid-fact`, `other-provider`, `foreign-control-domain` |
-| `rdm.node_admin.node.update.via-data-dir-lost`, `via-data-dir-unreadable` | PrepareStorage | node, node_id, incarnation_id, path, cause |
 | `rdm.node_admin.deployment.update.via-provider-command` | the provider, per command | operation, deployment_id, container, domain, deadline_ms, elapsed_ms, outcome (`answered` / `failed` / `deadline` / `cancelled` / `client-error`), exit_code, client_kill, cleanup, external_outcome, stderr (scrubbed, the tail), stderr_truncated |
 | `rdm.node_admin.deployment.remove.via-created-container` | find | node, deployment_id, container |
 
-Environment: `MESH_SPAWN_TYPE`, `RDM_CONTAINER_SUBNET_POOL`, `RDM_REQUIRE_CONTAINER`, `RDM_DATA_DIR_GONE_FLOORS`, `RDM_INHERITED_DATA_DIR` (the table in `CLAUDE.md`).
+Environment: `MESH_SPAWN_TYPE`, `RDM_CONTAINER_SUBNET_POOL`, `RDM_REQUIRE_CONTAINER`, `RDM_INHERITED_DATA_DIR` (the table in `CLAUDE.md`).

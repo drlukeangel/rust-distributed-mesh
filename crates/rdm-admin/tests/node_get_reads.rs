@@ -6,7 +6,7 @@
 //! plans.
 
 use rdm_admin::model::*;
-use rdm_admin::storage::{BirthRef, DataDirLost, DataDirUnreadable, NodeRow};
+use rdm_admin::storage::NodeRow;
 use rdm_admin::node_rows::WriteRecord as _;
 use rdm_admin::storage::MemoryNodesStorage;
 use rdm_admin::topology::Topology;
@@ -45,8 +45,8 @@ fn path(path: &str, name: &str) -> PathName {
 
 /// The node read over `view`, each record read through the reader (query.md §1) over `status`'s name
 /// claims and the lifecycle records `status`'s records are written as under their mesh's writer in `view`.
-async fn answer(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin::views::Planned, filter: Filter) -> Vec<rdm_core::views::NodeView> {
-    match reply(view, status, planned, &filter).await {
+async fn answer(view: &Topology, status: &MemoryNodesStorage, filter: Filter) -> Vec<rdm_core::views::NodeView> {
+    match reply(view, status, &filter).await {
         StatusReply::Nodes { nodes } => nodes,
         other => panic!("node.get {filter:?} answered {other:?}"),
     }
@@ -55,7 +55,7 @@ async fn answer(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admi
 /// The reply of `node.get` with `filter` over `view`, each record read through the reader: every record
 /// `status` holds is read at its node id, each mesh in `view` given its Mesh record
 /// ([`crate::write_meshes`]), its properties the node's own ([`properties`]).
-async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin::views::Planned, filter: &Filter) -> StatusReply {
+async fn reply(view: &Topology, status: &MemoryNodesStorage, filter: &Filter) -> StatusReply {
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     let meshes = rdm_admin::storage::MemoryMeshStorage::default();
@@ -78,104 +78,7 @@ async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin
         }
     }
     let current = rdm_admin::current_record::CurrentRecords { nodes: status };
-    rdm_admin::views::nodes_answer_with_status(&path("mesh1.node-admin", "1"), view, &loads, &atlas, planned, filter, &|_| {}, Some(current)).await
-}
-
-/// CONTRACT (`docs/architecture/lifecycles/node-recovery.md:152` — "It writes the birth's durable
-/// `data-dir-lost` fact to the mesh's `nodes.storage` at `<mesh>/<node.id>/<incarnation.id>/data-dir-lost`,
-/// then deletes the unreached birth (`node.delete` with `skip_stop`)" and
-/// `docs/architecture/lifecycles/node-recovery.md:161` — "It writes the birth's durable
-/// `data-dir-unreadable` fact to `<mesh>/<node.id>/<incarnation.id>/data-dir-unreadable` (the path and
-/// the failure cause), deletes the unreached birth (`node.delete` with `skip_stop`), and **does not**
-/// run `node.create`."; `docs/architecture/lifecycles/node-recovery.md:107` — "On recovery (`node.delete`
-/// + `node.create` at the same `(path, name)`), the `Deleted` row written by `node.delete` retains the
-/// exited node's `config` and `tags`; the subsequent `node.create`'s name claim reads that `Deleted`
-/// row and copies its `config` and `tags` into the new node's row before writing.";
-/// storage-whole-records.md: "A birth recovered over a fresh data dir reads its predecessor's
-/// `data-dir-lost` through the `predecessor` reference on its own record"): a birth recovered over a
-/// fresh data dir at the (path, name) of a birth whose data dir was lost answers that loss on
-/// `node.get`, read on the record its own record names as its predecessor; a birth the view no longer
-/// holds (deleted by its recovery, held with its data dir unreadable) is answered, by mesh and by its
-/// id, at the path the current Build plans, read on the record held at that `(path, name)`; a
-/// birth with neither fact answers neither. A Build that cannot be read names no path: the births the
-/// view holds are still answered. A cleared unreadable fact is answered no more. Must NOT happen: the
-/// loss answered only on the exited birth, or the held birth missing while the Build plans its path.
-// @feature: data-dir-lost-recovery
-#[tokio::test]
-async fn node_get_answers_data_dir_facts_from_the_records_at_their_path_name() {
-    let mut admin = node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
-    admin.is_primary = true;
-    admin.is_fabric_primary = true;
-    let (plain, recovered) = (node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"));
-    let view = Topology {
-        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
-        nodes: vec![admin.clone(), plain.clone(), recovered.clone()],
-    };
-    let storage = Arc::new(MemoryNodesStorage::default());
-    let status: &MemoryNodesStorage = &storage;
-    let rows = rdm_admin::node_rows::NodeRows::new(
-        admin.location(),
-        admin.node_id.clone(),
-        Arc::new(tokio::sync::RwLock::new(view.clone())),
-        storage.clone(),
-    );
-    // mesh1.node.2's predecessor lost its data dir, was deleted by recovery, and recovery's claim over
-    // the exited birth its provenance names links predecessor and inherits config and tags; mesh1.node.3 was deleted by its
-    // recovery and is held with its data dir unreadable.
-    let lost = DataDirLost { path: "/data/mesh1.node.2".into(), since: 1_700 };
-    let (exited_id, exited_birth) = (NodeId::mint(), IncarnationId::mint());
-    let mut exited_node = Node::allocated(path("mesh1.node", "2"), "mesh1", "node");
-    exited_node.node_id = exited_id.clone();
-    exited_node.incarnation_id = Some(exited_birth.clone());
-    let mut exited = NodeRow::new(path("mesh1.node", "2"), "mesh1", "node", exited_id.clone(), NodeStatus::Ready);
-    exited.birth_mut(&exited_birth, &path("mesh1.node", "2")).data_dir_lost = Some(lost.clone());
-    status.write_record(&exited).await.unwrap();
-    rows.deleted_unreached(&exited_node, &rdm_core::OperationId::node("node.delete", &exited_id)).await.unwrap();
-    // The recovery names the exited birth by its admitted provenance, never by the location.
-    let recovery = rdm_admin::storage::Allocation { predecessor: Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }), build_id: Some(rdm_core::BuildId::mint()), operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&recovered.location())), incarnation: recovered.incarnation_id.clone().unwrap(), deployment_id: rdm_admin::model::DeploymentId::mint() };
-    let claimed = rows.create_row(&path("mesh1.node", "2"), "mesh1", "node", &recovered.node_id, &recovery.operation, Some(&recovery), None, rdm_admin::node_rows::RowFor::Recovery).await.unwrap();
-    match claimed {
-        rdm_admin::node_rows::RowCreated::Written { row, seeded_from } => {
-            assert_eq!(seeded_from, Some(exited_id.clone()));
-            assert_eq!(row.predecessor, Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }));
-        }
-        other => panic!("expected Written claim for recovery, got {other:?}"),
-    }
-    let held = DataDirUnreadable { path: "/data/mesh1.node.3".into(), cause: "node-key: not hex".into() };
-    let (held_id, held_birth) = (NodeId::mint(), IncarnationId::mint());
-    let mut unreadable = NodeRow::new(path("mesh1.node", "3"), "mesh1", "node", held_id.clone(), NodeStatus::Deleted);
-    unreadable.birth_mut(&held_birth, &path("mesh1.node", "3")).data_dir_unreadable = Some(held.clone());
-    status.write_record(&unreadable).await.unwrap();
-    let planned: rdm_admin::views::Planned = Ok(BTreeMap::from([("mesh1".to_string(), [path("mesh1.node-admin", "1"), path("mesh1.node", "1"), path("mesh1.node", "2"), path("mesh1.node", "3")].to_vec())]));
-    // Each birth answered wrote its own property record; the recovered one's holds what it inherited.
-    for id in [&admin.node_id, &plain.node_id, &held_id] {
-        own(id, BTreeMap::new(), Default::default()).await;
-    }
-    own(&recovered.node_id, BTreeMap::from([("region".into(), "eu-west".into())]), ["tier-a".to_string()].into()).await;
-
-    let nodes = answer(&view, status, &planned, Filter::new().eq("mesh", ["mesh1"])).await;
-    let at = |id: &NodeId| nodes.iter().find(|n| &n.node_id == id).unwrap_or_else(|| panic!("{id} answered: {nodes:#?}"));
-    assert_eq!(nodes.len(), 4, "the three births the view holds and the held one: {nodes:#?}");
-    let r2 = at(&recovered.node_id);
-    assert_eq!((r2.node_id.clone(), r2.data_dir_lost.as_ref().map(|l| (l.path.clone(), l.since))), (recovered.node_id.clone(), Some((lost.path.clone(), lost.since))), "the recovered birth answers the loss it was recovered over");
-    assert_eq!(r2.config.get("region").map(String::as_str), Some("eu-west"), "the recovered birth inherits its predecessor's config");
-    assert!(r2.tags.iter().any(|t| t == "tier-a"), "the recovered birth inherits its predecessor's tags");
-    assert!(at(&plain.node_id).data_dir_lost.is_none() && at(&plain.node_id).data_dir_unreadable.is_none(), "a birth with neither fact answers neither");
-    let r3 = at(&held_id);
-    assert_eq!((r3.node_id.clone(), r3.status, r3.data_dir_unreadable.as_ref().map(|u| (u.path.clone(), u.cause.clone()))), (held_id.clone(), rdm_core::views::NodeStatus::Dead, Some((held.path.clone(), held.cause.clone()))), "the held birth is answered at its planned path");
-
-    let by_id = answer(&view, status, &planned, Filter::new().eq("id", [held_id.to_string()])).await;
-    assert_eq!(by_id.iter().map(|n| n.node_id.clone()).collect::<Vec<_>>(), vec![held_id.clone()], "the held birth is answered by its id");
-
-    let unread: rdm_admin::views::Planned = Err("the current Build could not be read: refused".into());
-    let without = answer(&view, status, &unread, Filter::new().eq("mesh", ["mesh1"])).await;
-    assert_eq!(without.len(), 3, "a Build that cannot be read names no path: the births the view holds are answered: {without:#?}");
-
-    unreadable.birth_mut(&held_birth, &path("mesh1.node", "3")).data_dir_unreadable = None;
-    status.write_record(&unreadable).await.unwrap();
-    let cleared = answer(&view, status, &planned, Filter::new().eq("mesh", ["mesh1"])).await;
-    assert!(cleared.iter().all(|n| n.location() != path("mesh1.node", "3")), "a cleared unreadable fact is answered no more: {cleared:#?}");
+    rdm_admin::views::nodes_answer_with_status(&path("mesh1.node-admin", "1"), view, &loads, &atlas, filter, &|_| {}, Some(current)).await
 }
 
 /// CONTRACT (Q167 R-RD2, R-RD3; node-rpc-envelope.md node.get): over a fabric of two meshes holding
@@ -210,11 +113,10 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
         status.write_record(&row).await.unwrap();
         own(&n.node_id, config.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), tags.iter().map(|t| t.to_string()).collect()).await;
     }
-    let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
     let names = |nodes: Vec<rdm_core::views::NodeView>| nodes.into_iter().map(|n| n.location()).collect::<Vec<_>>();
     let get = |f: Filter| {
-        let (view, status, planned) = (&view, &status, &planned);
-        async move { names(answer(view, status, planned, f).await) }
+        let (view, status) = (&view, &status);
+        async move { names(answer(view, status, f).await) }
     };
 
     assert_eq!(get(Filter::new()).await, [path("mesh1.broker", "1"), path("mesh1.gateway", "1"), path("mesh1.node-admin", "1"), path("mesh2.gateway", "1")], "no pair: every node, by (path, name)");
@@ -232,7 +134,7 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
         (Filter::new().eq("is_primary", ["yes"]), "the pair (is_primary, [yes])"),
         (Filter::new().eq("tags", Vec::<String>::new()), "the pair (tags, []) names no value"),
     ] {
-        match reply(&view, &status, &planned, &filter).await {
+        match reply(&view, &status, &filter).await {
             r @ StatusReply::RejectedFilter { .. } => {
                 let StatusReply::RejectedFilter { reason } = &r else { unreachable!() };
                 assert!(reason.contains(pair), "{reason:?} names {pair:?}");
@@ -390,7 +292,7 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
     records.write_record(&peer_row).await.unwrap();
     use rdm_core::views::NodeStatus as Read;
     assert_eq!(status_of(&view, &records, &rpc.node_id).await, (Read::Ready, false), "a stop the node has not acknowledged moves its row nowhere: ready");
-    let ready: Vec<PathName> = answer(&view, &records, &Ok(BTreeMap::new()), Filter::new().eq("status", ["ready"])).await.into_iter().map(|n| n.location()).collect();
+    let ready: Vec<PathName> = answer(&view, &records, Filter::new().eq("status", ["ready"])).await.into_iter().map(|n| n.location()).collect();
     assert_eq!(ready, [path("mesh1.node", "1"), path("mesh1.node-admin", "1")], "[status: ready] matches the birth whose stop is unacknowledged, never mesh2's pending record");
     // Another mesh's record is read under its current writer as every record is (query.md §1): the
     // state it took answers, never the view's.
@@ -485,7 +387,6 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         nodes,
     };
     let local = |f: &Filter| gateway.nodes_get(f).map(|ds| ds.into_iter().map(|d| d.node.location()).collect::<Vec<_>>());
-    let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
     for f in [
         Filter::new().eq("type", ["node"]).eq("status", ["ready"]),
         Filter::new().eq("mesh", ["mesh1"]),
@@ -493,13 +394,13 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         Filter::new().eq("mesh", ["mesh2"]).eq("type", ["broker"]),
         Filter::new(),
     ] {
-        let atlas: Vec<PathName> = answer(&view, &records, &planned, f.clone()).await.into_iter().map(|n| n.location()).collect();
+        let atlas: Vec<PathName> = answer(&view, &records, f.clone()).await.into_iter().map(|n| n.location()).collect();
         assert_eq!(local(&f), Ok(atlas.clone()), "{f:?}: the topology the gateway holds answers what the atlas answers");
         assert!(!atlas.is_empty(), "{f:?} matches a node");
     }
     assert_eq!(local(&Filter::new().eq("type", ["node"]).eq("status", ["ready"])), Ok(vec![path("mesh1.node", "1")]), "the local query filters type and status");
     for (f, pair) in [(Filter::new().eq("tags", ["gold"]), "(tags, [gold])"), (Filter::new().eq("config.zone", ["eu-1"]), "(config.zone, [eu-1])")] {
-        assert_eq!(answer(&view, &records, &planned, f.clone()).await.len(), 4, "node.get answers the row-only pair {f:?}");
+        assert_eq!(answer(&view, &records, f.clone()).await.len(), 4, "node.get answers the row-only pair {f:?}");
         let why = local(&f).expect_err("a row-only pair is refused locally");
         assert!(why.contains(pair) && why.contains("read it with node.get"), "{why:?} names {pair} and node.get");
     }
@@ -507,7 +408,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
 
 /// The status and `stopped` of the birth `id`, as `node.get [id: id]` over `view` answers it, each record read through the reader over `records` ([`reply`]).
 async fn status_of(view: &Topology, records: &MemoryNodesStorage, id: &NodeId) -> (rdm_core::views::NodeStatus, bool) {
-    let n = answer(view, records, &Ok(BTreeMap::new()), Filter::new().eq("id", [id.to_string()])).await.into_iter().next().expect("the birth is answered");
+    let n = answer(view, records, Filter::new().eq("id", [id.to_string()])).await.into_iter().next().expect("the birth is answered");
     (n.status, n.stopped)
 }
 
@@ -538,9 +439,8 @@ async fn a_node_with_no_property_record_is_listed_unavailable_and_no_property_pa
     // The admin and mesh1.node.1 wrote their own property records; mesh1.node.2 has not yet.
     own(&admin.node_id, BTreeMap::new(), Default::default()).await;
     own(&owned.node_id, BTreeMap::from([("zone".to_string(), "eu-1".to_string())]), ["gold".to_string()].into()).await;
-    let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
 
-    let all = answer(&view, &records, &planned, Filter::new().eq("mesh", ["mesh1"])).await;
+    let all = answer(&view, &records, Filter::new().eq("mesh", ["mesh1"])).await;
     assert_eq!(all.len(), 3, "every node is listed, the one with no property record included: {all:#?}");
     let of = |id: &NodeId| all.iter().find(|n| &n.node_id == id).unwrap_or_else(|| panic!("{id} listed: {all:#?}")).clone();
     let b = of(&bare.node_id);
@@ -550,6 +450,6 @@ async fn a_node_with_no_property_record_is_listed_unavailable_and_no_property_pa
     assert_eq!((o.properties.clone(), o.tags.clone()), (rdm_core::views::PropertyRecord::Read, ["gold".to_string()].into()), "a node whose record is read answers its own tags");
 
     let ids = |nodes: Vec<rdm_core::views::NodeView>| nodes.into_iter().map(|n| n.node_id).collect::<Vec<_>>();
-    assert_eq!(ids(answer(&view, &records, &planned, Filter::new().eq("tags", ["gold"])).await), [owned.node_id.clone()], "[tags: gold] matches the node that carries it");
-    assert_eq!(ids(answer(&view, &records, &planned, Filter::new().not("config.zone", ["eu-1"])).await), [admin.node_id.clone()], "a negated config pair matches the node whose record lacks the value, never the node whose record is unavailable");
+    assert_eq!(ids(answer(&view, &records, Filter::new().eq("tags", ["gold"])).await), [owned.node_id.clone()], "[tags: gold] matches the node that carries it");
+    assert_eq!(ids(answer(&view, &records, Filter::new().not("config.zone", ["eu-1"])).await), [admin.node_id.clone()], "a negated config pair matches the node whose record lacks the value, never the node whose record is unavailable");
 }

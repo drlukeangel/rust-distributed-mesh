@@ -522,8 +522,8 @@ mod tests {
             "path": name.path, "name": name.name, "type": r#type, "mesh": mesh, "node_id": NodeId::mint(), "endpoint_id": null,
             "incarnation_id": null, "deployment_id": null, "provider": "process", "data_dir": null, "status": "ready",
             "is_primary": false, "is_fabric_primary": false, "admin_api_base": null, "transport_addr": null, "listeners": [],
-            "declared": null, "stopped": false, "load": null, "gossip": null, "tags": [], "config": {}, "data_dir_lost": null,
-            "data_dir_unreadable": null, "types": [], "held": [], "held_hash": vec![0u8; 32], "cert": null, "executable": null,
+            "declared": null, "stopped": false, "load": null, "gossip": null, "tags": [], "config": {},
+            "types": [], "held": [], "held_hash": vec![0u8; 32], "cert": null, "executable": null,
             "storage_persistence": null, "topology_storage_provider": null,
         }))
         .expect("a node row");

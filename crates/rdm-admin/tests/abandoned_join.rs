@@ -155,7 +155,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
         let node_id = rdm_core::fixture_node_id(&name);
         let incarnation = IncarnationId::parse(silent.0.lock().unwrap().last().expect("the create launched its birth")).unwrap();
         let data_dir = rdm_admin::deployment::node_data_dir(&data_root, &node_id);
-        let endpoint_id = rdm_admin::deployment::pipeline::inspect_transport_key(&data_dir).expect("the create wrote its node key");
+        let endpoint_id = rdm_admin::deployment::pipeline::endpoint_id(&data_dir).expect("the create wrote its node key");
         let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
         let digest = |incarnation: &IncarnationId| MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::mint(),

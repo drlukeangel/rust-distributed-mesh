@@ -548,7 +548,6 @@ fn a_renewal_its_own_admin_blocks_is_spent_nowhere_marks_nothing_and_is_sent_aga
             "a call refused before any attempt is spent nowhere: nothing marks the birth"
         );
         assert_eq!((view.status, view.incarnation_id.as_ref()), (NodeStatus::Ready, Some(&b.digest.node.incarnation)), "the member is marked nothing: {view:?}");
-        assert!(view.data_dir_lost.is_none(), "no fact is recorded of it: {view:?}");
         let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|r| r.birth(&b.digest.node.incarnation).and_then(|f| f.cert.clone())).expect("the member's cert dates");
         assert_eq!(row.issued_at, num(&join_issue(&spans, "mesh1.node.1"), "issued_at_rafka_ms"), "a renewal not answered writes nothing: the row is still the join's after {tries:?}");
 

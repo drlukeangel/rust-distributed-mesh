@@ -683,13 +683,12 @@ pub struct TerminalReceipt {
     pub exit_code: Option<i32>,
     /// An unreached birth's delete (node-recovery.md step 3): what the provider read of the runtime at
     /// the step's own instant, `running` (then terminated), `exited`, `os-stopped` or `unavailable`.
-    /// The re-created node takes the inherited data dir only on `exited` (`R-FM2`). `None` for every
-    /// other delete.
+    /// The re-created node takes its predecessor's data dir only on `exited` (node-recovery.md step 3).
+    /// `None` for every other delete.
     #[serde(default)]
     pub verdict: Option<String>,
     /// The data dir the birth ran over, as the delete resolved its record: a replacement's create of
-    /// the member's successor takes it over whole (build-deployment.md §3: "`Persistent` inherits the
-    /// predecessor's data dir and endpoint key"). `None` when the record names none. Positional on the Build
+    /// the member's successor takes it over whole. `None` when the record names none. Positional on the Build
     /// topic's wire, after `verdict`.
     #[serde(default)]
     pub data_dir: Option<String>,
@@ -887,9 +886,9 @@ pub struct CreateRequest {
     pub name: String,
     /// The endpoint plan of the node's kind.
     pub spec: &'static TypeSpec,
-    /// The data dir the create's spec names (node-recovery.md sequence step 4: node recovery's
-    /// create, over the exited birth's data dir): taken over whole, its endpoint key loaded and never
-    /// minted. `None`: a fresh data dir.
+    /// The data dir the create's spec names (node-recovery.md sequence step 3: node recovery's
+    /// create, over the exited birth's data dir): taken over whole, a new endpoint key written there
+    /// (Q358). `None`: a fresh data dir.
     pub data_dir: Option<PathBuf>,
     /// The runtime rows this admin holds, handed to a node-admin's own nodes.storage before it
     /// starts: its durable map of the births a predecessor heard.
@@ -914,9 +913,8 @@ pub(crate) type PreNodeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<
 /// Work a create awaits inside its `DeployRuntime` step right before it launches the new runtime,
 /// and only then: a step an earlier attempt receipted (its runtime still runs and is reused) and a
 /// runtime the provider finds this deployment already started run none of it. A create over an
-/// exited birth's data dir targets that birth here (node-recovery.md "Delete targets the old instance
-/// before the new join"): the new runtime carries the same endpoint key, so the target is done before
-/// it exists and never once it does.
+/// exited birth's data dir targets that birth here (node-recovery.md "Delete blocks the old instance
+/// before the new join"): the target is done before the new runtime exists and never once it does.
 pub(crate) type BeforeLaunch<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
 
 /// A request to delete one node.
@@ -1165,50 +1163,14 @@ impl Identity {
     }
 }
 
-/// Read the transport key an existing data dir holds, minting none: a recovery's node takes the
-/// How an inherited data dir failed when `PrepareStorage` inspected it (R-FM2).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InheritedDirError {
-    /// `<data_dir>` does not exist (`rm -rf` / unmounted).
-    Gone(String),
-    /// `<data_dir>` exists on disk, but `node-key` is missing, unreadable, or corrupt.
-    Broken(String),
-}
-
-impl InheritedDirError {
-    /// Human-readable error message for the failure.
-    pub fn into_message(self) -> String {
-        match self {
-            Self::Gone(m) | Self::Broken(m) => m,
-        }
-    }
-}
-
-/// Inspect `<data_dir>/node-key` of an inherited data dir (R-FM2): classifies whether `<data_dir>`
-/// is absent (`Gone`) or exists with a missing, unreadable, or corrupt `node-key` (`Broken`).
-pub fn inspect_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, InheritedDirError> {
+/// The `endpoint_id` of the node key a create wrote into `data_dir` (`<data_dir>/node-key`): the
+/// node's own, read back when the create's `PrepareStorage` is already done. A key that is missing or
+/// does not decode is refused by name.
+pub fn endpoint_id(data_dir: &std::path::Path) -> Result<EndpointId, String> {
     let path = data_dir.join("node-key");
-    let h = match std::fs::read_to_string(&path) {
-        Ok(h) => h,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !data_dir.is_dir() => {
-            return Err(InheritedDirError::Gone(format!("the inherited data dir {} does not exist: no node-key to load the endpoint key from", data_dir.display())))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(InheritedDirError::Broken(format!("node-key is missing in the inherited data dir {}: the endpoint key cannot be retained", data_dir.display())))
-        }
-        Err(e) => return Err(InheritedDirError::Broken(format!("{}: {e}", path.display()))),
-    };
-    let bytes: [u8; 32] = hex::decode(h.trim())
-        .map_err(|e| InheritedDirError::Broken(format!("{}: {e}", path.display())))?
-        .try_into()
-        .map_err(|_| InheritedDirError::Broken(format!("{}: not 32 bytes", path.display())))?;
+    let h = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let bytes: [u8; 32] = hex::decode(h.trim()).map_err(|e| format!("{}: {e}", path.display()))?.try_into().map_err(|_| format!("{}: not 32 bytes", path.display()))?;
     Ok(EndpointId(iroh::SecretKey::from_bytes(&bytes).public().to_string()))
-}
-
-/// endpoint key of the data dir it inherits (node-recovery.md, "Retained"), so a dir with no key
-/// is refused by name, never given a new one.
-pub(crate) fn load_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String> {
-    inspect_transport_key(data_dir).map_err(InheritedDirError::into_message)
 }
 
 /// The Build a run belongs to as spans, command contexts and lifecycle ops carry it: its id, or
@@ -1358,6 +1320,9 @@ impl DeploymentPipeline<'_> {
             io_ms = tracing::field::Empty,
             awaiting = tracing::field::Empty,
             awaited = tracing::field::Empty,
+            data_dir = tracing::field::Empty,
+            inherited = tracing::field::Empty,
+            endpoint_id = tracing::field::Empty,
         );
         let started = Instant::now();
         // A step whose event ended `complete` is never run again (build.md §1): it hands on the value
@@ -1482,8 +1447,8 @@ impl DeploymentPipeline<'_> {
         self.create_with_row_for(req, row_for, pre_node_ready, before_launch).await
     }
 
-    /// `create_with` for a recovery Build (`RowFor::Recovery` even when `req.data_dir` is `None`
-    /// after `RDM_DATA_DIR_GONE_FLOORS`, R-FM2).
+    /// `create_with` for a recovery (`RowFor::Recovery` even when `req.data_dir` is `None`: a newly
+    /// allocated data dir).
     pub(crate) async fn create_recovery_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         self.create_with_row_for(req, crate::node_rows::RowFor::Recovery, pre_node_ready, before_launch).await
     }
@@ -1598,7 +1563,7 @@ impl DeploymentPipeline<'_> {
         run.given(CreateStep::AllocateIdentity.name(), &Identity { node_id: req.node_id.clone(), incarnation: incarnation.clone(), supersedes: None, deployment_id });
         if run.is_done(CreateStep::PrepareStorage.name()) {
             let dir = data_dir.clone();
-            if let Ok(key) = crate::blocking::blocking_io(move || load_transport_key(&dir)).await {
+            if let Ok(key) = crate::blocking::blocking_io(move || endpoint_id(&dir)).await {
                 run.given(CreateStep::PrepareStorage.name(), &key);
             }
         }
@@ -1801,16 +1766,10 @@ impl DeploymentPipeline<'_> {
         let endpoint_id: EndpointId = self.step(run, CreateStep::PrepareStorage.name(), async {
             let step_span = tracing::Span::current();
             let mut done_awaits: Vec<&'static str> = Vec::with_capacity(3);
-            let inherited_key = if inherits {
-                step_span.record("awaiting", "transport-key");
-                let dir = data_dir.clone();
-                let k = crate::blocking::blocking_io(move || load_transport_key(&dir)).await?;
-                done_awaits.push("transport-key");
-                step_span.record("awaited", done_awaits.join(",").as_str());
-                Some(k)
-            } else {
-                None
-            };
+            // The data dir the node is launched on (`RDM_DATA_DIR`), and whether it is its predecessor's
+            // (`RDM_INHERITED_DATA_DIR`): RDM never looks at what the directory holds (Q359).
+            step_span.record("data_dir", data_dir.display().to_string().as_str());
+            step_span.record("inherited", inherits);
             // The birth's first row, by the writer of the mesh's rows (lifecycles/node-create.md step 1):
             // before anything is prepared or launched for the birth (refused, nothing is), and after
             // the AllocateIdentity receipt names its node id, so an executor lost at any point leaves
@@ -1858,17 +1817,15 @@ impl DeploymentPipeline<'_> {
                 step_span.record("awaited", done_awaits.join(",").as_str());
                 *writing = Some(id.node_id.clone());
             }
-            // An inherited data dir keeps its key: it is loaded, never minted; both on the blocking pool.
-            let key = match inherited_key {
-                Some(k) => k,
-                None => {
-                    step_span.record("awaiting", "transport-key");
-                    let k = EndpointId(crate::admin::load_or_mint_key(&data_dir).await?.public().to_string());
-                    done_awaits.push("transport-key");
-                    step_span.record("awaited", done_awaits.join(",").as_str());
-                    k
-                }
-            };
+            // The node's endpoint is its own: over its predecessor's data dir a new key is minted and
+            // written there, never the predecessor's read (Q358); a newly allocated one is minted its
+            // first. On the blocking pool.
+            step_span.record("awaiting", "endpoint_id");
+            let secret = if inherits { crate::admin::write_new_key(&data_dir).await? } else { crate::admin::load_or_mint_key(&data_dir).await? };
+            let key = EndpointId(secret.public().to_string());
+            done_awaits.push("endpoint_id");
+            step_span.record("awaited", done_awaits.join(",").as_str());
+            step_span.record("endpoint_id", key.0.as_str());
             if !req.held_runtimes.is_empty() {
                 step_span.record("awaiting", "held-runtimes");
                 crate::deployment::provider::write_held_runtimes(&data_dir, &req.held_runtimes).await?;
@@ -3483,67 +3440,5 @@ mod tests {
         assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "WaitForMeshJoin completes from the accepted report with no digest in any view: {err}; receipts {steps:?}");
         assert!(steps.iter().any(|(s, o)| s == CreateStep::WaitForMeshJoin.name() && *o == StepOutcome::Complete), "WaitForMeshJoin's receipt is Complete: {steps:?}");
         let _ = std::fs::remove_dir_all(&template.data_root);
-    }
-
-    // @feature: data-dir-lost-recovery
-    /// CONTRACT: docs/architecture/lifecycles/node-recovery.md:147
-    /// "Gone versus broken is decided from the filesystem error on the inherited `data_dir`, never
-    ///  guessed. An absent directory path (`NotFound` on the directory itself) is gone; an existing
-    ///  directory on disk whose `node-key` is missing, unreadable, or corrupt (`NotFound` on
-    ///  `node-key` inside an existing directory, `EIO`, `EACCES`, or decode failure) is broken"
-    #[test]
-    fn inspect_transport_key_distinguishes_absent_data_dir_gone_from_existing_dir_broken_and_loads_valid_key(
-    ) {
-        assert_eq!(crate::admin::DEFAULT_DATA_DIR_GONE_FLOORS, 2);
-        assert!(crate::admin::data_dir_gone_floors() >= 1);
-        assert!(crate::admin::data_dir_gone_hold_ms() >= 1);
-
-        let dir = std::env::temp_dir().join(format!(
-            "rdm-data-dir-lost-unit-{}",
-            rdm_core::IncarnationId::mint()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-
-        // 1. Absent directory -> InheritedDirError::Gone
-        match inspect_transport_key(&dir) {
-            Err(InheritedDirError::Gone(msg)) => {
-                assert!(msg.contains("does not exist"), "unexpected message: {msg}");
-            }
-            other => panic!("expected Gone for absent directory, got {other:?}"),
-        }
-
-        // 2. Existing directory with missing `node-key` -> InheritedDirError::Broken
-        std::fs::create_dir_all(&dir).unwrap();
-        match inspect_transport_key(&dir) {
-            Err(InheritedDirError::Broken(msg)) => {
-                assert!(
-                    msg.contains("node-key is missing"),
-                    "unexpected message: {msg}"
-                );
-            }
-            other => panic!("expected Broken for missing node-key, got {other:?}"),
-        }
-
-        // 3. Existing directory with corrupt `node-key` -> InheritedDirError::Broken
-        let key_path = dir.join("node-key");
-        std::fs::write(&key_path, "not-valid-hex").unwrap();
-        assert!(matches!(
-            inspect_transport_key(&dir),
-            Err(InheritedDirError::Broken(_))
-        ));
-
-        std::fs::write(&key_path, "deadbeef").unwrap();
-        assert!(matches!(
-            inspect_transport_key(&dir),
-            Err(InheritedDirError::Broken(_))
-        ));
-
-        // 4. Repaired 32-byte hex `node-key` -> Ok(EndpointId)
-        let secret = iroh::SecretKey::from_bytes(&[0x42u8; 32]);
-        let expected_ep = EndpointId(secret.public().to_string());
-        std::fs::write(&key_path, hex::encode(secret.to_bytes())).unwrap();
-        assert_eq!(inspect_transport_key(&dir), Ok(expected_ep));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

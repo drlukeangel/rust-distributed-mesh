@@ -230,7 +230,7 @@ impl TopologySink for RecordingSink {
 /// CONTRACT: docs/architecture/lifecycles/node-create.md:13 "Caller | Accepted control/Build caller through the typed object"
 /// CONTRACT: docs/architecture/lifecycles/node-create.md:14 "Executor | Accepted node-admin executor; mesh-primary for an ordinary node"
 /// CONTRACT: docs/architecture/lifecycles/node-create.md:15 "Identity | New node.id and incarnation; immutable path and claimed name"
-/// CONTRACT: docs/architecture/lifecycles/node-create.md:16 "Endpoint key | Mint into a new data dir, or load the key from an inherited data dir"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:16 "Endpoint key | Minted and written into the data dir, a new one or an inherited one; never loaded from an inherited data dir (Q358)"
 /// CONTRACT: docs/architecture/lifecycles/node-create.md:17 "Port | Bind port 0; advertise the actual OS-assigned transport_addr"
 /// CONTRACT: docs/architecture/lifecycles/node-create.md:18 "Spec | The create spec: the node's properties, flat (Q166): its executable (path, sha256, image), storage, placement, tags and config, and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism. The executable is the create's input and nothing else's: recorded on the row at the claim, re-hashed at the launch, never changed for the birth"
 /// CONTRACT: docs/architecture/lifecycles/node-create.md:19 "Progress | Every event of the complete `node.start`, then `node.created`"
@@ -360,15 +360,15 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             timeouts: Timeouts::default(),
         };
 
-        // Endpoint key (node-create.md:16): mint into a new data dir, or load the key from an
-        // inherited data dir.
+        // Endpoint key (node-create.md:16): minted and written into the data dir; the node started on
+        // that dir loads the key written there for it, its own.
         let key_dir = data_root.join("inherited-key-check");
         let minted_key = rdm_node::node::load_or_mint_key(&key_dir).unwrap();
         let loaded_key = rdm_node::node::load_or_mint_key(&key_dir).unwrap();
         assert_eq!(
             minted_key.public(),
             loaded_key.public(),
-            "inherited data dir loads the existing endpoint key instead of minting a new one"
+            "a node started on its data dir loads its own endpoint key, the one written there"
         );
 
         // Mesh-absent vs mesh-present decision from accepted topology (node-create.md:27-31).

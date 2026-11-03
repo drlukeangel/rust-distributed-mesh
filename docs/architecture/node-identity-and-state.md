@@ -619,9 +619,7 @@ A silent member is its mesh-primary's
 [node investigation](lifecycles/node-investigation.md) and [node recovery](lifecycles/node-recovery.md) (Q335).
 
 **What a mesh-primary records of a silent member** is on the node's record: the `PendingReconnect`
-and `Dead` marks ([States](lifecycles/states.md#states), node row silence marks), the
-`data-dir-lost` and `data-dir-unreadable` facts ([node recovery](lifecycles/node-recovery.md),
-[deployment provider](deployment-provider.md) §2.5), each set and cleared by the mesh-primary on the
+and `Dead` marks ([States](lifecycles/states.md#states), node row silence marks), each set and cleared by the mesh-primary on the
 record it holds and written whole and revalidated by a successor's own
 inspection. An application's own record of an outage and the work it owes on a return (Rafka's
 `NodeOfflineRecord` and its refill job) is the application's. A deleted node's identity never takes

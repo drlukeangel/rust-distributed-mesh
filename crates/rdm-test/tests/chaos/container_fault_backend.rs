@@ -1489,7 +1489,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let replacement_c = ExactContainer::of(&estate, &kill).await.expect("the replacement's container");
     assert_ne!(replacement_c.id, kill_c.id, "the replacement runs in a new container");
     let fresh = estate.probe(&["get", "--target", &rdm_test::estate::path_target(&kill), "--key", "83"]);
-    assert_eq!(fresh["reply"]["result"], json!({"found": true, "value": "before-fault"}), "the recovered node serves the store of the data dir it inherited: {fresh}");
+    assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a `node`'s storage is ephemeral: the recovered node runs on a new data dir, its store empty (Q359): {fresh}");
     let old = estate.probe(&["get", "--target", &kill_exact, "--key", "83"]);
     assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows the recovered node: {old}");
     assert_eq!(estate.live_containers().iter().filter(|(n, _)| *n == kill).count(), 1, "one container serves the path");
@@ -1506,7 +1506,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
         (n["status"] == "ready" && n["node_id"] != admin_n["node_id"]).then_some(n)
     })
     .await;
-    assert_eq!(admin_new["endpoint_id"], admin_n["endpoint_id"], "the recovered node-admin holds the endpoint key of the data dir it inherited: {admin_new}");
+    assert_ne!(admin_new["endpoint_id"], admin_n["endpoint_id"], "a new endpoint_id (Q358): {admin_new}");
     // Ready in the view is the new birth's own digest; the recovery is done when its mesh-primary's
     // run of it ended `complete`.
     wait_for("the node-admin's recovery is run to its end", Duration::from_secs(60), || async {

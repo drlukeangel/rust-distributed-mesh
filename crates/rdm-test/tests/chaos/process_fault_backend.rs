@@ -139,7 +139,7 @@ async fn runs_of(estate: &Estate, id: &str) -> u64 {
 /// a mesh with a live mesh-primary (mesh-recovery.md:8-9), so it is node recovery the same way: its
 /// mesh-primary proves the exit and submits the recovery (reason recovery, its delete, create and
 /// update operations, each its own pipeline), and the path comes back as a node-admin with a new NodeId over the
-/// inherited data dir and the same endpoint key; the Fabric's drift opens nothing for it. Exactly
+/// inherited data dir and a new endpoint key (Q358); the Fabric's drift opens nothing for it. Exactly
 /// one runtime serves each path. What must NOT happen: a signal reaching a process the fact does not
 /// name, a held runtime replaced, a Build minted for drift, the fabric-primary node-admin
 /// signalled, or a mesh left without a node-admin.
@@ -264,15 +264,15 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let replacement_rt = published(&estate, &kill).await;
     assert_ne!((replacement_rt.pid, replacement_rt.start), (kill_rt.pid, kill_rt.start));
     assert_ne!(replacement["incarnation_id"], kill_n["incarnation_id"], "a new incarnation: {replacement}");
-    assert_eq!(replacement["endpoint_id"], kill_n["endpoint_id"], "the recovered node holds the endpoint key of the data dir it inherited: {replacement}");
+    assert_ne!(replacement["endpoint_id"], kill_n["endpoint_id"], "a new endpoint_id (Q358): {replacement}");
     let fresh = estate.probe(&["get", "--target", &rdm_test::estate::path_target(&kill), "--key", "83"]);
-    assert_eq!(fresh["reply"]["result"], json!({"found": true, "value": "before-fault"}), "the recovered node serves the store of the data dir it inherited: {fresh}");
+    assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a `node`'s storage is ephemeral: the recovered node runs on a new data dir, its store empty (Q359): {fresh}");
     assert_eq!(fresh["reply"]["executing_node"], replacement["node_id"], "the new node serves it: {fresh}");
     let old = estate.probe(&["get", "--target", &kill_exact, "--key", "83"]);
     // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
     assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
-    // A data dir is named by the node id it was allocated for: the recovered birth runs in the one it inherited.
-    assert_eq!(estate.live_runtimes().into_iter().filter(|(d, _)| *d == std::path::PathBuf::from(&kill_dir)).map(|(_, pid)| pid).collect::<Vec<_>>(), vec![replacement_rt.pid], "one runtime serves the path: the recovered birth's, in the data dir it inherited");
+    // A data dir is named by the node id it was allocated for: the recovered birth runs in a new one.
+    assert!(estate.live_runtimes().into_iter().all(|(d, _)| d != std::path::PathBuf::from(&kill_dir)), "no runtime runs in the exited birth's data dir: the recovered birth's is new");
 
     // ---- A node-admin that is neither mesh primary nor fabric primary: killed by exact runtime.
     let nodes = estate.node_values().await;
@@ -289,7 +289,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
         })
         .await;
     assert_ne!(admin_new["incarnation_id"], admin_n["incarnation_id"], "a new incarnation: {admin_new}");
-    assert_eq!(admin_new["endpoint_id"], admin_n["endpoint_id"], "the recovered node-admin holds the endpoint key of the data dir it inherited: {admin_new}");
+    assert_ne!(admin_new["endpoint_id"], admin_n["endpoint_id"], "a new endpoint_id (Q358): {admin_new}");
     assert_eq!(estate.data_dir(&admin).await, admin_dir, "the recovered node-admin runs over the inherited data dir");
     // Ready in the view is the new birth's own digest; the recovery is done when its mesh-primary's
     // run of it ended `complete`.

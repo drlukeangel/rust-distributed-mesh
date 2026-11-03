@@ -269,6 +269,8 @@ struct Prepared {
     /// The incarnation the own row says this birth last ran.
     incarnation: rdm_admin::model::IncarnationId,
     build_id: rdm_admin::build::BuildId,
+    /// The endpoint key the lost birth's data dir held.
+    endpoint_id: rdm_admin::model::EndpointId,
     /// The nodes the lost fabric-primary launched, as the store records them: separate path/name fields and node.id.
     launched: Vec<(rdm_core::PathName, rdm_admin::model::NodeId)>,
 }
@@ -402,7 +404,7 @@ impl Prepared {
             rdm_admin::build_state::accept(&journal, &accepted, None, "mesh1.node-admin.1", "prepared-root").await.unwrap();
             launched
         });
-        let prepared = Self { dir, store, data_dir, fabric_id, mesh_id, node_id, incarnation, build_id, launched };
+        let prepared = Self { dir, store, data_dir, fabric_id, mesh_id, node_id, incarnation, build_id, endpoint_id: EndpointId(key.public().to_string()), launched };
         assert_eq!(fabric_dirs(&prepared.store), vec![prepared.fabric_id.to_string()], "one fabric on the root");
         assert!(rdm_admin::store_log::read_record(&prepared.fabric_row(), "fabric-record", None).is_some(), "the Fabric row stands on the root");
         assert!(rdm_admin::store_log::read_record(&prepared.store.join(prepared.fabric_id.to_string()).join(rdm_admin::store_root::BUILDS_FILE), "build-record", Some(&format!("{}/accepted", prepared.build_id))).is_some(), "the accepted Build stands on the shared store root as its own record");
@@ -557,8 +559,8 @@ const RECOVERS_WITHIN: Duration = Duration::from_secs(60);
 /// node.id and incarnation over the inherited directory (fabric-recovery.md:10), in its role by the ordinary
 /// rules from its rows", "a root holding the fabric's own record and the accepted topology (the admin
 /// boots from its own row, recovery mode, FabricId and MeshIds preserved)"; fabric-recovery.md: the
-/// re-created node-admin is a new node over its inherited data dir: a new node.id and incarnation, the
-/// same path.name and endpoint key, and a new port; "Nothing alive": "The launched node-admin reuses the
+/// re-created node-admin is a new node over its inherited data dir: a new node.id, incarnation,
+/// `endpoint_id` and port, the same path.name (Q358); "Nothing alive": "The launched node-admin reuses the
 /// fabric id and each MeshId it reads from the store, and mints none", "node.delete of the exited
 /// instance, then node.create at the same path.name, with a new node.id over the inherited data dir", "A
 /// node's name is released by node recovery's node.delete and taken by its node.create, which carries a
@@ -601,6 +603,10 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     let deployment = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-deployment").unwrap_or_else(|| panic!("no deployment span: {spans:?}"));
     assert_eq!(attr(deployment, "node_id"), node_id, "the process's first boot span carries the new node.id: {deployment}");
     assert!(!incarnation.is_empty() && incarnation != root.incarnation.to_string(), "a new incarnation: {recovery}");
+    // Q358: a new node gets a new endpoint: the boot minted a key over the one the data dir held.
+    let minted = rdm_admin::deployment::pipeline::endpoint_id(&root.data_dir).expect("the data dir holds the new node's key");
+    assert_ne!(minted, root.endpoint_id, "a new endpoint key written over the lost birth's, never read (Q358)");
+    assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.node.create.via-identity-minted"), "the boot names its key minted: {spans:?}");
     assert_eq!(
         (format!("{}.{}", attr(recovery, "node_path"), attr(recovery, "node_name")), attr(recovery, "inherited_node_id"), attr(recovery, "inherited_incarnation_id"), attr(recovery, "fabric_id"), attr(recovery, "supersedes")),
         ("mesh1.node-admin.1".to_string(), root.node_id.to_string(), root.incarnation.to_string(), root.fabric_id.to_string(), String::new()),

@@ -244,7 +244,7 @@ impl MeshStorage for FileMeshStorage {
 
 // ---------------------------------------------------------------- facts on a node's record
 
-pub use rdm_node::nodes_storage::{AppTypes, Allocation, BirthFacts, BirthRef, CertDates, DataDirLost, DataDirUnreadable, NodeOperation, NodeRow, RuntimeRow, SigningCertDates, BIRTHS_KEPT};
+pub use rdm_node::nodes_storage::{AppTypes, Allocation, BirthFacts, BirthRef, CertDates, NodeOperation, NodeRow, RuntimeRow, SigningCertDates, BIRTHS_KEPT};
 
 /// The primaries recorded for `birth` leave its facts: a birth whose exit is proven holds no primary
 /// (mesh-delete.md step 7, "Deleted births resolve Gone"). The mesh-primary's write, never a node's: a
@@ -391,7 +391,7 @@ mod tests {
     /// The same script over any nodes store: the facts of one birth, each written from the record its
     /// writer holds, all stand on the record a fresh reader loads whole (storage-whole-records.md,
     /// cells: "two facts of one birth both stand on the record across a reload"): a late `Pending`
-    /// beside `Ready`, two attempts' operation effects, a lost and an unreadable data dir;
+    /// beside `Ready`, two attempts' operation effects, a silence mark and a primary revision;
     /// the birth's cert dates are its last.
     async fn facts_of_one_birth_all_stand(first: &dyn NodesStorage, reopened: &dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Box<dyn NodesStorage>> + Send>>) {
         let (node_id, incarnation_id, name): (NodeId, IncarnationId, PathName) = (NodeId::mint(), IncarnationId::mint(), rdm_core::PathName::new("mesh1.node", "1").unwrap());
@@ -405,8 +405,8 @@ mod tests {
         let op = || rdm_core::status::DeclaredOperation { operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())).in_occurrence(rdm_core::OperationOccurrenceId::mint()) };
         write(Box::new(move |b| b.apply_operation(&op(), NodeState::Stopped))).await;
         write(Box::new(move |b| b.apply_operation(&op(), NodeState::Stopped))).await;
-        write(Box::new(|b| b.data_dir_lost = Some(DataDirLost { path: "/d".into(), since: 1 }))).await;
-        write(Box::new(|b| b.data_dir_unreadable = Some(DataDirUnreadable { path: "/d".into(), cause: "node-key: not hex".into() }))).await;
+        write(Box::new(|b| b.silence = Some(crate::model::NodeStatus::PendingReconnect))).await;
+        write(Box::new(|b| b.is_primary = Some(3))).await;
         let cert = |issued_at: u64| CertDates { issued_at, expires_at: issued_at + 10, issuer_expires_at: 100, renew_at: issued_at + 6 };
         write(Box::new(move |b| b.cert = Some(cert(1)))).await;
         write(Box::new(move |b| b.cert = Some(cert(20)))).await;
@@ -417,7 +417,7 @@ mod tests {
         assert_eq!(b.declared_state(), Some(NodeState::Ready), "a late Pending removes no Ready: the reader takes the greatest");
         assert_eq!(b.declared.len(), 2, "two states, both kept");
         assert_eq!(b.operations.len(), 2, "two occurrences' effects both stand");
-        assert!(b.data_dir_lost.is_some() && b.data_dir_unreadable.is_some(), "a lost and an unreadable data dir both stand");
+        assert_eq!((b.silence, b.is_primary), (Some(crate::model::NodeStatus::PendingReconnect), Some(3)), "a silence mark and a primary revision both stand");
         assert_eq!(b.cert, Some(cert(20)), "the birth's cert dates are the last written");
         assert_eq!(store.nodes("mesh1").await.unwrap(), vec![record.clone()], "the record is its mesh's");
         assert!(store.nodes("mesh2").await.unwrap().is_empty(), "and no other mesh's");

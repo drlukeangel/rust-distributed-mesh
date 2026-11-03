@@ -177,7 +177,7 @@ impl TopologySink for WithRows {
 /// while awaiting the claim's first await (`writer-check`, with the view write lock held), both spans
 /// close with `outcome = "cancelled"` naming the exact await that did not return (`awaiting = "claim"`
 /// on `via-step`, `awaiting = "writer-check"` on `via-node-row`); when cancelled while awaiting the
-/// blocking pool (`transport-key`), `via-step` names `awaited = "claim"`, `awaiting = "transport-key"`,
+/// blocking pool (`endpoint_id`), `via-step` names `awaited = "claim"`, `awaiting = "endpoint_id"`,
 /// `outcome = "cancelled"` and records `io_calls = 1` and `io_queued_ms` for the in-flight blocking call.
 #[test]
 fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_first_await() {
@@ -244,7 +244,7 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
         assert!(timed_out.is_err(), "the create waits at the claim's first await while the view write lock is held");
         drop(held_view);
 
-        // 2. Let the claim complete, and hold the one blocking thread so `PrepareStorage` cancels at `transport-key`.
+        // 2. Let the claim complete, and hold the one blocking thread so `PrepareStorage` cancels at `endpoint_id`.
         let builds2 = crate::stepping(&executor.node_id, "mesh1");
         let build2 = BuildId::mint();
         builds2
@@ -261,7 +261,7 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
         held_rx.await.unwrap();
         let req2 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "4").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "4").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build2.clone()), path: "mesh1.node".into(), name: "4".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let timed_out2 = tokio::time::timeout(Duration::from_millis(120), pipeline2.create(&req2)).await;
-        assert!(timed_out2.is_err(), "the create waits at transport-key while the blocking thread is held");
+        assert!(timed_out2.is_err(), "the create waits at endpoint_id while the blocking thread is held");
         release_tx.send(()).unwrap();
         holder.await.unwrap();
     });
@@ -292,7 +292,7 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
     assert_eq!(claim1.get("outcome").map(String::as_str), Some("cancelled"), "cancelled claim span records outcome=cancelled: {claim1:?}");
     assert_eq!(claim1.get("awaiting").map(String::as_str), Some("writer-check"), "claim span names writer-check as the await that did not return: {claim1:?}");
 
-    // Case 2 (`mesh1.node.4`): claim completed, cancelled at `transport-key` while waiting for the blocking thread.
+    // Case 2 (`mesh1.node.4`): claim completed, cancelled at `endpoint_id` while waiting for the blocking thread.
     let step2 = finished
         .iter()
         .map(attrs_of)
@@ -300,7 +300,7 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
         .unwrap_or_else(|| panic!("no PrepareStorage span for mesh1.node.4: {finished:?}"));
     assert_eq!(step2.get("outcome").map(String::as_str), Some("cancelled"), "cancelled PrepareStorage records outcome=cancelled: {step2:?}");
     assert_eq!(step2.get("awaited").map(String::as_str), Some("entry-spec,create-row"), "PrepareStorage names the completed entry-spec read and claim awaits: {step2:?}");
-    assert_eq!(step2.get("awaiting").map(String::as_str), Some("transport-key"), "PrepareStorage names transport-key as the await in flight: {step2:?}");
+    assert_eq!(step2.get("awaiting").map(String::as_str), Some("endpoint_id"), "PrepareStorage names endpoint_id as the await in flight: {step2:?}");
     assert_eq!(step2.get("io_calls").and_then(|v| v.parse::<u64>().ok()), Some(1), "in-flight blocking call is counted on cancellation: {step2:?}");
     assert!(step2.get("io_queued_ms").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) >= 50, "in-flight queue wait is recorded on cancellation: {step2:?}");
 

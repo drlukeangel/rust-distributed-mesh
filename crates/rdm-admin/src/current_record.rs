@@ -72,13 +72,6 @@ impl CurrentRecords<'_> {
         self.nodes.properties(node_id).await.map_err(|e| format!("the own part of the record of node {node_id} could not be read: {e}"))
     }
 
-    /// The mesh-primary's part of the latest record of every node of `mesh` (query.md §1: "`node.get`
-    /// materializes records"; historical records, Deleted ones included, are among them). `Err`: a read
-    /// failed.
-    pub async fn lifecycle_rows(&self, mesh: &str) -> Result<Vec<NodeRow>, String> {
-        self.nodes.nodes(mesh).await.map_err(|e| format!("the records of mesh {mesh} could not be read: {e}"))
-    }
-
     /// The current-pair lookup: the live record standing at `name`, read from the node records by their
     /// path and name (node-identity-and-state.md §2). `Ok(None)` when none does.
     pub async fn row_at(&self, name: &PathName) -> Result<Option<NodeRow>, String> {

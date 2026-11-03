@@ -570,8 +570,8 @@ enum Ends {
 
 /// One run of the role-node restart: the role fixture's mesh-primary has replied `blocked`, the change is held
 /// before its copy, the role fixture dials (a connection event) and its process is killed (SIGKILL); node recovery
-/// re-creates it at its `(path, name)` over the same data dir (node investigation's `exited` verdict, R-FM2)
-/// once its mesh-primary issues commands again; the change ends `ends`. What is asserted is the
+/// re-creates it at its `(path, name)` on a new data dir (a `node`'s storage is ephemeral, Q359) once its
+/// mesh-primary issues commands again; the change ends `ends`. What is asserted is the
 /// restarted birth's: it writes only the provider the `commit` record decided.
 async fn role_node_restart(test: &str, ends: Ends) {
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
@@ -595,7 +595,7 @@ async fn role_node_restart(test: &str, ends: Ends) {
     estate.artifact("ended.json", &done);
     let restarted = estate.until_node(&role(), "the role node re-created at its (path, name)", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::Ready).cloned()).await;
     let new_id = restarted.node_id.to_string();
-    assert_eq!(estate.data_dir(&role()).await, data_dir, "the restart is over the same data dir: a new birth over a new one is not restart coverage");
+    assert_ne!(estate.data_dir(&role()).await, data_dir, "the re-created node is on a new data dir: a `node`'s storage is ephemeral (Q359)");
     let (chosen, other, previous): (&str, &Path, &[&str]) = match ends {
         Ends::Switched => (TOPOLOGY_STORAGE_TARGET, &file_root, &[FILE]),
         Ends::FailedBeforeTheSwitch => (FILE, &target_root, &[]),
@@ -634,12 +634,12 @@ async fn role_node_restart(test: &str, ends: Ends) {
 /// the decision only from that record"; "A step that fails before the switch fails the Build only once
 /// the fabric-primary has read that no `commit` exists ...; the fabric-primary then sends `mesh.unblock`
 /// on the old provider"): a role process (mesh2.node.1) is killed while its mesh-primary has replied
-/// `blocked` and the change is held before its copy, and comes back at its `(path, name)` over the same data
-/// dir. Run twice: a change that switches, and one whose copy is refused before the switch. Each time the
+/// `blocked` and the change is held before its copy, and comes back at its `(path, name)` as a new node on a
+/// new data dir (a `node`'s storage is ephemeral, Q359). Run twice: a change that switches, and one whose copy is refused before the switch. Each time the
 /// restarted birth writes only the provider the `commit` record decided: its row names it, every record
 /// of it is on that provider and none on the other, and it only ever moves onto that provider once the
 /// record is read; the Fabric row names that provider. Must NOT happen: a write of the restarted birth on
-/// the provider not chosen, or a new birth over a new data dir counted as the restart.
+/// the provider not chosen.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn topology_storage_state_survives_role_node_restart() {
     role_node_restart("topology_storage_state_survives_role_node_restart-switched", Ends::Switched).await;
@@ -649,7 +649,7 @@ async fn topology_storage_state_survives_role_node_restart() {
 /// CONTRACT (storage.md §2 "Changing it" (Q198): "A mesh-primary that has replied `blocked` issues no new
 /// command until it is unblocked"; "Whoever resumes the change ... learns the decision only from that
 /// record"; i149 R8, R12): a role node whose mesh-primary has replied `blocked` is killed while the change
-/// is held, and node recovery re-creates it at its `(path, name)` over the same data dir once its
+/// is held, and node recovery re-creates it at its `(path, name)`, on a new data dir (Q359), once its
 /// mesh-primary is unblocked. The restarted birth writes `test-target`, the provider the commit record
 /// decided: every record of it is on `test-target`, none on `file`; the Build completes and the fabric
 /// names `test-target` with `file` previous. Must NOT happen: the restarted birth writing to `file` (its

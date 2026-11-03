@@ -113,27 +113,6 @@ pub enum ProviderKind {
     Container,
 }
 
-/// The durable `data-dir-lost` fact on a birth's status row (R-FM2): the inherited data dir was
-/// absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors while the provider reported the birth
-/// `Exited`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DataDirLost {
-    /// The absent data dir path.
-    pub path: String,
-    /// When the absent data dir was first observed, ms since the Unix epoch.
-    pub since: u64,
-}
-
-/// The durable `data-dir-unreadable` fact on a birth's status row (R-FM2): the inherited data dir
-/// exists on disk, but `node-key` is missing, unreadable, or corrupt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DataDirUnreadable {
-    /// The broken data dir path.
-    pub path: String,
-    /// Why `node-key` could not be loaded from the data dir.
-    pub cause: String,
-}
-
 /// One node as the answering node-admin's view holds it (`node.get`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeView {
@@ -191,14 +170,6 @@ pub struct NodeView {
     /// the live copy. RDM never reads it.
     #[serde(default)]
     pub config: std::collections::BTreeMap<String, String>,
-    /// The durable `data-dir-lost` fact on this birth's status row (R-FM2), when the inherited
-    /// data dir was absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors while `Exited`.
-    #[serde(default)]
-    pub data_dir_lost: Option<DataDirLost>,
-    /// The durable `data-dir-unreadable` fact on this birth's status row (R-FM2), when the
-    /// inherited data dir exists on disk with a missing, unreadable, or corrupt `node-key`.
-    #[serde(default)]
-    pub data_dir_unreadable: Option<DataDirUnreadable>,
     /// This exact birth's immutable app declaration.
     #[serde(default)]
     pub types: std::collections::BTreeSet<String>,

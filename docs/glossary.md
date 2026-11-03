@@ -207,8 +207,7 @@ Every term below links to the architecture pages that define it.
   `reached` means the exact birth answered `node.tickle` (with no command left unanswered past the
   staleness floor) and is commanded back via [`node.mesh.join`](architecture/lifecycles/node-mesh-join.md);
   any other verdict comes from [`node.runtime.inspect`](architecture/lifecycles/node-runtime-inspect.md)
-  and re-creates the node at the same `path` and `name` with a new `node.id` (over the inherited data dir
-  when `exited`, or a newly allocated data dir otherwise).
+  and re-creates the node at the same `path` and `name` with a new `node.id` (over its predecessor's data dir when `exited` with `persistent` storage and the directory there, or a newly allocated data dir otherwise; always a new `endpoint_id`).
 - **adoption launch** ([Fabric recovery](architecture/lifecycles/fabric-recovery.md#nothing-alive),
   [Node-admin lifecycle](architecture/node-admin-lifecycle.md)): A `node-admin` a person or a script
   starts at the lost `fabric-primary`'s `path` and `name`, with `RDM_FABRIC_ID`, `RDM_MESH` and

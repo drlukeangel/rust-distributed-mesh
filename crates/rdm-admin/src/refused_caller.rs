@@ -292,8 +292,6 @@ mod tests {
             door: Default::default(),
             client,
             builds: builds.clone(),
-            data_root: Default::default(),
-            gone_dirs: Default::default(),
             resubmits: Default::default(),
             failed: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&rdm_core::FabricId::mint(), &admin.node_id),

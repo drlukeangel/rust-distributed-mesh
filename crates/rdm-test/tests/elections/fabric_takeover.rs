@@ -251,12 +251,13 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
     estate.record_trace_url(deleted[0].split(' ').next().unwrap_or("").trim_matches('"'));
 }
 
-/// CONTRACT (node-recovery.md "Retained": "the inherited data dir and endpoint key when the verdict is
-/// `exited`"): mesh1 holds the fabric-primary and is lost; mesh2's admin can inspect it, so the old birth's
+/// CONTRACT (node-recovery.md "Retained": "the predecessor's data dir when the verdict is `exited`, its
+/// `storage_persistence` is `persistent` and the directory exists"; "New": "`endpoint_id` and
+/// `transport_addr` ... on every verdict (Q358)"): mesh1 holds the fabric-primary and is lost; mesh2's admin can inspect it, so the old birth's
 /// node.delete reads its runtime exited at its `TerminateRuntime`, and mesh2's primary re-creates
-/// mesh1.node-admin.1 over the old birth's data dir: a new node.id at mesh1.node-admin.1, ready, with
-/// the old birth's endpoint key, told `RDM_INHERITED_DATA_DIR=1`. Must NOT happen: a newly allocated
-/// data dir or a newly minted key for an admin whose runtime exited.
+/// mesh1.node-admin.1 over the old birth's data dir (a node-admin's storage is persistent): a new node.id
+/// at mesh1.node-admin.1, ready, with a new endpoint key, told `RDM_INHERITED_DATA_DIR=1`. Must NOT
+/// happen: a newly allocated data dir for an admin whose runtime exited, or its predecessor's key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_runtime_exited() {
     let test = "a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_runtime_exited";
@@ -288,7 +289,7 @@ async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_r
     let Some(new) = recreated else {
         panic!("mesh1.node-admin.1 was not re-created; create steps {steps:#?}");
     };
-    assert_eq!(new.endpoint_id.as_deref(), Some(old_endpoint.as_str()), "the old birth's endpoint key, loaded from its data dir: {new:?}");
+    assert_ne!(new.endpoint_id.as_deref(), Some(old_endpoint.as_str()), "a new endpoint key, never the old birth's (Q358): {new:?}");
     assert_eq!(new.data_dir.as_deref().map(std::path::PathBuf::from), Some(old_dir.clone()), "the old birth's data dir: {new:?}");
     assert_eq!(told.as_deref(), Some("1"), "the re-created admin was told inherited = true");
     let read = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == old_id && s(&sp["attributes"]["caller"]) == "terminate").cloned().expect("the old birth's node.delete read its runtime at its TerminateRuntime");

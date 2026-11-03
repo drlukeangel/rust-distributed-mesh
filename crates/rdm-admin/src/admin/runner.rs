@@ -800,8 +800,8 @@ impl AdminRunner {
 
     /// Node recovery of the unreached birth `from` at `node` (node-recovery.md "Execution", "Steps"): the
     /// primary's own workflow, never a Build or part of one (Q342). node.delete of the unheard instance,
-    /// then node.create with its path and name and a new node.id, over the inherited data dir when the
-    /// delete read the old runtime exited (`R-FM2`). Each step is recorded on the node record: no Build is
+    /// then node.create with its path and name and a new node.id, over the predecessor's data dir when the
+    /// delete read the old runtime exited and its storage is persistent ([`Self::create_over`]). Each step is recorded on the node record: no Build is
     /// read and no receipt written. The caller holds the node's work turn ([`Self::node_work`]).
     /// `backbone`: fabric recovery's backbone arm, whose delete terminates nothing in the mesh
     /// (fabric-recovery.md step 3, Q148).
@@ -812,8 +812,8 @@ impl AdminRunner {
         // Each step is recorded on the node record, and a birth already deleted is not deleted again
         // (node-recovery.md sequence step 1): a recovery run again after its create failed finds the
         // exited birth's row Deleted, its node.delete's completion, and runs only the create. The runtime
-        // that delete terminated has exited, so the create takes the inherited data dir as it would on
-        // that delete's read (`R-FM2` still decides a lost one).
+        // that delete terminated has exited, so the create decides its data dir as it would on that
+        // delete's read ([`Self::create_over`]).
         let recorded = self.nodes_storage.node(&from.node_id).await.map_err(|e| crate::executor::RunEnd::from(format!("node.delete:path {node_path:?}, name {node_name:?}: the record of {} could not be read: {e}", from.node_id, node_path = &node.path, node_name = &node.name)))?;
         let exited = if recorded.as_ref().is_some_and(|row| row.status == crate::model::NodeStatus::Deleted && row.birth(&from.incarnation).is_some()) {
             delete.in_scope(|| tracing::info!(outcome = "recorded", "the exited birth's row is Deleted: its node.delete completed and is not run again"));
@@ -863,21 +863,23 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// Node recovery's node.create (node-recovery.md sequence steps 4-5): a new node at `node` over the
-    /// unreached birth `from`'s data dir when its delete read the old runtime exited, through the create
-    /// workflow: it loads the endpoint key that dir holds and binds port 0, with a new node.id and
-    /// incarnation, no supersedes; over a newly allocated data dir with a newly minted key otherwise. Not through
+    /// Node recovery's node.create (node-recovery.md sequence step 3): a new node at `node` over the
+    /// unreached birth `from`'s data dir when its delete read the old runtime exited, its
+    /// `storage_persistence` is `persistent` and the directory exists, over a newly allocated data dir
+    /// otherwise, through the create workflow: it mints a new endpoint key, writes it into that data dir
+    /// and binds port 0, with a new node.id, incarnation, `endpoint_id` and `transport_addr`, no
+    /// supersedes (Q358). Not through
     /// the create door's target: the birth at the path is the exited one this recovery deleted, and
     /// the target would replace it.
     ///
-    /// The exited birth is targeted here, by the create (node-recovery.md "Delete targets the old
-    /// instance before the new join"): right before the new runtime with the same key is launched,
+    /// The exited birth is targeted here, by the create (node-recovery.md "Delete blocks the old
+    /// instance before the new join"): right before the new runtime is launched,
     /// inside its `DeployRuntime` step ([`crate::deployment::pipeline::BeforeLaunch`]). Whichever
     /// executor runs the create targets, so an executor lost after the delete's Complete leaves
     /// nothing untargeted; a rerun that reuses a runtime an earlier attempt launched (it was targeted
     /// before that launch) cuts none of that runtime's paths.
     /// `read_exited`: whether the delete of `from` read the old runtime exited at its `TerminateRuntime`
-    /// (node-recovery.md step 4, `R-FM2`), from that delete's own receipt.
+    /// (node-recovery.md step 2), from that delete's own receipt.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_over(&self, builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, node: &PathName, from: &crate::build::ExitedBirth, node_id: &crate::model::NodeId, read_exited: bool, executable: Option<&rdm_core::binding::Binding>, requested: Option<(&CreateRequest, crate::node_rows::RowFor)>) -> Result<(), crate::executor::RunEnd> {
         let (exited, _) = self.exited_birth("node.create", node, from).await?;
@@ -898,43 +900,30 @@ impl AdminRunner {
         }
         let pipeline = self.pipeline_with(&template, builds);
         let data_dir = pipeline.birth_dir(&exited);
-        // The key the target names is the one the kept data dir holds (a record resolved from the
-        // durable runtime rows carries none): the node created over that dir loads exactly it.
-        let mut targeted = exited;
-        if targeted.endpoint_id.is_none() {
-            targeted.endpoint_id = crate::deployment::pipeline::load_transport_key(&data_dir).ok();
-        }
+        // The exited birth's record, as its endpoint names it; the new node's endpoint is new, so
+        // nothing is read from the predecessor's data dir (Q358).
+        let targeted = exited;
         // A node-admin's recovery is a node-admin birth whose maker is this mesh-primary (the
         // template's seed): it is handed the durable runtime rows before it runs, as every admin
         // birth is.
         let held_runtimes = if rdm_core::is_node_admin(&r#type) { self.held_runtimes().await } else { Vec::new() };
-        // The inherited data dir only when the delete read the old runtime exited, and its loss is not
-        // recorded (node-recovery.md step 4, `R-FM2`); a newly allocated one otherwise.
-        let lost = match self.records.status.get() {
-            Some(fold) => fold.caches().nodes.birth_facts(&**fold.nodes(), &from.node_id, &from.incarnation).await.ok().flatten().is_some_and(|f| f.data_dir_lost.is_some()),
-            None => false,
-        };
-        let data_dir = if lost || !read_exited {
-            None
+        // The predecessor's data dir only when the delete read the old runtime exited, the node's
+        // `storage_persistence` is `persistent` and the directory exists (Q358, Q359); a newly allocated
+        // one otherwise. An os-stopped or unproven runtime may still run on that directory, so only an
+        // exited one hands it on. What the directory holds is the application's to judge, in its
+        // `pre_node_ready` (Q350): RDM never looks inside it. A record written before the field names no
+        // `storage_persistence`: the type's own default stands for it.
+        let storage_persistence = match self.records.status.get() {
+            Some(fold) => fold.caches().nodes.known_row(&**fold.nodes(), &from.node_id).await.ok().flatten().and_then(|r| r.storage_persistence),
+            None => None,
+        }
+        .unwrap_or_else(|| rdm_core::meta::StoragePersistence::of_type(&targeted.r#type));
+        let persistent = matches!(storage_persistence, rdm_core::meta::StoragePersistence::Persistent { .. });
+        let data_dir = if read_exited && persistent {
+            let dir = data_dir.clone();
+            crate::blocking::blocking_io(move || dir.is_dir()).await.then_some(data_dir)
         } else {
-            if let Err(crate::deployment::pipeline::InheritedDirError::Broken(ref cause)) = crate::deployment::pipeline::inspect_transport_key(&data_dir) {
-                if let Some(fold) = self.records.status.get() {
-                    let unreadable = crate::storage::DataDirUnreadable { path: data_dir.display().to_string(), cause: cause.clone() };
-                    let held = crate::storage::NodeRow::new(node.clone(), targeted.mesh.clone(), &targeted.r#type, from.node_id.clone(), crate::model::NodeStatus::Deleted);
-                    let _ = fold.caches().nodes.update(&**fold.nodes(), &from.node_id, Some(held), |r| r.birth_mut(&from.incarnation, node).data_dir_unreadable = Some(unreadable)).await;
-                }
-                tracing::info_span!(
-                    "rdm.node_admin.node.reject.via-data-dir-unreadable",
-                    node_path = %node.path, node_name = %node.name,
-                    node_id = %from.node_id,
-                    incarnation_id = %from.incarnation.as_str(),
-                    path = %data_dir.display(),
-                    cause = %cause,
-                    "otel.kind" = "internal",
-                )
-                .in_scope(|| tracing::info!("inherited data dir is broken; holding recovery until repaired"));
-            }
-            Some(data_dir)
+            None
         };
         let (mut req, row_for) = match requested {
             Some((req, row_for)) => (req.clone(), row_for),
@@ -948,13 +937,13 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// node-recovery.md "Delete targets the old instance before the new join": the exited birth's
-    /// resolver entry is deleted and its direct paths dropped, awaited, right before the new birth
-    /// with the same endpoint key is launched (the create over its data dir, [`Self::create_over`]).
+    /// node-recovery.md "Delete blocks the old instance before the new join": the exited birth's
+    /// resolver entry is deleted and its direct paths dropped, awaited, right before the new birth is
+    /// launched ([`Self::create_over`]). The new birth's endpoint is new (Q358): the paths deleted are
+    /// the exited birth's own, which nothing dials again.
     ///
-    /// The await is bounded, and it is awaited (not spawned as `after_exit` does) because the new
-    /// birth carries the SAME key: a delete landing after the new birth's paths exist would delete
-    /// those. Bounded, in the pinned iroh (rev 921afe53): `Socket::replace_direct_addrs`
+    /// The await is bounded, and it is awaited (not spawned as `after_exit` does), so the paths are
+    /// gone before the new birth runs. Bounded, in the pinned iroh (rev 921afe53): `Socket::replace_direct_addrs`
     /// (iroh/src/socket.rs:1408-1420) returns at once when no actor runs for the key, else sends one
     /// message into the actor's 64-slot inbox (socket/remote_map/remote_state.rs:246) and awaits its
     /// oneshot. The actor's loop (remote_state.rs:300-360) runs only synchronous arm bodies and
@@ -971,7 +960,7 @@ impl AdminRunner {
         if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
             ep.replace_direct_addrs(key, []).await;
             tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-removed", node_path = %record.path, node_name = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "recovery", reason = "exited-verdict")
-                .in_scope(|| tracing::info!("the exited birth's direct paths are deleted before the new birth with its key is launched"));
+                .in_scope(|| tracing::info!("the exited birth's direct paths are deleted before the new birth is launched"));
         }
     }
 

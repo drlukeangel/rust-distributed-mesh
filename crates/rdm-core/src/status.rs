@@ -2685,8 +2685,6 @@ mod tests {
             gossip: Some(crate::GossipStats { heard: 20, neighbours: 5, frames_sent: 123_456, frames_received: 654_321 }),
             tags: ["rabbit".to_string(), "zone-a".to_string()].into(),
             config: [("tier".to_string(), "gold".to_string())].into(),
-            data_dir_lost: None,
-            data_dir_unreadable: None,
             properties: Default::default(),
         }
     }

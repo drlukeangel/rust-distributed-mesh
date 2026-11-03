@@ -186,7 +186,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert_eq!(estate.build_ids().await, builds, "recovery opens no Build");
     assert_eq!(build_log::build_value(&estate, &r4).await, before, "the current Build's record is what it was: a recovery is no attempt of it");
     assert_ne!(back["node_id"], lost["node_id"], "a lost birth's path gets a new logical node");
-    assert_eq!(back["endpoint_id"], lost["endpoint_id"], "over the inherited data dir and its endpoint key");
+    assert_ne!(back["endpoint_id"], lost["endpoint_id"], "a new endpoint_id (Q358)");
 
     // 8. A stop, then a start: node commands of the primary above the node, never a Build or part of
     // one (Q342): the Builds are what they were.

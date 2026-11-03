@@ -17,7 +17,7 @@ removal is separate work.
 | OS-suspended target | The provider reports the exact runtime `os-stopped` ([deployment-provider §2.5](../deployment-provider.md#25-runtime-state-what-the-provider-reports)): the stop is skipped by name (a suspended process answers no call) and the delete begins at `TerminateRuntime` on the exact handle, as `terminate(Immediate)`: a suspended runtime runs no handler, so there is no graceful wait, and nothing of it is resumed; the delete completes only on the provider's `Exited`. Explicit delete only, never recovery, which respects suspension |
 | Runtime action | `TerminateRuntime` on the exact accepted runtime, whatever the provider reads of it (a running one is stopped; an exited one has what it left removed; one already removed is done), then its inspection (Q145) |
 | Terminal event | Executor emits node.deleted only from the provider's `Exited` of the exact runtime, after releasing node.id and name |
-| Storage | Retain data dir and endpoint key; a later spec can inherit them |
+| Storage | Retain the data dir; a later node at the path can inherit it, never its endpoint key (Q358) |
 | Peer block | node.deleted blocks old `(node.id, incarnation)` in the peer-location view |
 | Never evidence | Gossip, silence, Ping failure and timeout never say the runtime exited |
 
@@ -35,8 +35,7 @@ removal is separate work.
    `Exited` and writes the delete's `rdm.build.step` event (inside a repair, the node record). The exited node cannot publish
    its own end or serve that stream.
 5. Block the old `(node.id, incarnation)` in the peer-location view. Peers refuse a late
-   digest of the deleted birth under the [frame catalog's receiver rules](../gossip.md#31-frame-catalog),
-   even when a successor uses the same endpoint key.
+   digest of the deleted birth under the [frame catalog's receiver rules](../gossip.md#31-frame-catalog).
 
 ## Command, completion and gossip messages
 

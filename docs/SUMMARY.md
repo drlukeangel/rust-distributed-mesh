@@ -66,7 +66,6 @@
 - [Troubleshooting](eng/troubleshooting.md)
 - [Fabric recovery runbook](eng/fabric-recovery-runbook.md)
 - [Node storage runbook](eng/node-storage-runbook.md)
-- [Provider runbook](eng/provider-runbook.md)
 - [Node records (i150 integration)](features/node-records/overview.md)
   - [How-to](features/node-records/how-to.md)
   - [Runbook](features/node-records/runbook.md)

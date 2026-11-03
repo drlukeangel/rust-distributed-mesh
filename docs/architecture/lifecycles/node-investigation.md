@@ -31,8 +31,7 @@ new node.id (Q110). Fabric recovery's backbone arm excepts `running`
 Nothing waits on the provider's `Exited`: not node recovery, a primary change, a name's release,
 node.delete or mesh.delete.
 
-Data dir: if the provider step finds the runtime exited, the re-created node takes the inherited data
-dir; on any other verdict, a newly allocated one (R-FM2).
+Data dir: if the provider step finds the runtime exited, the re-created node takes its predecessor's data dir when its `storage_persistence` is `persistent` and the directory exists; otherwise, and on any other verdict, a newly allocated one (Q359). Its `endpoint_id` and `transport_addr` are always new (Q358).
 
 A caller birth a primary does not hold (its Digest refused by name under [gossip.md §3.1 receiver
 rules](../gossip.md#31-frame-catalog), its status declaration refused `SubjectUnknown`, or its join report refused `JoinMismatch` because the row at its path and name holds another node) is decided by
@@ -59,5 +58,5 @@ row deleted ([node.delete](node-delete.md), releasing the name) and reports it t
 | Target | One node, by `(node.id, incarnation)` |
 | Steps | The by-destination connections index read, node.runtime.inspect, node.tickle direct, the same tickle via those peers |
 | Result | `reached`, `running`, `os-stopped`, `exited` or `unproven` |
-| What follows | Reached: node.mesh.join. Any other verdict: re-created at the same path and name with a new node.id, over the inherited data dir when the verdict is `exited`, over a newly allocated one otherwise |
+| What follows | Reached: node.mesh.join. Any other verdict: re-created at the same path and name with a new node.id, over the predecessor's data dir when the verdict is `exited`, its storage `persistent` and the directory there, over a newly allocated one otherwise |
 | Spans | [node.tickle](node-tickle.md#operation-contract)'s and [node.runtime.inspect](node-runtime-inspect.md#operation-contract)'s own |

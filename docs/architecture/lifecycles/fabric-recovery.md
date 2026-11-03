@@ -15,8 +15,7 @@ mutation the launch on the fabric-primary's data dir asks, as the adoption launc
 answers: a launch that finds a living admin is refused NameHeld, never an ordinary admin at the primary's name,
 and that admin's fabric recovery re-creates the birth (Q156, Q199). No surviving maker
 exists, so there are no maker JoinNode/GetTopology calls. The launched node-admin is a new node at the same
-path and name: a new node.id and incarnation and a new port, with the same endpoint key over the inherited data
-dir and a new one over a new data dir. The person's steps are in the
+path and name: a new node.id, incarnation, `endpoint_id` and port, over the inherited data dir or a new one (Q358). The person's steps are in the
 [fabric recovery runbook](../../eng/fabric-recovery-runbook.md).
 The sequence below reads topology from a node that is alive; when no node is,
 [Nothing alive](#nothing-alive) is the case.
@@ -60,7 +59,7 @@ the same order starts the workflow again, resuming from the progress recorded on
 3. **The executor runs the standing playbook on the lost one**: [node investigation](node-investigation.md) decides (Q111). Reached, by the investigation's answer
    from the exact birth and nothing else, the lost birth is commanded back through [node.mesh.join](node-mesh-join.md) and runs its start sequence,
    hook, cert and rafka-time (Q87). Any other verdict, node recovery re-creates it at the same path and name
-   with a new node.id: over the inherited data dir with the same endpoint key when the investigation's
+   with a new node.id: over the inherited data dir when the investigation's
    provider step found the old runtime exited, over a newly allocated data dir, `inherited = false`,
    otherwise (`R-FM2`). An old birth that comes back once its verdict is not `reached`, during its successor's creation or after it, is a deleted birth: every view refuses its
    Digest by name, and its mesh-primary decides it by its path and name and its atlas
@@ -78,9 +77,7 @@ the same order starts the workflow again, resuming from the progress recorded on
    installs both roles, acknowledges directly, and records them on its own row as the mesh's writer; its
    normal Digest carries the change. The write records the roles; it does not grant them. The workflow
    completes on the acknowledgement. The fabric's shared store root stays where it was. The fabric
-   resolves to a fabric-primary at the original path and name over the original data dir and endpoint key
-   when the investigation's provider step found the old runtime exited, and over a newly allocated data
-   dir and endpoint key otherwise (R-FM2). Under an in-force fabric.delete (build.md §1), the workflow
+   resolves to a fabric-primary at the original path and name over the original data dir when the investigation's provider step found the old runtime exited, and over a newly allocated data dir otherwise (R-FM2); its `endpoint_id` is new either way (Q358). Under an in-force fabric.delete (build.md §1), the workflow
    re-creates and restores nothing: the delete is the current Build and names no node, so the executor
    holds the fabric-primary's roles to the end and continues the delete, whose mesh.delete of the lost
    birth's mesh deletes its row with the rest; no hand-back follows (Q155). The executor takes the fabric-primary role and the lost mesh's mesh-primary role by one recorded transition at the next revision, keeping its own mesh's; a returning fabric-primary's writes carry its superseded revision and every reader ignores them, its Build calls are refused NotFabricPrimary, and it stops on its first read after the heal (Q109); a runtime the executor cannot inspect or terminate fails the delete's step by name, no receipt manufactured, the intent retained; its own mesh is deleted last, it reports fabric.deleted alive, and an outside caller deletes it (Q160).

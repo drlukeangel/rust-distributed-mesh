@@ -2,37 +2,9 @@
 
 use super::*;
 
-/// The digest key carrying a node-admin's mesh id.
-
-/// The environment variable configuring the hold duration (in staleness floors) before an absent
-/// inherited `data_dir` on a proven-exited node is declared lost and recovered over a newly
-/// allocated `data_dir` (`docs/architecture/lifecycles/node-recovery.md` "Lost data dir (`R-FM2`)",
-/// default 2).
-pub const ENV_DATA_DIR_GONE_FLOORS: &str = "RDM_DATA_DIR_GONE_FLOORS";
-
-/// Default hold duration in staleness floors (`docs/architecture/lifecycles/node-recovery.md`
-/// "Lost data dir (`R-FM2`)": 2 staleness floors = 60 s at 30 s).
-pub const DEFAULT_DATA_DIR_GONE_FLOORS: u64 = 2;
-
-/// Configured hold floors for an absent inherited `data_dir` (`RDM_DATA_DIR_GONE_FLOORS`, default 2,
-/// `docs/architecture/lifecycles/node-recovery.md` "Lost data dir (`R-FM2`)").
-pub fn data_dir_gone_floors() -> u64 {
-    std::env::var(ENV_DATA_DIR_GONE_FLOORS)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|&n| n >= 1)
-        .unwrap_or(DEFAULT_DATA_DIR_GONE_FLOORS)
-}
-
-/// Configured hold duration in milliseconds (`data_dir_gone_floors() * staleness_floor()`,
-/// `docs/architecture/lifecycles/node-recovery.md` "Lost data dir (`R-FM2`)").
-pub fn data_dir_gone_hold_ms() -> u64 {
-    data_dir_gone_floors().saturating_mul(rdm_core::cadence::staleness_floor().as_millis() as u64)
-}
-
 /// RDM's fixed pass-through list: each, when set on a node-admin, is passed on to every runtime it
 /// launches ([`AdminConfig::passthrough`]). A declared secret is never one of them (Q150).
-pub const PASSTHROUGH: [&str; 10] = ["RDM_EVIDENCE_DIR", "RUST_LOG", "RUST_BACKTRACE", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV, ENV_DATA_DIR_GONE_FLOORS];
+pub const PASSTHROUGH: [&str; 9] = ["RDM_EVIDENCE_DIR", "RUST_LOG", "RUST_BACKTRACE", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV];
 
 /// Everything a node-admin reads from its environment (`docs/architecture/node-admin-lifecycle.md` §2).
 #[derive(Debug, Clone)]
@@ -298,6 +270,23 @@ pub(crate) async fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey, Strin
         }
         let k = SecretKey::generate();
         std::fs::write(&path, hex::encode(k.to_bytes())).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(k)
+    })
+    .await
+}
+
+/// A new node key minted and written into `data_dir` as its node's own, over any key already there:
+/// a new node launched on its predecessor's data dir gets its own endpoint, never the predecessor's,
+/// which is never read (Q358). Written to a file beside it and renamed over `node-key`, on the
+/// blocking pool.
+pub(crate) async fn write_new_key(data_dir: &Path) -> Result<SecretKey, String> {
+    let data_dir = data_dir.to_path_buf();
+    crate::blocking::blocking_io(move || {
+        std::fs::create_dir_all(&data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
+        let (path, written) = (data_dir.join("node-key"), data_dir.join("node-key.new"));
+        let k = SecretKey::generate();
+        std::fs::write(&written, hex::encode(k.to_bytes())).map_err(|e| format!("{}: {e}", written.display()))?;
+        std::fs::rename(&written, &path).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(k)
     })
     .await

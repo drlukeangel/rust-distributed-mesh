@@ -27,8 +27,6 @@ fn row(name: rdm_core::PathName, r#type: &str, primary: bool, fabric: bool) -> N
         gossip: None,
         tags: Default::default(),
         config: Default::default(),
-        data_dir_lost: None,
-        data_dir_unreadable: None,
     }
 }
 

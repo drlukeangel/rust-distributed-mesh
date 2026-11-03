@@ -421,15 +421,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // The declared values this admin holds, kept beside its data dir as the root is (`ca-secret`), so
     // the same admin started again holds the same values: the value never changes while the fabric runs.
     declared_secrets.keep(&cfg.data_dir).map_err(|e| format!("refusing to start: {e}"))?;
-    let key_file = cfg.data_dir.join("node-key");
-    let key_held = crate::blocking::blocking_io(move || key_file.try_exists()).await.map_err(|e| format!("{}: {e}", cfg.data_dir.join("node-key").display()))?;
-    let step = if key_held {
-        tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-identity-loaded")
-    } else {
-        tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-identity-minted")
-    };
-    let key = load_or_mint_key(&cfg.data_dir).await?;
-    drop(step);
     let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), topology_storage_provider = %cfg.topology_storage_provider, fabric_id = tracing::field::Empty, inherited_root = tracing::field::Empty, writes_to = tracing::field::Empty, mesh_id = tracing::field::Empty, error = tracing::field::Empty);
     // The node-admin storage boundaries: its own row, the runtimes it started, its Build journal and
     // attempt contexts in its own data dir; the fabric, mesh, nodes, connections and status stores
@@ -461,6 +452,20 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         }
         cfg.fabric_id = own.fabric_id.clone();
     }
+    // The endpoint key. A start with no launcher on a data dir that holds its own row (an inherited
+    // root) or an adoption launch is a new node with a new node.id: it mints a new key and writes it over
+    // the one the data dir holds, never reading it (Q358). Any other start loads the key its data dir
+    // holds, minted on first use.
+    let new_endpoint = cfg.launch.is_none() && (cfg.adopt.is_some() || own_row.is_some());
+    let key_file = cfg.data_dir.join("node-key");
+    let key_held = !new_endpoint && crate::blocking::blocking_io(move || key_file.try_exists()).await.map_err(|e| format!("{}: {e}", cfg.data_dir.join("node-key").display()))?;
+    let step = if key_held {
+        tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-identity-loaded")
+    } else {
+        tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-identity-minted")
+    };
+    let key = if new_endpoint { super::records::write_new_key(&cfg.data_dir).await? } else { load_or_mint_key(&cfg.data_dir).await? };
+    drop(step);
     storage_step.record("fabric_id", tracing::field::display(&cfg.fabric_id));
     storage_step.record("inherited_root", cfg.launch.is_none() && own_row.is_some());
     let own_mesh = match (&cfg.launch, &own_row) {
@@ -521,7 +526,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // The adoption launch (Q156; fabric-recovery.md "Nothing alive"): what the store holds is read with
     // nothing written, and a store root that does not hold the fabric, its provider, the mesh or the lost
     // fabric-primary at this path and name refuses the start by name. An inherited data dir gives it only its
-    // custody and its endpoint key, never its path.
+    // custody, never its path or its endpoint key (Q358).
     let adoption = match &cfg.adopt {
         None => None,
         Some(name) => {
@@ -604,9 +609,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         _ => None,
     };
     // Identity and the two addresses: assigned by the launching pipeline, the bootstrap admin's own,
-    // or (an inherited root) a node.id and incarnation this admin mints at the path and name and endpoint
-    // key of the inherited row, with a new port (fabric-recovery.md: the re-created node-admin is a new
-    // node over its inherited data dir). A new node supersedes no birth (node-stop.md, node-start.md: a stop
+    // or (an inherited root) a node.id, incarnation and endpoint key this admin mints at the path and name
+    // of the inherited row, with a new port (fabric-recovery.md: the re-created node-admin is a new
+    // node over its inherited data dir; Q358). A new node supersedes no birth (node-stop.md, node-start.md: a stop
     // and its start alone keep the node.id and incarnation). Its bootstrap contacts are the births it last heard,
     // its own Mesh first: hints, any one of which answering is enough.
     // The adoption launch this admin runs, held until it completes or fails (fabric-recovery.md "Nothing alive").
@@ -683,8 +688,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 node_id,
                 incarnation.clone(),
                 None,
-                // The inherited endpoint key and a fresh port (the operating system assigns it), never the
-                // one the inherited birth held: peers learn the new address from its digest.
+                // A new endpoint key (minted above, Q358) and a fresh port (the operating system assigns it),
+                // never the inherited birth's: peers learn the new endpoint and address from its digest.
                 SocketAddr::new(own.transport_addr.ip(), 0),
                 seeds,
             )
@@ -2067,14 +2072,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             let reader = stores.reader();
                                             let read = async {
                                                 let Some(row) = reader.row(&node_id).await? else { return Ok(None) };
-                                                let predecessor = match row.predecessor.as_ref() {
-                                                    Some(p) => reader.row(&p.node_id).await?,
-                                                    None => None,
-                                                };
                                                 let properties = reader.properties(&node_id).await?;
-                                                Ok::<_, String>(Some((row, predecessor, properties)))
+                                                Ok::<_, String>(Some((row, properties)))
                                             };
-                                            let (row, predecessor, properties) = match read.await {
+                                            let (row, properties) = match read.await {
                                                 Ok(Some(read)) => read,
                                                 Ok(None) => return None,
                                                 Err(e) => {
@@ -2086,7 +2087,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             if row.mesh != mesh || row.node_id == me {
                                                 return None;
                                             }
-                                            let mut v = crate::views::own_row_view(&view, &atlas, &row, predecessor.as_ref(), properties.as_ref());
+                                            let mut v = crate::views::own_row_view(&view, &atlas, &row, properties.as_ref());
                                             match properties {
                                                 Some(own) => {
                                                     v.config = own.config;
@@ -2551,12 +2552,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     door: build_slot.clone(),
                                                     client: Some(node_rpc.client.clone()),
                                                     builds: control.builds.clone(),
-                                                    data_root: cfg
-                                                        .data_dir
-                                                        .parent()
-                                                        .map(Path::to_path_buf)
-                                                        .unwrap_or_else(|| cfg.data_dir.clone()),
-                                                    gone_dirs: Arc::default(),
                                                     resubmits: Arc::default(),
                                                     failed: Arc::default(),
                                                     investigated: investigated.clone(),

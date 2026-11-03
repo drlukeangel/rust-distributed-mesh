@@ -431,7 +431,7 @@ impl Rig {
                 let rows = self.sink.1.get().expect("the rig's node rows");
                 let incarnation = rows.written().row_of(&node_id).and_then(|r| r.newest_birth().map(|b| b.incarnation_id.clone()).or_else(|| r.allocated.as_ref().map(|a| a.incarnation.clone()))).expect("the create wrote the node record");
                 let data_dir = rdm_admin::deployment::node_data_dir(&self.data_root, &node_id);
-                let endpoint_id = rdm_admin::deployment::pipeline::inspect_transport_key(&data_dir).expect("the create wrote the transport key");
+                let endpoint_id = rdm_admin::deployment::pipeline::endpoint_id(&data_dir).expect("the create wrote the transport key");
                 let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
                 let digest = MeshDigest { held_hash: Default::default(),
                     fabric_id: FabricId::mint(),
@@ -532,7 +532,7 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
     assert!(spans_named(&spans, "rdm.node_admin.deployment.update.via-step").iter().all(|s| s["attributes"]["step"] != "WaitForMeshJoin"), "nothing after the bind wait ran: {spans:?}");
     let prepare: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "PrepareStorage").collect();
     assert_eq!(prepare.len(), 1, "PrepareStorage ran once: {spans:?}");
-    assert_eq!(prepare[0]["attributes"]["awaited"], "entry-spec,create-row,transport-key", "PrepareStorage names every await it ran (a plain create reads its create spec first): {}", prepare[0]);
+    assert_eq!(prepare[0]["attributes"]["awaited"], "entry-spec,create-row,endpoint_id", "PrepareStorage names every await it ran (a plain create reads its create spec first): {}", prepare[0]);
     assert_eq!(prepare[0]["attributes"]["awaiting"], "done", "PrepareStorage completed every await: {}", prepare[0]);
     let create_row: Vec<&Value> = spans_named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["moment"] == "create").collect();
     assert_eq!(create_row.len(), 1, "PrepareStorage opened the create via-node-row span: {create_row:?}");

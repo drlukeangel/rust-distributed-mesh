@@ -23,7 +23,7 @@ The contract is in these pages; this runbook only gathers them:
   declared type its own). Neither the pipeline nor the provider applies a hidden default.
 - **RDM deletes nothing on disk, ever.** A delete releases the node.id and the name, never the data
   dir.
-- **Only the data dir is carried.** The endpoint key (`node-key`) lives in it. Anything the
+- **Only the data dir is carried.** RDM's own files for the node live in it too; a re-created node gets a new endpoint key written there, never its predecessor's (Q358). Anything the
   application keeps outside `RDM_DATA_DIR` is not carried by RDM to a later birth. A broker's
   durable data must live under its `RDM_DATA_DIR`.
 
@@ -32,11 +32,9 @@ The contract is in these pages; this runbook only gathers them:
 | Operation | node.id, incarnation | Data dir | Endpoint key | `pre_node_ready` |
 |---|---|---|---|---|
 | `node.stop` then `node.start` | same | same | same | runs again, `start_kind = AfterStop` |
-| node recovery, verdict `exited` (a re-birth) | new; same path and name | the old one, inherited | the old one, loaded from it | `FirstStart`, `inherited = true` |
-| node recovery, any other verdict but `os-stopped` | new; same path and name | newly allocated | newly minted | `FirstStart`, `inherited = false` |
-| node recovery, the old data dir absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors | new; same path and name | newly allocated beside the old path; `data-dir-lost { path, since }` recorded | newly minted (the old one is never re-minted) | `FirstStart`, `inherited = false` |
-| node recovery, the old data dir present but `node-key` unreadable | none yet | none: `data-dir-unreadable { path, cause }` recorded and the recovery held until the key reads | none | runs only once the key reads, `inherited = true` |
-| `node.delete` | released | kept on disk, with its key; a later spec at the path may inherit it | kept | none |
+| node recovery, verdict `exited`, `persistent` storage, the old data dir there | new; same path and name | the old one, inherited | newly minted, written into it | `FirstStart`, `inherited = true` |
+| node recovery, `ephemeral` storage, the old data dir gone, or any other verdict but `os-stopped` | new; same path and name | newly allocated | newly minted | `FirstStart`, `inherited = false` |
+| `node.delete` | released | kept on disk; a later node at the path may inherit it | never reused | none |
 
 A new executable is a new node, a Build that adds it (build-deployment.md §3). To keep the old node's
 data, the old node is stopped and renamed with node.name.update first; it keeps its data dir and key
@@ -60,9 +58,8 @@ until a Delete removes it, and moving its data is Rafka's own step, with its own
 
 | Where | What it shows |
 |---|---|
-| `rdm.node_admin.deployment.update.via-step` with `step=PrepareStorage` | the data dir prepared for a create: fresh, or inherited and inspected |
+| `rdm.node_admin.deployment.update.via-step` with `step=PrepareStorage` | the data dir prepared for a create: fresh, or the predecessor's |
 | `rdm.mesh.node.update.via-pre-node-ready-attempt`, field `inherited` | what the hook was told |
-| `node.get` on the birth | `data-dir-lost` or `data-dir-unreadable` when either stands ([provider runbook](provider-runbook.md)) |
 | the birth's row | a new node.id and incarnation at the same path and name after a re-birth; the same ones after a restart |
 
 ## Checking a broker restart
@@ -74,6 +71,6 @@ until a Delete removes it, and moving its data is Rafka's own step, with its own
    touch the disk.
 3. For a re-birth: read `inherited` on the pre-node-ready attempt span.
    - `true`: the old data dir is in use, and the broker should open it.
-   - `false`: read the recovery's verdict and any `data-dir-lost` fact. The broker started empty and
+   - `false`: read the recovery's verdict and the path's `storage_persistence`. The broker started empty and
      must resync.
 4. Check the path's storage in the accepted Build: a broker path should be `Persistent`.

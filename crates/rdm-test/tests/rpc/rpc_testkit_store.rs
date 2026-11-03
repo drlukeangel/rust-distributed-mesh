@@ -6,7 +6,8 @@
 //! 2. A same-node restart keeps the store: the same incarnation of the same
 //!    logical node serves the value written before it.
 //! 3. A killed node is recovered by its mesh-primary (node-recovery.md): a new logical node at
-//!    the same separate path and name over the inherited data dir and endpoint key, so it keeps the store.
+//!    the same separate path and name with a new endpoint (Q358), on a new data dir: a `node`'s
+//!    storage is ephemeral, so its store is empty (Q359).
 //! 4. A new node at the path does not inherit it (Q345: a new node is a Build that adds it): the
 //!    Delete of the recovered node publishes its departure and releases its name, and the Create at
 //!    the path is a new node whose store is empty; `path:` reaches it, and `exact:<old>` resolves Gone
@@ -92,8 +93,9 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_new_nod
     landed_on(&kept, &restarted, "get");
     assert_eq!(kept["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the restarted node serves the old value: {kept}");
 
-    // 3. A killed node is recovered by its mesh-primary over its inherited data dir: a new logical
-    //    node at the same separate path and name, with the same endpoint key, that keeps the store.
+    // 3. A killed node is recovered by its mesh-primary: a new logical node at the same separate path
+    //    and name, with a new endpoint (Q358), on a new data dir (a `node`'s storage is ephemeral, Q359),
+    //    its store empty.
     let data_dir = estate.data_dir(&location()).await;
     // The recovery is the mesh-primary's own workflow, never a Build or part of one (node-recovery.md
     // "Execution"; Q342).
@@ -118,11 +120,11 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_new_nod
         })
         .await;
     assert_ne!(recovered["incarnation_id"], first["incarnation_id"], "recovery creates a new node.id and incarnation");
-    assert_eq!(recovered["endpoint_id"], first["endpoint_id"], "the same endpoint key, loaded from the inherited data dir");
-    assert_eq!(estate.data_dir(&location()).await, data_dir, "the inherited data dir");
+    assert_ne!(recovered["endpoint_id"], first["endpoint_id"], "a new endpoint_id (Q358)");
+    assert_ne!(estate.data_dir(&location()).await, data_dir, "a new data dir: the node's storage is ephemeral (Q359)");
     let inherited = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&inherited, &recovered, "get");
-    assert_eq!(inherited["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the recovered node serves the store it inherited: {inherited}");
+    assert_eq!(inherited["reply"]["result"], json!({"found": false}), "the recovered node's store is empty: nothing is inherited (Q359): {inherited}");
 
     // The recovery ends with its create of the node now holding the path: work on one node is serialized
     // at its mesh-primary, so the Delete below waits for no Build attempt.
@@ -178,7 +180,7 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_new_nod
     assert!(on(&first, "compare-and-swap", "mismatch"));
     assert!(on(&first, "put", "too-large"));
     assert!(on(&restarted, "get", "value"), "the restarted birth served the kept value");
-    assert!(on(&recovered, "get", "value"), "the recovered birth served the inherited value");
+    assert!(on(&recovered, "get", "absent"), "the recovered birth, on a new data dir, holds no value (Q359)");
     // 3: the mesh-primary proved the killed birth's exit and ran its recovery, keyed on that exact
     // birth, to its end, as its own workflow.
     let recovery = named(&spans, "rdm.node_admin.node.update.via-node-recovery")

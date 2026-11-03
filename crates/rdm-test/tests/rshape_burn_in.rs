@@ -3072,8 +3072,9 @@ async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName,
 /// workflow, acknowledged by the provider, and its mesh-primary proves the exit and recovers it. The seeded
 /// traffic keeps going until the view holds a ready node at the path.name under a node.id other than the
 /// exited one. Recovery is never a Build (Q342): the fabric names the Build it named before. The new node is held to the
-/// page's operation summary, "Retained: path.name, placement, inherited data dir, endpoint key" and "New:
-/// node.id, incarnation, OS-assigned port and exact runtime" (the port is the caller's to compare, from its
+/// page's operation summary, "Retained: path.name, placement, the predecessor's data dir when the verdict
+/// is `exited` and its storage `persistent`" and "New: node.id, incarnation, `endpoint_id` and
+/// `transport_addr`, exact runtime" (Q358, Q359) (the port is the caller's to compare, from its
 /// settled views). A role node only: a node-admin's death is `kill_and_recover`'s, and the fabric-primary is
 /// never killed.
 async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, scenario: &str) -> Value {
@@ -3108,9 +3109,13 @@ async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName,
     let investigated: Vec<Value> = crate::build_log::node_investigated(&f.estate, &old_id).into_iter().filter(|e| e["data"]["incarnation"] == old_inc.as_str()).map(|e| e["data"].clone()).collect();
     assert!(investigated.iter().any(|d| d["next"] == "recreate"), "{scenario}: {node:?}'s investigation is one rdm.node.investigated event naming recreate (node-investigation.md): {investigated:?}");
     assert_ne!(s(&born["incarnation_id"]), old_inc, "{node:?}: a node recovery is a new incarnation (node-recovery.md, New)");
-    assert_eq!(born["endpoint_id"], n["endpoint_id"], "{node:?}: a node recovery keeps the endpoint key, loaded from the inherited data dir (node-recovery.md, Retained)");
+    assert_ne!(born["endpoint_id"], n["endpoint_id"], "{node:?}: a node recovery gets a new endpoint_id (node-recovery.md, New; Q358)");
     let dir_new = f.estate.data_dir(node).await;
-    assert_eq!(dir_new, dir_old, "{node:?}: a node recovery creates the new node over the exited node's data dir (node-recovery.md, Retained)");
+    if n["storage_persistence"]["persistence"] == "persistent" {
+        assert_eq!(dir_new, dir_old, "{node:?}: a persistent node is re-created on the exited node's data dir (node-recovery.md, Retained; Q359)");
+    } else {
+        assert_ne!(dir_new, dir_old, "{node:?}: an ephemeral node is re-created on a new data dir (storage.md §1; Q359)");
+    }
     let rt_new = exact_runtime(f, node).await;
     let runtimes = live_and_distinct(node, &rt_old, &rt_new);
     let terminal = terminal_proof(node, &rt_old);

@@ -345,8 +345,6 @@ fn node_view() -> NodeView {
         gossip: Some(rdm_core::GossipStats { heard: 2, neighbours: 1, frames_sent: 3, frames_received: 4 }),
         tags: ["red".to_string()].into(),
         config: [("tier".to_string(), "gold".to_string())].into(),
-        data_dir_lost: None,
-        data_dir_unreadable: None,
         properties: Default::default(),
     }
 }

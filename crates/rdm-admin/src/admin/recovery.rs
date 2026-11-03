@@ -16,7 +16,7 @@ pub(crate) struct RecoverySubmitter {
     pub digest_view: DigestView,
     pub provider: Arc<dyn DeploymentProvider>,
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
-    /// The node records this admin writes, as it holds them: the data-dir facts are written on them.
+    /// The node records this admin writes, as it holds them.
     pub written: Arc<crate::node_rows::WrittenRows>,
     /// This admin's runner, once built: it runs the recovery and the terminate of a deleted birth
     /// heard again, the primary's own workflow (Q342).
@@ -28,11 +28,6 @@ pub(crate) struct RecoverySubmitter {
     pub client: Option<Arc<rdm_transport::NodeRpcClient>>,
     /// This admin's Build state: the current Build's paths a refused caller's decision reads (Q217).
     pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
-    /// Parent directory under which birth data directories are allocated (`<data_root>/<name>-<node_id>`).
-    pub data_root: PathBuf,
-    /// Per exited birth whose inherited `data_dir` was observed absent (`Gone`, `R-FM2`):
-    /// `(first_seen_ms, consecutive_observations)`.
-    pub gone_dirs: Arc<Mutex<HashMap<(NodeId, IncarnationId), (u64, u64)>>>,
     /// Per birth whose last recovery ended without completing: when it is eligible again, under the
     /// one backoff rule ([`RecoverySubmitter::submit_ended`]). A birth with none is due at once.
     pub resubmits: Arc<Mutex<HashMap<(NodeId, IncarnationId), Resubmit>>>,
@@ -96,26 +91,6 @@ impl RecoverySubmitter {
         self.digest_view.held_path_name().unwrap_or_else(|| self.me())
     }
 
-    /// Resolve `node`'s inherited `data_dir` when known (`R-FM2`): from `node.data_dir`, its digest in
-    /// `self.digest_view`, its durable runtime row in `self.nodes_storage`, or `<data_root>/<node_id>`.
-    pub(crate) async fn birth_data_dir(&self, node: &Node) -> Option<PathBuf> {
-        if let Some(d) = node.data_dir.as_deref() {
-            return Some(PathBuf::from(d));
-        }
-        if let Some(d) = self.digest_view.get(node.node_id.as_str()).filter(|(dg, _)| node.incarnation_id.as_ref() == Some(&dg.node.incarnation)).and_then(|(dg, _)| dg.data_dir.map(PathBuf::from)) {
-            return Some(d);
-        }
-        if let Some(inc) = node.incarnation_id.as_ref() {
-            if let Some(d) = self.nodes_storage.runtime(&node.node_id, inc).await.ok().flatten().and_then(|r| r.data_dir.map(PathBuf::from)) {
-                return Some(d);
-            }
-        }
-        if !self.data_root.as_os_str().is_empty() {
-            return Some(crate::deployment::node_data_dir(&self.data_root, &node.node_id));
-        }
-        None
-    }
-
     /// The provider's exact-exited verdict of `node`'s birth: node.runtime.inspect over the one runtime
     /// resolution (`node_investigation::birth_runtime`: the view's digest of that exact birth, heard,
     /// projected by its mesh-primary or stopped, else the birth's own durable runtime row). Beside it,
@@ -131,8 +106,7 @@ impl RecoverySubmitter {
     /// inspected again, nothing waits for a proof of termination. The recovery's node.delete runs
     /// `TerminateRuntime` first when the runtime runs ([`crate::deployment::pipeline`]). A birth whose
     /// removal this admin's view holds announced is that workflow's, read after the inspection (the
-    /// tick's view predates it); an `exited` birth whose inherited data dir is absent waits out
-    /// `RDM_DATA_DIR_GONE_FLOORS` before its loss is recorded (`R-FM2` arm A).
+    /// tick's view predates it).
     pub(crate) async fn recover(&self, n: &Node) -> Inspected {
         let (outcome, handle) = self.inspect(n).await;
         self.span_inspection(n, &outcome, handle.as_ref());
@@ -151,44 +125,6 @@ impl RecoverySubmitter {
             )
             .in_scope(|| tracing::info!("the birth's removal belongs to the workflow that announced it: no recovery is submitted"));
             return outcome;
-        }
-        if let (Inspected::Exited(..), Some(inc), Some(dir)) = (&outcome, n.incarnation_id.clone(), self.birth_data_dir(n).await) {
-            let facts = self.written.birth_facts(&*self.nodes_storage, &n.node_id, &inc).await.ok().flatten();
-            if let Some(unreadable) = facts.as_ref().and_then(|f| f.data_dir_unreadable.clone()) {
-                if self.holds_on_unreadable_dir(n, &inc, &dir, &unreadable).await {
-                    return outcome;
-                }
-            } else if facts.as_ref().and_then(|f| f.data_dir_lost.as_ref()).is_none() {
-                match crate::deployment::pipeline::inspect_transport_key(&dir) {
-                    Err(crate::deployment::pipeline::InheritedDirError::Gone(_)) => {
-                        let now_ms = local_now_ms();
-                        let (since, count) = {
-                            let mut gone = self.gone_dirs.lock().unwrap();
-                            let entry = gone.entry((n.node_id.clone(), inc.clone())).or_insert((now_ms, 0));
-                            entry.1 = entry.1.saturating_add(1);
-                            *entry
-                        };
-                        if count < 2 || now_ms.saturating_sub(since) < data_dir_gone_hold_ms() {
-                            return outcome;
-                        }
-                        let lost = crate::storage::DataDirLost { path: dir.display().to_string(), since };
-                        let _ = self.written.update_birth(&*self.nodes_storage, n, &inc, |b| b.data_dir_lost = Some(lost)).await;
-                        tracing::info_span!(
-                            "rdm.node_admin.node.update.via-data-dir-lost",
-                            node_path = %n.path, node_name = %n.name,
-                            node_id = %n.node_id,
-                            incarnation_id = %inc.as_str(),
-                            path = %dir.display(),
-                            since = since as i64,
-                            "otel.kind" = "internal",
-                        )
-                        .in_scope(|| tracing::info!("inherited data dir absent past gone-floors hold; recovering over a fresh data dir"));
-                    }
-                    Ok(_) | Err(crate::deployment::pipeline::InheritedDirError::Broken(_)) => {
-                        self.gone_dirs.lock().unwrap().remove(&(n.node_id.clone(), inc));
-                    }
-                }
-            }
         }
         match n.incarnation_id.clone() {
             Some(incarnation) => {
@@ -348,39 +284,7 @@ impl RecoverySubmitter {
     /// tick: the same workflow, keyed on the birth; nothing is inspected again.
     pub(crate) async fn recover_again(&self, node: &Node) -> Result<(), String> {
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no birth to recover", node.node_id))?;
-        // A create that found the inherited data dir unreadable failed by no retryable cause: the
-        // recovery holds while the dir stays unreadable, owed still, and runs once it reads again
-        // (node-recovery.md "Lost data dir (R-FM2)").
-        if let Some(dir) = self.birth_data_dir(node).await {
-            let facts = self.written.birth_facts(&*self.nodes_storage, &node.node_id, &incarnation).await.ok().flatten();
-            if let Some(unreadable) = facts.and_then(|f| f.data_dir_unreadable) {
-                if self.holds_on_unreadable_dir(node, &incarnation, &dir, &unreadable).await {
-                    return Ok(());
-                }
-            }
-        }
         self.submit_on_tick(node, &incarnation, "", true).await
-    }
-
-    /// Whether `n`'s recovery holds on its inherited data dir `dir`, which its create found unreadable
-    /// (`unreadable`, recorded on the birth): it holds while the dir's transport key still does not
-    /// read; once it reads, the fact is cleared on the birth (`via-data-dir-repaired`) and the recovery
-    /// runs.
-    async fn holds_on_unreadable_dir(&self, n: &Node, inc: &IncarnationId, dir: &std::path::Path, unreadable: &crate::storage::DataDirUnreadable) -> bool {
-        if crate::deployment::pipeline::inspect_transport_key(dir).is_err() {
-            return true;
-        }
-        let _ = self.written.update_birth(&*self.nodes_storage, n, inc, |b| b.data_dir_unreadable = None).await;
-        tracing::info_span!(
-            "rdm.node_admin.node.resolve.via-data-dir-repaired",
-            node_path = %n.path, node_name = %n.name,
-            node_id = %n.node_id,
-            incarnation_id = %inc.as_str(),
-            path = %unreadable.path,
-            "otel.kind" = "internal",
-        )
-        .in_scope(|| tracing::info!("repaired unreadable inherited data dir"));
-        false
     }
 
     /// The recovery of `node`'s unreached birth at `incarnation`, run by this admin, the primary above

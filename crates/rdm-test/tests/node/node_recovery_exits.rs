@@ -2,7 +2,8 @@
 //!
 //! Node recovery (node-recovery.md, R-RC1). A member that exits outside any workflow is recovered by its own mesh-primary on the provider's
 //! exact exited verdict: node.delete of the exited instance, then node.create at the same (path, name)
-//! over the inherited data dir (same endpoint key, new node.id). A member that is hung but still
+//! over its predecessor's data dir when its storage is `persistent`, else a new one (always a new
+//! node.id and endpoint, Q358, Q359). A member that is hung but still
 //! running is never recovered; a repeat submit is answered, never run twice; an exit during a
 //! workflow fails that workflow and the next tick recovers the member.
 
@@ -163,9 +164,10 @@ async fn recovery_recorded(estate: &Estate, before: &Value) -> (Value, Value) {
 /// it marks the node TRUE OFFLINE, asks the provider about the exact runtime, and on Exited runs the
 /// recovery itself, its own workflow keyed on the exited birth (node-recovery.md "Execution", Q342):
 /// node.delete of the exited instance (node.deleted from the exited verdict, once, named by the exact
-/// birth), then node.create at the same (path, name) over the inherited data dir, and nothing after
-/// it. Each step is recorded on the node record; no Build is written or called. The path comes back
-/// with the SAME transport key and data dir and a NEW node.id and incarnation. No other node changes.
+/// birth), then node.create at the same (path, name), and nothing after it. Each step is recorded on
+/// the node record; no Build is written or called. The path comes back with a NEW node.id,
+/// incarnation and `endpoint_id` (Q358), over a newly allocated data dir: a `node`'s storage is
+/// `ephemeral` (Q359). No other node changes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     let (estate, birth_build) =
@@ -189,8 +191,8 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     let after = until_node_where(&estate, node_path, &format!("{node_path:?} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_ne!(after["node_id"], before["node_id"], "recovery creates a new node.id");
     assert_ne!(after["incarnation_id"], before["incarnation_id"], "and a new incarnation");
-    assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same transport key, loaded from the inherited data dir");
-    assert_eq!(estate.data_dir(node_path).await, data_dir, "the same data dir");
+    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
+    assert_ne!(estate.data_dir(node_path).await, data_dir, "a newly allocated data dir: the node's storage is ephemeral (Q359)");
     assert_ne!(after["deployment_id"], before["deployment_id"], "a new runtime");
 
     // The mesh-primary proved the exit and submitted the recovery, keyed on the exited birth.
@@ -234,15 +236,15 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact exited birth");
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).expect("the new node's boot span");
     assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (targeted) before the new node joins");
-    // node-recovery.md "Delete targets the old instance before the new join": the target is the
-    // create's, run by the executor that launches the new node with the retained key, inside the
-    // create's own operation and before that launch. A target run after the delete's Complete is left
+    // node-recovery.md "Delete blocks the old instance before the new join": the target is the
+    // create's, run by the executor that launches the new node, inside the create's own operation and
+    // before that launch. A target run after the delete's Complete is left
     // undone when that executor is lost before it, and a later create launches untargeted.
     let create = recovery_create_span(&run, node_path).expect("the recovery's create operation span");
     let targets = exited_birth_spans(&spans, &before);
     assert_eq!(targets.len(), 1, "the exited birth is targeted once: {targets:?}");
     assert!(start(create) <= start(targets[0]) && end(targets[0]) <= end(create), "the target runs inside the create operation: {} vs {create}", targets[0]);
-    assert!(end(targets[0]) <= start(boot), "the target is done before the new node with the same key boots: {} vs {boot}", targets[0]);
+    assert!(end(targets[0]) <= start(boot), "the target is done before the new node boots: {} vs {boot}", targets[0]);
     for step in ["StopNode", "AwaitNodeLeft"] {
         assert!(step_span(&run, NO_BUILD, node_path, step).is_none(), "no RPC to the exited process: {step} ran");
     }
@@ -264,14 +266,15 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
 /// or minted, Q342), two operations in order (node-recovery.md "Steps"):
 /// node.delete of the exited instance (`node.delete:<path>`: no RPC to it, no stop frames,
 /// node.deleted once named by its exact birth and before the new node boots), then node.create at
-/// the same (path, name) over the inherited data dir (`node.create:<path>`), each as its own workflow's
+/// the same (path, name) (`node.create:<path>`), each as its own workflow's
 /// pipeline and node operation span; no node.update follows (proposal node-properties-own-commands.md
 /// §5 item 8).
-/// The path comes back with the SAME transport key and data dir and a NEW node.id and incarnation;
-/// no rename and no storage hand-over.
+/// The path comes back with a NEW node.id, incarnation and `endpoint_id` (Q358) over a newly
+/// allocated data dir, a `node`'s storage being `ephemeral` (Q359); no rename and no storage
+/// hand-over.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_dir() {
-    let (estate, birth_build) = estate("any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_dir").await;
+async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint() {
+    let (estate, birth_build) = estate("any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint").await;
     let node = &Estate::path("mesh1.node", "3");
     let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
@@ -285,8 +288,8 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
 
     let after = until_node_where(&estate, node, &format!("{node:?} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_ne!(after["incarnation_id"], before["incarnation_id"], "a new incarnation");
-    assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same transport key, loaded from the inherited data dir");
-    assert_eq!(estate.data_dir(node).await, data_dir, "the same data dir");
+    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
+    assert_ne!(estate.data_dir(node).await, data_dir, "a newly allocated data dir: the node's storage is ephemeral (Q359)");
 
     let recovery = recovery_span(&estate, node, &before["node_id"]).await;
     assert_eq!(s(&recovery["attributes"]["submitter"]), s(&mesh_primary["node_id"]), "{recovery}");
@@ -321,15 +324,15 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact exited birth");
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).expect("the new node's boot span");
     assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (targeted) before the new node joins");
-    // node-recovery.md "Delete targets the old instance before the new join": the target is the
-    // create's, run by the executor that launches the new node with the retained key, inside the
-    // create's own operation and before that launch. A target run after the delete's Complete is left
+    // node-recovery.md "Delete blocks the old instance before the new join": the target is the
+    // create's, run by the executor that launches the new node, inside the create's own operation and
+    // before that launch. A target run after the delete's Complete is left
     // undone when that executor is lost before it, and a later create launches untargeted.
     let create = recovery_create_span(&run, node).expect("the recovery's create operation span");
     let targets = exited_birth_spans(&spans, &before);
     assert_eq!(targets.len(), 1, "the exited birth is targeted once: {targets:?}");
     assert!(start(create) <= start(targets[0]) && end(targets[0]) <= end(create), "the target runs inside the create operation: {} vs {create}", targets[0]);
-    assert!(end(targets[0]) <= start(boot), "the target is done before the new node with the same key boots: {} vs {boot}", targets[0]);
+    assert!(end(targets[0]) <= start(boot), "the target is done before the new node boots: {} vs {boot}", targets[0]);
     // Each operation is its workflow: its node operation span and its own pipeline, never a recovery
     // pipeline of its own.
     for (op, pipeline) in [("delete", "delete"), ("create", "create")] {
@@ -356,34 +359,36 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
 }
 
 /// CONTRACT (node-recovery.md "Failure and receipts": the mesh-primary runs its failed recovery again;
-/// keyed on the exited birth, never a second recovery; D48): a member's data dir loses its node-key and
-/// the member is killed. Its recovery's node.delete completes (the exited birth departs, node.deleted
-/// once) and its node.create refuses by name at PrepareStorage, so the recovery ends failed. The key is put back. The mesh-primary submits the same exited birth
-/// again after its backoff, though no view holds that birth any longer: the recovery owed in its
-/// memory runs again (D48), the birth already deleted, and the path comes back as a new node over the
-/// same data dir and endpoint key. Must NOT happen: the failed recovery left for good (nothing at the
-/// path), a second node.deleted of the exited birth, a Build minted.
+/// keyed on the exited birth, never a second recovery; D48): the directory a member's new data dir is
+/// allocated in is made read-only and the member is killed. Its recovery's node.delete completes (the
+/// exited birth departs, node.deleted once) and its node.create refuses by name at PrepareStorage, so
+/// the recovery ends failed. The directory is made writable again. The mesh-primary submits the same
+/// exited birth again after its backoff, though no view holds that birth any longer: the recovery owed
+/// in its memory runs again (D48), the birth already deleted, and the path comes back as a new node.
+/// Must NOT happen: the failed recovery left for good (nothing at the path), a second node.deleted of
+/// the exited birth, a Build minted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_completes() {
     let (estate, birth_build) = estate("a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_completes").await;
     let node = &Estate::path("mesh1.node", "2");
     let before = estate.node_value(node).await;
     let data_dir = estate.data_dir(node).await;
-    let key_path = Path::new(&data_dir).join("node-key");
-    let key = std::fs::read(&key_path).unwrap_or_else(|e| panic!("{node:?}'s node-key in {data_dir}: {e}"));
-    std::fs::remove_file(&key_path).unwrap();
+    // A `node`'s storage is ephemeral: its re-create is allocated a new data dir beside the old one.
+    use std::os::unix::fs::PermissionsExt;
+    let root = Path::new(&data_dir).parent().expect("the data root").to_path_buf();
+    let mode = std::fs::metadata(&root).unwrap().permissions().mode();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
     let builds = estate.build_ids().await;
     estate.kill_node(node).await;
 
     let submits = |spans: &[Value]| -> Vec<Value> { named(spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect() };
     let failed = wait_for("the recovery's create fails at PrepareStorage", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("failed")) }).await;
     let outcome = s(&failed["attributes"]["outcome"]);
-    assert!(outcome.contains("PrepareStorage") && outcome.contains("node-key is missing"), "the create refused the dir with no key by name: {failed}");
-    std::fs::write(&key_path, &key).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(mode)).unwrap();
+    assert!(outcome.contains("PrepareStorage") && outcome.contains(&root.display().to_string()), "the create refused the data dir it could not write, by name: {failed}");
 
     let after = until_node_where(&estate, node, &format!("{node:?} ready as a new node after its recovery failed"), Duration::from_secs(60), |n| ready(n) && n["node_id"] != before["node_id"]).await;
-    assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same endpoint key, loaded from the inherited data dir");
-    assert_eq!(estate.data_dir(node).await, data_dir, "the same data dir");
+    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
     let done = wait_for("the completed submit of the exited birth is exported", Duration::from_secs(60), || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("complete")) }).await;
     assert_eq!(done["attributes"]["incarnation_id"], before["incarnation_id"], "keyed on the exact exited birth: {done}");
     assert_eq!(s(&done["attributes"]["outcome"]), "complete", "{done}");
@@ -788,7 +793,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     assert_eq!(s(&recovery["attributes"]["submitter"]), standby, "the new mesh-primary submitted the recovery: {recovery}");
     assert_eq!(s(&recovery["attributes"]["mesh"]), "mesh2", "mesh2's recovery, run by the new mesh-primary itself: {recovery}");
     let after = until_node_where(&estate, node, &format!("{node:?} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
-    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a verdict other than exited re-creates over a newly allocated data dir, so a new transport key");
+    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a re-created node always gets a new endpoint_id (Q358)");
 
     let spans = estate.spans();
     let taken_ns = start(&role);
@@ -967,7 +972,7 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
     let builds = estate.build_ids().await;
     estate.kill_node(node).await;
     let after = until_new_birth(&estate, node, &before, SETTLE).await;
-    assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same endpoint key, loaded from the inherited data dir");
+    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
     let submits = |spans: &[Value]| -> Vec<Value> { named(spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect() };
     let done = wait_for("the completed recovery submit is exported", Duration::from_secs(60), || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]) == "complete") }).await;
     assert_eq!((s(&done["attributes"]["submitter"]), s(&done["attributes"]["mesh"])), (mp.clone(), "mesh2".to_string()), "mesh2's primary runs it: {done}");
@@ -992,228 +997,128 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
     estate.shutdown().await;
 }
 
-/// CONTRACT (node-recovery.md "Lost data dir (R-FM2)", crit:e12.s87.1): when `mesh1.node.2`'s runtime
-/// exits and its `data_dir` is removed (`rm -rf` / unmounted), the mesh-primary proves `Exited` on
-/// two consecutive ladders, holds `RDM_DATA_DIR_GONE_FLOORS` (2) staleness floors while `data_dir`
-/// remains absent, records `data-dir-lost` on the exited birth's status row
-/// (`rdm.node_admin.node.update.via-data-dir-lost`), and runs `node.delete -> node.create` over a
-/// newly allocated `data_dir`. The recovered birth has a NEW `node.id`, a NEW endpoint key
-/// (`endpoint_id != old_endpoint_id`), a NEW `data_dir != old_data_dir`, and reaches
-/// `Ready` with `rdm.mesh.node.update.via-pre-node-ready-attempt` (`inherited = false`).
+/// `pid`'s environment, by name, from `/proc/<pid>/environ`.
+fn environ_of(pid: u64) -> std::collections::BTreeMap<String, String> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).unwrap_or_else(|e| panic!("pid {pid}: /proc environ: {e}"));
+    raw.split(|b| *b == 0).filter_map(|e| std::str::from_utf8(e).ok()?.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect()
+}
+
+/// The mesh-primary's `PrepareStorage` step of the create of `node_id` at `node`, once exported: what
+/// data dir it launched the node on, whether it was the predecessor's, and the new `endpoint_id`.
+async fn prepared_storage(estate: &Estate, node: &PathName, endpoint_id: &Value) -> Value {
+    wait_for(&format!("the re-create's PrepareStorage span for {node:?} is exported"), Duration::from_secs(60), || async {
+        named(&estate.spans(), "rdm.node_admin.deployment.update.via-step")
+            .into_iter()
+            .find(|sp| at_location(sp, node) && sp["attributes"]["step"] == "PrepareStorage" && sp["attributes"]["endpoint_id"] == *endpoint_id)
+            .cloned()
+    })
+    .await
+}
+
+/// CONTRACT (storage.md §1 "Persistence belongs to the logical `path` and `name`, not its node.id":
+/// "A node re-created at the same `path` and `name` with `persistent` storage is launched on its
+/// predecessor's data dir when that directory exists; with `ephemeral` storage, or when it does not
+/// exist, on a new one ... Its endpoint is always new (Q358)"; node-recovery.md sequence step 3; Q359):
+/// in a mesh of two node-admins, a broker (`persistent`) and a gateway (`ephemeral`), each killed
+/// outside any workflow is re-created by its mesh-primary on the verdict `exited` with a new node.id,
+/// `endpoint_id` and `transport_addr`. The broker is launched on its predecessor's data dir
+/// (`RDM_INHERITED_DATA_DIR=1`), the application's file there untouched; the gateway on a new one
+/// (`0`); the broker killed again after its data dir is removed, on a new one (`0`). Must NOT happen:
+/// a re-created node holding its predecessor's endpoint, an ephemeral node handed its predecessor's
+/// directory, a recovery held or refused for what the directory holds or for its absence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_member_whose_data_dir_is_removed_after_exit_recovers_over_a_fresh_dir_with_a_new_key_after_two_floors() {
-    let (estate, _build) = fabric_of(
-        "a_member_whose_data_dir_is_removed_after_exit_recovers_over_a_fresh_dir_with_a_new_key_after_two_floors",
-        &[("mesh1", 1, 2)],
-        Duration::from_secs(60),
-    )
-    .await;
-    let node = &Estate::path("mesh1.node", "2");
-    let before = estate.node_value(node).await;
-    let old_dir = estate.data_dir(node).await;
-    let old_node_id = s(&before["node_id"]);
-    let old_incarnation = s(&before["incarnation_id"]);
-    let old_endpoint = s(&before["endpoint_id"]);
+async fn a_re_created_node_is_launched_on_its_predecessors_data_dir_only_when_its_storage_is_persistent_and_the_dir_exists() {
+    let test = "a_re_created_node_is_launched_on_its_predecessors_data_dir_only_when_its_storage_is_persistent_and_the_dir_exists";
+    let sha = rdm_test::faults::candidate_sha();
+    let estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &rdm_test::faults::binding_set_with_roles(&sha), &sha, &["node", "broker", "gateway", "compute"])
+        .await
+        .expect("the binding set with the role types is accepted");
+    estate.resize(&rdm_client::FabricDesired { fabric: "fabric1".into(), meshes: vec![rdm_client::MeshDesired::of("mesh1", [("node-admin", 2), ("broker", 1), ("gateway", 1)])] }).await;
+    let (broker, gateway) = (Estate::path("mesh1.broker", "1"), Estate::path("mesh1.gateway", "1"));
+    let want: std::collections::BTreeSet<PathName> = [Estate::path("mesh1.node-admin", "1"), Estate::path("mesh1.node-admin", "2"), broker.clone(), gateway.clone()].into();
+    estate.settles_to_named(&want, SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
+    assert_eq!(s(&estate.node_value(&broker).await["storage_persistence"]["persistence"]), "persistent", "the broker's storage is persistent");
+    assert_eq!(s(&estate.node_value(&gateway).await["storage_persistence"]["persistence"]), "ephemeral", "the gateway's storage is ephemeral");
 
-    estate.kill_node(node).await;
-    std::fs::remove_dir_all(&old_dir).expect("remove the exited member's data_dir");
+    // 1. The broker (persistent), its data dir there: launched on it, with a new endpoint.
+    let before = estate.node_value(&broker).await;
+    let dir = estate.data_dir(&broker).await;
+    std::fs::write(Path::new(&dir).join("app-data"), b"the broker's").unwrap();
+    estate.kill_node(&broker).await;
+    let after = until_new_birth(&estate, &broker, &before, SETTLE).await;
+    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
+    assert_ne!(after["transport_addr"], before["transport_addr"], "a new transport_addr (Q358)");
+    assert_eq!(estate.data_dir(&broker).await, dir, "launched on its predecessor's data dir");
+    assert_eq!(std::fs::read(Path::new(&dir).join("app-data")).unwrap(), b"the broker's", "the application's data there is untouched");
+    let env = environ_of(estate.pid_of(&broker).await);
+    assert_eq!((env.get("RDM_DATA_DIR"), env.get("RDM_INHERITED_DATA_DIR").map(String::as_str)), (Some(&dir), Some("1")), "the node is told it runs on its predecessor's data dir");
+    let prepared = prepared_storage(&estate, &broker, &after["endpoint_id"]).await;
+    assert_eq!((s(&prepared["attributes"]["data_dir"]), s(&prepared["attributes"]["inherited"])), (dir.clone(), "true".to_string()), "PrepareStorage names the inherited data dir: {prepared}");
+    let recovery = recovery_span(&estate, &broker, &before["node_id"]).await;
+    assert_eq!((s(&recovery["attributes"]["verdict"]), s(&recovery["attributes"]["outcome"])), ("exited".to_string(), "complete".to_string()), "{recovery}");
+    estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
+    eprintln!("persistent: {broker:?} {} -> {} on {dir} (inherited), endpoint {} -> {}, transport {} -> {}: recovery trace {}, PrepareStorage trace {}", s(&before["node_id"]), s(&after["node_id"]), s(&before["endpoint_id"]), s(&after["endpoint_id"]), before["transport_addr"], after["transport_addr"], s(&recovery["trace_id"]), s(&prepared["trace_id"]));
 
-    let lost_span = wait_for("rdm.node_admin.node.update.via-data-dir-lost span", crate::node_recovery_due(), || async {
-        named(&estate.spans(), "rdm.node_admin.node.update.via-data-dir-lost")
-            .into_iter()
-            .find(|sp| s(&sp["attributes"]["node_id"]) == old_node_id)
-            .cloned()
-    })
-    .await;
-    assert_eq!(s(&lost_span["attributes"]["incarnation_id"]), old_incarnation, "{lost_span}");
-    assert_eq!(s(&lost_span["attributes"]["path"]), old_dir, "{lost_span}");
+    // 2. The gateway (ephemeral): a new data dir.
+    let before = estate.node_value(&gateway).await;
+    let dir = estate.data_dir(&gateway).await;
+    estate.kill_node(&gateway).await;
+    let after = until_new_birth(&estate, &gateway, &before, SETTLE).await;
+    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
+    let new_dir = estate.data_dir(&gateway).await;
+    assert_ne!(new_dir, dir, "an ephemeral node is launched on a new data dir");
+    assert_eq!(environ_of(estate.pid_of(&gateway).await).get("RDM_INHERITED_DATA_DIR").map(String::as_str), Some("0"), "and told so");
+    let prepared = prepared_storage(&estate, &gateway, &after["endpoint_id"]).await;
+    assert_eq!((s(&prepared["attributes"]["data_dir"]), s(&prepared["attributes"]["inherited"])), (new_dir.clone(), "false".to_string()), "{prepared}");
 
-    let after = until_new_birth(&estate, node, &before, SETTLE).await;
-    assert_ne!(after["node_id"], before["node_id"], "new node.id minted: {after}");
-    assert_ne!(s(&after["endpoint_id"]), old_endpoint, "new endpoint key minted (never re-minted from lost dir): {after}");
-    let new_dir = estate.data_dir(node).await;
-    assert_ne!(new_dir, old_dir, "newly allocated data_dir beside the old path: {after}");
-    assert!(Path::new(&new_dir).is_dir(), "new data_dir exists on disk: {new_dir}");
-    assert_eq!(s(&after["data_dir_lost"]["path"]), old_dir, "node.get surfaces the data-dir-lost fact: {after}");
-    assert!(after["data_dir_lost"]["since"].as_u64().unwrap_or(0) > 0, "data-dir-lost carries since timestamp: {after}");
-
-    let attempt = wait_for("rdm.mesh.node.update.via-pre-node-ready-attempt for recovered birth", crate::node_recovery_due(), || async {
-        named(&estate.spans(), "rdm.mesh.node.update.via-pre-node-ready-attempt")
-            .into_iter()
-            .find(|sp| sp["attributes"]["node_id"] == after["node_id"])
-            .cloned()
-    })
-    .await;
-    assert_eq!(s(&attempt["attributes"]["inherited"]), "false", "fresh recovery birth runs its pre_node_ready hook with inherited = false: {attempt}");
-
-    let submit = recovery_span(&estate, node, &before["node_id"]).await;
-    eprintln!(
-        "s87 cell 1 (gone): {node:?} old ({old_node_id}, {old_incarnation}, dir {old_dir}, key {old_endpoint}) -> new ({}, {}, dir {new_dir}, key {}) | via-data-dir-lost trace {} span {} | submit trace {} | pre_node_ready trace {} inherited={}",
-        s(&after["node_id"]),
-        s(&after["incarnation_id"]),
-        s(&after["endpoint_id"]),
-        s(&lost_span["trace_id"]),
-        s(&lost_span["span_id"]),
-        s(&submit["trace_id"]),
-        s(&attempt["trace_id"]),
-        attempt["attributes"]["inherited"],
-    );
-    estate.record_trace_url(submit["trace_id"].as_str().unwrap_or(""));
+    // 3. The broker again, its data dir removed: a new one, and the recovery is not held.
+    let before = estate.node_value(&broker).await;
+    let dir = estate.data_dir(&broker).await;
+    estate.kill_node(&broker).await;
+    std::fs::remove_dir_all(&dir).unwrap();
+    let after = until_new_birth(&estate, &broker, &before, SETTLE).await;
+    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
+    let new_dir = estate.data_dir(&broker).await;
+    assert_ne!(new_dir, dir, "a predecessor's data dir that does not exist is never re-made: a new one");
+    assert!(!Path::new(&dir).exists(), "the absent directory is not created again");
+    assert_eq!(environ_of(estate.pid_of(&broker).await).get("RDM_INHERITED_DATA_DIR").map(String::as_str), Some("0"), "and told so");
+    estate.settles_to_named(&want, Duration::from_secs(30)).await;
     estate.shutdown().await;
 }
 
-/// CONTRACT (node-recovery.md "Lost data dir (R-FM2)", deployment-provider.md `PrepareStorage`,
-/// crit:e12.s87.2): when `mesh1.node.2`'s runtime exits and `<data_dir>/node-key` is corrupted, the
-/// mesh-primary proves `Exited`, attempts `PrepareStorage`, fails `load_transport_key`, records
-/// `data-dir-unreadable { path, cause }` on the birth's status row, emits
-/// `rdm.node_admin.node.reject.via-data-dir-unreadable`, and HOLDS recovery. Over 3 additional
-/// staleness floors: NO new `node.id` is minted, NO new endpoint key is minted, NO fresh `data_dir`
-/// is allocated, NO second `rdm.node_admin.node.update.via-node-recovery` span is opened while the
-/// dir remains unreadable, and `node.get` surfaces the `data-dir-unreadable` fact.
+/// CONTRACT (storage.md §1 "What is in the data dir is the application's to judge": "the node's
+/// `pre_node_ready` answers whether it is usable: ... `Failed` when it is not (Q350, Q359)";
+/// node-recovery.md "The data dir": "`Failed` when it is not, which ends the recovery's step failed
+/// with the node `Pending`"): a member whose re-created node's `pre_node_ready` answers `Failed` for
+/// its data is killed. Its mesh-primary's recovery deletes the exited birth and creates the new node,
+/// whose start ends `Failed` with the hook's reason: the recovery's step ends failed naming it, and the
+/// new node stays at the path, `Pending`, never Ready. Must NOT happen: the node Ready over data its
+/// application refused, the node stopped or deleted for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_member_whose_data_dir_is_unreadable_records_the_fact_and_holds_recovery_without_retrying() {
-    let (estate, _build) = fabric_of(
-        "a_member_whose_data_dir_is_unreadable_records_the_fact_and_holds_recovery_without_retrying",
-        &[("mesh1", 1, 2)],
-        Duration::from_secs(60),
-    )
-    .await;
-    let node = &Estate::path("mesh1.node", "2");
+async fn a_re_created_node_whose_pre_node_ready_answers_failed_stays_pending_and_its_recovery_ends_failed() {
+    let (estate, _) = estate("a_re_created_node_whose_pre_node_ready_answers_failed_stays_pending_and_its_recovery_ends_failed").await;
+    let node = &Estate::path("mesh1.node", "3");
     let before = estate.node_value(node).await;
-    let old_dir = estate.data_dir(node).await;
-    let old_node_id = s(&before["node_id"]);
-    let old_incarnation = s(&before["incarnation_id"]);
-    let key_path = Path::new(&old_dir).join("node-key");
-
+    // The node running now passed its hook; the knob is read by the next node at the path.
+    rdm_test::write_pre_node_ready_knob(&estate.root, node, "failed the data is not usable").unwrap();
+    rdm_test::write_pre_node_ready_knob_attempts(&estate.root, node, 1).unwrap();
     estate.kill_node(node).await;
-    std::fs::write(&key_path, "corrupt-not-valid-hex-key").expect("corrupt node-key");
 
-    let reject_span = wait_for("rdm.node_admin.node.reject.via-data-dir-unreadable span", crate::node_recovery_due(), || async {
-        named(&estate.spans(), "rdm.node_admin.node.reject.via-data-dir-unreadable")
-            .into_iter()
-            .find(|sp| s(&sp["attributes"]["node_id"]) == old_node_id)
-            .cloned()
-    })
-    .await;
-    assert_eq!(s(&reject_span["attributes"]["incarnation_id"]), old_incarnation, "{reject_span}");
-    assert_eq!(s(&reject_span["attributes"]["path"]), old_dir, "{reject_span}");
-    assert!(!s(&reject_span["attributes"]["cause"]).is_empty(), "cause recorded: {reject_span}");
-
-    let held_view = until_node_where(&estate, node, "node.get surfaces data_dir_unreadable", crate::node_recovery_due(), |n| {
-        n["data_dir_unreadable"]["path"] == json!(old_dir) && !s(&n["data_dir_unreadable"]["cause"]).is_empty()
-    })
-    .await;
-    assert_eq!(s(&held_view["node_id"]), old_node_id, "no new node.id minted while unreadable: {held_view}");
-
-    // Hold over 3 additional staleness floors: no second recovery submit,
-    // no new node_id, no fresh data_dir.
-    tokio::time::sleep(rdm_core::cadence::staleness_floor() * 3 + Duration::from_millis(200)).await;
-
-    let spans = estate.spans();
-    let submits: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
-        .into_iter()
-        .filter(|sp| s(&sp["attributes"]["node_id"]) == old_node_id)
-        .collect();
-    assert_eq!(submits.len(), 1, "no second via-node-recovery span opened while data_dir remains unreadable: {submits:#?}");
-
-    let views = estate.node_values().await;
-    let at_name: Vec<&Value> = views.iter().filter(|n| rdm_test::estate::is_location(&n, &node)).collect();
-    assert_eq!(at_name.len(), 1, "still only the held birth at {node:?}: {at_name:#?}");
-    assert_eq!(s(&at_name[0]["node_id"]), old_node_id, "no new node_id minted: {at_name:#?}");
-    assert_eq!(s(&at_name[0]["data_dir_unreadable"]["path"]), old_dir, "data_dir_unreadable still surfaced: {at_name:#?}");
-
-    eprintln!(
-        "s87 cell 2 (broken hold): {node:?} ({old_node_id}, {old_incarnation}) held with data_dir_unreadable at {old_dir} | reject trace {} span {} cause={:?} | submits count={}",
-        s(&reject_span["trace_id"]),
-        s(&reject_span["span_id"]),
-        s(&reject_span["attributes"]["cause"]),
-        submits.len(),
-    );
-    estate.record_trace_url(reject_span["trace_id"].as_str().unwrap_or(""));
+    let submits = |spans: &[Value]| -> Vec<Value> { named(spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect() };
+    let failed = wait_for("the recovery ends failed", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("failed")) }).await;
+    let outcome = s(&failed["attributes"]["outcome"]);
+    assert!(outcome.contains("the data is not usable"), "the recovery's step names the hook's reason: {failed}");
+    let after = until_node_where(&estate, node, &format!("{node:?} a new node, pending"), Duration::from_secs(60), |n| n["node_id"] != before["node_id"] && n["status"] == "pending").await;
+    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
+    // It stays Pending: nothing makes it Ready over the data its application refused.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let still = estate.node_value(node).await;
+    assert_eq!((still["node_id"].clone(), s(&still["status"])), (after["node_id"].clone(), "pending".to_string()), "the new node stays Pending: {still}");
+    estate.record_trace_url(failed["trace_id"].as_str().unwrap_or(""));
+    eprintln!("pre_node_ready Failed: {node:?} {} -> {} pending; recovery trace {} outcome {outcome}", s(&before["node_id"]), s(&after["node_id"]), s(&failed["trace_id"]));
     estate.shutdown().await;
 }
-
-/// CONTRACT (node-recovery.md "Lost data dir (R-FM2)", crit:e12.s87.3): when `<data_dir>/node-key`
-/// is restored after an unreadable hold, on the next tick the mesh-primary clears
-/// `data-dir-unreadable` (`rdm.node_admin.node.resolve.via-data-dir-repaired`), completes
-/// `node.create` over the SAME `data_dir` with the RETAINED endpoint key
-/// (`endpoint_id == old_endpoint_id`) and a new `node.id`, and the birth reaches `Ready`
-/// (`inherited = true`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_member_held_on_an_unreadable_data_dir_completes_recovery_with_its_retained_key_once_repaired() {
-    let (estate, _build) = fabric_of(
-        "a_member_held_on_an_unreadable_data_dir_completes_recovery_with_its_retained_key_once_repaired",
-        &[("mesh1", 1, 2)],
-        Duration::from_secs(60),
-    )
-    .await;
-    let node = &Estate::path("mesh1.node", "2");
-    let before = estate.node_value(node).await;
-    let old_dir = estate.data_dir(node).await;
-    let old_node_id = s(&before["node_id"]);
-    let old_incarnation = s(&before["incarnation_id"]);
-    let old_endpoint = s(&before["endpoint_id"]);
-    let key_path = Path::new(&old_dir).join("node-key");
-    let saved_key = std::fs::read_to_string(&key_path).expect("read original node-key before corruption");
-
-    estate.kill_node(node).await;
-    std::fs::write(&key_path, "corrupt-not-valid-hex-key").expect("corrupt node-key");
-
-    let reject_span = wait_for("rdm.node_admin.node.reject.via-data-dir-unreadable span", crate::node_recovery_due(), || async {
-        named(&estate.spans(), "rdm.node_admin.node.reject.via-data-dir-unreadable")
-            .into_iter()
-            .find(|sp| s(&sp["attributes"]["node_id"]) == old_node_id)
-            .cloned()
-    })
-    .await;
-    let _held_view = until_node_where(&estate, node, "node.get surfaces data_dir_unreadable", crate::node_recovery_due(), |n| {
-        n["data_dir_unreadable"]["path"] == json!(old_dir)
-    })
-    .await;
-
-    // Repair `<data_dir>/node-key` from backup.
-    std::fs::write(&key_path, &saved_key).expect("restore valid node-key");
-
-    let repaired_span = wait_for("rdm.node_admin.node.resolve.via-data-dir-repaired span", crate::node_recovery_due(), || async {
-        named(&estate.spans(), "rdm.node_admin.node.resolve.via-data-dir-repaired")
-            .into_iter()
-            .find(|sp| s(&sp["attributes"]["node_id"]) == old_node_id)
-            .cloned()
-    })
-    .await;
-    assert_eq!(s(&repaired_span["attributes"]["incarnation_id"]), old_incarnation, "{repaired_span}");
-    assert_eq!(s(&repaired_span["attributes"]["path"]), old_dir, "{repaired_span}");
-
-    let after = until_new_birth(&estate, node, &before, SETTLE).await;
-    assert_ne!(after["node_id"], before["node_id"], "new node.id minted: {after}");
-    assert_eq!(s(&after["endpoint_id"]), old_endpoint, "retained endpoint key from repaired data_dir: {after}");
-    assert_eq!(estate.data_dir(node).await, old_dir, "recovered over the same data_dir: {after}");
-    assert!(after["data_dir_unreadable"].is_null(), "data_dir_unreadable cleared on node.get: {after}");
-
-    let attempt = wait_for("rdm.mesh.node.update.via-pre-node-ready-attempt for repaired birth", crate::node_recovery_due(), || async {
-        named(&estate.spans(), "rdm.mesh.node.update.via-pre-node-ready-attempt")
-            .into_iter()
-            .find(|sp| sp["attributes"]["node_id"] == after["node_id"])
-            .cloned()
-    })
-    .await;
-    assert_eq!(s(&attempt["attributes"]["inherited"]), "true", "repaired recovery birth runs its pre_node_ready hook with inherited = true: {attempt}");
-
-    eprintln!(
-        "s87 cell 3 (repaired): {node:?} old ({old_node_id}, {old_incarnation}) -> new ({}, {}) over same dir {old_dir} with retained key {old_endpoint} | reject trace {} | repaired trace {} span {} | pre_node_ready trace {} inherited={}",
-        s(&after["node_id"]),
-        s(&after["incarnation_id"]),
-        s(&reject_span["trace_id"]),
-        s(&repaired_span["trace_id"]),
-        s(&repaired_span["span_id"]),
-        s(&attempt["trace_id"]),
-        attempt["attributes"]["inherited"],
-    );
-    estate.record_trace_url(repaired_span["trace_id"].as_str().unwrap_or(""));
-    estate.shutdown().await;
-}
-
-
 
 /// CONTRACT (node-investigation.md: "A node that comes back after it was re-created is refused ... The
 /// node that refused it reports it to the fabric-primary, which terminates its runtime"; Q110, Q128): a

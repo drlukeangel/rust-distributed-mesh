@@ -19,7 +19,7 @@ use rdm_core::{GossipStats, NodeLoad};
 use crate::atlas::Atlas;
 use rdm_core::filter::{Entity, Filter};
 use rdm_core::status::StatusReply;
-use rdm_core::views::{DataDirLost, DataDirUnreadable, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
+use rdm_core::views::{FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -92,8 +92,6 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
         gossip,
         tags,
         config,
-        data_dir_lost: None,
-        data_dir_unreadable: None,
         // The fact the view folded for the silent birth (deployment-provider.md §2.5): node.get, the
         // node.delete door and the plan read one source.
     }
@@ -103,50 +101,10 @@ fn mesh_view(m: crate::topology::MeshView) -> MeshView {
     MeshView { renewals: None, id: m.id, name: m.name, status: scope_status(m.status), primary_admin: m.primary_admin, admin_api_base: m.admin_api_base, nodes: m.nodes }
 }
 
-/// The paths the current Build plans in each mesh, by mesh: where `node.get` names a birth its view
-/// no longer holds (deleted by its recovery and held unrecovered, its data dir unreadable), one point
-/// read per path no birth of the view holds. `Err` names why they could not be read.
-pub type Planned = Result<BTreeMap<String, Vec<PathName>>, String>;
-
-/// The `data-dir-lost` fact of the birth `n`: on its own birth's facts, else on the birth its record
-/// names as its predecessor (the exited birth it was recovered over), `predecessor` that record.
-fn data_dir_lost_of(n: &Node, row: Option<&crate::storage::NodeRow>, predecessor: Option<&crate::storage::NodeRow>) -> Option<DataDirLost> {
-    let row = row?;
-    let own = n.incarnation_id.as_ref().and_then(|i| row.birth(i)).and_then(|b| b.data_dir_lost.clone());
-    let lost = match own {
-        Some(l) => l,
-        None => {
-            let p = row.predecessor.as_ref()?;
-            predecessor.filter(|r| r.node_id == p.node_id)?.birth(&p.incarnation_id)?.data_dir_lost.clone()?
-        }
-    };
-    Some(DataDirLost { path: lost.path, since: lost.since })
-}
-
-fn data_dir_unreadable_of(n: &Node, row: Option<&crate::storage::NodeRow>) -> Option<DataDirUnreadable> {
-    if n.status == crate::model::NodeStatus::Ready {
-        return None;
-    }
-    let u = row?.birth(n.incarnation_id.as_ref()?)?.data_dir_unreadable.clone()?;
-    Some(DataDirUnreadable { path: u.path, cause: u.cause })
-}
-
-/// The predecessor record the `data-dir-lost` fact of `n` is read on, through `current`: read only when
-/// `row` names a predecessor and holds no such fact of `n`'s own birth.
-async fn predecessor_of(current: &crate::current_record::CurrentRecords<'_>, n: &Node, row: Option<&crate::storage::NodeRow>) -> Result<Option<crate::storage::NodeRow>, String> {
-    let Some(r) = row else { return Ok(None) };
-    let Some(p) = r.predecessor.as_ref() else { return Ok(None) };
-    if n.incarnation_id.as_ref().and_then(|i| r.birth(i)).is_some_and(|b| b.data_dir_lost.is_some()) {
-        return Ok(None);
-    }
-    current.row(&p.node_id).await
-}
-
 /// `n` with `load` and `gossip`, as its mesh-primary's part of its record, `row`, carries it (its
-/// executable, storage, placement, cert dates and data-dir facts), `predecessor` the record its row names
-/// as its predecessor, and its app types from `own`, the node's own part of its record (Q333), when it is
+/// executable, storage, placement and cert dates), and its app types from `own`, the node's own part of its record (Q333), when it is
 /// of `n`'s birth. Its config and tags are the node's own part's too, taken by the answering read.
-fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, row: Option<&crate::storage::NodeRow>, predecessor: Option<&crate::storage::NodeRow>, own: Option<&rdm_node::node_records::NodeProperties>) -> NodeView {
+fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, row: Option<&crate::storage::NodeRow>, own: Option<&rdm_node::node_records::NodeProperties>) -> NodeView {
     let mut v = node_view(n, load, gossip, Default::default(), Default::default());
     // What this birth runs, as its row records it (proposal executable-bindings-at-create.md rule 7).
     v.executable = row.and_then(|r| r.executable.clone());
@@ -162,8 +120,6 @@ fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, ro
     // fabric-certs.md §Tracking: `node.get` surfaces the birth's held cert as `cert { issued_at,
     // expires_at, issuer_expires_at }`.
     v.cert = n.incarnation_id.as_ref().and_then(|i| row?.birth(i)?.cert.clone()).map(|c| rdm_core::views::NodeCertView { issued_at: c.issued_at, expires_at: c.expires_at, issuer_expires_at: c.issuer_expires_at });
-    v.data_dir_lost = data_dir_lost_of(n, row, predecessor);
-    v.data_dir_unreadable = data_dir_unreadable_of(n, row);
     v
 }
 
@@ -171,10 +127,7 @@ fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, ro
 /// record carries, stopped renamed nodes included: each record read through `current` (query.md §1: the
 /// lifecycle record at its node id, never a copy an atlas holds), the lifecycle the ops
 /// left each birth in from `atlas` ([`Atlas::read`]), and `is_primary` and `is_fabric_primary` as the
-/// primary updates' answers `atlas` holds set them ([`Atlas::primaries`], Q355). A birth the view no longer holds is answered at a
-/// path `planned` names and no birth holds, from the data-dir-unreadable fact on the record of that pair
-/// among its mesh's records ([`crate::current_record::CurrentRecords::lifecycle_rows`]:
-/// its Deleted record released the pair's claim). A node `ids` names that the view no longer holds is
+/// primary updates' answers `atlas` holds set them ([`Atlas::primaries`], Q355). A node `ids` names that the view no longer holds is
 /// answered from its record at that id, its latest line current, a Deleted one included (query.md §1:
 /// "Historical records, including Deleted nodes, remain queryable by their own IDs"); an id with no
 /// record is not answered. A `(path, name)` of `names` that no answered birth stands at is the
@@ -184,19 +137,15 @@ fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, ro
 /// reader that holds no records) no record is read. `Err` names a record that could not be read
 /// (query.md §1: "Record read errors remain named errors, not empty results or fabricated lifecycle
 /// status").
-async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, atlas: &Atlas, current: Option<&crate::current_record::CurrentRecords<'_>>, planned: &BTreeMap<String, Vec<PathName>>, ids: &BTreeSet<crate::model::NodeId>, names: &BTreeSet<PathName>) -> Result<Vec<NodeView>, String> {
+async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, atlas: &Atlas, current: Option<&crate::current_record::CurrentRecords<'_>>, ids: &BTreeSet<crate::model::NodeId>, names: &BTreeSet<PathName>) -> Result<Vec<NodeView>, String> {
     let mut held = view.clone();
     atlas.primaries(&mut held);
     let view = &held;
     let mut out: Vec<NodeView> = Vec::new();
     for b in view.births() {
-        let (row, predecessor) = match current {
-            Some(c) => {
-                let row = c.row(&b.node_id).await?;
-                let predecessor = predecessor_of(c, b, row.as_ref()).await?;
-                (row, predecessor)
-            }
-            None => (None, None),
+        let row = match current {
+            Some(c) => c.row(&b.node_id).await?,
+            None => None,
         };
         // The name its record holds and the status its row last took, never the gossip view's word on
         // either (Q197, Q233); a birth an op deleted is not answered.
@@ -205,30 +154,9 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             continue;
         }
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
-        out.push(record_view(&n, load, gossip, row.as_ref(), predecessor.as_ref(), None));
+        out.push(record_view(&n, load, gossip, row.as_ref(), None));
     }
     if let Some(c) = current {
-        // A birth the view no longer holds at a planned pair: its mesh's records,
-        // a Deleted one included (its claim released, the pair claims nothing).
-        for (mesh, paths) in planned {
-            let unheld: Vec<&PathName> = paths.iter().filter(|p| !view.births().any(|n| &n.location() == *p)).collect();
-            if unheld.is_empty() {
-                continue;
-            }
-            for r in c.lifecycle_rows(mesh).await?.into_iter().filter(|r| unheld.contains(&&r.location())) {
-                let Some((incarnation, unreadable)) = r.births.iter().rev().find_map(|b| Some((b.incarnation_id.clone(), b.data_dir_unreadable.clone()?))) else { continue };
-                if out.iter().any(|v| v.node_id == r.node_id || v.location() == r.location()) {
-                    continue;
-                }
-                let mut n = Node::allocated(r.location(), r.mesh.clone(), &r.r#type);
-                n.node_id = r.node_id.clone();
-                n.incarnation_id = Some(incarnation);
-                n.provider = Some(view.fabric.provider);
-                n.data_dir = Some(unreadable.path.clone());
-                n.status = crate::model::NodeStatus::Dead;
-                out.push(record_view(&n, None, None, Some(&r), None, None));
-            }
-        }
         // A node the filter names by id that the view no longer holds: its record at that id, never
         // the pair's claimant (query.md §1: "a history query does not redirect to the current pair's
         // claimant").
@@ -237,12 +165,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
                 continue;
             }
             let Some(row) = c.row(id).await? else { continue };
-            // The record its row names as its predecessor, read as a held birth's is (`predecessor_of`).
-            let predecessor = match row.predecessor.as_ref() {
-                Some(p) if row.newest_birth().is_none_or(|b| b.data_dir_lost.is_none()) => c.row(&p.node_id).await?,
-                _ => None,
-            };
-            out.push(own_row_view(view, atlas, &row, predecessor.as_ref(), None));
+            out.push(own_row_view(view, atlas, &row, None));
         }
         // A (path, name) the filter names that no birth answered here stands at: the node the node
         // records' current-pair lookup names there, read at its record (query.md §1), never the gossip
@@ -255,11 +178,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             if out.iter().any(|v| v.node_id == row.node_id) {
                 continue;
             }
-            let predecessor = match row.predecessor.as_ref() {
-                Some(p) if row.newest_birth().is_none_or(|b| b.data_dir_lost.is_none()) => c.row(&p.node_id).await?,
-                _ => None,
-            };
-            out.push(own_row_view(view, atlas, &row, predecessor.as_ref(), None));
+            out.push(own_row_view(view, atlas, &row, None));
         }
     }
     out.sort_by(|a, b| a.location().cmp(&b.location()));
@@ -268,14 +187,14 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
 
 /// A node's own whole row as its mesh-primary holds it (Q234: every node property; the hydration sync's
 /// `OwnRow`): the birth `view` holds of `row`'s node, as `row` carries it and the ops left it
-/// (`atlas`), `predecessor` the record `row` names as its predecessor, `own` the node's own part of its
+/// (`atlas`), `own` the node's own part of its
 /// record (Q333); a birth `view` does not hold yet is answered from its record alone, its addresses from
 /// `own` at that birth. Never a store read.
-pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRow, predecessor: Option<&crate::storage::NodeRow>, own: Option<&rdm_node::node_records::NodeProperties>) -> NodeView {
+pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRow, own: Option<&rdm_node::node_records::NodeProperties>) -> NodeView {
     if let Some(b) = view.births().find(|n| n.node_id == row.node_id) {
         let mut n = b.clone();
         if atlas.read(&mut n, Some(row)) {
-            return record_view(&n, None, None, Some(row), predecessor, own);
+            return record_view(&n, None, None, Some(row), own);
         }
     }
     let mut n = Node::allocated(row.location(), row.mesh.clone(), &row.r#type);
@@ -290,7 +209,7 @@ pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRo
             n.listeners = own.listeners.clone();
         }
     }
-    record_view(&n, None, None, Some(row), predecessor, own)
+    record_view(&n, None, None, Some(row), own)
 }
 
 /// `node.get` (Q167) answered by the node-admin `me` from its `view`, its nodes' `loads` and the
@@ -299,11 +218,10 @@ pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRo
 /// and nothing is read. Its span names the read, the pairs and how many nodes were answered. It takes
 /// `current`, the reader each birth's record is read through (query.md §1: its
 /// lifecycle record and its properties at its own node ID; never a copy an
-/// atlas holds), `planned`, the current Build's paths, naming where a birth the view no longer holds is
-/// answered from its record (R-FM1, R-FM2), and `amend`, what the answering admin adds to each row
+/// atlas holds), and `amend`, what the answering admin adds to each row
 /// before it is matched (the app types its own channels hold). A record that cannot be read answers
 /// `NotReady` naming it.
-pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, records: &Atlas, planned: &Planned, filter: &Filter, amend: &(dyn Fn(&mut NodeView) + Sync), current: Option<crate::current_record::CurrentRecords<'_>>) -> StatusReply {
+pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, records: &Atlas, filter: &Filter, amend: &(dyn Fn(&mut NodeView) + Sync), current: Option<crate::current_record::CurrentRecords<'_>>) -> StatusReply {
     let read = Entity::Nodes.read();
     let span = tracing::info_span!(
         "rdm.node_admin.node.serve.via-get",
@@ -315,20 +233,10 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         io_calls = tracing::field::Empty,
         io_queued_ms = tracing::field::Empty,
         io_ms = tracing::field::Empty,
-        planned = tracing::field::Empty,
         outcome = tracing::field::Empty,
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
-    // A Build that cannot be read names no path: the births the view holds are answered, and the
-    // span says why no birth it no longer holds could be.
-    let planned = match planned {
-        Ok(p) => p.clone(),
-        Err(why) => {
-            span.record("planned", format!("unreadable: {why}").as_str());
-            BTreeMap::new()
-        }
-    };
     let answer = async {
         if let Some(reason) = filter.refusal(Entity::Nodes) {
             return rdm_core::reply::status::bounded_rejected_filter(&reason);
@@ -340,7 +248,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         // each resolved at the node records' current-pair lookup when no birth the view holds stands there.
         let named = |property: &str| -> Vec<&String> { filter.pairs.iter().filter(|(p, _)| p == property).flat_map(|(_, values)| values).collect() };
         let names: BTreeSet<PathName> = named("path").into_iter().flat_map(|path| named("name").into_iter().filter_map(move |name| PathName::new(path, name).ok())).collect();
-        let mut nodes = match nodes(view, &loads(), records, current.as_ref(), &planned, &ids, &names).await {
+        let mut nodes = match nodes(view, &loads(), records, current.as_ref(), &ids, &names).await {
             Ok(nodes) => nodes,
             Err(why) => return rdm_core::reply::status::not_ready(format!("path {:?}, name {:?}: {why}", me.path, me.name)),
         };
@@ -645,7 +553,7 @@ mod tests {
             let read = |filter: Filter| {
                 let (me, view, loads, atlas, claims) = (&me, &view, &loads, &atlas, &claims);
                 let current = crate::current_record::CurrentRecords { nodes: claims };
-                async move { nodes_answer_with_status(me, view, loads, atlas, &Ok(BTreeMap::new()), &filter, &|_| {}, Some(current)).await }
+                async move { nodes_answer_with_status(me, view, loads, atlas, &filter, &|_| {}, Some(current)).await }
             };
             let tag_reply = read(Filter::new().eq("tags", ["tier-a"])).await;
             match tag_reply {
@@ -671,7 +579,7 @@ mod tests {
             }
 
             // 3. Invalid filter on node.get is refused naming the pair.
-            let bad_node_reply = nodes_answer_with_status(&me, &view, &loads, &atlas, &Ok(BTreeMap::new()), &Filter::new().eq("unknown_field", ["x"]), &|_| {}, None).await;
+            let bad_node_reply = nodes_answer_with_status(&me, &view, &loads, &atlas, &Filter::new().eq("unknown_field", ["x"]), &|_| {}, None).await;
             assert!(matches!(bad_node_reply, StatusReply::RejectedFilter { ref reason } if reason.contains("(unknown_field, [x])")));
 
             // 4. mesh.get and fabric.get serve matching views and refuse invalid filters.
@@ -761,7 +669,7 @@ mod tests {
             let (atlas, loads): (Atlas, Loads) = (Atlas::default(), Arc::new(BTreeMap::new));
             let read = |filter: Filter| {
                 let (me, view, loads, atlas, store) = (&me, &view, &loads, &atlas, &store);
-                async move { nodes_answer_with_status(me, view, loads, atlas, &Ok(BTreeMap::new()), &filter, &|_| {}, Some(crate::current_record::CurrentRecords { nodes: store })).await }
+                async move { nodes_answer_with_status(me, view, loads, atlas, &filter, &|_| {}, Some(crate::current_record::CurrentRecords { nodes: store })).await }
             };
             match read(Filter::new().eq("path", [at.path.as_str()]).eq("name", [at.name.as_str()])).await {
                 StatusReply::Nodes { nodes } => {

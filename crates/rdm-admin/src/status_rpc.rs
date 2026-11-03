@@ -1483,10 +1483,6 @@ impl StatusDoor {
                 let Some(loads) = self.loads.as_ref() else {
                     return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} reads no digest view; {op} is refused", me_name_path = &me_name.path, me_name_name = &me_name.name));
                 };
-                let planned = match self.fabric_states.get() {
-                    Some(fabric_states) => fabric_states.planned_paths().await,
-                    None => Err(format!("path {me_name_path:?}, name {me_name_name:?} holds no checklists yet: the current Build is not read", me_name_path = &me_name.path, me_name_name = &me_name.name)),
-                };
                 // The app types this admin's own channels hold, on each row before it is matched.
                 let amend = |n: &mut rdm_core::views::NodeView| {
                     let Some(channels) = &self.app_channels else { return };
@@ -1505,7 +1501,7 @@ impl StatusDoor {
                 // name claims, in this admin's nodes store, once its node records are bound.
                 let records = self.configs.get().and_then(|c| c.records());
                 let current = records.map(|_| crate::current_record::CurrentRecords { nodes: &*self.nodes_storage });
-                crate::views::nodes_answer_with_status(me_name, view, loads, atlas, &planned, &read.filter, &amend, current).await
+                crate::views::nodes_answer_with_status(me_name, view, loads, atlas, &read.filter, &amend, current).await
             }
             Entity::Meshes => {
                 if self.loads.is_none() {

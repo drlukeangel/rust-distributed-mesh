@@ -30,19 +30,11 @@ the three that mean something ([deployment-provider.md §4](deployment-provider.
 
 Rules:
 
-- **Persistence belongs to the logical `path` and `name`, not its incarnation.** A node recovered at
-  the same `path` and `name` with `persistent` storage inherits the lost birth's data dir and endpoint
-  key; with `ephemeral` it is given a fresh one. `RDM_INHERITED_DATA_DIR` tells the birth which,
-  surfaced to `before_ready` as `inherited` ([deployment-provider.md §4](deployment-provider.md),
-  [node-recovery.md](lifecycles/node-recovery.md)).
+- **Persistence belongs to the logical `path` and `name`, not its node.id.** A node re-created at the same `path` and `name` with `persistent` storage is launched on its predecessor's data dir when that directory exists; with `ephemeral` storage, or when it does not exist, on a new one. `RDM_INHERITED_DATA_DIR` tells the node which, surfaced to `pre_node_ready` as `inherited` ([deployment-provider.md §4](deployment-provider.md), [node-recovery.md](lifecycles/node-recovery.md)). Its endpoint is always new (Q358): RDM writes its own files for the new node there and never reads the predecessor's.
 - **RDM deletes nothing on disk, ever.** `node.delete` releases no storage; `preserve` issues no
   release action; `release` is a statement to the application, which removes the storage by its own
   work or leaves it.
-- **A lost or broken data dir is told apart by the error, never guessed.** Gone, the directory absent
-  past `RDM_DATA_DIR_GONE_FLOORS` staleness floors, is recovered at the same `path` and `name` over a fresh
-  data dir and recorded `data-dir-lost`; broken, the directory present with `node-key` missing or
-  unreadable, holds the recovery and is recorded `data-dir-unreadable` (R-FM2,
-  [deployment-provider.md §4](deployment-provider.md)).
+- **What is in the data dir is the application's to judge.** RDM does not look at the application's data; the node's `pre_node_ready` answers whether it is usable: `Ok`, `Pending` while it waits (for example a volume not yet mounted), `Failed` when it is not (Q350, Q359).
 - **Defaults are the application's.** Rafka's per-kind defaults (broker and node-admin persistent,
   gateway and compute ephemeral) belong to its ingress adapter; normalization happens before Build
   acceptance, and an accepted Build carries the explicit value for every path.
@@ -157,5 +149,5 @@ A caller reads the fabric's with `fabric.get` and each node's with
 
 ## Environment
 
-`RDM_DATA_DIR`, `RDM_INHERITED_DATA_DIR`, `RDM_DATA_DIR_GONE_FLOORS`, `RDM_STORE_DIR`,
+`RDM_DATA_DIR`, `RDM_INHERITED_DATA_DIR`, `RDM_STORE_DIR`,
 `RDM_TOPOLOGY_STORAGE_PROVIDER` (the table in `CLAUDE.md`).

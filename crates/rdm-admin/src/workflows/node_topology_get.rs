@@ -204,8 +204,6 @@ mod tests {
                         gossip: None,
                         tags: BTreeSet::from(["role-a".to_string()]),
                         config: BTreeMap::from([("tier".to_string(), "gold".to_string())]),
-                        data_dir_lost: None,
-                        data_dir_unreadable: None,
                         types: BTreeSet::new(),
                         held: BTreeSet::new(),
                         held_hash: [0u8; 32],

@@ -143,7 +143,8 @@ const CREATE_ORDER: [&str; 13] = [
 /// process: no connections delete, no stop frames; nothing terminated, it reads exited), NodeDeleted once for the
 /// exact birth, exactly that birth removed; the old birth is targeted before the new one is created;
 /// node.create at the same path.name (`node.create:<path>`): the same data dir (its storage still
-/// there) and the same endpoint key, a new node.id and incarnation, no supersedes, ready. No operation
+/// there), a new endpoint key written into it (Q358), a new node.id and incarnation, no supersedes,
+/// ready. No operation
 /// writes a receipt of another.
 /// Must NOT happen: one fused `recover-node:<path>` operation, a rename, a stop, a
 /// storage handoff or release, a path-keyed removal.
@@ -176,7 +177,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
         .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: Some(recover_build.clone()), node: first.node.clone(), handle: first.handle.clone(), unreached: true })
         .await
         .unwrap_or_else(|e| panic!("delete: {e}"));
-    // The executor targets the exited birth before the create that takes its key.
+    // The executor targets the exited birth before the create over its data dir.
     rig.log.lock().unwrap().push(format!("targeted:{}", first.node.node_id));
     // node.create over the exited birth's data dir, under the node.id minted for the re-create (D58).
     let old_inc = first.node.incarnation_id.clone().unwrap();
@@ -203,11 +204,12 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     assert_eq!(subject(&delete_op, "NodeDeleted"), first.node.node_id, "NodeDeleted names the exited node");
     assert_eq!(subject(&create_op, "AllocateIdentity"), second_id, "the create's AllocateIdentity names the new node.id");
 
-    // Retained: path.name, data dir and its storage, endpoint key. New: node.id, incarnation, runtime.
+    // Retained: path.name, data dir and its storage. New: node.id, incarnation, endpoint, runtime.
     assert_eq!(second.node.name, first.node.name);
     assert_ne!(second.node.node_id, first.node.node_id, "a new node.id");
     assert_ne!(second.node.incarnation_id, first.node.incarnation_id);
-    assert_eq!(second.node.endpoint_id, first.node.endpoint_id, "the same endpoint key, loaded from the inherited data dir");
+    assert_ne!(second.node.endpoint_id, first.node.endpoint_id, "a new endpoint_id, never the predecessor's (Q358)");
+    assert_eq!(rdm_admin::deployment::pipeline::endpoint_id(&old_dir).ok(), second.node.endpoint_id, "the new key is written into the inherited data dir as the new node's own");
     assert_eq!(second.node.data_dir, first.node.data_dir, "the inherited data dir");
     assert_eq!(std::fs::read(old_dir.join("wal").join("seg-0")).unwrap(), b"records", "storage retained");
     assert_eq!(rig.provider.inspect(&second.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
@@ -234,14 +236,15 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
 }
 
-/// CONTRACT (node-recovery.md, Operation summary "Retained": "endpoint key"; sequence step 4: "it
-/// loads the endpoint key from that data dir"): node recovery's create over an inherited data dir that
-/// holds no `node-key` fails by name at PrepareStorage, and no key is minted into that dir: nothing is
-/// launched and no create step after it completes.
-/// Must NOT happen: a new endpoint key minted for the recovered node.
+/// CONTRACT (node-recovery.md sequence step 3: "it mints a new endpoint key and writes it there as the
+/// new node's own, never reading the predecessor's"; storage.md §1: "What is in the data dir is the
+/// application's to judge"; Q358, Q359): node recovery's create over the predecessor's data dir whose
+/// `node-key` does not decode, beside the application's data, completes: `PrepareStorage` writes a new
+/// key over it and the node runs on the same directory with a new endpoint, its data untouched.
+/// Must NOT happen: the create refused for what the directory holds, the predecessor's key read, the
+/// application's data touched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_and_mints_none() {
-    // Its own capture, set before any span of this run: the refusal's trace is this cell's evidence.
+async fn a_create_over_a_predecessors_data_dir_writes_a_new_endpoint_key_and_never_reads_what_the_dir_holds() {
     let spans = Spans::default();
     rdm_transport::enable_callsites();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
@@ -257,105 +260,26 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
     rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
-    // The inherited data dir lost its endpoint key.
-    std::fs::remove_file(old_dir.join("node-key")).unwrap();
-    rig.log.lock().unwrap().clear();
+    // The predecessor's key does not decode; the application's data sits beside it.
+    std::fs::write(old_dir.join("node-key"), "not-valid-hex").unwrap();
+    std::fs::write(old_dir.join("app-data"), b"the application's").unwrap();
 
     let recover_build = publish_build(&rig.builds, add_node()).await;
-    let outcome = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(path()))), node_id: (rdm_core::fixture_node_id(&(path()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(recover_build.clone()), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
-        .await;
-    let err = match outcome {
-        Err(e) => e,
-        Ok(created) => {
-            rig.provider.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
-            panic!("a create over an inherited data dir with no endpoint key was created as {} with key {:?}", created.node.node_id, created.node.endpoint_id);
-        }
-    };
-    assert_eq!(err.step, "PrepareStorage", "{err}");
-    let text = err.to_string();
-    assert!(text.contains("node-key") && text.contains("inherited data dir"), "the refusal names the missing key in the inherited data dir: {text}");
-    assert!(!old_dir.join("node-key").exists(), "no key is minted into the inherited data dir");
-    let view = rig.builds.read_build(&recover_build).await.unwrap();
-    let completed: Vec<&str> = view.steps.iter().filter(|r| r.outcome == StepOutcome::Complete).map(|r| r.step.as_str()).collect();
-    assert_eq!(completed, vec!["AllocateIdentity"], "nothing after the identity completed: {completed:?}");
+    let recreated = NodeId::mint();
+    let created = pipeline
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &recreated), node_id: recreated.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(recover_build.clone()), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
+        .await
+        .unwrap_or_else(|e| panic!("a create over the predecessor's data dir is refused for what it holds: {e}"));
+    assert_eq!(created.node.data_dir, first.node.data_dir, "the predecessor's data dir");
+    assert!(created.node.endpoint_id.is_some() && created.node.endpoint_id != first.node.endpoint_id, "a new endpoint_id: {:?}", created.node.endpoint_id);
+    assert_eq!(rdm_admin::deployment::pipeline::endpoint_id(&old_dir).ok(), created.node.endpoint_id, "the new key is the one written there");
+    assert_eq!(std::fs::read(old_dir.join("app-data")).unwrap(), b"the application's", "the application's data is untouched");
+    assert_eq!(rig.provider.inspect(&created.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
     let all = spans.0.lock().unwrap().clone();
-    assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("create") && f.get("build_id") == Some(&recover_build.log().to_string())), "the create ran as its pipeline");
-    let _ = std::fs::remove_dir_all(&rig.template.data_root);
-}
-
-/// CONTRACT (node-recovery.md "Lost data dir (R-FM2)", deployment-provider.md `PrepareStorage`,
-/// crit:e12.s87.1, crit:e12.s87.2, crit:e12.s87.3): `PrepareStorage` classifies an inherited
-/// `<data_dir>` into two distinct cases:
-/// - **Gone** (`!<data_dir>.is_dir()`): `InheritedDirError::Gone`; once the hold expires, recovery
-///   allocates a fresh `<data_dir>` (`data_dir: None`) with a new `node.id` and a new endpoint key,
-///   never re-minting into the absent path.
-/// - **Broken** (`<data_dir>` exists on disk, `node-key` missing or corrupt):
-///   `InheritedDirError::Broken`; `PrepareStorage` fails without minting a new key, and once
-///   `<data_dir>/node-key` is repaired from backup, `create` over `Some(old_dir)` succeeds with the
-///   retained endpoint key.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_one_and_recovers_each_by_its_rule() {
-    use rdm_admin::deployment::pipeline::{inspect_transport_key, InheritedDirError};
-    let spans = Spans::default();
-    rdm_transport::enable_callsites();
-    let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
-    let rig = rig().await;
-    let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
-    let recorder = Recorder(rig.log.clone());
-    let pipeline = rig.pipeline(&observer, &recorder);
-
-    let birth_build = publish_build(&rig.builds, add_node()).await;
-    let first = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(path()))), node_id: (rdm_core::fixture_node_id(&(path()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(birth_build), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
-        .await
-        .unwrap_or_else(|e| panic!("create: {e}"));
-    let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
-    let saved_key = std::fs::read_to_string(old_dir.join("node-key")).expect("read original node-key");
-    rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
-
-    // Case 2 (Broken): corrupt `node-key` while `old_dir` still exists on disk.
-    std::fs::write(old_dir.join("node-key"), "not-valid-hex").unwrap();
-    assert!(matches!(inspect_transport_key(&old_dir), Err(InheritedDirError::Broken(_))), "corrupt key in existing dir is Broken");
-    let broken_build = publish_build(&rig.builds, add_node()).await;
-    // Each re-create runs under the node.id minted for it (D58).
-    let recreated = NodeId::mint();
-    let err = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &recreated), node_id: recreated.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(broken_build.clone()), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
-        .await
-        .expect_err("broken inherited data_dir must fail PrepareStorage");
-    assert_eq!(err.step, "PrepareStorage", "{err}");
-    assert_eq!(std::fs::read_to_string(old_dir.join("node-key")).unwrap(), "not-valid-hex", "broken node-key is never overwritten or re-minted");
-
-    // Repaired: restore `node-key` and verify recovery retains the endpoint key over `old_dir`.
-    std::fs::write(old_dir.join("node-key"), &saved_key).unwrap();
-    assert_eq!(inspect_transport_key(&old_dir), Ok(first.node.endpoint_id.clone().unwrap()));
-    // Each re-create runs under the node.id minted for it (D58).
-    let recreated = NodeId::mint();
-    let repaired = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &recreated), node_id: recreated.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(broken_build), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
-        .await
-        .unwrap_or_else(|e| panic!("repaired create: {e}"));
-    assert_eq!(repaired.node.endpoint_id, first.node.endpoint_id, "repaired dir retains endpoint key");
-    assert_eq!(repaired.node.data_dir, first.node.data_dir, "repaired dir keeps the same path");
-    rig.provider.terminate(&repaired.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
-
-    // Case 1 (Gone): remove `old_dir` completely; `inspect_transport_key` classifies it as `Gone`,
-    // and recovery over a newly allocated `data_dir` (`data_dir: None`) mints a new key in a new dir.
-    std::fs::remove_dir_all(&old_dir).unwrap();
-    assert!(matches!(inspect_transport_key(&old_dir), Err(InheritedDirError::Gone(_))), "absent dir is Gone");
-    let gone_build = publish_build(&rig.builds, add_node()).await;
-    // Each re-create runs under the node.id minted for it (D58).
-    let recreated = NodeId::mint();
-    let fresh = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &recreated), node_id: recreated.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(gone_build), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
-        .await
-        .unwrap_or_else(|e| panic!("gone recovery over fresh dir: {e}"));
-    assert_ne!(fresh.node.node_id, repaired.node.node_id, "new node.id minted");
-    assert_ne!(fresh.node.endpoint_id, first.node.endpoint_id, "new endpoint key minted in fresh dir");
-    assert_ne!(fresh.node.data_dir, first.node.data_dir, "fresh data_dir allocated beside old_dir");
-    assert!(!old_dir.exists(), "absent old_dir is never recreated");
-    rig.provider.terminate(&fresh.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
+    let prepared = all.values().find(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-step" && f.get("step").map(String::as_str) == Some("PrepareStorage") && f.get("inherited").map(String::as_str) == Some("true")).map(|(_, _, f)| f.clone()).expect("the re-create's PrepareStorage span");
+    assert_eq!(prepared.get("data_dir"), Some(&old_dir.display().to_string()), "PrepareStorage names the inherited data dir: {prepared:?}");
+    assert_eq!(prepared.get("endpoint_id").cloned(), created.node.endpoint_id.as_ref().map(|e| e.0.clone()), "and the new endpoint_id: {prepared:?}");
+    rig.provider.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
 }
 

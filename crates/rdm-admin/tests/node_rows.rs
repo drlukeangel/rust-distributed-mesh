@@ -1692,7 +1692,7 @@ fn a_node_created_with_a_free_text_name_keeps_name_path_and_type_through_create_
                 let view = view.read().await;
                 crate::write_meshes(&view, meshes).await;
                 let current = rdm_admin::current_record::CurrentRecords { nodes: &*storage };
-                let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer_with_status(&me, &view, &loads, &atlas, &Ok(BTreeMap::new()), &filter, &|_| {}, Some(current)).await else {
+                let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer_with_status(&me, &view, &loads, &atlas, &filter, &|_| {}, Some(current)).await else {
                     panic!("expected StatusReply::Nodes");
                 };
                 nodes

@@ -30,26 +30,6 @@ pub struct NodeOperation {
     pub state: NodeState,
 }
 
-/// The `data-dir-lost` fact on a birth (R-FM2): the inherited data dir was absent for
-/// `RDM_DATA_DIR_GONE_FLOORS` staleness floors while the provider reported the birth `Exited`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DataDirLost {
-    /// The absent data dir path.
-    pub path: String,
-    /// When the absent data dir was first observed, ms since the Unix epoch.
-    pub since: u64,
-}
-
-/// The `data-dir-unreadable` fact on a birth (R-FM2): the inherited data dir exists on disk, but
-/// `node-key` is missing, unreadable, or corrupt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DataDirUnreadable {
-    /// The broken data dir path.
-    pub path: String,
-    /// Why `node-key` could not be loaded from the data dir.
-    pub cause: String,
-}
-
 /// A birth's member cert dates (fabric-certs.md §Tracking), written by the node's mesh-primary when
 /// the birth holds the cert. The written expiry is the receipt (Q141); the dates are the birth's
 /// renewal state.
@@ -99,12 +79,6 @@ pub struct BirthFacts {
     /// then `Dead`; `None` while heard. Observer-inferred: never itself a reason to act.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub silence: Option<crate::model::NodeStatus>,
-    /// `data-dir-lost` (R-FM2).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_dir_lost: Option<DataDirLost>,
-    /// `data-dir-unreadable` (R-FM2).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_dir_unreadable: Option<DataDirUnreadable>,
     /// The member cert dates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cert: Option<CertDates>,
@@ -136,7 +110,7 @@ impl BirthFacts {
 impl BirthFacts {
     /// A birth that holds no fact yet.
     pub fn new(incarnation_id: IncarnationId, name: PathName) -> Self {
-        Self { incarnation_id, path: name.path.clone(), name: name.name.clone(), declared: BTreeSet::new(), operations: Vec::new(), silence: None, data_dir_lost: None, data_dir_unreadable: None, cert: None, signing_cert: None, is_primary: None, is_fabric_primary: None, stopped_at_rafka_ms: None }
+        Self { incarnation_id, path: name.path.clone(), name: name.name.clone(), declared: BTreeSet::new(), operations: Vec::new(), silence: None, cert: None, signing_cert: None, is_primary: None, is_fabric_primary: None, stopped_at_rafka_ms: None }
     }
 
     /// The greatest state declared in the birth's current cycle.
@@ -264,7 +238,7 @@ pub struct NodeRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh_id: Option<MeshId>,
     /// The exact birth this node replaced, written at its create from the recovery attempt that named
-    /// it: what a birth recovered over a fresh data dir reads its predecessor's `data-dir-lost` through.
+    /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predecessor: Option<BirthRef>,
     /// The node's `storage_persistence` as its create spec names it (storage.md §1; Q166, build.md §1:
