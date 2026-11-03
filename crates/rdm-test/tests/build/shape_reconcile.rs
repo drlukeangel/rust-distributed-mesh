@@ -88,8 +88,8 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
         .unwrap_or_else(|| panic!("{shape}: no span accepted build {build_id}"))
         .clone();
     // The fabric primary runs the section that creates the node-admins; a new mesh's own primary runs
-    // a later section for its members. Every section runs under a fabric-primary's drive of the Build,
-    // and one ends complete.
+    // a later section for its members. Each pass of the Build drive is its own root, joined by build_id
+    // (telemetry.md §4): every section runs under a drive of its Build, and one ends complete.
     let reconciles: Vec<Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .filter(|s| s["attributes"]["build_id"] == build_id.as_str())
@@ -97,12 +97,10 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
         .collect();
     assert!(reconciles.iter().any(|r| r["attributes"]["outcome"] == "complete"), "{shape}: no section run of {build_id} ended complete");
     let drives: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|d| d["attributes"]["build_id"] == build_id.as_str()).collect();
+    assert!(drives.iter().all(|d| d["parent_span_id"].as_str().unwrap_or("").is_empty()), "{shape}: each drive pass is a root: {drives:?}");
     for r in &reconciles {
-        assert!(drives.iter().any(|d| descends_from(&spans, r, d)), "{shape}: every section runs under a fabric-primary's drive of the Build: {r}");
+        assert!(drives.iter().any(|d| descends_from(&spans, r, d)), "{shape}: every section runs under a drive of its Build: {r}");
     }
-    // The accepting fabric-primary holds the request's context: its drive, and the first section run
-    // under it, continue the request's trace; a drive after the role moved starts its own trace.
-    assert!(reconciles.iter().any(|r| r["trace_id"] == accepted_span["trace_id"]), "{shape}: the first section continues the accepting request's trace");
     let bootstrap_location = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     let created: Vec<_> = views.iter().filter(|n| n.location() != bootstrap_location).collect();
     for node in created {

@@ -637,7 +637,8 @@ impl Drives {
         }
         if !drive.running.swap(true, Ordering::SeqCst) {
             let (env, d, drives) = (env.clone(), drive.clone(), self.clone());
-            let parent = tracing::Span::current();
+            // Each pass of the drive is its own root, joined by build_id (telemetry.md §4), never a
+            // child of the event or submit that ensured it.
             let task = tokio::spawn(
                 async move {
                     let end = loop {
@@ -667,7 +668,7 @@ impl Drives {
                         }
                     }
                 }
-                .instrument(parent)
+                .instrument(tracing::Span::none())
                 .with_current_subscriber(),
             );
             tasks.0.insert(drive.build_id.clone(), task);

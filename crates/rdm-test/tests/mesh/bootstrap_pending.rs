@@ -52,7 +52,7 @@ fn end(sp: &Value) -> u64 {
 /// accepted Build (its entry join), and only then receives MeshStatus::Pending from the fabric
 /// primary, applied once through its status door without making it the elected primary; no create
 /// of mesh2's own membership starts before that Pending is applied; mesh2's primary is supplied by
-/// election afterwards; the creation Build's section calls are in its request's trace. What
+/// election afterwards; the creation Build's section calls run under its drive. What
 /// must NOT happen: a member of mesh2 created before Pending, a second Pending applied, or the
 /// bootstrap admin taking a role by accepting Pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -149,7 +149,7 @@ async fn pending_contract(cell: &str) {
         .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && of(d, &fabric_primary) && nodes.iter().any(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && d["attributes"]["sender"] == n.node_id.as_str()) && d["attributes"]["outcome"] == "applied")
         .collect();
     assert!(mesh2_applied.len() <= 1, "mesh2's Ready is applied at most once by one fabric primary, whoever declared it: {mesh2_applied:?}");
-    // The creation Build ran once, and its section call to mesh2 is in its request's trace: the
+    // The creation Build ran once, and its section call to mesh2 runs under its drive: the
     // fabric-primary that accepted it drove it and dispatched the section.
     assert_eq!(runs, 1, "the creation Build ran once");
     let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).cloned().expect("the creation Build's build.create span");

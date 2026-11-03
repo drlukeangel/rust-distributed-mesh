@@ -196,12 +196,15 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert_eq!(decided.len(), 1, "{decided:?}");
     assert_eq!(decided[0]["attributes"]["receiver_is_primary"], "false", "accepting Pending is not an election: {}", decided[0]);
     let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).unwrap().clone();
-    // The accepting fabric-primary holds the request's context: its drive of the Build, and each section
-    // run under it, continue the request's trace. The role may move to mesh2's lower NodeId during the
-    // creation; a section the new fabric-primary's drive runs starts its own trace (the context is the
-    // old primary's local record).
-    let continued = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str() && r["trace_id"] == accepted["trace_id"]).count();
-    assert!(continued >= 1, "the first section continues the request's trace");
+    // Each pass of the Build drive is its own root, joined by build_id (telemetry.md §4): every section
+    // runs under a drive of its Build, whichever fabric-primary or mesh-primary ran it.
+    let drives: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|d| d["attributes"]["build_id"] == create.as_str()).collect();
+    assert!(drives.iter().all(|d| d["parent_span_id"].as_str().unwrap_or("").is_empty()), "each drive pass is a root: {drives:?}");
+    let sections: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str()).collect();
+    assert!(!sections.is_empty(), "the create ran its sections");
+    for r in &sections {
+        assert!(drives.iter().any(|d| descends_from(&spans, r, d)), "every section runs under a drive of its Build: {r}");
+    }
     // node-identity-and-state.md §2.7: "The mesh's primary node-admin writes its row at creation", the
     // name checked "against the mesh records at the key `(path, name)`", the same MeshId writing its own
     // row again accepted; R13: the fabric-primary writes as the acting primary of a mesh with no
