@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
     assert!(completed, "fabric.delete Build must reach BuildFrame::Complete");
 
     // Step 4 (fabric-delete.md): separate node.delete of the surviving fabric-primary from outside.
-    let mut del_stream = Nodes::new(carrier).delete(&entry).await?;
+    let mut del_stream = Nodes::new(carrier).delete(vec![birth.node_id.clone()]).await?; // by its node.id (build.md §1)
     let mut deleted = false;
     while let Some(frame) = del_stream.next().await {
         match frame {

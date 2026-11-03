@@ -5,16 +5,17 @@
 //! Every Build the UI submits names each path's executable (proposal executable-bindings-at-create.md
 //! rule 1): the UI is the door, expanding its counts into the complete topology, built from the current
 //! Build `fabric.get` names and every node's row (`fabric.nodes.get`), each held path on the executable
-//! its row records and each created path on the consumer's executable of its kind, found beside the
+//! its row records and each created path on the consumer's executable of its type, found beside the
 //! UI's own executable (`rshape-node-admin`, `rshape-gateway`, `rshape-compute`, `rshape-broker`). A
-//! grow takes the lowest free ordinal of the kind; a shrink drops the highest ordinal that is not the
-//! kind's primary.
+//! grow takes the lowest free ordinal of the type; a shrink drops the highest ordinal that is not the
+//! type's primary.
 
 use rdm_core::{PathName};
 use rdm_client::{
     birth_of_view, Accepted, BuildCarrier, Build, BuildId, CallEnd, Change, Connections, ConnectionsView, ExactBirth, FabricDesired, FabricView, Fabrics,
-    Filter, MeshDesired, MeshNode, NodeStatus, NodeView, Nodes, Peers, ProviderKind,
+    Filter, Frame, MeshDesired, MeshNode, NodeStatus, NodeView, Peers, ProviderKind, WorkflowStream,
 };
+use rdm_core::build::{Meshes, Nodes};
 use rdm_core::binding::{sha256_file, Binding};
 use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,14 +23,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// The node-admin the UI enters at, the peers it reaches over Node RPC, and the executable of each
-/// kind the UI's Builds name.
+/// type the UI's Builds name.
 pub struct Admin {
     peers: Arc<Peers>,
     entry: PathName,
     executables: BTreeMap<String, PathBuf>,
 }
 
-/// The consumer's executable of each kind found in `dir`.
+/// The consumer's executable of each type found in `dir`.
 fn executables_in(dir: &std::path::Path) -> BTreeMap<String, PathBuf> {
     [("node-admin", "rshape-node-admin"), ("gateway", "rshape-gateway"), ("compute", "rshape-compute"), ("broker", "rshape-broker")]
         .into_iter()
@@ -54,7 +55,7 @@ impl Admin {
         Ok(Admin { peers, entry: birth.location(), executables: beside })
     }
 
-    /// This admin, its Builds naming `executables` by kind.
+    /// This admin, its Builds naming `executables` by type.
     pub fn with_executables(mut self, executables: BTreeMap<String, PathBuf>) -> Self {
         self.executables = executables;
         self
@@ -71,17 +72,20 @@ impl Admin {
         let based_on = BuildId::parse(based_on).map_err(|e| unread(format!("fabric.get names {based_on}, not a Build id: {e}")))?;
         let accepted: BTreeSet<PathName> = self.build(&based_on).await?.nodes.into_iter().map(|spec| spec.location()).collect();
         let rows = self.rows().await?;
-        let mut current = Current { based_on, paths: BTreeMap::new(), primaries: BTreeSet::new(), image: (fabric.provider == ProviderKind::Container).then(|| CONTAINER_IMAGE.to_string()) };
+        let mut current = Current { paths: BTreeMap::new(), ids: BTreeMap::new(), rows: BTreeMap::new(), primaries: BTreeSet::new(), mesh_primaries: BTreeMap::new(), image: (fabric.provider == ProviderKind::Container).then(|| CONTAINER_IMAGE.to_string()) };
         for row in rows.into_iter().filter(|n| accepted.contains(&n.location()) && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)) {
             if row.is_primary {
                 current.primaries.insert(row.location());
+                if row.r#type == "node-admin" {
+                    current.mesh_primaries.insert(row.mesh.clone(), row.node_id.clone());
+                }
             }
+            current.ids.insert(row.location(), row.node_id.clone());
+            current.rows.insert(row.location(), row.clone());
             let executable = match row.executable {
                 Some(ref b) => b,
                 None => &self.binding(&row.r#type, &current.image)?,
             };
-            // The node's own tags and config, as its row holds them: the Build applies every property of
-            // the spec that differs from the row (build.md §1), so the request names what the row holds.
             let at = row.location();
             let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(at.clone(), &row.mesh, &row.r#type, executable.clone()) };
             current.paths.insert(at, spec);
@@ -152,7 +156,7 @@ impl Admin {
 
     /// `node.get [mesh: m]` of every mesh the entry admin's view holds.
     pub async fn nodes(&self) -> Result<Vec<NodeView>, CallEnd> {
-        let nodes = Nodes::new(self.carrier());
+        let nodes = rdm_client::Nodes::new(self.carrier());
         let mut out = Vec::new();
         for m in self.fabric().await?.meshes {
             out.extend(nodes.get(&Filter::new().eq("mesh", [m.name.clone()])).await?);
@@ -175,7 +179,7 @@ impl Admin {
 
     /// `node.get` with no pair: every node's row, the executable it records included.
     pub async fn rows(&self) -> Result<Vec<NodeView>, CallEnd> {
-        Nodes::new(self.carrier()).get(&Filter::new()).await
+        rdm_client::Nodes::new(self.carrier()).get(&Filter::new()).await
     }
 
     /// Put `key` = `value` on the config of the entry admin's own row, beside what the row holds: one
@@ -204,7 +208,8 @@ impl Admin {
         self.carrier().build(id).await
     }
 
-    /// node.create of a `kind` node in `mesh`, at the lowest free ordinal of its kind.
+    /// node.create of a `type` node in `mesh`, at the lowest free ordinal of its type: a Create of that
+    /// node alone (build.md §1).
     pub async fn spawn(&self, mesh: &str, r#type: &str) -> Result<Accepted, CallEnd> {
         let current = self.current().await?;
         if !current.paths.values().any(|s| s.mesh == mesh) {
@@ -216,73 +221,133 @@ impl Admin {
             "node-admin" | "broker" | "gateway" | "compute" => *grown.counts.entry(r#type.to_string()).or_insert(0) += 1,
             _ => return Err(CallEnd::Rejected { reason: "unknown-type".into(), detail: "the demo runs node-admins, gateways, brokers and computes only".into() }),
         }
-        let nodes = self.resized(&current, &[grown], false)?;
-        Ok(Nodes::new(self.carrier()).create_named(current.based_on, nodes).await?.accepted().clone())
+        let next = self.resized(&current, &[grown], false)?;
+        let created: Vec<Nodes> = next.into_iter().filter(|s| !current.paths.contains_key(&s.location())).map(nodes_of).collect();
+        let stream = rdm_client::Nodes::new(self.carrier()).create(created).await?;
+        opened(stream.accepted())
     }
 
-    /// node.stop of `node`.
-    pub async fn stop(&self, node: &PathName) -> Result<Accepted, CallEnd> {
-        Ok(Nodes::new(self.carrier()).stop(node).await?.accepted().clone())
+    /// node.stop of `node`: a node command, never a Build; its terminal frame.
+    pub async fn stop(&self, node: &PathName) -> Result<Frame, CallEnd> {
+        terminal(rdm_client::Nodes::new(self.carrier()).stop(node).await?).await
     }
 
-    /// node.start of the stopped `node`.
-    pub async fn start(&self, node: &PathName) -> Result<Accepted, CallEnd> {
-        Ok(Nodes::new(self.carrier()).start(node).await?.accepted().clone())
+    /// node.start of the stopped `node`: a node command, never a Build; its terminal frame.
+    pub async fn start(&self, node: &PathName) -> Result<Frame, CallEnd> {
+        terminal(rdm_client::Nodes::new(self.carrier()).start(node).await?).await
     }
 
-    /// node.delete of `node`.
+    /// node.delete of `node`: a Delete naming its node.id (build.md §1).
     pub async fn remove(&self, node: &PathName) -> Result<Accepted, CallEnd> {
-        Ok(Nodes::new(self.carrier()).delete(node).await?.accepted().clone())
+        let current = self.current().await?;
+        let id = current.ids.get(node).cloned().ok_or_else(|| unknown_node(node))?;
+        let stream = rdm_client::Nodes::new(self.carrier()).delete(vec![id]).await?;
+        opened(stream.accepted())
     }
 
-    /// build.create reconciling the fabric to `desired`.
+    /// build.create taking the fabric to `desired`: a Create of the meshes and nodes it adds, or a
+    /// Delete of the meshes and nodes it removes. A shape that both adds and removes is two Builds,
+    /// refused here by name: the UI submits one at a time.
     pub async fn build_fabric(&self, desired: FabricDesired) -> Result<Accepted, CallEnd> {
         let current = self.current().await?;
-        let nodes = self.resized(&current, &desired.meshes, true)?;
-        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
+        let next = self.resized(&current, &desired.meshes, true)?;
+        let held: BTreeSet<String> = current.paths.values().map(|s| s.mesh.clone()).collect();
+        let kept: BTreeSet<PathName> = next.iter().map(|s| s.location()).collect();
+        let created: Vec<Nodes> = next.iter().filter(|s| !current.paths.contains_key(&s.location())).cloned().map(nodes_of).collect();
+        let new_meshes: Vec<Meshes> = desired.meshes.iter().filter(|m| !held.contains(&m.name)).map(|m| Meshes { name: m.name.clone() }).collect();
+        let gone_meshes: Vec<String> = held.iter().filter(|m| !desired.meshes.iter().any(|d| &d.name == *m)).cloned().collect();
+        let deleted: Vec<rdm_core::NodeId> = current
+            .paths
+            .values()
+            .filter(|s| !kept.contains(&s.location()) && !gone_meshes.contains(&s.mesh))
+            .filter_map(|s| current.ids.get(&s.location()).cloned())
+            .collect();
+        let change = match (created.is_empty() && new_meshes.is_empty(), deleted.is_empty() && gone_meshes.is_empty()) {
+            (false, true) => Change::Create { meshes: new_meshes, nodes: created },
+            (true, false) => Change::Delete { meshes: gone_meshes, node_ids: deleted },
+            (true, true) => return Err(CallEnd::Rejected { reason: "no-change".into(), detail: "the fabric is at that shape already".into() }),
+            (false, false) => return Err(CallEnd::Rejected { reason: "add-and-remove".into(), detail: "a Build adds or removes nodes: submit the growth and the shrink one at a time".into() }),
+        };
+        let s = self.carrier().create(change).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
 
-    /// build.create of a new mesh with `desired`'s counts.
+    /// build.create of a new mesh with `desired`'s counts: a Create of the mesh and its nodes.
     pub async fn create_mesh(&self, desired: MeshDesired) -> Result<Accepted, CallEnd> {
         let current = self.current().await?;
         if current.paths.values().any(|s| s.mesh == desired.name) {
             return Err(CallEnd::Rejected { reason: "mesh-already-exists".into(), detail: format!("the fabric holds mesh {} already", desired.name) });
         }
-        let nodes = self.resized(&current, std::slice::from_ref(&desired), false)?;
-        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
+        let nodes = self.resized(&current, std::slice::from_ref(&desired), false)?.into_iter().filter(|s| s.mesh == desired.name).map(nodes_of).collect();
+        let s = self.carrier().create(Change::Create { meshes: vec![Meshes { name: desired.name.clone() }], nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
 
-    /// build.create of the current topology as it stands: every live path on the executable its row records,
-    /// based on the current Build. It changes nothing any node runs, so its Build has nothing to execute
-    /// and is Complete once the fabric holds ready (states.md "Resize and executable replacement").
-    pub async fn resubmit(&self) -> Result<Accepted, CallEnd> {
-        let current = self.current().await?;
-        let nodes = current.paths.into_values().collect();
-        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
-        Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
-    }
-
-    /// build.create of the current topology with `node`'s entry naming the executable at `executable`,
-    /// hashed here: its replacement, which RDM realizes as node.delete then node.create at the path
-    /// (build-deployment.md §3). A path the rows hold no live node at is refused `unknown-node`.
+    /// `node`'s replacement on the executable at `executable`, hashed here (lifecycles/node-replace.md):
+    /// node commands free its name (its connections deleted, it leaves its mesh, it is renamed
+    /// `<name>-old` and stopped, keeping its data), then one Create adds its successor at the same path and
+    /// name. A path the rows hold no live node at is refused `unknown-node`.
     pub async fn replace(&self, node: &PathName, executable: PathBuf) -> Result<Accepted, CallEnd> {
-        let mut current = self.current().await?;
+        let current = self.current().await?;
         let sha256 = sha256_file(&executable).map_err(|e| missing(format!("{} could not be hashed: {e}", executable.display())))?;
-        let image = current.image.clone();
-        let spec = current.paths.get_mut(node).ok_or_else(|| CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("the fabric holds no live node at path {:?}, name {:?}", node.path, node.name) })?;
-        spec.executable = Some(Binding { launch_id: spec.r#type.clone(), executable, sha256, image });
-        let nodes = current.paths.into_values().collect();
-        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
-        Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
+        let spec = current.paths.get(node).cloned().ok_or_else(|| unknown_node(node))?;
+        let row = current.rows.get(node).cloned().ok_or_else(|| unknown_node(node))?;
+        let primary = current.mesh_primaries.get(&spec.mesh).cloned().ok_or_else(|| CallEnd::Rejected { reason: "no-mesh-primary".into(), detail: format!("node.get names no primary of {}", spec.mesh) })?;
+        let old = node.renamed().map_err(|e| CallEnd::Rejected { reason: "invalid-name".into(), detail: format!("{node:?} has no <name>-old: {e:?}") })?;
+        let nodes = rdm_client::Nodes::new(self.carrier());
+        terminal(nodes.delete_connections(node, &rdm_core::status::ConnectionScope::All).await?).await?;
+        terminal(nodes.leave_mesh(node).await?).await?;
+        let incarnation = row.incarnation_id.clone().ok_or_else(|| unknown_node(node))?;
+        let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(row.node_id.clone()), node_id: row.node_id.clone(), incarnation };
+        match nodes.name_update(&birth, &primary, &rdm_transport::RouteChoice::Direct, &old).await {
+            Ok(rdm_core::status::StatusReply::NameUpdated { .. }) => {}
+            Ok(other) => return Err(CallEnd::Rejected { reason: "name-update-refused".into(), detail: format!("node.name.update of {node:?} to {old:?} ended {other:?}") }),
+            Err(e) => return Err(e),
+        }
+        terminal(nodes.stop(&old).await?).await?;
+        let binding = Binding { launch_id: spec.r#type.clone(), executable, sha256, image: current.image.clone() };
+        let successor = Nodes { executable: Some(binding), tags: Default::default(), config: Default::default(), ..nodes_of(spec) };
+        opened(nodes.create(vec![successor]).await?.accepted())
     }
 
-    /// build.create removing the mesh `mesh`.
+    /// build.create removing the mesh `mesh`: a Delete of it by name.
     pub async fn remove_mesh(&self, mesh: &str) -> Result<Accepted, CallEnd> {
-        let s = self.carrier().create(Change::RemoveMesh { mesh: mesh.to_string() }).await?;
+        let s = self.carrier().create(Change::Delete { meshes: vec![mesh.to_string()], node_ids: Vec::new() }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
+}
+
+/// The Build a call opened, or why it opened none.
+fn opened(accepted: Option<&Accepted>) -> Result<Accepted, CallEnd> {
+    accepted.cloned().ok_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the call opened no Build".into() })
+}
+
+/// A workflow stream read to its terminal frame: `Complete`, or a failure named.
+async fn terminal(mut stream: WorkflowStream) -> Result<Frame, CallEnd> {
+    let mut last = None;
+    while let Some(frame) = stream.next().await {
+        let frame = frame?;
+        let end = frame.is_terminal();
+        last = Some(frame);
+        if end {
+            break;
+        }
+    }
+    match last {
+        Some(Frame::Complete) => Ok(Frame::Complete),
+        Some(other) => Err(CallEnd::Rejected { reason: "workflow-failed".into(), detail: format!("{other:?}") }),
+        None => Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the stream ended with no frame".into() }),
+    }
+}
+
+/// A path the rows hold no live node at.
+fn unknown_node(node: &PathName) -> CallEnd {
+    CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("the fabric holds no live node at path {:?}, name {:?}", node.path, node.name) }
+}
+
+/// `spec` as the Build's Nodes schema (node-rpc-envelope.md "Build schema").
+fn nodes_of(spec: NodeSpec) -> Nodes {
+    Nodes { path: spec.path, name: spec.name, mesh: spec.mesh, r#type: spec.r#type, storage_persistence: Some(spec.storage_persistence), executable: spec.executable, tags: spec.tags, config: spec.config }
 }
 
 /// A path the UI cannot name an executable for, refused before anything is sent.
@@ -295,9 +360,11 @@ const CONTAINER_IMAGE: &str = "rafka-node-runtime:empty";
 
 /// What a request is built from: the current Build, every live path with its create spec, and the primaries.
 struct Current {
-    based_on: BuildId,
     paths: BTreeMap<PathName, NodeSpec>,
+    ids: BTreeMap<PathName, rdm_core::NodeId>,
+    rows: BTreeMap<PathName, NodeView>,
     primaries: BTreeSet<PathName>,
+    mesh_primaries: BTreeMap<String, rdm_core::NodeId>,
     image: Option<String>,
 }
 

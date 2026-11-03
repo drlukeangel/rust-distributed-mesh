@@ -20,7 +20,6 @@
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{Filter, Frame, MeshNode, Nodes, PathName, Peers, WorkflowStream};
-use rdm_core::build::Step;
 
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
@@ -62,7 +61,10 @@ async fn main() -> Result<()> {
     let nodes = Nodes::new(peers.carrier_at(entry));
     println!("before: {}", row(&nodes, &node).await?);
 
-    finish("delete connections, leave mesh", nodes.steps(vec![Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()}, Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()}]).await?).await?;
+    // Two node commands of its mesh-primary, never a Build (Q342, D61): its connections deleted, then it
+    // leaves its mesh.
+    finish("delete connections", nodes.delete_connections(&node, &rdm_core::status::ConnectionScope::All).await?).await?;
+    finish("leave mesh", nodes.leave_mesh(&node).await?).await?;
     println!("left: {}", row(&nodes, &node).await?);
 
     // Back onto the mesh: stopped, then started as the same birth.

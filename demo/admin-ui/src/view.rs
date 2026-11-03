@@ -12,8 +12,8 @@ fn text(v: &Value, k: &str) -> Option<String> {
 
 /// The primary role a node holds, as the tabs label it. "mesh primary" is the node-admin node-type primary
 /// only; the fabric-primary is that node-type primary of its own mesh as well.
-pub fn primary_label(kind: &str, is_primary: bool, is_fabric_primary: bool) -> &'static str {
-    match (kind, is_primary, is_fabric_primary) {
+pub fn primary_label(r#type: &str, is_primary: bool, is_fabric_primary: bool) -> &'static str {
+    match (r#type, is_primary, is_fabric_primary) {
         (_, _, true) => "fabric primary · mesh primary",
         ("node-admin", true, false) => "mesh primary",
         _ => "",

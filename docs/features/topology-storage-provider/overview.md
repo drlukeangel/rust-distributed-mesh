@@ -43,7 +43,7 @@ one backend are two names. A node moves only between providers its own executabl
 | `rdm-node` | `storage_copy::copy` | the copy, in source order, with every name claim and in-flight row |
 | `rdm-admin` | `storage_change::StorageChanges` | the change's steps: `mesh.block`, the copy and the switch, `mesh.unblock`, the verdict |
 | `rdm-core` | `launch::ENV_TOPOLOGY_STORAGE_PROVIDER`, `build::StorageChange`, `build::StorageCommit`, `ChangeId` | the launch variable, the change and its `commit` record's identity |
-| `rdm-client` | `Change::Reconcile { topology_storage_provider }`, `FabricView`, `NodeView`, `CallEnd` | what a caller sends and reads |
+| `rdm-client` | `Fabrics::update_storage`, `FabricView`, `NodeView`, `CallEnd` | what a caller sends and reads |
 
 `file` is registered by every RDM binary: one append-only JSONL file per store under the fabric's
 root in `RDM_STORE_DIR` (`<store dir>/<fabric id>/`), with its `layout` marker and `locks/`. A name
@@ -73,9 +73,9 @@ provider its own row names).
 
 ## The request path
 
-A storage change is a `build.create` of `Change::Reconcile` carrying the complete topology with the
-same meshes and the new `topology_storage_provider`. A request naming the provider the fabric already
-writes is no change. Acceptance:
+A storage change is a `fabric.storage.update` naming the new `topology_storage_provider` to the
+fabric-primary, which runs it as its own workflow, never a Build. A request naming the provider the
+fabric already writes is no change. Acceptance:
 
 1. refuses by name a provider the fabric-primary's wiring does not register,
    `topology-storage-provider-not-registered`, or cannot open, `topology-storage-provider-not-opened`:
@@ -148,7 +148,7 @@ every line carried in source order, the deleted birth's and the deleted mesh's i
 
 | operation | Node RPC | rdm-client | shared core |
 |---|---|---|---|
-| change the provider | Build op `0x20`, `build.create` of `Reconcile` | `BuildCarrier::create(Change::Reconcile { .. })`, followed with `follow_with` | the accepted topology and the Build executor |
+| change the provider | Status op `0x1B`, `fabric.storage.update` (`UpdateStorage`) | `Fabrics::update_storage`, answered the change's id | the fabric-primary's storage change |
 | read the fabric's provider | op `0x1B`, `fabric.get` | `Fabrics::get` → `FabricView` | the Fabric row |
 | read each node's provider | op `0x1B`, `mesh.nodes.get`, `fabric.nodes.get`, `node.get` | `Meshes::nodes`, `Fabrics::nodes`, `Nodes::get` → `NodeView` | the node rows |
 | read the change's receipts | Build op `0x20`, `build.get` | `BuildCarrier::get` / `Builds::get` → `BuildReceipts` | the Build journal |

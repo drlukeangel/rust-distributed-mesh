@@ -295,7 +295,7 @@ while let Some(item) = stream.next().await {
             stream.accepted().await;
         }
         rdm_transport::stream::StreamItem::Failed(failure) => {
-            // Reconcile recorded progress; do not infer successful completion.
+            // The Build's recorded progress stands; do not infer successful completion.
             return handle_stream_failure(failure);
         }
     }

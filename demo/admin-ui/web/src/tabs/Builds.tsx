@@ -16,8 +16,8 @@ function BuildCard({ b, current }: { b: BuildView; current: boolean }) {
         <span className="mono" style={{ fontWeight: 600 }}>{b.build_id}</span>
         <span className="pill" style={{ borderColor: stateColor(b.state), color: stateColor(b.state) }}>{b.state}</span>
         {current && <span className="pill" style={{ borderColor: "var(--accent)", color: "var(--accent)" }}>accepted topology</span>}
-        <span className="muted mono">{b.submitted_change?.kind ?? "—"} · reason {b.reason} · attempt {b.attempt} · executor {b.executor ?? "—"}</span>
-        <span className="muted mono">{new Date(b.submitted_at_ms).toLocaleTimeString()}</span>
+        <span className="muted mono">{Object.keys(b.change ?? {})[0] ?? "—"} · reason {b.reason} · attempt {b.attempt} · executor {b.executor ?? "—"}</span>
+        <span className="muted mono">{new Date(b.time).toLocaleTimeString()}</span>
       </div>
       {b.last_failure && <div style={{ color: "var(--err)" }} className="mono">last failure: {b.last_failure}</div>}
       {attempts.length === 0 && <div className="muted">no step receipts yet</div>}

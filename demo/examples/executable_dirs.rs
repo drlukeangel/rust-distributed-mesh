@@ -9,21 +9,20 @@
 //! is mounted read-only at its host path, and a Build naming an executable outside them is refused at
 //! acceptance, `executable-refused`, naming `RDM_EXECUTABLE_DIRS`.
 //!
-//! Here a caller replaces one node's executable: it checks the executable is inside the directories the
-//! fabric runs with (its own `RDM_EXECUTABLE_DIRS`, the value the estate was started with) before it
-//! sends anything, hashes it, and submits the fabric's current topology with that one path's binding
-//! changed. RDM realizes the replacement as `node.delete` then `node.create` at the path. A refusal is
-//! printed by name.
+//! Here a caller creates one node on an executable: it checks the executable is inside the directories
+//! the fabric runs with (its own `RDM_EXECUTABLE_DIRS`, the value the estate was started with) before
+//! it sends anything, hashes it, and submits a Create of that one node, in a mesh the fabric holds, of
+//! a type the fabric declares (build.md §1). A refusal is printed by name.
 //!
 //! Build: `cargo build --example executable_dirs` in `demo/`. Run against an estate started with the
 //! directories set (`RDM_EXECUTABLE_DIRS=<dir>[,<dir>...] scripts/demo-estate.sh up`):
 //!
 //! ```text
 //! RDM_EXECUTABLE_DIRS=<dir> RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" \
-//!     target/debug/examples/executable_dirs <path> <name> <dir>/<executable>
+//!     target/debug/examples/executable_dirs <mesh> <type> <path> <name> <dir>/<executable>
 //! ```
 use anyhow::{anyhow, Context, Result};
-use rdm_client::{BuildFrame, BuildId, CallEnd, Change, Fabrics, Filter, MeshNode, Nodes, PathName, Peers};
+use rdm_client::{BuildFrame, CallEnd, Change, MeshNode, PathName, Peers};
 use rdm_core::binding::{sha256_file, Binding};
 use std::path::{Path, PathBuf};
 
@@ -60,8 +59,10 @@ fn inside(executable: &Path, dirs: &[PathBuf]) -> Result<bool> {
 async fn main() -> Result<()> {
     let _telemetry = rdm_transport::init_evidence_telemetry("example-executable-dirs");
     let mut args = std::env::args().skip(1);
-    let (Some(path), Some(name), Some(executable)) = (args.next(), args.next(), args.next()) else { return Err(anyhow!("usage: executable_dirs <path> <name> <executable>")) };
-    let node = PathName::new(&path, &name).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
+    let (Some(mesh), Some(r#type), Some(path), Some(name), Some(executable)) = (args.next(), args.next(), args.next(), args.next(), args.next()) else {
+        return Err(anyhow!("usage: executable_dirs <mesh> <type> <path> <name> <executable>"));
+    };
+    PathName::new(&path, &name).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
     let executable = PathBuf::from(executable);
     let dirs = executable_dirs()?;
     if !inside(&executable, &dirs)? {
@@ -71,29 +72,23 @@ async fn main() -> Result<()> {
 
     let (peers, entry) = enter().await?;
     let carrier = peers.carrier_at(entry);
-    let fabric = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabric.get answered no fabric"))?;
-    let based_on = BuildId::parse(fabric.build_id.as_deref().ok_or_else(|| anyhow!("fabric.get names no current Build"))?).map_err(|e| anyhow!("the current Build id: {e}"))?;
-
-    // The current topology, each path with the tags and config its row holds (a Build applies every
-    // property of a spec that differs from the row), and this one path on the new executable.
-    let rows = Nodes::new(carrier.clone()).get(&Filter::new()).await?;
-    let mut nodes = carrier.build(&based_on).await?.nodes;
-    for spec in &mut nodes {
-        if let Some(row) = rows.iter().find(|r| r.location() == spec.location() && r.incarnation_id.is_some()) {
-            spec.tags = row.tags.clone();
-            spec.config = row.config.clone();
-        }
-    }
-    let spec = nodes.iter_mut().find(|s| s.location() == node).ok_or_else(|| anyhow!("the current Build names no path {path:?}, name {name:?}"))?;
-    let image = spec.executable.as_ref().and_then(|b| b.image.clone());
-    spec.executable = Some(Binding { launch_id: spec.r#type.clone(), executable: executable.clone(), sha256, image });
-
-    let stream = match carrier.create(Change::Reconcile { based_on, nodes}).await {
+    // The one node the Create adds, whole, on that executable (node-rpc-envelope.md "Build schema").
+    let node = rdm_core::build::Nodes {
+        path: path.clone(),
+        name: name.clone(),
+        mesh,
+        r#type: r#type.clone(),
+        storage_persistence: None,
+        executable: Some(Binding { launch_id: r#type, executable: executable.clone(), sha256, image: None }),
+        tags: Default::default(),
+        config: Default::default(),
+    };
+    let stream = match carrier.create(Change::Create { meshes: Vec::new(), nodes: vec![node] }).await {
         Ok(s) => s,
         Err(CallEnd::Rejected { reason, detail }) => return Err(anyhow!("refused {reason}: {detail}")),
         Err(e) => return Err(e.into()),
     };
-    println!("replacing path {path:?}, name {name:?} onto {}: Build {}", executable.display(), stream.build_id().log());
+    println!("creating path {path:?}, name {name:?} on {}: Build {}", executable.display(), stream.build_id().log());
     let followed = carrier.follow(stream).await?;
     match followed.frames.last() {
         Some(BuildFrame::Complete { .. }) => println!("path {path:?}, name {name:?} runs {}", executable.display()),

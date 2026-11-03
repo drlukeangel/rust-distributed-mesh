@@ -88,31 +88,21 @@ Cell: `a_customer_reads_each_nodes_topology_provider`.
 
 ## 4. Move RDM's records to your provider
 
-Submit the complete topology you hold, the same meshes and nodes, with the new value. `based_on` is the
-id of the current Build (`FabricView.build_id`, as `fabric.get` answers it); `nodes` is every node of
-the fabric by its create spec, as any `Reconcile` carries them.
+Send the new value to the fabric-primary with `fabric.storage.update`. The storage change is the
+fabric-primary's own workflow, never a Build ([storage.md §2](../../architecture/storage.md)): it
+answers the change's id once its `rdm.storage.started` event is written, and the change ends with its
+`rdm.storage.ended` event.
 
 ```rust
-use rdm_client::{follow_with, BuildFrame, Change};
+use rdm_client::Fabrics;
 
-let change = Change::Reconcile {
-    based_on,                                  // the current Build the request is built from
-    nodes,                                     // every node of the fabric, unchanged
-    topology_storage_provider: Some("test-target".into()),
-};
-let stream = carrier.create(change).await?;    // build.create: accepted, or refused by name
-let build_id = stream.build_id().clone();
-// A stream that breaks, or ends FabricPrimaryMoved, is reattached by its Build id.
-let followed = follow_with(stream, |id, _from| {
-    let carrier = carrier.clone();
-    async move { carrier.reattach(&id).await }
-})
-.await?;
-assert!(matches!(followed.frames.last(), Some(BuildFrame::Complete { .. })));
+// fabric.storage.update: the change's id, or a refusal by name (`build-in-progress` while a Build or
+// another change runs, or a provider the fabric's wiring does not register or cannot open).
+let change_id = Fabrics::new(carrier.clone()).update_storage("test-target").await?;
 ```
 
 The fabric, every mesh and every node stay ready; no node restarts and no node changes
-state. Once the Build is `Complete`, `fabric.get` names `test-target` with `file` previous, and every
+state. Once the change has ended, `fabric.get` names `test-target` with `file` previous, and every
 node's row names `test-target`.
 
 Cells: `a_customer_changes_topology_storage_without_restarting_members` (the change on a two-mesh fabric
@@ -139,24 +129,21 @@ A node's own connection events never wait for the change (Q169). Cell:
 
 ## 5. Leave the property out
 
-A Build that omits it (`topology_storage_provider: None`) leaves the fabric's provider unchanged; it is
-never read as `file`. Naming the provider the fabric already writes is no change either.
+A Build never carries the provider (build.md §1: it adds or removes nodes), so a Build leaves the
+fabric's provider unchanged; it is never read as `file`. Naming the provider the fabric already writes
+is no change either.
 
-```rust
-let grow = Change::Reconcile { based_on, nodes: nodes_with_one_more, topology_storage_provider: None };
-```
-
-Nodes that Build creates write the fabric's current provider. Cells:
+Nodes a Build creates write the fabric's current provider. Cells:
 `an_omitted_provider_preserves_the_current_provider`, `a_previous_provider_remains_unchanged_after_cutover`
 (a node created after the switch writes `test-target` alone).
 
 ## 6. Return to a previous provider
 
-A later Build naming a provider the fabric left is a change like any other: it copies into it only the
-lines it lacks, and the Fabric row then lists both previous providers in order.
+A later `fabric.storage.update` naming a provider the fabric left is a change like any other: it copies
+into it only the lines it lacks, and the Fabric row then lists both previous providers in order.
 
 ```rust
-let back = Change::Reconcile { based_on, nodes, topology_storage_provider: Some("file".into()) };
+let change_id = Fabrics::new(carrier.clone()).update_storage("file").await?;
 ```
 
 After it, `fabric.get` names `file` with `["file", "test-target"]` previous. Cell:

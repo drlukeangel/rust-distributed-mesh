@@ -184,29 +184,6 @@ async fn ready(admin: &Admin, what: &str) {
     }
 }
 
-/// CONTRACT (states.md "Resize and executable replacement": only a resize or an executable replacement puts
-/// the fabric back to pending, and a Build that did is Complete once its own ready state is set;
-/// Q154, never blocked for ever): the UI's resubmit of the current topology, the Day-0 admin named on the
-/// executable its row records (day 0's entry names none), is one Build with nothing to execute, Complete
-/// within the bound with the fabric ready. Must NOT happen: that Build Pending at attempt 1
-/// with no step for ever (Rafka 141).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn resubmitting_the_current_topology_on_the_day0_admin_completes_with_the_fabric_ready() {
-    let d = dir("resubmit");
-    let (_running, admin) = node_admin(&d).await;
-    let timeline = Arc::new(Timeline::default());
-    let ui = router(Some(admin.clone()), timeline.clone());
-    let id = accepted(&ui, "/api/builds/resubmit", None).await;
-    until_complete(&admin, "the resubmitted topology", &id).await;
-    ready(&admin, "after the resubmitted topology").await;
-    let id = accepted(&ui, "/api/builds/resubmit", None).await;
-    until_complete(&admin, "the topology resubmitted again", &id).await;
-    ready(&admin, "after the topology resubmitted again").await;
-    let whats: Vec<String> = timeline.0.lock().unwrap().iter().map(|(w, _)| w.clone()).collect();
-    assert_eq!(whats, ["resubmit topology", "resubmit topology"], "both Builds are on the UI's timeline");
-    let _ = std::fs::remove_dir_all(&d);
-}
-
 /// The consumer's Day-0 node-admin (`rshape-node-admin`) as its own process, started as
 /// scripts/demo-estate.sh starts it, from a copy of the consumer's executables under `root/bin`: every node
 /// it launches runs from there, so dropping this stops exactly the estate's processes.
@@ -307,20 +284,17 @@ impl Drop for ConsumerEstate {
 
 /// CONTRACT (build-deployment.md §3: a request naming a different executable for an existing path is that
 /// node's replacement, node.delete then node.create at the path; states.md "Resize and executable
-/// replacement"; Q154): on the consumer's own estate, the UI adds a gateway (Complete), resubmits the
-/// current topology (Complete, nothing executed) and replaces the gateway's executable with another build
-/// of it (Complete); after each the fabric is ready, and after the last the gateway's row
+/// replacement"; lifecycles/node-replace.md; Q154): on the consumer's own estate, the UI adds a gateway
+/// (Complete) and replaces it on another build of its executable (node commands free its name, then a
+/// Create of its successor, Complete); after each the fabric is ready, and after the last the gateway's row
 /// records the new executable. Must NOT happen: a Build the UI submitted never Complete.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn adding_resubmitting_and_replacing_a_gateway_through_the_ui_each_completes() {
+async fn adding_and_replacing_a_gateway_through_the_ui_each_completes() {
     let (estate, admin) = ConsumerEstate::start("replace").await;
     let ui = router(Some(admin.clone()), Arc::new(Timeline::default()));
     let id = accepted(&ui, "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "type": "gateway"}))).await;
     until_complete(&admin, "the gateway added", &id).await;
     ready(&admin, "after the gateway added").await;
-    let id = accepted(&ui, "/api/builds/resubmit", None).await;
-    until_complete(&admin, "the topology resubmitted", &id).await;
-    ready(&admin, "after the topology resubmitted").await;
     let next = estate.another_build("rshape-gateway");
     let id = accepted(&ui, "/api/nodes/mesh1.gateway/1/replace", Some(json!({"executable": next}))).await;
     until_complete(&admin, "the gateway's executable replaced", &id).await;

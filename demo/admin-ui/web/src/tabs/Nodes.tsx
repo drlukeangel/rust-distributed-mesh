@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, comparePathName, pathNameText, type PathName, type TopologyNode } from "../api";
+import { api, comparePathName, pathNameText, type CommandEnded, type PathName, type TopologyNode } from "../api";
 import { NodeName } from "../NodeName";
 
 const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -14,10 +14,10 @@ export function Nodes() {
     return () => clearInterval(id);
   }, []);
 
-  const act = async (what: string, node: PathName, f: () => Promise<{ build_id: string; attempt: number }>) => {
+  const act = async (what: string, node: PathName, f: () => Promise<{ build_id: string; attempt: number } | CommandEnded>) => {
     try {
       const r = await f();
-      setMsg(`${what} ${pathNameText(node)}: build ${r.build_id} attempt ${r.attempt}`);
+      setMsg("terminal" in r ? `${what} ${pathNameText(node)}: ${r.terminal}` : `${what} ${pathNameText(node)}: build ${r.build_id} attempt ${r.attempt}`);
     } catch (e) {
       setMsg(`${what} ${pathNameText(node)} refused: ${reason(e)}`);
     }

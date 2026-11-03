@@ -57,19 +57,19 @@ fabric to reach ready hands out the `FabricReady` witness a kill takes (Q74;
 
 ## 3. Acquiring a fabric, option 1: a Build
 
-A Build is the one way to change the fabric's shape: `build.create` with a complete-topology
-request, `Change::Reconcile { based_on, nodes }`, every created path naming its executable
+A Build is the one way to change the fabric's shape: `build.create` of a `Change::Create { meshes, nodes }` or a
+`Change::Delete { meshes, node_ids }`, every created node naming its executable
 ([build.md](../architecture/build.md); [build-deployment.md](../architecture/build-deployment.md)).
 
 | harness call | what it submits |
 |---|---|
-| `estate.submit(&spec)` | a `BuildSpec` of counts per mesh, expanded against the current topology into the complete-topology request; the wire carries no count form (`crates/rdm-test/src/typed.rs`, `BuildSpec`) |
+| `estate.submit(&spec)` | a `BuildSpec` of counts per mesh, expanded against the current topology into a Create of the nodes it adds or a Delete of the nodes it removes; the wire carries no counts (`crates/rdm-test/src/typed.rs`, `BuildSpec`) |
 | `estate.submit_change(change)` | a `Change` the cell built itself |
 | `estate.submit_named(what, nodes)` | the node specs the cell names, from the current topology and the estate's executables |
 | `estate.shape_change(&desired)` | the `Change` that takes the fabric to a `FabricDesired` |
 
-A count expands the way the compiler's count form resizes: a grow takes the lowest free ordinal of
-the kind, a shrink drops the highest ordinal that is not the kind's primary
+A count expands this way: a grow takes the lowest free ordinal of
+the type, a shrink drops the highest ordinal that is not the type's primary
 (`crates/rdm-test/src/executables.rs`, module doc).
 
 The submit answers a `BuildStream`: the cell reads it to its terminal frame. `Builds::get(id)`
@@ -86,7 +86,7 @@ names:
 
 | call | operation |
 |---|---|
-| `nodes.create_named(based_on, specs)`, `estate.create_node(mesh, type)` | [node.create](../architecture/lifecycles/node-create.md), itself a `build.create` of the complete topology (`Change::Reconcile`) |
+| `nodes.create(nodes)`, `estate.create_node(mesh, type)` | [node.create](../architecture/lifecycles/node-create.md), itself a `build.create` of a `Change::Create` naming the nodes it adds |
 | `nodes.stop(path)` / `nodes.start(path)` | [node.stop](../architecture/lifecycles/node-stop.md) / [node.start](../architecture/lifecycles/node-start.md): a node command (NodeCommand `0x22`) to the node's mesh-primary, never a Build; same node id and incarnation |
 | `nodes.delete(path)` | [node.delete](../architecture/lifecycles/node-delete.md) |
 | `nodes.delete_connections(path, scope)` | [node.connection.delete](../architecture/lifecycles/node-connections-delete.md) |

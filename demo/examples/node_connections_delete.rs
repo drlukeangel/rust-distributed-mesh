@@ -4,13 +4,10 @@
 //! `crates/rdm-admin/src/workflows/node_connections_delete.rs:6`,
 //! `crates/rdm-core/src/node_command.rs:59`).
 //!
-//! `node.connection.delete` is invoked either:
-//! - directly at the member's mesh-primary (`Nodes::connections_delete` with `ConnectionScope::All`
-//!   or `ConnectionScope::Connections`), which sends `NodeCommandRequest::DeleteConnections` on op
-//!   `0x22` and answers `StatusReply::ConnectionsDeleted { closed, not_open, held, receipt }`; or
-//! - as a Build workflow (`Nodes::delete_connections`), which moves any held primary roles first, streams
-//!   `NodeEvent::ConnectionsDeleted`, and sets the member's status to
-//!   [`NodeStatus::ConnectionsDeleted`] while the process keeps running with the same birth.
+//! `node.connection.delete` is a node command, never a Build (Q342, D49): `Nodes::delete_connections`
+//! sends `NodeCommandRequest::DeleteConnections` on op `0x22` to the member's mesh-primary, which moves
+//! any held primary roles first, streams `NodeEvent::ConnectionsDeleted`, and sets the member's status
+//! to [`NodeStatus::ConnectionsDeleted`] while the process keeps running with the same birth.
 //! An empty `ConnectionScope::Connections(vec![])` is refused by name (`RejectedConnectionScope`)
 //! before anything is sent.
 //!
@@ -27,7 +24,7 @@ use rdm_client::{
 };
 use rdm_core::status::ConnectionScope;
 
-use rdm_transport::{NodeTarget, RouteChoice};
+use rdm_transport::NodeTarget;
 
 fn exact(n: &NodeView) -> Result<ExactBirth> {
     let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
@@ -78,27 +75,12 @@ async fn main() -> Result<()> {
         held_before.connections.len()
     );
 
-    let refused = nodes
-        .connections_delete(
-            &birth_target,
-            &primary.node_id,
-            &RouteChoice::Direct,
-            &ConnectionScope::Connections(Vec::new()),
-        )
-        .await?;
-    println!("empty ConnectionScope::Connections refused: {refused:?}");
+    // A node command to the node's mesh-primary (NodeCommand 0x22 `DeleteConnections`, D49), never a
+    // Build: an empty list of connections is refused by name.
+    let refused = nodes.delete_connections(&target, &ConnectionScope::Connections(Vec::new())).await.err();
+    println!("empty ConnectionScope::Connections refused: {refused:?} (mesh-primary {:?}, path {:?}, name {:?})", primary.node_id, primary.path, primary.name);
 
-    let cut = nodes
-        .connections_delete(
-            &birth_target,
-            &primary.node_id,
-            &RouteChoice::Direct,
-            &ConnectionScope::All,
-        )
-        .await?;
-    println!("node.connection.delete {{ All }} via mesh-primary path {:?}, name {:?}: {cut:?}", primary.path, primary.name);
-
-    let mut stream = nodes.delete_connections(&target).await?;
+    let mut stream = nodes.delete_connections(&target, &ConnectionScope::All).await?;
     let mut saw_deleted_event = false;
     while let Some(frame) = stream.next().await {
         let frame = frame?;

@@ -86,9 +86,8 @@ async fn main() -> Result<()> {
 
     let current = Builds::new(peers.carrier_at(restored.location())).get(&Filter::new().eq("current", ["true"])).await?;
     if let Some(b) = current.first() {
-        // A receipt on the fabric-primary's path: its location, or the lost or the re-created node.
+        // A receipt on the fabric-primary's path: the lost or the re-created node, by its node.id (D58).
         let on_fp = |subject: &Option<OperationSubject>| match subject {
-            Some(OperationSubject::Location(p)) => *p == fp.location(),
             Some(OperationSubject::Node(id)) | Some(OperationSubject::Birth { node_id: id, .. }) => *id == old_id || *id == restored.node_id,
             _ => false,
         };

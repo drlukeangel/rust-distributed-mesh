@@ -1,23 +1,20 @@
 //! The Admin UI's topology routes: thin front doors to node-admin (PRD §4,
-//! i143.e1.s6). Each one submits one Build over Node RPC through the typed objects of
-//! `rafka-node-admin-client` and answers `202 {"build_id","attempt"}`, or node-admin's
-//! refusal with its named reason. The UI never starts or stops a
-//! runtime itself.
+//! i143.e1.s6). A route that adds or removes nodes submits one Build over Node RPC through the typed
+//! objects of `rafka-node-admin-client` and answers `202 {"build_id","attempt"}`; a node command
+//! (a stop, a start) is never a Build and answers `200 {"terminal"}` once it ends; either way a
+//! refusal answers with node-admin's named reason. The UI never starts or stops a runtime itself.
 //!
 //! ```text
-//! POST   /api/nodes/spawn          {mesh, type}  -> Reconcile: the topology with the next path of that type
-//! POST   /api/nodes/{path}/{name}/stop           -> Stop (a restart is a stop, then a start: Q183)
-//! POST   /api/nodes/{path}/{name}/start          -> Start
-//! DELETE /api/nodes/{path}/{name}                -> RemoveNode
+//! POST   /api/nodes/spawn          {mesh, type}  -> Create: one node at the next path of that type
+//! POST   /api/nodes/{path}/{name}/stop           -> node.stop, a node command (a restart is a stop, then a start: Q183)
+//! POST   /api/nodes/{path}/{name}/start          -> node.start, a node command
+//! DELETE /api/nodes/{path}/{name}                -> Delete: the node by its node.id
 //! POST   /api/bootstrap   [{meshes: [{name, node_admin, gateway?, compute?, broker?}]}] -> one Build to that
-//!                                                   shape (no body: the MN shape), Reconcile
-//! POST   /api/meshes      {name, node_admin, gateway?, compute?, broker?} -> Reconcile: the topology
-//!                                                   with the new mesh
-//! DELETE /api/meshes/{name}                      -> RemoveMesh
-//! POST   /api/builds/resubmit                    -> Reconcile: the current topology as it stands, each
-//!                                                   node on the executable its row records
-//! POST   /api/nodes/{path}/{name}/replace {executable} -> Reconcile: the current topology with that node on the
-//!                                                   executable at that file (its replacement)
+//!                                                   shape (no body: the MN shape): a Create or a Delete
+//! POST   /api/meshes      {name, node_admin, gateway?, compute?, broker?} -> Create: the mesh and its nodes
+//! DELETE /api/meshes/{name}                      -> Delete: the mesh by name
+//! POST   /api/nodes/{path}/{name}/replace {executable} -> node commands free the name, then a Create of its
+//!                                                   successor on the executable at that file
 //! ```
 //!
 //! The counts are the UI's vocabulary: it expands them into named paths, each on its executable
@@ -93,7 +90,6 @@ pub fn router(admin: Option<Arc<Admin>>, events: Arc<dyn BuildEvents>) -> Router
         .route("/api/nodes/{node_path}/{node_name}/stop", post(stop))
         .route("/api/nodes/{node_path}/{node_name}/start", post(start))
         .route("/api/nodes/{node_path}/{node_name}/replace", post(replace))
-        .route("/api/builds/resubmit", post(resubmit))
         .route("/api/nodes/{node_path}/{node_name}", delete(remove))
         .route("/api/bootstrap", post(bootstrap))
         .route("/api/meshes", post(create_mesh))
@@ -127,6 +123,19 @@ fn answer(c: &Control, what: &str, r: Result<Accepted, CallEnd>, node: Option<&P
     }
 }
 
+/// A node command's answer: its terminal frame once it ended, never a Build.
+fn answer_command(c: &Control, what: &str, r: Result<rdm_client::Frame, CallEnd>, node: Option<&PathName>, mesh: Option<&str>) -> Response {
+    let _ = (c, mesh);
+    match r {
+        Ok(frame) => {
+            tracing::info!(node = ?node, "{what} ended at node-admin");
+            (StatusCode::OK, Json(json!({ "terminal": format!("{frame:?}") }))).into_response()
+        }
+        Err(CallEnd::Rejected { reason, detail }) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": reason, "detail": detail }))).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": "node-admin-unreachable", "detail": e.to_string() }))).into_response(),
+    }
+}
+
 fn parse_node((path, name): (String, String)) -> Result<PathName, Response> {
     PathName::new(path, name)
         .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid-request", "detail": e.to_string() }))).into_response())
@@ -148,7 +157,7 @@ async fn stop(State(c): State<Control>, Path(name): Path<(String, String)>) -> R
     };
     let mesh = admin.mesh_of(&node).await;
     let r = admin.stop(&node).await;
-    answer(&c, "stop node", r, Some(&node), mesh.as_deref())
+    answer_command(&c, "stop node", r, Some(&node), mesh.as_deref())
 }
 
 async fn start(State(c): State<Control>, Path(name): Path<(String, String)>) -> Response {
@@ -158,7 +167,7 @@ async fn start(State(c): State<Control>, Path(name): Path<(String, String)>) -> 
     };
     let mesh = admin.mesh_of(&node).await;
     let r = admin.start(&node).await;
-    answer(&c, "start node", r, Some(&node), mesh.as_deref())
+    answer_command(&c, "start node", r, Some(&node), mesh.as_deref())
 }
 
 async fn replace(State(c): State<Control>, Path(name): Path<(String, String)>, Json(body): Json<ReplaceRequest>) -> Response {
@@ -169,16 +178,6 @@ async fn replace(State(c): State<Control>, Path(name): Path<(String, String)>, J
     let mesh = admin.mesh_of(&node).await;
     let r = admin.replace(&node, body.executable).await;
     answer(&c, "replace executable", r, Some(&node), mesh.as_deref())
-}
-
-/// The current topology submitted again as it stands: one Build with nothing to execute.
-async fn resubmit(State(c): State<Control>) -> Response {
-    let admin = match client(&c) {
-        Ok(a) => a,
-        Err(r) => return r,
-    };
-    let r = admin.resubmit().await;
-    answer(&c, "resubmit topology", r, None, None)
 }
 
 async fn remove(State(c): State<Control>, Path(name): Path<(String, String)>) -> Response {

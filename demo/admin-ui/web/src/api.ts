@@ -1,4 +1,4 @@
-export type ManagedKind = "node-admin" | "gateway" | "compute" | "broker";
+export type ManagedType = "node-admin" | "gateway" | "compute" | "broker";
 /// A mesh's desired counts, as node-admin's Build takes them.
 export type MeshShape = { name: string; node_admin: number; rpc_node?: number; gateway?: number; compute?: number; broker?: number };
 
@@ -15,6 +15,11 @@ export const pathNameText = (n: PathName) => `path ${n.path}, name ${n.name}`;
 export interface BuildAccepted {
   build_id: string;
   attempt: number;
+}
+
+/// A node command's answer: it is never a Build, so it names its terminal frame.
+export interface CommandEnded {
+  terminal: string;
 }
 
 export interface FabricInfo {
@@ -93,8 +98,8 @@ export interface BuildView {
   reason: string;
   executor: string | null;
   last_failure: string | null;
-  submitted_at_ms: number;
-  submitted_change: { kind?: string } | null;
+  time: number;
+  change: Record<string, unknown> | null;
   steps: StepView[];
   topology: unknown;
 }
@@ -192,20 +197,19 @@ export const api = {
     call<FaultRecord>("/api/chaos/cut", post(target)),
   heal: (id: number) => call<FaultRecord>("/api/chaos/heal", post({ id })),
   timeline: (all: boolean) => call<Timeline>(`/api/timeline?all=${all ? 1 : 0}&limit=400`),
-  bootWaterfall: (node_id: string, kind: string) =>
-    call<BootWaterfallResponse>(`/api/boot-trace?node_id=${encodeURIComponent(node_id)}&kind=${encodeURIComponent(kind)}`),
+  bootWaterfall: (node_id: string, type: string) =>
+    call<BootWaterfallResponse>(`/api/boot-trace?node_id=${encodeURIComponent(node_id)}&type=${encodeURIComponent(type)}`),
   bootstrap: (meshes?: MeshShape[]) => call<BuildAccepted>("/api/bootstrap", meshes ? post({ meshes }) : { method: "POST" }),
-  spawn: (kind: ManagedKind, mesh: string) =>
-    call<BuildAccepted>("/api/nodes/spawn", post({ mesh, type: kind })),
+  spawn: (type: ManagedType, mesh: string) =>
+    call<BuildAccepted>("/api/nodes/spawn", post({ mesh, type })),
   stop: (node: PathName) =>
-    call<BuildAccepted>(`${nodeRoute(node)}/stop`, { method: "POST" }),
+    call<CommandEnded>(`${nodeRoute(node)}/stop`, { method: "POST" }),
   start: (node: PathName) =>
-    call<BuildAccepted>(`${nodeRoute(node)}/start`, { method: "POST" }),
+    call<CommandEnded>(`${nodeRoute(node)}/start`, { method: "POST" }),
   remove: (node: PathName) =>
     call<BuildAccepted>(nodeRoute(node), { method: "DELETE" }),
   replace: (node: PathName, executable: string) =>
     call<BuildAccepted>(`${nodeRoute(node)}/replace`, post({ executable })),
-  resubmit: () => call<BuildAccepted>("/api/builds/resubmit", { method: "POST" }),
   createMesh: (shape: MeshShape) => call<BuildAccepted>("/api/meshes", post(shape)),
   removeMesh: (name: string) =>
     call<BuildAccepted>(`/api/meshes/${encodeURIComponent(name)}`, { method: "DELETE" }),

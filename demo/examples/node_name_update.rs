@@ -22,7 +22,6 @@
 //! The new name defaults to the node's name with `-old` after it.
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{ExactBirth, Filter, Frame, MeshNode, NodeView, Nodes, PathName, Peers, WorkflowStream};
-use rdm_core::build::Step;
 
 use rdm_transport::{NodeTarget, RouteChoice};
 
@@ -76,7 +75,10 @@ async fn main() -> Result<()> {
     let primary = all.iter().find(|n| n.mesh == row.mesh && n.r#type == "node-admin" && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh))?;
 
     // The precondition: its connections deleted, then its mesh left.
-    finish("delete connections, leave mesh", nodes.steps(vec![Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()}, Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()}]).await?).await?;
+    // Two node commands of its mesh-primary, never a Build (Q342, D61): its connections deleted, then it
+    // leaves its mesh.
+    finish("delete connections", nodes.delete_connections(&node, &rdm_core::status::ConnectionScope::All).await?).await?;
+    finish("leave mesh", nodes.leave_mesh(&node).await?).await?;
 
     let reply = nodes.name_update(&exact(row)?, &primary.node_id, &RouteChoice::Direct, &renamed).await?;
     println!("node.name.update path {:?}, name {:?} -> name {:?}: {reply:?}", node.path, node.name, renamed.name);

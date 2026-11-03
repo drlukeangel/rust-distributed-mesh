@@ -20,7 +20,7 @@ export function BootWaterfall() {
     if (!pick) return;
     const node = nodes.find((n) => n.node_id === pick);
     const label = node ? pathNameText(node) : `node ${pick}`;
-    api.bootWaterfall(pick, node?.kind ?? "").then((r) => {
+    api.bootWaterfall(pick, node?.type ?? "").then((r) => {
       const raw = r.data?.[0]?.spans ?? [];
       const parsed = raw.map((s) => ({ name: s.operationName, start_us: s.startTime, duration_ms: s.duration / 1000 })).sort((a, b) => a.start_us - b.start_us);
       setSpans(parsed);

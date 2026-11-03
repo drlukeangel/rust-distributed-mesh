@@ -9,9 +9,9 @@
 //! pair; `BuildCarrier::follow` follows a stream to its terminal and reattaches on its own whenever the
 //! stream breaks or ends `FabricPrimaryMoved`, keeping each completed step once.
 //!
-//! Here the call is one step, `node.connection.delete { All }` of a node (its connections are closed
-//! and it keeps running on its mesh), run as the next attempt of the fabric's current Build. The caller keeps only its Build id from the first stream and drops
-//! the stream, as a restarted caller would; then it reattaches by id and follows the Build to its end.
+//! Here the Build is a Delete of one node, named by its node.id (build.md §1): the node is stopped
+//! and leaves the fabric. The caller keeps only its Build id from the first stream and drops the
+//! stream, as a restarted caller would; then it reattaches by id and follows the Build to its end.
 //!
 //! Build: `cargo build --example build_reattach` in `demo/`. Run against a live estate:
 //!
@@ -20,7 +20,6 @@
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{BuildFrame, MeshNode, Nodes, PathName, Peers};
-use rdm_core::build::Step;
 
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
@@ -37,11 +36,12 @@ async fn main() -> Result<()> {
     let carrier = peers.carrier_at(entry);
 
     // Submit, keep the Build id, lose the stream.
-    let accepted = Nodes::new(carrier.clone()).steps(vec![Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()}]).await?.accepted().clone();
+    let nodes = Nodes::new(carrier.clone());
+    let node_id = nodes.get(&rdm_client::Filter::new().eq("path", [node.path.as_str()]).eq("name", [node.name.as_str()])).await?.into_iter().next().map(|n| n.node_id).ok_or_else(|| anyhow!("node.get names no node at {node:?}"))?;
+    let accepted = nodes.delete(vec![node_id]).await?.accepted().cloned().ok_or_else(|| anyhow!("the Delete opened no Build"))?;
     println!("accepted: Build {} attempt {}; the stream is dropped", accepted.build_id.log(), accepted.attempt);
 
-    // Reattach by id: the receipts so far, and the stream again. The receipts are every attempt's: a
-    // call on a node runs as an attempt of the fabric's current Build, so its earlier attempts' are there too.
+    // Reattach by id: the receipts so far, and the stream again.
     let again = carrier.reattach(&accepted.build_id).await?;
     let (ours, earlier): (Vec<_>, Vec<_>) = again.receipts.iter().partition(|r| r.attempt >= accepted.attempt);
     println!("reattached: {} receipt(s) of earlier attempts, {} of this one", earlier.len(), ours.len());

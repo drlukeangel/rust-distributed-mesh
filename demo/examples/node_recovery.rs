@@ -131,7 +131,6 @@ async fn main() -> Result<()> {
             .iter()
             .filter(|s| s.step == "Complete")
             .filter(|s| match &s.operation.subject {
-                Some(OperationSubject::Location(at)) => *at == target.location(),
                 Some(OperationSubject::Node(id)) | Some(OperationSubject::Birth { node_id: id, .. }) => id == &old_id || id == &row.node_id,
                 _ => false,
             })
