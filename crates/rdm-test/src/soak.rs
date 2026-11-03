@@ -64,10 +64,6 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or("").to_string()
 }
 
-fn num(v: &Value) -> u64 {
-    v.as_u64().or_else(|| v.as_str().and_then(|a| a.parse().ok())).unwrap_or(0)
-}
-
 /// The name of an action's kind.
 pub fn kind(a: &Action) -> &'static str {
     match a {
