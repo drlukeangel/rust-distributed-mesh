@@ -613,7 +613,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     assert!(!named(&spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().any(|sp| sp["attributes"]["pipeline"] == "recover"), "no recovery pipeline of its own");
     assert!(
         !named(&run, "rdm.node_admin.deployment.update.via-pipeline").into_iter().any(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && at_location(sp, node) && sp["attributes"]["pipeline"] == "update"),
-        "no node.update after the create: the create's claim seeded what the recovery keeps"
+        "no node.update after the create: the create's row seeded what the recovery keeps"
     );
     let drift: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(before["node_id"].as_str().unwrap_or("-"))).collect();
     assert!(drift.is_empty(), "the fabric-primary opened a drift attempt for a member: {drift:?}");
@@ -942,7 +942,7 @@ async fn frames(mut stream: rdm_client::WorkflowStream) -> Vec<Frame> {
 /// `<name>-old` live (the rename's `via-writer` span says `connections=deleted mesh=left`, applied by the
 /// node, which publishes nothing off its mesh), and is stopped as `<name>-old` after (its NodeStopped once,
 /// its stop span naming `<name>-old`). The successor is a re-birth at `mesh1.rpc.1`, the name the rename
-/// released (a new node.id, transport key and data dir), its claim a successor's seeded from the
+/// released (a new node.id, transport key and data dir), its row a successor's seeded from the
 /// predecessor's row, and its join admitted under `mesh1.rpc.1`: it is never born at any other name.
 /// The predecessor is deleted at `<name>-old` on the provider's exited verdict (NodeDeleted once, its Deleted row
 /// at `<name>-old`, its data dir kept). RDM moves no data. At the end `mesh1.rpc.1` is the successor, ready,
@@ -1029,10 +1029,10 @@ async fn a_replace_runs_as_one_build_of_node_primitives_in_order() {
     assert!(end(r1) <= start(&stopped1[0]), "the predecessor gives up its name before it is stopped");
     let stop_node: Vec<String> = named(&spans, "rdm.node_admin.status.update.via-stop-node").into_iter().filter(|sp| sp["attributes"]["operation"] == "node.stop" && sp["attributes"]["node"] == before.node_id.as_str() && sp["attributes"]["build_id"] == build).map(|sp| s(&sp["attributes"]["node"])).collect();
     assert_eq!(stop_node, vec![before.node_id.to_string()], "the predecessor stops as the same node after its rename");
-    // The successor: a re-birth at the name, its claim seeded from the predecessor's row, admitted there.
-    let claim = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == successor.node_id.to_string() && sp["attributes"]["moment"] == "create").cloned().expect("the successor's claim");
-    assert_eq!((s(&claim["attributes"]["subject_path"]), s(&claim["attributes"]["subject_name"]), s(&claim["attributes"]["seeded_from"])), (path.path.clone(), path.name.clone(), before.node_id.to_string()), "the successor claims the released name, seeded from the predecessor's row: {claim:#}");
-    assert!(end(&stopped1[0]) <= start(&claim), "the successor is created once the predecessor is stopped as name-old");
+    // The successor: a re-birth at the name, its row seeded from the predecessor's row, admitted there.
+    let created = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == successor.node_id.to_string() && sp["attributes"]["moment"] == "create").cloned().expect("the successor's row");
+    assert_eq!((s(&created["attributes"]["subject_path"]), s(&created["attributes"]["subject_name"]), s(&created["attributes"]["seeded_from"])), (path.path.clone(), path.name.clone(), before.node_id.to_string()), "the successor writes its row at the released name, seeded from the predecessor's row: {created:#}");
+    assert!(end(&stopped1[0]) <= start(&created), "the successor is created once the predecessor is stopped as name-old");
     let join = of("rdm.node_admin.node.update.via-join", &successor.node_id).into_iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "installed").collect::<Vec<_>>();
     assert!(join.iter().all(|j| j["attributes"]["admitted_path"] == path.path && j["attributes"]["admitted_name"] == path.name) && !join.is_empty(), "the successor's join is admitted at {path:?} and no other name: {join:#?}");
     assert!(of("rdm.node_admin.name.update.via-writer", &successor.node_id).is_empty(), "the successor is never renamed");
@@ -1044,7 +1044,7 @@ async fn a_replace_runs_as_one_build_of_node_primitives_in_order() {
     assert!(rows.len() == 1 && s(&rows[0]["attributes"]["outcome"]) == "row-deleted" && s(&rows[0]["attributes"]["node_id"]) == before.node_id.to_string(), "one Deleted row under name-old for the predecessor: {rows:#?}");
     assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "nothing of the Build is drift");
     let create = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == build && sp["attributes"]["node_path"] == path.path && sp["attributes"]["node_name"] == path.name).cloned().expect("the successor's create operation span");
-    estate.artifact("steps.json", &json!({"operations": keys, "leave": left[0], "rename_old": r1, "stopped_old": stopped1[0], "claim": claim, "node_deleted": deleted[0], "deleted_row": rows[0]}));
+    estate.artifact("steps.json", &json!({"operations": keys, "leave": left[0], "rename_old": r1, "stopped_old": stopped1[0], "created": created, "node_deleted": deleted[0], "deleted_row": rows[0]}));
     estate.record_trace_url(create["trace_id"].as_str().unwrap_or(""));
 }
 
@@ -1095,11 +1095,11 @@ async fn steps_naming_an_unknown_node_are_refused_unknown_node_naming_the_step_a
 /// "Historical records ... remain queryable by their own IDs and matching properties"): mesh2's
 /// primary tells `mesh2.rpc.1` a config and a tag,
 /// then the node is replaced up to the successor's create (no delete of the predecessor). The
-/// predecessor leaves its mesh, takes `<name>-old` live and is stopped there; the successor's claim at
+/// predecessor leaves its mesh, takes `<name>-old` live and is stopped there; the successor's create at
 /// `<name>`, the name it released, puts its row with its Build entry's config and tags (Q305,
 /// node-replace.md "Properties"): this Build of steps takes its entry from its topology, which names
 /// none of the config and the tag the calls wrote, so the successor's row carries neither, never the
-/// retained `.old` row's (`seeded_from` the predecessor all the same). The claim then marks the
+/// retained `.old` row's (`seeded_from` the predecessor all the same). The create then marks the
 /// retained row `inherited_by` the successor. The successor's join under `<name>` hands it no config;
 /// node.get by the tag names the retained predecessor alone, which stays at `<name>-old` with its tag
 /// in its own property record, never the successor. Must NOT happen: the dead predecessor's config or
@@ -1141,26 +1141,26 @@ async fn a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_it
     let got = frames(estate.nodes_obj().await.steps(create_steps).await.expect("the Build up to the successor's create was accepted")).await;
     assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
     let after = estate.until_node(node_path, "the successor is ready at the original location", SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != member.node_id).map(|n| serde_json::to_value(n).unwrap())).await;
-    let spans = wait_for("the successor's claim, the retained row's mark and the successor's join under the name are exported", Duration::from_secs(60), || async {
+    let spans = wait_for("the successor's row, the retained row's mark and the successor's join under the name are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
         let joined = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().any(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["admitted_path"] == node_path.path && sp["attributes"]["admitted_name"] == node_path.name);
         let marked = named(&spans, "rdm.node_admin.node.update.via-inherited-row").into_iter().any(|sp| sp["attributes"]["node_id"] == before["node_id"]);
         (joined && marked).then_some(spans)
     })
     .await;
-    // Step 3: the successor's claim at the released name writes its entry's properties (none here), then marks the retained row.
-    let claim = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "create").expect("the successor's claim").clone();
-    let a = &claim["attributes"];
+    // Step 3: the successor's create at the released name writes its entry's properties (none here), then marks the retained row.
+    let created = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "create").expect("the successor's row").clone();
+    let a = &created["attributes"];
     assert_eq!(
         (s(&a["node_path"]), s(&a["node_name"]), s(&a["subject_path"]), s(&a["subject_name"]), s(&a["outcome"]), s(&a["seeded_from"]), s(&a["keys"]), s(&a["tags"])),
         (mesh_primary.path.clone(), mesh_primary.name.clone(), node_path.path.clone(), node_path.name.clone(), "row-seeded".to_string(), s(&before["node_id"]), "0".to_string(), "".to_string()),
-        "the mesh-primary puts the successor at {node_path:?} with its entry's config and tags, none, never the retained row's: {claim}"
+        "the mesh-primary puts the successor at {node_path:?} with its entry's config and tags, none, never the retained row's: {created}"
     );
     assert!(named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().all(|sp| sp["attributes"]["node_id"] != after["node_id"]), "the successor is never renamed");
     let mark = named(&spans, "rdm.node_admin.node.update.via-inherited-row").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).expect("the retained row's mark").clone();
     let m = &mark["attributes"];
     assert_eq!((s(&m["original_path"]), s(&m["original_name"]), s(&m["inherited_by"]), s(&m["outcome"])), (node_path.path.clone(), node_path.name.clone(), s(&after["node_id"]), "inherited".to_string()), "the retained row says who inherited it (its tag stays in its own property record, read below): {mark}");
-    assert_eq!(mark["parent_span_id"], claim["span_id"], "the mark is the claim's last write: {mark} under {claim}");
+    assert_eq!(mark["parent_span_id"], created["span_id"], "the mark is the create's last write: {mark} under {created}");
     // The successor's join under the name is installed (node-start.md step 2); the answer carries no config.
     let joined = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["admitted_path"] == node_path.path && sp["attributes"]["admitted_name"] == node_path.name).expect("the successor's join under the name").clone();
     assert_eq!(s(&joined["attributes"]["outcome"]), "installed".to_string(), "the successor's join under {node_path:?} is installed: {joined}");
@@ -1183,7 +1183,7 @@ async fn a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_it
     assert_eq!(retained_record["record"]["tags"], json!(labels), "the retained row keeps its tags after leaving the active index");
     assert_eq!(retained_record["record"]["config"], told_json, "the retained row keeps its own config");
     assert_eq!(retained["node_id"], before["node_id"], "the retained {old_name:?} is the predecessor: {retained}");
-    eprintln!("trace {}: successor={} predecessor={} path={:?} name={:?}; inherited_by={}; trace {}: join", s(&claim["trace_id"]), s(&after["node_id"]), s(&before["node_id"]), node_path.path, node_path.name, s(&m["inherited_by"]), s(&joined["trace_id"]));
+    eprintln!("trace {}: successor={} predecessor={} path={:?} name={:?}; inherited_by={}; trace {}: join", s(&created["trace_id"]), s(&after["node_id"]), s(&before["node_id"]), node_path.path, node_path.name, s(&m["inherited_by"]), s(&joined["trace_id"]));
     estate.shutdown().await;
 }
 
@@ -2231,7 +2231,7 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rdm_transport::NodeRpcClien
 /// writer knows"). The caller puts `<mesh>.rpc.1`'s config and the tag `rabbit` through its
 /// mesh-primary (not the fabric-primary), the node carries them, then its runtime is killed: the
 /// mesh-primary's recovery writes the exited birth's Deleted row with that config and tag, the new
-/// node's name claim is seeded from it (`via-node-row` moment `claim`, `seeded_from` the exited node,
+/// node's row is seeded from it (`via-node-row` moment `create`, `seeded_from` the exited node,
 /// one key, `tags` rabbit), the new node (new node.id, same (path, name)) carries the config and the tag, and
 /// `node.get` by the tag names the new node and not the exited one. Nothing copies them after the
 /// create: no node.update runs.
@@ -2265,17 +2265,17 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
 
     estate.kill_node(node_path).await;
     let after = until_node_where(&estate, node_path, &format!("{node_path:?} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
-    // The new node's name claim, written by the mesh-primary, is seeded from the exited birth's
+    // The new node's row, written by the mesh-primary, is seeded from the exited birth's
     // Deleted row: its config is the one told.
-    let claim = wait_for("the new node's name claim is exported", Duration::from_secs(60), || async {
+    let created = wait_for("the new node's row is exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
         named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "create").cloned()
     })
     .await;
-    let a = &claim["attributes"];
-    assert!(at_location(&claim, &location(&mesh_primary)) && a["outcome"] == "row-seeded" && s(&a["seeded_from"]) == s(&before["node_id"]), "the mesh-primary claims the name seeded from the exited birth's Deleted row: {claim}");
-    assert_eq!(s(&a["keys"]), "1", "the seeded row carries the config told to the predecessor: {claim}");
-    assert_eq!(s(&a["tags"]), "rabbit", "the claim seeds the Deleted row's tags in the same write: {claim}");
+    let a = &created["attributes"];
+    assert!(at_location(&created, &location(&mesh_primary)) && a["outcome"] == "row-seeded" && s(&a["seeded_from"]) == s(&before["node_id"]), "the mesh-primary writes the row at the name seeded from the exited birth's Deleted row: {created}");
+    assert_eq!(s(&a["keys"]), "1", "the seeded row carries the config told to the predecessor: {created}");
+    assert_eq!(s(&a["tags"]), "rabbit", "the create seeds the Deleted row's tags in the same write: {created}");
     let deleted: Vec<Value> = named(&estate.spans(), "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect();
     assert_eq!(deleted.len(), 1, "one Deleted row of the exited birth: {deleted:?}");
     // The record and its config stay (node-delete.md step 3): the exited node's own property record,
@@ -2301,7 +2301,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     assert_eq!(selected, vec![s(&after["node_id"])], "the tags index names the new node under the label, and not the exited one");
     let told: Vec<Value> = named(&estate.spans(), "rdm.node_admin.node.update.via-config").into_iter().filter(|sp| sp["attributes"]["node_id"] == after["node_id"]).cloned().collect();
     assert!(told.is_empty(), "the join handed the config: no config call is sent to the starting node: {told:?}");
-    eprintln!("trace {}: via-node-row delete node_id={} keys={} tags={}; trace {}: via-node-row claim writer={} node_id={} seeded_from={} keys={} tags={}", s(&deleted[0]["trace_id"]), s(&before["node_id"]), deleted[0]["attributes"]["keys"], s(&deleted[0]["attributes"]["tags"]), s(&claim["trace_id"]), s(&mesh_primary["node_id"]), s(&after["node_id"]), s(&a["seeded_from"]), a["keys"], s(&a["tags"]));
+    eprintln!("trace {}: via-node-row delete node_id={} keys={} tags={}; trace {}: via-node-row create writer={} node_id={} seeded_from={} keys={} tags={}", s(&deleted[0]["trace_id"]), s(&before["node_id"]), deleted[0]["attributes"]["keys"], s(&deleted[0]["attributes"]["tags"]), s(&created["trace_id"]), s(&mesh_primary["node_id"]), s(&after["node_id"]), s(&a["seeded_from"]), a["keys"], s(&a["tags"]));
 }
 
 /// CONTRACT (node-recovery.md "Execution", Q118: the mesh-primary reports the drift up, the

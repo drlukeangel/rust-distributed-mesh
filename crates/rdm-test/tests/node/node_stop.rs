@@ -1354,7 +1354,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     let held: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drift-held").into_iter().filter(|sp| at_location(sp, &fp)).collect();
     assert!(!held.is_empty() && held.iter().all(|sp| attr(sp, "by") == "the testkit cut drift-pass"), "the fabric-primary's held drift pass names the cut: {held:#?}");
     let bare = |id: String| id.trim_start_matches("bid_").replace('-', "");
-    // Every birth at the node's path.name, by its claim: the create's, and its next attempt's (Q245,
+    // Every birth at the node's path.name, by its row: the create's, and its next attempt's (Q245,
     // Q252: the next attempt deletes the unready birth the failed create left and creates it again).
     let births: std::collections::BTreeSet<String> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| names_location(sp, "subject", &node) && attr(sp, "moment") == "create").map(|sp| attr(sp, "node_id")).collect();
     let removal: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| attr(sp, "scope").starts_with("surplus: ") && births.iter().any(|id| attr(sp, "scope").contains(id.as_str()))).collect();
@@ -1376,7 +1376,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
         per_birth.entry((attr(sp, "node_id"), attr(sp, "incarnation_id"))).or_default().push(sp);
     }
     assert!(per_birth.values().all(|d| d.len() == 1), "NodeDeleted once per birth of {node:?}: {per_birth:#?}");
-    assert_eq!(per_birth.keys().map(|(id, _)| id.clone()).collect::<std::collections::BTreeSet<_>>(), births, "every birth the creates claimed is deleted, and no other: {per_birth:#?}");
+    assert_eq!(per_birth.keys().map(|(id, _)| id.clone()).collect::<std::collections::BTreeSet<_>>(), births, "every birth the creates wrote a row for is deleted, and no other: {per_birth:#?}");
     // Each deletion is explained: drift's attempt deletes the surplus birth; every other one is the
     // create's next attempt deleting the unready birth its failed first attempt left.
     let by_drift: Vec<&&Value> = deleted.iter().filter(|sp| (bare(attr(sp, "build_id")), attr(sp, "attempt")) == (build.clone(), attempt.clone())).collect();

@@ -12,10 +12,10 @@
 //! No write reads storage first; storage is read only to fill a cache.
 //!
 //! - `mesh.storage`: each Mesh record at its id (its identity and its one state) and each
-//!   live mesh's name claim.
+//!   live mesh's record by its name.
 //! - `nodes.storage`: each node's record at its id (its row and the facts of its births: declared
 //!   states, operation effects, silence, data-dir facts, cert dates, the birth's address and the
-//!   primaries recorded for it) and its name claim, through which a `(path, name)` resolves (R-SR5); and
+//!   primaries recorded for it) and its record at its `(path, name)`, through which the pair resolves (R-SR5); and
 //!   the runtimes this admin started, in its own data dir. A birth's address on its record is a hint:
 //!   never topology, never death proof. The admin's own row (NodeId, path and name, the incarnation it last
 //!   ran, its transport identity), so a restart is the same logical node, is its own seed in its data
@@ -83,7 +83,7 @@ pub enum MeshWritten {
 pub enum MeshRefused {
     /// Another live mesh's record holds the name: it is free only once that mesh is deleted.
     NameHeld {
-        /// The name claimed.
+        /// The mesh's name.
         name: String,
         /// The mesh that holds it.
         by: MeshId,
@@ -91,7 +91,7 @@ pub enum MeshRefused {
     /// This mesh is deleted: a deleted mesh is never written live again and its id is never reissued
     /// (states.md); only its deleted record is ever written again.
     MeshDeleted {
-        /// The name claimed.
+        /// The mesh's name.
         name: String,
         /// The deleted mesh.
         mesh_id: MeshId,
@@ -232,7 +232,7 @@ const MESH_FORMAT: &str = "mesh-record/4";
 const MESH_KIND: &str = "mesh-record";
 
 #[cfg(feature = "file-backend")]
-/// The format of a mesh's in-flight lock's claim.
+/// The format of a mesh's in-flight lock's record.
 const IN_FLIGHT_FORMAT: &str = "mesh-in-flight/2";
 
 #[cfg(feature = "file-backend")]
@@ -391,7 +391,7 @@ pub async fn live_records(meshes: &dyn MeshStorage, nodes: &dyn NodesStorage, ow
 }
 
 /// The records of every mesh: the records of each mesh `meshes` holds a record of, and of `own_mesh`
-/// (whose record a Day-0 admin's claim precedes), each mesh read once, a `Deleted` record included: a
+/// (whose record a Day-0 admin's own row precedes), each mesh read once, a `Deleted` record included: a
 /// deleted birth's recorded primary stays an election input until a newer revision supersedes it
 /// (fabric-node-lifecycle-elections.md §3), as a lost primary's does through fabric recovery. Each
 /// mesh's records as the reader's fold reads them: a version a deleted birth wrote is ignored
@@ -689,7 +689,7 @@ mod tests {
                 c.put_connection(&down).await.unwrap();
             }
             assert_eq!(m.mesh(&mesh.mesh_id).await.unwrap(), Some(mesh.clone()));
-            assert_eq!(m.mesh_named("mesh1").await.unwrap(), Some(mesh.clone()), "the name claim's lookup names the record");
+            assert_eq!(m.mesh_named("mesh1").await.unwrap(), Some(mesh.clone()), "the lookup by name names the record");
             assert_eq!(m.meshes().await.unwrap(), [mesh.clone()]);
             assert_eq!(n.runtimes().await.unwrap(), [runtime.clone()]);
             assert_eq!(c.connections().await.unwrap(), [down.clone()], "the latest fact per (source, destination, kind)");
@@ -850,7 +850,7 @@ mod tests {
         let (m1, m2) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc1)).await.unwrap(), FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc2)).await.unwrap());
         let writes = async |n: &FileNodesStorage, m: &FileMeshStorage, mesh: &str| {
             let w = WrittenRows::default();
-            crate::storage::write_mesh(&*m, None, &MeshRecord::new(MeshId::mint(), mesh)).await.unwrap().expect("each mesh claims a name no mesh holds");
+            crate::storage::write_mesh(&*m, None, &MeshRecord::new(MeshId::mint(), mesh)).await.unwrap().expect("each mesh writes its record at a name no mesh holds");
             let mut ids = Vec::new();
             for (name, kind) in [(PathName::new(format!("{mesh}.admin"), "1").unwrap(), rdm_core::NodeKind::NodeAdmin), (PathName::new(format!("{mesh}.rpc"), "1").unwrap(), rdm_core::NodeKind::RpcNode), (PathName::new(format!("{mesh}.rpc"), "2").unwrap(), rdm_core::NodeKind::RpcNode)] {
                 let r = row(name, mesh, kind);
@@ -891,7 +891,7 @@ mod tests {
         let (meshes, nodes) = (FileMeshStorage::open(&root, &w).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &w).await.unwrap());
         let admin: PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
         let old = MeshRecord::new(MeshId::mint(), "mesh2");
-        write_mesh(&meshes, None, &old).await.unwrap().expect("the first mesh2 claims its name");
+        write_mesh(&meshes, None, &old).await.unwrap().expect("the first mesh2 writes its record at its name");
         let first = NodeRow { mesh_id: Some(old.mesh_id.clone()), ..NodeRow::new(admin.clone(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeId::mint(), crate::model::NodeStatus::Pending) };
         assert_eq!(crate::node_rows::write_record(&nodes, &first).await.unwrap(), Ok(()));
         let build = crate::build::BuildId::mint();
@@ -1033,33 +1033,33 @@ mod tests {
         assert!(matches!(n.runtimes().await, Err(StorageError::Unrecognised { .. })));
     }
 
-    /// CONTRACT (node-identity-and-state.md §2.7: the mesh-primary "claims the mesh's name at the key
+    /// CONTRACT (node-identity-and-state.md §2.7: the mesh-primary "checks the mesh's name against the mesh records at the key
     /// `(path, name)` ... Held means held by a different MeshId: `NameHeld` names that holder.
-    /// The same MeshId re-claiming its own name ... is idempotent and accepted"; R-MN1: only a delete
+    /// The same MeshId writing its own row again ... is idempotent and accepted"; R-MN1: only a delete
     /// releases a name, a mesh's by its removal, the record deleted; states.md: a mesh id is never
-    /// reissued, deleted is final; Q109: the storage decides nothing): the record's writer claims a
-    /// mesh's name. A free name takes the claim and the record; the same mesh re-claiming with its
-    /// record unchanged writes nothing; another mesh's claim of the live name is refused naming the
+    /// reissued, deleted is final; Q109: the storage decides nothing): the record's writer writes a
+    /// mesh's record at its name. A free name takes the record; the same mesh writing again with its
+    /// record unchanged writes nothing; another mesh's write at the live name is refused naming the
     /// holder and writes nothing; the holder's deleted record is a write of its own record that releases
     /// the name, and a repeat of it writes nothing; the deleted mesh is never written live again; another
-    /// mesh then claims the name. The memory store and the file store each run their own check.
+    /// mesh then writes its record at the name. The memory store and the file store each run their own check.
     #[tokio::test]
     async fn a_mesh_name_is_held_by_its_writers_record_and_only_a_dead_row_releases_it() {
-        let d = crate::test_support::tempdir("storage-mesh-claim");
+        let d = crate::test_support::tempdir("storage-mesh-row");
         let check = async |m: &dyn MeshStorage, store: &str| {
             let (first, second) = (MeshId::mint(), MeshId::mint());
             let live = |id: &MeshId| MeshRecord::new(id.clone(), "mesh2");
             let dead = |id: &MeshId| MeshRecord { state: MeshState::Deleted, ..live(id) };
-            assert_eq!(crate::storage::write_mesh(&*m, None, &live(&first)).await, Ok(Ok(MeshWritten::Written)), "{store}: a free name takes the claim and the record");
-            assert_eq!(crate::storage::write_mesh(&*m, Some(&live(&first)), &live(&first)).await, Ok(Ok(MeshWritten::Held)), "{store}: the same mesh re-claiming its name writes nothing");
-            assert_eq!(crate::storage::write_mesh(&*m, None, &live(&second)).await, Ok(Err(MeshRefused::NameHeld { name: "mesh2".into(), by: first.clone() })), "{store}: another mesh's live claim holds mesh2");
-            assert_eq!(m.mesh_named("mesh2").await.unwrap(), Some(live(&first)), "{store}: nothing is written by a refused claim");
+            assert_eq!(crate::storage::write_mesh(&*m, None, &live(&first)).await, Ok(Ok(MeshWritten::Written)), "{store}: a free name takes the record");
+            assert_eq!(crate::storage::write_mesh(&*m, Some(&live(&first)), &live(&first)).await, Ok(Ok(MeshWritten::Held)), "{store}: the same mesh writing its own record again writes nothing");
+            assert_eq!(crate::storage::write_mesh(&*m, None, &live(&second)).await, Ok(Err(MeshRefused::NameHeld { name: "mesh2".into(), by: first.clone() })), "{store}: another mesh's live row holds mesh2");
+            assert_eq!(m.mesh_named("mesh2").await.unwrap(), Some(live(&first)), "{store}: nothing is written by a refused write");
             assert_eq!(crate::storage::write_mesh(&*m, Some(&live(&first)), &dead(&first)).await, Ok(Ok(MeshWritten::Written)), "{store}: the holder's deleted record is a write of its own record");
             assert_eq!(m.mesh_named("mesh2").await.unwrap(), None, "{store}: the deleted record released the name");
             assert_eq!(crate::storage::write_mesh(&*m, Some(&dead(&first)), &dead(&first)).await, Ok(Ok(MeshWritten::Held)), "{store}: a repeat of the deleted record writes nothing");
             assert_eq!(crate::storage::write_mesh(&*m, Some(&dead(&first)), &live(&first)).await, Ok(Err(MeshRefused::MeshDeleted { name: "mesh2".into(), mesh_id: first.clone() })), "{store}: a deleted mesh is never written live again");
-            assert_eq!(crate::storage::write_mesh(&*m, None, &live(&second)).await, Ok(Ok(MeshWritten::Written)), "{store}: the released name is claimed again");
-            assert_eq!(m.mesh_named("mesh2").await.unwrap(), Some(live(&second)), "{store}: the claim names the new mesh's record");
+            assert_eq!(crate::storage::write_mesh(&*m, None, &live(&second)).await, Ok(Ok(MeshWritten::Written)), "{store}: the released name is written again");
+            assert_eq!(m.mesh_named("mesh2").await.unwrap(), Some(live(&second)), "{store}: the name resolves to the new mesh's record");
             assert_eq!(m.mesh(&first).await.unwrap(), Some(dead(&first)), "{store}: the deleted mesh's record stands, read by id");
         };
         check(&MemoryMeshStorage::default(), "memory").await;

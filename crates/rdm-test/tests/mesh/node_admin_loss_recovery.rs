@@ -193,13 +193,13 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         .expect("the fabric primary created a node-admin into the lost mesh under the accepted Build");
     let created = creates_admin(first).expect("the first attempt's create");
     let recovery_admin = PathName::new(attr(&created, "node_path"), attr(&created, "node_name")).expect("a create names its location");
-    // Its node id is the one its create's claim took the name for.
+    // Its node id is the one its create wrote its row for.
     let recovery_admin_id = named(&spans, "rdm.node_admin.node.create.via-node-row")
         .into_iter()
         .filter(|c| rdm_test::estate::names_location(c, "subject", &recovery_admin) && attr(c, "moment") == "create" && at(c) > at(first))
         .min_by_key(|c| at(c))
         .map(|c| attr(c, "node_id"))
-        .unwrap_or_else(|| panic!("{recovery_admin:?}'s create claimed its name for a node id"));
+        .unwrap_or_else(|| panic!("{recovery_admin:?}'s create wrote its row for a node id"));
     let joined: Vec<&Value> = named(&spans, "rdm.node.mesh.update.via-joining").into_iter().filter(|j| rdm_test::estate::of_node(j, &recovery_admin, &recovery_admin_id) && at(j) > at(first)).collect();
     assert!(!joined.is_empty() && joined.iter().all(|j| attr(j, "mesh_id") == lost_mesh_id), "{recovery_admin:?} joined under {lost}'s own MeshId: it never minted: {joined:?}");
     // The adopter is the admin the span names; the held state's publisher is the mesh's lost primary.
