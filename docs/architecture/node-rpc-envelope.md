@@ -431,7 +431,7 @@ A stopped node's control service stays reachable through its bound endpoint
 
 The router refuses every op, Ping included, with typed NotReady until the Node RPC door
 is ready. A node-admin waits until its primary is filled and its view holds it;
-an rpc node waits until it joins its mesh. The rejection span is
+a node waits until it joins its mesh. The rejection span is
 `rdm.node_rpc.request.reject.via-not-ready`. This door is the generic serving gate, not a
 fabric ready declaration. Source:
 `crates/rdm-transport/src/server.rs::with_ready_gate`.

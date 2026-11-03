@@ -139,7 +139,7 @@ python3 scripts/test_name_check.py               # the check's own tests
 - A span a cell asserts is named by its literal, the name the code emits
   (`rdm_test::estate::named(&spans, "rdm.node_rpc.request.serve.via-direct")`); never build a span
   name from parts.
-- A node is named in a cell by its `path.name` (`mesh1.rpc.1`, `mesh1.admin.2`) or its node id;
+- A node is named in a cell by its `path.name` (`mesh1.node.1`, `mesh1.node-admin.2`) or its node id;
   `id`, `index` and `name` are three things, and `key` is none of them (CLAUDE.md "Vocabulary").
 - An estate's root is named for its cell: `rdm_test::estate::estate_root(test)` makes
   `i143-<test>-<pid>-<n>` under the temporary directory, so two runs never share a root.

@@ -80,7 +80,7 @@ Who executes follows topology and lifecycle ownership, not a node's type.
 The owning Mesh executor realizes ordinary members and sibling node-admins; an exact Pending
 bootstrap admin or a node-admin joining a live mesh executes only its own Mesh under the fabric-primary. Fabric-wide and
 outside-Mesh retirement rules remain generic control decisions. A general rule equivalent to
-`if kind == RpcNode { mesh executor } else { fabric executor }` is forbidden. Provider-domain
+`if type == "node" { mesh executor } else { fabric executor }` is forbidden. Provider-domain
 locality may change execution location, never topology or the election.
 
 RDM may carry an opaque or typed node class required by generic algorithms, but MUST NOT

@@ -36,7 +36,7 @@ flowchart TB
     NC[rdm-core\ndescriptor / framing / outcome] --> NR
     MO[rafka-mesh-ops\nRafka product contracts/codecs] --> PC
 
-    MT --> PC[process composition\nnode-admin / rpc node / downstream node-base]
+    MT --> PC[process composition\nnode-admin / node / downstream node-base]
     NR --> PC
     C[connections / RDM Mesh EF\nDirect / ViaPeer / NoActiveRoute] --> PC
 

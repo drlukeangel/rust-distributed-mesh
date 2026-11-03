@@ -472,7 +472,7 @@ fn scenario_manifest_round_trips_owner_seed_and_fault_schedule() {
     expect("provider_disagrees", mutate(&|x| { x["owner"]["provider"] = json!("container"); }), |e| matches!(e, ManifestError::ProviderDisagrees { .. }));
     expect("empty_owner_test", mutate(&|x| { x["owner"]["test"] = json!(""); }), |e| matches!(e, ManifestError::EmptyOwnerField("test")));
     expect("empty_source_sha", mutate(&|x| { x["source"]["sha"] = json!(""); }), |e| matches!(e, ManifestError::EmptySourceField("sha")));
-    expect("shapes_disagree", mutate(&|x| { x["shapes"][0]["node"] = json!(9); }), |e| matches!(e, ManifestError::ShapesDisagree));
+    expect("shapes_disagree", mutate(&|x| { x["shapes"][0]["counts"]["node"] = json!(9); }), |e| matches!(e, ManifestError::ShapesDisagree));
     expect("fault_step", mutate(&|x| { x["fault_schedule"][0]["before_operation"] = json!(99); }), |e| matches!(e, ManifestError::FaultStepOutOfRange { before_operation: 99, .. }));
     expect("fault_target", mutate(&|x| { x["fault_schedule"][0]["fault"]["restart_node"]["node"] = json!(PathName::new("mesh1.broker", "1").unwrap()); }), |e| matches!(e, ManifestError::FaultTargetUnknown(n) if n == &PathName::new("mesh1.broker", "1").unwrap()));
 

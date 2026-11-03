@@ -1,12 +1,12 @@
-//! Declared secrets (`RDM_DECLARED_SECRETS`): a value only the application's own kinds read, carried by
+//! Declared secrets (`RDM_DECLARED_SECRETS`): a value only the application's own types read, carried by
 //! RDM and never written anywhere (Q150).
 //!
-//! The application declares each secret in its node-admin's [`Wiring`] by name, with the node kinds that
+//! The application declares each secret in its node-admin's [`Wiring`] by name, with the node types that
 //! read it: here `EXAMPLE_APP_TOKEN`, read by brokers. The bootstrap node-admin reads each declared
 //! name once from its own environment, so the value is set where the fabric is started. Every node-admin
 //! RDM launches is written the values beside the fabric's root, so whichever admin creates a broker can
 //! set it; each admin keeps them beside its data dir and reads them back on a start, so a value never
-//! changes while the fabric runs. The value is set only in the environment of the kinds its declaration
+//! changes while the fabric runs. The value is set only in the environment of the types its declaration
 //! names and withheld from every other process; it is never written to a row, a Build record, a
 //! receipt, the launch record or a span, and a spawn error is scrubbed of it. A name RDM sets or passes
 //! through (`RDM_*`, `TRACEPARENT`, ...) or a name declared twice refuses the admin's start by name.

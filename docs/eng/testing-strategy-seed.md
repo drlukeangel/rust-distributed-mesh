@@ -49,7 +49,7 @@ assert:
 | `UnsupportedVersion` | `version` is not 1 |
 | `UnknownProvider` | `provider` is not `process` or `container` |
 | `UnknownShape` | `shape` is not `SN`, `MN` or `MM` |
-| `ShapeMismatch` | the meshes are below the shape's floor: SN is 1 mesh of 1 node-admin and 1 rpc node; MN is 1 mesh of 2 node-admins and 3 rpc nodes; MM is two MN meshes |
+| `ShapeMismatch` | the meshes are below the shape's floor: SN is 1 mesh of 1 node-admin and 1 node; MN is 1 mesh of 2 node-admins and 3 nodes; MM is two MN meshes |
 | `UnknownTarget` | an operation or assertion targets a `path.name` that is not `<mesh>.rpc.<n>` of a declared mesh |
 | `AmbiguousGet` | a `get` does not say exactly one of `equals` or `absent: true` |
 

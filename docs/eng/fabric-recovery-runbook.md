@@ -1,7 +1,7 @@
 # Runbook: launching a node-admin at the lost fabric-primary's path.name
 
 When no node-admin of the fabric is alive, nothing inside the fabric brings one back. This happens to a
-one-mesh fabric (Rafka's SN shape: one node-admin, `mesh1.admin.1`, which is the fabric-primary and
+one-mesh fabric (Rafka's SN shape: one node-admin, `mesh1.node-admin.1`, which is the fabric-primary and
 mesh1's primary) the moment that node-admin dies, even while the mesh's other nodes keep serving. A
 person or a script launches one `rdm-node-admin` at the lost fabric-primary's path.name: the adoption
 launch. The launch takes back the fabric-primary role and the mesh-primary role, and the fabric heals
@@ -29,7 +29,7 @@ The end-to-end cell is
   and an adoption launch is refused by name (Q159).
 - **Find the fabric id.** It is the name of the fabric's directory under the store root
   (`<RDM_STORE_DIR>/<fabric id>`), and the bootstrap admin's `RDM_FABRIC_ID`.
-- **Find the lost fabric-primary's path.name.** In a one-mesh fabric it is `mesh1.admin.1`. The store's
+- **Find the lost fabric-primary's path.name.** In a one-mesh fabric it is `mesh1.node-admin.1`. The store's
   node rows record it; a launch at any other path.name is refused by name.
 
 ## The launch
@@ -38,7 +38,7 @@ Start the consumer's node-admin executable (the one the Day-0 admin ran), with n
 
 | Variable | Value |
 |---|---|
-| `RDM_NODE_NAME` | the lost fabric-primary's path.name, e.g. `mesh1.admin.1` |
+| `RDM_NODE_NAME` | the lost fabric-primary's path.name, e.g. `mesh1.node-admin.1` |
 | `RDM_FABRIC_ID` | the fabric's id |
 | `RDM_MESH` | that path.name's mesh, e.g. `mesh1` |
 | `RDM_STORE_DIR` | the fabric's store root, the same one the Day-0 admin was given |
