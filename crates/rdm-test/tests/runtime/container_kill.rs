@@ -40,7 +40,7 @@ fn docker_state(id: &str) -> String {
 /// and incarnation_id, the submitter, the verdict and the outcome, and no build_id; its own steps
 /// (`rdm.node_admin.deployment.update.via-step`) run in its trace with an empty build_id.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recreates_it() {
+async fn a_killed_container_is_read_exited_by_inspection_and_its_mesh_primary_recreates_it() {
     if std::env::var("RDM_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") {
         eprintln!("SKIP container kill: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step)");
         return;
@@ -52,7 +52,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
             subfeature: "container-kill".into(),
             rung: "MN".into(),
             provider: "container".into(),
-            test: "a_killed_container_is_proven_terminal_by_inspection_and_the_build_recreates_it".into(),
+            test: "a_killed_container_is_read_exited_by_inspection_and_its_mesh_primary_recreates_it".into(),
         },
         "fabric1",
         "mesh1",
