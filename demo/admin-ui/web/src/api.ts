@@ -1,4 +1,4 @@
-export type ManagedKind = "rpc_node" | "node_admin" | "gateway" | "compute" | "broker";
+export type ManagedKind = "node-admin" | "gateway" | "compute" | "broker";
 /// A mesh's desired counts, as node-admin's Build takes them.
 export type MeshShape = { name: string; node_admin: number; rpc_node?: number; gateway?: number; compute?: number; broker?: number };
 
@@ -51,7 +51,7 @@ export interface Overview {
 
 export interface TopologyNode {
   name: PathName;
-  kind: string;
+  type: string;
   mesh: string;
   status: string;
   role: string;
@@ -195,7 +195,7 @@ export const api = {
     call<BootWaterfallResponse>(`/api/boot-trace?node_id=${encodeURIComponent(node_id)}&kind=${encodeURIComponent(kind)}`),
   bootstrap: (meshes?: MeshShape[]) => call<BuildAccepted>("/api/bootstrap", meshes ? post({ meshes }) : { method: "POST" }),
   spawn: (kind: ManagedKind, mesh: string) =>
-    call<BuildAccepted>("/api/nodes/spawn", post({ mesh, kind })),
+    call<BuildAccepted>("/api/nodes/spawn", post({ mesh, type: kind })),
   stop: (node: PathName) =>
     call<BuildAccepted>(`${nodeRoute(node)}/stop`, { method: "POST" }),
   start: (node: PathName) =>

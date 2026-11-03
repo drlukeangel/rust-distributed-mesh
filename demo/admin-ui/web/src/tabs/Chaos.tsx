@@ -60,7 +60,7 @@ export function Chaos() {
         {sorted.map((n) => (
           <div key={n.node_id} className="card">
             <div className="mono" style={{ fontWeight: 600 }}><NodeName node={n.name} /></div>
-            <div className="muted mono" style={{ fontSize: 11 }}>{n.kind} · {n.status} {n.role && `· ${n.role}`}</div>
+            <div className="muted mono" style={{ fontSize: 11 }}>{n.type} · {n.status} {n.role && `· ${n.role}`}</div>
             {n.is_fabric_primary ? (
               <div className="muted" style={{ marginTop: 8 }}>fabric primary: never a fault target</div>
             ) : (

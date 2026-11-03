@@ -210,13 +210,10 @@ impl Admin {
             return Err(CallEnd::Rejected { reason: "unknown-mesh".into(), detail: format!("the fabric holds no mesh {mesh}") });
         }
         let mut grown = Self::counts_of(&current, mesh);
-        match kind {
-            "node-admin" => grown.node_admin += 1,
-            // The demo is a rafka replica (Q295): it runs no RDM rpc node.
-            "node" => return Err(CallEnd::Rejected { reason: "unknown-kind".into(), detail: "the demo runs no rpc node: spawn a gateway, a broker or a compute".into() }),
-            "broker" => grown.broker += 1,
-            "gateway" => grown.gateway += 1,
-            "compute" => grown.compute += 1,
+        match r#type {
+            // The demo is a rafka replica (Q295): it runs no plain RDM `node`.
+            "node-admin" | "broker" | "gateway" | "compute" => *grown.counts.entry(r#type.to_string()).or_insert(0) += 1,
+            _ => return Err(CallEnd::Rejected { reason: "unknown-type".into(), detail: "the demo runs node-admins, gateways, brokers and computes only".into() }),
         }
         let nodes = self.resized(&current, &[grown], false)?;
         Ok(Nodes::new(self.carrier()).create_named(current.based_on, nodes).await?.accepted().clone())

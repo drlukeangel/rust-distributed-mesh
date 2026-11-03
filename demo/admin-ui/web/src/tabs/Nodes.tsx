@@ -32,9 +32,9 @@ export function Nodes() {
       <div className="grid grid-cards">
         {sorted.map((n) => (
           <div key={n.node_id} className="card">
-            <div className="mono" style={{ color: n.kind === "node_admin" ? "#e3b341" : "#c9d1d9", fontWeight: 600 }}><NodeName node={n.name} /></div>
+            <div className="mono" style={{ color: n.type === "node-admin" ? "#e3b341" : "#c9d1d9", fontWeight: 600 }}><NodeName node={n.name} /></div>
             <div className="muted mono" style={{ fontSize: 11, marginTop: 4 }}>
-              kind: {n.kind}<br />
+              type: {n.type}<br />
               mesh: {n.mesh}<br />
               status: {n.status}<br />
               role: {n.role || "member"}<br />

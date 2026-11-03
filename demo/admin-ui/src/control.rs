@@ -5,7 +5,7 @@
 //! runtime itself.
 //!
 //! ```text
-//! POST   /api/nodes/spawn          {mesh, kind}  -> Reconcile: the topology with the next path of that kind
+//! POST   /api/nodes/spawn          {mesh, type}  -> Reconcile: the topology with the next path of that type
 //! POST   /api/nodes/{path}/{name}/stop           -> Stop (a restart is a stop, then a start: Q183)
 //! POST   /api/nodes/{path}/{name}/start          -> Start
 //! DELETE /api/nodes/{path}/{name}                -> RemoveNode
@@ -137,7 +137,7 @@ async fn spawn(State(c): State<Control>, Json(body): Json<SpawnRequest>) -> Resp
         Ok(a) => a,
         Err(r) => return r,
     };
-    let r = admin.spawn(&body.mesh, body.kind).await;
+    let r = admin.spawn(&body.mesh, &body.r#type).await;
     answer(&c, "add node", r, None, Some(&body.mesh))
 }
 

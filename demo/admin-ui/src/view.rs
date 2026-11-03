@@ -96,10 +96,10 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
         .iter()
         .map(|n| {
             let n = serde_json::to_value(n).unwrap_or(Value::Null);
-            let kind = text(&n, "kind").unwrap_or_default();
+            let r#type = text(&n, "type").unwrap_or_default();
             let (p, fp) = (n["is_primary"].as_bool().unwrap_or(false), n["is_fabric_primary"].as_bool().unwrap_or(false));
             json!({
-                "name": n["name"], "kind": kind, "mesh": n["mesh"], "status": n["status"], "role": primary_label(&kind, p, fp),
+                "name": n["name"], "type": r#type, "mesh": n["mesh"], "status": n["status"], "role": primary_label(&r#type, p, fp),
                 "is_primary": p, "is_fabric_primary": fp, "declared": n["declared"], "incarnation_id": n["incarnation_id"], "node_id": n["node_id"],
                 "has_runtime": n["data_dir"].is_string(),
             })

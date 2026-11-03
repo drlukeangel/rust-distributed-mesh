@@ -3,7 +3,7 @@ import { api, pathNameText, type ManagedKind } from "./api";
 
 /// What node-admin manages. Each button submits one Build to node-admin; the
 /// UI never starts or stops a runtime itself.
-const KINDS: ManagedKind[] = ["rpc_node", "node_admin", "gateway", "compute", "broker"];
+const KINDS: ManagedKind[] = ["node-admin", "gateway", "compute", "broker"];
 /// The R-shape estate (i143 e11.s1): two meshes of 2 node-admins, 2 computes, 3 gateways and 3 brokers.
 const R_SHAPE = (name: string) => ({ name, node_admin: 2, compute: 2, gateway: 3, broker: 3 });
 const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));

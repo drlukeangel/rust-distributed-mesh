@@ -3,7 +3,7 @@ import ReactFlow, { Background, Controls, MarkerType, type Edge as FlowEdge, typ
 import { api, comparePathName, pathNameText, type Connection, type Topology as Topo, type TopologyNode } from "../api";
 import { NodeName } from "../NodeName";
 
-const KIND_COLOR: Record<string, string> = { node_admin: "#e3b341", rpc_node: "#8b949e", gateway: "#58a6ff", compute: "#3fb950", broker: "#d2a8ff" };
+const KIND_COLOR: Record<string, string> = { "node-admin": "#e3b341", node: "#8b949e", gateway: "#58a6ff", compute: "#3fb950", broker: "#d2a8ff" };
 const MESH_COLORS = ["#58a6ff", "#bc8cff", "#f0883e", "#56d4dd", "#ff7b72"];
 
 const meshColor = (names: string[], m: string) => MESH_COLORS[names.indexOf(m) % MESH_COLORS.length];
@@ -34,7 +34,7 @@ function layout(nodes: TopologyNode[]): FlowNode[] {
     members.forEach((n, idx) => {
       const ang = (2 * Math.PI * idx) / Math.max(1, members.length) - Math.PI / 2;
       const r = 165;
-      const c = KIND_COLOR[n.kind] ?? "#8b949e";
+      const c = KIND_COLOR[n.type] ?? "#8b949e";
       // A node is its id on the canvas: a connection names its source and destination by node id.
       out.push({
         id: n.node_id,
@@ -45,7 +45,7 @@ function layout(nodes: TopologyNode[]): FlowNode[] {
           label: (
             <div style={{ textAlign: "center", lineHeight: 1.2 }} data-testid={`node-${n.name.path}-${n.name.name}`}>
               <div className="mono" style={{ fontSize: 11, color: "#c9d1d9" }}><NodeName node={n.name} /></div>
-              <div style={{ fontSize: 10, color: "#8b949e" }}>{n.kind} · {n.status}</div>
+              <div style={{ fontSize: 10, color: "#8b949e" }}>{n.type} · {n.status}</div>
               {n.role && <div style={{ fontSize: 10, color: "#e3b341" }} data-testid={`role-${n.name.path}-${n.name.name}`}>{n.role}</div>}
             </div>
           ),
