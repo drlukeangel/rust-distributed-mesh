@@ -968,17 +968,17 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         );
 
         // Step 5 (node-delete.md:37-39): block the old `(node.id, incarnation)` in the peer-location
-        // view; peers refuse a late digest of the deleted birth even when a successor uses the same
-        // endpoint key.
+        // view; peers refuse a late digest of the deleted birth once a successor holds its (path, name),
+        // the successor at its own new endpoint (Q358).
         let peer_view = rdm_transport::topology::DigestView::default();
-        let shared_endpoint = EndpointId("shared-retained-endpoint-key".into());
+        let deleted_endpoint = EndpointId("deleted-birth-endpoint-key".into());
         let old_digest = rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: template.fabric_id.clone(),
             node: rdm_core::MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: target_id.clone(),
                 path: target_name.path.clone(), name: target_name.name.clone(),
-                endpoint_id: shared_endpoint.clone(),
+                endpoint_id: deleted_endpoint,
                 transport_addr: "127.0.0.1:41001".parse().unwrap(),
                 incarnation: target_incarnation.clone(),
                 supersedes: None,
@@ -1013,7 +1013,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             node: rdm_core::MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: successor_id.clone(),
                 path: target_name.path.clone(), name: target_name.name.clone(),
-                endpoint_id: shared_endpoint,
+                endpoint_id: EndpointId("successor-endpoint-key".into()),
                 transport_addr: "127.0.0.1:41002".parse().unwrap(),
                 incarnation: successor_inc.clone(),
                 supersedes: None,
@@ -1023,7 +1023,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             emitted_at_rafka_ms: 3_000,
             ..old_digest.clone()
         };
-        assert!(peer_view.record(successor_digest), "successor with the same endpoint key is admitted");
+        assert!(peer_view.record(successor_digest), "the successor at the same (path, name) and its own endpoint is admitted");
         let late_old_digest = rdm_core::MeshDigest {
             digest_seq: 99,
             emitted_at_rafka_ms: 4_000,
@@ -1031,7 +1031,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         };
         assert!(
             !peer_view.record(late_old_digest),
-            "late digest of the deleted birth is refused even when a successor uses the same endpoint key"
+            "a late digest of the deleted birth is refused once its successor holds the (path, name)"
         );
         assert!(peer_view.get(target_id.as_str()).is_none());
         assert!(peer_view.get(successor_id.as_str()).is_some());
