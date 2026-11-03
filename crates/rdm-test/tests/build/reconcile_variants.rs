@@ -27,7 +27,7 @@
 //! Build never Complete (Pending at attempt 1 with no step) after a request that changed nothing the
 //! fabric runs (Rafka 141).
 
-use rdm_client::{BuildFrame, Change, LaunchKind as NodeKind, NodeView, PathName, ScopeStatus};
+use rdm_client::{BuildFrame, Change, NodeView, PathName, ScopeStatus};
 use rdm_core::binding::{sha256_file, Binding};
 use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
 use rdm_test::estate::{Estate, Owner};
@@ -149,8 +149,8 @@ fn resets_as_the_pages_say(estate: &Estate, rows: &[(String, String, Back)]) {
 /// The variants that act on `mesh`'s rpc paths, in order, from a fabric where `mesh` holds `<mesh>.rpc.1`
 /// on the estate's executable: tags only, storage only, a new path, another executable, a removed path.
 async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, String, Back)>) {
-    let rpc1 = PathName::new(format!("{mesh}.rpc"), "1").unwrap();
-    let rpc2 = PathName::new(format!("{mesh}.rpc"), "2").unwrap();
+    let rpc1 = PathName::new(format!("{mesh}.node"), "1").unwrap();
+    let rpc2 = PathName::new(format!("{mesh}.node"), "2").unwrap();
     let (based_on, mut r, _) = verbatim(estate).await;
     at(&mut r, &rpc1).tags = ["zone_a".to_string()].into();
     row(estate, &format!("{mesh}: tags only"), based_on, r, Back::Stays, rows).await;
@@ -176,7 +176,7 @@ async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, Strin
     assert_eq!((properties(estate, &node).config, node.config), (zone.clone(), zone), "{mesh}: a storage-only change leaves the config as it is");
 
     let (based_on, mut r, _) = verbatim(estate).await;
-    r.push(rdm_test::executables::created_spec(rpc2.clone(), mesh, NodeKind::RpcNode, estate.executables.of(NodeKind::RpcNode)));
+    r.push(rdm_test::executables::created_spec(rpc2.clone(), mesh, "node", estate.executables.of("node")));
     row(estate, &format!("{mesh}: a new path"), based_on, r, Back::ToPending, rows).await;
     estate.until_node(&rpc2, &format!("{rpc2:?} ready"), BOUND, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).map(|_| ())).await;
 
@@ -199,7 +199,7 @@ async fn day0_variants(estate: &Estate, rows: &mut Vec<(String, String, Back)>) 
     row(estate, "the unchanged request (each held path naming none)", based_on, r, Back::Stays, rows).await;
 
     let (based_on, mut r, rows_now) = verbatim(estate).await;
-    let admin = PathName::new("mesh1.admin", "1").unwrap();
+    let admin = PathName::new("mesh1.node-admin", "1").unwrap();
     at(&mut r, &admin).executable = Some(row_executable(&rows_now, &admin));
     row(estate, "the Day-0 admin named on the executable its row records", based_on, r, Back::Stays, rows).await;
 
@@ -223,10 +223,10 @@ async fn every_reconcile_variant_on_a_day0_fabric_completes_with_the_fabric_read
     estate.until_fabric_ready(BOUND).await;
     let mut rows = Vec::new();
     day0_variants(&estate, &mut rows).await;
-    // mesh1.rpc.1, so the rpc variants have a held path to act on.
+    // mesh1.node.1, so the rpc variants have a held path to act on.
     let (based_on, mut r, _) = verbatim(&estate).await;
-    r.push(rdm_test::executables::created_spec(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode, estate.executables.of(NodeKind::RpcNode)));
-    row(&estate, "mesh1: a new path, mesh1.rpc.1", based_on, r, Back::ToPending, &mut rows).await;
+    r.push(rdm_test::executables::created_spec(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", estate.executables.of("node")));
+    row(&estate, "mesh1: a new path, mesh1.node.1", based_on, r, Back::ToPending, &mut rows).await;
     rpc_variants(&estate, "mesh1", &mut rows).await;
     estate.stop().await;
     resets_as_the_pages_say(&estate, &rows);
@@ -244,8 +244,8 @@ async fn every_reconcile_variant_on_a_two_mesh_fabric_completes_with_the_fabric_
     estate.until_fabric_ready(BOUND).await;
     let mut rows = Vec::new();
     let (based_on, mut r, _) = verbatim(&estate).await;
-    for (p, kind) in [(PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin), (PathName::new("mesh2.rpc", "1").unwrap(), NodeKind::RpcNode)] {
-        r.push(rdm_test::executables::created_spec(p, "mesh2", kind, estate.executables.of(kind)));
+    for (p, r#type) in [(PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin"), (PathName::new("mesh2.node", "1").unwrap(), "node")] {
+        r.push(rdm_test::executables::created_spec(p, "mesh2", r#type, estate.executables.of(r#type)));
     }
     row(&estate, "mesh2 created, the Day-0 admin's entry kept naming none", based_on, r, Back::ToPending, &mut rows).await;
     estate.settles_to(&[("mesh1", 1, 0), ("mesh2", 1, 1)], BOUND).await;

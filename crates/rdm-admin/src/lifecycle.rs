@@ -549,7 +549,7 @@ mod tests {
             let l = log.clone();
             let r = pipeline
                 .transition(
-                    Transition { transition_id: format!("t{i}"), target: "mesh1.rpc.1".into(), key: READY, shape: &shape },
+                    Transition { transition_id: format!("t{i}"), target: "mesh1.node.1".into(), key: READY, shape: &shape },
                     || Ok(()),
                     || l.lock().unwrap().push("COMMIT"),
                 )

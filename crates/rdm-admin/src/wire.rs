@@ -22,7 +22,7 @@ use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Iden
 use crate::mesh_delete::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
-use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
+use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, PathName};
 use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
 use rdm_core::LifecycleOp;
 use serde::{Deserialize, Serialize};
@@ -146,7 +146,7 @@ struct WireMesh {
 #[derive(Serialize, Deserialize)]
 struct WireSpec {
     mesh: String,
-    kind: NodeKind,
+    r#type: String,
     storage: WireStorage,
 }
 
@@ -159,11 +159,7 @@ enum WireStorage {
 #[derive(Serialize, Deserialize)]
 struct WireMeshDesired {
     name: String,
-    node_admin: u32,
-    rpc_node: u32,
-    broker: u32,
-    gateway: u32,
-    compute: u32,
+    counts: std::collections::BTreeMap<String, u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -176,7 +172,7 @@ struct WireFabricDesired {
 enum WireChange {
     ReconcileFabric { desired: WireFabricDesired },
     ReconcileMesh { desired: WireMeshDesired },
-    AddNode { mesh: String, node_kind: NodeKind },
+    AddNode { mesh: String, r#type: String },
     RemoveNode { node: PathName },
     CreateMesh { desired: WireMeshDesired },
     RemoveMesh { mesh: String },
@@ -197,26 +193,26 @@ enum WireAction {
     /// Reserved position: the removed node.restart's action (Q183). Never sent; a fact carrying it is
     /// refused by name ([`fact_from_wire`]). Kept so every later action keeps its position.
     Reserved0 { path: PathName, from_incarnation: IncarnationId },
-    DeleteConnections { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
-    Stop { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
-    Start { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
-    Recover { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
-    Delete { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
+    DeleteConnections { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
+    Stop { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
+    Start { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
+    Recover { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
+    Delete { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
     Steps { steps: Vec<rdm_core::build::Step>, pinned: Vec<(PathName, crate::build::PinnedBirth)>, rename_intents: std::collections::BTreeMap<u32, crate::accepted::RenameIntent> },
-    Terminate { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
+    Terminate { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
     /// Fabric recovery's backbone re-create, a node.create alone (Q142); appended, so every earlier
     /// variant keeps its position.
-    RecoverFromBackbone { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
+    RecoverFromBackbone { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
 }
 
 impl From<&MeshDesired> for WireMeshDesired {
     fn from(m: &MeshDesired) -> Self {
-        Self { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute }
+        Self { name: m.name.clone(), counts: m.counts.clone() }
     }
 }
 impl From<WireMeshDesired> for MeshDesired {
     fn from(m: WireMeshDesired) -> Self {
-        Self { name: m.name, node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute }
+        Self { name: m.name, counts: m.counts }
     }
 }
 impl From<&FabricDesired> for WireFabricDesired {
@@ -234,7 +230,7 @@ impl From<&TopologyChange> for WireChange {
         match c {
             TopologyChange::ReconcileFabric { desired } => Self::ReconcileFabric { desired: desired.into() },
             TopologyChange::ReconcileMesh { desired } => Self::ReconcileMesh { desired: desired.into() },
-            TopologyChange::AddNode { mesh, node_kind } => Self::AddNode { mesh: mesh.clone(), node_kind: *node_kind },
+            TopologyChange::AddNode { mesh, r#type: node_kind } => Self::AddNode { mesh: mesh.clone(), r#type: node_kind.clone() },
             TopologyChange::RemoveNode { node } => Self::RemoveNode { node: node.clone() },
             TopologyChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             TopologyChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh: mesh.clone() },
@@ -249,7 +245,7 @@ impl From<WireChange> for TopologyChange {
         match c {
             WireChange::ReconcileFabric { desired } => Self::ReconcileFabric { desired: desired.into() },
             WireChange::ReconcileMesh { desired } => Self::ReconcileMesh { desired: desired.into() },
-            WireChange::AddNode { mesh, node_kind } => Self::AddNode { mesh, node_kind },
+            WireChange::AddNode { mesh, r#type: node_kind } => Self::AddNode { mesh, r#type: node_kind },
             WireChange::RemoveNode { node } => Self::RemoveNode { node },
             WireChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             WireChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh },
@@ -262,14 +258,14 @@ impl From<WireChange> for TopologyChange {
 impl From<&AttemptAction> for WireAction {
     fn from(a: &AttemptAction) -> Self {
         match a {
-            AttemptAction::DeleteConnections { kind, mesh: mesh, path, node_id, from_incarnation } => Self::DeleteConnections { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Stop { kind, mesh: mesh, path, node_id, from_incarnation } => Self::Stop { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Start { kind, mesh: mesh, path, node_id, from_incarnation } => Self::Start { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Recover { kind, mesh: mesh, path, node_id, from_incarnation, backbone: false } => Self::Recover { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Recover { kind, mesh: mesh, path, node_id, from_incarnation, backbone: true } => Self::RecoverFromBackbone { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Delete { kind, mesh: mesh, path, node_id, from_incarnation } => Self::Delete { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::DeleteConnections { r#type, mesh: mesh, path, node_id, from_incarnation } => Self::DeleteConnections { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Stop { r#type, mesh: mesh, path, node_id, from_incarnation } => Self::Stop { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Start { r#type, mesh: mesh, path, node_id, from_incarnation } => Self::Start { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Recover { r#type, mesh: mesh, path, node_id, from_incarnation, backbone: false } => Self::Recover { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Recover { r#type, mesh: mesh, path, node_id, from_incarnation, backbone: true } => Self::RecoverFromBackbone { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Delete { r#type, mesh: mesh, path, node_id, from_incarnation } => Self::Delete { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Steps { steps, pinned, rename_intents } => Self::Steps { steps: steps.clone(), pinned: pinned.clone(), rename_intents: rename_intents.clone() },
-            AttemptAction::Terminate { kind, mesh: mesh, path, node_id, from_incarnation } => Self::Terminate { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Terminate { r#type, mesh: mesh, path, node_id, from_incarnation } => Self::Terminate { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
         }
     }
 }
@@ -280,14 +276,14 @@ impl TryFrom<WireAction> for AttemptAction {
     fn try_from(a: WireAction) -> Result<Self, String> {
         Ok(match a {
             WireAction::Reserved0 { path, .. } => return Err(format!("the attempt's action is node.restart of {path:?}, a reserved position: node.restart is removed (Q183)")),
-            WireAction::DeleteConnections { kind, mesh, path, node_id, from_incarnation } => Self::DeleteConnections { kind, mesh, path, node_id, from_incarnation },
-            WireAction::Stop { kind, mesh, path, node_id, from_incarnation } => Self::Stop { kind, mesh, path, node_id, from_incarnation },
-            WireAction::Start { kind, mesh, path, node_id, from_incarnation } => Self::Start { kind, mesh, path, node_id, from_incarnation },
-            WireAction::Recover { kind, mesh, path, node_id, from_incarnation } => Self::Recover { kind, mesh, path, node_id, from_incarnation, backbone: false },
-            WireAction::RecoverFromBackbone { kind, mesh, path, node_id, from_incarnation } => Self::Recover { kind, mesh, path, node_id, from_incarnation, backbone: true },
-            WireAction::Delete { kind, mesh, path, node_id, from_incarnation } => Self::Delete { kind, mesh, path, node_id, from_incarnation },
+            WireAction::DeleteConnections { r#type, mesh, path, node_id, from_incarnation } => Self::DeleteConnections { r#type, mesh, path, node_id, from_incarnation },
+            WireAction::Stop { r#type, mesh, path, node_id, from_incarnation } => Self::Stop { r#type, mesh, path, node_id, from_incarnation },
+            WireAction::Start { r#type, mesh, path, node_id, from_incarnation } => Self::Start { r#type, mesh, path, node_id, from_incarnation },
+            WireAction::Recover { r#type, mesh, path, node_id, from_incarnation } => Self::Recover { r#type, mesh, path, node_id, from_incarnation, backbone: false },
+            WireAction::RecoverFromBackbone { r#type, mesh, path, node_id, from_incarnation } => Self::Recover { r#type, mesh, path, node_id, from_incarnation, backbone: true },
+            WireAction::Delete { r#type, mesh, path, node_id, from_incarnation } => Self::Delete { r#type, mesh, path, node_id, from_incarnation },
             WireAction::Steps { steps, pinned, rename_intents } => Self::Steps { steps, pinned, rename_intents },
-            WireAction::Terminate { kind, mesh, path, node_id, from_incarnation } => Self::Terminate { kind, mesh, path, node_id, from_incarnation },
+            WireAction::Terminate { r#type, mesh, path, node_id, from_incarnation } => Self::Terminate { r#type, mesh, path, node_id, from_incarnation },
         })
     }
 }
@@ -305,7 +301,7 @@ impl From<&NodeSpec> for WireSpec {
             StoragePersistence::Ephemeral => WireStorage::Ephemeral,
             StoragePersistence::Persistent { disposition } => WireStorage::Persistent { disposition },
         };
-        Self { mesh: m.mesh.clone(), kind: m.kind, storage }
+        Self { mesh: m.mesh.clone(), r#type: m.r#type.clone(), storage }
     }
 }
 impl WireSpec {
@@ -317,7 +313,7 @@ impl WireSpec {
             WireStorage::Ephemeral => StoragePersistence::Ephemeral,
             WireStorage::Persistent { disposition } => StoragePersistence::Persistent { disposition },
         };
-        NodeSpec { path, mesh: self.mesh, kind: self.kind, storage_persistence, executable: None, tags: Default::default(), config: Default::default() }
+        NodeSpec { path, mesh: self.mesh, r#type: self.r#type.clone(), storage_persistence, executable: None, tags: Default::default(), config: Default::default() }
     }
 }
 impl From<&MeshTopology> for WireMesh {
@@ -870,11 +866,11 @@ mod tests {
     }
 
     fn roster_birth(name: PathName) -> Value {
-        json!({ "mesh": "mesh1", "kind": rdm_core::NodeKind::NodeAdmin, "node": name, "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string() })
+        json!({ "mesh": "mesh1", "kind": "node-admin", "node": name, "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string() })
     }
 
     fn terminal() -> Value {
-        json!({ "node": PathName::new("mesh1.rpc", "1").unwrap(), "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string(), "runtime": runtime_identity(), "exit_code": 0 })
+        json!({ "node": PathName::new("mesh1.node", "1").unwrap(), "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string(), "runtime": runtime_identity(), "exit_code": 0 })
     }
 
     #[test]
@@ -896,7 +892,7 @@ mod tests {
     /// target field is refused by name, never dropped before durable commit.
     #[test]
     fn a_property_target_output_with_an_unknown_field_is_refused_by_name() {
-        let pin = crate::build::PinnedBirth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let pin = crate::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.properties.update"), "PinPropertyTarget", serde_json::to_value(&pin).unwrap(), "");
     }
 
@@ -931,13 +927,13 @@ mod tests {
 
     #[test]
     fn a_lifecycle_op_output_with_an_unknown_field_is_refused_by_name() {
-        let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+        let op = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(),
             build_id: "b1".into(),
             attempt: 3,
-            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
+            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
             node_id: crate::model::NodeId::mint(),
             incarnation: crate::model::IncarnationId::mint(),
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             event_at_rafka_ms: 4_242,
             traceparent: None,
             tracestate: None,
@@ -980,7 +976,7 @@ mod tests {
     }
 
     fn exit_manifest() -> Value {
-        json!({ "mesh_id": "meshd0000001", "roster": [roster_birth(PathName::new("mesh1.admin", "1").unwrap())], "final_primary": roster_birth(PathName::new("mesh1.admin", "1").unwrap()), "final_runtime": runtime_identity(), "receipts": [terminal()] })
+        json!({ "mesh_id": "meshd0000001", "roster": [roster_birth(PathName::new("mesh1.node-admin", "1").unwrap())], "final_primary": roster_birth(PathName::new("mesh1.node-admin", "1").unwrap()), "final_runtime": runtime_identity(), "receipts": [terminal()] })
     }
 
     #[test]
@@ -994,7 +990,7 @@ mod tests {
 
     #[test]
     fn a_roster_amended_output_with_an_unknown_field_is_refused_by_name() {
-        let valid = json!({ "predecessor": roster_birth(PathName::new("mesh1.admin", "1").unwrap()), "final_primary": roster_birth(PathName::new("mesh1.admin", "2").unwrap()), "final_runtime": runtime_identity() });
+        let valid = json!({ "predecessor": roster_birth(PathName::new("mesh1.node-admin", "1").unwrap()), "final_primary": roster_birth(PathName::new("mesh1.node-admin", "2").unwrap()), "final_runtime": runtime_identity() });
         unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("mesh.delete"), crate::mesh_delete::STEP_ROSTER_AMENDED, valid.clone(), "");
         unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("mesh.delete"), crate::mesh_delete::STEP_ROSTER_AMENDED, valid, "/final_runtime");
     }

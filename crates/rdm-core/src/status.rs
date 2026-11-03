@@ -991,31 +991,28 @@ pub fn name_refusal(name: &str) -> Option<String> {
     grammar_refusal("name", name)
 }
 
-/// The default `node_type` when `node.create` omits it or passes an empty string.
-pub const DEFAULT_NODE_TYPE: &str = "node";
-
-/// Normalize a `node_type` supplied at `node.create`: an empty string becomes [`DEFAULT_NODE_TYPE`].
-/// Whitespace is not trimmed, so `" "` stays `" "` and [`node_type_refusal`] refuses it by name.
-pub fn normalize_node_type(node_type: &str) -> String {
-    if node_type.is_empty() {
-        DEFAULT_NODE_TYPE.to_string()
+/// Normalize a `type` supplied at `node.create`: an empty string becomes `node` ([`crate::meta::NODE`]).
+/// Whitespace is not trimmed, so `" "` stays `" "` and [`type_refusal`] refuses it by name.
+pub fn normalize_type(r#type: &str) -> String {
+    if r#type.is_empty() {
+        crate::meta::NODE.to_string()
     } else {
-        node_type.to_string()
+        r#type.to_string()
     }
 }
 
-/// Why `node_type` is not a valid node type, by name (`node_type`), or `None` when it is within
-/// the shared identifier grammar (`1..=64` of `a-z 0-9 - _ . ~`, no leading `.`, whitespace refused).
-pub fn node_type_refusal(node_type: &str) -> Option<String> {
-    grammar_refusal("node_type", node_type)
+/// Why `type` is not a valid node type, by name (`type`), or `None` when it is within the shared
+/// identifier grammar (`1..=64` of `a-z 0-9 - _ . ~`, no leading `.`, whitespace refused).
+pub fn type_refusal(r#type: &str) -> Option<String> {
+    grammar_refusal("type", r#type)
 }
 
-/// Why `node.update` of `node_type` is refused, by name (`node_type` is immutable after `node.create`).
-pub fn node_type_update_refusal(held_node_type: &str, requested_node_type: &str) -> String {
-    if let Some(reason) = node_type_refusal(requested_node_type) {
-        return format!("node_type is immutable (set at node.create, held {held_node_type:?}); node.update cannot change node_type ({reason})");
+/// Why `node.update` of `type` is refused, by name (`type` is immutable after `node.create`).
+pub fn type_update_refusal(held: &str, requested: &str) -> String {
+    if let Some(reason) = type_refusal(requested) {
+        return format!("type is immutable (set at node.create, held {held:?}); node.update cannot change type ({reason})");
     }
-    format!("node_type is immutable (set at node.create, held {held_node_type:?}); node.update cannot change node_type to {requested_node_type:?}")
+    format!("type is immutable (set at node.create, held {held:?}); node.update cannot change type to {requested:?}")
 }
 
 /// Why `value`, a `noun` (a tag label, a node name), is outside the one grammar both take, by name, or
@@ -1723,9 +1720,9 @@ pub enum StatusReply {
     ///
     /// Position 42 on the wire.
     RejectedSourceFailed {
-        /// What failed, named with its owner and row: `fabric.storage of mesh2.admin.1, handover row
-        /// <operation>`, `the view of mesh2.admin.1`, `the Build storage, read by mesh1.admin.1
-        /// for the final primary mesh2.admin.1's receipts`. Within [`MAX_SOURCE_FAILED_SOURCE_BYTES`].
+        /// What failed, named with its owner and row: `fabric.storage of mesh2.node-admin.1, handover row
+        /// <operation>`, `the view of mesh2.node-admin.1`, `the Build storage, read by mesh1.node-admin.1
+        /// for the final primary mesh2.node-admin.1's receipts`. Within [`MAX_SOURCE_FAILED_SOURCE_BYTES`].
         source: String,
         /// The operation on it that failed (`put`, `read`, `read-committed`, `adopt`, `resolve`),
         /// with its subject. Within [`MAX_SOURCE_FAILED_OP_BYTES`].
@@ -2501,25 +2498,25 @@ mod tests {
             (StatusReply::CurrentStopped { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::ConfigUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() }, ReplyKind::Success),
             (StatusReply::Reserved22 { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::ConfigRowRefused { node: "mesh1.node.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::ConfigNotApplied { node: "mesh1.node.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::Blocked { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } }, ReplyKind::Success),
             (StatusReply::NameUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::RejectedAdmittingConnections { status: crate::views::NodeStatus::ConnectionsDeleting, held_connections: vec![ConnectionId::mint()] }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::NameHeld { path: "mesh1.rpc".into(), name: "1".into(), by: NodeId::mint() }, ReplyKind::new(crate::outcome::Code::AlreadyExists)),
-            (StatusReply::NodeRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::NameHeld { path: "mesh1.node".into(), name: "1".into(), by: NodeId::mint() }, ReplyKind::new(crate::outcome::Code::AlreadyExists)),
+            (StatusReply::NodeRowRefused { node: "mesh1.node.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::NameNotApplied { node: "100000000001".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::ConnectionsDeleted { closed: vec![ConnectionId::mint()], not_open: vec![ConnectionId::mint()], held: vec![], receipt: None }, ReplyKind::Success),
             (StatusReply::RejectedConnectionScope { reason: "empty".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::Nodes { nodes: vec![node_view()] }, ReplyKind::Success),
             (StatusReply::Meshes { meshes: vec![mesh_view()] }, ReplyKind::Success),
             (StatusReply::Fabric { fabric: crate::views::FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::Pending, provider: crate::views::ProviderKind::Process, fabric_primary: Some(NodeId::mint()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()) } }, ReplyKind::Success),
-            (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.rpc.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
+            (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.node.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
             (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::new(crate::outcome::Code::NotFound)),
             (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::new(crate::outcome::Code::ResourceExhausted)),
             (StatusReply::RejectedStaleWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: crate::OperationId::unscoped("mesh.delete:m") }, offered: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") } }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (StatusReply::RejectedConflictingWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") }, offered: MeshDeleteIdentity { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") } }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::incomplete_manifest(&["mesh2.node.1 i1".into()], "no exit manifest"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::source_failed("the Build storage", "read-committed 66h8qrqvaajk", "builds.jsonl: interrupted"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::Reserved44 { workflow: String::new(), status: String::new() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
@@ -2558,10 +2555,10 @@ mod tests {
             StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 },
             StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 },
             StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::Ready },
-            StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-6:mesh1.rpc.1") },
-            StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-7:mesh1.rpc.1") },
-            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.rpc", "1").unwrap()) },
-            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.rpc", "1").unwrap()) },
+            StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-6:mesh1.node.1") },
+            StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-7:mesh1.node.1") },
+            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.node", "1").unwrap()) },
+            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.node", "1").unwrap()) },
             StatusRequest::DeleteMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") },
             StatusRequest::MeshDeleted {
                 mesh_id: MeshId::mint(),
@@ -2577,12 +2574,12 @@ mod tests {
             StatusRequest::Reserved13 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("commit-state:fabric1") },
             StatusRequest::Reserved14 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("open-traffic:fabric1") },
             StatusRequest::Reserved15 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("open-traffic:fabric1") },
-            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.start", &crate::PathName::new("mesh1.rpc", "1").unwrap()) },
+            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.start", &crate::PathName::new("mesh1.node", "1").unwrap()) },
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
             StatusRequest::Reserved34 { node_id: NodeId::mint(), config: Default::default(), revision: 1 },
-            StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc", "1").unwrap() },
-            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc.old", "1").unwrap() },
+            StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node", "1").unwrap() },
+            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node.old", "1").unwrap() },
             StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(vec![ConnectionId::mint()]) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::All(["rabbit".to_string(), "red".to_string()].into())) },
             StatusRequest::GetMeshes { mesh: None },
@@ -2591,8 +2588,8 @@ mod tests {
             StatusRequest::GetConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: ["rabbit".to_string()].into() },
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(["rabbit".to_string()].into()) },
-            StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("join-mesh:mesh1.rpc.1") },
-            StatusRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("leave-mesh:mesh1.rpc.1") },
+            StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("join-mesh:mesh1.node.1") },
+            StatusRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("leave-mesh:mesh1.node.1") },
             StatusRequest::RenewCert { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), cert: vec![1, 2, 3] },
             StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into(), ca_key: CaKeyHex("ef".into()) },
             StatusRequest::Get { entity: crate::filter::Entity::Nodes, node: None, filter: crate::filter::Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold", "silver"]) },
@@ -2602,8 +2599,8 @@ mod tests {
                 config: Default::default(), tags: Default::default(),
             } },
             StatusRequest::report_call_failed(
-                ReportedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc", "1").unwrap() },
-                ReportedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc", "2").unwrap() },
+                ReportedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node", "1").unwrap() },
+                ReportedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node", "2").unwrap() },
                 "not-sent: Connection(\"connect refused\")",
             ),
             StatusRequest::UpdateStorage { topology_storage_provider: "test-target".into() },
@@ -2613,7 +2610,7 @@ mod tests {
             assert_eq!(Status::decode_request(&Status::encode_request(&q).unwrap()).unwrap(), q);
         }
         // A declaration naming the operation that produced its state (i146 Q36).
-        let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: Some(DeclaredOperation { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.rpc", "1").unwrap()) }) };
+        let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: Some(DeclaredOperation { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.node", "1").unwrap()) }) };
         assert_eq!(Status::decode_request(&Status::encode_request(&named).unwrap()).unwrap(), named);
     }
 
@@ -2630,7 +2627,7 @@ mod tests {
         let longest_name = "n".repeat(MAX_TAG_BYTES);
         assert_eq!(name_refusal(&longest_name), None);
         for q in [
-            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc", longest_name.clone()).unwrap() },
+            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node", longest_name.clone()).unwrap() },
             StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: at_cap.clone() },
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(at_cap.clone()) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::Any(at_cap.clone())) },
@@ -2675,8 +2672,8 @@ mod tests {
             let len = Status::encode_reply(&r).unwrap().len();
             assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "{} encodes to {len}, over {}", r.name(), Status::MAX_REPLY_FRAME_BYTES);
         }
-        let short = StatusReply::config_not_applied("mesh1.rpc.1", "busy", "at its admission bound");
-        assert_eq!(short, StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "at its admission bound".into() }, "a detail within its budget is kept whole");
+        let short = StatusReply::config_not_applied("mesh1.node.1", "busy", "at its admission bound");
+        assert_eq!(short, StatusReply::ConfigNotApplied { node: "mesh1.node.1".into(), answered: "busy".into(), reason: "at its admission bound".into() }, "a detail within its budget is kept whole");
     }
 
     /// CONTRACT (an error carries every detail it can, and still reaches the caller): a
@@ -2691,8 +2688,8 @@ mod tests {
         assert!(len <= 1024, "{} encodes to {len}, over 1024", r.name());
         let StatusReply::RejectedSourceFailed { source, op, cause } = &r else { unreachable!() };
         assert!(source.ends_with('…') && op.ends_with('…') && cause.ends_with('…'), "a cut field says it was cut");
-        let short = StatusReply::source_failed("fabric.storage of mesh1.admin.1", "put", "disk full");
-        assert_eq!(short, StatusReply::RejectedSourceFailed { source: "fabric.storage of mesh1.admin.1".into(), op: "put".into(), cause: "disk full".into() }, "fields within their budgets are kept whole");
+        let short = StatusReply::source_failed("fabric.storage of mesh1.node-admin.1", "put", "disk full");
+        assert_eq!(short, StatusReply::RejectedSourceFailed { source: "fabric.storage of mesh1.node-admin.1".into(), op: "put".into(), cause: "disk full".into() }, "fields within their budgets are kept whole");
     }
 
     /// CONTRACT (a hook's blocker reaches its executor whole or cut, never as a reset): a `Blocked`
@@ -2736,15 +2733,15 @@ mod tests {
 
     fn node_view() -> crate::views::NodeView {
         crate::views::NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
-            name: crate::PathName::new("mesh1.rpc", "12").unwrap(),
-            kind: crate::NodeKind::RpcNode,
+            name: crate::PathName::new("mesh1.node", "12").unwrap(),
+            r#type: "node".into(),
             mesh: "mesh1".into(),
             node_id: NodeId::mint(),
             endpoint_id: Some("e".repeat(64)),
             incarnation_id: Some(IncarnationId::mint()),
             deployment_id: Some("d".repeat(32)),
             provider: Some(crate::views::ProviderKind::Process),
-            data_dir: Some("/var/lib/rdm/fabric1/mesh1.rpc.12".into()),
+            data_dir: Some("/var/lib/rdm/fabric1/mesh1.node.12".into()),
             status: crate::views::NodeStatus::Ready,
             is_primary: false,
             is_fabric_primary: false,
@@ -2768,7 +2765,7 @@ mod tests {
     }
 
     fn connection_view() -> crate::views::ConnectionView {
-        crate::views::ConnectionView { id: ConnectionId::mint().to_string(), source: "mesh1.rpc.1".into(), destination: "mesh1.admin.1".into(), kind: "direct".into(), state: "connected".into(), carrier: None, reason: Some("dialled".into()), logged_at_ms: 1_791_332_804_963 }
+        crate::views::ConnectionView { id: ConnectionId::mint().to_string(), source: "mesh1.node.1".into(), destination: "mesh1.node-admin.1".into(), kind: "direct".into(), state: "connected".into(), carrier: None, reason: Some("dialled".into()), logged_at_ms: 1_791_332_804_963 }
     }
 
     /// CONTRACT (a read past the reply bound is a named refusal, never a reset): an answer within
@@ -2799,8 +2796,8 @@ mod tests {
         assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "rejected-incomplete-manifest encodes to {len}, over {}", Status::MAX_REPLY_FRAME_BYTES);
         let StatusReply::RejectedIncompleteManifest { missing, without_exit, .. } = r else { unreachable!() };
         assert_eq!((missing as usize, without_exit.len()), (births.len(), MAX_WITHOUT_EXIT_BIRTHS), "the count stays whole when the list is cut");
-        let short = StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into(), "mesh2.admin.2 i2".into()], "no exit manifest");
-        assert_eq!(short, StatusReply::RejectedIncompleteManifest { missing: 2, without_exit: vec!["mesh2.rpc.1 i1".into(), "mesh2.admin.2 i2".into()], reason: "no exit manifest".into() }, "a list and reason within budget are kept whole");
+        let short = StatusReply::incomplete_manifest(&["mesh2.node.1 i1".into(), "mesh2.node-admin.2 i2".into()], "no exit manifest");
+        assert_eq!(short, StatusReply::RejectedIncompleteManifest { missing: 2, without_exit: vec!["mesh2.node.1 i1".into(), "mesh2.node-admin.2 i2".into()], reason: "no exit manifest".into() }, "a list and reason within budget are kept whole");
     }
 
     #[test]

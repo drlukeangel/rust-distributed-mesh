@@ -17,10 +17,10 @@ fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
 }
 
-fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &NodeId, incarnation: &IncarnationId, status: MemberStatus, seq: u64, port: u16) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, node_id: &NodeId, incarnation: &IncarnationId, status: MemberStatus, seq: u64, port: u16) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+        node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
             name,
             endpoint_id: EndpointId(format!("key-{node_id}")),
@@ -109,19 +109,19 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let (p_node, r_node) = (node().await, node().await);
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
-        let reader = TopologyView::join(&r_node.gossip, &r_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.3", clock(), vec![], &[]).await.unwrap();
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node-admin.1", clock(), vec![], &[]).await.unwrap();
+        let reader = TopologyView::join(&r_node.gossip, &r_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node.3", clock(), vec![], &[]).await.unwrap();
         let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());
         let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         let publisher = PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication") };
 
-        let p_digest = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_101);
+        let p_digest = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_101);
         p.publish(&p_digest).await.unwrap();
         let (one, one_birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(p.digest_view.record(digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &one, &one_birth, MemberStatus::Ready, 1, 41_111)));
-        assert!(p.digest_view.started(&one, &one_birth, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"));
+        assert!(p.digest_view.record(digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &one, &one_birth, MemberStatus::Ready, 1, 41_111)));
+        assert!(p.digest_view.started(&one, &one_birth, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"));
         let own = || p.digest_view.get(p_node_id.as_str()).expect("the primary holds itself").0;
 
         // Version N: the publication puts the projection into the mesh; a joiner reads it and installs it.
@@ -134,7 +134,7 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
 
         // A birth joins the view: a material change no publication has published yet.
         let (two, two_birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(p.digest_view.record(digest(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &two, &two_birth, MemberStatus::Pending, 1, 41_112)));
+        assert!(p.digest_view.record(digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &two, &two_birth, MemberStatus::Pending, 1, 41_112)));
         assert!(p.digest_view.get(two.as_str()).is_some(), "the primary's view holds the new birth");
 
         let served = of(p.held_topology(&own()), "mesh1");
@@ -173,13 +173,13 @@ fn a_read_of_one_mesh_serves_that_mesh_as_the_whole_read_does() {
     capture.run(4, async {
         let p_node = node().await;
         let mesh_id = MeshId::mint();
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());
         let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
-        p.publish(&digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_201)).await.unwrap();
+        p.publish(&digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_201)).await.unwrap();
         let (one, one_birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(p.digest_view.record(digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &one, &one_birth, MemberStatus::Ready, 1, 41_211)));
+        assert!(p.digest_view.record(digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &one, &one_birth, MemberStatus::Ready, 1, 41_211)));
         let own = || p.digest_view.get(p_node_id.as_str()).expect("the primary holds itself").0;
         let same = |when: &str| {
             let whole = of(p.held_topology(&own()), "mesh1");

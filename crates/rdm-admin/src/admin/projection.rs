@@ -83,13 +83,13 @@ pub(crate) fn role_announcements(t: &Topology, mesh: &str, me: (&NodeId, &Incarn
     // The mesh-primary is its mesh's one row writer and sole author of member status (R-MT1 Q3): it
     // says each other node type's role the election filled with a birth the record does not name.
     if mesh_primary {
-        for kind in NodeKind::ALL.into_iter().filter(|k| *k != NodeKind::NodeAdmin) {
-            let Some((node_id, incarnation)) = t.node_type_primary(mesh, kind).and_then(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))) else { continue };
-            let held = decided.node_type_primaries.get(&(mesh.to_string(), kind));
+        for r#type in t.types_in(mesh).into_iter().filter(|t| !rdm_core::is_node_admin(t)) {
+            let Some((node_id, incarnation)) = t.node_type_primary(mesh, &r#type).and_then(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))) else { continue };
+            let held = decided.node_type_primaries.get(&(mesh.to_string(), r#type.clone()));
             if held.is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
                 continue;
             }
-            said.push((rdm_core::PrimaryRole::NodeTypePrimary(kind), rdm_core::Primary { mesh: mesh.to_string(), node_id, incarnation, revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
+            said.push((rdm_core::PrimaryRole::NodePrimary(r#type.clone()), rdm_core::Primary { mesh: mesh.to_string(), node_id, incarnation, revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
         }
     }
     said
@@ -412,7 +412,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if let Some(id) = d.mesh_id.clone() {
             mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
-        let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), d.node.kind);
+        let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), &d.node.r#type);
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -469,7 +469,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if let Some(id) = d.mesh_id.clone() {
             mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
-        let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), d.node.kind);
+        let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), &d.node.r#type);
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -500,7 +500,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if removed.contains(&(name.clone(), Some(op.incarnation.clone()))) {
             continue;
         }
-        let mut n = Node::allocated(name.clone(), op.mesh.clone(), op.kind);
+        let mut n = Node::allocated(name.clone(), op.mesh.clone(), &op.r#type);
         n.mesh = op.mesh.clone();
         n.node_id = op.node_id.clone();
         n.incarnation_id = Some(op.incarnation.clone());
@@ -534,7 +534,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if let Some(id) = d.mesh_id.clone() {
             mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
-        let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), d.node.kind);
+        let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), &d.node.r#type);
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -605,7 +605,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // A mesh becomes ready when every node of the mesh that is not stopped is (states.md:16, Q240); once heard
         // ready it stays ready while it has a primary, because a lost node is node recovery's and a
         // checklist for the primary that takes over, never a mesh gone back to pending.
-        let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.node_type_primary(&m, NodeKind::NodeAdmin).is_some());
+        let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.node_type_primary(&m, "node-admin").is_some());
         let id = mesh_ids.get(&m).cloned();
         // A mesh past ready is the state its row holds (states.md: pending ->
         // ready -> leaving -> dead): the leaving mesh's primary commits Leaving at
@@ -614,7 +614,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // primary, publishes MeshStatus Dead (R-NS1 item 1); an admin that does not author the
         // mesh's status also states the Dead it heard, bound to this mesh id (never to a name).
         let row = id.as_ref().and_then(|id| declared_meshes.get(id).copied());
-        let authored_here = records.me.get().is_some_and(|me| topology.node_type_primary(&m, NodeKind::NodeAdmin).is_some_and(|p| &p.node_id == me));
+        let authored_here = records.me.get().is_some_and(|me| topology.node_type_primary(&m, "node-admin").is_some_and(|p| &p.node_id == me));
         let status = match row {
             Some(rdm_core::status::MeshState::Deleted) => ScopeStatus::Dead,
             _ if id.as_ref().is_some_and(|id| records.mesh_deleted(id)) => ScopeStatus::Dead,
@@ -691,19 +691,19 @@ mod tests {
     fn digest_projection_preserves_explicit_ownership_and_primary_selection() {
         let view = DigestView::default();
         let records = Records::default();
-        let mut admin = super::super::tests::digest(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, MemberStatus::Ready);
+        let mut admin = super::super::tests::digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
         let fabric = admin.fabric_id.clone();
         let mesh_id = MeshId::mint();
-        admin.node.name = rdm_core::PathName::new("elsewhere.rpc", "administrator").unwrap();
+        admin.node.name = rdm_core::PathName::new("elsewhere.node", "administrator").unwrap();
         admin.node.mesh = "mesh2".into();
-        admin.node.kind = NodeKind::NodeAdmin;
+        admin.node.r#type = "node-admin".to_string();
         admin.mesh_id = Some(mesh_id.clone());
         admin.is_primary = Some(7);
         admin.is_fabric_primary = Some(7);
-        let mut member = super::super::tests::digest(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, MemberStatus::Ready);
+        let mut member = super::super::tests::digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
         member.node.name = rdm_core::PathName::new("elsewhere.gateway", "north").unwrap();
         member.node.mesh = "mesh2".into();
-        member.node.kind = NodeKind::Compute;
+        member.node.r#type = "compute".to_string();
         member.mesh_id = Some(mesh_id.clone());
         member.is_primary = Some(7);
         let now = std::time::Instant::now();
@@ -713,20 +713,20 @@ mod tests {
             assert!(view.record_at(rdm_core::MeshDigest::from(decoded), now));
         }
         for digest in [&admin, &member] {
-            let primary = view.primaries.node_type_primary("mesh2", digest.node.kind).expect("the declared primary record is installed");
+            let primary = view.primaries.node_type_primary("mesh2", &digest.node.r#type).expect("the declared primary record is installed");
             assert!(primary.is_birth(&digest.node.node_id, &digest.node.incarnation));
             assert_eq!(primary.revision, 7);
         }
-        assert!(view.primaries.node_type_primary("elsewhere", NodeKind::Gateway).is_none());
+        assert!(view.primaries.node_type_primary("elsewhere", "gateway").is_none());
         member.is_primary = None;
         view.recorded_primaries(&mut member);
         assert_eq!(member.is_primary, Some(7));
         let topology = project_at("fabric1", &fabric, ProviderKind::Process, &view, &records, now);
         let found = topology.node(&member.node.name).expect("the member is projected");
-        assert_eq!((&found.mesh, found.kind, found.node_type()), (&"mesh2".to_string(), NodeKind::Compute, "compute"));
-        assert_eq!(topology.node_type_primary("mesh2", NodeKind::Compute).map(|n| &n.node_id), Some(&member.node.node_id));
-        assert_eq!(topology.node_type_primary("mesh2", NodeKind::NodeAdmin).map(|n| &n.node_id), Some(&admin.node.node_id));
-        assert!(topology.node_type_primary("elsewhere", NodeKind::Gateway).is_none());
+        assert_eq!((&found.mesh, found.r#type.as_str()), (&"mesh2".to_string(), "compute"));
+        assert_eq!(topology.node_type_primary("mesh2", "compute").map(|n| &n.node_id), Some(&member.node.node_id));
+        assert_eq!(topology.node_type_primary("mesh2", "node-admin").map(|n| &n.node_id), Some(&admin.node.node_id));
+        assert!(topology.node_type_primary("elsewhere", "gateway").is_none());
         assert_eq!(topology.meshes.iter().find(|m| m.name == "mesh2").and_then(|m| m.id.as_ref()), Some(&mesh_id));
         assert!(topology.violations().is_empty(), "{:?}", topology.violations());
     }
@@ -742,7 +742,7 @@ mod tests {
         let records = Arc::new(Records::default());
         let me_id = NodeId::mint();
         let me_inc = IncarnationId::mint();
-        let me_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let me_name: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let view = Arc::new(std::sync::OnceLock::new());
 
         // 1. `fabric_primary_source` and `build_records_reader`:
@@ -788,7 +788,7 @@ mod tests {
         //    `row_name` reads a birth's row from `NodesStorage` and indicates whether the row released its name (`Deleted` / `Withdrawn`).
         //    `takes_path` lets a candidate whose row has not released its name take the path from a listed birth whose row released its name.
         let store = MemoryNodesStorage::default();
-        let rpc_path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let rpc_path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let old_id = NodeId::mint();
         let old_inc = IncarnationId::mint();
         let new_id = NodeId::mint();
@@ -798,7 +798,7 @@ mod tests {
         assert!(matches!(r_none, RowName::At(ref p, _) if p == &rpc_path));
         assert!(!rel_none);
 
-        store.put_node(&NodeRow::new(rpc_path.clone(), "mesh1", rdm_core::NodeKind::RpcNode, old_id.clone(), NodeStatus::Deleted)).await.unwrap();
+        store.put_node(&NodeRow::new(rpc_path.clone(), "mesh1", "node", old_id.clone(), NodeStatus::Deleted)).await.unwrap();
         let (r_del, rel_del) = row_name(&me_name, &store, &old_id, &old_inc, &rpc_path).await;
         assert!(matches!(r_del, RowName::At(ref p, _) if p == &rpc_path));
         assert!(rel_del);
@@ -806,11 +806,11 @@ mod tests {
         let mut row_names = RowNames::default();
         row_names.released.insert((old_id.clone(), old_inc.clone()));
 
-        let mut old_node = Node::allocated(rpc_path.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut old_node = Node::allocated(rpc_path.clone(), "mesh1", "node");
         old_node.node_id = old_id;
         old_node.incarnation_id = Some(old_inc);
 
-        let mut new_node = Node::allocated(rpc_path.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut new_node = Node::allocated(rpc_path.clone(), "mesh1", "node");
         new_node.node_id = new_id;
         new_node.incarnation_id = Some(new_inc);
 

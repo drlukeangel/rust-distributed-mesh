@@ -15,8 +15,8 @@ use rdm_core::status::StatusReply;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Node {
-    let mut n = Node::allocated(name, mesh, kind);
+fn node(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Node {
+    let mut n = Node::allocated(name, mesh, r#type);
     n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n
@@ -78,7 +78,7 @@ async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin
         }
     }
     let current = rdm_admin::current_record::CurrentRecords { nodes: status };
-    rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin", "1"), view, &loads, &atlas, planned, filter, &|_| {}, Some(current)).await
+    rdm_admin::views::nodes_answer_with_status(&path("mesh1.node-admin", "1"), view, &loads, &atlas, planned, filter, &|_| {}, Some(current)).await
 }
 
 /// CONTRACT (`docs/architecture/lifecycles/node-recovery.md:152` — "It writes the birth's durable
@@ -103,10 +103,10 @@ async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin
 // @feature: data-dir-lost-recovery
 #[tokio::test]
 async fn node_get_answers_data_dir_facts_from_the_records_at_their_path_name() {
-    let mut admin = node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let mut admin = node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
     admin.is_primary = true;
     admin.is_fabric_primary = true;
-    let (plain, recovered) = (node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let (plain, recovered) = (node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"));
     let view = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
@@ -120,21 +120,21 @@ async fn node_get_answers_data_dir_facts_from_the_records_at_their_path_name() {
         Arc::new(tokio::sync::RwLock::new(view.clone())),
         storage.clone(),
     );
-    // mesh1.rpc.2's predecessor lost its data dir, was deleted by recovery, and recovery's claim over
-    // the exited birth its provenance names links predecessor and inherits config and tags; mesh1.rpc.3 was deleted by its
+    // mesh1.node.2's predecessor lost its data dir, was deleted by recovery, and recovery's claim over
+    // the exited birth its provenance names links predecessor and inherits config and tags; mesh1.node.3 was deleted by its
     // recovery and is held with its data dir unreadable.
-    let lost = DataDirLost { path: "/data/mesh1.rpc.2".into(), since: 1_700 };
+    let lost = DataDirLost { path: "/data/mesh1.node.2".into(), since: 1_700 };
     let (exited_id, exited_birth) = (NodeId::mint(), IncarnationId::mint());
-    let mut exited_node = Node::allocated(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode);
+    let mut exited_node = Node::allocated(path("mesh1.node", "2"), "mesh1", "node");
     exited_node.node_id = exited_id.clone();
     exited_node.incarnation_id = Some(exited_birth.clone());
-    let mut exited = NodeRow::new(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, exited_id.clone(), NodeStatus::Ready);
-    exited.birth_mut(&exited_birth, &path("mesh1.rpc", "2")).data_dir_lost = Some(lost.clone());
+    let mut exited = NodeRow::new(path("mesh1.node", "2"), "mesh1", "node", exited_id.clone(), NodeStatus::Ready);
+    exited.birth_mut(&exited_birth, &path("mesh1.node", "2")).data_dir_lost = Some(lost.clone());
     status.write_record(&exited).await.unwrap();
     rows.deleted_unreached(&exited_node, &rdm_core::OperationId::node("node.delete", &exited_id)).await.unwrap();
     // The recovery names the exited birth by its admitted provenance, never by the location.
     let recovery = rdm_admin::storage::Allocation { predecessor: Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }), build_id: rdm_core::BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &recovered.name), incarnation: recovered.incarnation_id.clone().unwrap(), deployment_id: rdm_admin::model::DeploymentId::mint() };
-    let claimed = rows.create_row(&path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, &recovered.node_id, &recovery.operation, Some(&recovery), None, rdm_admin::node_rows::RowFor::Recovery).await.unwrap();
+    let claimed = rows.create_row(&path("mesh1.node", "2"), "mesh1", "node", &recovered.node_id, &recovery.operation, Some(&recovery), None, rdm_admin::node_rows::RowFor::Recovery).await.unwrap();
     match claimed {
         rdm_admin::node_rows::RowCreated::Written { row, seeded_from } => {
             assert_eq!(seeded_from, Some(exited_id.clone()));
@@ -142,12 +142,12 @@ async fn node_get_answers_data_dir_facts_from_the_records_at_their_path_name() {
         }
         other => panic!("expected Written claim for recovery, got {other:?}"),
     }
-    let held = DataDirUnreadable { path: "/data/mesh1.rpc.3".into(), cause: "node-key: not hex".into() };
+    let held = DataDirUnreadable { path: "/data/mesh1.node.3".into(), cause: "node-key: not hex".into() };
     let (held_id, held_birth) = (NodeId::mint(), IncarnationId::mint());
-    let mut unreadable = NodeRow::new(path("mesh1.rpc", "3"), "mesh1", rdm_core::NodeKind::RpcNode, held_id.clone(), NodeStatus::Deleted);
-    unreadable.birth_mut(&held_birth, &path("mesh1.rpc", "3")).data_dir_unreadable = Some(held.clone());
+    let mut unreadable = NodeRow::new(path("mesh1.node", "3"), "mesh1", "node", held_id.clone(), NodeStatus::Deleted);
+    unreadable.birth_mut(&held_birth, &path("mesh1.node", "3")).data_dir_unreadable = Some(held.clone());
     status.write_record(&unreadable).await.unwrap();
-    let planned: rdm_admin::views::Planned = Ok(BTreeMap::from([("mesh1".to_string(), [path("mesh1.admin", "1"), path("mesh1.rpc", "1"), path("mesh1.rpc", "2"), path("mesh1.rpc", "3")].to_vec())]));
+    let planned: rdm_admin::views::Planned = Ok(BTreeMap::from([("mesh1".to_string(), [path("mesh1.node-admin", "1"), path("mesh1.node", "1"), path("mesh1.node", "2"), path("mesh1.node", "3")].to_vec())]));
     // Each birth answered wrote its own property record; the recovered one's holds what it inherited.
     for id in [&admin.node_id, &plain.node_id, &held_id] {
         own(id, BTreeMap::new(), Default::default()).await;
@@ -172,10 +172,10 @@ async fn node_get_answers_data_dir_facts_from_the_records_at_their_path_name() {
     let without = answer(&view, status, &unread, Filter::new().eq("mesh", ["mesh1"])).await;
     assert_eq!(without.len(), 3, "a Build that cannot be read names no path: the births the view holds are answered: {without:#?}");
 
-    unreadable.birth_mut(&held_birth, &path("mesh1.rpc", "3")).data_dir_unreadable = None;
+    unreadable.birth_mut(&held_birth, &path("mesh1.node", "3")).data_dir_unreadable = None;
     status.write_record(&unreadable).await.unwrap();
     let cleared = answer(&view, status, &planned, Filter::new().eq("mesh", ["mesh1"])).await;
-    assert!(cleared.iter().all(|n| n.name != path("mesh1.rpc", "3")), "a cleared unreadable fact is answered no more: {cleared:#?}");
+    assert!(cleared.iter().all(|n| n.name != path("mesh1.node", "3")), "a cleared unreadable fact is answered no more: {cleared:#?}");
 }
 
 /// CONTRACT (Q167 R-RD2, R-RD3; node-rpc-envelope.md node.get): over a fabric of two meshes holding
@@ -183,14 +183,14 @@ async fn node_get_answers_data_dir_facts_from_the_records_at_their_path_name() {
 /// the rows matching every pair, by `(path, name)`: `[config.zone: eu-1]` the two nodes whose config
 /// holds that zone, never the one whose config lacks the key; `[tags: gold] [tags: ssd]` (all of) the
 /// one carrying both; `[tags: gold, silver]` (any of) the three carrying either; `[mesh: mesh1]
-/// [kind: gateway]` mesh1's gateway alone; `[mesh: mesh9]`, a mesh the admin does not hold, the empty
+/// [type: gateway]` mesh1's gateway alone; `[mesh: mesh9]`, a mesh the admin does not hold, the empty
 /// list; no pair, every node. A pair naming a property no node row has, a value its field cannot
 /// take, or no value is `RejectedFilter` (`INVALID_ARGUMENT`) naming the pair, nothing read. What
 /// must NOT happen: all-of read as any-of, an AND read as an OR, a missing config key matching, or an
 /// unknown property answered as the empty list.
 #[tokio::test]
 async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_schema_has_not() {
-    let (admin, gw1, broker, gw2) = (node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), node(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway), node(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", rdm_core::NodeKind::Broker), node(rdm_core::PathName::new("mesh2.gateway", "1").unwrap(), "mesh2", rdm_core::NodeKind::Gateway));
+    let (admin, gw1, broker, gw2) = (node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), node(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", "gateway"), node(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker"), node(rdm_core::PathName::new("mesh2.gateway", "1").unwrap(), "mesh2", "gateway"));
     let view = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![
@@ -206,7 +206,7 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
         (&broker, &["silver"][..], &[("zone", "eu-1"), ("rack", "7")][..]),
         (&gw2, &["gold"][..], &[("rack", "7")][..]),
     ] {
-        let row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
+        let row = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
         status.write_record(&row).await.unwrap();
         own(&n.node_id, config.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), tags.iter().map(|t| t.to_string()).collect()).await;
     }
@@ -217,18 +217,18 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
         async move { names(answer(view, status, planned, f).await) }
     };
 
-    assert_eq!(get(Filter::new()).await, [path("mesh1.admin", "1"), path("mesh1.broker", "1"), path("mesh1.gateway", "1"), path("mesh2.gateway", "1")], "no pair: every node, by (path, name)");
+    assert_eq!(get(Filter::new()).await, [path("mesh1.node-admin", "1"), path("mesh1.broker", "1"), path("mesh1.gateway", "1"), path("mesh2.gateway", "1")], "no pair: every node, by (path, name)");
     assert_eq!(get(Filter::new().eq("config.zone", ["eu-1"])).await, [path("mesh1.broker", "1"), path("mesh1.gateway", "1")], "[config.zone: eu-1]");
     assert_eq!(get(Filter::new().eq("tags", ["gold"]).eq("tags", ["ssd"])).await, [path("mesh1.gateway", "1")], "[tags: gold] [tags: ssd]: all of");
     assert_eq!(get(Filter::new().eq("tags", ["gold", "silver"])).await, [path("mesh1.broker", "1"), path("mesh1.gateway", "1"), path("mesh2.gateway", "1")], "[tags: gold, silver]: any of");
-    assert_eq!(get(Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["gateway"])).await, [path("mesh1.gateway", "1")], "[mesh: mesh1] [kind: gateway]");
-    assert_eq!(get(Filter::new().eq("kind", ["gateway"]).eq("config.rack", ["7"])).await, [path("mesh2.gateway", "1")], "[kind: gateway] [config.rack: 7]");
+    assert_eq!(get(Filter::new().eq("mesh", ["mesh1"]).eq("type", ["gateway"])).await, [path("mesh1.gateway", "1")], "[mesh: mesh1] [type: gateway]");
+    assert_eq!(get(Filter::new().eq("type", ["gateway"]).eq("config.rack", ["7"])).await, [path("mesh2.gateway", "1")], "[type: gateway] [config.rack: 7]");
     assert!(get(Filter::new().eq("mesh", ["mesh9"])).await.is_empty(), "[mesh: mesh9]: a mesh the admin does not hold is the empty list");
     assert!(get(Filter::new().eq("id", [NodeId::mint().to_string()])).await.is_empty(), "[id: an id not held] is the empty list");
 
     for (filter, pair) in [
         (Filter::new().eq("mesh", ["mesh1"]).eq("zone", ["eu-1"]), "the pair (zone, [eu-1]) names no property of a node row"),
-        (Filter::new().eq("kind", ["gatway"]), "the pair (kind, [gatway])"),
+        (Filter::new().eq("status", ["redy"]), "the pair (status, [redy])"),
         (Filter::new().eq("is_primary", ["yes"]), "the pair (is_primary, [yes])"),
         (Filter::new().eq("tags", Vec::<String>::new()), "the pair (tags, []) names no value"),
     ] {
@@ -245,14 +245,14 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
 
 /// CONTRACT (lifecycles/node-replace.md:41: "The predecessor's tags remain at its own ID; resolving the
 /// current pair selects the successor, not a label index or predecessor"; query.md §1: a set field
-/// (`tags`) matches when it contains the value): the successor at `mesh1.rpc.1` and the retained
-/// predecessor at `(mesh1.rpc, 1-old)`, marked `inherited_by` the successor, both carry `rabbit`.
+/// (`tags`) matches when it contains the value): the successor at `mesh1.node.1` and the retained
+/// predecessor at `(mesh1.node, 1-old)`, marked `inherited_by` the successor, both carry `rabbit`.
 /// `node.get [tags: rabbit]` reads each node's own labels and names both; the current pair
-/// `[path: mesh1.rpc, name: 1]` selects the successor alone. Must NOT happen: a label index or the
+/// `[path: mesh1.node, name: 1]` selects the successor alone. Must NOT happen: a label index or the
 /// inherited mark hiding the predecessor's own labels, or the current pair resolving to the predecessor.
 #[tokio::test]
 async fn a_retained_predecessors_labels_stay_at_its_own_id_and_the_current_pair_selects_the_successor() {
-    let (admin, successor, predecessor) = (node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), node(rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let (admin, successor, predecessor) = (node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), node(rdm_core::PathName::new("mesh1.node", "1-old").unwrap(), "mesh1", "node"));
     let view = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
@@ -260,12 +260,12 @@ async fn a_retained_predecessors_labels_stay_at_its_own_id_and_the_current_pair_
     };
     let rabbit: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
     let status = MemoryNodesStorage::default();
-    status.write_record(&NodeRow::new(admin.name.clone(), admin.mesh.clone(), admin.kind, admin.node_id.clone(), NodeStatus::Ready)).await.unwrap();
+    status.write_record(&NodeRow::new(admin.name.clone(), admin.mesh.clone(), &admin.r#type, admin.node_id.clone(), NodeStatus::Ready)).await.unwrap();
     own(&admin.node_id, BTreeMap::new(), Default::default()).await;
-    status.write_record(&NodeRow::new(successor.name.clone(), successor.mesh.clone(), successor.kind, successor.node_id.clone(), NodeStatus::Ready)).await.unwrap();
+    status.write_record(&NodeRow::new(successor.name.clone(), successor.mesh.clone(), &successor.r#type, successor.node_id.clone(), NodeStatus::Ready)).await.unwrap();
     own(&successor.node_id, BTreeMap::new(), rabbit.clone()).await;
     own(&predecessor.node_id, BTreeMap::new(), rabbit.clone()).await;
-    let mut p = NodeRow::new(predecessor.name.clone(), predecessor.mesh.clone(), predecessor.kind, predecessor.node_id.clone(), NodeStatus::Ready);
+    let mut p = NodeRow::new(predecessor.name.clone(), predecessor.mesh.clone(), &predecessor.r#type, predecessor.node_id.clone(), NodeStatus::Ready);
     p.inherited_by = Some(successor.node_id.clone());
     status.write_record(&p).await.unwrap();
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
@@ -277,7 +277,7 @@ async fn a_retained_predecessors_labels_stay_at_its_own_id_and_the_current_pair_
     let mut both = vec![successor.node_id.clone(), predecessor.node_id.clone()];
     both.sort();
     assert_eq!(ids(answer(&view, &status, &planned, Filter::new().eq("tags", ["rabbit"])).await), both, "[tags: rabbit] reads each node's own labels: the retained predecessor's stay at its own id");
-    assert_eq!(ids(answer(&view, &status, &planned, Filter::new().eq("path", ["mesh1.rpc"]).eq("name", ["1"])).await), [successor.node_id.clone()], "the current pair selects the successor");
+    assert_eq!(ids(answer(&view, &status, &planned, Filter::new().eq("path", ["mesh1.node"]).eq("name", ["1"])).await), [successor.node_id.clone()], "the current pair selects the successor");
 }
 
 /// The fabric-primary `me`'s Status door over `view`, its atlas `atlas`, its nodes store
@@ -344,8 +344,8 @@ fn get(entity: rdm_core::filter::Entity, filter: Filter) -> rdm_core::status::Re
 /// from anywhere but the node's record.
 #[tokio::test]
 async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
-    let (mut admin, gw) = (node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), node(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway));
-    admin.kind = rdm_core::NodeKind::NodeAdmin;
+    let (mut admin, gw) = (node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), node(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", "gateway"));
+    admin.r#type = "node-admin".to_string();
     admin.is_primary = true;
     admin.is_fabric_primary = true;
     let view = Topology {
@@ -356,7 +356,7 @@ async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
     let records = Arc::new(MemoryNodesStorage::default());
     let expiries = [(&admin, 9_000_000u64), (&gw, 7_000_000u64)];
     for (n, expires_at) in expiries {
-        let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
+        let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
         row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name).cert = Some(rdm_admin::storage::CertDates { issued_at: 1_000_000, expires_at, issuer_expires_at: 20_000_000, renew_at: expires_at - 1_000 });
         records.write_record(&row).await.unwrap();
     }
@@ -375,7 +375,7 @@ async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
 
     match fp.read_rows(&get(rdm_core::filter::Entity::Nodes, Filter::new().eq("mesh", ["mesh1"]))).await {
         Ok(rdm_core::read::Rows::Nodes(nodes)) => {
-            assert_eq!(nodes.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), [path("mesh1.admin", "1"), path("mesh1.gateway", "1")], "{nodes:#?}");
+            assert_eq!(nodes.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), [path("mesh1.node-admin", "1"), path("mesh1.gateway", "1")], "{nodes:#?}");
             assert_eq!(nodes[1].cert.as_ref().map(|c| c.expires_at), Some(7_000_000), "the cert is the node's record's");
         }
         other => panic!("node.get answers from the nodes' records, not {other:?}"),
@@ -400,7 +400,7 @@ async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
 /// status, or a lifecycle effect laid over it, answered in place of the row's.
 #[tokio::test]
 async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_takes() {
-    let (mut admin, mut rpc, peer) = (node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode));
+    let (mut admin, mut rpc, peer) = (node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), node(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node"));
     // The fabric-primary, mesh1's primary too: the writer of mesh1's records and, mesh2 holding no
     // primary, the acting writer of mesh2's (query.md §1).
     admin.is_primary = true;
@@ -417,17 +417,17 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
     for n in [&admin, &rpc, &peer] {
         own(&n.node_id, BTreeMap::new(), Default::default()).await;
     }
-    let mut row = NodeRow::new(rpc.name.clone(), rpc.mesh.clone(), rpc.kind, rpc.node_id.clone(), NodeStatus::Ready);
+    let mut row = NodeRow::new(rpc.name.clone(), rpc.mesh.clone(), &rpc.r#type, rpc.node_id.clone(), NodeStatus::Ready);
     row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.name).declared.insert(rdm_core::status::NodeState::Ready);
     records.write_record(&row).await.unwrap();
     // mesh2's record as its current writer holds it.
-    let mut peer_row = NodeRow::new(peer.name.clone(), peer.mesh.clone(), peer.kind, peer.node_id.clone(), NodeStatus::Pending);
+    let mut peer_row = NodeRow::new(peer.name.clone(), peer.mesh.clone(), &peer.r#type, peer.node_id.clone(), NodeStatus::Pending);
     peer_row.birth_mut(peer.incarnation_id.as_ref().unwrap(), &peer.name);
     records.write_record(&peer_row).await.unwrap();
     use rdm_core::views::NodeStatus as Read;
     assert_eq!(status_of(&view, &records, &rpc.node_id).await, (Read::Ready, false), "a stop the node has not acknowledged moves its row nowhere: ready");
     let ready: Vec<PathName> = answer(&view, &records, &Ok(BTreeMap::new()), Filter::new().eq("status", ["ready"])).await.into_iter().map(|n| n.name.clone()).collect();
-    assert_eq!(ready, [path("mesh1.admin", "1"), path("mesh1.rpc", "1")], "[status: ready] matches the birth whose stop is unacknowledged, never mesh2's pending record");
+    assert_eq!(ready, [path("mesh1.node-admin", "1"), path("mesh1.node", "1")], "[status: ready] matches the birth whose stop is unacknowledged, never mesh2's pending record");
     // Another mesh's record is read under its current writer as every record is (query.md §1): the
     // state it took answers, never the view's.
     assert_eq!(status_of(&view, &records, &peer.node_id).await, (Read::Pending, false), "mesh2's birth: the pending its current record holds, not the view's ready");
@@ -463,8 +463,8 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
 /// CONTRACT (query.md §2, Q232: "the same pair list answers the same nodes from both sources on a
 /// settled fabric"): a gateway of mesh1 holding the digests of mesh1's admin (its primary), two rpc
 /// nodes (one ready, one pending) and a broker of mesh2, and the fabric-primary's atlas
-/// holding the same births, answer the same nodes for the same gossiped pairs: `[kind: rpc] [status:
-/// ready]`, `[mesh: mesh1]`, `[is_primary: true]`, `[mesh: mesh2] [kind: broker]` and no
+/// holding the same births, answer the same nodes for the same gossiped pairs: `[type: node] [status:
+/// ready]`, `[mesh: mesh1]`, `[is_primary: true]`, `[mesh: mesh2] [type: broker]` and no
 /// pair; the local query makes no call. A row-only pair (`[tags: gold]`, `[config.zone: eu-1]`) is
 /// answered by `node.get` and refused locally naming the pair and `node.get`. Must NOT happen: the
 /// two sources disagreeing on a gossiped pair, or a row-only pair answered locally as no match.
@@ -480,7 +480,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
     let gateway = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), NodeId::mint().as_str(), Arc::new(time.clone()), vec![], &[]).await.unwrap();
 
     // (name, ready, primary of its node type)
-    let births = [(path("mesh1.admin", "1"), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true), (path("mesh1.rpc", "1"), "mesh1", rdm_core::NodeKind::RpcNode, true, false), (path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, false, false), (path("mesh2.broker", "1"), "mesh2", rdm_core::NodeKind::Broker, true, false)];
+    let births = [(path("mesh1.node-admin", "1"), "mesh1", "node-admin", true, true), (path("mesh1.node", "1"), "mesh1", "node", true, false), (path("mesh1.node", "2"), "mesh1", "node", false, false), (path("mesh2.broker", "1"), "mesh2", "broker", true, false)];
     let mut nodes = Vec::new();
     let records = MemoryNodesStorage::default();
     for (i, (name, mesh, kind, ready, primary)) in births.into_iter().enumerate() {
@@ -489,13 +489,13 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         n.is_primary = primary;
         n.endpoint_id = Some(EndpointId(format!("key-{}", n.node_id)));
         n.transport_addr = Some(format!("127.0.0.1:{}", 21_000 + i).parse().unwrap());
-        let row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), n.status);
+        let row = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
         records.write_record(&row).await.unwrap();
         own(&n.node_id, BTreeMap::from([("zone".to_string(), "eu-1".to_string())]), ["gold".to_string()].into()).await;
         let d = MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric.clone(),
-            node: MeshNode { mesh: n.mesh.clone(), kind: n.kind, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone().unwrap(), transport_addr: n.transport_addr.unwrap(), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            node: MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone().unwrap(), transport_addr: n.transport_addr.unwrap(), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: if ready { MemberStatus::Ready } else { MemberStatus::Pending },
             node_state: Default::default(),
             admin_api_base: None,
@@ -523,17 +523,17 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
     let local = |f: &Filter| gateway.nodes_get(f).map(|ds| ds.into_iter().map(|d| d.node.name).collect::<Vec<_>>());
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
     for f in [
-        Filter::new().eq("kind", ["rpc"]).eq("status", ["ready"]),
+        Filter::new().eq("type", ["node"]).eq("status", ["ready"]),
         Filter::new().eq("mesh", ["mesh1"]),
         Filter::new().eq("is_primary", ["true"]),
-        Filter::new().eq("mesh", ["mesh2"]).eq("kind", ["broker"]),
+        Filter::new().eq("mesh", ["mesh2"]).eq("type", ["broker"]),
         Filter::new(),
     ] {
         let atlas: Vec<PathName> = answer(&view, &records, &planned, f.clone()).await.into_iter().map(|n| n.name.clone()).collect();
         assert_eq!(local(&f), Ok(atlas.clone()), "{f:?}: the topology the gateway holds answers what the atlas answers");
         assert!(!atlas.is_empty(), "{f:?} matches a node");
     }
-    assert_eq!(local(&Filter::new().eq("kind", ["rpc"]).eq("status", ["ready"])), Ok(vec![path("mesh1.rpc", "1")]), "the local query filters kind and status");
+    assert_eq!(local(&Filter::new().eq("type", ["node"]).eq("status", ["ready"])), Ok(vec![path("mesh1.node", "1")]), "the local query filters type and status");
     for (f, pair) in [(Filter::new().eq("tags", ["gold"]), "(tags, [gold])"), (Filter::new().eq("config.zone", ["eu-1"]), "(config.zone, [eu-1])")] {
         assert_eq!(answer(&view, &records, &planned, f.clone()).await.len(), 4, "node.get answers the row-only pair {f:?}");
         let why = local(&f).expect_err("a row-only pair is refused locally");
@@ -556,10 +556,10 @@ async fn status_of(view: &Topology, records: &MemoryNodesStorage, id: &NodeId) -
 /// a negated property pair.
 #[tokio::test]
 async fn a_node_with_no_property_record_is_listed_unavailable_and_no_property_pair_matches_it() {
-    let mut admin = node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let mut admin = node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
     admin.is_primary = true;
     admin.is_fabric_primary = true;
-    let (owned, bare) = (node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let (owned, bare) = (node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"));
     let view = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
@@ -567,11 +567,11 @@ async fn a_node_with_no_property_record_is_listed_unavailable_and_no_property_pa
     };
     let records = MemoryNodesStorage::default();
     for n in [&admin, &owned, &bare] {
-        let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
+        let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
         row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
         records.write_record(&row).await.unwrap();
     }
-    // The admin and mesh1.rpc.1 wrote their own property records; mesh1.rpc.2 has not yet.
+    // The admin and mesh1.node.1 wrote their own property records; mesh1.node.2 has not yet.
     own(&admin.node_id, BTreeMap::new(), Default::default()).await;
     own(&owned.node_id, BTreeMap::from([("zone".to_string(), "eu-1".to_string())]), ["gold".to_string()].into()).await;
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());

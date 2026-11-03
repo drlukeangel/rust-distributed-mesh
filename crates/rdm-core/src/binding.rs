@@ -2,14 +2,14 @@
 //! (build-deployment.md). A [`Binding`] is what a node's path config names, what a create launches and
 //! what the node's row records.
 //!
-//! A [`BindingSet`] is a consumer's executables by launch id (a [`crate::NodeKind`] label; the label
+//! A [`BindingSet`] is a consumer's executables by launch id (a node type's name; the name
 //! carries no behaviour here), built from one candidate: the input a harness or a product's door
 //! expands into per-path entries before the typed call. RDM keeps no set: every created path names its
 //! own binding. [`BindingSet::validate`] refuses every defect of a set by name, before anything
 //! starts. A launch re-hashes the one binding it runs ([`Binding::verify`]), so a file replaced after
 //! validation is refused at the launch that would have run it.
 
-use crate::NodeKind;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -107,7 +107,7 @@ pub enum BindingError {
         /// Why it failed.
         reason: String,
     },
-    /// The launch id is not a launch template of this mesh product.
+    /// The launch id is not a node type's name (the type grammar).
     UnknownLaunchId {
         /// The launch id concerned.
         launch_id: String,
@@ -238,7 +238,7 @@ impl fmt::Display for BindingError {
         match self {
             Self::Unreadable { path, reason } => write!(f, "binding file {} cannot be read: {reason}", path.display()),
             Self::Parse { path, reason } => write!(f, "binding file {} does not parse: {reason}", path.display()),
-            Self::UnknownLaunchId { launch_id } => write!(f, "launch id `{launch_id}` is not a launch template of this mesh product"),
+            Self::UnknownLaunchId { launch_id } => write!(f, "launch id `{launch_id}` is not a node type's name"),
             Self::DuplicateDeclaration { launch_id } => write!(f, "launch id `{launch_id}` is declared more than once"),
             Self::DuplicateBinding { launch_id } => write!(f, "launch id `{launch_id}` is bound more than once"),
             Self::UndeclaredBinding { launch_id } => write!(f, "launch id `{launch_id}` is bound but not declared in launch_ids"),
@@ -282,9 +282,9 @@ fn is_executable(path: &Path) -> std::io::Result<bool> {
 }
 
 impl BindingSet {
-    /// The binding of `kind`'s launch id, when the set binds it.
-    pub fn of(&self, kind: NodeKind) -> Option<&Binding> {
-        self.bindings.iter().find(|b| b.launch_id == kind.name())
+    /// The binding of `type`'s launch id, when the set binds it.
+    pub fn of(&self, r#type: &str) -> Option<&Binding> {
+        self.bindings.iter().find(|b| b.launch_id == r#type)
     }
 
     /// Read the binding set from the file at `path`.
@@ -296,10 +296,10 @@ impl BindingSet {
     /// Every defect refused by name, before any provider action: map shape, files, hashes,
     /// candidate, image.
     pub fn validate(&self, expect: &Expect) -> Result<Validated, BindingError> {
-        let known: BTreeSet<&str> = NodeKind::ALL.iter().map(|k| k.name()).collect();
+        let known = |id: &str| crate::status::type_refusal(id).is_none();
         let mut declared = BTreeSet::new();
         for id in &self.launch_ids {
-            if !known.contains(id.as_str()) {
+            if !known(id) {
                 return Err(BindingError::UnknownLaunchId { launch_id: id.clone() });
             }
             if !declared.insert(id.as_str()) {
@@ -308,7 +308,7 @@ impl BindingSet {
         }
         let mut bound: BTreeMap<&str, &Binding> = BTreeMap::new();
         for b in &self.bindings {
-            if !known.contains(b.launch_id.as_str()) {
+            if !known(&b.launch_id) {
                 return Err(BindingError::UnknownLaunchId { launch_id: b.launch_id.clone() });
             }
             if bound.insert(b.launch_id.as_str(), b).is_some() {
@@ -323,7 +323,7 @@ impl BindingSet {
                 return Err(BindingError::MissingBinding { launch_id: id.clone() });
             }
         }
-        for id in std::iter::once(&NodeKind::NodeAdmin.name()).chain(expect.required.iter()) {
+        for id in std::iter::once(&crate::meta::NODE_ADMIN).chain(expect.required.iter()) {
             if !declared.contains(id) {
                 return Err(BindingError::NotRequiredByTheSet { launch_id: (*id).to_string() });
             }
@@ -401,10 +401,10 @@ impl Validated {
         self.set.bindings.iter().try_for_each(|b| BindingSet::check_image(b, provider))
     }
 
-    /// The executable `kind` launches: its binding, re-hashed now. An unbound kind and a file
+    /// The executable `type` launches: its binding, re-hashed now. An unbound type and a file
     /// that changed since validation are refused by name; nothing falls back.
-    pub fn resolve(&self, kind: NodeKind) -> Result<Resolved, BindingError> {
-        let id = kind.name();
+    pub fn resolve(&self, r#type: &str) -> Result<Resolved, BindingError> {
+        let id = r#type;
         let b = self.set.bindings.iter().find(|b| b.launch_id == id).ok_or_else(|| BindingError::Unbound { launch_id: id.into() })?;
         let sha256 = Self::recheck(b)?;
         Ok(Resolved { launch_id: id.into(), executable: b.executable.clone(), sha256, image: b.image.clone(), candidate: self.set.candidate.clone() })
@@ -467,19 +467,19 @@ mod tests {
     #[test]
     fn complete_set_validates_and_resolves_each_launch_id() {
         let d = Dir::new("ok");
-        let s = set(vec![d.exe("node_admin", "a"), d.exe("broker", "b")]);
+        let s = set(vec![d.exe("node-admin", "a"), d.exe("broker", "b")]);
         let v = s.validate(&expect()).unwrap();
-        let r = v.resolve(NodeKind::Broker).unwrap();
+        let r = v.resolve("broker").unwrap();
         assert_eq!(r.executable, s.bindings[1].executable);
         assert_eq!(r.sha256, s.bindings[1].sha256);
-        assert_eq!(v.resolve(NodeKind::Gateway), Err(BindingError::Unbound { launch_id: "gateway".into() }));
+        assert_eq!(v.resolve("gateway"), Err(BindingError::Unbound { launch_id: "gateway".into() }));
     }
 
     /// CONTRACT: every planted defect of a binding set is refused by its own named rule.
     #[test]
     fn every_defect_is_refused_by_its_own_name() {
         let d = Dir::new("bad");
-        let good = || set(vec![d.exe("node_admin", "a"), d.exe("broker", "b")]);
+        let good = || set(vec![d.exe("node-admin", "a"), d.exe("broker", "b")]);
         let e = expect();
         let mut s = good();
         s.bindings[1].executable = d.0.join("nope");
@@ -522,9 +522,9 @@ mod tests {
     #[test]
     fn replaced_executable_is_refused_at_launch() {
         let d = Dir::new("swap");
-        let s = set(vec![d.exe("node_admin", "a"), d.exe("broker", "b")]);
+        let s = set(vec![d.exe("node-admin", "a"), d.exe("broker", "b")]);
         let v = s.validate(&expect()).unwrap();
         std::fs::write(&s.bindings[1].executable, "tampered").unwrap();
-        assert!(matches!(v.resolve(NodeKind::Broker), Err(BindingError::HashMismatch { .. })));
+        assert!(matches!(v.resolve("broker"), Err(BindingError::HashMismatch { .. })));
     }
 }

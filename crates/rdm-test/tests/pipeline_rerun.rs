@@ -14,7 +14,7 @@ use rdm_admin::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt,
     ClaimOutcome, MemoryBuildStateAdapter, StepOutcome,
 };
-use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Publication, Timeouts};
 use rdm_admin::join::Joins;
 use rdm_admin::storage::NodesStorage;
@@ -162,7 +162,7 @@ async fn killed_then_rerun(kill_at: KillAt) {
     let sink = Published::default();
     let reached = Arc::new(Notify::new());
     let process = Arc::new(ProcessDeploymentProvider::new());
-    let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt, node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+    let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
     // Attempt 1 dies at the kill point.
     let first = Killable {
@@ -274,7 +274,7 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
         let sink = Published::default();
         let reached = Arc::new(Notify::new());
         let process = Arc::new(ProcessDeploymentProvider::new());
-        let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt, node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
         // Attempt 1 dies after the join was admitted (WaitForBind's receipt is written) and before the
         // WaitForMeshJoin receipt.

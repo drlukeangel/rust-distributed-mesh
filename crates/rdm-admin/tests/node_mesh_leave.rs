@@ -184,11 +184,11 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
 
         let fabric_id = FabricId::mint();
         let mesh_id = MeshId::mint();
-        let node_name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let node_name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let node_id = NodeId::mint();
         let incarnation = IncarnationId::mint();
 
-        let peer_name: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        let peer_name: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         let peer_id = NodeId::mint();
         let peer_incarnation = IncarnationId::mint();
 
@@ -234,7 +234,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
 
         let resolver = Arc::new(LiveNodeResolver::default());
         resolver.apply(
-            ResolvedNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+            ResolvedNode { r#type: "node".into(), mesh: "mesh1".into(),
                 node_id: peer_id.clone(),
                 name: peer_name.clone(),
                 endpoint_id: peer_key.public(),
@@ -247,7 +247,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         let connections_store = Arc::new(MemoryConnectionsStorage::default());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = Arc::new(ConnectionsWriter::new(
-            ConnectionEnd { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+            ConnectionEnd { r#type: "node".into(), mesh: "mesh1".into(),
                 name: node_name.clone(),
                 node_id: node_id.clone(),
                 incarnation: Some(incarnation.clone()),
@@ -293,7 +293,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         let digest_base = MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric_id.clone(),
-            node: MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode,
+            node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: node_id.clone(),
                 name: node_name.clone(),
                 endpoint_id: EndpointId(node_key.public().to_string()),
@@ -327,11 +327,11 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         let status_for_get = status_cell.clone();
         let get_status = Arc::new(move || *status_for_get.lock().unwrap());
 
-        let own = Arc::new(NodeSelf::new(node_id.clone(), incarnation.clone(), node_name.clone(), rdm_core::NodeKind::RpcNode, node_server, control_client, resolver, topology_view, set_status, get_status, None, Duration::from_secs(2)));
+        let own = Arc::new(NodeSelf::new(node_id.clone(), incarnation.clone(), node_name.clone(), "node".to_string(), node_server, control_client, resolver, topology_view, set_status, get_status, None, Duration::from_secs(2)));
         own.set_connections(writer.clone());
         own.set_data_plane(data_plane.clone());
 
-        // Open a live Direct data-plane connection to `mesh1.rpc.2`.
+        // Open a live Direct data-plane connection to `mesh1.node.2`.
         let (ping_out, _) = data_plane
             .call::<Ping>(
                 &NodeTarget::ExactNode(peer_id.clone()),
@@ -383,7 +383,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             executable: std::env::current_exe().unwrap(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher {
-                mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
+                mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
                 node_id: executor.node_id.clone(),
                 incarnation: executor.incarnation.clone(),
             },
@@ -544,7 +544,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             .spawn();
         let peer_to_left_resolver = Arc::new(LiveNodeResolver::default());
         peer_to_left_resolver.apply(
-            ResolvedNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+            ResolvedNode { r#type: "node".into(), mesh: "mesh1".into(),
                 node_id: node_id.clone(),
                 name: node_name.clone(),
                 endpoint_id: node_key.public(),
@@ -621,7 +621,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         // 5. A node-admin on both its own mesh and the backbone leaves both (`left: [Own, Backbone]`),
         //    and inside `node.stop` (`StopNode`) streams `Leaving` (Data) then `StopMeshLeft { left }`
         //    (Data) before `Stopped { receipt }` (node-mesh-leave.md:5-6, 19, 21-25, 34-43, 84, 91-95).
-        let admin_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let admin_name: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let admin_id = NodeId::mint();
         let admin_inc = IncarnationId::mint();
         let admin_ep = rdm_transport::endpoint::bind(
@@ -673,7 +673,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         admin_digest.node.name = admin_name.clone();
         admin_digest.node.incarnation = admin_inc.clone();
         let admin_self = Arc::new(
-            NodeSelf::new(admin_id.clone(), admin_inc.clone(), admin_name.clone(), rdm_core::NodeKind::NodeAdmin, admin_server, admin_client, admin_resolver, admin_top, Arc::new(move |_| admin_digest.clone()), Arc::new(|| MemberStatus::Ready), None, Duration::from_secs(1))
+            NodeSelf::new(admin_id.clone(), admin_inc.clone(), admin_name.clone(), "node-admin".to_string(), admin_server, admin_client, admin_resolver, admin_top, Arc::new(move |_| admin_digest.clone()), Arc::new(|| MemberStatus::Ready), None, Duration::from_secs(1))
             .with_backbone(admin_backbone),
         );
         let (tx_admin_leave, mut rx_admin_leave) = tokio::sync::mpsc::unbounded_channel();
@@ -685,7 +685,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
                     incarnation: admin_inc.clone(),
                     build_id: build_id.to_string(),
                     attempt: 2,
-                    operation: rdm_core::OperationId::location("node.mesh.leave", &rdm_core::PathName::new("mesh1.admin", "1").unwrap()),
+                    operation: rdm_core::OperationId::location("node.mesh.leave", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()),
                 },
                 Box::new(ChannelFrames(tx_admin_leave)),
             )

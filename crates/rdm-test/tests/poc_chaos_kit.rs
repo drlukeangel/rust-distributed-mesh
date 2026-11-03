@@ -2,7 +2,7 @@
 //! so the chaos run starts from pieces known to work. Process provider; telemetry on through
 //! `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-use rdm_core::{NodeKind, PathName};
+use rdm_core::{PathName};
 use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
 use rdm_test::typed::BuildSpec;
 use rdm_core::build::BuildPhase;
@@ -45,7 +45,7 @@ async fn small_estate(test: &str) -> Estate {
 #[tokio::test(flavor = "multi_thread")]
 async fn poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid() {
     let mut estate = small_estate("poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid").await;
-    let dir = PathBuf::from(estate.data_dir(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await);
+    let dir = PathBuf::from(estate.data_dir(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await);
     let rt = ExactRuntime::published(&dir).expect("rpc.2 published its runtime");
 
     // A recycled pid is refused by name, and nothing is signalled.
@@ -75,7 +75,7 @@ async fn poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid() {
 async fn poc_netfault_cut_unhears_one_node_and_heal_restores_it() {
     let mut estate = small_estate("poc_netfault_cut_unhears_one_node_and_heal_restores_it").await;
     let nodes = estate.node_values().await;
-    let victim = PathName::new("mesh1.rpc", "2").unwrap();
+    let victim = PathName::new("mesh1.node", "2").unwrap();
     let rest: Vec<PathName> = nodes.iter().map(|n| serde_json::from_value(n["name"].clone()).expect("separate path and name")).filter(|n| *n != victim).collect();
     let before = estate.node_view(&victim).await;
     let cut = match Partition::start(&udp_ports(&nodes, &[victim.clone()]), &udp_ports(&nodes, &rest)) {
@@ -105,21 +105,21 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
     let mut o = owner("poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it");
     o.rung = "fault-door".into();
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_on(o, "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("faulted-admin binding set accepted");
+    let mut estate = Estate::bootstrap_on(o, "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("faulted-admin binding set accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
     estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
     // Either admin may execute: arm the same cut on both doors.
     let mut doors = Vec::new();
-    for n in estate.node_views().await.iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
+    for n in estate.node_views().await.iter().filter(|n| n.r#type == "node-admin") {
         doors.push(Door::at(&estate, &n.name).await);
     }
     let id = "poc:deploy-runtime";
-    let spec = json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "node": rdm_core::OperationSubject::Location(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())});
+    let spec = json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "node": rdm_core::OperationSubject::Location(rdm_core::PathName::new("mesh1.node", "1").unwrap())});
     for d in &doors {
         d.arm(id, spec.clone()).await;
     }
-    let desired = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)])] };
+    let desired = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", 1)])] };
     let mut stream = estate.submit(&BuildSpec::Fabric(desired)).await;
     let build = stream.build_id().to_string();
     // The door of whichever admin executes the create reports the held call.
@@ -131,7 +131,7 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
         d.release(id).await;
     }
     Estate::until_complete(&mut stream).await;
-    estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "rpc.1 ready after the release", SETTLE, |n| n.filter(|n| ready(n)).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "rpc.1 ready after the release", SETTLE, |n| n.filter(|n| ready(n)).map(|_| ())).await;
     estate.stop().await;
 }
 
@@ -141,7 +141,7 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn poc_probe_round_trips_and_a_cut_frame_is_not_sent() {
     let mut estate = small_estate("poc_probe_round_trips_and_a_cut_frame_is_not_sent").await;
-    let id = estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await["node_id"].as_str().unwrap().to_string();
+    let id = estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await["node_id"].as_str().unwrap().to_string();
     let exact = format!("exact:{id}");
     let put = estate.probe(&["put", "--target", &exact, "--key", "7", "--value", "poc"]);
     assert_eq!(put["outcome"], "Reply", "{put}");
@@ -161,14 +161,14 @@ async fn poc_probe_round_trips_and_a_cut_frame_is_not_sent() {
 async fn poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric() {
     let mut estate = Estate::bootstrap(owner("poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric"), "fabric1", "mesh1").await;
     let build = estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await.build_id.to_string();
-    let want: std::collections::BTreeSet<PathName> = [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.rpc", "1").unwrap()].into();
+    let want: std::collections::BTreeSet<PathName> = [PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node-admin", "2").unwrap(), PathName::new("mesh1.node", "1").unwrap()].into();
     let before = estate.settles_to_named(&want, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let primary = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).unwrap();
-    let primary_dir = if primary == PathName::new("mesh1.admin", "1").unwrap() { estate.bootstrap_data_dir("mesh1") } else { PathBuf::from(estate.data_dir(&primary).await) };
-    let rpc_id = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await.node_id;
+    let primary_dir = if primary == PathName::new("mesh1.node-admin", "1").unwrap() { estate.bootstrap_data_dir("mesh1") } else { PathBuf::from(estate.data_dir(&primary).await) };
+    let rpc_id = estate.node_view(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await.node_id;
     let mut admin_pids = Vec::new();
-    for admin in before.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.name != PathName::new("mesh1.admin", "1").unwrap()) {
+    for admin in before.iter().filter(|n| n.r#type == "node-admin" && n.name != PathName::new("mesh1.node-admin", "1").unwrap()) {
         admin_pids.push(estate.pid_of(&admin.name).await);
     }
     for pid in admin_pids {

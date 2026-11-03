@@ -59,8 +59,8 @@ impl Capture {
     }
 }
 
-fn ready_node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Node {
-    let mut n = Node::allocated(name, mesh, kind);
+fn ready_node(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Node {
+    let mut n = Node::allocated(name, mesh, r#type);
     n.node_id = NodeId::mint();
     n.incarnation_id = Some(IncarnationId::mint());
     n.status = NodeStatus::Ready;
@@ -146,16 +146,16 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
         .unwrap();
 
     let peer2_id = rt.block_on(async {
-        let admin = ready_node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
-        let mut target = ready_node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let admin = ready_node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
+        let mut target = ready_node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         target.status = NodeStatus::PendingReconnect;
         let target_id = target.node_id.clone();
         let target_inc = target.incarnation_id.clone().unwrap();
 
-        let peer1 = ready_node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
-        let peer2 = ready_node(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let peer1 = ready_node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node");
+        let peer2 = ready_node(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node");
         let peer2_id = (peer1.node_id.to_string(), peer2.node_id.to_string());
-        let peer3 = ready_node(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let peer3 = ready_node(rdm_core::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node");
 
         let view = Topology {
             fabric: Fabric {
@@ -254,14 +254,14 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
             .spawn();
 
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode { mesh: peer1.mesh.clone(), kind: peer1.kind,
+        resolver.insert(ResolvedNode { mesh: peer1.mesh.clone(), r#type: peer1.r#type.clone(),
             node_id: peer1.node_id.clone(),
             name: peer1.name.clone(),
             endpoint_id: p1_key.public(),
             transport_addr: p1_addr,
             incarnation: peer1.incarnation_id.clone().unwrap(),
         });
-        resolver.insert(ResolvedNode { mesh: peer2.mesh.clone(), kind: peer2.kind,
+        resolver.insert(ResolvedNode { mesh: peer2.mesh.clone(), r#type: peer2.r#type.clone(),
             node_id: peer2.node_id.clone(),
             name: peer2.name.clone(),
             endpoint_id: p2_key.public(),
@@ -283,7 +283,7 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
             connections: None,
         };
 
-        // 1. Peer 1 fails InnerNotSent while Peer 2 answers CurrentStopped -> Reached via mesh1.rpc.3.
+        // 1. Peer 1 fails InnerNotSent while Peer 2 answers CurrentStopped -> Reached via mesh1.node.3.
         let res1 = tickle(&target, &view, &tickle_client)
             .await
             .expect("tickle 1");
@@ -298,7 +298,7 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
                     }
                 );
             }
-            other => panic!("expected Reached via mesh1.rpc.3, got {other:?}"),
+            other => panic!("expected Reached via mesh1.node.3, got {other:?}"),
         }
 
         // 2. Neither direct nor either of the 2 peers answers -> Unreached naming the 2 carriers asked.
@@ -333,7 +333,7 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
             .iter()
             .any(|s| s.attributes.get("carrier").map(String::as_str) == Some(peer2_id.1.as_str())
                 && s.attributes.get("answer").map(String::as_str) == Some("current-stopped")),
-        "peer span must record carrier=mesh1.rpc.3 and answer=current-stopped"
+        "peer span must record carrier=mesh1.node.3 and answer=current-stopped"
     );
 
     let unreached_spans = capture.named("rdm.node.tickle.returns-unknown.via-unreached");

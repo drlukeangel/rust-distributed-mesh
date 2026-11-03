@@ -1,8 +1,8 @@
 //! `rshape-broker`: the R-shape consumer's broker entry point. It names its role and nothing else.
 
-use rdm_node::{NodeKind, Role};
+use rdm_node::{Role};
 
 #[tokio::main]
 async fn main() {
-    rshape_consumer::exit_on_error("rshape-broker", rshape_consumer::run(Role { kind: NodeKind::Broker }, "rshape-broker").await);
+    rshape_consumer::exit_on_error("rshape-broker", rshape_consumer::run(Role { r#type: "broker".into() }, "rshape-broker").await);
 }

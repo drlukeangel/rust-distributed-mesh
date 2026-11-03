@@ -10,11 +10,11 @@ use rdm_admin::deployment::pipeline::LifecycleEvents;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-fn member(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, seq: u64) -> MeshDigest {
+fn member(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, r#type: &str, seq: u64) -> MeshDigest {
     let node_id = NodeId::mint();
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric.clone(),
-        node: MeshNode { mesh: mesh.into(), kind,
+        node: MeshNode { mesh: mesh.into(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
             name,
             endpoint_id: EndpointId(format!("key-{node_id}-{}", "x".repeat(40))),
@@ -37,7 +37,7 @@ fn member(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, kind: rdm_cor
 }
 
 fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
-    LifecycleOp { kind: d.node.kind, mesh: d.node.mesh.clone(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: rdm_core::OperationId::node(operation, &d.node.node_id), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+    LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: rdm_core::OperationId::node(operation, &d.node.node_id), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
 }
 
 // @feature: node-lifecycle
@@ -60,9 +60,9 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), vec![], &[]).await.unwrap();
     let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: admin_birth.incarnation.clone(), node_id: admin_birth.node_id.clone() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
-    let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None, status_door: Default::default() };
+    let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None, status_door: Default::default() };
 
-    let rpc = member(&fabric, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 10);
+    let rpc = member(&fabric, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 10);
     assert!(topology_view.digest_view.record(rpc.clone()), "the member's heartbeat is held");
     assert!(topology_view.digest_view.started(&rpc.node.node_id, &rpc.node.incarnation, &rpc.node.name, &rpc.node.mesh), "node.started of the member");
     let status = |d: &MeshDigest| topology_view.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
@@ -77,7 +77,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     assert_eq!(status(&rpc), Some(MemberStatus::Leaving), "the stop's admission sets the member stopping");
     assert_eq!(projected(&rpc), Some(MemberStatus::Leaving), "the member projection carries it");
 
-    let peer = member(&fabric, rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, 10);
+    let peer = member(&fabric, rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", 10);
     assert!(!topology_view.digest_view.reported(&peer.node.node_id, &peer.node.incarnation, MemberStatus::ConnectionsDeleting), "a member of another mesh is not this primary's to record");
     lifecycle.leaving(&op(&peer, "node.stop")).await;
     assert_eq!(status(&peer), None, "a member of another mesh is not this primary's to set");
@@ -106,11 +106,11 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), vec![], &[]).await.unwrap();
     topology_view.set_mesh_primary(true);
 
-    let member = member(&fabric, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 10);
+    let member = member(&fabric, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 10);
     assert!(topology_view.digest_view.record(member.clone()), "the member's heartbeat is held");
     let node = |name: rdm_core::PathName, primary: bool, id: NodeId, inc: IncarnationId| {
-        let mut n = Node::allocated(name, "mesh1", rdm_core::NodeKind::NodeAdmin);
-        n.kind = rdm_core::NodeKind::NodeAdmin;
+        let mut n = Node::allocated(name, "mesh1", "node-admin");
+        n.r#type = "node-admin".to_string();
         n.mesh = "mesh1".into();
         n.node_id = id;
         n.incarnation_id = Some(inc);
@@ -120,8 +120,8 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
         n.is_fabric_primary = primary;
         n
     };
-    let me = node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), true, admin_birth.node_id.clone(), admin_birth.incarnation.clone());
-    let subject = node(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), false, member.node.node_id.clone(), member.node.incarnation.clone());
+    let me = node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), true, admin_birth.node_id.clone(), admin_birth.incarnation.clone());
+    let subject = node(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), false, member.node.node_id.clone(), member.node.incarnation.clone());
     let topology = Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {
         fabric: Fabric { id: fabric.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: Vec::new(),

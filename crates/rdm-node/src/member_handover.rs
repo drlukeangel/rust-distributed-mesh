@@ -14,27 +14,26 @@ use rdm_core::catalog::OpOwner;
 use rdm_core::framing::Birth;
 use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, FABRIC};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::{NodeKind, PrimaryRole};
+use rdm_core::{PrimaryRole};
 use rdm_transport::topology::{TopologyView, PrimaryView, RoleTaken};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use tracing::Instrument as _;
 
 use crate::model::{IncarnationId, NodeId, PathName};
 
-/// One entry of `PrimaryUpdate`'s `primaries`: `(node_type, primary, successor, revision)`.
+/// One entry of `PrimaryUpdate`'s `primaries`: `(type, primary, successor, revision)`.
 pub type Entry = (String, Birth, Birth, u64);
 
 /// The step a failed commanded update names (`Failed { step, .. }`).
 pub const STEP: &str = "primary-update";
 
-/// The primary record kind the node type `node_type` of an entry names: `fabric` the fabric-primary,
-/// `node-admin` the mesh-primary, every other type its node-type primary. `None` for a type RDM does
-/// not know.
-pub fn primary_of_type(node_type: &str) -> Option<PrimaryRole> {
-    if node_type == FABRIC {
+/// The primary record the type `type` of an entry names: `fabric` the fabric-primary, `node-admin` the
+/// mesh-primary, every other type its node-type primary. `None` for a name outside the type grammar.
+pub fn primary_of_type(r#type: &str) -> Option<PrimaryRole> {
+    if r#type == FABRIC {
         return Some(PrimaryRole::FabricPrimary);
     }
-    NodeKind::ALL.into_iter().find(|k| k.node_type() == node_type).map(PrimaryRole::of_node_type)
+    rdm_core::status::type_refusal(r#type).is_none().then(|| PrimaryRole::of_type(r#type))
 }
 
 /// The records `entries` name, each its successor at its revision, of the mesh `mesh_of` gives that
@@ -42,8 +41,8 @@ pub fn primary_of_type(node_type: &str) -> Option<PrimaryRole> {
 pub fn records_of(entries: &[Entry], mesh_of: impl Fn(&Birth) -> String) -> Vec<(PrimaryRole, rdm_core::Primary)> {
     entries
         .iter()
-        .filter_map(|(node_type, _, successor, revision)| {
-            let role = primary_of_type(node_type)?;
+        .filter_map(|(r#type, _, successor, revision)| {
+            let role = primary_of_type(r#type)?;
             Some((role, rdm_core::Primary { mesh: mesh_of(successor), node_id: successor.node_id.clone(), incarnation: successor.incarnation.clone(), revision: *revision }))
         })
         .collect()
@@ -62,7 +61,7 @@ pub fn install(primary_view: &PrimaryView, entries: &[Entry], mesh_of: impl Fn(&
     }
 }
 
-/// The entries as a span names them: `<node_type> <primary> -> <successor> @<revision>`, comma-separated.
+/// The entries as a span names them: `<type> <primary> -> <successor> @<revision>`, comma-separated.
 pub fn entries_named(entries: &[Entry]) -> String {
     entries.iter().map(|(t, p, s, r)| format!("{t} {p} -> {s} @{r}")).collect::<Vec<_>>().join(", ")
 }
@@ -75,7 +74,7 @@ pub enum AnswerPayload {
     /// Transfer this primary role to the explicitly selected birth.
     Update {
         /// The explicitly requested primary role's node type.
-        node_type: String,
+        r#type: String,
         /// The exact successor birth supplied by the command.
         successor: Option<Birth>,
     },
@@ -100,18 +99,18 @@ mod answered_tests {
         let id = NodeId::mint();
         let operation = rdm_core::OperationId::node("node.primary.update", &id);
         let successor = Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let payload = AnswerPayload::Update { node_type: "rpc".into(), successor: Some(successor.clone()) };
+        let payload = AnswerPayload::Update { r#type: "node".into(), successor: Some(successor.clone()) };
         let reply = Reply::PrimaryUpdated { revisions: Vec::new() };
         answered.keep("build-a", 1, &operation, payload.clone(), reply.clone());
         assert_eq!(answered.before("build-a", 1, &operation, &payload), Some(reply));
         assert_eq!(answered.before("build-b", 1, &operation, &payload), None);
         assert_eq!(answered.before("build-a", 2, &operation, &payload), None);
         let changed = AnswerPayload::Update {
-            node_type: "rpc".into(),
+            r#type: "node".into(),
             successor: Some(Birth { incarnation: IncarnationId::mint(), ..successor }),
         };
         assert!(matches!(answered.before("build-a", 1, &operation, &changed), Some(Reply::RejectedConflictingPayload { .. })));
-        let absent = AnswerPayload::Update { node_type: "rpc".into(), successor: None };
+        let absent = AnswerPayload::Update { r#type: "node".into(), successor: None };
         assert!(matches!(answered.before("build-a", 1, &operation, &absent), Some(Reply::RejectedConflictingPayload { .. })));
     }
 }
@@ -174,7 +173,7 @@ pub async fn call_successor(client: &NodeRpcClient, successor: &NodeId, entries:
 /// mesh-primary records the change from the successor's digest (step 5).
 pub struct MemberDoor {
     me: PathName,
-    kind: rdm_core::NodeKind,
+    r#type: String,
     node_id: NodeId,
     incarnation: IncarnationId,
     topology_view: TopologyView,
@@ -190,8 +189,8 @@ pub struct MemberDoor {
 impl MemberDoor {
     /// The door of the birth `node_id`/`incarnation` at `me`, on its mesh channel `topology_view`, calling
     /// through `client`.
-    pub fn new(me: PathName, kind: rdm_core::NodeKind, node_id: NodeId, incarnation: IncarnationId, topology_view: TopologyView, client: Arc<NodeRpcClient>) -> Self {
-        Self { me, kind, node_id, incarnation, topology_view, client, answered: Answered::default(), commanded: Answered::default(), serving: Default::default() }
+    pub fn new(me: PathName, r#type: &str, node_id: NodeId, incarnation: IncarnationId, topology_view: TopologyView, client: Arc<NodeRpcClient>) -> Self {
+        Self { me, r#type: r#type.to_string(), node_id, incarnation, topology_view, client, answered: Answered::default(), commanded: Answered::default(), serving: Default::default() }
     }
 
     fn held_name(&self) -> PathName {
@@ -217,7 +216,7 @@ impl MemberDoor {
         let _one_at_a_time = self.serving.lock().await;
         match req {
             Request::PrimaryUpdate { primaries, build_id, run, operation } => self.install(primaries, build_id, run, operation),
-            Request::UpdatePrimary { node_type, build_id, run, operation, successor } => self.update(node_type, build_id, run, operation, successor).await,
+            Request::UpdatePrimary { r#type, build_id, run, operation, successor } => self.update(r#type, build_id, run, operation, successor).await,
         }
     }
 
@@ -243,14 +242,14 @@ impl MemberDoor {
     /// answers with the successor's node.primary.updated, installed in its own view first. A command that
     /// names none is `Failed` by name; a successor that does not answer is `Failed`: the successor is
     /// unheard after the update.
-    async fn update(&self, node_type: String, build_id: String, run: u32, operation: rdm_core::OperationId, successor: Option<Birth>) -> Reply {
-        let payload = AnswerPayload::Update { node_type: node_type.clone(), successor: successor.clone() };
+    async fn update(&self, r#type: String, build_id: String, run: u32, operation: rdm_core::OperationId, successor: Option<Birth>) -> Reply {
+        let payload = AnswerPayload::Update { r#type: r#type.clone(), successor: successor.clone() };
         if let Some(r) = self.commanded.before(&build_id, run, &operation, &payload) {
             return r;
         }
         let me = self.held_name();
-        let span = tracing::info_span!("rdm.node_admin.primary.update.via-update-primary", node_path = %me.path, node_name = %me.name, node_type = %node_type, build_id = %build_id, run, operation = %operation.action, operation_subject = ?operation.subject, successor = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty);
-        let reply = self.update_in(&me, &node_type, &build_id, run, &operation, successor).instrument(span.clone()).await;
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-update-primary", node_path = %me.path, node_name = %me.name, "type" = %r#type, build_id = %build_id, run, operation = %operation.action, operation_subject = ?operation.subject, successor = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty);
+        let reply = self.update_in(&me, &r#type, &build_id, run, &operation, successor).instrument(span.clone()).await;
         span.record("outcome", reply.name());
         if let Reply::Failed { reason, .. } = &reply {
             span.record("detail", reason.as_str());
@@ -262,25 +261,25 @@ impl MemberDoor {
         reply
     }
 
-    async fn update_in(&self, me: &PathName, node_type: &str, build_id: &str, run: u32, operation: &rdm_core::OperationId, successor: Option<Birth>) -> Reply {
-        let (mesh, kind) = (self.topology_view.mesh_name().to_string(), self.kind);
-        if node_type != kind.node_type() {
-            return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me:?} is a {}, not of the type {node_type} the command names", kind.node_type()), rdm_core::outcome::Code::FailedPrecondition);
+    async fn update_in(&self, me: &PathName, r#type: &str, build_id: &str, run: u32, operation: &rdm_core::OperationId, successor: Option<Birth>) -> Reply {
+        let mesh = self.topology_view.mesh_name().to_string();
+        if r#type != self.r#type {
+            return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me:?} is a {}, not of the type {} the command names", self.r#type, r#type), rdm_core::outcome::Code::FailedPrecondition);
         }
         // Commanded by its mesh-primary, it runs the update (a receiver never refuses a call for the birth it
         // names, R-RX5). The revision the successor's entry takes is the next after the record of its type
         // this node holds; holding none, it reads its mesh-primary's topology first, as a starting node does.
         let primary_view = self.topology_view.primaries();
-        if primary_view.node_type_primary(&mesh, kind).is_none() {
+        if primary_view.node_type_primary(&mesh, &self.r#type).is_none() {
             self.read_own_mesh(me, &mesh).await;
         }
-        let revision = primary_view.node_type_primary(&mesh, kind).map_or(0, |r| r.revision) + 1;
+        let revision = primary_view.node_type_primary(&mesh, &self.r#type).map_or(0, |r| r.revision) + 1;
         // Step 4 on the successor the mesh-primary's pre-check named (step 2): no election here (Q129).
         let Some(successor) = successor else {
-            return rdm_core::reply::handover::bounded_failed(STEP, &format!("path {:?}, name {:?} is a {node_type} primary: its mesh-primary's command names no successor", me.path, me.name), rdm_core::outcome::Code::FailedPrecondition);
+            return rdm_core::reply::handover::bounded_failed(STEP, &format!("path {:?}, name {:?} is a {} primary: its mesh-primary's command names no successor", me.path, me.name, r#type), rdm_core::outcome::Code::FailedPrecondition);
         };
         tracing::Span::current().record("successor", successor.node_id.as_str());
-        let entries = vec![(node_type.to_string(), self.me_birth(), successor.clone(), revision)];
+        let entries = vec![(r#type.to_string(), self.me_birth(), successor.clone(), revision)];
         // Step 4: the call on the successor's exact birth.
         match call_successor(&self.client, &successor.node_id, &entries, build_id, run, operation).await {
             Ok(revisions) => {

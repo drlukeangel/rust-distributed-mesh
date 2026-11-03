@@ -16,7 +16,7 @@
 //!   deletes births A launched, through its own `node.stop` then `node.start` and `node.delete`, from their published
 //!   runtimes, with A's receipts nowhere.
 
-use rdm_client::{CallEnd, LaunchKind as NodeKind, NodeStatus};
+use rdm_client::{CallEnd, NodeStatus};
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
@@ -48,20 +48,20 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // from the upper 70%.
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     for _ in 0..5 {
-        let me = estate.until_node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "the bootstrap admin lists itself", Duration::from_secs(30), |n| n.cloned()).await;
+        let me = estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "the bootstrap admin lists itself", Duration::from_secs(30), |n| n.cloned()).await;
         if share_below(&me.node_id.to_string()) >= 0.3 {
             break;
         }
         estate.stop().await;
         estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     }
-    let incumbent_admin = Estate::path("mesh1.admin", "1");
+    let incumbent_admin = Estate::path("mesh1.node-admin", "1");
     // Build A: three rpc nodes, launched by the bootstrap admin. The accepted Build is never
     // history: it is forgotten only once a later Build is current.
     let a = estate.reconcile_shape("fabric1", &[("mesh1", 1, 3)]).await.build_id;
     let nodes = estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
     let incumbent = nodes.iter().find(|n| n.name == incumbent_admin).cloned().unwrap();
-    let a_births: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::RpcNode).cloned().collect();
+    let a_births: Vec<_> = nodes.iter().filter(|n| n.r#type == "node").cloned().collect();
     let refused = estate.builds_obj().await.delete(&a).await;
     assert!(matches!(&refused, Err(CallEnd::Rejected { reason, .. }) if reason == "cannot-delete"), "the accepted Build is never history: {refused:?}");
 
@@ -70,9 +70,9 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // Births until one draws a lower NodeId than the incumbent's.
     let mut late = None;
     for _ in 0..30 {
-        Estate::workflow("node.create of a node-admin in mesh1", estate.create_node("mesh1", NodeKind::NodeAdmin).await).await;
+        Estate::workflow("node.create of a node-admin in mesh1", estate.create_node("mesh1", "node-admin").await).await;
         let nodes = estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
-        let born = nodes.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.node_id != incumbent.node_id).cloned().unwrap();
+        let born = nodes.iter().find(|n| n.r#type == "node-admin" && n.node_id != incumbent.node_id).cloned().unwrap();
         if born.node_id.to_string() < incumbent.node_id.to_string() {
             late = Some(born);
             break;
@@ -153,7 +153,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // The vacancy was filled by the mesh's lowest ready NodeId, at every level.
     assert!(named(&spans, "rdm.mesh.election.resolve.via-recompute")
         .iter()
-        .any(|sp| sp["attributes"]["kind"] == "node_admin" && sp["attributes"]["winner_node_id"] == late["node_id"] && sp["attributes"]["election_key"] == "node_id_crockford"));
+        .any(|sp| sp["attributes"]["type"] == "node-admin" && sp["attributes"]["winner_node_id"] == late["node_id"] && sp["attributes"]["election_key"] == "node_id_crockford"));
     assert!(named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute").iter().any(|sp| sp["attributes"]["winner_node_id"] == late["node_id"]));
     // It managed A's births from their published runtimes.
     for birth in [&restarted, &deleted] {

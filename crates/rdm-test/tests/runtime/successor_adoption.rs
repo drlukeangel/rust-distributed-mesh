@@ -26,7 +26,7 @@
 //! `PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata` complete, in
 //! order, before its `WaitForNodeReady` step begins.
 
-use rdm_client::{LaunchKind as NodeKind, NodeStatus, PathName};
+use rdm_client::{NodeStatus, PathName};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
@@ -61,16 +61,16 @@ async fn a_successor_manages_births_it_never_launched() {
     let nodes = estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     // The initial fabric refuses a node restart and a node delete until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let successor = nodes.iter().find(|n| n.name == PathName::new("mesh1.admin", "2").unwrap()).cloned().unwrap();
-    let launcher = nodes.iter().find(|n| n.name == PathName::new("mesh1.admin", "1").unwrap()).cloned().unwrap();
-    let rpc = |name: &str| a_births.iter().find(|n| n.name == PathName::new("mesh1.rpc", name).unwrap()).cloned().unwrap();
+    let successor = nodes.iter().find(|n| n.name == PathName::new("mesh1.node-admin", "2").unwrap()).cloned().unwrap();
+    let launcher = nodes.iter().find(|n| n.name == PathName::new("mesh1.node-admin", "1").unwrap()).cloned().unwrap();
+    let rpc = |name: &str| a_births.iter().find(|n| n.name == PathName::new("mesh1.node", name).unwrap()).cloned().unwrap();
     let (restarted, deleted) = (rpc("2"), rpc("3"));
-    let deleted_pid = estate.pid_of(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).await;
+    let deleted_pid = estate.pid_of(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await;
 
-    // Stop the launching admin (`node.stop` runs `node.primary.update` to `mesh1.admin.2` first and
-    // takes `mesh1.admin.1` down only after the confirmed transfer).
+    // Stop the launching admin (`node.stop` runs `node.primary.update` to `mesh1.node-admin.2` first and
+    // takes `mesh1.node-admin.1` down only after the confirmed transfer).
     estate.enter(&successor.name).await;
-    let mut stop = estate.nodes_obj().await.stop(&launcher.name).await.expect("node.stop of mesh1.admin.1");
+    let mut stop = estate.nodes_obj().await.stop(&launcher.name).await.expect("node.stop of mesh1.node-admin.1");
     let accepted = stop.accepted().clone();
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
@@ -82,7 +82,7 @@ async fn a_successor_manages_births_it_never_launched() {
             (me.is_primary && me.is_fabric_primary).then(|| v.to_vec())
         })
         .await;
-    for n in view.iter().filter(|n| n.kind == NodeKind::RpcNode) {
+    for n in view.iter().filter(|n| n.r#type == "node") {
         assert!(n.data_dir.as_deref().is_some_and(|d| !d.is_empty()), "the successor's view carries {:?}'s data dir: {n:?}", n.name);
     }
 
@@ -90,14 +90,14 @@ async fn a_successor_manages_births_it_never_launched() {
     estate.stop_then_start(&restarted.name).await;
     // A stop then a start keep the birth (node-stop.md "Kept": "node.id, incarnation, endpoint key, port,
     // bin, path/name and storage"): the node is ready again as the same birth.
-    let after = estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1.rpc.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
+    let after = estate.until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1.node.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation_id), (&restarted.node_id, &restarted.incarnation_id), "a restart keeps the node id and the birth");
-    Estate::workflow("node.delete of mesh1.rpc.3", estate.nodes_obj().await.delete(&deleted.name).await).await;
-    wait_for("mesh1.rpc.3's runtime is gone", Duration::from_secs(30), || async { (!alive(deleted_pid)).then_some(()) }).await;
+    Estate::workflow("node.delete of mesh1.node.3", estate.nodes_obj().await.delete(&deleted.name).await).await;
+    wait_for("mesh1.node.3's runtime is gone", Duration::from_secs(30), || async { (!alive(deleted_pid)).then_some(()) }).await;
 
     // The admins that hold mesh1 now: the successor, and the drift recovery's rebirth of the
     // killed launcher's path, a new NodeId that may take the role back by NodeId order.
-    let admins_now: Vec<String> = estate.node_views().await.iter().filter(|n| n.kind == NodeKind::NodeAdmin && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|n| n.node_id.to_string()).collect();
+    let admins_now: Vec<String> = estate.node_views().await.iter().filter(|n| n.r#type == "node-admin" && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|n| n.node_id.to_string()).collect();
     let recovery_scope = format!("mesh1.node_admin: 1 present of 2 accepted (unheard: {:?})", vec![(launcher.node_id.clone(), launcher.incarnation_id.clone().expect("launched birth"))]);
     let (launcher, restarted, deleted) = (serde_json::to_value(&launcher).unwrap(), serde_json::to_value(&restarted).unwrap(), serde_json::to_value(&deleted).unwrap());
     estate.stop().await;
@@ -117,7 +117,7 @@ async fn a_successor_manages_births_it_never_launched() {
         v
     };
     // Day 0: the adoption, step by step, before Ready.
-    let day0 = steps_of(&PathName::new("mesh1.admin", "1").unwrap(), &|sp| sp["attributes"]["build_id"] == "");
+    let day0 = steps_of(&PathName::new("mesh1.node-admin", "1").unwrap(), &|sp| sp["attributes"]["build_id"] == "");
     let names: Vec<&str> = day0.iter().map(|sp| sp["attributes"]["step"].as_str().unwrap()).collect();
     assert_eq!(names, ["AdoptCurrentRuntime", "RegisterExactRuntimeHandle", "ResolveProviderControlDomain", "PublishRuntimeFactAndCurrentRuntimeMetadata"]);
     for sp in &day0 {
@@ -146,10 +146,10 @@ async fn a_successor_manages_births_it_never_launched() {
         steps_of(&node, &|sp| sp["attributes"]["build_id"] == build && sp["attributes"]["attempt"] == wait["attributes"]["attempt"] && sp["trace_id"] == wait["trace_id"] && sp["parent_span_id"] == wait["parent_span_id"] && ns(sp, "end_unix_nano") <= ns(wait, "start_unix_nano"))
     };
     let (restarts, launches): (Vec<&Value>, Vec<&Value>) =
-        launched.iter().filter(|w| location_of(w) != PathName::new("mesh1.admin", "1").unwrap()).partition(|w| steps_before(w).iter().any(|sp| sp["attributes"]["step"] == "StartNode"));
+        launched.iter().filter(|w| location_of(w) != PathName::new("mesh1.node-admin", "1").unwrap()).partition(|w| steps_before(w).iter().any(|sp| sp["attributes"]["step"] == "StartNode"));
     let restarted_nodes: Vec<PathName> = restarts.iter().map(|w| location_of(w)).collect();
-    assert_eq!(restarted_nodes, [PathName::new("mesh1.rpc", "2").unwrap()], "only the restarted fixture waited for Ready after StartNode");
-    for node in ["1", "2", "3"].map(|name| PathName::new("mesh1.rpc", name).unwrap()) {
+    assert_eq!(restarted_nodes, [PathName::new("mesh1.node", "2").unwrap()], "only the restarted fixture waited for Ready after StartNode");
+    for node in ["1", "2", "3"].map(|name| PathName::new("mesh1.node", name).unwrap()) {
         assert!(launches.iter().any(|w| location_of(w) == node), "{node:?} was launched and waited for Ready");
     }
     for wait in &restarts {

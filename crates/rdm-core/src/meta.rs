@@ -2,7 +2,7 @@
 //! names them for a path and name. Intrinsic, explicit on every materialized path after ingress
 //! normalization; never a tag, never inferred later from a flag, a map or a provider's behaviour.
 
-use crate::path::{NodeKind, PathName};
+use crate::path::PathName;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,8 +18,9 @@ pub struct NodeSpec {
     pub path: PathName,
     /// The owning mesh, independent of the path/name pair.
     pub mesh: String,
-    /// The executable's runtime kind, independent of the path/name pair.
-    pub kind: NodeKind,
+    /// The node's type (`node`, `node-admin`, or a type the Fabric declares), independent of the
+    /// path/name pair.
+    pub r#type: String,
     /// The node's `storage_persistence` (storage.md §1): what becomes of its own data dir across its
     /// births and once it is gone. Not where RDM's records go: that is the fabric's
     /// `topology_storage_provider` (storage.md §2).
@@ -64,12 +65,11 @@ pub enum StoragePersistence {
 }
 
 impl StoragePersistence {
-    /// The ingress storage default of an explicitly selected runtime kind.
-    pub fn for_kind(kind: NodeKind) -> Self {
-        match kind {
-            NodeKind::NodeAdmin | NodeKind::Broker => Self::Persistent { disposition: PersistentDisposition::Preserve },
-            NodeKind::Gateway | NodeKind::Compute | NodeKind::RpcNode => Self::Ephemeral,
-        }
+    /// The storage default of `type` with no declaration to read: `node-admin` keeps its storage
+    /// (persistent, preserve); `node`, the base every type extends, is ephemeral. A declared type's
+    /// default is its own ([`NodeType::storage_persistence`]).
+    pub fn of_type(r#type: &str) -> Self {
+        if is_node_admin(r#type) { Self::Persistent { disposition: PersistentDisposition::Preserve } } else { Self::Ephemeral }
     }
 }
 
@@ -188,13 +188,18 @@ pub const NODE_ADMIN: &str = "node-admin";
 /// RDM's two types, never declared again by an application.
 pub const RDM_TYPES: [&str; 2] = [NODE, NODE_ADMIN];
 
+/// Whether `type` is `node-admin`: the one place RDM reads a node's type for anything but equality.
+pub fn is_node_admin(r#type: &str) -> bool {
+    r#type == NODE_ADMIN
+}
+
 /// One of the application's node types (the Fabrics schema's `types`, node-rpc-envelope.md "#
 /// Schemas"): it extends `node` and overrides its defaults. Never named `node` or `node-admin`, RDM's
 /// two (refused by name).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeType {
-    /// The type's name, what a node's `node_type` names.
+    /// The type's name, what a node's `type` names.
     pub name: String,
     /// The `storage_persistence` a node of the type takes when its create states none.
     pub storage_persistence: StoragePersistence,
@@ -204,6 +209,17 @@ pub struct NodeType {
 }
 
 impl NodeType {
+    /// The declared type named `type` in `declared`.
+    pub fn of<'a>(declared: &'a [NodeType], r#type: &str) -> Option<&'a NodeType> {
+        declared.iter().find(|t| t.name == r#type)
+    }
+
+    /// Why a node may not take `type`, by name: neither one of RDM's two nor declared on the Fabric.
+    pub fn undeclared(declared: &[NodeType], r#type: &str) -> Option<String> {
+        (!RDM_TYPES.contains(&r#type) && Self::of(declared, r#type).is_none())
+            .then(|| format!("the node type `{}` is not declared on the fabric", r#type))
+    }
+
     /// Refuse, by name, a declared list naming one of RDM's two types, an empty name or a name twice.
     pub fn check_declared(types: &[NodeType]) -> Result<(), String> {
         let mut seen = BTreeSet::new();
@@ -223,12 +239,12 @@ impl NodeType {
 }
 
 impl NodeSpec {
-    /// The migration default for `path`'s kind: what ingress normalization gives a materialized path
-    /// that declared no spec (brokers and node-admins keep their storage across a restart and a
-    /// delete; gateways, compute and proof rpc nodes are ephemeral), with no executable, tag or
-    /// config. Ingress-only: once a Build is accepted its spec is explicit and nothing re-derives it.
-    pub fn default_for(path: PathName, mesh: impl Into<String>, kind: NodeKind) -> Self {
-        Self { path, mesh: mesh.into(), kind, storage_persistence: StoragePersistence::for_kind(kind), executable: None, tags: BTreeSet::new(), config: BTreeMap::new() }
+    /// The default spec of a node of `type` at `path`: what ingress normalization gives a materialized
+    /// path that declared no spec, its storage the type's with no declaration to read
+    /// ([`StoragePersistence::of_type`]), with no executable, tag or config. Ingress-only: once a Build
+    /// is accepted its spec is explicit and nothing re-derives it.
+    pub fn default_for(path: PathName, mesh: impl Into<String>, r#type: &str) -> Self {
+        Self { path, mesh: mesh.into(), r#type: r#type.to_string(), storage_persistence: StoragePersistence::of_type(r#type), executable: None, tags: BTreeSet::new(), config: BTreeMap::new() }
     }
 }
 
@@ -236,18 +252,17 @@ impl NodeSpec {
 mod tests {
     use super::*;
 
-    /// CONTRACT: the storage state space is exactly three states; the per-kind defaults are the
-    /// versioned migration defaults; a spec reads back from its journaled form as written.
+    /// CONTRACT: the storage state space is exactly three states; RDM's two types' defaults are
+    /// `node-admin` persistent and `node` ephemeral, and a type with no declaration to read takes
+    /// `node`'s; a spec reads back from its journaled form as written.
     #[test]
-    fn the_kind_defaults_are_the_migration_defaults_and_a_spec_reads_back_as_written() {
+    fn rdm_types_storage_defaults_and_a_spec_reads_back_as_written() {
         let preserve = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve };
-        let at = |kind| NodeSpec::default_for(crate::PathName::new("elsewhere.gateway", "north").unwrap(), "m", kind).storage_persistence;
-        assert_eq!(at(NodeKind::Broker), preserve);
-        assert_eq!(at(NodeKind::NodeAdmin), preserve);
-        assert_eq!(at(NodeKind::Gateway), StoragePersistence::Ephemeral);
-        assert_eq!(at(NodeKind::Compute), StoragePersistence::Ephemeral);
-        assert_eq!(at(NodeKind::RpcNode), StoragePersistence::Ephemeral);
-        let release = NodeSpec { storage_persistence: StoragePersistence::Persistent { disposition: PersistentDisposition::Release }, config: [("zone".to_string(), "a".to_string())].into(), ..NodeSpec::default_for(crate::PathName::new("m.rpc", "1").unwrap(), "m", NodeKind::RpcNode) };
+        let at = |t: &str| NodeSpec::default_for(crate::PathName::new("elsewhere.apps", "north").unwrap(), "m", t).storage_persistence;
+        assert_eq!(at(NODE_ADMIN), preserve);
+        assert_eq!(at(NODE), StoragePersistence::Ephemeral);
+        assert_eq!(at("worker"), StoragePersistence::Ephemeral);
+        let release = NodeSpec { storage_persistence: StoragePersistence::Persistent { disposition: PersistentDisposition::Release }, config: [("zone".to_string(), "a".to_string())].into(), ..NodeSpec::default_for(crate::PathName::new("m.node", "1").unwrap(), "m", NODE) };
         let json = serde_json::to_string(&release).unwrap();
         assert_eq!(serde_json::from_str::<NodeSpec>(&json).unwrap(), release);
         assert!(serde_json::from_str::<StoragePersistence>(r#"{"persistence":"ephemeral","disposition":"preserve"}"#).unwrap_err().to_string().contains("carries no `disposition`"), "ephemeral carries no disposition");
@@ -282,7 +297,7 @@ mod tests {
     /// record written before the rename, its old names, reads back as the same value.
     #[test]
     fn a_spec_is_written_under_the_page_names_and_one_written_before_reads_back() {
-        let spec = NodeSpec::default_for(crate::PathName::new("m.admin", "1").unwrap(), "m", NodeKind::NodeAdmin);
+        let spec = NodeSpec::default_for(crate::PathName::new("m.node-admin", "1").unwrap(), "m", NODE_ADMIN);
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(json["storage_persistence"], serde_json::json!({"persistence": "persistent", "disposition": "preserve"}), "{json}");
         assert!(json.get("storage").is_none(), "{json}");

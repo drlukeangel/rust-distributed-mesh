@@ -541,7 +541,7 @@ mod tests {
         let renamed = PublisherId { ..publisher };
         let old = Frame::MeshTopology { mesh: "mesh1".into(), publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] };
         assert!(order.admit(&old).is_err());
-        let operation = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let operation = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation.clone(), renamed.clone(), 20)).is_ok());
         let relabeled = PublisherId { ..renamed };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation, relabeled, 19)).is_err(), "a carried projection floor belongs to the birth, not its label");
@@ -580,10 +580,10 @@ mod tests {
     use crate::snapshot::PublisherId;
     use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshNode, NodeId};
 
-    fn birth(path: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> MeshDigest {
+    fn birth(path: rdm_core::PathName, mesh: &str, r#type: &str) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode { mesh: mesh.to_owned(), kind: kind, node_id: NodeId::mint(), name: path, endpoint_id: EndpointId(NodeId::mint().to_string()), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
+            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: NodeId::mint(), name: path, endpoint_id: EndpointId(NodeId::mint().to_string()), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
             status: MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
@@ -611,7 +611,7 @@ mod tests {
     }
 
     fn op(d: &MeshDigest, action: &str) -> LifecycleOp {
-        LifecycleOp { kind: d.node.kind, mesh: d.node.mesh.clone(), build_id: "3qcfk1kq47m9".into(), attempt: 1, operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+        LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "3qcfk1kq47m9".into(), attempt: 1, operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
     }
 
     /// CONTRACT (R-RX3: MeshTopology and MeshTopologyDelta order by `published_at_rafka_ms` then
@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn a_publication_stamped_before_the_newest_held_of_its_mesh_is_ignored_and_one_publications_chunks_are_all_taken() {
         let mut order = ReceiveOrder::default();
-        let (p1, p2) = (publisher("mesh1.admin.1"), publisher("mesh1.admin.2"));
+        let (p1, p2) = (publisher("mesh1.node-admin.1"), publisher("mesh1.node-admin.2"));
         assert_eq!(order.admit(&mesh_topology("mesh1", &p1, 100, 7, 0)), Ok(()));
         assert_eq!(order.admit(&mesh_topology("mesh1", &p1, 100, 7, 1)), Ok(()), "the second chunk of the same publication is taken");
         order.installed("mesh1", &p1, 7, Some(100));
@@ -656,7 +656,7 @@ mod tests {
     #[test]
     fn a_mesh_version_moves_when_its_snapshot_installs_and_a_read_installed_version_orders_its_publishers_lower_versions() {
         let mut order = ReceiveOrder::default();
-        let (p, other) = (publisher("mesh1.admin.1"), publisher("mesh1.admin.2"));
+        let (p, other) = (publisher("mesh1.node-admin.1"), publisher("mesh1.node-admin.2"));
         assert_eq!(order.admit(&mesh_topology("mesh1", &p, 200, 8, 0)), Ok(()), "chunk 0 of v8: its snapshot never completes");
         assert_eq!(order.admit(&mesh_topology("mesh1", &p, 150, 7, 1)), Ok(()), "v7's chunk is taken: nothing installed is newer");
         order.installed("mesh1", &p, 7, Some(150));
@@ -680,7 +680,7 @@ mod tests {
     #[test]
     fn a_read_of_its_own_source_below_the_version_it_published_is_refused() {
         let mut order = ReceiveOrder::default();
-        let (me, other) = (publisher("mesh2.admin.2"), publisher("mesh2.admin.1"));
+        let (me, other) = (publisher("mesh2.node-admin.2"), publisher("mesh2.node-admin.1"));
         order.published("mesh2", &me, 27);
         order.published("mesh2", &me, 28);
         order.published("mesh2", &me, 26);
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn a_heartbeat_below_the_held_digest_seq_of_its_birth_is_ignored_and_a_new_incarnation_starts_again() {
         let digest_view = crate::topology::DigestView::default();
-        let d = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let d = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         let at = |seq| MeshDigest { digest_seq: seq, ..d.clone() };
         assert!(digest_view.record(at(7)));
         assert!(!digest_view.record(at(7)), "the installed heartbeat classifier ignores its identical repeat");
@@ -723,8 +723,8 @@ mod tests {
     #[test]
     fn a_lifecycle_fact_below_the_held_version_of_its_publisher_and_mesh_is_ignored() {
         let mut order = ReceiveOrder::default();
-        let (primary, successor, acting) = (publisher("mesh1.admin.1"), publisher("mesh1.admin.2"), publisher("mesh2.admin.1"));
-        let (a, b, c) = (birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), birth(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), birth(rdm_core::PathName::new("mesh3.rpc", "1").unwrap(), "mesh3", rdm_core::NodeKind::RpcNode));
+        let (primary, successor, acting) = (publisher("mesh1.node-admin.1"), publisher("mesh1.node-admin.2"), publisher("mesh2.node-admin.1"));
+        let (a, b, c) = (birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), birth(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), birth(rdm_core::PathName::new("mesh3.node", "1").unwrap(), "mesh3", "node"));
         assert_eq!(order.admit(&StatusEvent::Deleting.frame(op(&a, "node.delete"), primary.clone(), 8)), Ok(()));
         assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&b, "node.stop"), primary.clone(), 8)), Ok(()), "a second fact at the held version is taken");
         assert_eq!(
@@ -741,9 +741,9 @@ mod tests {
     #[test]
     fn a_frame_with_no_order_key_is_always_taken() {
         let mut order = ReceiveOrder::default();
-        let d = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let d = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         let deleted = Frame::NodeDeleted { op: op(&d, "node.delete"), forwarded_by: None };
-        let status = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 };
+        let status = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 };
         for _ in 0..2 {
             assert_eq!(order.admit(&deleted), Ok(()));
             assert_eq!(order.admit(&status), Ok(()));

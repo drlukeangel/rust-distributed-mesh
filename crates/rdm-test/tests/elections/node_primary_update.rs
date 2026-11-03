@@ -40,7 +40,7 @@ fn num(sp: &Value, k: &str) -> Option<i64> {
 }
 
 fn names() -> BTreeSet<PathName> {
-    ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.admin"), &i.to_string())).chain((1..=3).map(move |i| Estate::path(&format!("{m}.rpc"), &i.to_string())))).collect()
+    ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.node-admin"), &i.to_string())).chain((1..=3).map(move |i| Estate::path(&format!("{m}.node"), &i.to_string())))).collect()
 }
 
 /// The caller of a Build: the objects it submitted over, kept so that it can follow the Build to the
@@ -129,7 +129,7 @@ async fn replace_by_steps(estate: &Estate, entry: &rdm_client::PathName, p: &Pat
     }
     let node = p.clone();
     let subject = estate.node_view(p).await;
-    let mut stream = nodes.steps(rdm_test::steps::replace(&node, &subject.mesh, subject.kind).expect("valid replacement fixture name")).await.expect("the replace steps were accepted");
+    let mut stream = nodes.steps(rdm_test::steps::replace(&node, &subject.mesh, &subject.r#type).expect("valid replacement fixture name")).await.expect("the replace steps were accepted");
     let build = stream.accepted().build_id.to_string();
     let caller = Caller { peers, entry: entry.clone(), kind: stream.kind().clone(), accepted: stream.accepted().clone() };
     let frames = tokio::spawn(async move {
@@ -202,7 +202,7 @@ fn fabric_primary(nodes: &[Value]) -> Option<PathName> {
 }
 
 async fn kill(estate: &mut Estate, name: &PathName) {
-    if *name == Estate::path("mesh1.admin", "1") {
+    if *name == Estate::path("mesh1.node-admin", "1") {
         estate.kill_bootstrap();
     } else {
         estate.kill_node(name).await;
@@ -219,7 +219,7 @@ async fn kill(estate: &mut Estate, name: &PathName) {
 async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_mesh() {
     // One ordinary node of each mesh runs on an OS clock an hour ahead: rafka-time is adopted from
     // the primaries and no stamp of any node reads the OS clock.
-    let (mut estate, nodes) = fabric_skewing("a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_mesh", Some(&rdm_core::PathName::new("mesh2.rpc", "1").unwrap())).await;
+    let (mut estate, nodes) = fabric_skewing("a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_mesh", Some(&rdm_core::PathName::new("mesh2.node", "1").unwrap())).await;
     let old = fabric_primary(&nodes).expect("one fabric primary");
     let mesh = mesh_of(&old);
     let heir = sibling(&old);
@@ -261,24 +261,24 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     // The Day-0 root adopted its own OS clock, once, and says why.
     let own: Vec<&&Value> = adopted.iter().filter(|sp| attr(sp, "source") == "own-clock").collect();
     assert_eq!(own.len(), 1, "exactly one own-clock adoption in the fabric: {own:?}");
-    let root_id = s(&node(&nodes, &Estate::path("mesh1.admin", "1"))["node_id"]);
+    let root_id = s(&node(&nodes, &Estate::path("mesh1.node-admin", "1"))["node_id"]);
     assert_eq!((attr(own[0], "node").as_str(), attr(own[0], "reason").as_str()), (root_id.as_str(), "day0-root"));
     // Every other node adopted from the answer to the join it made, served by the admin that deployed it.
     let joined: BTreeSet<String> = adopted.iter().filter(|sp| attr(sp, "source") == "pull" && attr(sp, "via") == "join").map(|sp| attr(sp, "node")).collect();
     // Adoption spans name the node by its node id.
-    let expected: BTreeSet<String> = names().into_iter().filter(|n| *n != Estate::path("mesh1.admin", "1")).map(|n| s(&node(&nodes, &n)["node_id"])).collect();
+    let expected: BTreeSet<String> = names().into_iter().filter(|n| *n != Estate::path("mesh1.node-admin", "1")).map(|n| s(&node(&nodes, &n)["node_id"])).collect();
     assert!(expected.is_subset(&joined), "every node but the root adopted at its join; missing {:?}", expected.difference(&joined).collect::<Vec<_>>());
     // The skewed node ran an hour ahead (its boot span says so), and every heartbeat of every node
     // carries rafka-time less the host clock: none is off by the skew, and the nodes stay within a
     // second of one another.
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment");
     assert!(
-        boot.iter().any(|sp| rdm_test::estate::at_location(sp, &Estate::path("mesh2.rpc", "1")) && num(sp, "os_clock_skew_ms") == Some(OS_CLOCK_SKEW_MS)),
-        "mesh2.rpc.1 ran on an OS clock {OS_CLOCK_SKEW_MS} ms ahead"
+        boot.iter().any(|sp| rdm_test::estate::at_location(sp, &Estate::path("mesh2.node", "1")) && num(sp, "os_clock_skew_ms") == Some(OS_CLOCK_SKEW_MS)),
+        "mesh2.node.1 ran on an OS clock {OS_CLOCK_SKEW_MS} ms ahead"
     );
     let beats = named(&spans, "rdm.mesh.node.update.via-heartbeat");
     let skew_of = |sp: &&Value| num(sp, "clock_skew_ms").unwrap_or(i64::MAX);
-    assert!(beats.iter().any(|sp| rdm_test::estate::at_location(sp, &Estate::path("mesh2.rpc", "1"))), "mesh2.rpc.1 published heartbeats");
+    assert!(beats.iter().any(|sp| rdm_test::estate::at_location(sp, &Estate::path("mesh2.node", "1"))), "mesh2.node.1 published heartbeats");
     let (lo, hi) = (beats.iter().map(skew_of).min().unwrap(), beats.iter().map(skew_of).max().unwrap());
     assert!(lo > -1_000 && hi < 1_000, "every node's rafka-time stands within 1 s of the host clock (the skewed node's OS clock was {OS_CLOCK_SKEW_MS} ms ahead): {lo}..{hi} ms over {} heartbeats", beats.len());
     // The fabric-primary moved to the heir: the other mesh's primary pulled once from it and adopted
@@ -313,7 +313,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     let mesh = mesh_of(&old);
     let successor = sibling(&old);
     let other_mesh = if mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let subject_name = Estate::path(&format!("{other_mesh}.rpc"), "1");
+    let subject_name = Estate::path(&format!("{other_mesh}.node"), "1");
     let subject = node(&nodes, &subject_name).clone();
     let node_id = rdm_core::NodeId::parse(&s(&subject["node_id"])).expect("a node id");
     let incarnation = rdm_core::IncarnationId::parse(&s(&subject["incarnation_id"])).expect("a live birth");
@@ -381,7 +381,7 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     kill(&mut estate, &old).await;
     estate.until_view("the surviving admin is its mesh's primary", Duration::from_secs(90), |views| views.iter().any(|n| n.name == heir && n.is_primary).then_some(())).await;
-    let watcher = nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] != mesh).map(|n| location(&n)).expect("an admin of the other mesh");
+    let watcher = nodes.iter().find(|n| n["type"] == "node-admin" && n["mesh"] != mesh).map(|n| location(&n)).expect("an admin of the other mesh");
     let heard = estate
         .until_view_at(&watcher, &format!("{watcher:?} names {heir:?} {mesh}'s primary"), Duration::from_secs(60), |views| {
             let ns = Estate::values(views);
@@ -389,7 +389,7 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
         })
         .await;
     estate.stop().await;
-    let primaries: Vec<PathName> = heard.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).collect();
+    let primaries: Vec<PathName> = heard.iter().filter(|n| n["mesh"] == mesh && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| location(&n)).collect();
     assert_eq!(primaries, vec![heir.clone()], "{watcher:?} names one {mesh} primary, {heir:?}: {heard:#?}");
 }
 
@@ -416,7 +416,7 @@ async fn a_mesh_cut_from_the_backbone_with_a_node_admin_left_on_each_side_is_rec
         let side = |incumbent: bool| nodes.iter().filter(|n| (n["mesh"] == fp_node["mesh"]) == incumbent).map(|n| location(&n)).collect::<Vec<_>>();
         (side(true), side(false))
     };
-    let other_primary_row = nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] != fp_node["mesh"] && n["is_primary"] == true).cloned().expect("the other mesh's primary");
+    let other_primary_row = nodes.iter().find(|n| n["type"] == "node-admin" && n["mesh"] != fp_node["mesh"] && n["is_primary"] == true).cloned().expect("the other mesh's primary");
     let (other_primary, other_primary_id) = (location(&other_primary_row), s(&other_primary_row["node_id"]));
     let floor = rdm_transport::topology::staleness_floor();
     let fp_id = s(&fp_node["node_id"]);

@@ -164,7 +164,7 @@ pub struct Line {
 impl Line {
     /// The record kind: the format without its version.
     pub fn kind(&self) -> &str {
-        kind_of(&self.format)
+        type_of(&self.format)
     }
 
     /// The record as `T`, refused by name (the file and the line's offset) when it does not decode.
@@ -173,7 +173,7 @@ impl Line {
     }
 }
 
-fn kind_of(format: &str) -> &str {
+fn type_of(format: &str) -> &str {
     format.split('/').next().unwrap_or(format)
 }
 

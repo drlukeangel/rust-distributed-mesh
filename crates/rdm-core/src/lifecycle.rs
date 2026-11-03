@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LifecycleOp {
-    /// The subject's explicit immutable kind.
-    pub kind: crate::NodeKind,
+    /// The subject's immutable type.
+    pub r#type: String,
     /// The Build the operation belongs to.
     pub build_id: String,
     /// The attempt of the Build.
@@ -52,14 +52,14 @@ pub struct LifecycleOp {
 
 impl PartialEq for LifecycleOp {
     fn eq(&self, other: &Self) -> bool {
-        let Self { build_id, attempt, operation, node_id, incarnation, name, kind, mesh, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;
+        let Self { build_id, attempt, operation, node_id, incarnation, name, r#type, mesh, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;
         *build_id == other.build_id
             && *attempt == other.attempt
             && *operation == other.operation
             && *node_id == other.node_id
             && *incarnation == other.incarnation
             && *name == other.name
-            && *kind == other.kind
+            && *r#type == other.r#type
             && *mesh == other.mesh
             && *event_at_rafka_ms == other.event_at_rafka_ms
     }
@@ -120,13 +120,13 @@ mod tests {
 
     #[test]
     fn an_op_round_trips_and_its_key_is_the_operation_not_a_step() {
-        let op = LifecycleOp { kind: crate::NodeKind::RpcNode, mesh: "mesh2".into(),
+        let op = LifecycleOp { r#type: "node".into(), mesh: "mesh2".into(),
             build_id: "b1".into(),
             attempt: 2,
-            operation: crate::OperationId::location("node.delete", &crate::PathName::new("mesh2.rpc", "2").unwrap()),
+            operation: crate::OperationId::location("node.delete", &crate::PathName::new("mesh2.node", "2").unwrap()),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
-            name: crate::PathName::new("mesh2.rpc", "2").unwrap(),
+            name: crate::PathName::new("mesh2.node", "2").unwrap(),
             event_at_rafka_ms: 7,
             traceparent: None,
             tracestate: None,

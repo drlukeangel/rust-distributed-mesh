@@ -31,7 +31,7 @@
 //! (fabric-recovery.md step 2 "Outside its mesh", Q335), and on that verdict the node-admin at the
 //! fabric-primary's path and name is re-created and restored.
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus, PathName};
+use rdm_client::{FabricDesired, MeshDesired, NodeStatus, PathName};
 use rdm_test::elections::{advertised_fabric_primaries, primaries_as_expected};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
@@ -61,7 +61,7 @@ fn location(row: &Value) -> PathName {
 /// killed. No call reaches its birth, so on node investigation's verdict the lowest
 /// Ready mesh-primary on the backbone, mesh2's, runs fabric recovery, exactly as a node-admin
 /// of the lost mesh would: it takes no primary role, node investigation reads the lost birth (not
-/// `reached`), node recovery re-creates the node-admin at path mesh1.admin, name 1, and when that node is
+/// `reached`), node recovery re-creates the node-admin at path mesh1.node-admin, name 1, and when that node is
 /// Ready the workflow restores it as mesh-primary and fabric-primary. The restored mesh-primary
 /// recovers the rest of its mesh, and the fabric accepts and completes a change from it. Must NOT happen:
 /// mesh2's primary, or any other node, named fabric-primary while the workflow runs.
@@ -72,10 +72,10 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
     estate.settles_to(&[("mesh1", 2, 3), ("mesh2", 2, 3)], Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let nodes = estate.node_values().await;
-    let fp = PathName::new("mesh1.admin", "1").unwrap();
+    let fp = PathName::new("mesh1.node-admin", "1").unwrap();
     assert_eq!(nodes.iter().find(|n| n["is_fabric_primary"] == true).map(location), Some(fp.clone()), "the Day-0 admin is fabric-primary: {nodes:#?}");
     let old_node_id = s(&nodes.iter().find(|n| location(n) == fp).unwrap()["node_id"]);
-    let backbone_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2 has a primary");
+    let backbone_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2 has a primary");
     let backbone = s(&backbone_row["node_id"]);
     let backbone_location = location(backbone_row);
     estate.enter(&backbone_location).await;
@@ -91,10 +91,10 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
     estate.kill_bootstrap();
     let killed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
-    // Nobody but the node at path mesh1.admin, name 1 is ever fabric-primary; the workflow restores a new birth there.
+    // Nobody but the node at path mesh1.node-admin, name 1 is ever fabric-primary; the workflow restores a new birth there.
     let floor = rdm_transport::topology::staleness_floor();
     let restored_id = estate
-        .until_view("the node re-created at path mesh1.admin, name 1 is restored as mesh-primary and fabric-primary", floor * 20 + Duration::from_secs(120), |views| {
+        .until_view("the node re-created at path mesh1.node-admin, name 1 is restored as mesh-primary and fabric-primary", floor * 20 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
             let primaries: Vec<PathName> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(location).collect();
             assert!(primaries.iter().all(|h| h == &fp), "only the node at {fp:?} is ever fabric-primary: {primaries:?}");
@@ -106,7 +106,7 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
     estate.enter(&fp).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     // Control is back at the restored fabric-primary: it accepts a change and completes it.
-    let mut spawn = estate.create_node("mesh2", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the restored fabric-primary refused node.create of an rpc node in mesh2: {e}"));
+    let mut spawn = estate.create_node("mesh2", "node").await.unwrap_or_else(|e| panic!("the restored fabric-primary refused node.create of an rpc node in mesh2: {e}"));
     Estate::complete(&mut spawn).await;
     estate.settles_to(&[("mesh1", 2, 3), ("mesh2", 2, 4)], Duration::from_secs(60)).await;
 
@@ -116,7 +116,7 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     // mesh2's primary ran fabric recovery from the backbone; its node investigation of the lost birth decided
-    // (Q335), and it restored the node at path mesh1.admin, name 1.
+    // (Q335), and it restored the node at path mesh1.node-admin, name 1.
     let ran: Vec<Value> = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| at(sp) >= killed_ns).cloned().collect();
     let run = ran.iter().find(|sp| attr(sp, "node_path") == backbone_location.path && attr(sp, "node_name") == backbone_location.name && attr(sp, "arm") == "backbone" && attr(sp, "outcome").starts_with("restored")).unwrap_or_else(|| panic!("{backbone} ran fabric recovery from the backbone and restored {fp:?}: {ran:#?}"));
     assert!(!attr(run, "verdict").is_empty() && attr(run, "verdict") != "reached", "the workflow's node investigation of the killed fabric-primary decided, not reached: {run}");
@@ -140,12 +140,12 @@ async fn a_member_whose_runtime_exited_is_replaced() {
     )
     .await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
-    let gone = estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "this admin hears mesh1.rpc.2", Duration::from_secs(30), |n| n.cloned()).await;
+    let gone = estate.until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "this admin hears mesh1.node.2", Duration::from_secs(30), |n| n.cloned()).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    estate.kill_node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await;
+    estate.kill_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
     estate
         .until_view("a new birth restores two ready rpc nodes", rdm_transport::topology::staleness_floor() + Duration::from_secs(60), |views| {
-            let ready: Vec<_> = views.iter().filter(|n| n.kind == NodeKind::RpcNode && n.status == NodeStatus::Ready).collect();
+            let ready: Vec<_> = views.iter().filter(|n| n.r#type == "node" && n.status == NodeStatus::Ready).collect();
             (ready.len() == 2 && !ready.iter().any(|n| n.node_id == gone.node_id && n.incarnation_id == gone.incarnation_id)).then_some(())
         })
         .await;
@@ -164,7 +164,7 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
         "mesh1",
     )
     .await;
-    let desired = FabricDesired { fabric: "fabric1".into(), meshes: ["mesh3", "mesh1", "mesh2"].map(|m| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)])).to_vec() };
+    let desired = FabricDesired { fabric: "fabric1".into(), meshes: ["mesh3", "mesh1", "mesh2"].map(|m| MeshDesired::of(m, [("node-admin", 2), ("node", 1)])).to_vec() };
     estate.reconcile(&desired).await;
     let all_ready = |nodes: &[Value]| nodes.len() == 9 && nodes.iter().all(|n| n["status"] == "ready");
     let nodes = estate
@@ -173,12 +173,12 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
             (all_ready(&nodes) && primaries_as_expected(&nodes).is_ok()).then_some(nodes)
         })
         .await;
-    let boot_location = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+    let boot_location = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     let winner_node = nodes.iter().find(|n| serde_json::from_value::<rdm_core::PathName>(n["name"].clone()).is_ok_and(|location| location == boot_location)).expect("bootstrap node").clone();
     let winner = s(&winner_node["node_id"]);
     assert_eq!(advertised_fabric_primaries(&nodes), vec![winner.clone()], "the Day-0 admin holds the fabric-primary role: {nodes:#?}");
     // Every mesh primary's own view advertises the same primary.
-    let mesh_primaries: Vec<Value> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).cloned().collect();
+    let mesh_primaries: Vec<Value> = nodes.iter().filter(|n| n["type"] == "node-admin" && n["is_primary"] == true).cloned().collect();
     assert_eq!(mesh_primaries.len(), 3);
     for mp in &mesh_primaries {
         let view = estate

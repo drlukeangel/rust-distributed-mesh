@@ -9,9 +9,9 @@ use serde_json::Value;
 use rdm_core::{NodeId, PathName};
 use std::time::Duration;
 
-fn source() -> PathName { PathName::new("mesh1.rpc", "1").unwrap() }
-fn carrier() -> PathName { PathName::new("mesh1.rpc", "2").unwrap() }
-fn destination() -> PathName { PathName::new("mesh1.rpc", "3").unwrap() }
+fn source() -> PathName { PathName::new("mesh1.node", "1").unwrap() }
+fn carrier() -> PathName { PathName::new("mesh1.node", "2").unwrap() }
+fn destination() -> PathName { PathName::new("mesh1.node", "3").unwrap() }
 
 fn owner(test: &str) -> Owner {
     Owner { product: "mesh".into(), feature: "connections".into(), subfeature: "connections-restart".into(), rung: "MN".into(), provider: "process".into(), test: test.into() }

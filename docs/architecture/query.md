@@ -29,9 +29,9 @@ One read per entity, each answering a list in a stable order: `fabric.get`, `mes
 `node.get`, `node.connection.get`. A filter is a list of `[property, [values…]]` pairs.
 
 ```text
-node.get  [["kind", ["gateway", "broker"]]]                       any of the values in one pair
-node.get  [["mesh", ["mesh1"]], ["kind", ["gateway"]]]            pairs are AND
-node.get  [["kind", ["admin"]], ["is_primary", ["true"]]]         every mesh-primary
+node.get  [["type", ["gateway", "broker"]]]                       any of the values in one pair
+node.get  [["mesh", ["mesh1"]], ["type", ["gateway"]]]            pairs are AND
+node.get  [["type", ["node-admin"]], ["is_primary", ["true"]]]    every mesh-primary
 node.get  [["is_fabric_primary", ["true"]]]
 node.get  [["tags", ["red"]], ["tags", ["eu"]]]                   a repeated property is AND (all of)
 node.get  [["config.region", ["eu-west"]], ["status", ["ready"]]]
@@ -53,8 +53,7 @@ The matching rules:
 - **Property:** any public field of the row by its page name ([Node properties](node-rpc-envelope.md#node-properties)
   for a node; `MeshView`, `FabricView` and `ConnectionView` for the others).
   `config.<key>` reads into the application's config map; the key is everything after the first dot.
-- **Values:** strings. A boolean is `true` or `false`, an enum its page name (`ready`,
-  `gateway`), a number its digits, an id or a name its canonical text.
+- **Values:** strings. A boolean is `true` or `false`, an enum its page name (`ready`), a number its digits, an id or a name its canonical text.
 - **Match:** a set field (`tags`) matches when it contains the value; a string field matches exactly;
   `""` matches an empty string, never an absent one. A row without a property the schema has (a
   config key) does not match.
@@ -80,12 +79,11 @@ the mesh and fabric statuses ([gossip.md](gossip.md)). It queries that view with
 the same matching rules, locally, with no call:
 
 ```text
-topology_view.nodes_get([["kind", ["broker"]], ["status", ["ready"]]])   the ready brokers I hear
+topology_view.nodes_get([["type", ["broker"]], ["status", ["ready"]]])   the ready brokers I hear
 topology_view.nodes_get([["mesh", [my mesh]]])                                       my mesh as I hold it
 ```
 
-- **Properties:** only what gossip carries: `id`, `incarnation`, `name`, `path`, `node_type`,
-  `kind`, `mesh`, `status`, the endpoint (`endpoint`, `transport_addr`) and the primaries
+- **Properties:** only what gossip carries: `id`, `incarnation`, `name`, `path`, `type`, `mesh`, `status`, the endpoint (`endpoint`, `transport_addr`) and the primaries
   (`is_primary`, `is_fabric_primary`). Gossip carries what routing needs and nothing else (Q203).
 - **Refused:** a row-only property (`tags`, `config.<key>`, `executable`, …) is `INVALID_ARGUMENT` by
   name, naming `node.get`, whatever rows would have matched; the local view never answers a row-only

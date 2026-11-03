@@ -168,7 +168,7 @@ use crate::context::CallContext;
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
-use crate::{IncarnationId, NodeId, NodeKind, PathName};
+use crate::{IncarnationId, NodeId, PathName};
 use serde::{Deserialize, Serialize};
 /// Construct the typed failed outcome.
 pub fn failed(build_id: String, attempt: u32, operation: crate::OperationId, step: String, reason: String, code: crate::outcome::Code) -> BuildReply { BuildReply::Failed { build_id, attempt, operation, step, reason, code } }
@@ -278,7 +278,7 @@ pub fn already_applied(revisions: Vec<(String, crate::framing::Birth, crate::fra
 /// Construct the typed rejected-not-primary outcome.
 pub fn rejected_not_primary(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedNotPrimary { reason } }
 /// Construct the typed rejected-stale-revision outcome.
-pub fn rejected_stale_revision(node_type: String, expected: u64, current: u64) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedStaleRevision { node_type, expected, current } }
+pub fn rejected_stale_revision(r#type: String, expected: u64, current: u64) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedStaleRevision { r#type, expected, current } }
 /// Construct the typed not-ready outcome.
 pub fn not_ready(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::NotReady { reason } }
 /// Construct the typed malformed outcome.

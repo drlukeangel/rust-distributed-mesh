@@ -51,7 +51,7 @@ impl AdminRunner {
     /// stopped, as the view projects a digest (the leave's records, [`crate::mesh_delete::roster_records`]).
     fn held_record(&self, b: &RosterBirth) -> Option<Node> {
         let d = self.digest_view.get(&b.node_id).map(|(d, _)| d).or_else(|| self.digest_view.stopped_digests().into_iter().find(|d| d.node.node_id.as_str() == b.node_id)).filter(|d| d.node.incarnation.as_str() == b.incarnation_id)?;
-        let mut n = Node::allocated(d.node.name.clone(), d.node.mesh.clone(), d.node.kind);
+        let mut n = Node::allocated(d.node.name.clone(), d.node.mesh.clone(), &d.node.r#type);
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -118,7 +118,7 @@ impl AdminRunner {
         // before anything is amended (R11). During fabric.delete, an unanswered mesh with no prior
         // AcceptedRoster resolves by deleting its unreached births (R-FS1 revised).
         let mut steps = steps;
-        let primary = match view.node_type_primary(mesh, NodeKind::NodeAdmin).filter(|p| p.status.is_live()).cloned() {
+        let primary = match view.node_type_primary(mesh, "node-admin").filter(|p| p.status.is_live()).cloned() {
             Some(p) => p,
             None => {
                 // Under fabric.delete (its plan names no mesh), a mesh with no live node-admin gains none: it
@@ -198,7 +198,7 @@ impl AdminRunner {
     /// loss: the attempt ends and the next one hands that admin the workflow.
     async fn delete_mesh_in_process(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &MeshDeleteKey, steps: &[BuildStepReceipt], view: &Topology) -> Result<(), RunEnd> {
         let outer = &key.operation;
-        if let Some(live) = view.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.status.is_live()) {
+        if let Some(live) = view.nodes_of_type(mesh, "node-admin").find(|n| n.status.is_live()) {
             return Err(RunEnd::Incomplete(format!("{outer:?}: {mesh}'s admin {} is live and holds no mesh-primary role yet, so it is not lost; the next attempt hands the workflow to the admin that holds it", live.node_id)));
         }
         let span = tracing::info_span!("rdm.node_admin.mesh.delete.via-in-process", node_path = %self.held_name().path, node_name = %self.held_name().name, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %build_id.log(), attempt, operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.recipe_step, roster = tracing::field::Empty, outcome = tracing::field::Empty);
@@ -211,7 +211,7 @@ impl AdminRunner {
     async fn delete_mesh_in_process_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &MeshDeleteKey, steps: &[BuildStepReceipt], view: &Topology) -> Result<(), RunEnd> {
         let outer = &key.operation;
         let me = self.node_id.to_string();
-        let live: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == mesh && n.kind != NodeKind::NodeAdmin && n.status.is_live()).cloned().collect();
+        let live: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == mesh && !rdm_core::is_node_admin(&n.r#type) && n.status.is_live()).cloned().collect();
         // The roster is captured once and never recaptured (mesh-delete.md "Resume after the primary's
         // loss"): the AcceptedRoster receipt an earlier executor recorded is read; with none recorded, the
         // capture has not happened yet and this one is the first, taken from the mesh's node rows on the
@@ -220,7 +220,7 @@ impl AdminRunner {
             Some(adm) => adm,
             None => {
                 let roster = self.stored_roster(mesh, &key.mesh_id, steps).await.map_err(|e| format!("{outer:?}: {e}"))?;
-                let is_admin = |b: &RosterBirth| b.kind == NodeKind::NodeAdmin;
+                let is_admin = |b: &RosterBirth| rdm_core::is_node_admin(&b.r#type);
                 let final_primary = roster.iter().find(|b| is_admin(b)).or(roster.first()).cloned().ok_or_else(|| format!("{outer:?}: the store holds no node row of {mesh} to delete"))?;
                 let final_runtime = self.roster_birth_runtime(&final_primary, steps).await.map_err(|e| format!("{outer:?}: the runtime of {}, the roster's final primary, is not known here: {e}", final_primary.node_id))?;
                 tracing::Span::current().record("roster", roster.len());
@@ -239,7 +239,7 @@ impl AdminRunner {
         // terminal receipt: a delete with every step's receipt stands; one that holds its exited verdict and not
         // every later step runs on from its receipts; a live member by its ordinary node.delete; every other
         // birth as an unreached birth.
-        let is_admin = |b: &RosterBirth| b.kind == NodeKind::NodeAdmin;
+        let is_admin = |b: &RosterBirth| rdm_core::is_node_admin(&b.r#type);
         for admins in [false, true] {
             for b in roster.iter().filter(|b| is_admin(b) == admins) {
                 let held = self.builds.read_build(build_id).await.map_err(|e| format!("{outer:?}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
@@ -257,7 +257,7 @@ impl AdminRunner {
                     None => {
                         // An admin node investigation reaches is not lost (Q111): the next attempt hands it the
                         // workflow, and nothing of it is deleted here.
-                        let seen = view.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
+                        let seen = view.nodes_of_type(mesh, "node-admin").find(|n| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
                         if let Some(n) = seen {
                             if matches!(crate::path_investigation::PathProbe::investigate(self, &n).await, crate::node_investigation::Finding::Reached { .. }) {
                                 return Err(RunEnd::Incomplete(format!("{outer:?}: {mesh}'s node-admin {} {} answers, so it is not lost; the next attempt hands the workflow to the admin the election names", b.node_id, b.incarnation_id)));
@@ -348,7 +348,7 @@ impl AdminRunner {
         let Some(adm) = crate::mesh_delete::admitted_of(steps, outer).transpose().map_err(|e| format!("{outer:?}: {e}"))? else {
             return Err(RunEnd::failed(no_primary));
         };
-        if let Some(live) = view.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.status.is_live()) {
+        if let Some(live) = view.nodes_of_type(mesh, "node-admin").find(|n| n.status.is_live()) {
             return Err(RunEnd::Incomplete(format!("{no_primary}: its admin {} is live and holds no primary role yet, so it is not lost; the next attempt hands the workflow to the admin primary", live.node_id)));
         }
         let lost = adm.final_primary.clone();
@@ -369,7 +369,7 @@ impl AdminRunner {
         }
         // None survives: every other node-admin of the roster, silent in this view, is deleted before
         // anything is created for the mesh.
-        for other in adm.roster.iter().filter(|b| **b != lost && b.kind == NodeKind::NodeAdmin && b.mesh == mesh) {
+        for other in adm.roster.iter().filter(|b| **b != lost && rdm_core::is_node_admin(&b.r#type) && b.mesh == mesh) {
             self.delete_silent_admin(build_id, attempt, key, mesh, other, steps).await?;
         }
         // The lost primary's departure vacates its role in this view before the name of the admin
@@ -385,7 +385,7 @@ impl AdminRunner {
         created.map_err(|e| format!("{outer:?}: the node-admin path={node_path:?} name={node_name:?} created for {mesh}, which has no live admin: {e}"))?;
         self.refresh_view().await;
         let now = self.topology.read().await.clone();
-        now.node_type_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| RunEnd::Incomplete(format!("{outer:?}: path={node_path:?} name={node_name:?} was created for {mesh} and holds no mesh-primary role yet; the next attempt amends the roster for it")))
+        now.node_type_primary(mesh, "node-admin").cloned().ok_or_else(|| RunEnd::Incomplete(format!("{outer:?}: path={node_path:?} name={node_name:?} was created for {mesh} and holds no mesh-primary role yet; the next attempt amends the roster for it")))
     }
 
     /// node.create of `path`, the one node-admin of a leaving mesh no admin of which survives, into
@@ -411,9 +411,9 @@ impl AdminRunner {
             other => return Err(format!("path={node_path:?} name={node_name:?} is not a path no birth held: the create door targeted {other:?}")),
         }
         let hand_off = self.mesh_state_hook(mesh, state)?;
-        let template = self.with_issuing_material(self.template_bound(path, mesh, NodeKind::NodeAdmin, executable, "row").await?, mesh).await?;
+        let template = self.with_issuing_material(self.template_bound(path, mesh, "node-admin", executable, "row").await?, mesh).await?;
         let held_runtimes = self.held_runtimes().await;
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(path)), mesh: mesh.to_string(), kind: NodeKind::NodeAdmin, build_id: build_id.clone(), attempt, node: path.clone(), spec: self.listeners.spec_for(NodeKind::NodeAdmin), data_dir: None, held_runtimes, entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(path)), mesh: mesh.to_string(), r#type: "node-admin".into(), build_id: build_id.clone(), attempt, node: path.clone(), spec: self.listeners.spec_for("node-admin"), data_dir: None, held_runtimes, entry: None };
         let created = self.pipeline(&template).create_with(&req, Some(hand_off), None).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(created.node.node_id.clone(), (created.node, created.handle));
@@ -438,7 +438,7 @@ impl AdminRunner {
     /// this admin's durable runtime row of it, never from the view, which drops a deleted birth.
     async fn amend_after_loss(&self, key: &MeshDeleteKey, adm: &Admitted, primary: &Node, held: &RosterBirth) -> Result<(), RunEnd> {
         let outer = &key.operation;
-        if primary.kind != NodeKind::NodeAdmin {
+        if !rdm_core::is_node_admin(&primary.r#type) {
             return Err(format!("{outer:?} is refused: {} {} is not a node-admin and cannot be the final primary", held.node_id, held.incarnation_id).into());
         }
         let (_, handle) = self.handle_for(primary).await.map_err(|e| format!("{outer:?} is refused: no provider proof path for the new final primary {}: {e}", primary.node_id))?;
@@ -461,7 +461,7 @@ impl AdminRunner {
             if !exited {
                 let record = lost.record()?;
                 match crate::node_investigation::birth_runtime(&self.digest_view, Some(&**store), &record).await {
-                    Ok(b) => row = Some(crate::storage::RuntimeRow { kind: record.kind, mesh: record.mesh.clone(), node_id: record.node_id.clone(), name: record.name.clone(), incarnation_id: b.incarnation, runtime: b.fact, data_dir: b.data_dir }),
+                    Ok(b) => row = Some(crate::storage::RuntimeRow { r#type: record.r#type.clone(), mesh: record.mesh.clone(), node_id: record.node_id.clone(), name: record.name.clone(), incarnation_id: b.incarnation, runtime: b.fact, data_dir: b.data_dir }),
                     Err(why) => {
                         let step = crate::deployment::pipeline::DeleteStep::TerminateRuntime.name();
                         let reason = format!(
@@ -500,7 +500,7 @@ impl AdminRunner {
         // lost primary published the mesh's topology), it is the surviving admin the election names
         // (mesh-delete.md "Resume after the primary's loss" step 2), and the next attempt hands it the
         // workflow. Nothing is deleted or created for the mesh.
-        let held = self.topology.read().await.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
+        let held = self.topology.read().await.nodes_of_type(mesh, "node-admin").find(|n| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
         if let Some(n) = held {
             if matches!(crate::path_investigation::PathProbe::investigate(self, &n).await, crate::node_investigation::Finding::Reached { .. }) {
                 return Err(RunEnd::Incomplete(format!("{outer:?}: {mesh}'s node-admin {} {} answers, so it survives; the next attempt hands the workflow to the admin the election names", b.node_id, b.incarnation_id)));
@@ -931,8 +931,8 @@ impl AdminRunner {
         // it, gossips it and answers"); its view then states the mesh Dead and its status workflow
         // publishes MeshStatus Dead, five sends, while it lives (R-NS1 item 1). A refused put
         // answers no handoff: the owner's repeated delete-mesh decides it afresh.
-        // Its Mesh row is written deleted on mesh.storage with it, which releases the mesh's name (R-MN1
-        // item 2); a refused write answers no handoff either.
+        // Its Mesh row is written deleted on mesh.storage with it: writing the deleted record frees the
+        // name (R-MN1 item 2); a refused write answers no handoff either.
         let committed = crate::status_rpc::commit_mesh_state(&*self.mesh_storage, &self.records.caches, &self.records.declared, &me.mesh, &key.mesh_id, rdm_core::status::MeshState::Deleted, 0).await;
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-deleted-row", node_path = %self.held_name().path, node_name = %self.held_name().name, mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation.action, operation_subject = ?key.operation.subject, receipts = manifest.receipts.len(), outcome = committed.name(), mesh_row = tracing::field::Empty, error = tracing::field::Empty);
         let mesh_row = match committed {
@@ -1098,7 +1098,7 @@ mod tests {
         let fabric_id = FabricId::mint();
         let mesh1_id = MeshId::mint();
         let mesh2_id = MeshId::mint();
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let node_id = NodeId::mint();
         let incarnation = IncarnationId::mint();
 
@@ -1108,7 +1108,7 @@ mod tests {
             &fabric_id,
             "mesh1",
             &mesh1_id,
-            "mesh1.admin.1",
+            "mesh1.node-admin.1",
             Arc::new(time.clone()),
             vec![],
             &[],
@@ -1289,7 +1289,7 @@ mod tests {
         let mut fab_top = FabricTopology::root("fab", "mesh1", mesh1_id);
         fab_top.meshes.insert(
             "mesh2".into(),
-            MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1)])),
+            MeshTopology::of(&MeshDesired::of("mesh2", [("node-admin", 1)])),
         );
         adapter
             .publish_accepted(&BuildAccepted {
@@ -1305,11 +1305,11 @@ mod tests {
         let final_inc = IncarnationId::mint();
         runner
             .nodes_storage
-            .put_node(&crate::storage::NodeRow::new(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, final_id.clone(), NodeStatus::Deleted))
+            .put_node(&crate::storage::NodeRow::new(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", final_id.clone(), NodeStatus::Deleted))
             .await
             .unwrap();
-        let final_birth = RosterBirth { mesh: "mesh2".into(), kind: rdm_core::NodeKind::NodeAdmin,
-            node: rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
+        let final_birth = RosterBirth { mesh: "mesh2".into(), r#type: "node-admin".into(),
+            node: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
             node_id: final_id.to_string(),
             incarnation_id: final_inc.to_string(),
         };
@@ -1334,7 +1334,7 @@ mod tests {
             attempt: 1,
             operation: outer.clone(),
         };
-        crate::mesh_delete::record_completion(&*adapter, &key, "mesh1.admin.1", &manifest)
+        crate::mesh_delete::record_completion(&*adapter, &key, "mesh1.node-admin.1", &manifest)
             .await
             .unwrap();
 
@@ -1346,7 +1346,7 @@ mod tests {
         //    primary's `TerminateRuntime` receipt is present on its `node.delete` Build.
         let del_op = rdm_core::OperationId::node("node.delete", &final_id);
         let term = TerminalReceipt {
-            node: rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
+            node: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
             node_id: final_id.to_string(),
             incarnation_id: final_inc.to_string(),
             runtime: Some(final_runtime),
@@ -1368,13 +1368,13 @@ mod tests {
             .await
             .unwrap();
 
-        let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".into(),
+        let op = rdm_core::LifecycleOp { r#type: "node-admin".into(), mesh: "mesh2".into(),
             build_id: build_id.to_string(),
             attempt: 1,
             operation: del_op,
             node_id: final_id,
             incarnation: final_inc,
-            name: rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
+            name: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
             event_at_rafka_ms: 5_000_000,
             traceparent: None,
             tracestate: None,

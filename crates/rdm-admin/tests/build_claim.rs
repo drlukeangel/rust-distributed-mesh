@@ -10,7 +10,7 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rdm_core::{EndpointId, IncarnationId, NodeId, NodeKind};
+use rdm_core::{EndpointId, IncarnationId, NodeId};
 use rdm_admin::accepted::FabricTopology;
 use rdm_admin::build::BuildId;
 use rdm_admin::build_claim::{self, AttemptContexts, ClaimDoor};
@@ -39,9 +39,9 @@ impl Birth {
     }
 }
 
-fn birth(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, fabric_primary: bool) -> Birth {
+fn birth(name: rdm_core::PathName, mesh: &str, r#type: &str, fabric_primary: bool) -> Birth {
     let key = SecretKey::generate();
-    let mut node = Node::allocated(name, mesh, kind);
+    let mut node = Node::allocated(name, mesh, r#type);
     node.node_id = NodeId::mint();
     node.endpoint_id = Some(EndpointId(key.public().to_string()));
     node.incarnation_id = Some(IncarnationId::mint());
@@ -92,7 +92,7 @@ async fn elect(
     let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let resolved = ResolvedNode { mesh: b.node.mesh.clone(), kind: b.node.kind,
+    let resolved = ResolvedNode { mesh: b.node.mesh.clone(), r#type: b.node.r#type.clone(),
         node_id: b.node.node_id.clone(),
         name: b.node.name.clone(),
         endpoint_id: b.key.public(),
@@ -124,7 +124,7 @@ async fn open(builds: &MemoryBuildStateAdapter, id: &BuildId, attempt: u32) {
 /// A fabric-primary P whose log holds the Build at `settled` converged attempts, listing the
 /// re-born executor's birth in its view the way the product's digest view does.
 async fn primary(id: &BuildId, settled_attempts: u32, contexts: Arc<AttemptContexts>, executor: &Birth) -> (Birth, Admin, Arc<MemoryBuildStateAdapter>) {
-    let p = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true);
+    let p = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true);
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     settled(&builds, id, &p, settled_attempts).await;
     let topology = view(vec![p.node.clone(), executor.node.clone()]);
@@ -138,7 +138,7 @@ async fn primary(id: &BuildId, settled_attempts: u32, contexts: Arc<AttemptConte
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_of_a_held_attempt_is_lost_to_its_claimant_and_changes_nothing() {
     let id = BuildId::mint();
-    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let executor = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false);
     let (p, p_admin, p_builds) = primary(&id, 6, Arc::new(AttemptContexts::in_memory()), &executor).await;
     assert_eq!(p_admin.door.claim(&executor.node.node_id, &id, 1).await, BuildClaimReply::Lost { holder: p.node.node_id.clone() });
     assert_eq!(p_builds.read_build(&id).await.unwrap().attempt, 6, "the fabric-primary's log is unchanged by the refused claim");
@@ -149,14 +149,14 @@ async fn a_claim_of_a_held_attempt_is_lost_to_its_claimant_and_changes_nothing()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_past_the_open_attempt_is_not_open_and_names_the_next() {
     let id = BuildId::mint();
-    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let executor = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false);
     let (p, p_admin, p_builds) = primary(&id, 3, Arc::new(AttemptContexts::in_memory()), &executor).await;
     open(&p_builds, &id, 4).await;
     assert_eq!(p_admin.door.claim(&executor.node.node_id, &id, 9).await, BuildClaimReply::NotOpen { next: Some(4) });
     let first = p_admin.door.claim(&executor.node.node_id, &id, 4).await;
     assert!(matches!(first, BuildClaimReply::Won { .. }), "{first:?}");
     assert_eq!(p_admin.door.claim(&executor.node.node_id, &id, 4).await, first, "a repeat claim by the holder answers the same");
-    let q = birth(rdm_core::PathName::new("mesh1.admin", "3").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let q = birth(rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", false);
     p_admin.door.topology.write().await.nodes.push(q.node.clone());
     assert_eq!(p_admin.door.claim(&q.node.node_id, &id, 4).await, BuildClaimReply::Lost { holder: executor.node.node_id.clone() });
 }
@@ -172,9 +172,9 @@ async fn a_claim_past_the_open_attempt_is_not_open_and_names_the_next() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_lost_to_an_executor_of_another_mesh_leaves_its_own_mesh_free_for_the_next_attempt() {
     let id = BuildId::mint();
-    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let executor = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false);
     let (p, p_admin, p_builds) = primary(&id, 0, Arc::new(AttemptContexts::in_memory()), &executor).await;
-    let mut m = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true);
+    let mut m = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true);
     m.node.is_fabric_primary = false;
     p_admin.door.topology.write().await.nodes.push(m.node.clone());
     let first = p_admin.door.claim(&p.node.node_id, &id, 1).await;
@@ -186,7 +186,7 @@ async fn a_claim_lost_to_an_executor_of_another_mesh_leaves_its_own_mesh_free_fo
     assert_eq!(p_admin.door.claim(&executor.node.node_id, &id, 1).await, BuildClaimReply::Lost { holder: p.node.node_id.clone() });
     let held = p_admin.door.claims.in_flight("mesh1").await.unwrap().expect("mesh1's row of the held attempt stands");
     assert_eq!((held.attempt, held.claimant.as_str()), (1, p.node.node_id.as_str()));
-    // Attempt 1 hands off to mesh2.admin.1, and its verdict releases mesh1's row, as the drive does.
+    // Attempt 1 hands off to mesh2.node-admin.1, and its verdict releases mesh1's row, as the drive does.
     p_builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::HandedOff { to: m.node.node_id.clone() } }).await.unwrap();
     p_admin.door.claims.release_in_flight("mesh1", &held).await.unwrap();
     let next = p_admin.door.claim(&m.node.node_id, &id, 2).await;
@@ -200,9 +200,9 @@ async fn a_claim_lost_to_an_executor_of_another_mesh_leaves_its_own_mesh_free_fo
 async fn a_won_claim_returns_the_attempts_context_and_a_hand_off_inherits_it() {
     let id = BuildId::mint();
     let contexts = Arc::new(AttemptContexts::in_memory());
-    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let executor = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false);
     let (p, p_admin, p_builds) = primary(&id, 3, contexts.clone(), &executor).await;
-    let mut m = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true);
+    let mut m = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true);
     m.node.is_fabric_primary = false;
     p_admin.door.topology.write().await.nodes.push(m.node.clone());
     let rest = CallContext { caller_system: Some("rdm".into()), traceparent: Some(TRACEPARENT.into()), tracestate: None, baggage: None };
@@ -237,9 +237,9 @@ async fn a_won_claim_returns_the_attempts_context_and_a_hand_off_inherits_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_and_a_mesh_primary_claims_its_own_drift_attempt() {
     let id = BuildId::mint();
-    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let executor = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false);
     let (p, _p_admin, _p_builds) = primary(&id, 2, Arc::new(AttemptContexts::in_memory()), &executor).await;
-    let q = birth(rdm_core::PathName::new("mesh1.admin", "3").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let q = birth(rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", false);
     let q_view = view(vec![p.node.clone(), q.node.clone(), executor.node.clone()]);
     let q_admin = elect(&q, q_view, Arc::new(MemoryBuildStateAdapter::new()), Arc::new(AttemptContexts::in_memory())).await;
     let names_both = BuildClaimReply::NotClaimant { mesh: Some("mesh1".into()), fabric_primary: Some(p.node.node_id.clone()), mesh_primary: Some(p.node.node_id.clone()) };
@@ -247,7 +247,7 @@ async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_an
     assert_eq!(q_admin.door.claim_in(&q.node.node_id, &id, Some("mesh1"), 1).await, names_both, "nor a claim of its mesh's drift lane");
 
     // mesh2's mesh-primary, not the fabric-primary: its own drift lane's attempt 1 is open.
-    let mut m = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false);
+    let mut m = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", false);
     m.node.mesh = "mesh2".into();
     m.node.is_primary = true;
     let m_builds = Arc::new(MemoryBuildStateAdapter::new());
@@ -271,7 +271,7 @@ async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_an
 async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
     use rdm_core::build_claim::{BuildClaim, BuildClaimRequest};
     let id = BuildId::mint();
-    let re_born_birth = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let re_born_birth = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false);
     let (p, p_admin, p_builds) = primary(&id, 1, Arc::new(AttemptContexts::in_memory()), &re_born_birth).await;
     open(&p_builds, &id, 2).await;
     let resolver = Arc::new(StaticResolver::new());
@@ -299,7 +299,7 @@ async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
 async fn a_claim_from_an_endpoint_the_fabric_primary_never_heard_of_is_decided_for_the_executor_it_names() {
     use rdm_core::build_claim::{BuildClaim, BuildClaimRequest};
     let id = BuildId::mint();
-    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let executor = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false);
     let (p, p_admin, p_builds) = primary(&id, 1, Arc::new(AttemptContexts::in_memory()), &executor).await;
     open(&p_builds, &id, 2).await;
     let resolver = Arc::new(StaticResolver::new());
@@ -344,15 +344,15 @@ async fn a_claim_by_a_deleted_birth_is_refused_by_name_and_takes_nothing() {
     use rdm_admin::storage::{MeshStorage as _, NodeRow, NodesStorage as _};
     let id = BuildId::mint();
     let builds = MemoryBuildStateAdapter::new();
-    let p = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true);
+    let p = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true);
     settled(&builds, &id, &p, 1).await;
     open(&builds, &id, 2).await;
     let claims = rdm_admin::storage::MemoryMeshStorage::default();
     let contexts = AttemptContexts::in_memory();
     let rows = rdm_admin::storage::MemoryNodesStorage::default();
-    let me: rdm_core::PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+    let me: rdm_core::PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
     let me_id = NodeId::mint();
-    rows.put_node(&NodeRow::new(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, me_id.clone(), NodeStatus::Deleted)).await.unwrap();
+    rows.put_node(&NodeRow::new(me.clone(), "mesh1", "node-admin", me_id.clone(), NodeStatus::Deleted)).await.unwrap();
     let claim = BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: Some(me_id.clone()), mesh: None, build_id: id.clone(), attempt: 2, executor: rdm_core::framing::Birth { node_id: me_id.clone(), incarnation: IncarnationId::mint() } };
     let refused = build_claim::decide_claim(&me, &builds, &claims, &contexts, &claim, "mesh1", Some((&rows, &me_id))).await;
     assert!(matches!(&refused, BuildClaimReply::NotReady { reason } if reason.contains("deleted birth") && reason.contains(me_id.as_str())), "a deleted birth's claim is refused by name: {refused:?}");
@@ -360,7 +360,7 @@ async fn a_claim_by_a_deleted_birth_is_refused_by_name_and_takes_nothing() {
     let p = builds.read_build(&id).await.unwrap();
     assert_eq!((p.attempt, p.executor.as_ref()), (1, None), "nothing of the refused claim is on the Build log: attempt 2 stays unclaimed: {p:?}");
 
-    rows.put_node(&NodeRow::new(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, me_id.clone(), NodeStatus::Ready)).await.unwrap();
+    rows.put_node(&NodeRow::new(me.clone(), "mesh1", "node-admin", me_id.clone(), NodeStatus::Ready)).await.unwrap();
     let won = build_claim::decide_claim(&me, &builds, &claims, &contexts, &claim, "mesh1", Some((&rows, &me_id))).await;
     assert!(matches!(won, BuildClaimReply::Won { .. }), "the live birth's claim wins: {won:?}");
 }

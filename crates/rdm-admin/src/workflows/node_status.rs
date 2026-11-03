@@ -12,7 +12,7 @@ pub use crate::admin::ServingDoor;
 mod tests {
     use super::*;
     use crate::fabric_storage::{FabricIdentity, FabricRecord};
-    use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, Node, NodeId, NodeKind, NodeStatus, PathName};
+    use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, Node, NodeId, NodeStatus, PathName};
     use crate::status_rpc::{Declaration, OperationEffect};
     use crate::storage::{BirthFacts, MeshRecord, NodeOperation, NodeRow};
     use rdm_core::MemberStatus;
@@ -31,12 +31,12 @@ mod tests {
         // names the operation that produced the state when one did ([DeclaredOperation]): a
         // stop's `Stopped`, from which the mesh-primary publishes NodeStopped ([node.stop]
         // step 5), and a start's `Pending` and `Ready`."
-        let path = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
+        let path = PathName::numbered("mesh1", "node", 1);
         let node_id = NodeId::mint();
         let older_inc = IncarnationId::mint();
         let current_inc = IncarnationId::mint();
 
-        let mut row = NodeRow::new(path.clone(), "mesh1", NodeKind::RpcNode, node_id.clone(), NodeStatus::Starting);
+        let mut row = NodeRow::new(path.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Starting);
         let mut older_birth = BirthFacts::new(older_inc.clone(), path.clone());
         older_birth.declared.insert(NodeState::Pending);
         let mut current_birth = BirthFacts::new(current_inc.clone(), path.clone());
@@ -68,19 +68,19 @@ mod tests {
         assert_eq!(
             declarations,
             vec![
-                Declaration { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
+                Declaration { r#type: "node".into(), mesh: "mesh1".to_owned(),
                     node_id: node_id.clone(),
                     incarnation_id: older_inc.clone(),
                     name: path.clone(),
                     state: NodeState::Pending,
                 },
-                Declaration { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
+                Declaration { r#type: "node".into(), mesh: "mesh1".to_owned(),
                     node_id: node_id.clone(),
                     incarnation_id: current_inc.clone(),
                     name: path.clone(),
                     state: NodeState::Pending,
                 },
-                Declaration { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
+                Declaration { r#type: "node".into(), mesh: "mesh1".to_owned(),
                     node_id: node_id.clone(),
                     incarnation_id: current_inc.clone(),
                     name: path.clone(),
@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(declared_of_member(MemberStatus::Leaving), NodeState::Stopped);
 
         let mut distinct = Declared::default();
-        let mut current = Node::allocated(PathName::new("place", "primary").unwrap(), "mesh1", NodeKind::NodeAdmin);
+        let mut current = Node::allocated(PathName::new("place", "primary").unwrap(), "mesh1", "node-admin");
         current.incarnation_id = Some(current_inc.clone());
         let other = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: current_inc.clone() };
         distinct.record_report("mesh1", Reporter::Birth(other.clone()), Instant::now());
@@ -173,7 +173,7 @@ mod tests {
         let t1 = t0 + Duration::from_millis(10);
         declared.record_report("mesh1", Reporter::Endpoint("ep-primary".to_string()), t0);
         declared.record_report("mesh1", Reporter::Birth(rdm_core::framing::Birth { node_id: node_id.clone(), incarnation: older_inc.clone() }), t1);
-        let mut primary_node = Node::allocated(PathName::numbered("mesh1", NodeKind::NodeAdmin, 1), "mesh1", NodeKind::NodeAdmin);
+        let mut primary_node = Node::allocated(PathName::numbered("mesh1", "node-admin", 1), "mesh1", "node-admin");
         primary_node.node_id = node_id.clone();
         primary_node.incarnation_id = Some(current_inc.clone());
         primary_node.endpoint_id = Some(EndpointId("ep-primary".to_string()));
@@ -227,11 +227,11 @@ mod tests {
             Transition::Backward { current: NodeState::Ready }
         );
 
-        let admin_path = PathName::numbered("mesh1", NodeKind::NodeAdmin, 1);
+        let admin_path = PathName::numbered("mesh1", "node-admin", 1);
         let admin_id = NodeId::mint();
         let admin_inc = IncarnationId::mint();
-        let mut admin_node = Node::allocated(admin_path.clone(), "mesh1", NodeKind::NodeAdmin);
-        admin_node.kind = NodeKind::NodeAdmin;
+        let mut admin_node = Node::allocated(admin_path.clone(), "mesh1", "node-admin");
+        admin_node.r#type = "node-admin".to_string();
         admin_node.mesh = "mesh1".to_string();
         admin_node.node_id = admin_id.clone();
         admin_node.incarnation_id = Some(admin_inc.clone());
@@ -242,11 +242,11 @@ mod tests {
         admin_node.is_primary = true;
         admin_node.is_fabric_primary = true;
 
-        let rpc_path = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
+        let rpc_path = PathName::numbered("mesh1", "node", 1);
         let rpc_id = NodeId::mint();
         let rpc_inc = IncarnationId::mint();
-        let mut rpc_node = Node::allocated(rpc_path.clone(), "mesh1", NodeKind::RpcNode);
-        rpc_node.kind = NodeKind::RpcNode;
+        let mut rpc_node = Node::allocated(rpc_path.clone(), "mesh1", "node");
+        rpc_node.r#type = "node".to_string();
         rpc_node.mesh = "mesh1".to_string();
         rpc_node.node_id = rpc_id.clone();
         rpc_node.incarnation_id = Some(rpc_inc.clone());

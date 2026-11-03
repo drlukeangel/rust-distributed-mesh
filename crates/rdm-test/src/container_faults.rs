@@ -693,7 +693,7 @@ mod tests {
         assert!(running_address_in(net, "e", "true ").is_err(), "a running container off the network is refused");
 
         // The soak's listing at the failed unheard step: the third container listed had exited.
-        let listed = [(PathName::new("mesh1.gateway", "1").unwrap(), "true 10.231.0.31"), (PathName::new("mesh1.broker", "1").unwrap(), "true 10.231.0.30"), (PathName::new("mesh1.gateway", "1").unwrap(), "false invalid IP"), (PathName::new("mesh1.admin", "1").unwrap(), "true 10.231.0.2")];
+        let listed = [(PathName::new("mesh1.gateway", "1").unwrap(), "true 10.231.0.31"), (PathName::new("mesh1.broker", "1").unwrap(), "true 10.231.0.30"), (PathName::new("mesh1.gateway", "1").unwrap(), "false invalid IP"), (PathName::new("mesh1.node-admin", "1").unwrap(), "true 10.231.0.2")];
         let mut unheard = Vec::new();
         for (i, (node, read)) in listed.iter().enumerate() {
             if let Some(ip) = running_address_in(net, &i.to_string(), read).expect("a listed container's read") {

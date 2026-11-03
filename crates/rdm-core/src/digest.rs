@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct MeshNode {
     /// The owning mesh, independent of path spelling.
     pub mesh: String,
-    /// The executable runtime kind, independent of path spelling.
-    pub kind: crate::NodeKind,
+    /// The node's type, independent of path spelling.
+    pub r#type: String,
     /// The node's minted id.
     pub node_id: NodeId,
     /// The node's `(path, name)`.
@@ -194,9 +194,9 @@ mod tests {
 
     #[test]
     fn a_birth_round_trips_as_json_for_gossip() {
-        let a = MeshNode { mesh: "mesh1".into(), kind: crate::NodeKind::RpcNode,
+        let a = MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::mint(),
-            name: crate::PathName::new("mesh1.rpc", "1").unwrap(),
+            name: crate::PathName::new("mesh1.node", "1").unwrap(),
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:7000".parse().unwrap(),
             incarnation: IncarnationId::mint(),

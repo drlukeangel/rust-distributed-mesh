@@ -2,7 +2,7 @@
 //! A restart is node.stop then node.start (Q183: node.restart is removed). Spec:
 //! `docs/architecture/lifecycles/node-stop.md`, `docs/architecture/lifecycles/node-start.md`.
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, PathName};
+use rdm_client::{FabricDesired, MeshDesired, PathName};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha};
 use serde_json::Value;
@@ -25,7 +25,7 @@ fn s(v: &Value) -> String {
 }
 
 fn mesh(name: &str) -> MeshDesired {
-    MeshDesired::of(name, [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])
+    MeshDesired::of(name, [("node-admin", 2), ("node", 2)])
 }
 
 /// Every span the process `pid` wrote.
@@ -49,16 +49,16 @@ fn spans_of(estate: &Estate, pid: u64) -> Vec<Value> {
 /// successor's recovery completes under it: a new node stands ready at the successor's (path, name).
 ///
 /// What must NOT happen (the twelve soaks at 768dfaee, `mock_soak_primaries_preserve_continuous_invariants`
-/// round 17, mesh2.admin.2-n88v5zcrvdkd): the restarted primary's mesh-row writes refused, and no
+/// round 17, mesh2.node-admin.2-n88v5zcrvdkd): the restarted primary's mesh-row writes refused, and no
 /// re-birth in 150 s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_its_mesh_rows() {
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_on(owner_of("a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_its_mesh_rows"), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"])
+    let mut estate = Estate::bootstrap_on(owner_of("a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_its_mesh_rows"), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"])
         .await
         .expect("the faulted-admin binding set is accepted");
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
-    let names: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| [("admin", "1"), ("admin", "2"), ("rpc", "1"), ("rpc", "2")].map(|(kind, name)| PathName::new(format!("{m}.{kind}"), name).unwrap())).collect();
+    let names: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| [("node-admin", "1"), ("node-admin", "2"), ("node", "1"), ("node", "2")].map(|(r#type, name)| PathName::new(format!("{m}.{}", r#type), name).unwrap())).collect();
     let before = estate.settles_to_named(&names, Duration::from_secs(60)).await;
     // The initial fabric refuses a restart until it has first reached ready; a kill before
     // that is refused by the estate (Q74).
@@ -66,8 +66,8 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     // The target mesh is the one that does not hold the fabric-primary role: its primary (the primary) and its
     // other admin (the successor the primary's restart hands the role to).
     let fabric_primary = before.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
-    let primary_view = before.iter().find(|n| n.mesh != fabric_primary.mesh && n.kind == NodeKind::NodeAdmin && n.is_primary).expect("other mesh primary");
-    let successor_view = before.iter().find(|n| n.mesh == primary_view.mesh && n.kind == NodeKind::NodeAdmin && n.node_id != primary_view.node_id).expect("other admin");
+    let primary_view = before.iter().find(|n| n.mesh != fabric_primary.mesh && n.r#type == "node-admin" && n.is_primary).expect("other mesh primary");
+    let successor_view = before.iter().find(|n| n.mesh == primary_view.mesh && n.r#type == "node-admin" && n.node_id != primary_view.node_id).expect("other admin");
     let (primary, successor, away) = (&primary_view.name, &successor_view.name, &primary_view.mesh);
     let successor_birth = (successor_view.node_id.to_string(), successor_view.incarnation_id.as_ref().expect("successor birth").to_string());
     let primary_birth = (primary_view.node_id.to_string(), primary_view.incarnation_id.as_ref().expect("primary birth").to_string());

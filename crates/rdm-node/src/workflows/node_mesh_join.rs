@@ -247,7 +247,7 @@ mod tests {
             let mesh_id = MeshId::mint();
             let admin_id = NodeId::mint();
             let admin_incarnation = IncarnationId::mint();
-            let admin_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+            let admin_name: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
 
             // Verify `whom(&JoinTo)` formatting for both launcher and commander targets.
             let sample_key = iroh::SecretKey::generate().public();
@@ -323,7 +323,7 @@ mod tests {
             let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
             resolver.apply(
                 rdm_transport::ResolvedNode {
-                    mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin,
+                    mesh: "mesh1".into(), r#type: "node-admin".into(),
                     node_id: admin_id.clone(),
                     name: admin_name.clone(),
                     endpoint_id: admin_key.public(),
@@ -336,14 +336,14 @@ mod tests {
 
             let node_id = NodeId::mint();
             let node_incarnation = IncarnationId::mint();
-            let initial_name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-            let handed_name: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+            let initial_name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+            let handed_name: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
 
             // Start with status = Ready in the raw digest to prove `node_mesh_join` forces Pending on the wire.
             let digest = MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
-                node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+                node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),
                     name: initial_name.clone(),
                     endpoint_id: EndpointId(node_key.public().to_string()),
@@ -361,7 +361,7 @@ mod tests {
                 in_flight: None,
                 load: None,
                 gossip: None,
-                data_dir: Some("/var/lib/rdm/mesh1.rpc.1".into()),
+                data_dir: Some("/var/lib/rdm/mesh1.node.1".into()),
                 is_primary: None,
                 is_fabric_primary: None,
             };
@@ -398,8 +398,8 @@ mod tests {
                     client: &client,
                     rafka_time: &rafka_time,
                     to: &to,
-                    primary: "mesh1.admin.1",
-                    operation: &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
+                    primary: "mesh1.node-admin.1",
+                    operation: &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
                     report_parent: None,
                     reported: tracing::Span::none(),
                     channel_parent: None,
@@ -459,8 +459,8 @@ mod tests {
                     client: &client,
                     rafka_time: &rafka_time,
                     to: &to,
-                    primary: "mesh1.admin.1",
-                    operation: &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
+                    primary: "mesh1.node-admin.1",
+                    operation: &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
                     report_parent: None,
                     reported: reported_span,
                     channel_parent: None,
@@ -540,7 +540,7 @@ mod tests {
             let mesh_id = MeshId::mint();
             let admin_id = NodeId::mint();
             let admin_incarnation = IncarnationId::mint();
-            let admin_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+            let admin_name: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
 
             let admin_key = iroh::SecretKey::generate();
             let admin_ep = rdm_transport::endpoint::bind(
@@ -566,7 +566,7 @@ mod tests {
                     build: None,
                     rafka_time_ms: 4_200_000,
                     member_cert: Vec::new(),
-                    name: Some(rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
+                    name: Some(rdm_core::PathName::new("mesh1.node", "1").unwrap()),
                     cert_policy: None,
                 },
                 statuses: Vec::new(),
@@ -608,7 +608,7 @@ mod tests {
             let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
             resolver.apply(
                 rdm_transport::ResolvedNode {
-                    mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin,
+                    mesh: "mesh1".into(), r#type: "node-admin".into(),
                     node_id: admin_id.clone(),
                     name: admin_name.clone(),
                     endpoint_id: admin_key.public(),
@@ -622,9 +622,9 @@ mod tests {
             let digest = MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
-                node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+                node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),
-                    name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+                    name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
                     endpoint_id: EndpointId(node_key.public().to_string()),
                     incarnation: IncarnationId::mint(),
                     supersedes: None,
@@ -667,8 +667,8 @@ mod tests {
                     client: &client,
                     rafka_time: &rafka_time,
                     to: &to,
-                    primary: "mesh1.admin.1",
-                    operation: &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
+                    primary: "mesh1.node-admin.1",
+                    operation: &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
                     report_parent: None,
                     reported: tracing::Span::none(),
                     channel_parent: None,
@@ -688,7 +688,7 @@ mod tests {
         assert_eq!(joining["attributes"]["operation"], "node.create");
         assert_eq!(
             joining["attributes"]["primary"].as_str(),
-            Some("mesh1.admin.1"),
+            Some("mesh1.node-admin.1"),
             "node-mesh-join.md:275 specifies field `primary` on rdm.node.mesh.update.via-joining, got attributes: {}",
             joining["attributes"]
         );

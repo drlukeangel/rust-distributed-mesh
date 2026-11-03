@@ -1,6 +1,6 @@
 //! The R-shape consumer's composition root: a role process composed from RDM's public seams and
-//! nothing else. No Rafka business crate, no application semantics: a role is a label (a
-//! `NodeKind`), the families it serves are the node base's generic proof families, and the
+//! nothing else. No Rafka business crate, no application semantics: a role is a label (its node
+//! type), the families it serves are the node base's generic proof families, and the
 //! testkit's opaque protocols 0x70 (testkit store), 0x71 (resolve probe), 0x72 (declare probe)
 //! and, for the roles that originate or accept work, 0x73 (originate) are served as the testkit
 //! defines them. The R-shape roles allocate no opcode; [`consumer_example`], the compiled example
@@ -12,7 +12,7 @@ pub mod replica;
 
 use anyhow::{anyhow, Result};
 use rdm_core::connections::CarrierPolicy;
-use rdm_core::NodeKind;
+
 use rdm_transport::connections::Alpn;
 use rdm_node::{launch_for, Role};
 use rdm_test::{compose, node, originate, Oracles};
@@ -20,19 +20,21 @@ use tracing::Instrument;
 
 /// The carrier policy of this shape: an originated call may travel over a Proxy whose carrier is a
 /// gateway (connections.md section 6).
-pub const CARRIER_POLICY: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::Gateway };
+pub fn carrier_policy() -> CarrierPolicy {
+    CarrierPolicy::Proxy { carrier_type: "gateway".into() }
+}
 
 /// The shape's one data-plane protocol (connections.md §5), an `Alpn` value handed to the start seam
 /// (never an ALPN constant of its own): every role registers it, proxied through a gateway, and
 /// answers each stream with `echo <its node id>: <the bytes it read>`.
 pub fn data_alpn() -> Alpn {
-    Alpn { name: b"demo/echo".to_vec(), proxy: true, carriers: vec![NodeKind::Gateway] }
+    Alpn { name: b"demo/echo".to_vec(), proxy: true, carriers: vec!["gateway".into()] }
 }
 
 /// Whether `role` serves the originate door (0x73): the roles work enters through. A compute node
 /// originates opaque calls; a gateway accepts them and routes by the supplied RDM mechanisms. A
 /// broker answers deterministic proof acknowledgements only.
-pub fn serves_originate(role: Role) -> bool {
+pub fn serves_originate(role: &Role) -> bool {
     matches!(role.name(), "compute" | "gateway")
 }
 
@@ -41,43 +43,43 @@ pub fn serves_originate(role: Role) -> bool {
 /// in its exit line.
 pub async fn run(role: Role, binary: &str) -> Result<()> {
     let _telemetry = rdm_transport::telemetry::init_evidence_telemetry(binary);
-    let launch = launch_for(role)?;
+    let launch = launch_for(role.clone())?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
         node_path = %launch.name.path, node_name = %launch.name.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
-        kind = role.name(),
+        "type" = role.name(),
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
         rdm_transport::telemetry::set_parent(&boot, &tp);
     }
     let oracles = Oracles::open(&launch)?;
-    let originates = serves_originate(role);
+    let originates = serves_originate(&role);
     // The replica (Q296): the broker's records log, opened before the node serves; the gateway
     // forwards to the broker primary its topology names, the view handed over once the node is up.
     let view = std::sync::Arc::new(std::sync::OnceLock::new());
     let replica_node = replica::Node { view: view.clone(), me: launch.node_id.clone(), name: launch.name.clone(), mesh: launch.mesh.clone(), passed: replica::PassedOver::default() };
     // The gateway's `on_call_failed`: a forward whose attempts are spent passes that broker over, and
     // the gateway asks the next replica (fabric-node-hooks.md "on_call_failed").
-    let node_hooks = match role.kind {
-        NodeKind::Gateway => rdm_node::node_hooks::NodeHooks::none().with_on_call_failed(std::sync::Arc::new(replica::PassOver(replica_node.passed.clone()))),
+    let node_hooks = match role.r#type.as_str() {
+        "gateway" => rdm_node::node_hooks::NodeHooks::none().with_on_call_failed(std::sync::Arc::new(replica::PassOver(replica_node.passed.clone()))),
         _ => rdm_node::node_hooks::NodeHooks::none(),
     };
-    let broker = match role.kind {
-        NodeKind::Broker => Some(replica::Broker::open(&launch.data_dir.join("replica")).await.map_err(|e| anyhow!("refusing to start: the records log: {e}"))?),
+    let broker = match role.r#type.as_str() {
+        "broker" => Some(replica::Broker::open(&launch.data_dir.join("replica")).await.map_err(|e| anyhow!("refusing to start: the records log: {e}"))?),
         _ => None,
     };
     let (running, mut acceptor) = node::start_pre_node_ready_with_alpn(&launch, node_hooks, data_alpn(), |b, seams| {
         let client = seams.client.clone();
-        let b = oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, seams.resolver.clone(), &seams.name);
-        let b = match (role.kind, broker) {
-            (NodeKind::Broker, Some(broker)) => replica::register_broker(b, broker, replica_node),
-            (NodeKind::Gateway, _) => replica::register_gateway(b, seams.client.clone(), replica_node),
+        let b = oracles.serve(compose(role.clone(), &launch.node_id.to_string(), b, client), &launch, seams.resolver.clone(), &seams.name);
+        let b = match (role.r#type.as_str(), broker) {
+            ("broker", Some(broker)) => replica::register_broker(b, broker, replica_node),
+            ("gateway", _) => replica::register_gateway(b, seams.client.clone(), replica_node),
             _ => b,
         };
         if originates {
-            originate::serve_with_policy(b, seams, &launch, CARRIER_POLICY)
+            originate::serve_with_policy(b, seams, &launch, carrier_policy())
         } else {
             b
         }
@@ -111,7 +113,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
         }
     });
     let served = running.server.catalog().entries().count();
-    boot.in_scope(|| tracing::info!(served, kind = role.name(), originates, "role process serving on the imported substrate"));
+    boot.in_scope(|| tracing::info!(served, "type" = role.name(), originates, "role process serving on the imported substrate"));
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
     node::wait_for_signal(binary).await;

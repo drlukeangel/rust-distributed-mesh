@@ -43,7 +43,7 @@ use crate::process_faults::{cpu_ticks, proc_state, ExactRuntime, Fault};
 use crate::scenario::Operation as StoreOp;
 use crate::sim::Scheduler;
 use crate::wedge::{judge, Control, Evidence, Family, FaultAck, Primitive, Progress as WedgeProgress, Reconciliation, Recovery, Release, Routing};
-use rdm_client::{birth_of_view, Accepted, CallEnd, FabricDesired, FabricView, Frame, LaunchKind, MeshDesired, MeshNode, NodeView, PathName, ScopeStatus, WorkflowStream};
+use rdm_client::{birth_of_view, Accepted, CallEnd, FabricDesired, FabricView, Frame, MeshDesired, MeshNode, NodeView, PathName, ScopeStatus, WorkflowStream};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -481,7 +481,7 @@ fn admin_of(n: &Value) -> Option<Admin> {
 
 /// Every live admin, from the entry admin's view.
 fn admins_of(nodes: &[Value]) -> Vec<Admin> {
-    nodes.iter().filter(|n| n["kind"] == "node_admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).filter_map(admin_of).collect()
+    nodes.iter().filter(|n| n["type"] == "node-admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).filter_map(admin_of).collect()
 }
 
 /// `node.get` of every node of every mesh `admin` holds, as that admin's own view holds them, as JSON: a read that
@@ -516,17 +516,6 @@ async fn relocate_control(estate: &mut Estate, known: &[Admin]) -> Option<Admin>
         }
     }
     None
-}
-
-/// The kind a class launches as.
-fn launch_kind(class: NodeClass) -> LaunchKind {
-    match class {
-        NodeClass::NodeAdmin => LaunchKind::NodeAdmin,
-        NodeClass::RpcNode => LaunchKind::RpcNode,
-        NodeClass::Compute => LaunchKind::Compute,
-        NodeClass::Gateway => LaunchKind::Gateway,
-        NodeClass::Broker => LaunchKind::Broker,
-    }
 }
 
 /// A workflow call the fabric-primary did not accept, by name.
@@ -568,12 +557,12 @@ fn accepted_json(a: &Accepted) -> Value {
 /// The node count of every class per mesh the model holds.
 fn expected_counts(model: &Model) -> BTreeMap<String, BTreeMap<&'static str, u32>> {
     let classes: BTreeSet<NodeClass> = model.bounds.keys().copied().chain(model.meshes.values().flat_map(|m| m.nodes.values().map(|n| n.class))).collect();
-    model.meshes.keys().map(|m| (m.clone(), classes.iter().map(|c| (c.kind_name(), model.count(m, *c))).collect())).collect()
+    model.meshes.keys().map(|m| (m.clone(), classes.iter().map(|c| (c.type_name(), model.count(m, *c))).collect())).collect()
 }
 
 /// A node that serves the testkit store: every kind but the node-admin.
 fn serves_testkit_store(n: &Value) -> bool {
-    n["kind"].as_str().is_some_and(|k| k != "node_admin")
+    n["type"].as_str().is_some_and(|k| !rdm_core::is_node_admin(&k))
 }
 
 /// The fabric has converged when every live admin's view holds the same births: the expected
@@ -585,8 +574,8 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
     let nodes = estate.node_values().await;
     let shape_ok = |nodes: &[Value]| {
         expected.iter().all(|(m, counts)| {
-            let ready = |k: &str| nodes.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && n["status"] == "ready").count() as u32;
-            let all = |k: &str| nodes.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && !matches!(n["status"].as_str(), Some("dead"))).count() as u32;
+            let ready = |k: &str| nodes.iter().filter(|n| n["mesh"] == m.as_str() && n["type"] == k && n["status"] == "ready").count() as u32;
+            let all = |k: &str| nodes.iter().filter(|n| n["mesh"] == m.as_str() && n["type"] == k && !matches!(n["status"].as_str(), Some("dead"))).count() as u32;
             counts.iter().all(|(kind, n)| ready(kind) == *n && all(kind) == *n)
         })
     };
@@ -625,8 +614,8 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
         let heard_expected: BTreeMap<String, BTreeMap<&'static str, u32>> = expected.iter().filter(|(m, _)| !unheard.contains(*m)).map(|(m, c)| (m.clone(), c.clone())).collect();
         let shape_heard = |ns: &[Value]| {
             heard_expected.iter().all(|(m, counts)| {
-                let ready = |k: &str| ns.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && n["status"] == "ready").count() as u32;
-                let all = |k: &str| ns.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && !matches!(n["status"].as_str(), Some("dead"))).count() as u32;
+                let ready = |k: &str| ns.iter().filter(|n| n["mesh"] == m.as_str() && n["type"] == k && n["status"] == "ready").count() as u32;
+                let all = |k: &str| ns.iter().filter(|n| n["mesh"] == m.as_str() && n["type"] == k && !matches!(n["status"].as_str(), Some("dead"))).count() as u32;
                 counts.iter().all(|(kind, n)| ready(kind) == *n && all(kind) == *n)
             })
         };
@@ -741,7 +730,7 @@ async fn until_unheard(estate: &mut Estate, known: &[Admin], births: &[(PathName
             let mut judge = entry.clone();
             if true_offline {
                 if let (Some(v), Some(mesh)) = (views_at(estate, &entry).await, births.first().and_then(|(_, id)| estate.node_record(id)).and_then(|r| r["record"]["mesh"].as_str().map(str::to_string))) {
-                    if let Some(primary) = v.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["is_primary"] == true && n["status"] == "ready").and_then(admin_of) {
+                    if let Some(primary) = v.iter().find(|n| n["type"] == "node-admin" && n["mesh"] == mesh && n["is_primary"] == true && n["status"] == "ready").and_then(admin_of) {
                         judge = primary;
                     }
                 }
@@ -749,7 +738,7 @@ async fn until_unheard(estate: &mut Estate, known: &[Admin], births: &[(PathName
             let mut judges = vec![judge.clone()];
             if direct && !true_offline {
                 if let (Some(v), Some(mesh)) = (views_at(estate, &entry).await, births.first().and_then(|(_, id)| estate.node_record(id)).and_then(|r| r["record"]["mesh"].as_str().map(str::to_string))) {
-                    let own: Vec<Admin> = v.iter().filter(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["status"] == "ready").filter_map(admin_of).filter(|a| known.contains(a)).collect();
+                    let own: Vec<Admin> = v.iter().filter(|n| n["type"] == "node-admin" && n["mesh"] == mesh && n["status"] == "ready").filter_map(admin_of).filter(|a| known.contains(a)).collect();
                     if !own.is_empty() {
                         judges = own;
                     }
@@ -998,14 +987,14 @@ impl SpanTail {
 /// the floor the mesh-primary's silence mark is also taken at (node-recovery.md step 1), so a peer mesh
 /// whose primary is marked is one the driver does not act on until it is heard again.
 /// The driver acts on a peer mesh only when this is `None`: at `4aa58cf0` the authority soak
-/// restarted `mesh2.admin.2` 6 s after its mesh-primary was released from a hold, 2.6 s into the
+/// restarted `mesh2.node-admin.2` 6 s after its mesh-primary was released from a hold, 2.6 s into the
 /// fabric-primary's silence of mesh2, and the restart was refused `unheard-mesh` although every view had
 /// converged.
 fn held_unheard_in(nodes: &[Value]) -> Option<String> {
     let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true && n["status"] == "ready")?;
     nodes
         .iter()
-        .find(|n| n["kind"] == "node_admin" && n["is_primary"] == true && n["mesh"] != fp["mesh"] && n["status"] != "ready")
+        .find(|n| n["type"] == "node-admin" && n["is_primary"] == true && n["mesh"] != fp["mesh"] && n["status"] != "ready")
         .map(|n| format!("{} holds {} unheard: its primary {} is {}", s(&fp["node_id"]), s(&n["mesh"]), s(&n["node_id"]), s(&n["status"])))
 }
 
@@ -1072,10 +1061,10 @@ impl Driver {
     pub async fn new(mut estate: Estate, cfg: Config, read: BuildRead) -> Self {
         estate.set_seed(cfg.seed);
         let initial = cfg.model(&estate.owner.provider);
-        let desired = FabricDesired { fabric: "fabric1".into(), meshes: cfg.shape.iter().map(|(m, classes)| MeshDesired::of(*m, classes.iter().map(|(class, n)| (launch_kind(*class), *n)))).collect() };
+        let desired = FabricDesired { fabric: "fabric1".into(), meshes: cfg.shape.iter().map(|(m, classes)| MeshDesired::of(*m, classes.iter().map(|(class, n)| (class.type_name(), *n)))).collect() };
         let reconciled = tokio::time::timeout(Duration::from_secs(120), estate.reconcile(&desired)).await.unwrap_or_else(|_| panic!("the formation Build of {desired:?} did not complete within 120s"));
         let build_id = reconciled.build_id.to_string();
-        let want: BTreeMap<(String, LaunchKind), usize> = cfg.shape.iter().flat_map(|(m, classes)| classes.iter().map(move |(class, n)| ((m.to_string(), launch_kind(*class)), *n as usize))).collect();
+        let want: BTreeMap<(String, String), usize> = cfg.shape.iter().flat_map(|(m, classes)| classes.iter().map(move |(class, n)| ((m.to_string(), class.type_name().to_string()), *n as usize))).collect();
         estate.settles_to_counts(want, Duration::from_secs(60)).await;
         let expected = expected_counts(&initial);
         wait_for("every live admin holds the same births", cfg.floor * 2 + cfg.backbone * 2 + Duration::from_secs(60), || converged_everywhere(&estate, &expected)).await;
@@ -1119,13 +1108,13 @@ impl Driver {
     fn publish_view(&self, nodes: &[Value]) {
         let admin = nodes
             .iter()
-            .find(|n| n["kind"] == "node_admin" && n["is_fabric_primary"] == true && n["status"] == "ready")
-            .or_else(|| nodes.iter().find(|n| n["kind"] == "node_admin" && n["status"] == "ready"))
+            .find(|n| n["type"] == "node-admin" && n["is_fabric_primary"] == true && n["status"] == "ready")
+            .or_else(|| nodes.iter().find(|n| n["type"] == "node-admin" && n["status"] == "ready"))
             .and_then(|n| serde_json::from_value::<NodeView>(n.clone()).ok())
             .as_ref()
             .and_then(birth_of_view);
         let rpcs = nodes.iter().filter(|n| serves_testkit_store(n) && n["status"] == "ready").map(|n| (location(n), s(&n["node_id"]))).collect();
-        let gateways = nodes.iter().filter(|n| n["kind"] == "gateway" && n["status"] == "ready").map(|n| s(&n["node_id"])).collect();
+        let gateways = nodes.iter().filter(|n| n["type"] == "gateway" && n["status"] == "ready").map(|n| s(&n["node_id"])).collect();
         *self.shared.view.lock().unwrap() = View { admin, rpcs, gateways };
         let mut b = self.shared.op_view.lock().unwrap();
         for n in nodes.iter().filter(|n| serves_testkit_store(n)) {
@@ -1141,7 +1130,7 @@ impl Driver {
             if n["is_fabric_primary"] == true {
                 return Some(format!("{what}: {p:?} is the fabric-primary; it leaves only by a hand-off Build"));
             }
-            if p == &self.estate.entry_birth().name && n["kind"] == "node_admin" && self.estate.bootstrap_pid().is_some() {
+            if p == &self.estate.entry_birth().name && n["type"] == "node-admin" && self.estate.bootstrap_pid().is_some() {
                 return Some(format!("{what}: {p:?} is the harness's control address (the bootstrap node-admin)"));
             }
             None
@@ -1151,11 +1140,11 @@ impl Driver {
         // ready to take the role (node-primary-update.md "No-successor cases"; a
         // desired-state shrink of a node type's only node skips the update, so a shrink is not guarded).
         let no_secondary = |n: &Value, what: &str| -> Option<String> {
-            if n["kind"] == "node_admin" || n["is_primary"] != true {
+            if n["type"] == "node-admin" || n["is_primary"] != true {
                 return None;
             }
-            let secondary = nodes.iter().any(|o| o["mesh"] == n["mesh"] && o["kind"] == n["kind"] && o["name"] != n["name"] && o["status"] == "ready");
-            (!secondary).then(|| format!("{what}: {:?} holds its node-type primary role and no other {} of {} is ready: node.primary.update has no secondary", location(n), s(&n["kind"]), s(&n["mesh"])))
+            let secondary = nodes.iter().any(|o| o["mesh"] == n["mesh"] && o["type"] == n["type"] && o["name"] != n["name"] && o["status"] == "ready");
+            (!secondary).then(|| format!("{what}: {:?} holds its node-type primary role and no other {} of {} is ready: node.primary.update has no secondary", location(n), s(&n["type"]), s(&n["mesh"])))
         };
         // A replacement is a delete then a spawn, and a spawn lands at the lowest free ordinal of
         // its class: it replaces the node at the same path/name pair only when no lower ordinal is free.
@@ -1176,7 +1165,7 @@ impl Driver {
                 no_secondary(n, "restart")
             }),
             Action::HandOff { mesh } => {
-                let primary = nodes.iter().find(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true && n["status"] == "ready");
+                let primary = nodes.iter().find(|n| n["mesh"] == mesh.as_str() && n["type"] == "node-admin" && n["is_primary"] == true && n["status"] == "ready");
                 match primary {
                     None => Some(format!("hand-off: {mesh} has no ready mesh primary")),
                     Some(p) => guarded(&location(p), "hand-off").filter(|r| r.contains("bootstrap")).or_else(|| lands_on_same_path(&location(p))),
@@ -1374,8 +1363,8 @@ impl Driver {
         let mut no_build_for_drift = false;
         match action {
             Action::Grow { mesh, class } => {
-                let kind = class.kind_name();
-                let spawn = after_build_in_progress(|| self.estate.create_node(&mesh, launch_kind(*class))).await.map_err(|end| refused(&format!("node.create {kind} in {mesh}"), end))?;
+                let kind = class.type_name();
+                let spawn = after_build_in_progress(|| self.estate.create_node(&mesh, class.type_name())).await.map_err(|end| refused(&format!("node.create {kind} in {mesh}"), end))?;
                 entry["accepted"] = accepted_json(spawn.accepted());
                 entry["build"] = self.await_build(spawn).await?;
             }
@@ -1410,7 +1399,7 @@ impl Driver {
             Action::HandOff { mesh } => {
                 let n = nodes
                     .iter()
-                    .find(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true && n["status"] == "ready")
+                    .find(|n| n["mesh"] == mesh.as_str() && n["type"] == "node-admin" && n["is_primary"] == true && n["status"] == "ready")
                     .cloned()
                     .ok_or_else(|| broken("model-matches-view", format!("{mesh} has no ready mesh primary")))?;
                 entry["handed_off_from"] = json!({"node": n["name"], "node_id": n["node_id"], "fabric_primary": n["is_fabric_primary"]});
@@ -1423,7 +1412,7 @@ impl Driver {
                 if let Some(fp) = nodes.iter().find(|x| x["is_fabric_primary"] == true).map(location) {
                     let est = &self.estate;
                     let successor = wait_for_opt(&format!("{fp:?} holds a ready node-admin of {mesh} besides {primary_name:?}"), CONVERGE, || async {
-                        est.held_values_at(&fp).await.into_iter().find(|x| x["mesh"] == mesh.as_str() && x["kind"] == "node_admin" && location(x) != primary_name && x["status"] == "ready").map(|x| location(&x))
+                        est.held_values_at(&fp).await.into_iter().find(|x| x["mesh"] == mesh.as_str() && x["type"] == "node-admin" && location(x) != primary_name && x["status"] == "ready").map(|x| location(&x))
                     })
                     .await;
                     entry["successor_in_fabric_primary_view"] = json!(successor);
@@ -1674,7 +1663,7 @@ impl Driver {
     /// spawn's Build and the replaced incarnation.
     async fn replace(&mut self, n: &Value, entry: &mut Value) -> Result<(String, (String, String)), Broken> {
         let (path, mesh) = (location(n), s(&n["mesh"]));
-        let kind: LaunchKind = serde_json::from_value(n["kind"].clone()).unwrap_or_else(|e| panic!("{path:?}: the view's kind {} is no node kind: {e}", n["kind"]));
+        let r#type: String = serde_json::from_value(n["type"].clone()).unwrap_or_else(|e| panic!("{path:?}: the view's type {} is no node type: {e}", n["type"]));
         let nodes = self.estate.nodes_obj().await;
         let target = &path.clone();
         let delete = after_build_in_progress(|| nodes.delete(&target)).await.map_err(|end| refused(&format!("node.delete {path:?}"), end))?;
@@ -1685,7 +1674,7 @@ impl Driver {
         if relocate_control(&mut self.estate, &self.known).await.is_none() {
             return Err(broken("control-api-answers", format!("after node.delete {path:?}, no admin answers fabric.get: {:?}", self.known.iter().map(|a| &a.name).collect::<Vec<_>>())));
         }
-        let spawn = after_build_in_progress(|| self.estate.create_node(&mesh, kind)).await.map_err(|end| refused(&format!("node.create {kind:?} in {mesh}"), end))?;
+        let spawn = after_build_in_progress(|| self.estate.create_node(&mesh, &r#type)).await.map_err(|end| refused(&format!("node.create {:?} in {mesh}", r#type), end))?;
         entry["regrow"] = accepted_json(spawn.accepted());
         let build = spawn.accepted().build_id.to_string();
         self.await_build(spawn).await?;
@@ -1783,7 +1772,7 @@ impl Driver {
         // Only a node's own mesh-primary tickles it, so only it records `dead`. A held mesh-primary has
         // no other tickler: the admins that look at it find it `os-stopped`, which proves no exit and
         // opens no hold (deployment-provider.md §2.5), so it is held pending-reconnect, never dead.
-        let holds_mesh_primary = nodes0.iter().any(|x| location(x) == path && x["kind"] == "node_admin" && x["is_primary"] == true);
+        let holds_mesh_primary = nodes0.iter().any(|x| location(x) == path && x["type"] == "node-admin" && x["is_primary"] == true);
         let true_offline = coin && !container && !holds_mesh_primary;
         // Control never waits on the held node's own control API: a held admin answers nothing.
         let held_name = Some(location(n));
@@ -2029,7 +2018,7 @@ impl Driver {
         let mut refeeds = SpanTail::from_now(self.estate.evidence.clone(), |sp| sp["name"] == "rdm.mesh.connection.update.via-refeed" && sp["attributes"]["reason"] == "stale-held-member");
         let cut_at_ns = now_ns();
         self.silenced.insert(mesh.to_string(), Cut::Udp { partition, members: members.clone() });
-        let at_cut: Vec<(PathName, String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready").map(|n| (location(n), s(&n["mesh"]), s(&n["node_id"]))).collect();
+        let at_cut: Vec<(PathName, String, String)> = nodes.iter().filter(|n| n["type"] == "node-admin" && n["status"] == "ready").map(|n| (location(n), s(&n["mesh"]), s(&n["node_id"]))).collect();
         let window = self.cfg.floor;
         let until = Instant::now() + window * 6 + Duration::from_secs(40);
         let held_at = loop {
@@ -2112,7 +2101,7 @@ impl Driver {
             }
         }
         if let Some(row) = self.rounds_log.last_mut() {
-            row["authority"] = json!({"fabric_primary": writers.iter().next(), "mesh_primaries": nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| n["name"].clone()).collect::<Vec<_>>(), "primaries": nodes.iter().filter(|n| n["is_primary"] == true).map(|n| n["name"].clone()).collect::<Vec<_>>()});
+            row["authority"] = json!({"fabric_primary": writers.iter().next(), "mesh_primaries": nodes.iter().filter(|n| n["type"] == "node-admin" && n["is_primary"] == true).map(|n| n["name"].clone()).collect::<Vec<_>>(), "primaries": nodes.iter().filter(|n| n["is_primary"] == true).map(|n| n["name"].clone()).collect::<Vec<_>>()});
         }
         Ok(vec![
             "one-current-birth-per-path",
@@ -2320,7 +2309,7 @@ mod tests {
     /// runtime" at the release instant while the birth was running, ready 0.3 s later.
     #[test]
     fn a_released_birth_marked_pending_reconnect_is_returning_never_replaced() {
-        let row = |inc: &str, status: &str| json!({"name": {"path": "mesh2.admin", "name": "1"}, "node_id": "100000000000", "incarnation_id": inc, "status": status});
+        let row = |inc: &str, status: &str| json!({"name": {"path": "mesh2.node-admin", "name": "1"}, "node_id": "100000000000", "incarnation_id": inc, "status": status});
         assert_eq!(judge_held_birth(&[row("qx6", "pending-reconnect")], "100000000000", "qx6"), HeldBirth::Returning);
         assert_eq!(judge_held_birth(&[row("qx6", "ready")], "100000000000", "qx6"), HeldBirth::Ready);
         assert_eq!(judge_held_birth(&[row("zzz", "ready")], "100000000000", "qx6"), HeldBirth::Replaced);
@@ -2393,7 +2382,7 @@ mod tests {
     /// mesh is never held.
     #[test]
     fn a_peer_mesh_is_held_while_the_fabric_primarys_view_holds_its_primary_off_ready() {
-        let row = |mesh: &str, id: &str, primary: bool, fabric: bool, status: &str| json!({ "mesh": mesh, "kind": "node_admin", "node_id": id, "is_primary": primary, "is_fabric_primary": fabric, "status": status });
+        let row = |mesh: &str, id: &str, primary: bool, fabric: bool, status: &str| json!({ "mesh": mesh, "type": "node-admin", "node_id": id, "is_primary": primary, "is_fabric_primary": fabric, "status": status });
         let fp = row("mesh1", "100000000000", true, true, "ready");
         assert!(held_unheard_in(&[fp.clone(), row("mesh2", "200000000000", true, false, "ready")]).is_none(), "a heard peer mesh is not held");
         let why = held_unheard_in(&[fp.clone(), row("mesh2", "200000000000", true, false, "pending_reconnect")]).expect("a marked peer mesh-primary holds its mesh");
@@ -2402,9 +2391,9 @@ mod tests {
     }
 
     /// The Build as the driver reads it in the floors soak on `b6695529` (seed 1431101, step 33):
-    /// mesh1.broker.2 born by attempt 1; attempt 5, the hand-back of the fabric-primary role to mesh1.admin.1
-    /// (`via-proven-drift` scope `handback: the fabric-primary role to mesh1.admin.1`), HandedOff; attempt 6,
-    /// mesh1.admin.1's claim after it (`via-claim-decision` won, `via-reconcile` converged with no
+    /// mesh1.broker.2 born by attempt 1; attempt 5, the hand-back of the fabric-primary role to mesh1.node-admin.1
+    /// (`via-proven-drift` scope `handback: the fabric-primary role to mesh1.node-admin.1`), HandedOff; attempt 6,
+    /// mesh1.node-admin.1's claim after it (`via-claim-decision` won, `via-reconcile` converged with no
     /// operation). Neither writes a receipt under an operation naming mesh1.broker.2.
     fn held_fixture() -> (PathName, (String, String)) {
         (PathName::new("mesh1.broker", "2").unwrap(), ("100000000000".into(), "200000000000".into()))

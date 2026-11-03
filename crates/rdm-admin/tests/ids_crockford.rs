@@ -66,7 +66,7 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-rbi5a").expect("the cell's evidence file can be created");
     let (id, facts_json) = capture.run(2, async move {
         let builds = MemoryBuildStateAdapter::new();
-        let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
         admin.status = NodeStatus::Ready;
         admin.incarnation_id = Some(IncarnationId::mint());
         admin.is_primary = true;

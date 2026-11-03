@@ -27,14 +27,14 @@ impl LifecycleHook for Log {
 fn desired(meshes: &[&str]) -> FabricDesired {
     FabricDesired {
         fabric: "fabric1".into(),
-        meshes: meshes.iter().map(|m| MeshDesired::of((*m).to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)])).collect(),
+        meshes: meshes.iter().map(|m| MeshDesired::of((*m).to_string(), [("node-admin", 2), ("node", 3)])).collect(),
     }
 }
 
 fn ready_topology(meshes: &[&str]) -> Topology {
     let mut nodes = Vec::new();
     for m in meshes {
-        for (k, n) in [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)] {
+        for (k, n) in [("node-admin", 2), ("node", 3)] {
             for i in 1..=n {
                 let mut node = Node::allocated(rdm_core::PathName::numbered(*m, k, i), *m, k);
                 node.status = NodeStatus::Ready;

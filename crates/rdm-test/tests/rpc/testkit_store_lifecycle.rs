@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
 
-fn node() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.rpc", "1").unwrap() }
-fn other() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.rpc", "2").unwrap() }
+fn node() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.node", "1").unwrap() }
+fn other() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.node", "2").unwrap() }
 fn at_node(sp: &Value, location: &rdm_core::PathName) -> bool { sp["attributes"]["node_path"] == location.path && sp["attributes"]["node_name"] == location.name }
 
 fn owner(test: &str) -> Owner {
@@ -113,7 +113,7 @@ async fn testkit_store_node_restarts_preserves_same_node_store() {
     let store_file = std::fs::read_dir(&restarted_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.file_name().is_some_and(|f| f.to_string_lossy().contains("testkit-store"))).map(|p| p.display().to_string());
     let receipts = estate.carrier().await.build(&restart_attempt.build_id).await.expect("stop receipts");
     let stop_operation = receipts.steps.iter().find(|r| r.operation.action == "node.stop" && r.operation.subject == Some(rdm_core::OperationSubject::Node(s(&first["node_id"]).parse().unwrap()))).expect("stop operation").operation.clone();
-    let primary_operation = rdm_core::OperationId::primary_update(rdm_core::PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::RpcNode), &stop_operation);
+    let primary_operation = rdm_core::OperationId::primary_update(rdm_core::PrimaryRole::NodePrimary("node".into()), &stop_operation);
     estate.stop().await;
 
     let spans = estate.spans();

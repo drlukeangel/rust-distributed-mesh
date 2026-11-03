@@ -24,22 +24,22 @@ fn bytes(hex: &str) -> Vec<u8> {
 fn requests_match_the_frozen_four_variant_wire_schema() {
     let fixtures = [
         // positions 0, 1, 2 and 4 are reserved (the count forms): `a_request_at_a_reserved_count_position_is_an_unknown_variant`; position 6 (the removed restart): `a_request_at_the_removed_restart_position_is_an_unknown_variant`
-        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { node: rdm_core::PathName::new("m.rpc", "1").unwrap() }) }, "00 00 03 05 6d 2e 72 70 63 01 31"),
+        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { node: rdm_core::PathName::new("m.node", "1").unwrap() }) }, "00 00 03 05 6d 2e 72 70 63 01 31"),
         (
-            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }) },
+            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }) },
             "00 00 0a 09 6d657368312e7270630131 0c 303132333435363738396162 0c 79727a34396a333033796834",
         ),
         (
             BuildRequest::Create {
                 submit: BuildSubmit::Change(BuildChange::Steps {
                     steps: vec![
-                        Step::DeleteConnections { node: rdm_core::PathName::new("m.rpc", "1").unwrap() },
-                        Step::LeaveMesh { node: rdm_core::PathName::new("m.rpc", "1").unwrap() },
-                        Step::Update { node: rdm_core::PathName::new("m.rpc", "1").unwrap(), name: rdm_core::PathName::new("m.rpc", "1-old").unwrap() },
-                        Step::Stop { node: rdm_core::PathName::new("m.rpc", "1-old").unwrap() },
-                        Step::Create { mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, node: rdm_core::PathName::new("m.rpc", "1").unwrap(), executable: None },
-                        Step::Start { node: rdm_core::PathName::new("m.rpc", "1-old").unwrap() },
-                        Step::Delete { node: rdm_core::PathName::new("m.rpc", "1-old").unwrap() },
+                        Step::DeleteConnections { node: rdm_core::PathName::new("m.node", "1").unwrap() },
+                        Step::LeaveMesh { node: rdm_core::PathName::new("m.node", "1").unwrap() },
+                        Step::Update { node: rdm_core::PathName::new("m.node", "1").unwrap(), name: rdm_core::PathName::new("m.node", "1-old").unwrap() },
+                        Step::Stop { node: rdm_core::PathName::new("m.node", "1-old").unwrap() },
+                        Step::Create { mesh: "m".into(), r#type: "node".into(), node: rdm_core::PathName::new("m.node", "1").unwrap(), executable: None },
+                        Step::Start { node: rdm_core::PathName::new("m.node", "1-old").unwrap() },
+                        Step::Delete { node: rdm_core::PathName::new("m.node", "1-old").unwrap() },
                     ],
                 }),
             },
@@ -57,14 +57,14 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
                     based_on: rdm_core::BuildId::parse("0123456789ab").unwrap(),
                     nodes: vec![
                         rdm_core::meta::NodeSpec {
-                            path: rdm_core::PathName::new("m.admin", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::NodeAdmin,
+                            path: rdm_core::PathName::new("m.node-admin", "1").unwrap(), mesh: "m".into(), r#type: "node-admin".into(),
                             storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
                             
-                            executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
+                            executable: Some(rdm_core::binding::Binding { launch_id: "node-admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
                             tags: ["t".to_string()].into(),
                             config: Default::default(),
                         },
-                        rdm_core::meta::NodeSpec { path: rdm_core::PathName::new("m.rpc", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
+                        rdm_core::meta::NodeSpec { path: rdm_core::PathName::new("m.node", "1").unwrap(), mesh: "m".into(), r#type: "node".into(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
                     ],
                 }),
             },
@@ -390,7 +390,7 @@ fn a_request_at_the_removed_change_position_is_an_unknown_variant() {
 /// positions (`DeleteConnections` = 07, `Stop` = 08, `Start` = 09).
 #[test]
 fn a_request_at_the_removed_restart_position_is_an_unknown_variant() {
-    assert_eq!(Build::decode_request(&bytes("00 00 06 09 6d657368312e727063 01 31")), Err(DecodeFailure::UnknownVariant), "a node.restart of mesh1.rpc.1");
+    assert_eq!(Build::decode_request(&bytes("00 00 06 09 6d657368312e727063 01 31")), Err(DecodeFailure::UnknownVariant), "a node.restart of mesh1.node.1");
     assert_eq!(Build::decode_request(&bytes("00 00 06")), Err(DecodeFailure::UnknownVariant), "the bare position too");
     assert!(matches!(Build::decode_request(&bytes("00 00 07 09 6d657368312e727063 01 31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteConnections { .. }) })), "DeleteConnections keeps position 7");
     assert!(matches!(Build::decode_request(&bytes("00 00 08 09 6d657368312e727063 01 31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Stop { .. }) })), "Stop keeps position 8");
@@ -426,18 +426,18 @@ fn a_request_at_a_reserved_count_position_is_an_unknown_variant() {
 #[test]
 fn a_create_spec_carries_explicit_ownership_and_the_complete_config_map() {
     let fixtures = [
-        ("m.admin.1", "07 6d 2e 61 64 6d 69 6e 01 31 01 6d 00 01 00 01 0a 6e 6f 64 65 5f 61 64 6d 69 6e 02 2f 78 01 73 00 01 01 74 00"),
-        ("m.rpc.1", "05 6d2e7270630131 01 6d 01 00 00 00 00"),
+        ("m.node-admin.1", "07 6d 2e 61 64 6d 69 6e 01 31 01 6d 00 01 00 01 0a 6e 6f 64 65 5f 61 64 6d 69 6e 02 2f 78 01 73 00 01 01 74 00"),
+        ("m.node.1", "05 6d2e7270630131 01 6d 01 00 00 00 00"),
     ];
     let admin = rdm_core::meta::NodeSpec {
-        path: rdm_core::PathName::new("m.admin", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::NodeAdmin,
+        path: rdm_core::PathName::new("m.node-admin", "1").unwrap(), mesh: "m".into(), r#type: "node-admin".into(),
         storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
         
-        executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
+        executable: Some(rdm_core::binding::Binding { launch_id: "node-admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
         tags: ["t".to_string()].into(),
         config: Default::default(),
     };
-    let rpc = rdm_core::meta::NodeSpec::default_for(rdm_core::PathName::new("m.rpc", "1").unwrap(), "m", rdm_core::NodeKind::RpcNode);
+    let rpc = rdm_core::meta::NodeSpec::default_for(rdm_core::PathName::new("m.node", "1").unwrap(), "m", "node");
     for ((path, expected), spec) in fixtures.iter().zip([&admin, &rpc]) {
         assert_eq!(postcard::to_allocvec(spec).unwrap(), bytes(expected), "{path}: explicit mesh, kind and complete properties");
     }

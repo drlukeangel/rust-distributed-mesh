@@ -12,7 +12,7 @@ use rdm_test::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-fn member() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.rpc", "1").unwrap() }
+fn member() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.node", "1").unwrap() }
 
 fn owner(cell: &str) -> Owner {
     Owner {
@@ -114,7 +114,7 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
         ids.sort();
         ids
     };
-    let primary = |mesh: &str| nodes.iter().find(|n| n.mesh == mesh && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).expect("mesh primary").node_id.to_string();
+    let primary = |mesh: &str| nodes.iter().find(|n| n.mesh == mesh && n.r#type == "node-admin" && n.is_primary).expect("mesh primary").node_id.to_string();
     assert_eq!(mesh1, members("mesh1"), "its own mesh includes this member");
     assert_eq!(mesh2, members("mesh2"));
     assert_eq!(mesh1_pub, primary("mesh1"));
@@ -189,7 +189,7 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
     estate.stop().await;
     let spans = estate.spans();
     let mut births = Vec::new();
-    for row in nodes.iter().filter(|n| n.name != rdm_core::PathName::new("mesh1.admin", "1").unwrap()) {
+    for row in nodes.iter().filter(|n| n.name != rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()) {
         let node = row.node_id.to_string();
         let joined = named(&spans, "rdm.mesh.entry.update.via-topology-pulled").into_iter().find(|sp| attr(sp, "node") == node).unwrap_or_else(|| panic!("{node} never completed a JoinNode"));
         let maker = attr(joined, "served_by");
@@ -199,7 +199,7 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
         // The birth's own read: its installs are in the birth's trace. A later read of the node
         // (the delta-gap top-up when a peer mesh's delta arrives past what it holds,
         // `topology_read::top_up_fetch`) is a read of its own, in its own trace, with its own serve:
-        // at `5a220a6a` the member at path mesh1.rpc, name 1 took mesh2 that way 1 s after its birth, before the cell's stop.
+        // at `5a220a6a` the member at path mesh1.node, name 1 took mesh2 that way 1 s after its birth, before the cell's stop.
         let installs: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().filter(|sp| attr(sp, "node") == node && sp["trace_id"] == joined["trace_id"]).collect();
         let serve = named(&spans, "rdm.mesh.topology.serve.via-read")
             .into_iter()

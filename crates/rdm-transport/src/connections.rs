@@ -12,7 +12,7 @@ use rdm_core::connections::{
     carrier_order, resolve_for_carriers,
 };
 use rdm_core::reconnect::first_failure_for;
-use rdm_core::{ConnectionId, IncarnationId, NodeId, NodeKind, PathName};
+use rdm_core::{ConnectionId, IncarnationId, NodeId, PathName};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -37,15 +37,15 @@ pub struct Alpn {
     /// Whether this protocol may travel over a Proxy when a Direct dial provably sent nothing.
     pub proxy: bool,
     /// The node kinds eligible to carry a Proxy for this protocol when `proxy` is `true`.
-    pub carriers: Vec<NodeKind>,
+    pub carriers: Vec<String>,
 }
 
 impl Alpn {
     /// The [`CarrierPolicy`] this registration states.
     pub fn carrier_policy(&self) -> CarrierPolicy {
         if self.proxy {
-            if let Some(&carrier_kind) = self.carriers.first() {
-                return CarrierPolicy::Proxy { carrier_kind };
+            if let Some(carrier_type) = self.carriers.first().cloned() {
+                return CarrierPolicy::Proxy { carrier_type };
             }
         }
         CarrierPolicy::NoProxy
@@ -90,7 +90,7 @@ pub struct Birth {
     /// The explicitly declared owning mesh.
     pub mesh: String,
     /// The explicitly declared runtime kind.
-    pub kind: rdm_core::NodeKind,
+    pub r#type: String,
     /// The birth's `(path, name)`.
     pub name: PathName,
     /// The birth's logical node id.
@@ -102,7 +102,7 @@ pub struct Birth {
 impl Birth {
     /// Convert this birth to a [`ConnectionEnd`].
     pub fn to_end(&self) -> ConnectionEnd {
-        ConnectionEnd { mesh: self.mesh.clone(), kind: self.kind,
+        ConnectionEnd { mesh: self.mesh.clone(), r#type: self.r#type.clone(),
             name: self.name.clone(),
             node_id: self.node_id.clone(),
             incarnation: Some(self.incarnation.clone()),
@@ -1508,7 +1508,7 @@ impl Dialer {
                         .record_drops(std::slice::from_ref(&proxy), INVALID_CONNECTION_LOST);
                     return Err(ConnectError::NoActiveRoute { direct: None });
                 };
-                let carrier_birth = Birth { mesh: carrier_end.mesh.clone(), kind: carrier_end.kind,
+                let carrier_birth = Birth { mesh: carrier_end.mesh.clone(), r#type: carrier_end.r#type.clone(),
                     name: carrier_end.name.clone(),
                     node_id: carrier_end.node_id.clone(),
                     incarnation: carrier_inc,
@@ -1538,14 +1538,14 @@ impl Dialer {
                     &destination.incarnation,
                     self.alpn.proxy,
                     &self.alpn.carriers,
-                    live.iter().map(|n| (n.node_id.clone(), n.name.clone(), n.mesh.clone(), n.kind)),
+                    live.iter().map(|n| (n.node_id.clone(), n.name.clone(), n.mesh.clone(), n.r#type.clone())),
                 );
                 if order.is_empty() {
                     return Err(ConnectError::NotSent { reason });
                 }
                 for node_id in order {
                     let Some(node) = live.iter().find(|n| n.node_id == node_id) else { continue };
-                    let carrier_birth = Birth { mesh: node.mesh.clone(), kind: node.kind, name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
+                    let carrier_birth = Birth { mesh: node.mesh.clone(), r#type: node.r#type.clone(), name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
                     match self
                         .open_tunnel(&own, &carrier_birth, destination, None, Some(begun), &caller_span, trace.clone())
                         .await
@@ -2599,17 +2599,17 @@ mod tests {
         let app_alpn = Alpn {
             name: b"app-data/1".to_vec(),
             proxy: true,
-            carriers: vec![NodeKind::RpcNode],
+            carriers: vec!["node".to_string()],
         };
         let direct_only_alpn = Alpn {
             name: b"direct-only/1".to_vec(),
             proxy: false,
-            carriers: vec![NodeKind::RpcNode],
+            carriers: vec!["node".to_string()],
         };
         assert_eq!(
             app_alpn.carrier_policy(),
             CarrierPolicy::Proxy {
-                carrier_kind: NodeKind::RpcNode
+                carrier_type: "node".into()
             }
         );
         assert_eq!(direct_only_alpn.carrier_policy(), CarrierPolicy::NoProxy);
@@ -2646,18 +2646,18 @@ mod tests {
 
         // 3. MemoryConnectionsSink records Proxy Connected, settles it with a Disconnected row when Direct Connected lands,
         // and owed_drop disconnects only open routes.
-        let src_birth = Birth { mesh: "mesh1".into(), kind: NodeKind::Gateway,
-            name: PathName::numbered("mesh1", NodeKind::Gateway, 1),
+        let src_birth = Birth { mesh: "mesh1".into(), r#type: "gateway".into(),
+            name: PathName::numbered("mesh1", "gateway", 1),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
-        let carrier_birth = Birth { mesh: "mesh1".into(), kind: NodeKind::Gateway,
-            name: PathName::numbered("mesh1", NodeKind::Gateway, 2),
+        let carrier_birth = Birth { mesh: "mesh1".into(), r#type: "gateway".into(),
+            name: PathName::numbered("mesh1", "gateway", 2),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
-        let dst_birth = Birth { mesh: "mesh1".into(), kind: NodeKind::Broker,
-            name: PathName::numbered("mesh1", NodeKind::Broker, 1),
+        let dst_birth = Birth { mesh: "mesh1".into(), r#type: "broker".into(),
+            name: PathName::numbered("mesh1", "broker", 1),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
@@ -2708,8 +2708,8 @@ mod tests {
         assert_eq!(sink.history().len(), 3);
 
         // Even if the node renames its birth, owed_drop on the still-open direct_row uses the source the pair landed with.
-        let renamed_birth = Birth { mesh: "mesh1".into(), kind: NodeKind::Gateway,
-            name: PathName::numbered("mesh1", NodeKind::Gateway, 9),
+        let renamed_birth = Birth { mesh: "mesh1".into(), r#type: "gateway".into(),
+            name: PathName::numbered("mesh1", "gateway", 9),
             node_id: src_birth.node_id.clone(),
             incarnation: src_birth.incarnation.clone(),
         };

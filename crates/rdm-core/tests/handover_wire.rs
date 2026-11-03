@@ -38,7 +38,7 @@ const PRIMARY: &str = "0c 303132333435363738396162  0c 79727a34396a333033796834"
 const SUCCESSOR: &str = "0c 303132333435363738396364  0c 79727a37396a3330337a7378";
 
 /// CONTRACT: the family's two requests. `PrimaryUpdate` (variant 0) is the primary's call on its
-/// successor carrying the election's result: one entry per primary that moves, `(node_type, primary,
+/// successor carrying the election's result: one entry per primary that moves, `(type, primary,
 /// successor, revision)`, the fabric-primary an entry of node type `fabric`, then the Build, its run and
 /// the operation. `UpdatePrimary` (variant 1) is the command from above: the node type whose primary
 /// moves, the Build, its run, the operation and the successor's exact birth the mesh-primary named, none
@@ -52,10 +52,10 @@ fn requests_match_the_frozen_two_variant_wire_schema() {
             NodePrimaryUpdateRequest::PrimaryUpdate { primaries: vec![("node-admin".into(), primary(), successor(), 4), fabric_entry()], build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o") },
             format!("00 02 0a 6e6f64652d61646d696e {PRIMARY} {SUCCESSOR} 04 06 666162726963 {PRIMARY} {SUCCESSOR} 08 0162 02 016f 00 00 00"),
         ),
-        // variant 1 | node_type "rpc-node" | build_id | run | operation | successor none (a node-admin's command)
-        (NodePrimaryUpdateRequest::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: None }, "01 08 7270632d6e6f6465 0162 02 016f 00 00 00 00".to_string()),
+        // variant 1 | type "rpc-node" | build_id | run | operation | successor none (a node-admin's command)
+        (NodePrimaryUpdateRequest::UpdatePrimary { r#type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: None }, "01 08 7270632d6e6f6465 0162 02 016f 00 00 00 00".to_string()),
         // variant 1 | ... | successor some: the birth the mesh-primary's pre-check named (Q129)
-        (NodePrimaryUpdateRequest::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: Some(successor()) }, format!("01 08 7270632d6e6f6465 0162 02 016f 00 00 00 01 {SUCCESSOR}")),
+        (NodePrimaryUpdateRequest::UpdatePrimary { r#type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: Some(successor()) }, format!("01 08 7270632d6e6f6465 0162 02 016f 00 00 00 01 {SUCCESSOR}")),
     ];
     for (q, hex) in fixtures {
         assert_eq!(NodePrimaryUpdate::encode_request(&q).unwrap(), bytes(&hex), "{q:?}");
@@ -80,8 +80,8 @@ fn replies_match_the_frozen_thirteen_variant_wire_schema() {
         (RejectedConflictingPayload { operation: rdm_core::OperationId::unscoped("o") }, "01 01 6f 00 00 00".to_string()),
         (Reserved2 { reason: "r".into() }, "02 01 72".to_string()),
         (RejectedNotPrimary { reason: "a".into() }, "03 01 61".to_string()),
-        // node_type "fabric" | expected | current
-        (RejectedStaleRevision { node_type: "fabric".into(), expected: 3, current: 4 }, "04 06 666162726963 03 04".to_string()),
+        // type "fabric" | expected | current
+        (RejectedStaleRevision { r#type: "fabric".into(), expected: 3, current: 4 }, "04 06 666162726963 03 04".to_string()),
         (NotReady { reason: "n".into() }, "05 01 6e".to_string()),
         (Malformed { kind: MalformedKind::Corrupt }, "06 02".to_string()),
         (PeerUnresolved { reason: "p".into() }, "07 01 70".to_string()),
@@ -116,7 +116,7 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
         (RejectedConflictingPayload { operation: rdm_core::OperationId::unscoped("o") }, Code::Aborted),
         (Reserved2 { reason: "r".into() }, Code::FailedPrecondition),
         (RejectedNotPrimary { reason: "a".into() }, Code::FailedPrecondition),
-        (RejectedStaleRevision { node_type: "fabric".into(), expected: 1, current: 2 }, Code::Aborted),
+        (RejectedStaleRevision { r#type: "fabric".into(), expected: 1, current: 2 }, Code::Aborted),
         (Failed { step: "s".into(), reason: "r".into(), code: Code::FailedPrecondition }, Code::FailedPrecondition),
         (AlreadyApplied { revisions: vec![fabric_entry()] }, Code::AlreadyExists),
     ] {

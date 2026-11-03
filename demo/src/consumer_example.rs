@@ -49,7 +49,7 @@ use rdm_core::framing::DeliveryId;
 use rdm_core::outcome::{Code, MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
 use rdm_core::streaming::{FrameKind, StreamingProtocol};
-use rdm_core::{NodeId, NodeKind, PathName};
+use rdm_core::{NodeId, PathName};
 use rdm_node::node_hooks::{HookOutcome, NodeHooks, NodeReadyCtx, OnNodeReady, PreNodeReady};
 use rdm_node::operation::{Decision, OperationStore, Operations, Recorded, State};
 use rdm_node::Role;
@@ -70,9 +70,9 @@ use tracing::Instrument;
 /// The product that owns the two ops, as its ledger rows and its serving name it.
 pub const OWNER: &str = "rshape-consumer";
 /// The kind whose nodes serve the ops and hold the record.
-pub const SERVING_KIND: NodeKind = NodeKind::Broker;
+pub const SERVING_TYPE: &str = "broker";
 /// The kind whose nodes call them ([`Caller`]).
-pub const CALLING_KIND: NodeKind = NodeKind::Compute;
+pub const CALLING_TYPE: &str = "compute";
 
 /// A request of [`ExampleWork`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -562,7 +562,7 @@ pub struct Caller {
 #[async_trait::async_trait]
 impl OnNodeReady for Caller {
     async fn on_node_ready(&self, ctx: &NodeReadyCtx) {
-        if ctx.birth.kind != CALLING_KIND {
+        if ctx.birth.kind != CALLING_TYPE {
             return;
         }
         // The calls are the application's own task, ended by the birth's stop, and outside the
@@ -595,7 +595,7 @@ impl Caller {
             pending.insert(format!("{path}-{name}-{}-{n:06}", ctx.birth.incarnation.as_str()), (format!("operation {n} of path {path:?}, name {name:?}"), Progress::ToSend));
             // Target selection: the serving kind's ready nodes in this node's mesh, as the topology
             // this node holds names them; a node that answered Unserved is passed over.
-            let serving: Vec<_> = match ctx.topology_view.nodes_get(&Filter::new().eq("mesh", [self.mesh.clone()]).eq("kind", [SERVING_KIND.segment()]).eq("status", ["ready"])) {
+            let serving: Vec<_> = match ctx.topology_view.nodes_get(&Filter::new().eq("mesh", [self.mesh.clone()]).eq("type", [SERVING_TYPE]).eq("status", ["ready"])) {
                 Ok(nodes) => nodes.into_iter().filter(|d| !unserved.contains(&d.node.node_id)).collect(),
                 Err(refused) => {
                     tracing::error!(target: "rshape", %refused, "the topology query was refused");

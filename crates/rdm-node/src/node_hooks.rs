@@ -24,7 +24,7 @@
 //! task of its own under `rdm.mesh.node.update.via-on-call-failed`, after the call has ended to its
 //! owner (`fabric-node-hooks.md` "on_call_failed"). It gates nothing.
 
-use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
+use crate::model::{FabricId, IncarnationId, MeshId, NodeId, PathName};
 use rdm_core::{MemberStatus, MeshDigest};
 use std::time::Duration;
 use rdm_transport::topology::{DigestView, TopologyView};
@@ -47,7 +47,7 @@ pub struct Birth {
     /// Its mesh.
     pub mesh_id: MeshId,
     /// Its kind.
-    pub kind: NodeKind,
+    pub r#type: String,
 }
 
 /// The node-admin that accepted this birth's `JoinNode`: the accepting primary the hook pulls from (`fabric-node-hooks.md` "What the context carries"). A start after
@@ -804,7 +804,7 @@ mod tests {
             let _ = rafka_time.adopt(1_000);
             let fabric_id = FabricId::mint();
             let mesh_id = MeshId::mint();
-            let name = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
+            let name = PathName::numbered("mesh1", "node", 1);
             let topology_view = TopologyView::join(
                 &gossip,
                 &ep,
@@ -825,7 +825,7 @@ mod tests {
                 incarnation: IncarnationId::mint(),
                 fabric_id,
                 mesh_id,
-                kind: NodeKind::RpcNode,
+                r#type: "node".into(),
             };
             let auth_key = iroh::SecretKey::generate().public();
             let accepting_id = NodeId::mint();
@@ -1075,7 +1075,7 @@ mod tests {
         let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-on-node-ready-unit")
             .expect("evidence capture starts");
 
-        let expected_name = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
+        let expected_name = PathName::numbered("mesh1", "node", 1);
         let expected_name_for_assert = expected_name.clone();
         capture.run(2, async move {
             let ep = rdm_transport::endpoint::bind(
@@ -1111,7 +1111,7 @@ mod tests {
                 incarnation: IncarnationId::mint(),
                 fabric_id,
                 mesh_id,
-                kind: NodeKind::RpcNode,
+                r#type: "node".into(),
             };
 
             // 1. Without `with_on_node_ready`, `spawn_on_node_ready` is a no-op.

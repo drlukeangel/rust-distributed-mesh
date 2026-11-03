@@ -58,7 +58,7 @@ pub struct StoredNode {
     /// The explicitly declared owning mesh.
     pub mesh: String,
     /// The explicitly declared runtime kind.
-    pub kind: crate::NodeKind,
+    pub r#type: String,
     /// The node's minted id.
     pub node_id: NodeId,
     /// The node's `(path, name)`.

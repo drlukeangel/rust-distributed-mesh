@@ -66,7 +66,7 @@ async fn published(estate: &Estate, node: &PathName) -> ExactRuntime {
     ExactRuntime::published(std::path::Path::new(&dir)).unwrap_or_else(|r| panic!("{node:?}: no exact runtime published in {dir}: {r:?}"))
 }
 
-fn rpc(name: &str) -> PathName { PathName::new("mesh1.rpc", name).unwrap() }
+fn rpc(name: &str) -> PathName { PathName::new("mesh1.node", name).unwrap() }
 
 /// Skip a network cell by the host's named reason; any other refusal is a failure.
 fn host_cannot(why: &LinkRefusal) -> bool {
@@ -141,12 +141,12 @@ fn disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal() {
     let capture = capture("disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal");
     capture.run(4, async {
         let estate = estate("disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal").await;
-        let dir = std::path::PathBuf::from(estate.data_dir(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await);
-        let other = std::path::PathBuf::from(estate.data_dir(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await);
+        let dir = std::path::PathBuf::from(estate.data_dir(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await);
+        let other = std::path::PathBuf::from(estate.data_dir(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await);
         let fill = DiskFull::fill(&dir, 16 << 20).expect("16 MiB fits");
         assert!(fill.allocated >= 16 << 20, "{fill:?}");
         assert!(fill.path.starts_with(&dir) && !other.join(rdm_test::disk_faults::FILLER).exists(), "only the named node's dir holds a filler");
-        let held = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await;
+        let held = estate.node_view(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
         assert!(ready(&held), "a bounded filler leaves the node serving: {held:?}");
         let path = fill.path.clone();
         drop(fill);

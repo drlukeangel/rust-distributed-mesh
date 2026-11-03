@@ -5,12 +5,14 @@ use rdm_core::connections::{resolve, CarrierPolicy, ConnectionEnd, ConnectionKin
 use rdm_core::reconnect::{
     deterministic_jitter, due, first_failure, next_failure, owed_direct_restored, reconnect_backoff, reconnect_plan, DIRECT_RESTORED,
 };
-use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
+use rdm_core::{IncarnationId, NodeId, PathName};
 
-const RPC: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
+fn rpc() -> CarrierPolicy {
+    CarrierPolicy::Proxy { carrier_type: "node".into() }
+}
 
 fn end(ordinal: u32, incarnation: &str) -> ConnectionEnd {
-    ConnectionEnd { mesh: "mesh1".into(), kind: NodeKind::RpcNode, name: PathName::numbered("mesh1", NodeKind::RpcNode, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(incarnation)).unwrap()) }
+    ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), name: PathName::numbered("mesh1", "node", ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(incarnation)).unwrap()) }
 }
 
 fn held_for(own: &ConnectionEnd) -> ConnectionsHeld {
@@ -116,19 +118,19 @@ fn cutback_to_direct_happens_only_after_the_proxy_disconnected_write_is_applied_
     assert!(owed_direct_restored(&h, 25).is_empty(), "no Direct yet: nothing owed");
 
     h.apply(connected(&own, &dest, 30)).unwrap();
-    assert!(matches!(resolve(&h, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays effective until deleted");
+    assert!(matches!(resolve(&h, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays effective until deleted");
     let owed = owed_direct_restored(&h, 31);
     assert_eq!(owed.len(), 1);
     assert_eq!((owed[0].state, owed[0].reason.as_deref()), (ConnectionState::Disconnected, Some(DIRECT_RESTORED)));
 
     // The write fails (never applied): the delete is owed again, and the Proxy still routes.
     assert_eq!(owed_direct_restored(&h, 40).len(), 1);
-    assert!(matches!(resolve(&h, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::ViaPeer { .. }));
+    assert!(matches!(resolve(&h, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::ViaPeer { .. }));
 
     // The write lands: the Proxy is deleted and new invocations go Direct.
     h.apply(owed_direct_restored(&h, 50).remove(0)).unwrap();
     assert!(owed_direct_restored(&h, 51).is_empty());
-    assert_eq!(resolve(&h, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: true });
+    assert_eq!(resolve(&h, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: true });
 }
 
 #[test]
@@ -138,8 +140,8 @@ fn route_resolution_never_creates_or_moves_a_reconnect() {
     let h = single(&own, &latest);
     let plan = reconnect_plan(&h, |_| None);
     for _ in 0..100 {
-        assert_eq!(resolve(&h, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::NoActiveRoute);
-        assert_eq!(resolve(&h, &own.node_id, &end(7, "x").node_id, RPC).route, EffectiveRoute::Direct { known: false });
+        assert_eq!(resolve(&h, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute);
+        assert_eq!(resolve(&h, &own.node_id, &end(7, "x").node_id, rpc()).route, EffectiveRoute::Direct { known: false });
     }
     assert_eq!(reconnect_plan(&h, |_| None), plan, "traffic changes no reconnect obligation");
 }

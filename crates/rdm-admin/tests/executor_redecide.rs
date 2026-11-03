@@ -11,7 +11,7 @@
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::join::Joins;
 use rdm_admin::deployment::pipeline::{
     CreateRequest, CreateStep, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, Timeouts, TopologySink,
@@ -141,7 +141,7 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rdm_core::Runtime
     let key = iroh::SecretKey::from_bytes(&hex::decode(key_hex.trim()).unwrap().try_into().unwrap());
     rdm_core::MeshDigest { held_hash: Default::default(),
         fabric_id: rdm_core::FabricId::parse(&env("RDM_FABRIC_ID")).unwrap(),
-        node: rdm_core::MeshNode { mesh: spec.mesh.clone(), kind: spec.kind,
+        node: rdm_core::MeshNode { mesh: spec.mesh.clone(), r#type: spec.r#type.clone(),
             node_id: NodeId::parse(&env("RDM_NODE_ID")).unwrap(),
             name: rdm_core::PathName::new(env("RDM_NODE_PATH"), env("RDM_NODE_NAME")).unwrap(),
             endpoint_id: rdm_core::EndpointId(key.public().to_string()),
@@ -273,7 +273,7 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![(key.into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.to_path_buf(),
             store_dir: data_root.to_path_buf(),
@@ -317,7 +317,7 @@ async fn accepted_build(builds: &MemoryBuildStateAdapter) -> BuildId {
 }
 
 fn request(build_id: &BuildId, attempt: u32, node: &PathName) -> CreateRequest {
-    CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt, node: node.clone(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None }
+    CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node)), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt, node: node.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None }
 }
 
 /// Attempt 1 by `lost`, killed at `dies`.
@@ -357,7 +357,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         let successor = executor(&fleet, &data_root, "successoradminkey");
 
         // CONTROL: the same executor re-runs its own cut-short run: its birth is handed on.
-        let own = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let own = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let build_own = accepted_build(&builds).await;
         lost_attempt(&fleet, &lost, &builds, &build_own, &own, Dies::BeforeJoin).await;
         let own_birth = fleet.spawns().last().cloned().expect("attempt 1 launched the birth");
@@ -367,7 +367,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         assert!(fleet.terminated.lock().unwrap().is_empty(), "nothing of the executor's own is stopped");
 
         // CONTROL: a birth that JOINED under the lost executor is handed on by the successor.
-        let joined = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        let joined = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         let build_joined = accepted_build(&builds).await;
         lost_attempt(&fleet, &lost, &builds, &build_joined, &joined, Dies::AfterJoin).await;
         let spawns_before = fleet.spawns().len();
@@ -378,7 +378,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         assert!(fleet.running(joined_birth.pid), "a birth that joined keeps running");
 
         // THE FINDING: the lost executor's launch never joined; its seed is the lost endpoint.
-        let stranded = rdm_core::PathName::new("mesh1.rpc", "3").unwrap();
+        let stranded = rdm_core::PathName::new("mesh1.node", "3").unwrap();
         let build_stranded = accepted_build(&builds).await;
         lost_attempt(&fleet, &lost, &builds, &build_stranded, &stranded, Dies::BeforeJoin).await;
         let dead = fleet.spawns().last().cloned().unwrap();
@@ -395,7 +395,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         assert!(fleet.running(fresh.pid));
 
         // A node the lost executor never launched: its identity decision is executor-independent.
-        let unborn = rdm_core::PathName::new("mesh1.rpc", "4").unwrap();
+        let unborn = rdm_core::PathName::new("mesh1.node", "4").unwrap();
         let build_unborn = accepted_build(&builds).await;
         let decided = rdm_admin::build_state::BuildStepReceipt {
             mesh: None,
@@ -431,7 +431,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
     let rejections: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.deployment.reject.via-lost-executor").collect();
     assert_eq!(rejections.len(), 1, "exactly the stranded birth is refused by name: {} such spans", rejections.len());
     let a = &rejections[0]["attributes"];
-    assert_eq!((&a["node_path"], &a["node_name"]), (&serde_json::json!("mesh1.rpc"), &serde_json::json!("3")));
+    assert_eq!((&a["node_path"], &a["node_name"]), (&serde_json::json!("mesh1.node"), &serde_json::json!("3")));
     assert!(a["recorded_executor"].as_str().unwrap().contains(result["lost_executor"].as_str().unwrap()), "{a}");
     assert!(a["executor"].as_str().unwrap().contains(result["successor_executor"].as_str().unwrap()), "{a}");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();

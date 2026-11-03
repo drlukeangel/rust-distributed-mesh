@@ -12,8 +12,8 @@ const TYPE: &str = "rafka.entity.channel-proof";
 
 /// A member of the mesh declaring [`TYPE`]: the testkit's channel member, the rig an embedding's
 /// app-channel cells use too.
-async fn node(fabric: &FabricId, mesh: &MeshId, name: rdm_core::PathName, mesh_name: &str, kind: rdm_core::NodeKind, seeds: Vec<MemberAddr>) -> Member {
-    Member::join(fabric, mesh, name, mesh_name, kind, &seeds, &[TYPE]).await
+async fn node(fabric: &FabricId, mesh: &MeshId, name: rdm_core::PathName, mesh_name: &str, r#type: &str, seeds: Vec<MemberAddr>) -> Member {
+    Member::join(fabric, mesh, name, mesh_name, r#type, &seeds, &[TYPE]).await
 }
 
 async fn pair() -> (
@@ -26,8 +26,8 @@ async fn pair() -> (
 ) {
     let fabric = FabricId::mint();
     let mesh = MeshId::mint();
-    let a = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, vec![]).await;
-    let b = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, vec![a.addr()]).await;
+    let a = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", vec![]).await;
+    let b = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", vec![a.addr()]).await;
     let ca = a.topology_view.join_channel(TYPE).await.unwrap();
     let cb = b.topology_view.join_channel(TYPE).await.unwrap();
     // Neighbour readiness is a protocol event, not an elapsed-time assumption.
@@ -98,7 +98,7 @@ fn encoded(n: &Member, kind: &str, id: &str, subject: &str, data: Vec<u8>, rever
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_undeclared_type_is_refused_by_name_on_join() {
     let fabric = FabricId::mint();
-    let n = node(&fabric, &MeshId::mint(), rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, vec![]).await;
+    let n = node(&fabric, &MeshId::mint(), rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", vec![]).await;
     assert!(
         matches!(n.topology_view.join_channel("rafka.entity.unknown").await, Err(ChannelError::UndeclaredType { r#type }) if r#type == "rafka.entity.unknown")
     );
@@ -376,7 +376,7 @@ fn an_undeclared_wire_type_is_dropped_by_name_and_the_next_event_applies() {
 /// receiver an earlier join holds is refused `ReceiverHeld` naming the type, never `Left`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_join_of_a_held_type_is_refused_receiver_held_by_name() {
-    let n = node(&FabricId::mint(), &MeshId::mint(), rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, vec![]).await;
+    let n = node(&FabricId::mint(), &MeshId::mint(), rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", vec![]).await;
     let _first = n.topology_view.join_channel(TYPE).await.unwrap();
     assert!(matches!(n.topology_view.join_channel(TYPE).await, Err(ChannelError::ReceiverHeld { r#type }) if r#type == TYPE));
 }
@@ -476,7 +476,7 @@ fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
 /// Holding a member's channel permits receipt, but does not declare its type for this author.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_learned_type_is_receivable_but_its_undeclared_author_cannot_publish_it() {
-    let n = node(&FabricId::mint(), &MeshId::mint(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, vec![]).await;
+    let n = node(&FabricId::mint(), &MeshId::mint(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", vec![]).await;
     let kind = "app.member-owned";
     let member = NodeId::mint();
     let birth = IncarnationId::mint();
@@ -505,7 +505,7 @@ async fn a_learned_type_is_receivable_but_its_undeclared_author_cannot_publish_i
 fn member_digest(n: &Member) -> rdm_core::MeshDigest {
     rdm_core::MeshDigest {
         fabric_id: n.topology_view.fabric_id().clone(),
-        node: rdm_core::MeshNode { mesh: n.topology_view.mesh_name().to_owned(), kind: n.kind,
+        node: rdm_core::MeshNode { mesh: n.topology_view.mesh_name().to_owned(), r#type: n.r#type.clone(),
             node_id: n.author.node_id.clone(),
             name: n.name.clone(),
             endpoint_id: rdm_core::EndpointId(n.endpoint_id().to_string()),
@@ -536,12 +536,12 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     const LATER: &str = "app.later-held";
     let fabric = FabricId::mint();
     let mesh = MeshId::mint();
-    let a = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, vec![]).await;
-    let b = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, vec![a.addr()]).await;
+    let a = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", vec![]).await;
+    let b = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", vec![a.addr()]).await;
     while a.topology_view.neighbours() < 1 || b.topology_view.neighbours() < 1 {
         tokio::task::yield_now().await;
     }
-    let c = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[b.addr()], &[LATER]).await;
+    let c = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &[b.addr()], &[LATER]).await;
     while b.topology_view.neighbours() < 2 || c.topology_view.neighbours() < 1 {
         tokio::task::yield_now().await;
     }

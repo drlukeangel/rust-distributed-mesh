@@ -55,9 +55,9 @@ mod tests {
 
         tracing::info_span!(
             "rdm.node.mesh.update.via-leaving",
-            node = "mesh1.rpc.1",
+            node = "mesh1.node.1",
             mesh = "mesh1",
-            operation = "node.mesh.leave:mesh1.rpc.1"
+            operation = "node.mesh.leave:mesh1.node.1"
         )
         .in_scope(|| {});
 
@@ -65,7 +65,7 @@ mod tests {
         assert_eq!(spans.len(), 1);
         assert_eq!(
             spans[0].attributes.get("operation").map(String::as_str),
-            Some("node.mesh.leave:mesh1.rpc.1")
+            Some("node.mesh.leave:mesh1.node.1")
         );
     }
 }

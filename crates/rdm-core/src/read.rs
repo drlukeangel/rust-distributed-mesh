@@ -451,11 +451,11 @@ mod tests {
             (ReadReply::Nodes { nodes: Vec::new() }, FrameKind::Data),
             (ReadReply::Meshes { meshes: Vec::new() }, FrameKind::Data),
             (ReadReply::Fabrics { fabrics: Vec::new() }, FrameKind::Data),
-            (ReadReply::Connections { node: "mesh1.rpc.1".into(), complete: true, connections: Vec::new() }, FrameKind::Data),
+            (ReadReply::Connections { node: "mesh1.node.1".into(), complete: true, connections: Vec::new() }, FrameKind::Data),
             (ReadReply::End { rows: 0, frames: 0 }, FrameKind::Terminal),
         ] {
             assert_eq!(Read::frame_kind(&frame), kind, "{frame:?}");
         }
-        assert!(matches!(Read::frame_kind(&ReadReply::ReadOverBound { read: "node.get".into(), row: "mesh1.rpc.1".into(), bytes: 70_000, max: 65_536 }), FrameKind::Refusal(_)));
+        assert!(matches!(Read::frame_kind(&ReadReply::ReadOverBound { read: "node.get".into(), row: "mesh1.node.1".into(), bytes: 70_000, max: 65_536 }), FrameKind::Refusal(_)));
     }
 }

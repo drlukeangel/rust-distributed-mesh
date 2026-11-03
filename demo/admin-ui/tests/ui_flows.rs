@@ -28,12 +28,12 @@ impl BuildEvents for Timeline {
 /// rpc node, so a Build is accepted on a file whose hash it names (a request naming no executable for a
 /// path it creates is refused at acceptance) and what it launches ends at once, as nothing here is about
 /// the nodes it creates.
-fn stubs(dir: &std::path::Path) -> std::collections::BTreeMap<rdm_core::NodeKind, std::path::PathBuf> {
+fn stubs(dir: &std::path::Path) -> std::collections::BTreeMap<String, std::path::PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let stub = dir.join("stub-node");
     std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-    [(rdm_core::NodeKind::NodeAdmin, stub.clone()), (rdm_core::NodeKind::Gateway, stub.clone()), (rdm_core::NodeKind::Broker, stub)].into_iter().collect()
+    [("node-admin", stub.clone()), ("gateway", stub.clone()), ("broker", stub)].into_iter().collect()
 }
 
 /// A Day-0 node-admin in this process, and the UI's typed client entered at its birth once its view names
@@ -94,7 +94,7 @@ async fn every_ui_topology_flow_is_one_build_in_node_admin() {
     let (_running, admin) = node_admin(&d).await;
     let timeline = Arc::new(Timeline::default());
     let ui = router(Some(admin.clone()), timeline.clone());
-    for (method, uri, body) in [("POST", "/api/bootstrap", None), ("POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "broker"})))] {
+    for (method, uri, body) in [("POST", "/api/bootstrap", None), ("POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "type": "broker"})))] {
         let (status, v) = call(&ui, method, uri, body).await;
         if status == StatusCode::UNPROCESSABLE_ENTITY && v["error"] == "build-in-progress" {
             // One Build in flight: the bootstrap is still reconciling, and the refusal names it.
@@ -117,7 +117,7 @@ async fn node_admin_refusals_reach_the_ui_with_their_reason() {
     let ui = router(Some(admin), timeline.clone());
     let (s, v) = call(&ui, "POST", "/api/nodes/mesh1.broker/9/stop", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown-node")), "{v}");
-    let (s, v) = call(&ui, "DELETE", "/api/nodes/mesh1.admin/1", None).await;
+    let (s, v) = call(&ui, "DELETE", "/api/nodes/mesh1.node-admin/1", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("would-leave-mesh-without-admin")), "{v}");
     let (s, v) = call(&ui, "DELETE", "/api/nodes/not..a..path/1", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid-request")), "{v}");
@@ -138,7 +138,7 @@ async fn topology_labels_mesh_primary_on_node_admins_only_and_serves_node_admins
     let (_running, admin) = node_admin(&d).await;
     let t = rdm_admin_ui::view::topology(&admin).await.unwrap();
     let role = |path: &str, name: &str| t["nodes"].as_array().unwrap().iter().find(|x| x["name"] == json!({"path": path, "name": name})).unwrap_or_else(|| panic!("path {path:?}, name {name:?} is in the topology: {t}"))["role"].as_str().unwrap().to_string();
-    assert_eq!(role("mesh1.admin", "1"), "fabric primary · mesh primary");
+    assert_eq!(role("mesh1.node-admin", "1"), "fabric primary · mesh primary");
     assert_eq!(t["connection_errors"], json!([]), "the node-admin answers its connection facts, an empty list here: {t}");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -236,7 +236,7 @@ impl ConsumerEstate {
                 ("MESH_SPAWN_TYPE", "process".to_string()),
                 ("RDM_FABRIC", "fabric1".into()),
                 ("RDM_MESH", "mesh1".into()),
-                ("RDM_DATA_DIR", root.join("mesh1.admin.1").display().to_string()),
+                ("RDM_DATA_DIR", root.join("mesh1.node-admin.1").display().to_string()),
                 ("RDM_STORE_DIR", root.join("store").display().to_string()),
                 ("RDM_ESTATE_ROOT", root.display().to_string()),
                 ("RDM_BIN_DIR", bin.display().to_string()),
@@ -261,7 +261,7 @@ impl ConsumerEstate {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        let executables = [(rdm_core::NodeKind::NodeAdmin, bin.join("rshape-node-admin")), (rdm_core::NodeKind::Gateway, bin.join("rshape-gateway"))].into_iter().collect();
+        let executables = [("node-admin", bin.join("rshape-node-admin")), ("gateway", bin.join("rshape-gateway"))].into_iter().collect();
         let admin = Arc::new(Admin::at(&birth).await.expect("the admin's birth").with_executables(executables));
         let until = std::time::Instant::now() + Duration::from_secs(60);
         let day0 = loop {
@@ -315,7 +315,7 @@ impl Drop for ConsumerEstate {
 async fn adding_resubmitting_and_replacing_a_gateway_through_the_ui_each_completes() {
     let (estate, admin) = ConsumerEstate::start("replace").await;
     let ui = router(Some(admin.clone()), Arc::new(Timeline::default()));
-    let id = accepted(&ui, "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "gateway"}))).await;
+    let id = accepted(&ui, "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "type": "gateway"}))).await;
     until_complete(&admin, "the gateway added", &id).await;
     ready(&admin, "after the gateway added").await;
     let id = accepted(&ui, "/api/builds/resubmit", None).await;

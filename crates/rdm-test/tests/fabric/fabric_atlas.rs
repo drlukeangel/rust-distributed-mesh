@@ -53,8 +53,8 @@ async fn two_meshes(estate: &mut Estate) -> Vec<Value> {
     estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
     estate.enter_fabric_primary().await;
     let views = estate.node_values().await;
-    let pick = |kind: &str, primary: bool| views.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == kind && (n["is_primary"] == true) == primary).cloned().unwrap_or_else(|| panic!("mesh2 holds a {kind} with is_primary={primary}: {views:#?}"));
-    vec![pick("rpc_node", false), pick("rpc_node", true), pick("node_admin", false), pick("node_admin", true)]
+    let pick = |kind: &str, primary: bool| views.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == kind && (n["is_primary"] == true) == primary).cloned().unwrap_or_else(|| panic!("mesh2 holds a {kind} with is_primary={primary}: {views:#?}"));
+    vec![pick("node", false), pick("node", true), pick("node-admin", false), pick("node-admin", true)]
 }
 
 fn path_of(n: &Value) -> PathName {
@@ -180,14 +180,14 @@ async fn the_atlas_names_a_stop_at_its_admission_and_its_receipts_before_complet
     use rdm_test::faults::{binding_set, candidate_sha, Door};
     let test = "the_atlas_names_a_stop_at_its_admission_and_its_receipts_before_complete";
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let targets = two_meshes(&mut estate).await;
     let (node, node_id) = (path_of(&targets[0]), id_of(&targets[0]));
     let fp = estate.fabric_view().await.fabric_primary.expect("fabric.get names the fabric-primary");
     let fp_at = estate.node_values().await.iter().find(|n| id_of(n) == fp).map(path_of).expect("the fabric-primary is listed");
     let fp_door = Door::at(&estate, &fp_at).await;
     let mut mesh2_doors = Vec::new();
-    for v in estate.node_values().await.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin") {
+    for v in estate.node_values().await.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin") {
         mesh2_doors.push(Door::at(&estate, &path_of(v)).await);
     }
     for d in &mesh2_doors {
@@ -240,7 +240,7 @@ async fn a_delayed_observation_of_another_meshs_node_never_moves_the_atlas_back(
     let test = "a_delayed_observation_of_another_meshs_node_never_moves_the_atlas_back";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     let targets = two_meshes(&mut estate).await;
-    for before in targets.iter().filter(|n| n["kind"] == "node_admin") {
+    for before in targets.iter().filter(|n| n["type"] == "node-admin") {
         let (node, node_id) = (path_of(before), id_of(before));
         let birth = (before["node_id"].as_str().unwrap_or_default().to_string(), before["incarnation_id"].as_str().unwrap_or_default().to_string());
         Estate::workflow(&format!("node.stop of {node:?}"), estate.nodes_obj().await.stop(&node).await).await;
@@ -275,13 +275,13 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
     use rdm_test::faults::{binding_set, candidate_sha, Door};
     let test = "a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fabric_primary_on_its_complete";
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let targets = two_meshes(&mut estate).await;
     let before = &targets[0];
     let node = path_of(before);
     let renamed = node.renamed().unwrap();
     let mut mesh2_doors = Vec::new();
-    for v in estate.node_values().await.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin") {
+    for v in estate.node_values().await.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin") {
         mesh2_doors.push(Door::at(&estate, &path_of(v)).await);
     }
     for d in &mesh2_doors {

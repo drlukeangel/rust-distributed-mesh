@@ -112,8 +112,8 @@ fn testkit_store_applies_cas_reports_exact_executing_birth() {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::RpcNode,
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            r#type: "node".into(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -137,7 +137,7 @@ fn testkit_store_applies_cas_reports_exact_executing_birth() {
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode { mesh: launch.mesh.clone(), kind: launch.kind, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
+        resolver.insert(ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
         let client = NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let call = |req: TestkitStoreRequest| {

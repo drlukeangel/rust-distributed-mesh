@@ -514,7 +514,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
             leave: (self.operation.operation.action == "node.mesh.join").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), node_hooks: s.node_hooks.clone(), pre_node_ready_task: s.pre_node_ready_task.clone(), node_id: s.node_id.clone(), name: me.clone() }),
         };
         Ok(crate::workflows::node_start::HookParts {
-            birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: NodeKind::NodeAdmin },
+            birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), r#type: "node-admin".into() },
             node_hooks: s.node_hooks.clone(),
             events: crate::node_hooks::Events::new(topology_view.digest_view.clone(), s.addressed.clone()),
             cancel: self.birth_cancel.take().expect("the hook's token is handed once"),
@@ -727,7 +727,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
                 if d.node.mesh == topology_view.mesh_name() {
                     mesh_peers.push(a.clone());
                 }
-                if d.node.kind == NodeKind::NodeAdmin {
+                if rdm_core::is_node_admin(&d.node.r#type) {
                     admins.push(a);
                 }
             }
@@ -937,7 +937,7 @@ mod carried_tests {
         let err = refuse_contradictory_start(&mesh_only_recovery, None).expect_err("mesh_primary without fabric_primary must be refused");
         assert!(err.contains("RDM_MESH_PRIMARY without RDM_FABRIC_PRIMARY"), "{err}");
 
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         assert_eq!(pending_gate(&me, "mesh1", true, false, false), PendingGate::SelfApply);
         assert_eq!(pending_gate(&me, "mesh1", true, true, false), PendingGate::Clear);
         assert!(matches!(pending_gate(&me, "mesh1", false, false, false), PendingGate::Blocked(_)));

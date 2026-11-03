@@ -15,11 +15,11 @@ fn bytes(hex: &str) -> Vec<u8> {
     hex.as_bytes().chunks_exact(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()).collect()
 }
 
-/// mesh1.rpc.1's digest as JSON carries it (REST, files): no liveness field, so `node_state` takes its
+/// mesh1.node.1's digest as JSON carries it (REST, files): no liveness field, so `node_state` takes its
 /// default (`Joining`), and the status `status`.
 fn digest(status: &str) -> MeshDigest {
     serde_json::from_str(&format!(
-        r#"{{"fabric_id":"1123456789ab","node":{{"mesh":"mesh1","kind":"rpc_node","node_id":"0123456789ab","name":{{"path":"mesh1.rpc","name":"1"}},"endpoint_id":"k","transport_addr":"127.0.0.1:80","incarnation":"yrz49j303yh4","supersedes":null}},"status":"{status}","admin_api_base":null,"digest_seq":7,"emitted_at_rafka_ms":9}}"#
+        r#"{{"fabric_id":"1123456789ab","node":{{"mesh":"mesh1","type":"node","node_id":"0123456789ab","name":{{"path":"mesh1.node","name":"1"}},"endpoint_id":"k","transport_addr":"127.0.0.1:80","incarnation":"yrz49j303yh4","supersedes":null}},"status":"{status}","admin_api_base":null,"digest_seq":7,"emitted_at_rafka_ms":9}}"#
     ))
     .unwrap()
 }
@@ -124,7 +124,7 @@ fn the_largest_complete_message_golden_fits_max_frame() {
 #[test]
 fn members_chunks_are_sized_against_the_complete_message() {
     let mut first = digest("ready"); first.admin_api_base = Some("x".repeat(1800));
-    let mut second = first.clone(); second.node.node_id = rdm_core::NodeId::parse("1123456789ab").unwrap(); second.node.name = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+    let mut second = first.clone(); second.node.node_id = rdm_core::NodeId::parse("1123456789ab").unwrap(); second.node.name = rdm_core::PathName::new("mesh1.node", "2").unwrap();
     let author = crate::gossip_wire::author();
     let publisher = PublisherId { incarnation: author.incarnation.clone(), node_id: author.node.clone() };
     let shape = |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted }.authored(&author, 0, 1);
@@ -171,7 +171,7 @@ fn members_chunks_include_the_maximum_trace_context_in_their_complete_size() {
     let state = format!("a={},b={}", "x".repeat(256), "y".repeat(251));
     assert_eq!(state.len(), rdm_core::context::MAX_TRACESTATE_BYTES);
     let mut d = digest("ready"); d.admin_api_base = Some("x".repeat(1600));
-    let mut other = d.clone(); other.node.node_id = rdm_core::NodeId::mint(); other.node.name = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+    let mut other = d.clone(); other.node.node_id = rdm_core::NodeId::mint(); other.node.name = rdm_core::PathName::new("mesh1.node", "2").unwrap();
     let shape = |digests, in_flight, deleted, chunk_index, chunk_count| {
         let mut f = Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted: deleted }.authored(&author, 0, 1);
         let Frame::Authored { context, .. } = &mut f else { unreachable!() };

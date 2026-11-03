@@ -19,7 +19,7 @@ use rdm_admin::admin::{
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{DeploymentProvider, TerminationMode, adopt};
 use rdm_client::{Filter, MeshNode, NodeStatus, Nodes, PathName, Peers, await_fact};
-use rdm_core::{NodeKind, RuntimeFact};
+use rdm_core::{RuntimeFact};
 
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH")
@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage: data_dir_lost_recovery [<path> <name>]")),
         _ => rows
             .iter()
-            .find(|n| n.kind != NodeKind::NodeAdmin && !n.is_primary && n.status == NodeStatus::Ready)
+            .find(|n| n.kind != "node-admin" && !n.is_primary && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no ready secondary role node in the estate"))?
             .clone(),
     };

@@ -3,7 +3,7 @@
 //! (`mesh_delete::members_exited` over each member's node.delete, `DeploymentPipeline::delete`); the
 //! provider, the Build state and the view are fixtures.
 //!
-//! mesh2 leaves: two ordinary nodes, one other node-admin and the final primary path `mesh2.admin`, name `1`.
+//! mesh2 leaves: two ordinary nodes, one other node-admin and the final primary path `mesh2.node-admin`, name `1`.
 //! In attempt 1 one ordinary node exits and the provider cannot inspect the other after its stop
 //! ladder, so the ordinary tier is incomplete and the node-admin tier never starts. The resumed
 //! attempt sees the view as the first one left it: neither ordinary node is live any more.
@@ -254,8 +254,8 @@ impl View {
     }
 }
 
-fn node_at(path: &str, name: &str, mesh: &str, kind: rdm_core::NodeKind) -> Node {
-    let mut n = Node::allocated(PathName::new(path, name).unwrap(), mesh, kind);
+fn node_at(path: &str, name: &str, mesh: &str, r#type: &str) -> Node {
+    let mut n = Node::allocated(PathName::new(path, name).unwrap(), mesh, r#type);
     n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n
@@ -272,11 +272,11 @@ struct Members {
 impl Members {
     fn new() -> Self {
         Self {
-            failing: node_at("mesh2.rpc", "1", "mesh2", rdm_core::NodeKind::RpcNode),
-            exiting: node_at("mesh2.rpc", "2", "mesh2", rdm_core::NodeKind::RpcNode),
-            other_admin: node_at("mesh2.admin", "2", "mesh2", rdm_core::NodeKind::NodeAdmin),
-            final_admin: node_at("mesh2.admin", "1", "mesh2", rdm_core::NodeKind::NodeAdmin),
-            fp: node_at("mesh1.admin", "1", "mesh1", rdm_core::NodeKind::NodeAdmin),
+            failing: node_at("mesh2.node", "1", "mesh2", "node"),
+            exiting: node_at("mesh2.node", "2", "mesh2", "node"),
+            other_admin: node_at("mesh2.node-admin", "2", "mesh2", "node-admin"),
+            final_admin: node_at("mesh2.node-admin", "1", "mesh2", "node-admin"),
+            fp: node_at("mesh1.node-admin", "1", "mesh1", "node-admin"),
         }
     }
 }
@@ -292,10 +292,10 @@ fn runtime_handles(records: &[Node], first_pid: u32) -> BTreeMap<NodeId, Deploym
 /// same location; renaming does not change which birth is removed.
 #[test]
 fn removed_birth_does_not_hide_a_new_incarnation_or_location_successor() {
-    let original = node_at("mesh2.rpc", "north", "mesh2", rdm_core::NodeKind::RpcNode);
+    let original = node_at("mesh2.node", "north", "mesh2", "node");
     let mut renamed = original.clone();
-    renamed.name = PathName::new("mesh2.rpc", "north-old").unwrap();
-    let successor = node_at("mesh2.rpc", "north", "mesh2", rdm_core::NodeKind::RpcNode);
+    renamed.name = PathName::new("mesh2.node", "north-old").unwrap();
+    let successor = node_at("mesh2.node", "north", "mesh2", "node");
     let mut newer = original.clone();
     newer.incarnation_id = Some(IncarnationId::mint());
     let view = View::default();
@@ -334,7 +334,7 @@ async fn node_delete_receipts(builds: &dyn BuildStateAdapter, key: &MeshDeleteKe
     assert_eq!(terminal.node_id, subject.node_id);
     assert_eq!(terminal.incarnation_id, subject.incarnation_id);
     let operation = rdm_core::OperationId::node("node.delete", &subject_birth.node_id);
-    let op = LifecycleOp { mesh: subject.mesh.clone(), kind: subject.kind, build_id: key.build_id.to_string(), attempt: key.attempt, operation: operation.clone(), node_id: subject_birth.node_id, incarnation: subject_birth.incarnation, name: subject.node.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+    let op = LifecycleOp { mesh: subject.mesh.clone(), r#type: subject.r#type.clone(), build_id: key.build_id.to_string(), attempt: key.attempt, operation: operation.clone(), node_id: subject_birth.node_id, incarnation: subject_birth.incarnation, name: subject.node.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
     for (step, output) in [("NodeDeleting", serde_json::to_value(&op).ok()), ("TerminateRuntime", serde_json::to_value(terminal).ok()), ("NodeDeleted", serde_json::to_value(&op).ok()), ("RemoveTopologyMembership", None), ("Complete", None)] {
         builds
             .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: key.build_id.clone(), attempt: key.attempt, operation: operation.clone(), step: step.into(), outcome: rdm_admin::build_state::StepOutcome::Complete, output, executor: Some(executor.clone()) })
@@ -362,8 +362,8 @@ fn writer_view(records: &[Node], primary: Option<&NodeId>, fabric_primary: Optio
 /// Every node's row in `storage` as its create left it (live, its config), held by `rows`.
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
-        assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+        storage.write_record(&NodeRow { replacement_from: None, r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
+        assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
     }
 }
 
@@ -748,21 +748,21 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
 /// deleted"), R-NS1 item 2 (from the stop of a mesh's last admin the fabric-primary is the writer of
 /// a mesh with no primary) and R-MD1 item 2 (mesh-left ensures the mesh row deleted). While the final
 /// primary holds its role live, the fabric-primary writes none of mesh2's rows and a second claim of
-/// path `mesh2.admin`, name `1` is refused `name-held`; once it is stopped (its role held) the
+/// path `mesh2.node-admin`, name `1` is refused `name-held`; once it is stopped (its role held) the
 /// fabric-primary writes its row Deleted, node id and config kept, as its node.delete's NodeDeleted
 /// step does; mesh-left puts the mesh row deleted as acting primary when no Dead row is held; and only
-/// then a new birth claims path `mesh2.admin`, name `1` over the Deleted row (`row-seeded`, seeded from it), its
+/// then a new birth claims path `mesh2.node-admin`, name `1` over the Deleted row (`row-seeded`, seeded from it), its
 /// row carrying its create spec's config, here none (Q166: a plain create's config is its spec's; only a
 /// recovery's and a successor's claim inherit).
 #[test]
 fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_only_then_the_name_is_claimed_again() {
     let cap = capture();
     let fp = {
-        let mut n = node_at("mesh1.admin", "1", "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let mut n = node_at("mesh1.node-admin", "1", "mesh1", "node-admin");
         n.is_fabric_primary = true;
         n
     };
-    let last = node_at("mesh2.admin", "1", "mesh2", rdm_core::NodeKind::NodeAdmin);
+    let last = node_at("mesh2.node-admin", "1", "mesh2", "node-admin");
     let storage = Arc::new(MemoryNodesStorage::default());
     let status = MemoryMeshStorage::default();
     let declared = Mutex::new(Declared::default());
@@ -778,8 +778,8 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         // The fabric-primary claimed the mesh's first admin's name when it created it, before the
         // mesh had a primary.
         rows_written(&storage, &rows, std::slice::from_ref(&last)).await;
-        // A live path `mesh2.admin`, name `1` holds its name: a second birth's claim is refused.
-        let second = rows.create_row(&last.name, &last.mesh.clone(), last.kind, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()), None, None, RowFor::Create).await;
+        // A live path `mesh2.node-admin`, name `1` holds its name: a second birth's claim is refused.
+        let second = rows.create_row(&last.name, &last.mesh.clone(), &last.r#type, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()), None, None, RowFor::Create).await;
         // In its role and live: the fabric-primary is not the writer of mesh2's rows.
         view.write().await.nodes.iter_mut().filter(|n| n.node_id == last.node_id).for_each(|n| n.is_primary = true);
         let live = rows.deleted(&last, &deleting).await;
@@ -795,7 +795,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         let statuses = status.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>();
         let dead_held = status.mesh(&mesh_id.clone()).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted);
         // mesh2 created again: its first admin's claim wins over the Deleted row.
-        let again = rows.create_row(&last.name, &last.mesh.clone(), last.kind, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()), None, None, RowFor::Create).await;
+        let again = rows.create_row(&last.name, &last.mesh.clone(), &last.r#type, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()), None, None, RowFor::Create).await;
         (second, live, stopped, after, row, (statuses, dead_held), again, trace_id)
     });
     let (statuses, dead_held) = statuses;
@@ -805,7 +805,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
 
-    assert!(matches!(&second, Err(RowRefused::NameHeld(h)) if h.by == last.node_id), "a live path `mesh2.admin`, name `1` refuses a second claim: {second:?}");
+    assert!(matches!(&second, Err(RowRefused::NameHeld(h)) if h.by == last.node_id), "a live path `mesh2.node-admin`, name `1` refuses a second claim: {second:?}");
     assert!(live.is_err(), "while the final primary holds its role live the fabric-primary writes none of mesh2's rows: {live:?}");
     stopped.unwrap_or_else(|e| panic!("once stopped, the fabric-primary writes the final primary's row Deleted as acting primary: {e}"));
     after.unwrap_or_else(|e| panic!("mesh-left writes its rows: {e}"));
@@ -819,7 +819,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
             assert_eq!(seeded_from.as_ref(), None, "a plain create names no seed: the Deleted row's location is not provenance");
             assert_eq!(row.initial_properties.as_ref().map(|p| p.config.clone()), Some(Default::default()), "its create spec's config, none: a plain create inherits no config (Q166)");
         }
-        other => panic!("the recreated mesh's admin claims path `mesh2.admin`, name `1` over the Deleted row: {other:?}"),
+        other => panic!("the recreated mesh's admin claims path `mesh2.node-admin`, name `1` over the Deleted row: {other:?}"),
     }
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     let deleted: Vec<String> = named("rdm.node_admin.node.delete.via-node-row").iter().filter(|s| s["attributes"]["subject_path"] == last.name.path && s["attributes"]["subject_name"] == last.name.name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
@@ -843,12 +843,12 @@ fn step_facts(facts: &[BuildFact]) -> Vec<BuildStepReceipt> {
 
 /// CONTRACT: a mesh leave whose final primary is lost mid-leave resumes under a named amendment and
 /// completes over both primaries (R11; mesh-delete.md, "Resume after the primary's loss"). Attempt 1:
-/// the final primary path `mesh2.admin`, name `1` runs the ordinary tier, path `mesh2.rpc`, name `2` exits and path `mesh2.rpc`, name `1`'s
+/// the final primary path `mesh2.node-admin`, name `1` runs the ordinary tier, path `mesh2.node`, name `2` exits and path `mesh2.node`, name `1`'s
 /// exit cannot be proven, then the final primary is lost. The fabric-primary records the lost
-/// primary's exact Exited first, then `RosterAmended { path `mesh2.admin`, name `1` -> path `mesh2.admin`, name `2` }` (the
+/// primary's exact Exited first, then `RosterAmended { path `mesh2.node-admin`, name `1` -> path `mesh2.node-admin`, name `2` }` (the
 /// surviving admin the election in its role); the identical amendment replays `AlreadyApplied` and a
 /// second amendment for the same predecessor is refused by name. Attempt 2: the amended primary runs
-/// only path `mesh2.rpc`, name `1` (path `mesh2.rpc`, name `2` and the lost primary keep their receipts, nobody re-runs them),
+/// only path `mesh2.node`, name `1` (path `mesh2.node`, name `2` and the lost primary keep their receipts, nobody re-runs them),
 /// its manifest is accepted against the amended admission, a stale manifest naming the predecessor as
 /// final primary is refused by name, mesh.deleted is recorded from it, and once the amended primary's
 /// own node.delete proves its exit the MeshLeft proof set covers every accepted birth, both primaries
@@ -954,7 +954,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             .unwrap();
         let last = records2.iter().find(|n| n.node_id == other_admin.node_id).cloned().unwrap();
         let mut fp_template = template.clone();
-        fp_template.launcher = rdm_core::launch::Launcher { mesh: "mesh1".into(), name: PathName::new("mesh1.admin", "1").unwrap(), node_id: fp_birth.node_id.clone(), incarnation: fp_birth.incarnation.clone() };
+        fp_template.launcher = rdm_core::launch::Launcher { mesh: "mesh1".into(), name: PathName::new("mesh1.node-admin", "1").unwrap(), node_id: fp_birth.node_id.clone(), incarnation: fp_birth.incarnation.clone() };
         let fp_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &fp_template, timeouts: Timeouts::default() };
         let terminal = fp_pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(last).node_id), build_id: delete_build, attempt: 1, node: last, handle: handles[&other_admin.node_id].clone(), unreached: false }).await.expect("the amended primary's node.delete proves its exit");
         let steps = builds.read_build(&build_id).await.unwrap().steps;
@@ -1000,15 +1000,15 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
 /// CONTRACT: mesh-delete.md draws each member's end at the mesh-primary as "member row deleted;
 /// node.deleted", then "mesh topology: NodeDeleted in MeshTopology.deleted", and its resume keeps a member's
 /// finished delete ("Resume after the primary's loss" step 3: "Completed member receipts stand").
-/// Attempt 1, under the final primary path `mesh2.admin`, name `1`: path `mesh2.rpc`, name `2`'s whole delete runs to
+/// Attempt 1, under the final primary path `mesh2.node-admin`, name `1`: path `mesh2.node`, name `2`'s whole delete runs to
 /// `Complete` and the lost primary publishes its NodeDeleted, which no other admin hears (the
-/// primary is lost before its frame lands, so its publications are its own); path `mesh2.rpc`, name `1`'s exit
+/// primary is lost before its frame lands, so its publications are its own); path `mesh2.node`, name `1`'s exit
 /// cannot be proven, so the ordinary tier is incomplete. The resume runs the lost primary's
-/// node.delete as a crashed target and amends the roster to path `mesh2.admin`, name `2`. Attempt 2, under the
-/// amended primary: path `mesh2.rpc`, name `2` keeps its receipts and is not run again (no step of its delete
+/// node.delete as a crashed target and amends the roster to path `mesh2.node-admin`, name `2`. Attempt 2, under the
+/// amended primary: path `mesh2.node`, name `2` keeps its receipts and is not run again (no step of its delete
 /// executes, its runtime is terminated once), and nothing of it is written or published again: its
 /// row `Deleted` and its NodeDeleted were its node.delete's, once (node-delete.md steps 3-4), and a
-/// peer that never heard that NodeDeleted keeps the birth until mesh-left; path `mesh2.rpc`, name `1`'s delete
+/// peer that never heard that NodeDeleted keeps the birth until mesh-left; path `mesh2.node`, name `1`'s delete
 /// runs and publishes its own. The lost primary's NodeDeleted is its own node.delete's, the
 /// fabric-primary's, never the amended primary's.
 #[test]
@@ -1185,11 +1185,11 @@ fn an_unproven_silent_primary_refuses_the_resume_and_no_amendment_is_recorded() 
 }
 
 /// CONTRACT: a repeated loss records one amendment per predecessor and the chain is explicit (R11
-/// step 8). path `mesh2.admin`, name `1` is lost, path `mesh2.admin`, name `2` is amended in; path `mesh2.admin`, name `2` is lost too with
-/// no admin left, and the one node-admin the fabric-primary created, path `mesh2.admin`, name `3` (a new birth,
+/// step 8). path `mesh2.node-admin`, name `1` is lost, path `mesh2.node-admin`, name `2` is amended in; path `mesh2.node-admin`, name `2` is lost too with
+/// no admin left, and the one node-admin the fabric-primary created, path `mesh2.node-admin`, name `3` (a new birth,
 /// not in the accepted roster), is amended in. The admission is the accepted roster plus
-/// path `mesh2.admin`, name `3`, its final primary path `mesh2.admin`, name `3`; the leaving primary's roster is extended the
-/// same way; a hand-off manifest that omits the amendment (its roster lacks path `mesh2.admin`, name `3`) is
+/// path `mesh2.node-admin`, name `3`, its final primary path `mesh2.node-admin`, name `3`; the leaving primary's roster is extended the
+/// same way; a hand-off manifest that omits the amendment (its roster lacks path `mesh2.node-admin`, name `3`) is
 /// refused by name.
 #[test]
 fn a_repeated_loss_records_one_amendment_per_predecessor_and_a_hand_off_omitting_one_is_refused() {
@@ -1197,7 +1197,7 @@ fn a_repeated_loss_records_one_amendment_per_predecessor_and_a_hand_off_omitting
     let cap = capture();
     let Members { failing, exiting, other_admin, final_admin, .. } = Members::new();
     let records = vec![failing.clone(), exiting.clone(), other_admin.clone(), final_admin.clone()];
-    let fresh = node_at("mesh2.admin", "3", "mesh2", rdm_core::NodeKind::NodeAdmin);
+    let fresh = node_at("mesh2.node-admin", "3", "mesh2", "node-admin");
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
     
     let mut runtime_nodes = records.clone();
@@ -1263,7 +1263,7 @@ fn a_repeated_loss_records_one_amendment_per_predecessor_and_a_hand_off_omitting
 /// CONTRACT: the amended final primary admits `DeleteMesh` from the owner's Build facts when gossip has
 /// not yet brought it the amendment (R11 step 4; mesh-delete.md, "Resume after the primary's loss",
 /// step 3: gossip is never authority). The fabric-primary recorded the lost primary's exact Exited
-/// and `RosterAmended { path `mesh2.admin`, name `1` -> path `mesh2.admin`, name `2` }` in its own Build facts; path `mesh2.admin`, name `2`'s
+/// and `RosterAmended { path `mesh2.node-admin`, name `1` -> path `mesh2.node-admin`, name `2` }` in its own Build facts; path `mesh2.node-admin`, name `2`'s
 /// own facts hold only the roster captured in attempt 1. Its admission reads the owner's facts: the
 /// roster admits it, and the lost primary's exit receipt read from the owner keeps it out of the
 /// node-admin tier, so no member workflow runs and the manifest covers both primaries.
@@ -1295,7 +1295,7 @@ fn an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_bring
         // The fabric-primary's resume, in its own facts only: gossip has not delivered it.
         node_delete_receipts(&owner, &key(2), &fp_birth, &lost, &exited(&lost, &lost_runtime)).await;
         amend_roster(&owner, &key(2), fp_birth.node_id.as_str(), &RosterAmended { predecessor: lost.clone(), final_primary: survivor.clone(), final_runtime: survivor_runtime.clone() }).await.expect("the amendment is recorded");
-        // path `mesh2.admin`, name `2` admits DeleteMesh.
+        // path `mesh2.node-admin`, name `2` admits DeleteMesh.
         let steps = own.read_build(&build_id).await.unwrap().steps;
         let leaving = accepted_row(&steps, &outer, STEP_LEAVING_ROSTER).unwrap().unwrap().roster;
         let owner_facts = owner.facts().await.unwrap();
@@ -1355,7 +1355,7 @@ fn an_amended_primary_whose_own_facts_lack_the_lost_primarys_exit_receipt_reads_
     own_amendment_without_the_delete("own_amendment_without_the_exit_receipt", &["NodeDeleting", "NodeDeleted", "RemoveTopologyMembership", "Complete"]);
 }
 
-/// The amended primary path `mesh2.admin`, name `2` admits the leave from its own facts, which hold the
+/// The amended primary path `mesh2.node-admin`, name `2` admits the leave from its own facts, which hold the
 /// fabric-primary's amendment and, of the lost primary's node.delete, only the steps
 /// `keep_of_lost_delete`; the owner holds them all.
 fn own_amendment_without_the_delete(case: &str, keep_of_lost_delete: &[&str]) {
@@ -1385,7 +1385,7 @@ fn own_amendment_without_the_delete(case: &str, keep_of_lost_delete: &[&str]) {
         // The fabric-primary's resume: the lost primary's node.delete, then the amendment.
         node_delete_receipts(&owner, &key(2), &fp_birth, &lost, &exited(&lost, &lost_runtime)).await;
         amend_roster(&owner, &key(2), fp_birth.node_id.as_str(), &RosterAmended { predecessor: lost.clone(), final_primary: survivor.clone(), final_runtime: survivor_runtime.clone() }).await.expect("the amendment is recorded");
-        // path `mesh2.admin`, name `2`'s own facts: gossip delivered the amendment, not the lost primary's delete.
+        // path `mesh2.node-admin`, name `2`'s own facts: gossip delivered the amendment, not the lost primary's delete.
         let lost_delete = rdm_core::OperationId::node("node.delete", &final_admin.node_id);
         let own_steps: Vec<BuildStepReceipt> = owner.read_build(&build_id).await.unwrap().steps.into_iter().filter(|r| r.operation != lost_delete || keep_of_lost_delete.contains(&r.step.as_str())).collect();
         let leaving = accepted_row(&own_steps, &outer, STEP_LEAVING_ROSTER).unwrap().unwrap().roster;
@@ -1420,10 +1420,10 @@ fn own_amendment_without_the_delete(case: &str, keep_of_lost_delete: &[&str]) {
 
 /// CONTRACT: the fabric-primary's own resume branch reads the lost final primary's runtime from its
 /// durable runtime row, never from the view (R11 steps 2-3; mesh-delete.md, "Resume after the
-/// primary's loss", steps 1-2). No topology view is consulted: the lost path `mesh2.admin`, name `1` has left
+/// primary's loss", steps 1-2). No topology view is consulted: the lost path `mesh2.node-admin`, name `1` has left
 /// every projection. With no runtime row of that birth the resume is refused by name and nothing is
 /// amended; with the row every admin stored the moment it first held the birth, its node.delete's
-/// `TerminateRuntime` receipt is its roster receipt and `RosterAmended` admits path `mesh2.admin`, name `2`.
+/// `TerminateRuntime` receipt is its roster receipt and `RosterAmended` admits path `mesh2.node-admin`, name `2`.
 #[test]
 fn the_fabric_primary_reads_a_lost_primarys_runtime_from_its_durable_runtime_row_and_amends() {
     let fp_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
@@ -1436,7 +1436,7 @@ fn the_fabric_primary_reads_a_lost_primarys_runtime_from_its_durable_runtime_row
     let (lost, survivor) = (birth(&final_admin), birth(&other_admin));
     let (lost_runtime, survivor_runtime) = (RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeIdentity::of(&handles[&other_admin.node_id].fact().unwrap()));
     let lost_node = &final_admin;
-    let row = rdm_admin::storage::RuntimeRow { kind: lost_node.kind, mesh: lost_node.mesh.clone(), node_id: lost_node.node_id.clone(), name: lost_node.name.clone(), incarnation_id: lost_node.incarnation_id.clone().unwrap(), runtime: handles[&final_admin.node_id].fact().unwrap(), data_dir: None };
+    let row = rdm_admin::storage::RuntimeRow { r#type: lost_node.r#type.clone(), mesh: lost_node.mesh.clone(), node_id: lost_node.node_id.clone(), name: lost_node.name.clone(), incarnation_id: lost_node.incarnation_id.clone().unwrap(), runtime: handles[&final_admin.node_id].fact().unwrap(), data_dir: None };
     let (without_row, with_row, before, after, steps_after, outer, trace_id) = cap.run(async {
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
@@ -1484,17 +1484,17 @@ fn the_fabric_primary_reads_a_lost_primarys_runtime_from_its_durable_runtime_row
 /// names it, and never captures a roster of its own (mesh-delete.md, "Resume after the primary's
 /// loss": "The accepted roster is captured once and never recaptured"; step 2: "or, when none
 /// survives, the one node-admin the fabric-primary created for it"). mesh2 held one admin,
-/// path `mesh2.admin`, name `1`, lost mid ordinary tier after path `mesh2.rpc`, name `2` exited. The fabric-primary recorded
-/// the lost primary's exact Exited and `RosterAmended { path `mesh2.admin`, name `1` -> path `mesh2.admin`, name `3` }`; the new
+/// path `mesh2.node-admin`, name `1`, lost mid ordinary tier after path `mesh2.node`, name `2` exited. The fabric-primary recorded
+/// the lost primary's exact Exited and `RosterAmended { path `mesh2.node-admin`, name `1` -> path `mesh2.node-admin`, name `3` }`; the new
 /// admin is created at the first generated name whose pair and reserved predecessor pair are both free.
 /// Its own Build facts hold no `LeavingRoster`: it reads the owner's, records no roster naming
-/// itself, runs only path `mesh2.rpc`, name `1`, and its manifest passes the owner's hand-off validation.
+/// itself, runs only path `mesh2.node`, name `1`, and its manifest passes the owner's hand-off validation.
 #[test]
 fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_captures_none() {
     let fp_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let cap = capture();
     let Members { failing, exiting, final_admin, .. } = Members::new();
-    let new_admin = node_at("mesh2.admin", "3", "mesh2", rdm_core::NodeKind::NodeAdmin);
+    let new_admin = node_at("mesh2.node-admin", "3", "mesh2", "node-admin");
     let records = vec![final_admin.clone(), exiting.clone(), failing.clone(), new_admin.clone()];
     let handles = runtime_handles(&records, 48_000);
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
@@ -1502,7 +1502,7 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
     let (lost, created) = (birth(&final_admin), birth(&new_admin));
     let admitted_births: Vec<Node> = records.iter().filter(|n| n.node_id != new_admin.node_id).cloned().collect();
     // The name: skip occupied pairs and reserved predecessor pairs, without decoding names.
-    let held = vec![PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.admin", "2-old").unwrap(), PathName::new("mesh2.rpc", "4").unwrap()];
+    let held = vec![PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh2.node-admin", "2-old").unwrap(), PathName::new("mesh2.node", "4").unwrap()];
     let path = rdm_admin::mesh_delete::leaving_mesh_admin_path("mesh2", &live_roster(&admitted_births).unwrap(), &held);
     let ran: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let (out, own_steps, verdict, trace_id) = cap.run(async {
@@ -1515,14 +1515,14 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
             b.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
         }
         accepted_roster(&owner, &key(1), STEP_ACCEPTED_ROSTER, fp_birth.node_id.as_str(), &lost, &runtime(&final_admin.node_id), || live_roster(&admitted_births)).await.unwrap();
-        // path `mesh2.rpc`, name `2`'s node.delete, finished by the lost primary and gossiped to the owner.
+        // path `mesh2.node`, name `2`'s node.delete, finished by the lost primary and gossiped to the owner.
         node_delete_receipts(&owner, &key(1), &executor_birth(&lost), &birth(&exiting), &exited(&birth(&exiting), &runtime(&exiting.node_id))).await;
         let root = tracing::info_span!("cell.mesh-deleted-created-admin", build_id = %build_id.log(), operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.recipe_step, operation_occurrence = ?outer.occurrence);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         node_delete_receipts(&owner, &key(2), &fp_birth, &lost, &exited(&lost, &runtime(&final_admin.node_id))).await;
         amend_roster(&owner, &key(2), fp_birth.node_id.as_str(), &RosterAmended { predecessor: lost.clone(), final_primary: created.clone(), final_runtime: runtime(&new_admin.node_id) }).await.expect("the amendment admits the created admin");
-        // path `mesh2.admin`, name `3` admits DeleteMesh: an amendment admits it, so it runs the owner's roster and captures none.
+        // path `mesh2.node-admin`, name `3` admits DeleteMesh: an amendment admits it, so it runs the owner's roster and captures none.
         let owner_facts = owner.facts().await.unwrap();
         let roster = rdm_admin::mesh_delete::leaving_roster(&own, &own.0, &key(2), new_admin.node_id.as_str(), &created, &runtime(&new_admin.node_id), || async { Ok(owner_facts) }).await;
         let out = match roster {
@@ -1546,7 +1546,7 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
-    assert_eq!(path, Ok(PathName::new("mesh2.admin", "3").unwrap()), "the created admin takes the first free generated pair");
+    assert_eq!(path, Ok(PathName::new("mesh2.node-admin", "3").unwrap()), "the created admin takes the first free generated pair");
     let manifest = out.unwrap_or_else(|e| panic!("the created admin runs the owner's admitted roster: {e}"));
     assert!(!own_steps.iter().any(|r| r.step == STEP_LEAVING_ROSTER), "the created admin captures no roster of its own: {:?}", own_steps.iter().map(|r| r.step.clone()).collect::<Vec<_>>());
     assert_eq!(*ran.lock().unwrap(), vec![failing.node_id.to_string()], "only the member without an exit receipt runs");
@@ -1568,14 +1568,14 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
 fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row() {
     use rdm_admin::primary_watch::{inspect_birth, Finding};
     use rdm_admin::storage::{MemoryNodesStorage, NodesStorage, RuntimeRow};
-    let lost = node_at("mesh2.admin", "1", "mesh2", rdm_core::NodeKind::NodeAdmin);
+    let lost = node_at("mesh2.node-admin", "1", "mesh2", "node-admin");
     let h = runtime_handles(std::slice::from_ref(&lost), 49_001)[&lost.node_id].clone();
     let fleet = Fleet { pids: [(49_001, lost.node_id.to_string())].into_iter().collect(), ..Default::default() };
     let digest_view = rdm_transport::topology::DigestView::default();
     let (without_row, with_row) = tokio::runtime::Runtime::new().unwrap().block_on(async {
         let nodes = MemoryNodesStorage::default();
         let without_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;
-        nodes.put_runtime(&RuntimeRow { kind: lost.kind, mesh: lost.mesh.clone(), node_id: lost.node_id.clone(), name: lost.name.clone(), incarnation_id: lost.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
+        nodes.put_runtime(&RuntimeRow { r#type: lost.r#type.clone(), mesh: lost.mesh.clone(), node_id: lost.node_id.clone(), name: lost.name.clone(), incarnation_id: lost.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
         let with_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;
         (without_row, with_row)
     });
@@ -1586,7 +1586,7 @@ fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row()
 /// CONTRACT (R11, the leave acts on the immutable accepted roster's exact births; mesh-delete.md
 /// "Resume after the primary's loss" step 3, "Failure/certainty behavior": "No timeout or gossip
 /// absence proves exit"): the admin the fabric-primary created for a leaving mesh with no admin
-/// left works the roster, not its view's liveness. path `mesh2.rpc`, name `1` was stopped by the lost primary
+/// left works the roster, not its view's liveness. path `mesh2.node`, name `1` was stopped by the lost primary
 /// before its exit was proven, and the created admin's view does not list it. It is still a roster
 /// birth with no Exited receipt, and its record is the one this admin's topology view holds of that
 /// exact birth: the record of another birth at the path is never taken.
@@ -1640,18 +1640,18 @@ fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_topology_
 /// CONTRACT (mesh-delete.md, "Resume after the primary's loss", step 3: the new final primary "runs
 /// only the tiers without a terminal receipt"; R11: the accepted roster is immutable and decides what
 /// runs; R13: "Rebuild after a role change reads the mesh's own rows"): the admin created for a
-/// leaving mesh with no admin left joined after path `mesh2.rpc`, name `1` stopped, so neither its view nor its
+/// leaving mesh with no admin left joined after path `mesh2.node`, name `1` stopped, so neither its view nor its
 /// the topology view holds that birth. The roster birth runs from the roster itself: its member workflow is
 /// handed a record naming exactly that birth (separate path/name, node id, incarnation), its exact Exited
 /// receipt is in the manifest, and its row, read from the mesh's own rows before the tiers run, is
 /// written Deleted with its config kept by its node.delete's NodeDeleted step. Must NOT happen: the tier refused "this view holds no record
-/// of the accepted birth" (no_survivor, created path `mesh2.admin`, name `2`, attempts 2 and 3), or a Deleted row
+/// of the accepted birth" (no_survivor, created path `mesh2.node-admin`, name `2`, attempts 2 and 3), or a Deleted row
 /// written with a config the writer never read.
 #[test]
 fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_is_written_deleted() {
     let cap = capture();
     let Members { failing, exiting, .. } = Members::new();
-    let created = node_at("mesh2.admin", "3", "mesh2", rdm_core::NodeKind::NodeAdmin);
+    let created = node_at("mesh2.node-admin", "3", "mesh2", "node-admin");
     let all = vec![failing.clone(), exiting.clone(), created.clone()];
     let handles = runtime_handles(&all, 47_000);
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
@@ -1668,10 +1668,10 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // Every member's row as its create left it. The created admin's writer holds the rows of the
         // births its view names; the stopped birth's row it never held.
         for n in &all {
-            storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
+            storage.write_record(&NodeRow { replacement_from: None, r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
         }
         for n in &records {
-            assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+            assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
         }
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
@@ -1910,17 +1910,17 @@ impl LifecycleEvents for Departures {
 /// leave runs the steps that have none, in order, and never one that has (mesh-delete.md, "Resume
 /// after the primary's loss" step 3: the new mesh-primary "runs only the tiers without a terminal
 /// receipt"; node-delete.md step 4: the executor records the complete delete receipt and emits
-/// node.deleted; the Build carrier: "Completed steps are not rerun"). Attempt 1: path `mesh2.rpc`, name `1` is
+/// node.deleted; the Build carrier: "Completed steps are not rerun"). Attempt 1: path `mesh2.node`, name `1` is
 /// stopped and its runtime terminated, the provider's exact Exited is receipted (TerminateRuntime),
 /// and the executor is cut before NodeDeleted's receipt is durable: NodeDeleted is never published
-/// and the delete has no `Complete`. path `mesh2.rpc`, name `2` runs its whole delete. Attempt 2 (another
-/// mesh-primary, the same Build) takes path `mesh2.rpc`, name `2` as done and finishes path `mesh2.rpc`, name `1`'s delete:
+/// and the delete has no `Complete`. path `mesh2.node`, name `2` runs its whole delete. Attempt 2 (another
+/// mesh-primary, the same Build) takes path `mesh2.node`, name `2` as done and finishes path `mesh2.node`, name `1`'s delete:
 /// its runtime is not terminated again (TerminateRuntime is reused), NodeDeleted is executed,
 /// receipted and published once, and the delete ends in `Complete`. Every other peer keeps the
 /// stopped birth until mesh-left if NodeDeleted is never published: the exited verdict alone is not the
 /// departure. Each primary's publications are its own (attempt 1's primary is lost before its
 /// frames land): attempt 2's primary publishes the NodeDeleted of the deletes it ran, and never again
-/// path `mesh2.rpc`, name `2`'s, which its own node.delete published once under attempt 1 (node-delete.md step 4:
+/// path `mesh2.node`, name `2`'s, which its own node.delete published once under attempt 1 (node-delete.md step 4:
 /// the executor emits node.deleted); a peer that never heard it keeps the birth until mesh-left.
 #[test]
 fn a_delete_cut_after_its_terminate_runtime_receipt_is_finished_by_the_resumed_attempt_from_its_missing_steps() {
@@ -2001,7 +2001,7 @@ fn a_delete_cut_after_its_terminate_runtime_receipt_is_finished_by_the_resumed_a
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
     let _ = std::fs::remove_dir_all(&data_root);
 
-    let err = first.expect_err("attempt 1 is cut inside path `mesh2.rpc`, name `1`'s delete: the ordinary tier is incomplete");
+    let err = first.expect_err("attempt 1 is cut inside path `mesh2.node`, name `1`'s delete: the ordinary tier is incomplete");
     assert!(err.contains("tier ordinary-nodes is incomplete") && err.contains(failing.node_id.as_str()), "{err}");
     let calls = calls.into_inner().unwrap();
     let ran = |attempt: u32| calls.iter().filter(|(a, _)| *a == attempt).map(|(_, n)| n.clone()).collect::<BTreeSet<_>>();
@@ -2230,8 +2230,8 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .await
             .unwrap();
 
-        // Fault 1: Cut after TerminateRuntime (before NodeDeleted) on FAILING (path `mesh2.rpc`, name `1`), while
-        // EXITING (path `mesh2.rpc`, name `2`) completes in the ordinary-nodes tier. The ordinary tier is left
+        // Fault 1: Cut after TerminateRuntime (before NodeDeleted) on FAILING (path `mesh2.node`, name `1`), while
+        // EXITING (path `mesh2.node`, name `2`) completes in the ordinary-nodes tier. The ordinary tier is left
         // incomplete, the node-admin tier never starts, and an incomplete handoff is refused by name
         // (`RejectedIncompleteManifest`).
         let cut = CutBuilds {
@@ -2293,7 +2293,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             &manifest_reference(build_id.as_str(), 1, &outer, false),
         );
 
-        // Fault 2: The final primary path `mesh2.admin`, name `1` is killed/lost while the fabric-primary awaits
+        // Fault 2: The final primary path `mesh2.node-admin`, name `1` is killed/lost while the fabric-primary awaits
         // `mesh.deleted`. Silence does not end the wait; once the final primary's runtime is proven
         // exited, `await_mesh_deleted` ends immediately with `RunEnd::Incomplete` (not waiting for
         // `MESH_DELETED_WAIT`).
@@ -2333,7 +2333,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
 
         // Resume on Attempt 2:
         // 1. Fabric-primary records the lost primary's exact `Exited` receipt (`TerminateRuntime`)
-        //    and appends `RosterAmended { path `mesh2.admin`, name `1` -> path `mesh2.admin`, name `2` }` (replaying `AlreadyApplied`
+        //    and appends `RosterAmended { path `mesh2.node-admin`, name `1` -> path `mesh2.node-admin`, name `2` }` (replaying `AlreadyApplied`
         //    on duplicate and refusing a conflicting second amendment for the same predecessor).
         node_delete_receipts(&builds, &key(2), &fp_birth, &lost, &exited(&lost, &lost_runtime)).await;
         let applied = amend_roster(&builds, &key(2), fp_birth.node_id.as_str(), &amendment).await;
@@ -2349,7 +2349,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         )
         .await;
 
-        // 2. The surviving mesh-primary path `mesh2.admin`, name `2` resumes `members_exited`: it keeps EXITING's
+        // 2. The surviving mesh-primary path `mesh2.node-admin`, name `2` resumes `members_exited`: it keeps EXITING's
         //    completed delete and the lost primary's exited receipt, and finishes only FAILING's missing
         //    `NodeDeleted` + `Complete` (reusing FAILING's `TerminateRuntime` without re-terminating).
         let steps_before_resume = builds.read_build(&build_id).await.unwrap().steps;
@@ -2381,7 +2381,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         .expect("attempt 2 finishes the cut member delete and completes OtherMembersExited");
 
         // 3. Handoff verdict accepts the amended primary's manifest, refuses a stale handoff naming
-        //    the lost predecessor, records `MeshDeleted`, and after path `mesh2.admin`, name `2`'s separate
+        //    the lost predecessor, records `MeshDeleted`, and after path `mesh2.node-admin`, name `2`'s separate
         //    `node.delete`, completes `MeshLeft` over all 4 births.
         let facts = builds.facts().await.unwrap();
         let verdict = handoff_verdict(&facts, &key(2), &admitted, &manifest_reference(build_id.as_str(), 2, &outer, false));
@@ -2406,7 +2406,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .unwrap();
         let last = records2.iter().find(|n| n.node_id == other_admin.node_id).cloned().unwrap();
         let mut fp_template = template.clone();
-        fp_template.launcher = rdm_core::launch::Launcher { mesh: "mesh1".into(), name: PathName::new("mesh1.admin", "1").unwrap(), node_id: fp_birth.node_id.clone(), incarnation: fp_birth.incarnation.clone() };
+        fp_template.launcher = rdm_core::launch::Launcher { mesh: "mesh1".into(), name: PathName::new("mesh1.node-admin", "1").unwrap(), node_id: fp_birth.node_id.clone(), incarnation: fp_birth.incarnation.clone() };
         let fp_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &fp_template, timeouts: Timeouts::default() };
         let terminal = fp_pipeline
             .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(last).node_id),
@@ -2539,7 +2539,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
     );
     let lost_node = records.iter().find(|n| n.node_id == final_admin.node_id).unwrap().clone();
     let survivor_node = records.iter().find(|n| n.node_id == other_admin.node_id).unwrap().clone();
-    let row = rdm_admin::storage::RuntimeRow { kind: lost_node.kind, mesh: lost_node.mesh.clone(),
+    let row = rdm_admin::storage::RuntimeRow { r#type: lost_node.r#type.clone(), mesh: lost_node.mesh.clone(),
         node_id: lost_node.node_id.clone(),
         name: lost_node.name.clone(),
         incarnation_id: lost_node.incarnation_id.clone().unwrap(),
@@ -2550,7 +2550,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
     let mesh_storage = MemoryMeshStorage::default();
     let declared = Mutex::new(Declared::default());
     let fp = {
-        let mut n = node_at("mesh1.admin", "1", "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let mut n = node_at("mesh1.node-admin", "1", "mesh1", "node-admin");
         n.is_fabric_primary = true;
         n
     };
@@ -2654,7 +2654,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
 
         // Once the primary is lost, `resume_after_loss` runs `delete_explicit` on the lost primary,
         // recording its verdict (`Some("exited")`) as its `TerminateRuntime` roster receipt under
-        // `node.delete:path `mesh2.admin`, name `1``, then appends `RosterAmended`.
+        // `node.delete:path `mesh2.node-admin`, name `1``, then appends `RosterAmended`.
         let steps_1 = builds.read_build(&build_id).await.unwrap().steps;
         let adm_1 = admitted_of(&steps_1, &outer).unwrap().unwrap();
         let mut lost_for_delete = lost_node.clone();
@@ -2685,7 +2685,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         .await
         .expect("resume_after_loss records the lost primary's verdict receipt and amends the roster");
 
-        // Member delete under the amended mesh-primary (path `mesh2.admin`, name `2`), then `mesh.deleted` handoff
+        // Member delete under the amended mesh-primary (path `mesh2.node-admin`, name `2`), then `mesh.deleted` handoff
         // validation and Dead mesh row commit.
         let steps_2 = builds.read_build(&build_id).await.unwrap().steps;
         let roster_receipt = rdm_admin::mesh_delete::exit_receipts(&steps_2, std::slice::from_ref(&lost))
@@ -2720,7 +2720,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         record_completion(&builds, &key(2), fp.node_id.as_str(), &validated).await.unwrap();
         drop(_in_root);
 
-        // Separate `node.delete` of the final mesh-primary (path `mesh2.admin`, name `2`) in its own Build and trace,
+        // Separate `node.delete` of the final mesh-primary (path `mesh2.node-admin`, name `2`) in its own Build and trace,
         // with the fabric-primary as executor.
         let delete_build = BuildId::mint();
         builds

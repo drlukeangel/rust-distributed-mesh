@@ -1,13 +1,13 @@
 //! e11.s4 — a product reads a node-type primary role from node-admin's view and never computes it.
 
-use rdm_core::{IncarnationId, NodeId, NodeKind};
+use rdm_core::{IncarnationId, NodeId};
 use rdm_client::{NodeStatus, NodeView};
 use rdm_node::leadership::{fabric_primary, primary_of};
 
-fn row(name: rdm_core::PathName, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
+fn row(name: rdm_core::PathName, r#type: &str, primary: bool, fabric: bool) -> NodeView {
     NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name,
-        kind,
+        r#type: r#type.to_string(),
         mesh: "mesh1".into(),
         node_id: NodeId::mint(),
         endpoint_id: None,
@@ -36,23 +36,23 @@ fn row(name: rdm_core::PathName, kind: NodeKind, primary: bool, fabric: bool) ->
 fn the_primary_is_the_one_the_view_advertises_whatever_the_node_ids_order() {
     // The view's primary is read as advertised: the product neither re-elects nor second-guesses it.
     let view = vec![
-        row(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, true, true),
-        row(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), NodeKind::Broker, false, false),
-        row(rdm_core::PathName::new("mesh1.broker", "2").unwrap(), NodeKind::Broker, true, false),
-        row(rdm_core::PathName::new("mesh1.broker", "3").unwrap(), NodeKind::Broker, false, false),
-        row(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), NodeKind::Gateway, true, false),
+        row(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", true, true),
+        row(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "broker", false, false),
+        row(rdm_core::PathName::new("mesh1.broker", "2").unwrap(), "broker", true, false),
+        row(rdm_core::PathName::new("mesh1.broker", "3").unwrap(), "broker", false, false),
+        row(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "gateway", true, false),
     ];
-    assert_eq!(primary_of(&view, "mesh1", NodeKind::Broker).map(|n| &n.node_id), Some(&view[2].node_id));
-    assert_eq!(primary_of(&view, "mesh1", NodeKind::Gateway).map(|n| &n.node_id), Some(&view[4].node_id));
-    assert_eq!(primary_of(&view, "mesh1", NodeKind::Compute), None, "a node type the view holds no primary for");
-    assert_eq!(primary_of(&view, "mesh2", NodeKind::Broker), None, "another mesh's node type");
+    assert_eq!(primary_of(&view, "mesh1", "broker").map(|n| &n.node_id), Some(&view[2].node_id));
+    assert_eq!(primary_of(&view, "mesh1", "gateway").map(|n| &n.node_id), Some(&view[4].node_id));
+    assert_eq!(primary_of(&view, "mesh1", "compute"), None, "a node type the view holds no primary for");
+    assert_eq!(primary_of(&view, "mesh2", "broker"), None, "another mesh's node type");
     assert_eq!(fabric_primary(&view).map(|n| &n.node_id), Some(&view[0].node_id));
 }
 
 #[test]
 fn an_election_in_flight_is_no_primary_not_a_guess() {
-    let view = vec![row(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), NodeKind::Broker, false, false), row(rdm_core::PathName::new("mesh1.broker", "2").unwrap(), NodeKind::Broker, false, false)];
-    assert_eq!(primary_of(&view, "mesh1", NodeKind::Broker), None);
+    let view = vec![row(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "broker", false, false), row(rdm_core::PathName::new("mesh1.broker", "2").unwrap(), "broker", false, false)];
+    assert_eq!(primary_of(&view, "mesh1", "broker"), None);
 }
 
 /// The product base holds no election: no NodeId ordering, no primary computation, anywhere in it.

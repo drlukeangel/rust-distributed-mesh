@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use rdm_admin::model::{Fabric, Mesh, Node, NodeKind, NodeStatus, PathName, ScopeStatus};
+use rdm_admin::model::{Fabric, Mesh, Node, NodeStatus, PathName, ScopeStatus};
 use rdm_admin::topology::Topology;
 use rdm_admin::workflows::node_tickle::{
     ProbeEnd, Tickle, TickleCalls, TickleClient, VIA_PEER_TICKLE_FANOUT, birth_answered,
@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_tickle [<path> <name>]")),
         _ => model_nodes
             .iter()
-            .find(|n| n.mesh == admin.mesh && n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .find(|n| n.mesh == admin.mesh && n.kind != "node-admin" && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no ready role node in {}", admin.mesh))?,
     };
     let inc = target.incarnation_id.as_ref().ok_or_else(|| anyhow!("missing incarnation_id"))?;

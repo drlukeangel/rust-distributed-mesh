@@ -10,7 +10,7 @@
 //! grow takes the lowest free ordinal of the kind; a shrink drops the highest ordinal that is not the
 //! kind's primary.
 
-use rdm_core::{NodeKind, PathName};
+use rdm_core::{PathName};
 use rdm_client::{
     birth_of_view, Accepted, BuildCarrier, Build, BuildId, CallEnd, Change, Connections, ConnectionsView, ExactBirth, FabricDesired, FabricView, Fabrics,
     Filter, MeshDesired, MeshNode, NodeStatus, NodeView, Nodes, Peers, ProviderKind,
@@ -26,12 +26,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub struct Admin {
     peers: Arc<Peers>,
     entry: PathName,
-    executables: BTreeMap<NodeKind, PathBuf>,
+    executables: BTreeMap<String, PathBuf>,
 }
 
 /// The consumer's executable of each kind found in `dir`.
-fn executables_in(dir: &std::path::Path) -> BTreeMap<NodeKind, PathBuf> {
-    [(NodeKind::NodeAdmin, "rshape-node-admin"), (NodeKind::Gateway, "rshape-gateway"), (NodeKind::Compute, "rshape-compute"), (NodeKind::Broker, "rshape-broker")]
+fn executables_in(dir: &std::path::Path) -> BTreeMap<String, PathBuf> {
+    [("node-admin", "rshape-node-admin"), ("gateway", "rshape-gateway"), ("compute", "rshape-compute"), ("broker", "rshape-broker")]
         .into_iter()
         .map(|(kind, name)| (kind, dir.join(name)))
         .filter(|(_, path)| path.is_file())
@@ -55,7 +55,7 @@ impl Admin {
     }
 
     /// This admin, its Builds naming `executables` by kind.
-    pub fn with_executables(mut self, executables: BTreeMap<NodeKind, PathBuf>) -> Self {
+    pub fn with_executables(mut self, executables: BTreeMap<String, PathBuf>) -> Self {
         self.executables = executables;
         self
     }
@@ -90,7 +90,7 @@ impl Admin {
 
     /// The binding a created node of `kind` runs: the consumer's executable of the kind, hashed once,
     /// in `image`. A kind with no executable is refused `executable-missing` before anything is sent.
-    fn binding(&self, kind: NodeKind, image: &Option<String>) -> Result<Binding, CallEnd> {
+    fn binding(&self, r#type: &str, image: &Option<String>) -> Result<Binding, CallEnd> {
         let executable = self.executables.get(&kind).cloned().ok_or_else(|| missing(format!("the UI has no `{}` executable: a {} path cannot be named (named: {:?})", kind.name(), kind.name(), self.executables.keys().map(|k| k.name()).collect::<Vec<_>>())))?;
         static HASHED: OnceLock<Mutex<BTreeMap<PathBuf, String>>> = OnceLock::new();
         let known = HASHED.get_or_init(Default::default).lock().unwrap().get(&executable).cloned();
@@ -113,7 +113,7 @@ impl Admin {
             paths.retain(|_, s| meshes.iter().any(|m| m.name == s.mesh));
         }
         for m in meshes {
-            for (kind, want) in [(NodeKind::NodeAdmin, m.node_admin), (NodeKind::Broker, m.broker), (NodeKind::Gateway, m.gateway), (NodeKind::Compute, m.compute)] {
+            for (kind, want) in [("node-admin", m.node_admin), ("broker", m.broker), ("gateway", m.gateway), ("compute", m.compute)] {
                 let mut have: Vec<PathName> = paths.values().filter(|s| s.mesh == m.name && s.kind == kind).map(|s| s.path.clone()).collect();
                 have.sort();
                 let keep = current.primaries.iter().find(|p| have.contains(p)).cloned();
@@ -135,8 +135,8 @@ impl Admin {
 
     /// The counts `current` holds of `mesh`.
     fn counts_of(current: &Current, mesh: &str) -> MeshDesired {
-        let of = |kind: NodeKind| current.paths.values().filter(|s| s.mesh == mesh && s.kind == kind).count() as u32;
-        MeshDesired { name: mesh.into(), node_admin: of(NodeKind::NodeAdmin), rpc_node: 0, broker: of(NodeKind::Broker), gateway: of(NodeKind::Gateway), compute: of(NodeKind::Compute) }
+        let of = |r#type: &str| current.paths.values().filter(|s| s.mesh == mesh && s.kind == kind).count() as u32;
+        MeshDesired::of(mesh, [("node-admin", of("node-admin")), ("broker", of("broker")), ("gateway", of("gateway")), ("compute", of("compute"))])
     }
 
     fn carrier(&self) -> BuildCarrier {
@@ -182,7 +182,7 @@ impl Admin {
     pub async fn put_own_config(&self, key: &str, value: &str) -> Result<rdm_core::status::StatusReply, String> {
         let rows = self.rows().await.map_err(|e| format!("node.get: {e:?}"))?;
         let own = rows.iter().find(|n| n.name == self.entry && n.incarnation_id.is_some()).ok_or_else(|| format!("no row holds path {:?}, name {:?}", self.entry.path, self.entry.name))?;
-        let primary = rows.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.is_fabric_primary).ok_or_else(|| "no row names the fabric-primary".to_string())?;
+        let primary = rows.iter().find(|n| n.kind == "node-admin" && n.is_fabric_primary).ok_or_else(|| "no row names the fabric-primary".to_string())?;
         let mut config = own.config.clone();
         config.insert(key.to_string(), value.to_string());
         let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(own.node_id.clone()), node_id: own.node_id.clone(), incarnation: own.incarnation_id.clone().expect("checked above") };
@@ -203,19 +203,19 @@ impl Admin {
     }
 
     /// node.create of a `kind` node in `mesh`, at the lowest free ordinal of its kind.
-    pub async fn spawn(&self, mesh: &str, kind: NodeKind) -> Result<Accepted, CallEnd> {
+    pub async fn spawn(&self, mesh: &str, r#type: &str) -> Result<Accepted, CallEnd> {
         let current = self.current().await?;
         if !current.paths.values().any(|s| s.mesh == mesh) {
             return Err(CallEnd::Rejected { reason: "unknown-mesh".into(), detail: format!("the fabric holds no mesh {mesh}") });
         }
         let mut grown = Self::counts_of(&current, mesh);
         match kind {
-            NodeKind::NodeAdmin => grown.node_admin += 1,
+            "node-admin" => grown.node_admin += 1,
             // The demo is a rafka replica (Q295): it runs no RDM rpc node.
-            NodeKind::RpcNode => return Err(CallEnd::Rejected { reason: "unknown-kind".into(), detail: "the demo runs no rpc node: spawn a gateway, a broker or a compute".into() }),
-            NodeKind::Broker => grown.broker += 1,
-            NodeKind::Gateway => grown.gateway += 1,
-            NodeKind::Compute => grown.compute += 1,
+            "node" => return Err(CallEnd::Rejected { reason: "unknown-kind".into(), detail: "the demo runs no rpc node: spawn a gateway, a broker or a compute".into() }),
+            "broker" => grown.broker += 1,
+            "gateway" => grown.gateway += 1,
+            "compute" => grown.compute += 1,
         }
         let nodes = self.resized(&current, &[grown], false)?;
         Ok(Nodes::new(self.carrier()).create_named(current.based_on, nodes).await?.accepted().clone())
@@ -305,10 +305,10 @@ struct Current {
 /// The create spec of `path` in `mesh`, of `kind`, on `executable`: its storage by kind, written out
 /// (node-admins and brokers keep theirs; gateways, compute and rpc nodes are ephemeral), no placement,
 /// no tags, no config.
-fn spec(path: PathName, mesh: &str, kind: NodeKind, executable: Binding) -> NodeSpec {
+fn spec(path: PathName, mesh: &str, r#type: &str, executable: Binding) -> NodeSpec {
     let storage_persistence = match kind {
-        NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { disposition: PersistentDisposition::Preserve },
-        NodeKind::Gateway | NodeKind::Compute | NodeKind::RpcNode => StorageMeta::Ephemeral,
+        "node-admin" | "broker" => StorageMeta::Persistent { disposition: PersistentDisposition::Preserve },
+        "gateway" | "compute" | "node" => StorageMeta::Ephemeral,
     };
     NodeSpec { path, mesh: mesh.into(), kind, storage_persistence, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default(), config: Default::default() }
 }

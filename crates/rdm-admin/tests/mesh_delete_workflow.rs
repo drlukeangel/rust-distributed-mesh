@@ -35,7 +35,7 @@ fn identity(k: &MeshDeleteKey) -> MeshDeleteIdentity {
 }
 
 fn final_primary() -> RosterBirth {
-    RosterBirth { mesh: "mesh2".into(), kind: rdm_core::NodeKind::NodeAdmin, node: rdm_core::PathName::new("mesh2.admin", "1").unwrap(), node_id: NodeId::mint().to_string(), incarnation_id: "i1".into() }
+    RosterBirth { mesh: "mesh2".into(), r#type: "node-admin".into(), node: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), node_id: NodeId::mint().to_string(), incarnation_id: "i1".into() }
 }
 
 fn runtime() -> RuntimeIdentity {

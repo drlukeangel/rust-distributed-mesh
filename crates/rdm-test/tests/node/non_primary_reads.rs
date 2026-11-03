@@ -5,7 +5,7 @@
 
 use rdm_client::{ExactBirth, Filter, NodeRpc, NodeView, Nodes};
 use rdm_core::status::StatusReply;
-use rdm_core::NodeKind;
+
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,9 +54,9 @@ async fn two_meshes_tagged(test: &str) -> (Estate, NodeView, NodeView, NodeView,
     estate.enter_fabric_primary().await;
     let views = estate.node_views().await;
     let fp = views.iter().find(|n| n.is_fabric_primary).cloned().unwrap_or_else(|| panic!("a fabric-primary: {views:#?}"));
-    let mp = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
-    let other = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && !n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's node-admin that is not a primary: {views:#?}"));
-    let rpc = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode).cloned().unwrap_or_else(|| panic!("mesh2's rpc node: {views:#?}"));
+    let mp = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
+    let other = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && !n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's node-admin that is not a primary: {views:#?}"));
+    let rpc = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").cloned().unwrap_or_else(|| panic!("mesh2's rpc node: {views:#?}"));
     assert_eq!(fp.mesh, "mesh1", "the fabric-primary is mesh1's: {fp:?}");
 
     // Commands go down: each tag and the config is sent to the fabric-primary, which sends it to the

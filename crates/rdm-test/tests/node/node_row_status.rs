@@ -74,7 +74,7 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     assert!(ready.iter().all(|(_, s)| s == "ready"), "every node of a ready fabric is ready on its row: {ready:?}");
 
     // The rpc node that is not its type's primary: a primary is stopped only after node.primary.update.
-    let subject = views.iter().find(|v| v.kind == rdm_core::NodeKind::RpcNode && !v.is_primary).unwrap_or_else(|| panic!("mesh1 holds an rpc node that is not its type's primary: {views:?}"));
+    let subject = views.iter().find(|v| v.r#type == "node" && !v.is_primary).unwrap_or_else(|| panic!("mesh1 holds an rpc node that is not its type's primary: {views:?}"));
     let (path, node_id): (PathName, String) = (subject.name.clone(), subject.node_id.to_string());
     let nodes = estate.nodes_obj().await;
 

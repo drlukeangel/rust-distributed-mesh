@@ -1088,7 +1088,7 @@ struct HeldRoles {
     fabric_since: Option<Instant>,
     meshes: HashMap<String, Primary>,
     /// Every other (mesh, node type) node-type primary record, by (mesh, kind).
-    node_type_primaries: HashMap<(String, rdm_core::NodeKind), Primary>,
+    node_type_primaries: HashMap<(String, String), Primary>,
     /// Primaries' exact births a peer told this node are proven gone (an entry read): the proof
     /// the peer holds, which this node never heard itself.
     gone: std::collections::HashSet<IncarnationId>,
@@ -1103,8 +1103,8 @@ struct HeldRoles {
 fn held_under(role: PrimaryRole, mesh: &str) -> (PrimaryRole, String) {
     match role {
         PrimaryRole::FabricPrimary => (PrimaryRole::FabricPrimary, String::new()),
-        PrimaryRole::MeshPrimary | PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => (PrimaryRole::MeshPrimary, mesh.to_string()),
-        PrimaryRole::NodeTypePrimary(kind) => (PrimaryRole::NodeTypePrimary(kind), mesh.to_string()),
+        PrimaryRole::MeshPrimary => (PrimaryRole::MeshPrimary, mesh.to_string()),
+        PrimaryRole::NodePrimary(r#type) => (PrimaryRole::NodePrimary(r#type), mesh.to_string()),
     }
 }
 
@@ -1113,15 +1113,15 @@ impl HeldRoles {
     fn get(&self, role: PrimaryRole, mesh: &str) -> Option<Primary> {
         match role {
             PrimaryRole::FabricPrimary => self.fabric.clone(),
-            PrimaryRole::MeshPrimary | PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => self.meshes.get(mesh).cloned(),
-            PrimaryRole::NodeTypePrimary(kind) => self.node_type_primaries.get(&(mesh.to_string(), kind)).cloned(),
+            PrimaryRole::MeshPrimary => self.meshes.get(mesh).cloned(),
+            PrimaryRole::NodePrimary(r#type) => self.node_type_primaries.get(&(mesh.to_string(), r#type)).cloned(),
         }
     }
 
     /// Hold `record` for `role` of `mesh`.
     fn put(&mut self, role: PrimaryRole, mesh: &str, record: Primary) {
-        if let Some(held) = self.get(role, mesh).filter(|h| h.incarnation != record.incarnation) {
-            let (role, mesh) = held_under(role, mesh);
+        if let Some(held) = self.get(role.clone(), mesh).filter(|h| h.incarnation != record.incarnation) {
+            let (role, mesh) = held_under(role.clone(), mesh);
             self.replaced.insert((role, mesh, held.incarnation), Instant::now());
         }
         match role {
@@ -1131,11 +1131,11 @@ impl HeldRoles {
                 }
                 self.fabric = Some(record);
             }
-            PrimaryRole::MeshPrimary | PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => {
+            PrimaryRole::MeshPrimary => {
                 self.meshes.insert(mesh.to_string(), record);
             }
-            PrimaryRole::NodeTypePrimary(kind) => {
-                self.node_type_primaries.insert((mesh.to_string(), kind), record);
+            PrimaryRole::NodePrimary(r#type) => {
+                self.node_type_primaries.insert((mesh.to_string(), r#type), record);
             }
         }
     }
@@ -1162,7 +1162,7 @@ impl PrimaryView {
     /// Hold `primary` for `role` if it supersedes what is held.
     pub fn take(&self, role: PrimaryRole, primary: &Primary) -> RoleTaken {
         let mut held = self.inner.lock().unwrap();
-        match held.get(role, &primary.mesh) {
+        match held.get(role.clone(), &primary.mesh) {
             Some(c) if &c == primary => RoleTaken::Same,
             Some(c) if !primary.supersedes(&c) => RoleTaken::Refused { held: c },
             previous => {
@@ -1187,17 +1187,17 @@ impl PrimaryView {
         let mut held = self.inner.lock().unwrap();
         let decided: Vec<RoleTaken> = records
             .iter()
-            .map(|(role, r)| match held.get(*role, &r.mesh) {
+            .map(|(role, r)| match held.get(role.clone(), &r.mesh) {
                 Some(h) if &h == r => RoleTaken::Same,
                 Some(h) if !r.supersedes(&h) => RoleTaken::Refused { held: h },
                 previous => RoleTaken::Held { previous },
             })
             .collect();
         if decided.iter().any(|t| matches!(t, RoleTaken::Refused { .. })) {
-            return records.iter().map(|(role, r)| RoleTaken::Refused { held: held.get(*role, &r.mesh).unwrap_or_else(|| r.clone()) }).collect();
+            return records.iter().map(|(role, r)| RoleTaken::Refused { held: held.get(role.clone(), &r.mesh).unwrap_or_else(|| r.clone()) }).collect();
         }
         for (role, r) in records {
-            held.put(*role, &r.mesh, r.clone());
+            held.put(role.clone(), &r.mesh, r.clone());
         }
         if decided.iter().any(|t| matches!(t, RoleTaken::Held { .. })) {
             self.changed.send_modify(|v| *v += 1);
@@ -1252,12 +1252,12 @@ impl PrimaryView {
     }
 
     /// The held record of `mesh`'s `kind` node-type primary role (`node_admin`: its mesh-primary role).
-    pub fn node_type_primary(&self, mesh: &str, kind: rdm_core::NodeKind) -> Option<Primary> {
-        self.inner.lock().unwrap().get(PrimaryRole::of_node_type(kind), mesh)
+    pub fn node_type_primary(&self, mesh: &str, r#type: &str) -> Option<Primary> {
+        self.inner.lock().unwrap().get(PrimaryRole::of_type(r#type), mesh)
     }
 
     /// Every other node type's primary record held, by (mesh, kind).
-    pub fn node_type_primaries(&self) -> std::collections::BTreeMap<(String, rdm_core::NodeKind), Primary> {
+    pub fn node_type_primaries(&self) -> std::collections::BTreeMap<(String, String), Primary> {
         self.inner.lock().unwrap().node_type_primaries.iter().map(|(k, h)| (k.clone(), h.clone())).collect()
     }
 
@@ -2520,7 +2520,7 @@ impl View {
         let complete_digests = complete.map(Full::digests).unwrap_or_default();
         let final_delete = if complete_digests.len() == 1
             && complete_digests[0].status == rdm_core::MemberStatus::Leaving
-            && complete_digests[0].node.kind == rdm_core::NodeKind::NodeAdmin
+            && rdm_core::is_node_admin(&complete_digests[0].node.r#type)
         {
             let last_id = &complete_digests[0].node.node_id;
             complete
@@ -2664,7 +2664,7 @@ impl View {
 
     /// Hold a primary record this node elected or read (an entry read), if it supersedes the one held.
     fn note_primary(&self, role: PrimaryRole, primary: &Primary, via: &'static str) -> bool {
-        let RoleTaken::Held { previous } = self.digest_view.primaries.take(role, primary) else { return false };
+        let RoleTaken::Held { previous } = self.digest_view.primaries.take(role.clone(), primary) else { return false };
         let previous = previous.as_ref().map(ToString::to_string).unwrap_or_default();
         tracing::info_span!("rdm.mesh.primary.update.via-announcement", node = %self.current_name(), role = role.name(), primary = %primary, via, outcome = "held", previous = %previous)
             .in_scope(|| tracing::info!("a primary record was held"));
@@ -3081,7 +3081,7 @@ impl TopologyView {
     /// this node holds.
     pub fn learn_primaries(&self, records: &[(PrimaryRole, Primary, bool)], via: &'static str) {
         for (role, primary, gone) in records {
-            self.view.note_primary(*role, primary, via);
+            self.view.note_primary(role.clone(), primary, via);
             if *gone {
                 self.view.digest_view.primaries.mark_gone(primary.incarnation.clone());
             }
@@ -3700,7 +3700,7 @@ impl Backbone {
                 if let Some((source_mesh, publisher, version, full)) = taken.source {
                     let is_final_delete = full.digests().len() == 1
                         && full.digests()[0].status == rdm_core::MemberStatus::Leaving
-                        && full.digests()[0].node.kind == rdm_core::NodeKind::NodeAdmin
+                        && rdm_core::is_node_admin(&full.digests()[0].node.r#type)
                         && full
                             .in_flight()
                             .iter()
@@ -3731,7 +3731,7 @@ impl Backbone {
         });
         let (digest_view, own_mesh) = (topology_view.digest_view.clone(), mesh.to_string());
         let targets: Arc<dyn Fn() -> Held + Send + Sync> =
-            Arc::new(move || held_view(&digest_view, |d| d.node.mesh != own_mesh && d.node.kind == rdm_core::NodeKind::NodeAdmin));
+            Arc::new(move || held_view(&digest_view, |d| d.node.mesh != own_mesh && rdm_core::is_node_admin(&d.node.r#type)));
         let channel = Channel::join(gossip, endpoint, backbone_channel(&topology_view.fabric), topology_view.fabric.as_str(), node, "backbone", seeds, topology_view.mesh.location_view.clone(), topology_view.view.order.clone(), on_frame, targets, replay, topology_view.mesh.author.clone(), topology_view.clock.clone()).await?;
         topology_view.mesh_status_publisher.lock().unwrap().node = node.to_string();
         let me = Self {
@@ -3978,7 +3978,7 @@ impl Backbone {
     fn own_full(&self, topology_view: &TopologyView, members: Vec<MeshDigest>) -> Full {
         let (mut in_flight, deleted) = topology_view.digest_view.overlays_of(&self.mesh);
         if members.len() == 1
-            && members[0].node.kind == rdm_core::NodeKind::NodeAdmin
+            && rdm_core::is_node_admin(&members[0].node.r#type)
             && members[0].status != rdm_core::MemberStatus::Leaving
         {
             let last_id = &members[0].node.node_id;
@@ -5533,7 +5533,7 @@ impl DigestView {
     /// mesh at that record's revision, the fabric-primary at that record's, none it does not hold.
     pub fn recorded_primaries(&self, d: &mut MeshDigest) {
         let n = &d.node;
-        d.is_primary = self.primaries.node_type_primary(&n.mesh, n.kind).filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
+        d.is_primary = self.primaries.node_type_primary(&n.mesh, &n.r#type).filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
         d.is_fabric_primary = self.primaries.fabric().filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
     }
 
@@ -5545,7 +5545,7 @@ impl DigestView {
         let n = &d.node;
         let record = |revision| Primary { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), revision };
         if let Some(revision) = d.is_primary {
-            self.primaries.take(PrimaryRole::of_node_type(n.kind), &record(revision));
+            self.primaries.take(PrimaryRole::of_type(&n.r#type), &record(revision));
         }
         if let Some(revision) = d.is_fabric_primary {
             self.primaries.take(PrimaryRole::FabricPrimary, &record(revision));
@@ -5975,27 +5975,27 @@ impl DigestView {
     /// stopped by its stop), so a deleted mesh's final mesh topology or `MeshLeft` leaves no crashed
     /// predecessor birth of the mesh in the active topology and holds it deleted for the retention.
     pub fn depart_mesh_births(&self, mesh: &str, build_id: &str, attempt: u32, at_rafka_ms: u64) {
-        let mut roster: BTreeMap<String, (IncarnationId, rdm_core::PathName, rdm_core::NodeKind)> = BTreeMap::new();
+        let mut roster: BTreeMap<String, (IncarnationId, rdm_core::PathName, String)> = BTreeMap::new();
         for d in self.all().into_iter().filter(|d| d.node.mesh == mesh) {
-            roster.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.node.name.clone(), d.node.kind));
+            roster.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.node.name.clone(), d.node.r#type));
         }
         for (d, _) in self.projected_unheard_at(Instant::now()).into_iter().filter(|(d, _)| d.node.mesh == mesh) {
-            roster.entry(d.node.node_id.to_string()).or_insert((d.node.incarnation.clone(), d.node.name.clone(), d.node.kind));
+            roster.entry(d.node.node_id.to_string()).or_insert((d.node.incarnation.clone(), d.node.name.clone(), d.node.r#type));
         }
         for d in self.stopped_digests().into_iter().filter(|d| d.node.mesh == mesh) {
-            roster.entry(d.node.node_id.to_string()).or_insert((d.node.incarnation.clone(), d.node.name.clone(), d.node.kind));
+            roster.entry(d.node.node_id.to_string()).or_insert((d.node.incarnation.clone(), d.node.name.clone(), d.node.r#type));
         }
         for op in self.in_flight().into_iter().filter(|op| op.mesh == mesh) {
-            roster.entry(op.node_id.to_string()).or_insert((op.incarnation.clone(), op.name.clone(), op.kind));
+            roster.entry(op.node_id.to_string()).or_insert((op.incarnation.clone(), op.name.clone(), op.r#type));
         }
         let own = self.own.lock().unwrap().clone();
         let mut changed = false;
-        for (id, (incarnation, path, kind)) in roster {
+        for (id, (incarnation, path, r#type)) in roster {
             if own.as_deref() == Some(id.as_str()) {
                 continue;
             }
             let Ok(node_id) = NodeId::parse(&id) else { continue };
-            let op = LifecycleOp { kind, mesh: mesh.to_string(), build_id: build_id.to_string(), attempt, operation: rdm_core::OperationId::node("node.delete", &node_id), node_id, incarnation, name: path, event_at_rafka_ms: at_rafka_ms, traceparent: None, tracestate: None };
+            let op = LifecycleOp { r#type, mesh: mesh.to_string(), build_id: build_id.to_string(), attempt, operation: rdm_core::OperationId::node("node.delete", &node_id), node_id, incarnation, name: path, event_at_rafka_ms: at_rafka_ms, traceparent: None, tracestate: None };
             if self.depart_quiet(op) {
                 changed = true;
             }
@@ -6042,7 +6042,7 @@ mod tests {
 
     #[test]
     fn status_reinforcements_retain_context_while_new_facts_take_the_current_held_revision() {
-        let mut publisher = super::StatusPublisher::new("mesh1.admin.1", super::StatusScope::Mesh("mesh1".into()));
+        let mut publisher = super::StatusPublisher::new("mesh1.node-admin.1", super::StatusScope::Mesh("mesh1".into()));
         let author = test_author();
         publisher.set_role(true); publisher.author = Some((author.clone(), 1));
         let now = std::time::Instant::now();
@@ -6064,10 +6064,10 @@ mod tests {
     fn the_same_mesh_status_under_its_authors_context_replaces_one_held_without() {
         let fabric = rdm_core::FabricId::parse("fab000000001").unwrap();
         let view = super::StatusView::default();
-        let plain = super::Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 40 };
+        let plain = super::Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 40 };
         assert!(view.take(&plain, &fabric));
-        assert!(view.held_frames(&fabric, "mesh1.admin.1").is_empty(), "a status held without its author's context is not served");
-        let mut publisher = super::StatusPublisher::new("mesh1.admin.1", super::StatusScope::Mesh("mesh1".into()));
+        assert!(view.held_frames(&fabric, "mesh1.node-admin.1").is_empty(), "a status held without its author's context is not served");
+        let mut publisher = super::StatusPublisher::new("mesh1.node-admin.1", super::StatusScope::Mesh("mesh1".into()));
         publisher.set_role(true);
         publisher.author = Some((test_author(), 1));
         let heard = super::StatusFact { status: "ready".into(), changed_at_rafka_ms: 40 };
@@ -6075,7 +6075,7 @@ mod tests {
         assert!(sent.context().is_some(), "the publisher's send is authored");
         assert!(view.take(&sent, &fabric), "the authored frame of the same fact replaces the plain one");
         assert!(!view.take(&sent, &fabric), "the same authored frame again is a duplicate");
-        assert!(view.held_frames(&fabric, "mesh1.admin.1").iter().all(|f| f.context().is_some()), "every frame the node serves carries its author's context");
+        assert!(view.held_frames(&fabric, "mesh1.node-admin.1").iter().all(|f| f.context().is_some()), "every frame the node serves carries its author's context");
     }
 
     use super::*;
@@ -6088,7 +6088,7 @@ mod tests {
     /// records; a later digest of another birth at a lower revision replaces neither; one at a higher
     /// revision does. What must NOT happen: a stale announcement replacing a later record.
     /// CONTRACT (Q131, fabric-recovery.md step 2: silence "in its own view"; the heard-again red at
-    /// 0acba6d97: mesh1.admin.2, thawed, read mesh1.admin.1 silent past the floor and opened its
+    /// 0acba6d97: mesh1.node-admin.2, thawed, read mesh1.node-admin.1 silent past the floor and opened its
     /// recovery): a node whose own loop stopped for longer than the staleness floor measured no silence
     /// in that gap. On its first read after waking, no member is unheard past the floor, and a member is
     /// unheard again only after a full floor measured awake. A view no loop marks awake measures silence
@@ -6096,25 +6096,25 @@ mod tests {
     #[test]
     fn a_node_that_was_not_running_past_the_floor_measures_no_silence_in_that_gap() {
         let floor = Duration::from_millis(150);
-        let member = birth_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1);
+        let member = birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1);
         let awake = DigestView::with_floor(Duration::from_secs(60), floor);
         assert!(awake.record(member.clone()));
         awake.mark_awake();
         std::thread::sleep(floor * 2);
-        assert!(awake.unheard_unexplained("mesh1", "mesh1.admin.2").is_empty(), "silence restarts on waking");
+        assert!(awake.unheard_unexplained("mesh1", "mesh1.node-admin.2").is_empty(), "silence restarts on waking");
         std::thread::sleep(floor * 2);
         awake.mark_awake();
         let bare = DigestView::with_floor(Duration::from_secs(60), floor);
         assert!(bare.record(member.clone()));
         std::thread::sleep(floor * 2);
-        assert_eq!(bare.unheard_unexplained("mesh1", "mesh1.admin.2").len(), 1, "a view no loop marks awake measures silence as before");
+        assert_eq!(bare.unheard_unexplained("mesh1", "mesh1.node-admin.2").len(), 1, "a view no loop marks awake measures silence as before");
         let marked = DigestView::with_floor(Duration::from_secs(60), floor);
         assert!(marked.record(member));
         for _ in 0..8 {
             marked.mark_awake();
             std::thread::sleep(floor / 4);
         }
-        assert_eq!(marked.unheard_unexplained("mesh1", "mesh1.admin.2").len(), 1, "a full floor of silence measured awake is silence");
+        assert_eq!(marked.unheard_unexplained("mesh1", "mesh1.node-admin.2").len(), 1, "a full floor of silence measured awake is silence");
     }
 
     #[test]
@@ -6126,19 +6126,19 @@ mod tests {
         da.is_primary = Some(3);
         da.is_fabric_primary = Some(7);
         assert!(digest_view.record(da.clone()));
-        let held = |role| match role { PrimaryRole::FabricPrimary => digest_view.primaries.fabric(), _ => digest_view.primaries.node_type_primary("mesh1", rdm_core::NodeKind::RpcNode) };
-        assert_eq!(held(PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::RpcNode)), Some(Primary { mesh: "mesh1".into(), node_id: a.clone(), incarnation: ai.clone(), revision: 3 }));
+        let held = |role| match role { PrimaryRole::FabricPrimary => digest_view.primaries.fabric(), _ => digest_view.primaries.node_type_primary("mesh1", "node") };
+        assert_eq!(held(PrimaryRole::NodePrimary("node".into())), Some(Primary { mesh: "mesh1".into(), node_id: a.clone(), incarnation: ai.clone(), revision: 3 }));
         assert_eq!(held(PrimaryRole::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a.clone(), 7)));
         let mut db = digest(&b, &bi, None, MemberStatus::Ready, 1);
-        db.node.name = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        db.node.name = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         db.node.mesh = "mesh1".into();
         db.is_primary = Some(2);
         assert!(digest_view.record(db.clone()));
-        assert_eq!(held(PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((a.clone(), 3)), "a lower revision replaces nothing");
+        assert_eq!(held(PrimaryRole::NodePrimary("node".into())).map(|h| (h.node_id, h.revision)), Some((a.clone(), 3)), "a lower revision replaces nothing");
         db.digest_seq += 1;
         db.is_primary = Some(4);
         assert!(digest_view.record(db));
-        assert_eq!(held(PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((b, 4)), "a higher revision is the record held");
+        assert_eq!(held(PrimaryRole::NodePrimary("node".into())).map(|h| (h.node_id, h.revision)), Some((b, 4)), "a higher revision is the record held");
         assert_eq!(held(PrimaryRole::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a, 7)), "the fabric-primary record is its own");
     }
 
@@ -6151,7 +6151,7 @@ mod tests {
     #[test]
     fn a_member_holds_the_primary_records_its_mesh_primarys_projection_carries() {
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let view = test_view("mesh1", "mesh1.rpc.1");
+        let view = test_view("mesh1", "mesh1.node.1");
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
         // The member holds its mesh-primary from its entry read.
         view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: publisher.node_id.clone(), incarnation: publisher.incarnation.clone(), revision: 1 });
@@ -6161,12 +6161,12 @@ mod tests {
         let mut mine = digest(&me, &my_inc, None, MemberStatus::Ready, 3);
         mine.is_primary = Some(1);
         let mut theirs = digest(&other, &other_inc, None, MemberStatus::Ready, 1);
-        theirs.node.name = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        theirs.node.name = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         theirs.node.mesh = "mesh1".into();
         let members = Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some(publisher.node_id.to_string()), topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], in_flight: Vec::new(), deleted: Vec::new() };
         let heard = hear(&mut view.order.lock().unwrap(), &view, &members, &fabric, Side::MeshChannel);
         assert!(heard, "the projection is admitted");
-        assert_eq!(view.digest_view.primaries.node_type_primary("mesh1", rdm_core::NodeKind::RpcNode), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's projection carries");
+        assert_eq!(view.digest_view.primaries.node_type_primary("mesh1", "node"), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's projection carries");
     }
 
     /// CONTRACT (node-recovery.md step 2: "Only the mesh-primary acts. ... For an unheard mesh-primary
@@ -6177,7 +6177,7 @@ mod tests {
     /// silent, judged an unheard mesh-primary by the mesh-primary's view and investigated by no one.
     #[test]
     fn a_replaced_mesh_primary_heard_again_is_one_more_node_admin_of_its_mesh() {
-        let view = test_view("mesh1", "mesh1.admin.2");
+        let view = test_view("mesh1", "mesh1.node-admin.2");
         let (old, old_inc) = (NodeId::parse("000000000009").unwrap(), IncarnationId::mint());
         let (new, new_inc) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
         let held = |id: &NodeId, inc: &IncarnationId, revision| Primary { mesh: "mesh1".into(), node_id: id.clone(), incarnation: inc.clone(), revision };
@@ -6196,9 +6196,9 @@ mod tests {
     fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: node_id.clone(),
-                name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+                name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
                 endpoint_id: EndpointId("key".into()),
                 transport_addr: "127.0.0.1:41000".parse().unwrap(),
                 incarnation: incarnation.clone(),
@@ -6371,13 +6371,13 @@ mod tests {
     }
 
     fn op(id: &NodeId, inc: &IncarnationId, action: &str) -> LifecycleOp {
-        LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+        LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(),
             build_id: "b1".into(),
             attempt: 1,
             operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: id.clone(), incarnation: inc.clone() }),
             node_id: id.clone(),
             incarnation: inc.clone(),
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             event_at_rafka_ms: 1,
             traceparent: None,
             tracestate: None,
@@ -6386,7 +6386,7 @@ mod tests {
 
     /// `mesh`'s status as its primary published it, held by `digest_view` (the frame a peer receives).
     fn hold_mesh_status(digest_view: &DigestView, mesh: &str, status: &str, changed_at_rafka_ms: u64) {
-        let f = Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: format!("{mesh}.admin.1"), forwarded_by: None, changed_at_rafka_ms };
+        let f = Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: format!("{mesh}.node-admin.1"), forwarded_by: None, changed_at_rafka_ms };
         assert!(digest_view.statuses.take(&f, &FabricId::parse("fab000000001").unwrap()), "{f:?}");
     }
 
@@ -6441,7 +6441,7 @@ mod tests {
     #[test]
     fn a_mesh_primary_observing_its_mesh_leaving_sends_it_at_once_and_a_peer_stops_routing_on_receipt() {
         let (now, fabric) = (Instant::now(), FabricId::parse("fab000000001").unwrap());
-        let mut publisher = StatusPublisher::new("mesh1.admin.1", StatusScope::Mesh("mesh1".into()));
+        let mut publisher = StatusPublisher::new("mesh1.node-admin.1", StatusScope::Mesh("mesh1".into()));
         publisher.set_role(true);
         let peer = DigestView::default();
         let held = StatusFact { status: "ready".into(), changed_at_rafka_ms: 10 };
@@ -6451,7 +6451,7 @@ mod tests {
         assert!(peer.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
         assert!(peer.routable(id.as_str()));
         let leaving = publisher.observe("leaving", None, true, now, 20).expect("the mesh's leaving is a change, sent at once");
-        assert!(matches!(&leaving, Frame::MeshStatus { status, publisher, .. } if status == "leaving" && publisher == "mesh1.admin.1"), "{leaving:?}");
+        assert!(matches!(&leaving, Frame::MeshStatus { status, publisher, .. } if status == "leaving" && publisher == "mesh1.node-admin.1"), "{leaving:?}");
         assert!(peer.statuses.take(&leaving, &fabric));
         assert!(!peer.routable(id.as_str()), "a peer holding the mesh leaving selects none of its births, though the member still says ready");
     }
@@ -6477,7 +6477,7 @@ mod tests {
         let mut w = digest_view.routing_watch();
         w.seen();
         assert!(!moved_now(&mut w).await, "nothing moved yet");
-        let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "leaving".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
+        let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "leaving".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
         assert!(digest_view.statuses.take(&f, &fabric));
         assert!(moved_now(&mut w).await, "a mesh status taken moves the routing watch");
         w.seen();
@@ -6510,7 +6510,7 @@ mod tests {
     /// The mesh-primary's report-taking of `node.started` of the birth `inc` of `id`: its
     /// DeclareNodeState(Ready) applied by its StatusAuthority.
     fn node_started(digest_view: &DigestView, id: &NodeId, inc: &IncarnationId) {
-        digest_view.started(id, inc, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1");
+        digest_view.started(id, inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1");
     }
 
     /// CONTRACT (node-status-heartbeat-connections.md §A.3: "the successor acquires the held member
@@ -6525,7 +6525,7 @@ mod tests {
     fn a_new_mesh_primarys_view_adopts_held_statuses_of_its_own_mesh_births_only() {
         let digest_view = DigestView::default();
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
-        *digest_view.observer_name.lock().unwrap() = "mesh1.admin.1".into();
+        *digest_view.observer_name.lock().unwrap() = "mesh1.node-admin.1".into();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert_eq!(digest_view.adopt_status(&id, &inc, "mesh1", MemberStatus::Ready), Ok(None), "held before its heartbeat");
         assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready));
@@ -6589,7 +6589,7 @@ mod tests {
 
     /// CONTRACT (gossip.md §3.1 `MeshTopology`; R-HB1): a non-primary node-admin of mesh1 takes its own
     /// mesh's statuses from its primary's backbone mesh topology, and a stop's end only when that
-    /// projection moves, in order, past the stop. Holding mesh1.rpc.1 stopped from the
+    /// projection moves, in order, past the stop. Holding mesh1.node.1 stopped from the
     /// primary's event, which carries v2 (the version its stop changed the birth at): v1
     /// again (a refresh at the version held, built before the stop) is refused by name; v2 carries
     /// the stop; v3 lists neither (the primary's stop cleared before it held the birth again) and
@@ -6604,7 +6604,7 @@ mod tests {
         let spans = OpenedSpans::default();
         let _capture = crate::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let view = test_view("mesh1", "mesh1.admin.2");
+        let view = test_view("mesh1", "mesh1.node-admin.2");
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let b = |status, seq| digest(&id, &inc, None, status, seq);
@@ -6687,7 +6687,7 @@ mod tests {
     /// status from the projection"; node-recovery.md "Detection and proof" step 1: "Every node-admin
     /// keeps the silence bookkeeping (`first_seen`), so a node-admin that takes the role mid-window
     /// continues the window already running"): a node-admin of mesh1 that is not its primary, whose
-    /// primary's projection lists mesh1.rpc.1 though the member's own Digest never reached it, holds
+    /// primary's projection lists mesh1.node.1 though the member's own Digest never reached it, holds
     /// the birth from that projection, unheard since it first held it. A later version listing it
     /// again does not refresh its silence, and the primary dropping the silent member from its
     /// projection (no departure) does not forget it. The member's own digest, once heard, is the
@@ -6697,7 +6697,7 @@ mod tests {
     #[test]
     fn an_admin_holds_an_own_mesh_birth_its_primarys_projection_lists_unheard_since_it_first_held_it() {
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let view = test_view("mesh1", "mesh1.admin.2");
+        let view = test_view("mesh1", "mesh1.node-admin.2");
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let mesh_topology = |version: u64, digests: Vec<MeshDigest>, deleted: Vec<LifecycleOp>| Frame::MeshTopology {
             mesh: "mesh1".into(),
@@ -6716,7 +6716,7 @@ mod tests {
         let (gone, gone_inc) = (NodeId::mint(), IncarnationId::mint());
         let member = digest(&id, &inc, None, MemberStatus::Ready, 4);
         let mut other = digest(&gone, &gone_inc, None, MemberStatus::Ready, 4);
-        other.node.name = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        other.node.name = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         other.node.mesh = "mesh1".into();
         view.take_snapshot(&mesh_topology(1, vec![member.clone(), other.clone()], vec![]), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
         let first_held_by = Instant::now();
@@ -6735,7 +6735,7 @@ mod tests {
         assert!(view.digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 5)), "the member's own digest is taken");
         assert!(view.digest_view.projected_at(id.as_str(), Instant::now()).is_none(), "its own digest is the birth's word: it is held from the projection no more");
         let mut departure = op(&gone, &gone_inc, "node.delete");
-        departure.name = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        departure.name = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         view.take_snapshot(&mesh_topology(4, vec![], vec![departure]), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
         assert!(view.digest_view.projected_at(gone.as_str(), Instant::now()).is_none(), "a departure removes the projected birth");
         assert!(view.digest_view.projected_unheard_at(Instant::now()).is_empty(), "nothing is held from the projection any more");
@@ -6748,13 +6748,13 @@ mod tests {
     #[test]
     fn a_mesh_primary_takes_no_status_of_its_own_mesh_from_another_publishers_projection() {
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let view = test_view("mesh1", "mesh1.admin.2");
+        let view = test_view("mesh1", "mesh1.node-admin.2");
         view.primary.store(true, Ordering::Relaxed);
         let predecessor = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(view.digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 5)), "the primary holds its member's heartbeat");
-        assert!(view.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), "and sets it ready from its node.started");
-        for (side, forwarded_by) in [(Side::Backbone, None), (Side::MeshChannel, Some("mesh1.admin.1".to_string()))] {
+        assert!(view.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "and sets it ready from its node.started");
+        for (side, forwarded_by) in [(Side::Backbone, None), (Side::MeshChannel, Some("mesh1.node-admin.1".to_string()))] {
             let late = Frame::MeshTopology { mesh: "mesh1".into(), publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 6)], in_flight: vec![], deleted: vec![] };
             view.take_snapshot(&late, &fabric, side, &mut view.order.lock().unwrap());
             assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((MemberStatus::Ready, 5)), "{side:?}: the authored status stands");
@@ -6871,7 +6871,7 @@ mod tests {
         assert_eq!(digest_view.member_status(&id, &inc), None, "a join digest authors no status");
         assert!(digest_view.reported(&id, &inc, MemberStatus::Pending), "its mesh-primary records the accepted join report's Pending");
         assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Pending), "held Pending from the join report");
-        assert!(digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), "node.started of the birth");
+        assert!(digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "node.started of the birth");
         // The digest the intake read the status for before node.started, written after it.
         let since = Instant::now();
         digest_view.inner.lock().unwrap().insert(id.to_string(), (digest(&id, &inc, None, MemberStatus::Pending, 101), Instant::now(), Heard::Direct));
@@ -6906,10 +6906,10 @@ mod tests {
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.get(id.as_str()).is_none(), "the view holds no digest of the birth");
-        assert!(digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), "node.started of a birth not held yet");
+        assert!(digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "node.started of a birth not held yet");
         assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready), "held ready before its digest");
         let started = spans.named("rdm.mesh.topology.update.from-node-started");
-        assert_eq!(started.iter().map(|f| (f["member_path"].clone(), f["member_name"].clone())).collect::<Vec<_>>(), vec![("mesh1.rpc".to_string(), "1".to_string())], "from-node-started names the birth: {started:#?}");
+        assert_eq!(started.iter().map(|f| (f["member_path"].clone(), f["member_name"].clone())).collect::<Vec<_>>(), vec![("mesh1.node".to_string(), "1".to_string())], "from-node-started names the birth: {started:#?}");
         assert!(digest_view.record_joined(digest(&id, &inc, None, MemberStatus::Pending, 100)), "its digest arrives with no status");
         assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready), "nothing is seeded Pending");
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 101)), "a heartbeat");
@@ -6921,7 +6921,7 @@ mod tests {
         // A held digest's name wins over the one the caller names: here the caller's names another mesh.
         let (other, other_inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.record(digest(&other, &other_inc, None, MemberStatus::Pending, 100)));
-        assert!(digest_view.started(&other, &other_inc, &rdm_core::PathName::new("mesh2.rpc", "9").unwrap(), "mesh2"), "the held digest's name, of this view's mesh, decides");
+        assert!(digest_view.started(&other, &other_inc, &rdm_core::PathName::new("mesh2.node", "9").unwrap(), "mesh2"), "the held digest's name, of this view's mesh, decides");
         assert_eq!(digest_view.member_status(&other, &other_inc), ready);
     }
 
@@ -6937,7 +6937,7 @@ mod tests {
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)));
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 120)));
-        assert!(digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), "node.started of the birth");
+        assert!(digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "node.started of the birth");
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 125)));
         assert!(digest_view.routable(id.as_str()), "no overlay holds it: the ready birth of a ready mesh is selected");
         let stop = op(&id, &inc, "node.stop");
@@ -7151,7 +7151,7 @@ mod tests {
     fn departures_and_overlays_pack_into_frames_that_fit_and_a_publisher_carries_only_its_mesh() {
         let digest_view = DigestView::default();
         let mut other = op(&NodeId::mint(), &IncarnationId::mint(), "node.delete");
-        other.name = rdm_core::PathName::new("mesh2.rpc", "1").unwrap();
+        other.name = rdm_core::PathName::new("mesh2.node", "1").unwrap();
         other.mesh = "mesh2".into();
         digest_view.depart(other);
         for _ in 0..60 {
@@ -7160,7 +7160,7 @@ mod tests {
         let (in_flight, deleted) = digest_view.overlays_of("mesh1");
         assert!(in_flight.is_empty());
         assert_eq!(deleted.len(), 60, "mesh2's departure is not mesh1's to publish");
-        let frame = |deleted| mesh_topology("mesh1", "mesh1.admin.1", Some("mesh2.admin.1"), Vec::new(), Vec::new(), deleted);
+        let frame = |deleted| mesh_topology("mesh1", "mesh1.node-admin.1", Some("mesh2.node-admin.1"), Vec::new(), Vec::new(), deleted);
         let runs = pack(deleted, |run| frame(run).authored(&test_author(), 0, 1));
         assert!(runs.len() > 1, "sixty departures do not fit one message");
         assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 60, "every departure travels");
@@ -7183,7 +7183,7 @@ mod tests {
         let ds: Vec<MeshDigest> = (0..64).map(|i| digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, i)).collect();
         let in_flight: Vec<LifecycleOp> = (0..3).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "node.delete")).collect();
         let deleted: Vec<LifecycleOp> = (0..5).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "node.delete")).collect();
-        let frame = |digests| mesh_topology("mesh1", "mesh1.admin.1", Some("mesh2.admin.1"), digests, in_flight.clone(), deleted.clone());
+        let frame = |digests| mesh_topology("mesh1", "mesh1.node-admin.1", Some("mesh2.node-admin.1"), digests, in_flight.clone(), deleted.clone());
         let runs = pack(ds.clone(), |run| frame(run).authored(&test_author(), 0, 1));
         assert!(runs.len() > 1, "sixty-four digests do not fit one message");
         assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 64, "every digest travels");
@@ -7214,7 +7214,7 @@ mod tests {
                 d
             })
             .collect();
-        let frame = |digests| mesh_topology("mesh1", "mesh1.admin.1", Some("mesh2.admin.1"), digests, Vec::new(), Vec::new());
+        let frame = |digests| mesh_topology("mesh1", "mesh1.node-admin.1", Some("mesh2.node-admin.1"), digests, Vec::new(), Vec::new());
         let runs = pack(ds, |run| frame(run).authored(&test_author(), 0, 1));
         assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 40, "every digest travels with its runtime");
         for r in &runs {
@@ -7390,12 +7390,12 @@ mod tests {
     /// mesh's member in the same kind of mesh topology is held as heard on the backbone.
     #[test]
     fn an_own_mesh_member_in_an_aggregate_is_still_heard_directly() {
-        let view = test_view("mesh1", "mesh1.admin.1");
+        let view = test_view("mesh1", "mesh1.node-admin.1");
         let fabric = FabricId::parse("fab000000001").unwrap();
         let id = NodeId::mint();
         let d = digest(&id, &IncarnationId::mint(), None, MemberStatus::Ready, 100);
         assert!(view.digest_view.record(d.clone()));
-        let aggregate = mesh_topology("mesh1", "mesh1.admin.1", None, vec![d], vec![], vec![]);
+        let aggregate = mesh_topology("mesh1", "mesh1.node-admin.1", None, vec![d], vec![], vec![]);
         let _ = view.take_snapshot(&single_chunk(aggregate), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         let (_, at, forwarded) = view.digest_view.inner.lock().unwrap().get(id.as_str()).cloned().unwrap();
         assert!(forwarded == Heard::Direct, "its own mesh's member is held as heard directly, never forwarded");
@@ -7403,9 +7403,9 @@ mod tests {
         // A peer mesh's member in the same kind of mesh topology is forwarded.
         let peer = NodeId::mint();
         let mut p = digest(&peer, &IncarnationId::mint(), None, MemberStatus::Ready, 100);
-        p.node.name = rdm_core::PathName::new("mesh2.rpc", "1").unwrap();
+        p.node.name = rdm_core::PathName::new("mesh2.node", "1").unwrap();
         p.node.mesh = "mesh2".into();
-        let aggregate = mesh_topology("mesh2", "mesh2.admin.1", None, vec![p], vec![], vec![]);
+        let aggregate = mesh_topology("mesh2", "mesh2.node-admin.1", None, vec![p], vec![], vec![]);
         let _ = view.take_snapshot(&single_chunk(aggregate), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         assert!(view.digest_view.inner.lock().unwrap().get(peer.as_str()).unwrap().2 == Heard::Forwarded, "a peer mesh's member is forwarded");
     }
@@ -7415,13 +7415,13 @@ mod tests {
     /// later one), never an older one: a delta moves the version and the view together.
     #[test]
     fn a_held_source_version_never_runs_ahead_of_the_view_it_names() {
-        let view = test_view("mesh1", "mesh1.rpc.1");
+        let view = test_view("mesh1", "mesh1.node.1");
         let fabric = FabricId::parse("fab000000001").unwrap();
         let id = NodeId::mint();
         let incarnation = IncarnationId::mint();
         let at = |n: u64| {
             let mut d = digest(&id, &incarnation, None, MemberStatus::Ready, n);
-            d.node.name = rdm_core::PathName::new("mesh2.rpc", "1").unwrap();
+            d.node.name = rdm_core::PathName::new("mesh2.node", "1").unwrap();
             d.node.mesh = "mesh2".into();
             d
         };
@@ -7512,32 +7512,32 @@ mod tests {
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let mut d = digest(&id, &inc, None, MemberStatus::Ready, 100);
-        d.node.name = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+        d.node.name = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         d.node.mesh = "mesh1".into();
         let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
         assert!(digest_view.record_at(d.clone(), long_ago));
-        assert_eq!(digest_view.unheard_unexplained("mesh1", "mesh1.admin.1").len(), 1, "a member silent with no event is unexplained");
+        assert_eq!(digest_view.unheard_unexplained("mesh1", "mesh1.node-admin.1").len(), 1, "a member silent with no event is unexplained");
         let mut again = digest(&id, &inc, None, MemberStatus::Ready, 200);
-        again.node.name = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+        again.node.name = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         again.node.mesh = "mesh1".into();
         assert!(digest_view.record(again), "heard again");
-        assert!(digest_view.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty(), "heard: nothing unexplained");
+        assert!(digest_view.unheard_unexplained("mesh1", "mesh1.node-admin.1").is_empty(), "heard: nothing unexplained");
         assert!(digest_view.stopped(op(&id, &inc, "node.stop")), "the stop this view applied");
-        assert!(digest_view.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty(), "a stopped member is expected silence");
+        assert!(digest_view.unheard_unexplained("mesh1", "mesh1.node-admin.1").is_empty(), "a stopped member is expected silence");
         assert!(digest_view.joined(&op(&id, &inc, "node.start")), "its start's node.joined holds it again");
-        assert!(digest_view.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty());
+        assert!(digest_view.unheard_unexplained("mesh1", "mesh1.node-admin.1").is_empty());
         let mut later = digest(&id, &inc, None, MemberStatus::Pending, 300);
-        later.node.name = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+        later.node.name = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         later.node.mesh = "mesh1".into();
         assert!(digest_view.record(later));
-        assert!(digest_view.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty());
+        assert!(digest_view.unheard_unexplained("mesh1", "mesh1.node-admin.1").is_empty());
     }
 
-    fn born(mesh: &str, kind: rdm_core::NodeKind, ordinal: u32, mesh_id: Option<&MeshId>, at: u64) -> MeshDigest {
+    fn born(mesh: &str, r#type: &str, ordinal: u32, mesh_id: Option<&MeshId>, at: u64) -> MeshDigest {
         let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, at);
-        d.node.name = rdm_core::PathName::numbered(mesh, kind, ordinal);
+        d.node.name = rdm_core::PathName::numbered(mesh, r#type, ordinal);
         d.node.mesh = mesh.into();
-        d.node.kind = kind;
+        d.node.r#type = r#type.to_string();
         d.mesh_id = mesh_id.cloned();
         d
     }
@@ -7558,7 +7558,7 @@ mod tests {
     fn a_node_joining_after_the_leaving_meshs_members_said_connections_deleting_and_leaving_installs_their_own_states_and_routes_none_of_them() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let m1 = MeshId::mint();
-        let (admin, connections_deleting, leaving) = (born("mesh1", rdm_core::NodeKind::NodeAdmin, 1, Some(&m1), 1), born("mesh1", rdm_core::NodeKind::RpcNode, 1, None, 1), born("mesh1", rdm_core::NodeKind::RpcNode, 2, None, 1));
+        let (admin, connections_deleting, leaving) = (born("mesh1", "node-admin", 1, Some(&m1), 1), born("mesh1", "node", 1, None, 1), born("mesh1", "node", 2, None, 1));
         let publisher = PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() };
         let mesh_topology = |version: u64, digests: Vec<MeshDigest>| Frame::MeshTopology {
             mesh: "mesh1".into(),
@@ -7582,19 +7582,19 @@ mod tests {
         };
         // mesh2's primary holds mesh1 and forwards it into mesh2; mesh-leaving is heard; then the
         // leaving primary's next mesh topology carries its members' own ConnectionsDeleting and Leaving.
-        let primary = test_view("mesh2", "mesh2.admin.1");
+        let primary = test_view("mesh2", "mesh2.node-admin.1");
         primary.primary.store(true, Ordering::Relaxed);
         // mesh1's primary published mesh1 ready before the leave; the joiner learns it
         // from the replay.
         // As a peer receives it: authored by its publisher.
-        primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&test_author(), 1, 5), &fabric, "backbone");
+        primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&test_author(), 1, 5), &fabric, "backbone");
         for (version, digests) in [(1, vec![admin.clone(), connections_deleting.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&connections_deleting, MemberStatus::ConnectionsDeleting), said(&leaving, MemberStatus::Leaving)])] {
             let taken = primary.take_snapshot(&mesh_topology(version, digests), &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
             let (mesh, from, v, full) = taken.source.expect("a complete source snapshot");
-            let _ = primary.forwarder.lock().unwrap().source("mesh2.admin.1", &mesh, &from, v, &full, version);
+            let _ = primary.forwarder.lock().unwrap().source("mesh2.node-admin.1", &mesh, &from, v, &full, version);
         }
         // A new mesh2 node joins: it reads the primary's topology (0x1E), then hears its replay.
-        let joiner = test_view("mesh2", "mesh2.rpc.9");
+        let joiner = test_view("mesh2", "mesh2.node.9");
         for s in primary.forwarder.lock().unwrap().snapshots() {
             for f in crate::snapshot::chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
                 mesh: s.mesh.clone(),
@@ -7618,8 +7618,8 @@ mod tests {
                 }
             }
         }
-        let mut replay = primary.digest_view.statuses.held_frames(&fabric, "mesh2.admin.1");
-        replay.extend(primary.forwarder.lock().unwrap().replay("mesh2.admin.1", 3));
+        let mut replay = primary.digest_view.statuses.held_frames(&fabric, "mesh2.node-admin.1");
+        replay.extend(primary.forwarder.lock().unwrap().replay("mesh2.node-admin.1", 3));
         for f in &replay {
             match f {
                 Frame::MeshTopology { .. } | Frame::MeshTopologyDelta { .. } => {
@@ -7659,7 +7659,7 @@ mod tests {
     /// taken. That holds when the projection held at mesh-left is already a mesh topology with no
     /// digests (no digest states the MeshId any more): the MeshId names the mesh from what this
     /// node learned of it. Must NOT happen: the re-install the s49 acceptance cell saw at
-    /// mesh2.admin.2, mesh3.admin.2 and mesh2.rpc.1/.2 after mesh-left (traces
+    /// mesh2.node-admin.2, mesh3.node-admin.2 and mesh2.node.1/.2 after mesh-left (traces
     /// fad0ff1bad18289a2c9e7734417dd456, 646ff8a73db798989f1208931f0fff1c,
     /// 379b4094c48d8b852890734790b7b222).
 
@@ -7671,10 +7671,10 @@ mod tests {
             std::mem::swap(&mut a, &mut b);
         }
         let mut lower = digest(&a, &IncarnationId::mint(), None, MemberStatus::Ready, 10);
-        lower.node.name = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+        lower.node.name = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         lower.node.mesh = "mesh1".into();
         let mut higher = digest(&b, &IncarnationId::mint(), None, MemberStatus::Ready, 10);
-        higher.node.name = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        higher.node.name = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         higher.node.mesh = "mesh1".into();
         assert!(digest_view.record_at(lower.clone(), at) && digest_view.record_at(higher.clone(), at));
         (lower, higher)
@@ -7690,23 +7690,23 @@ mod tests {
     /// node-type primary's record overwriting the mesh-primary record of its mesh.
     #[test]
     fn a_node_type_primary_is_held_apart_from_its_meshs_mesh_primary() {
-        use rdm_core::NodeKind;
+        
         let primaries = PrimaryView::default();
         let admin = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 };
         let rpc = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 };
         assert!(matches!(primaries.take(PrimaryRole::MeshPrimary, &admin), RoleTaken::Held { .. }));
-        assert!(matches!(primaries.take(PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), &rpc), RoleTaken::Held { previous: None }));
+        assert!(matches!(primaries.take(PrimaryRole::NodePrimary("node".into()), &rpc), RoleTaken::Held { previous: None }));
         assert_eq!(primaries.mesh("mesh1"), Some(admin.clone()), "the mesh-primary record stays its own");
-        assert_eq!(primaries.node_type_primary("mesh1", NodeKind::RpcNode), Some(rpc.clone()));
-        assert_eq!(primaries.node_type_primary("mesh1", NodeKind::NodeAdmin), Some(admin.clone()), "the node-admin node-type primary role is the mesh-primary role");
-        assert_eq!(primaries.node_type_primary("mesh1", NodeKind::Broker), None);
+        assert_eq!(primaries.node_type_primary("mesh1", "node"), Some(rpc.clone()));
+        assert_eq!(primaries.node_type_primary("mesh1", "node-admin"), Some(admin.clone()), "the node-admin node-type primary role is the mesh-primary role");
+        assert_eq!(primaries.node_type_primary("mesh1", "broker"), None);
         let older = Primary { revision: 0, ..rpc.clone() };
-        assert!(matches!(primaries.take(PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), &older), RoleTaken::Refused { .. }), "an older record is refused by the one supersede rule");
+        assert!(matches!(primaries.take(PrimaryRole::NodePrimary("node".into()), &older), RoleTaken::Refused { .. }), "an older record is refused by the one supersede rule");
         // An update of the node-type primary is held under the node type.
         let next = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
-        let taken = primaries.take_together(&[(PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), next.clone())]);
+        let taken = primaries.take_together(&[(PrimaryRole::NodePrimary("node".into()), next.clone())]);
         assert!(matches!(taken.as_slice(), [RoleTaken::Held { .. }]), "{taken:?}");
-        assert_eq!(primaries.node_type_primary("mesh1", NodeKind::RpcNode), Some(next));
+        assert_eq!(primaries.node_type_primary("mesh1", "node"), Some(next));
         assert_eq!(primaries.mesh("mesh1"), Some(admin), "and the mesh-primary record is untouched");
     }
 
@@ -7718,7 +7718,7 @@ mod tests {
         let digest_view = DigestView::default();
         let (_lower, primary) = two_admins(&digest_view, Instant::now());
         digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 3));
-        assert_eq!(digest_view.mesh_primary("mesh1").ok().map(|d| d.node.name.clone()), Some(rdm_core::PathName::new("mesh1.admin", "1").unwrap()));
+        assert_eq!(digest_view.mesh_primary("mesh1").ok().map(|d| d.node.name.clone()), Some(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()));
     }
 
     /// CONTRACT (R-EL1): a primary that is ConnectionsDeleting keeps its role, so the member still tops up from it.
@@ -7733,7 +7733,7 @@ mod tests {
         connections_deleting.emitted_at_rafka_ms += 1;
         assert!(digest_view.record(connections_deleting));
         let _ = primary;
-        assert_eq!(digest_view.mesh_primary("mesh1").ok().map(|d| d.node.name.clone()), Some(rdm_core::PathName::new("mesh1.admin", "2").unwrap()));
+        assert_eq!(digest_view.mesh_primary("mesh1").ok().map(|d| d.node.name.clone()), Some(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()));
     }
 
     /// CONTRACT: the primary's digest aged past the staleness floor does not move the role:
@@ -7744,7 +7744,7 @@ mod tests {
         let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
         let (lower, _higher) = two_admins(&digest_view, long_ago);
         digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&lower, 3));
-        assert_eq!(digest_view.mesh_primary("mesh1").ok().map(|d| d.node.name.clone()), Some(rdm_core::PathName::new("mesh1.admin", "2").unwrap()));
+        assert_eq!(digest_view.mesh_primary("mesh1").ok().map(|d| d.node.name.clone()), Some(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()));
     }
 
     /// CONTRACT: a node that cannot address its mesh's primary says which fact stops it, with the
@@ -7822,8 +7822,8 @@ mod tests {
         assert_eq!(spans.named("capture.shared-callsite").len(), 1, "the capture's own span reached it");
     }
 
-    fn op_at(path: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, id: &NodeId, inc: &IncarnationId, action: &str) -> LifecycleOp {
-        LifecycleOp { name: path, mesh: mesh.into(), kind, ..op(id, inc, action) }
+    fn op_at(path: rdm_core::PathName, mesh: &str, r#type: &str, id: &NodeId, inc: &IncarnationId, action: &str) -> LifecycleOp {
+        LifecycleOp { name: path, mesh: mesh.into(), r#type: r#type.to_string(), ..op(id, inc, action) }
     }
 
     /// CONTRACT (gossip.md "Mesh delete": after mesh.deleted the last admin publishes itself "until it
@@ -7859,20 +7859,20 @@ mod tests {
         let _capture = crate::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
-        let departure = op_at(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &x, &x_inc, "node.delete");
+        let departure = op_at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &x, &x_inc, "node.delete");
         let forwarder_id = NodeId::mint();
-        let status_at = |changed_at_rafka_ms: u64, status: &str| Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.admin.1".into(), forwarded_by: Some(forwarder_id.to_string()), changed_at_rafka_ms };
-        let held = Some(MeshStatus { status: "ready".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 5 });
+        let status_at = |changed_at_rafka_ms: u64, status: &str| Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: Some(forwarder_id.to_string()), changed_at_rafka_ms };
+        let held = Some(MeshStatus { status: "ready".into(), publisher: "mesh2.node-admin.1".into(), changed_at_rafka_ms: 5 });
 
-        let joiner = test_view("mesh2", "mesh2.admin.1");
-        let member = test_view("mesh2", "mesh2.rpc.1");
-        let renamed = test_view("mesh2", "mesh2.admin.1");
-        *renamed.held_name.lock().unwrap() = Some(rdm_core::PathName::new("mesh2.admin.old", "1").unwrap());
+        let joiner = test_view("mesh2", "mesh2.node-admin.1");
+        let member = test_view("mesh2", "mesh2.node.1");
+        let renamed = test_view("mesh2", "mesh2.node-admin.1");
+        *renamed.held_name.lock().unwrap() = Some(rdm_core::PathName::new("mesh2.node-admin.old", "1").unwrap());
         let (y, y_inc) = (NodeId::mint(), IncarnationId::mint());
         let mut y_birth = digest(&y, &y_inc, None, MemberStatus::Pending, 100);
-        y_birth.node.name = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
+        y_birth.node.name = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
         y_birth.node.mesh = "mesh2".into();
-        let peer = test_view("mesh2", "mesh2.rpc.2");
+        let peer = test_view("mesh2", "mesh2.node.2");
         assert!(peer.digest_view.record(y_birth));
         for (view, via) in [(&joiner, "entry-answer"), (&member, "mesh-channel"), (&renamed, "mesh-channel"), (&peer, "mesh-channel")] {
             assert!(view.digest_view.depart(departure.clone()));
@@ -7899,16 +7899,16 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let mesh_id = MeshId::mint();
         let mut d = digest(&id, &inc, None, MemberStatus::Leaving, 100);
-        d.node.name = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        d.node.name = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         d.node.mesh = "mesh1".into();
         d.mesh_id = Some(mesh_id.clone());
         assert!(digest_view.record(d));
-        assert!(digest_view.depart(LifecycleOp { build_id: "b1".into(), attempt: 1, ..op_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &id, &inc, "node.delete") }));
-        let late_stop = op_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &id, &inc, "node.stop");
+        assert!(digest_view.depart(LifecycleOp { build_id: "b1".into(), attempt: 1, ..op_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, "node.delete") }));
+        let late_stop = op_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, "node.stop");
         let late_stop = LifecycleOp { build_id: "b0".into(), ..late_stop };
         assert!(!digest_view.stopped(late_stop.clone()), "a late NodeStopped opens nothing");
         assert!(digest_view.in_flight().is_empty() && digest_view.get(id.as_str()).is_none(), "nothing is resurrected");
-        let late_delete = LifecycleOp { build_id: "b0".into(), ..op_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &id, &inc, "node.delete") };
+        let late_delete = LifecycleOp { build_id: "b0".into(), ..op_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, "node.delete") };
         assert!(!digest_view.depart(late_delete.clone()), "a late NodeDeleted departs nothing again");
         let held = digest_view.deleted().into_iter().next().unwrap();
         assert!(!digest_view.depart(held), "a copy of the departure held");
@@ -7932,12 +7932,12 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let mesh_id = MeshId::mint();
         let mut d = digest(&id, &inc, None, MemberStatus::Leaving, 100);
-        d.node.name = rdm_core::PathName::new("mesh2.admin", "2").unwrap();
+        d.node.name = rdm_core::PathName::new("mesh2.node-admin", "2").unwrap();
         d.node.mesh = "mesh2".into();
         d.mesh_id = Some(mesh_id.clone());
         assert!(digest_view.record(d));
-        assert!(digest_view.depart(LifecycleOp { build_id: "b1".into(), attempt: 1, ..op_at(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &id, &inc, "node.delete") }));
-        let replaced = LifecycleOp { build_id: "b2".into(), attempt: 2, ..op_at(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &id, &inc, "node.delete") };
+        assert!(digest_view.depart(LifecycleOp { build_id: "b1".into(), attempt: 1, ..op_at(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", &id, &inc, "node.delete") }));
+        let replaced = LifecycleOp { build_id: "b2".into(), attempt: 2, ..op_at(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", &id, &inc, "node.delete") };
         for copy in 0..3 {
             assert!(!digest_view.depart(replaced.clone()), "copy {copy} of the refused departure departs nothing again");
         }
@@ -7945,17 +7945,17 @@ mod tests {
         assert_eq!(refused.len(), 1, "one refusal by name, its copies silent: {refused:?}");
         assert_eq!((refused[0]["frame"].as_str(), refused[0]["operation"].as_str(), refused[0]["build_id"].as_str()), ("node-deleted", "node.delete", "b2"));
         // Another departure of the same birth is a fact of its own: refused by name once.
-        let deleted = LifecycleOp { build_id: "b3".into(), ..op_at(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &id, &inc, "node.delete") };
+        let deleted = LifecycleOp { build_id: "b3".into(), ..op_at(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", &id, &inc, "node.delete") };
         assert!(!digest_view.depart(deleted.clone()) && !digest_view.depart(deleted));
         assert_eq!(spans.named("rdm.mesh.topology.reject.via-deleted-birth").len(), 2, "each refused departure once");
     }
 
     /// A birth of `path` with a fresh NodeId and incarnation, ready, heartbeat `seq`.
-    fn birth_at(path: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, seq: u64) -> MeshDigest {
+    fn birth_at(path: rdm_core::PathName, mesh: &str, r#type: &str, seq: u64) -> MeshDigest {
         let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, seq);
         d.node.name = path;
         d.node.mesh = mesh.into();
-        d.node.kind = kind;
+        d.node.r#type = r#type.to_string();
         d
     }
 
@@ -8002,12 +8002,12 @@ mod tests {
     /// receiver holds for the same source is ignored, once, in the gossip receive path", with no
     /// channel qualifier; gossip.md §3.1: "a topology read install move[s] the held source version"):
     /// a node-admin holds one version per source, consulted by the backbone, its mesh channel and
-    /// its topology-read install. For its own mesh (mesh2) and a peer mesh (mesh1), mesh2.admin.2
+    /// its topology-read install. For its own mesh (mesh2) and a peer mesh (mesh1), mesh2.node-admin.2
     /// read-installs the publisher's v5, listing the member Ready; the backbone then delivers the
     /// same publisher's v4, listing it Pending: nothing changes, and the ignore span names the
     /// backbone, the source, the version held and the one offered; the backbone then delivers v5,
     /// and nothing changes. Must NOT happen: the member leaving Ready (the bf44123e build_op run on
-    /// mesh2.admin.2: read install 5bcc7547cc444f97, v4 install 2854055386b9a057, revert
+    /// mesh2.node-admin.2: read install 5bcc7547cc444f97, v4 install 2854055386b9a057, revert
     /// 7a563158be93f335, v5 3dd8d04dfcf8c2b9); a version a read installed left unconsulted by the
     /// backbone.
     #[test]
@@ -8016,7 +8016,7 @@ mod tests {
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let view = test_view("mesh2", "mesh2.admin.2");
+        let view = test_view("mesh2", "mesh2.node-admin.2");
         // The node's receive path as it runs: the backbone through the node's one held version per
         // source, and the topology-read install through the same.
         let hears = |f: &Frame| hear(&mut view.order.lock().unwrap(), &view, f, &fabric, Side::Backbone);
@@ -8029,8 +8029,8 @@ mod tests {
             }
         };
         for mesh in ["mesh2", "mesh1"] {
-            let publisher = birth_at(rdm_core::PathName::new(format!("{mesh}.admin"), "1").unwrap(), mesh, rdm_core::NodeKind::NodeAdmin, 1);
-            let ready = birth_at(rdm_core::PathName::new(format!("{mesh}.rpc"), "1").unwrap(), mesh, rdm_core::NodeKind::RpcNode, 3);
+            let publisher = birth_at(rdm_core::PathName::new(format!("{mesh}.node-admin"), "1").unwrap(), mesh, "node-admin", 1);
+            let ready = birth_at(rdm_core::PathName::new(format!("{mesh}.node"), "1").unwrap(), mesh, "node", 3);
             let pending = MeshDigest { status: MemberStatus::Pending, ..ready.clone() };
             let read = crate::snapshot::Chunk {
                 mesh: mesh.into(),
@@ -8068,13 +8068,13 @@ mod tests {
     /// channel took a source's newer publication, a publication of that mesh stamped before it is
     /// ignored by the receive path and the receiver keeps what it holds, whoever published either.
     /// Two receivers:
-    /// - a peer mesh primary on the backbone holds mesh2 from mesh2.admin.1; mesh2.admin.1 is deleted
-    ///   and mesh2.admin.2 becomes mesh2's primary (R-RX4: nobody else publishes mesh2), whose
-    ///   mesh topology is installed; mesh2.admin.1's last mesh topology, stamped before it, arrives after it
+    /// - a peer mesh primary on the backbone holds mesh2 from mesh2.node-admin.1; mesh2.node-admin.1 is deleted
+    ///   and mesh2.node-admin.2 becomes mesh2's primary (R-RX4: nobody else publishes mesh2), whose
+    ///   mesh topology is installed; mesh2.node-admin.1's last mesh topology, stamped before it, arrives after it
     ///   and is ignored; the deleted primary is not held again (rafka-v2 s41's red, trace
     ///   6cf5759abdce42d61c414560c772b308);
-    /// - on an ordinary node's mesh channel, mesh1.admin.2's full (after the role moved) is installed
-    ///   over mesh1.admin.1's; mesh1.admin.1's full and delta stamped before it are each ignored;
+    /// - on an ordinary node's mesh channel, mesh1.node-admin.2's full (after the role moved) is installed
+    ///   over mesh1.node-admin.1's; mesh1.node-admin.1's full and delta stamped before it are each ignored;
     /// - no source is marked desynchronized: nothing is repaired, for nothing is missing.
     /// Must NOT happen: a receiver switched back to the earlier publication's projection; a frame
     /// refused by who published it; an earlier publication read as a version gap.
@@ -8084,28 +8084,28 @@ mod tests {
         let held = |view: &View, side: Side, mesh: &str| view.receiver(side).lock().unwrap().held_version(mesh);
 
         // The backbone: a peer mesh primary holds mesh2 from its primary, then from its successor.
-        let peer = test_view("mesh4", "mesh4.admin.1");
+        let peer = test_view("mesh4", "mesh4.node-admin.1");
         let mut backbone = crate::receive_order::ReceiveOrder::default();
-        let (admin2, admin2b, rpc) = (birth_at(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, 1), [birth_at(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, 1), birth_at(rdm_core::PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, 1)]);
+        let (admin2, admin2b, rpc) = (birth_at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", 1), [birth_at(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", 1), birth_at(rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", 1)]);
         let mesh2_full = || vec![admin2.clone(), rpc[0].clone(), rpc[1].clone()];
         assert!(hear(&mut backbone, &peer, &stamped(snapshot_of("mesh2", &publisher_of(&admin2), None, 1, 1, mesh2_full(), vec![], vec![]), 100), &fabric, Side::Backbone));
-        // mesh2.admin.1 is deleted and mesh2.admin.2 is established as the mesh's primary.
-        let deleted = op_at(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &admin2.node.node_id, &admin2.node.incarnation, "node.delete");
+        // mesh2.node-admin.1 is deleted and mesh2.node-admin.2 is established as the mesh's primary.
+        let deleted = op_at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &admin2.node.node_id, &admin2.node.incarnation, "node.delete");
         assert!(hear(&mut backbone, &peer, &stamped(snapshot_of("mesh2", &publisher_of(&admin2b), None, 1, 1, vec![admin2b.clone(), rpc[0].clone(), rpc[1].clone()], vec![], vec![deleted.clone()]), 300), &fabric, Side::Backbone));
         assert_eq!(held(&peer, Side::Backbone, "mesh2"), Some((publisher_of(&admin2b), 1)), "the successor primary's mesh topology of mesh2 is installed");
         // The former primary's last mesh topology, stamped before the successor's, arrives late.
-        assert!(!hear(&mut backbone, &peer, &stamped(snapshot_of("mesh2", &publisher_of(&admin2), None, 2, 3, mesh2_full(), vec![], vec![]), 200), &fabric, Side::Backbone), "mesh2.admin.1's last mesh topology is ignored");
+        assert!(!hear(&mut backbone, &peer, &stamped(snapshot_of("mesh2", &publisher_of(&admin2), None, 2, 3, mesh2_full(), vec![], vec![]), 200), &fabric, Side::Backbone), "mesh2.node-admin.1's last mesh topology is ignored");
         assert_eq!(held(&peer, Side::Backbone, "mesh2"), Some((publisher_of(&admin2b), 1)), "the peer keeps the successor primary's mesh topology of mesh2");
         assert!(peer.digest_view.is_deleted(admin2.node.node_id.as_str()) && peer.digest_view.get(admin2.node.node_id.as_str()).is_none(), "the deleted primary is not held again");
 
-        // An ordinary node's mesh channel: mesh1's role moves from mesh1.admin.1 to mesh1.admin.2.
-        let member = test_view("mesh1", "mesh1.rpc.9");
+        // An ordinary node's mesh channel: mesh1's role moves from mesh1.node-admin.1 to mesh1.node-admin.2.
+        let member = test_view("mesh1", "mesh1.node.9");
         let mut channel = crate::receive_order::ReceiveOrder::default();
-        let (p1, p2, rpc1) = (birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1));
-        assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p1), Some("mesh1.admin.1"), 5, 1, vec![p1.clone(), p2.clone(), rpc1.clone()], vec![], vec![]), 500), &fabric, Side::MeshChannel));
-        assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p2), Some("mesh1.admin.2"), 1, 1, vec![p1.clone(), p2.clone(), rpc1.clone()], vec![], vec![]), 700), &fabric, Side::MeshChannel));
+        let (p1, p2, rpc1) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1));
+        assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p1), Some("mesh1.node-admin.1"), 5, 1, vec![p1.clone(), p2.clone(), rpc1.clone()], vec![], vec![]), 500), &fabric, Side::MeshChannel));
+        assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p2), Some("mesh1.node-admin.2"), 1, 1, vec![p1.clone(), p2.clone(), rpc1.clone()], vec![], vec![]), 700), &fabric, Side::MeshChannel));
         assert_eq!(held(&member, Side::MeshChannel, "mesh1"), Some((publisher_of(&p2), 1)), "the successor's full is installed: its revision");
-        assert!(!hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p1), Some("mesh1.admin.1"), 6, 2, vec![p1.clone(), rpc1.clone()], vec![], vec![]), 600), &fabric, Side::MeshChannel), "the predecessor's full stamped before the successor's is ignored");
+        assert!(!hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p1), Some("mesh1.node-admin.1"), 6, 2, vec![p1.clone(), rpc1.clone()], vec![], vec![]), 600), &fabric, Side::MeshChannel), "the predecessor's full stamped before the successor's is ignored");
         let late_delta = Frame::MeshTopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&p1), base_version: 5, topology_version: 6, published_at_rafka_ms: 600, changed: vec![], removed: vec![p2.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
         assert!(!hear(&mut channel, &member, &late_delta, &fabric, Side::MeshChannel), "the predecessor's delta stamped before the successor's full is ignored");
         assert_eq!(held(&member, Side::MeshChannel, "mesh1"), Some((publisher_of(&p2), 1)), "the member keeps the successor's projection");
@@ -8118,16 +8118,16 @@ mod tests {
     /// whether its publisher is held stopped or deleted here. A newer version of the revision a receiver
     /// holds, published before its publisher stopped, is taken for what it carries. Three receivers:
     /// - the fabric-primary on the backbone (rafka-v2 s42's successor, scratchpad m2a1.log:390-401): it
-    ///   holds mesh1.admin.1's v7 listing mesh1.admin.2 Ready and executed mesh1.admin.1's stop; v8,
-    ///   carrying mesh1.admin.2's stop, is taken, so mesh1.admin.2 is held stopped, and mesh1.admin.1's
+    ///   holds mesh1.node-admin.1's v7 listing mesh1.node-admin.2 Ready and executed mesh1.node-admin.1's stop; v8,
+    ///   carrying mesh1.node-admin.2's stop, is taken, so mesh1.node-admin.2 is held stopped, and mesh1.node-admin.1's
     ///   own entry in it is refused by the stop the fabric-primary executed (`via-stopped-birth`, door
-    ///   `projection`); mesh1.admin.3 takes the role and its full, stamped after v8, is installed;
-    ///   mesh1.admin.1's v9, stamped before that full, is ignored by the receive path;
-    /// - an own-mesh member on its mesh channel holds mesh1.admin.1's stop from the fabric-primary's
-    ///   event; mesh1.admin.1's v8, listing itself Ready, is taken. A lifecycle fact carries no
+    ///   `projection`); mesh1.node-admin.3 takes the role and its full, stamped after v8, is installed;
+    ///   mesh1.node-admin.1's v9, stamped before that full, is ignored by the receive path;
+    /// - an own-mesh member on its mesh channel holds mesh1.node-admin.1's stop from the fabric-primary's
+    ///   event; mesh1.node-admin.1's v8, listing itself Ready, is taken. A lifecycle fact carries no
     ///   `published_at_rafka_ms`, so no key orders it against another publisher's projection: the
     ///   projection is the source's next word, and the stop ends in it (`via-stop-ended-in-projection`);
-    /// - a node-admin that holds mesh1.admin.1 deleted (deleted) takes its v8 the same way; the
+    /// - a node-admin that holds mesh1.node-admin.1 deleted (deleted) takes its v8 the same way; the
     ///   deleted publisher is not held again (its own entry is refused by name, the departure stands).
     /// Must NOT happen: a receiver kept on an older version of the revision it holds; a publication refused
     /// because its publisher is held stopped or deleted; a receiver switched back to an earlier
@@ -8139,19 +8139,19 @@ mod tests {
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let fabric = FabricId::parse("fab000000001").unwrap();
         let held = |view: &View, side: Side| view.receiver(side).lock().unwrap().held_version("mesh1");
-        let (p, x, rpc, successor) = (birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1), birth_at(rdm_core::PathName::new("mesh1.admin", "3").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1));
-        let fabric_primary = birth_at(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, 1);
-        let stop_of = |d: &MeshDigest| op_at(d.node.name.clone(), &d.node.mesh, d.node.kind, &d.node.node_id, &d.node.incarnation, "node.stop");
+        let (p, x, rpc, successor) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1), birth_at(rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", 1));
+        let fabric_primary = birth_at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 1);
+        let stop_of = |d: &MeshDigest| op_at(d.node.name.clone(), &d.node.mesh, &d.node.r#type, &d.node.node_id, &d.node.incarnation, "node.stop");
         let (stop_p, stop_x) = (stop_of(&p), stop_of(&x));
 
         // The fabric-primary, on the backbone.
-        let fp = test_view("mesh2", "mesh2.admin.1");
+        let fp = test_view("mesh2", "mesh2.node-admin.1");
         let mut backbone = crate::receive_order::ReceiveOrder::default();
         assert!(hear(&mut backbone, &fp, &snapshot_of("mesh1", &publisher_of(&p), None, 7, 7, vec![p.clone(), x.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::Backbone));
-        assert!(fp.digest_view.stopped(stop_p.clone()), "the fabric-primary executed mesh1.admin.1's stop");
+        assert!(fp.digest_view.stopped(stop_p.clone()), "the fabric-primary executed mesh1.node-admin.1's stop");
         assert!(hear(&mut backbone, &fp, &snapshot_of("mesh1", &publisher_of(&p), None, 8, 8, vec![p.clone(), rpc.clone()], vec![stop_x.clone()], vec![]), &fabric, Side::Backbone));
         assert_eq!(held(&fp, Side::Backbone), Some((publisher_of(&p), 8)), "a newer version of the held revision, published before its publisher stopped, is taken");
-        assert!(fp.digest_view.in_flight().contains(&stop_x) && fp.digest_view.get(x.node.node_id.as_str()).is_none() && !fp.digest_view.routable(x.node.node_id.as_str()), "the stop v8 carries is held: mesh1.admin.2 is no longer held Ready");
+        assert!(fp.digest_view.in_flight().contains(&stop_x) && fp.digest_view.get(x.node.node_id.as_str()).is_none() && !fp.digest_view.routable(x.node.node_id.as_str()), "the stop v8 carries is held: mesh1.node-admin.2 is no longer held Ready");
         assert!(fp.digest_view.in_flight().contains(&stop_p) && fp.digest_view.get(p.node.node_id.as_str()).is_none(), "the publisher's own stop stands: v8 never carried it");
         assert!(hear(&mut backbone, &fp, &stamped(snapshot_of("mesh1", &publisher_of(&successor), None, 1, 1, vec![successor.clone(), rpc.clone()], vec![stop_p.clone(), stop_x.clone()], vec![]), 20), &fabric, Side::Backbone));
         assert_eq!(held(&fp, Side::Backbone), Some((publisher_of(&successor), 1)), "the successor's full is installed: its revision");
@@ -8160,20 +8160,20 @@ mod tests {
         assert!(fp.digest_view.in_flight().contains(&stop_x) && fp.digest_view.in_flight().contains(&stop_p), "both stops stand");
 
         // An own-mesh member, on its mesh channel: the stop is the fabric-primary's.
-        let member = test_view("mesh1", "mesh1.rpc.9");
+        let member = test_view("mesh1", "mesh1.node.9");
         let mut channel = crate::receive_order::ReceiveOrder::default();
-        assert!(hear(&mut channel, &member, &snapshot_of("mesh1", &publisher_of(&p), Some("mesh1.admin.1"), 7, 7, vec![p.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel));
+        assert!(hear(&mut channel, &member, &snapshot_of("mesh1", &publisher_of(&p), Some("mesh1.node-admin.1"), 7, 7, vec![p.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel));
         assert!(hear(&mut channel, &member, &StatusEvent::Stopped.frame(stop_p.clone(), publisher_of(&fabric_primary), 4), &fabric, Side::MeshChannel));
         assert!(member.digest_view.in_flight().contains(&stop_p), "the fabric-primary's stop is held");
-        assert!(hear(&mut channel, &member, &snapshot_of("mesh1", &publisher_of(&p), Some("mesh1.admin.1"), 8, 8, vec![p.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel));
+        assert!(hear(&mut channel, &member, &snapshot_of("mesh1", &publisher_of(&p), Some("mesh1.node-admin.1"), 8, 8, vec![p.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel));
         assert_eq!(held(&member, Side::MeshChannel), Some((publisher_of(&p), 8)), "a newer version of the held revision is taken on the mesh channel too");
         assert!(!member.digest_view.in_flight().contains(&stop_p), "the projection is the source's next word: the stop another publisher carried ends");
 
         // A node-admin that holds the publisher deleted, on the backbone.
-        let gone = test_view("mesh2", "mesh2.admin.3");
+        let gone = test_view("mesh2", "mesh2.node-admin.3");
         let mut gone_backbone = crate::receive_order::ReceiveOrder::default();
         assert!(hear(&mut gone_backbone, &gone, &snapshot_of("mesh1", &publisher_of(&p), None, 7, 7, vec![p.clone(), x.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::Backbone));
-        assert!(gone.digest_view.depart(op_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &p.node.node_id, &p.node.incarnation, "node.delete")), "mesh1.admin.1's departure is held");
+        assert!(gone.digest_view.depart(op_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &p.node.node_id, &p.node.incarnation, "node.delete")), "mesh1.node-admin.1's departure is held");
         assert!(hear(&mut gone_backbone, &gone, &snapshot_of("mesh1", &publisher_of(&p), None, 8, 8, vec![p.clone(), rpc.clone()], vec![stop_x.clone()], vec![]), &fabric, Side::Backbone));
         assert_eq!(held(&gone, Side::Backbone), Some((publisher_of(&p), 8)), "a deleted publisher's newer version of the held revision is taken");
         assert!(gone.digest_view.in_flight().contains(&stop_x) && !gone.digest_view.routable(x.node.node_id.as_str()), "the stop it carries is held");
@@ -8184,38 +8184,38 @@ mod tests {
         let in_projection = spans.named("rdm.mesh.topology.reject.via-stopped-birth");
         assert_eq!(
             in_projection.iter().filter(|f| f["door"] == "projection").map(|f| (f["node"].clone(), (f["member_path"].clone(), f["member_name"].clone()), f["topology_version"].clone())).collect::<Vec<_>>(),
-            vec![("mesh2.admin.1".to_string(), ("mesh1.admin".to_string(), "1".to_string()), "8".to_string())],
+            vec![("mesh2.node-admin.1".to_string(), ("mesh1.node-admin".to_string(), "1".to_string()), "8".to_string())],
             "the stopped publisher's own entry in v8 is refused by name at the fabric-primary, which executed its stop: {in_projection:#?}"
         );
         let stop_ended = spans.named("rdm.mesh.topology.update.via-stop-ended-in-projection");
-        assert_eq!(stop_ended.iter().map(|f| (f["node"].clone(), (f["member_path"].clone(), f["member_name"].clone()), f["publisher"].clone())).collect::<Vec<_>>(), vec![("mesh1.rpc.9".to_string(), ("mesh1.admin".to_string(), "1".to_string()), publisher_of(&p).to_string())], "{stop_ended:#?}");
+        assert_eq!(stop_ended.iter().map(|f| (f["node"].clone(), (f["member_path"].clone(), f["member_name"].clone()), f["publisher"].clone())).collect::<Vec<_>>(), vec![("mesh1.node.9".to_string(), ("mesh1.node-admin".to_string(), "1".to_string()), publisher_of(&p).to_string())], "{stop_ended:#?}");
     }
 
     /// CONTRACT (R-RX1, R-RX2, R-RX3, Luke 2026-10-12; gossip.md §3.3: "A new source primary begins a
     /// new revision, and a receiver installs a full of that revision before applying any of its deltas"): an
-    /// ordinary node of mesh2 holds mesh1's forwarded projection of mesh1.admin.1's lost birth, and the
+    /// ordinary node of mesh2 holds mesh1's forwarded projection of mesh1.node-admin.1's lost birth, and the
     /// primary record its entry read gave it names that birth. mesh1 recovers as itself, its new primary
     /// birth publishes, and mesh2's primary forwards the new revision's full and then a delta: the full is
     /// installed as a new revision and the delta applied, with no primary evidence for the new birth and no
     /// repair. The lost birth's last full, stamped before the new revision's, arrives after it and is
     /// ignored by the receive path. Must NOT happen: a publication refused for a publisher the primary
     /// record does not name; a source marked desynchronized with nothing missing (mesh_recover
-    /// `a_lost_mesh_recovers_as_itself_under_the_same_build`: mesh2.rpc.1-3 refused 35 frames each).
+    /// `a_lost_mesh_recovers_as_itself_under_the_same_build`: mesh2.node.1-3 refused 35 frames each).
     #[test]
     fn a_new_revision_on_the_mesh_channel_is_installed_with_no_primary_record_and_the_lost_births_earlier_full_is_ignored() {
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let member = test_view("mesh2", "mesh2.rpc.1");
+        let member = test_view("mesh2", "mesh2.node.1");
         let mut channel = crate::receive_order::ReceiveOrder::default();
-        let (lost, recovered, rpc) = (birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1));
+        let (lost, recovered, rpc) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1));
         assert!(matches!(member.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&lost, 1)), RoleTaken::Held { .. }), "the entry read's primary record of mesh1");
-        assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&lost), Some("mesh2.admin.1"), 7, 1, vec![lost.clone(), rpc.clone()], vec![], vec![]), 70), &fabric, Side::MeshChannel));
+        assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&lost), Some("mesh2.node-admin.1"), 7, 1, vec![lost.clone(), rpc.clone()], vec![], vec![]), 70), &fabric, Side::MeshChannel));
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&lost), 7)));
-        assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&recovered), Some("mesh2.admin.1"), 1, 2, vec![recovered.clone(), rpc.clone()], vec![], vec![]), 90), &fabric, Side::MeshChannel));
+        assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&recovered), Some("mesh2.node-admin.1"), 1, 2, vec![recovered.clone(), rpc.clone()], vec![], vec![]), 90), &fabric, Side::MeshChannel));
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 1)), "the new revision's full is installed: no primary evidence is asked of its publisher");
         let delta = Frame::MeshTopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&recovered), base_version: 1, topology_version: 2, published_at_rafka_ms: 95, changed: vec![], removed: vec![rpc.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
         assert!(hear(&mut channel, &member, &delta, &fabric, Side::MeshChannel));
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 2)), "its delta applies at exactly its base");
-        assert!(!hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&lost), Some("mesh2.admin.1"), 8, 3, vec![lost.clone(), rpc.clone()], vec![], vec![]), 80), &fabric, Side::MeshChannel), "the lost birth's full stamped before the new revision's is ignored");
+        assert!(!hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&lost), Some("mesh2.node-admin.1"), 8, 3, vec![lost.clone(), rpc.clone()], vec![], vec![]), 80), &fabric, Side::MeshChannel), "the lost birth's full stamped before the new revision's is ignored");
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 2)));
         assert!(member.mesh_rx.lock().unwrap().desynced().is_empty(), "nothing is marked for repair: {:?}", member.mesh_rx.lock().unwrap().desynced());
     }
@@ -8224,7 +8224,7 @@ mod tests {
     /// receiver holds for the same source is ignored, once, in the gossip receive path"; i143 s53:
     /// out-of-order frames are ignored only in receive_order.rs): every earlier frame of the held
     /// publisher is ignored by the receive path before the snapshot receiver reads it, so the receiver
-    /// orders nothing by version. An ordinary node of mesh1 holds mesh1.admin.1's v7 full and applies
+    /// orders nothing by version. An ordinary node of mesh1 holds mesh1.node-admin.1's v7 full and applies
     /// its 7→8 delta; then:
     /// - a copy of that delta is taken by the receive path (its key equals the held one) and the
     ///   receiver absorbs it as a copy (`via-duplicate`), with no gap;
@@ -8241,13 +8241,13 @@ mod tests {
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let member = test_view("mesh1", "mesh1.rpc.9");
+        let member = test_view("mesh1", "mesh1.node.9");
         let hears = |f: &Frame| hear(&mut member.order.lock().unwrap(), &member, f, &fabric, Side::MeshChannel);
         let reads = |chunk: crate::snapshot::Chunk| member.take_read_chunk(chunk, Side::Read, &fabric);
         let held = || member.mesh_rx.lock().unwrap().held_version("mesh1");
-        let (admin, rpc1, rpc2) = (birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1));
+        let (admin, rpc1, rpc2) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1), birth_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 1));
         let p = publisher_of(&admin);
-        let full = |version: u64, at: u64| stamped(snapshot_of("mesh1", &p, Some("mesh1.admin.1"), version, version, vec![admin.clone(), rpc1.clone(), rpc2.clone()], vec![], vec![]), at);
+        let full = |version: u64, at: u64| stamped(snapshot_of("mesh1", &p, Some("mesh1.node-admin.1"), version, version, vec![admin.clone(), rpc1.clone(), rpc2.clone()], vec![], vec![]), at);
         let delta = |base_version: u64, topology_version: u64, at: u64| Frame::MeshTopologyDelta { mesh: "mesh1".into(), source_publisher: p.clone(), base_version, topology_version, published_at_rafka_ms: at, changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] };
         let read = |version: u64| crate::snapshot::Chunk { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: None, topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![admin.clone(), rpc1.clone(), rpc2.clone()], in_flight: vec![], deleted: vec![] };
 
@@ -8291,30 +8291,30 @@ mod tests {
     /// members deleted down to its last admin); the forwarded v9 then reaches the mesh channel and is
     /// ignored as earlier than the held v10. Its topology read serves mesh1 at v10 with the last
     /// admin its only member. Must NOT happen: the read serving the mesh channel's v8 with all four
-    /// births (rdm#154: mesh3.admin.2 served mesh1@9 with four births for 30 s while it held v22,
-    /// rdm.mesh.topology.serve.via-read members=mesh1@9:mesh1.rpc.2,mesh1.admin.2,mesh1.rpc.1,mesh1.admin.1).
+    /// births (rdm#154: mesh3.node-admin.2 served mesh1@9 with four births for 30 s while it held v22,
+    /// rdm.mesh.topology.serve.via-read members=mesh1@9:mesh1.node.2,mesh1.node-admin.2,mesh1.node.1,mesh1.node-admin.1).
     #[test]
     fn a_non_primary_admins_read_serves_the_newest_version_it_holds_of_a_peer_mesh_whichever_channel_installed_it() {
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let admin = test_view("mesh3", "mesh3.admin.2");
+        let admin = test_view("mesh3", "mesh3.node-admin.2");
         let hears = |f: &Frame, side: Side| hear(&mut admin.order.lock().unwrap(), &admin, f, &fabric, side);
-        let (a1, a2, r1, r2) = (birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1));
-        let a2 = { let mut d = a2; d.node.name = rdm_core::PathName::new("mesh1.admin", "2").unwrap(); d };
+        let (a1, a2, r1, r2) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1), birth_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 1));
+        let a2 = { let mut d = a2; d.node.name = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(); d };
         let p = publisher_of(&a1);
         let all = vec![a1.clone(), a2.clone(), r1.clone(), r2.clone()];
         let full = |version: u64, digests: Vec<MeshDigest>, forwarded_by: Option<&str>| snapshot_of("mesh1", &p, forwarded_by, version, version, digests, vec![], vec![]);
 
-        // As mesh3.admin.2 heard them (rdm#154): its primary's forwarded v8 first, then the backbone's.
-        assert!(hears(&full(8, all.clone(), Some("mesh3.admin.1")), Side::MeshChannel), "the forwarded v8 is taken");
+        // As mesh3.node-admin.2 heard them (rdm#154): its primary's forwarded v8 first, then the backbone's.
+        assert!(hears(&full(8, all.clone(), Some("mesh3.node-admin.1")), Side::MeshChannel), "the forwarded v8 is taken");
         assert!(hears(&full(8, all.clone(), None), Side::Backbone));
         assert!(hears(&full(9, vec![a1.clone(), a2.clone()], None), Side::Backbone));
         assert!(hears(&full(10, vec![a1.clone()], None), Side::Backbone));
-        assert!(!hears(&full(9, vec![a1.clone(), a2.clone()], Some("mesh3.admin.1")), Side::MeshChannel), "the forwarded v9 is earlier than the held v10");
+        assert!(!hears(&full(9, vec![a1.clone(), a2.clone()], Some("mesh3.node-admin.1")), Side::MeshChannel), "the forwarded v9 is earlier than the held v10");
 
         let served: Vec<_> = admin.held_sources_of(None).into_iter().filter(|s| s.mesh == "mesh1").collect();
         assert_eq!(served.len(), 1, "one source of mesh1 is served: {served:#?}");
         let names: Vec<rdm_core::PathName> = served[0].digests.iter().map(|d| d.node.name.clone()).collect();
-        assert_eq!((served[0].publisher.clone(), served[0].topology_version, names.clone()), (p.clone(), 10, vec![rdm_core::PathName::new("mesh1.admin", "1").unwrap()]), "the read serves the version this node holds, v10, with the last admin its only member: {names:?} at v{}", served[0].topology_version);
+        assert_eq!((served[0].publisher.clone(), served[0].topology_version, names.clone()), (p.clone(), 10, vec![rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()]), "the read serves the version this node holds, v10, with the last admin its only member: {names:?} at v{}", served[0].topology_version);
     }
 
     /// CONTRACT (R-RX1, Luke 2026-10-12: no receiver refuses an input because of who sent it; R-RX3:
@@ -8330,25 +8330,25 @@ mod tests {
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let (primary, other, stopped_admin) = (birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.admin", "3").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1));
-        let subject = |name: &str| birth_at(rdm_core::PathName::new("mesh1.rpc", name).unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1);
-        let event = |kind: StatusEvent, s: &MeshDigest, operation: &str, by: &MeshDigest, version: u64| kind.frame(op_at(s.node.name.clone(), &s.node.mesh, s.node.kind, &s.node.node_id, &s.node.incarnation, operation), publisher_of(by), version);
+        let (primary, other, stopped_admin) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", 1));
+        let subject = |name: &str| birth_at(rdm_core::PathName::new("mesh1.node", name).unwrap(), "mesh1", "node", 1);
+        let event = |kind: StatusEvent, s: &MeshDigest, operation: &str, by: &MeshDigest, version: u64| kind.frame(op_at(s.node.name.clone(), &s.node.mesh, &s.node.r#type, &s.node.node_id, &s.node.incarnation, operation), publisher_of(by), version);
 
         // No primary record held: taken.
-        let member = test_view("mesh1", "mesh1.rpc.9");
+        let member = test_view("mesh1", "mesh1.node.9");
         let mut channel = crate::receive_order::ReceiveOrder::default();
         let s1 = subject("1");
         assert!(hear(&mut channel, &member, &event(StatusEvent::Stopped, &s1, "node.stop", &primary, 4), &fabric, Side::MeshChannel));
         assert_eq!(member.digest_view.in_flight().len(), 1, "no primary record is asked for: the stop is held");
 
-        // The primary record names mesh1.admin.1: mesh1.admin.2's events are taken too.
+        // The primary record names mesh1.node-admin.1: mesh1.node-admin.2's events are taken too.
         assert!(matches!(member.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1)), RoleTaken::Held { .. }));
         let s2 = subject("2");
         assert!(hear(&mut channel, &member, &event(StatusEvent::Deleting, &s2, "node.delete", &other, 7), &fabric, Side::MeshChannel));
         assert_eq!(member.digest_view.in_flight().len(), 2, "a publisher the primary record does not name moves its subject: {:?}", member.digest_view.in_flight());
 
         // A publisher held stopped: its event is taken.
-        assert!(member.digest_view.stopped(op_at(rdm_core::PathName::new("mesh1.admin", "3").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &stopped_admin.node.node_id, &stopped_admin.node.incarnation, "node.stop")));
+        assert!(member.digest_view.stopped(op_at(rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", &stopped_admin.node.node_id, &stopped_admin.node.incarnation, "node.stop")));
         let s3 = subject("3");
         assert!(hear(&mut channel, &member, &event(StatusEvent::Deleting, &s3, "node.delete", &stopped_admin, 2), &fabric, Side::MeshChannel));
         assert!(member.digest_view.in_flight().iter().any(|op| op.node_id == s3.node.node_id), "a publisher held stopped moves its subject");
@@ -8356,13 +8356,13 @@ mod tests {
         // Below the newest of its publisher and mesh: ignored. Another publisher's lower version: taken.
         let s4 = subject("4");
         let before = member.digest_view.in_flight().len();
-        assert!(!hear(&mut channel, &member, &event(StatusEvent::Stopped, &s4, "node.stop", &other, 5), &fabric, Side::MeshChannel), "mesh1.admin.2's fact at v5 after its v7 is ignored");
+        assert!(!hear(&mut channel, &member, &event(StatusEvent::Stopped, &s4, "node.stop", &other, 5), &fabric, Side::MeshChannel), "mesh1.node-admin.2's fact at v5 after its v7 is ignored");
         assert_eq!(member.digest_view.in_flight().len(), before, "nothing moved");
         assert!(!hear(&mut channel, &member, &event(StatusEvent::Stopped, &s4, "node.stop", &primary, 5), &fabric, Side::MeshChannel), "the version-refused identity is already seen, whoever carries its repeat");
         // A new operation tests the publisher's projection independently of that repeated fact.
         let mut fresh = event(StatusEvent::Stopped, &s4, "node.stop", &primary, 5);
         if let Frame::NodeStopped { op, .. } = &mut fresh { op.attempt += 1; }
-        assert!(hear(&mut channel, &member, &fresh, &fabric, Side::MeshChannel), "a new fact at mesh1.admin.1's v5 is never ordered against mesh1.admin.2's v7");
+        assert!(hear(&mut channel, &member, &fresh, &fabric, Side::MeshChannel), "a new fact at mesh1.node-admin.1's v5 is never ordered against mesh1.node-admin.2's v7");
         assert!(member.digest_view.in_flight().iter().any(|op| op.node_id == s4.node.node_id));
 
         assert!(spans.named("rdm.mesh.topology.reject.via-non-primary-publisher").is_empty(), "no status event is refused for who published it");
@@ -8372,7 +8372,7 @@ mod tests {
     /// CONTRACT (node-status-heartbeat-connections.md §C "late stopped after starting": "a NodeStopped
     /// older than the starting fact (lower `topology_version`) is refused"; §A.2 "Receivers compare per
     /// subject"; R-HB1 G1: "A receiver orders a fact only against facts of the same publisher revision"):
-    /// a member holds its primary's projection v5 listing mesh1.rpc.1 again after its start. The
+    /// a member holds its primary's projection v5 listing mesh1.node.1 again after its start. The
     /// primary's `NodeStopped` of that birth stamped v4 arrives late: it is refused by name, naming the
     /// held version, and the birth stays held. The same event stamped v6 (after the held projection) is
     /// taken; so is a v4 stop from another primary publisher's revision (the fabric-primary's), which is
@@ -8383,28 +8383,28 @@ mod tests {
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let (primary, fabric_primary) = (birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, 1));
-        let rpc = birth_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 3);
-        let stop = op_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &rpc.node.node_id, &rpc.node.incarnation, "node.stop");
+        let (primary, fabric_primary) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 1));
+        let rpc = birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 3);
+        let stop = op_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &rpc.node.node_id, &rpc.node.incarnation, "node.stop");
         let member = |name: &str| {
             let v = test_view("mesh1", name);
             v.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1));
             v.digest_view.primaries.take(PrimaryRole::FabricPrimary, &primary_of(&fabric_primary, 1));
-            v.take_snapshot(&snapshot_of("mesh1", &publisher_of(&primary), Some("mesh1.admin.1"), 5, 1, vec![primary.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel, &mut v.order.lock().unwrap());
+            v.take_snapshot(&snapshot_of("mesh1", &publisher_of(&primary), Some("mesh1.node-admin.1"), 5, 1, vec![primary.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel, &mut v.order.lock().unwrap());
             assert!(v.digest_view.record(rpc.clone()));
             v
         };
-        let late = member("mesh1.rpc.7");
+        let late = member("mesh1.node.7");
         late.take(&StatusEvent::Stopped.frame(stop.clone(), publisher_of(&primary), 4), &fabric, "mesh-channel");
         assert!(late.digest_view.in_flight().is_empty() && late.digest_view.get(rpc.node.node_id.as_str()).is_some(), "a stop older than the projection listing the birth is refused; the birth stays held");
-        let newer = member("mesh1.rpc.8");
+        let newer = member("mesh1.node.8");
         newer.take(&StatusEvent::Stopped.frame(stop.clone(), publisher_of(&primary), 6), &fabric, "mesh-channel");
         assert_eq!(newer.digest_view.in_flight(), vec![stop.clone()], "a stop newer than the held projection is taken");
-        let other_publisher = member("mesh1.rpc.9");
+        let other_publisher = member("mesh1.node.9");
         other_publisher.take(&StatusEvent::Stopped.frame(stop.clone(), publisher_of(&fabric_primary), 4), &fabric, "mesh-channel");
         assert_eq!(other_publisher.digest_view.in_flight(), vec![stop.clone()], "another publisher's revision is never ordered against this projection");
         let refused = spans.named("rdm.mesh.topology.reject.via-stop-older-than-projection");
-        assert_eq!(refused.iter().map(|f| (f["node"].clone(), f["topology_version"].clone(), f["held_version"].clone(), f["held_channel"].clone())).collect::<Vec<_>>(), vec![("mesh1.rpc.7".to_string(), "4".to_string(), "5".to_string(), "mesh-channel".to_string())], "{refused:#?}");
+        assert_eq!(refused.iter().map(|f| (f["node"].clone(), f["topology_version"].clone(), f["held_version"].clone(), f["held_channel"].clone())).collect::<Vec<_>>(), vec![("mesh1.node.7".to_string(), "4".to_string(), "5".to_string(), "mesh-channel".to_string())], "{refused:#?}");
     }
 
     /// Two receive paths of one node (its backbone and its mesh channel) applying a projection of
@@ -8416,7 +8416,7 @@ mod tests {
     }
 
     /// CONTRACT (gossip.md "Node-stopped lifecycle overlay": the stop stays "until the next lifecycle
-    /// op on that exact birth"; node_stop gate 4679736d, mesh1.admin.2: the stop of mesh1.rpc.1 ended
+    /// op on that exact birth"; node_stop gate 4679736d, mesh1.node-admin.2: the stop of mesh1.node.1 ended
     /// twice, trace 09b25fab91c3239df30466a89f81d507 on the mesh channel and
     /// 4b4eac62071c2a5054e464c5f3a429af on the backbone, the second naming `stop_carried_at=-1`): a
     /// node-admin applies its primary's projection on its backbone and on its mesh channel, each under
@@ -8429,11 +8429,11 @@ mod tests {
         use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
-        let view = test_view("mesh1", "mesh1.admin.2");
-        let primary = birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1);
+        let view = test_view("mesh1", "mesh1.node-admin.2");
+        let primary = birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1);
         view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1));
-        let rpc = birth_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 5);
-        let stop = op_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &rpc.node.node_id, &rpc.node.incarnation, "node.stop");
+        let rpc = birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 5);
+        let stop = op_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &rpc.node.node_id, &rpc.node.incarnation, "node.stop");
         assert!(view.digest_view.record(rpc.clone()));
         view.take(&StatusEvent::Stopped.frame(stop.clone(), publisher_of(&primary), 11), &FabricId::parse("fab000000001").unwrap(), "mesh-channel");
         let mut late = rpc.clone();
@@ -8489,7 +8489,7 @@ mod tests {
                 if stamp == 459 {
                     if let Some(f_lock) = self.forwarder_lock.get() {
                         if let Ok(mut f) = f_lock.try_lock() {
-                            *self.replayed_during_stamp.lock().unwrap() = f.replay("mesh1.admin.1", 471);
+                            *self.replayed_during_stamp.lock().unwrap() = f.replay("mesh1.node-admin.1", 471);
                         }
                     }
                     if let Some(v_lock) = self.version_lock.get() {
@@ -8503,7 +8503,7 @@ mod tests {
         let spans = OpenedSpans::default();
         let _capture = crate::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let (admin, rpc1, rpc2) = (birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1));
+        let (admin, rpc1, rpc2) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1), birth_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 1));
         let p = publisher_of(&admin);
 
         let transport = iroh::endpoint::QuicTransportConfig::builder().build();
@@ -8518,7 +8518,7 @@ mod tests {
             replayed_during_stamp: Mutex::new(Vec::new()),
         });
         let clock: SharedClock = racing.clone();
-        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", clock, vec![], &[]).await.unwrap();
+        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", clock, vec![], &[]).await.unwrap();
         let bb = Backbone::join(&gossip, &ep, &m, "mesh1", rdm_core::PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         // Clear `full_due` after initial role take so publication 1 is a normal source full and publication 2 is a delta.
@@ -8535,9 +8535,9 @@ mod tests {
 
     /// CONTRACT (gossip.md receive rules, `MeshTopology`: "`P(topology_version)` against the installed
     /// floor, including a topology read"; #3211 red 2, gate 19d4afbee release,
-    /// `mock_control_loss_recovers_without_status_heartbeat`: 485.567 mesh2.admin.2, mesh2's primary,
+    /// `mock_control_loss_recovers_without_status_heartbeat`: 485.567 mesh2.node-admin.2, mesh2's primary,
     /// published mesh2 v28; 485.811 it installed a topology read of its own v25 served by
-    /// mesh2.admin.1, `via-snapshot-installed` + `via-read-install`, and broker.3 went Pending
+    /// mesh2.node-admin.1, `via-snapshot-installed` + `via-read-install`, and broker.3 went Pending
     /// fleet-wide): a primary's own publications are its floor for its own source, so a topology
     /// read naming its own exact birth below the version it published is refused `OlderThanHeld`
     /// naming that version, and a read of the version it published is not refused for its order.
@@ -8548,13 +8548,13 @@ mod tests {
         let spans = OpenedSpans::default();
         let _capture = crate::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let (admin, rpc1, rpc2, rpc3) = (birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1), birth_at(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 1));
+        let (admin, rpc1, rpc2, rpc3) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1), birth_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 1), birth_at(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", 1));
         let p = publisher_of(&admin);
         let transport = iroh::endpoint::QuicTransportConfig::builder().build();
         let ep = crate::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", crate::clock::os_clock(), vec![], &[]).await.unwrap();
+        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", crate::clock::os_clock(), vec![], &[]).await.unwrap();
         let bb = Backbone::join(&gossip, &ep, &m, "mesh1", p.clone(), vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone()]).await);
@@ -8571,17 +8571,17 @@ mod tests {
         assert!(m.installed_snapshot("mesh1").is_none_or(|(_, v, _)| v != 1), "its own older image is not installed");
         let refused: Vec<_> = spans.named("rdm.mesh.topology.reject.via-stale").into_iter().filter(|f| f.get("frame").map(String::as_str) == Some("topology-read")).collect();
         assert_eq!(refused.len(), 1, "one refusal, named: {refused:#?}");
-        assert_eq!((refused[0]["node"].as_str(), refused[0]["held_key"].clone(), refused[0]["frame_key"].as_str()), ("mesh1.admin.1", format!("publisher={p} topology_version={published}"), "topology_version=1"));
+        assert_eq!((refused[0]["node"].as_str(), refused[0]["held_key"].clone(), refused[0]["frame_key"].as_str()), ("mesh1.node-admin.1", format!("publisher={p} topology_version={published}"), "topology_version=1"));
         assert!(spans.named("rdm.mesh.topology.update.via-snapshot-installed").iter().all(|f| f.get("channel").map(String::as_str) != Some("topology-read")), "no read installs");
     }
 
-    /// CONTRACT (gate 7965f026, `admin_top_up`: `mesh1.admin.2` called `GetTopology` on `mesh1.admin.1`
-    /// while `mesh1.admin.1` served `topology_version = 0` before its first `anti_entropy` publication;
+    /// CONTRACT (gate 7965f026, `admin_top_up`: `mesh1.node-admin.2` called `GetTopology` on `mesh1.node-admin.1`
+    /// while `mesh1.node-admin.1` served `topology_version = 0` before its first `anti_entropy` publication;
     /// `Frame::MeshTopology(mesh1, topology_version = 1)` arrived on `mesh-channel` and `backbone` 600 µs
     /// before the `Side::Read` `topology_version = 0` chunk, advancing `ReceiveOrder` to `v1` while
     /// `View::apply_full` recorded only `take_projected_status` for own-mesh members; `View::take_read_chunk`
     /// refused `v0` as `OlderThanHeld { held_version: 1, offered_version: 0 }` without recording the
-    /// own-mesh member digests into `DigestView`, leaving `mesh1.admin.2` with the primary record
+    /// own-mesh member digests into `DigestView`, leaving `mesh1.node-admin.2` with the primary record
     /// `mesh1:m1w2kypnr9xf@nejxnr0r5rwd (revision 1)` and `digest_view.get(primary) == None`, so top-up
     /// refused `primary-not-held`): when a `Side::Read` chunk of the node's own mesh arrives below
     /// the version already installed on `mesh-channel` / `backbone`, the projection in `mesh_rx` and
@@ -8591,17 +8591,17 @@ mod tests {
     #[test]
     fn an_own_mesh_topology_read_overtaken_by_gossip_keeps_the_newer_projection_and_holds_the_mesh_primarys_digest() {
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let (mut primary, mut admin2) = (birth_at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1), birth_at(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 1));
+        let (mut primary, mut admin2) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 1));
         primary.status = MemberStatus::Ready;
         admin2.status = MemberStatus::Pending;
         let p = publisher_of(&primary);
 
-        let view = test_view("mesh1", "mesh1.admin.2");
+        let view = test_view("mesh1", "mesh1.node-admin.2");
         assert!(view.digest_view.record(admin2.clone()));
 
         // Gossip v1 arrives on mesh-channel and backbone while the v0 topology-read stream is in flight.
         let gossip_v1 = stamped(
-            snapshot_of("mesh1", &p, Some("mesh1.admin.1"), 1, 1, vec![primary.clone(), admin2.clone()], vec![], vec![]),
+            snapshot_of("mesh1", &p, Some("mesh1.node-admin.1"), 1, 1, vec![primary.clone(), admin2.clone()], vec![], vec![]),
             100,
         );
         assert!(hear(&mut view.order.lock().unwrap(), &view, &gossip_v1, &fabric, Side::MeshChannel));
@@ -8634,11 +8634,11 @@ mod tests {
     }
 
     /// A birth of `name` at endpoint key `key`, digest number `seq`.
-    fn digest_at(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, key: &str, id: &NodeId, inc: &IncarnationId, seq: u64) -> MeshDigest {
+    fn digest_at(name: rdm_core::PathName, mesh: &str, r#type: &str, key: &str, id: &NodeId, inc: &IncarnationId, seq: u64) -> MeshDigest {
         let mut d = digest(id, inc, None, MemberStatus::Ready, seq);
         d.node.name = name;
         d.node.mesh = mesh.into();
-        d.node.kind = kind;
+        d.node.r#type = r#type.to_string();
         d.node.endpoint_id = EndpointId(key.into());
         d
     }
@@ -8685,57 +8685,57 @@ mod tests {
         let (a, a_inc) = (NodeId::mint(), IncarnationId::mint());
         let (b, b_inc) = (NodeId::mint(), IncarnationId::mint());
         let (c, c_inc) = (NodeId::mint(), IncarnationId::mint());
-        let gone = [(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "key-a"), (rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "key-b"), (rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "key-c"), (rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "key-c2"), (rdm_core::PathName::new("mesh1.rpc", "9").unwrap(), "key-z")];
+        let gone = [(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "key-a"), (rdm_core::PathName::new("mesh1.node", "2").unwrap(), "key-b"), (rdm_core::PathName::new("mesh1.node", "3").unwrap(), "key-c"), (rdm_core::PathName::new("mesh1.node", "4").unwrap(), "key-c2"), (rdm_core::PathName::new("mesh1.node", "9").unwrap(), "key-z")];
         assert_lookups_agree(&view, &gone);
 
         // A digest heard, then a newer one of the same birth.
-        assert!(view.record_at(digest_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-a", &a, &a_inc, 1), Instant::now()));
+        assert!(view.record_at(digest_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "key-a", &a, &a_inc, 1), Instant::now()));
         assert_lookups_agree(&view, &gone);
-        assert!(view.record_at(digest_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-a", &a, &a_inc, 2), Instant::now()));
+        assert!(view.record_at(digest_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "key-a", &a, &a_inc, 2), Instant::now()));
         assert_eq!(view.get_by_endpoint("key-a").unwrap().0.digest_seq, 2, "the newer digest is the one found");
-        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).unwrap().0.digest_seq, 2);
+        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).unwrap().0.digest_seq, 2);
         assert_lookups_agree(&view, &gone);
 
         // A forwarded, a topology and a join copy.
-        assert!(view.record_forwarded_at(digest_at(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-b", &b, &b_inc, 1), Instant::now()));
+        assert!(view.record_forwarded_at(digest_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "key-b", &b, &b_inc, 1), Instant::now()));
         assert_lookups_agree(&view, &gone);
-        assert!(view.record_topology_at(digest_at(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-b", &b, &b_inc, 2), Instant::now()));
+        assert!(view.record_topology_at(digest_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "key-b", &b, &b_inc, 2), Instant::now()));
         assert_lookups_agree(&view, &gone);
-        assert!(view.record_joined(digest_at(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-c", &c, &c_inc, 1)));
+        assert!(view.record_joined(digest_at(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", "key-c", &c, &c_inc, 1)));
         assert_lookups_agree(&view, &gone);
 
         // A stop removes the birth; the node.joined that ends it holds it again, at the name it carries.
-        assert!(view.stopped(op_at(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &c, &c_inc, "node.stop")));
+        assert!(view.stopped(op_at(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", &c, &c_inc, "node.stop")));
         assert!(view.get_by_endpoint("key-c").is_none(), "a stopped birth is not found by its key");
-        assert!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).is_none(), "nor by its (path, name)");
+        assert!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).is_none(), "nor by its (path, name)");
         assert_lookups_agree(&view, &gone);
-        assert!(view.joined(&op_at(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &c, &c_inc, "node.start")));
-        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.rpc", "4").unwrap()).unwrap().0.node.node_id, c, "held again at the name node.joined gives it");
-        assert!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).is_none(), "and no longer at the old one");
+        assert!(view.joined(&op_at(rdm_core::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node", &c, &c_inc, "node.start")));
+        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.node", "4").unwrap()).unwrap().0.node.node_id, c, "held again at the name node.joined gives it");
+        assert!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).is_none(), "and no longer at the old one");
         assert_lookups_agree(&view, &gone);
 
         // A successor at the same (path, name) over a newly allocated data dir: a new NodeId and key.
         let (a2, a2_inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(view.record_at(digest_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-a2", &a2, &a2_inc, 1), Instant::now()));
-        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).unwrap().0.node.node_id, a2, "of two births at one (path, name), the one taken most recently");
+        assert!(view.record_at(digest_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "key-a2", &a2, &a2_inc, 1), Instant::now()));
+        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).unwrap().0.node.node_id, a2, "of two births at one (path, name), the one taken most recently");
         assert_eq!(view.get_by_endpoint("key-a").unwrap().0.node.node_id, a, "the predecessor is still found by its own key");
         // A newer heartbeat of the predecessor keeps its place: the successor is still the one found.
-        assert!(view.record_at(digest_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-a", &a, &a_inc, 3), Instant::now()));
-        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).unwrap().0.node.node_id, a2);
+        assert!(view.record_at(digest_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "key-a", &a, &a_inc, 3), Instant::now()));
+        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).unwrap().0.node.node_id, a2);
         assert_lookups_agree(&view, &gone);
 
         // A successor over the inherited data dir: a new NodeId at the same key and (path, name).
         let (b2, b2_inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(view.record_at(digest_at(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-b", &b2, &b2_inc, 1), Instant::now()));
+        assert!(view.record_at(digest_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "key-b", &b2, &b2_inc, 1), Instant::now()));
         assert_eq!(view.get_by_endpoint("key-b").unwrap().0.node.node_id, b2, "of two births at one key, the one taken most recently");
-        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().0.node.node_id, b2);
+        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).unwrap().0.node.node_id, b2);
         assert_lookups_agree(&view, &gone);
 
         // The predecessors' departures leave the successors found.
-        assert!(view.depart_at(op_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &a, &a_inc, "node.delete"), Instant::now()));
+        assert!(view.depart_at(op_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &a, &a_inc, "node.delete"), Instant::now()));
         assert!(view.get_by_endpoint("key-a").is_none(), "a deleted birth is not found by its key");
-        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).unwrap().0.node.node_id, a2);
-        assert!(view.depart_at(op_at(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &b, &b_inc, "node.delete"), Instant::now()));
+        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).unwrap().0.node.node_id, a2);
+        assert!(view.depart_at(op_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b, &b_inc, "node.delete"), Instant::now()));
         assert_eq!(view.get_by_endpoint("key-b").unwrap().0.node.node_id, b2, "the successor at the inherited key is still found");
         assert_lookups_agree(&view, &gone);
 
@@ -8772,12 +8772,12 @@ mod tests {
             }
         };
         agree(&rx);
-        assert!(matches!(rx.take_chunk(chunk("mesh2", &p2, vec![digest_at(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, "key-a", &a, &inc, 1)])), Taken::Installed(_)));
-        assert!(matches!(rx.take_chunk(chunk("mesh1", &p1, vec![digest_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-a", &b, &inc, 1), digest_at(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-b", &c, &inc, 1)])), Taken::Installed(_)));
+        assert!(matches!(rx.take_chunk(chunk("mesh2", &p2, vec![digest_at(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", "key-a", &a, &inc, 1)])), Taken::Installed(_)));
+        assert!(matches!(rx.take_chunk(chunk("mesh1", &p1, vec![digest_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "key-a", &b, &inc, 1), digest_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "key-b", &c, &inc, 1)])), Taken::Installed(_)));
         assert_eq!(rx.member_at("key-a").unwrap().node.node_id, b, "the first source by mesh name");
         agree(&rx);
         // A delta that adds a member at a held key, moves a member's key and removes one.
-        let changed = vec![digest_at(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-b", &a, &inc, 1), digest_at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "key-a2", &b, &inc, 2)];
+        let changed = vec![digest_at(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", "key-b", &a, &inc, 1), digest_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "key-a2", &b, &inc, 2)];
         assert!(matches!(rx.take_delta("mesh1", &p1, 1, 2, &Delta { changed, ..Delta::default() }), Moved::Applied { .. }));
         assert_eq!(rx.member_at("key-a").unwrap().node.node_id, a, "the moved key is found in the next source");
         agree(&rx);

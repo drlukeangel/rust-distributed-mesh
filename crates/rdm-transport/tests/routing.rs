@@ -10,7 +10,7 @@
 use crate::common;
 use common::*;
 use rdm_core::connections::{resolve, CarrierPolicy, ConnectionKind, ConnectionState, EffectiveRoute};
-use rdm_core::{NodeId, NodeKind, PathName};
+use rdm_core::{NodeId, PathName};
 use rdm_transport::{CallOptions, NodeTarget, RouteChoice, RouteLeg};
 use rdm_core::protocol::NodeProtocol;
 use rdm_core::outcome::{NotSentReason, RpcOutcome};
@@ -67,19 +67,19 @@ async fn no_route_means_no_send() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn semantic_selection_is_not_connection_selection() {
     let r = rig().await;
-    let own: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-    let me = own_end(&own, "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let own: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
+    let me = own_end(&own, "mesh1", "node-admin");
     // B: Direct failed, a valid Proxy through P; C: Direct active.
     let mut held = held_for(&me.node_id);
     held.apply(connection(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Failed, None, 10)).unwrap();
     held.apply(connection(end(&r.p), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 11)).unwrap();
     held.apply(connection(me.clone(), end(&r.b), ConnectionKind::Proxy, ConnectionState::Connected, Some(end(&r.p)), 12)).unwrap();
     held.apply(connection(me.clone(), end(&r.c), ConnectionKind::Direct, ConnectionState::Connected, None, 13)).unwrap();
-    let policy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
+    let policy = CarrierPolicy::Proxy { carrier_type: "node".into() };
 
     // The domain chose B: B's reachability changed to Proxy and the seam still executes B.
     let target = select(&r, "B");
-    let route: RouteChoice = (&resolve(&held, &me.node_id, &target.resolved.node_id, policy).route).into();
+    let route: RouteChoice = (&resolve(&held, &me.node_id, &target.resolved.node_id, policy.clone()).route).into();
     assert_eq!(route, RouteChoice::ViaPeer { carrier: r.p.resolved.node_id.clone() });
     let (out, _, _) = routed(&r, target, route, b"b").await;
     assert_eq!(served_by(&out).map(|s| s.0).as_deref(), Some(r.b.resolved.node_id.as_str()), "reachability cannot move the selection to C: {out:?}");
@@ -97,12 +97,12 @@ async fn semantic_selection_is_not_connection_selection() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connection_changes_do_not_touch_the_selection_and_selection_changes_fabricate_no_connection_state() {
     let r = rig().await;
-    let own: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-    let me = own_end(&own, "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let own: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
+    let me = own_end(&own, "mesh1", "node-admin");
     let mut held = held_for(&me.node_id);
     held.apply(connection(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
     held.apply(connection(me.clone(), end(&r.c), ConnectionKind::Direct, ConnectionState::Connected, None, 11)).unwrap();
-    let policy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
+    let policy = CarrierPolicy::Proxy { carrier_type: "node".into() };
     // The selector is a value the seam only reads: Direct -> Proxy -> Direct on B changes it never.
     let selected = "B";
     let mut at = 20;
@@ -121,7 +121,7 @@ async fn connection_changes_do_not_touch_the_selection_and_selection_changes_fab
         }
         held.apply(connection(me.clone(), end(&r.b), kind, state, carrier, at + 1)).unwrap();
         let target = select(&r, selected);
-        let route: RouteChoice = (&resolve(&held, &me.node_id, &target.resolved.node_id, policy).route).into();
+        let route: RouteChoice = (&resolve(&held, &me.node_id, &target.resolved.node_id, policy.clone()).route).into();
         assert_eq!(route, expected, "connections decide the leg");
         let (out, _, leg) = routed(&r, target, route, b"x").await;
         match expected {
@@ -138,9 +138,9 @@ async fn connection_changes_do_not_touch_the_selection_and_selection_changes_fab
     // The domain moves B -> C: the seam executes C and writes nothing about B's connections. The
     // held projection is the seam's read-only input: what it answers for B before and after, and
     // how many facts it holds, are the same.
-    let before = (resolve(&held, &me.node_id, &r.b.resolved.node_id, policy), held.keys(), held.active_len(), held.own_active_proxies().len());
+    let before = (resolve(&held, &me.node_id, &r.b.resolved.node_id, policy.clone()), held.keys(), held.active_len(), held.own_active_proxies().len());
     let target = select(&r, "C");
-    let route: RouteChoice = (&resolve(&held, &me.node_id, &target.resolved.node_id, policy).route).into();
+    let route: RouteChoice = (&resolve(&held, &me.node_id, &target.resolved.node_id, policy.clone()).route).into();
     let (out, _, leg) = routed(&r, target, route, b"c").await;
     assert_eq!(served_by(&out).map(|s| s.0).as_deref(), Some(r.c.resolved.node_id.as_str()), "{out:?}");
     assert_eq!(leg, RouteLeg::Direct);

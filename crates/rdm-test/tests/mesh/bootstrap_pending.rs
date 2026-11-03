@@ -9,7 +9,7 @@
 //! membership get created; election alone supplies mesh2's primary afterwards.
 
 use rdm_core::PathName;
-use rdm_core::NodeKind;
+
 use rdm_client::{NodeStatus, NodeView};
 use rdm_test::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
@@ -80,15 +80,15 @@ async fn pending_contract(cell: &str) {
     let create = created.build_id.to_string();
     let build = estate.carrier().await.build(&created.build_id).await.expect("build.get [id] of the creation Build");
     let nodes = estate.settled_views(&[mesh("mesh1"), mesh("mesh2")]).await;
-    let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().expect("mesh2 elects a primary");
+    let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2 elects a primary");
     let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).cloned().expect("one fabric primary");
-    let bootstrap2 = nodes.iter().find(|n| n.name == Estate::path("mesh2.admin", "1")).cloned().expect("mesh2's bootstrap admin");
+    let bootstrap2 = nodes.iter().find(|n| n.name == Estate::path("mesh2.node-admin", "1")).cloned().expect("mesh2's bootstrap admin");
     let of = |sp: &Value, n: &NodeView| rdm_test::estate::of_node(sp, &n.name, n.node_id.as_str());
     // The provider every mesh2 member actually ran on, from the view (and, on containers, its
     // immutable container id).
     let provider = estate.owner.provider.clone();
     let mut mesh2_runtimes: Vec<Value> = Vec::new();
-    for n in nodes.iter().filter(|n| n.mesh == "mesh2" && n.kind != NodeKind::NodeAdmin) {
+    for n in nodes.iter().filter(|n| n.mesh == "mesh2" && n.r#type != "node-admin") {
         mesh2_runtimes.push(json!({"node": n.name, "provider": n.provider, "container": estate.container_of(&n.name).await}));
     }
     for r in &mesh2_runtimes {
@@ -104,7 +104,7 @@ async fn pending_contract(cell: &str) {
     let spans = estate.spans();
 
     // The bootstrap admin hydrated first: its entry join and the accepted Build it then holds.
-    let joined = named(&spans, "rdm.node_admin.fabric.update.via-join").into_iter().find(|j| of(j, &bootstrap2)).cloned().expect("mesh2.admin.1 joined by entry pull");
+    let joined = named(&spans, "rdm.node_admin.fabric.update.via-join").into_iter().find(|j| of(j, &bootstrap2)).cloned().expect("mesh2.node-admin.1 joined by entry pull");
     // The Pending hand-off, applied exactly once at that birth.
     let handoffs: Vec<Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == "mesh2").cloned().collect();
     let applied: Vec<&Value> = handoffs.iter().filter(|h| h["attributes"]["outcome"] == "applied").collect();
@@ -120,7 +120,7 @@ async fn pending_contract(cell: &str) {
     assert_eq!(decided.len(), 1, "{decided:?}");
     assert_eq!(decided[0]["attributes"]["receiver_is_primary"], "false", "accepting Pending is not an election");
     // Nothing of mesh2's own membership was created before Pending was applied.
-    let members = [Estate::path("mesh2.admin", "2"), Estate::path("mesh2.rpc", "1"), Estate::path("mesh2.rpc", "2")];
+    let members = [Estate::path("mesh2.node-admin", "2"), Estate::path("mesh2.node", "1"), Estate::path("mesh2.node", "2")];
     let member_creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .filter(|c| c["attributes"]["build_id"] == create.as_str() && members.iter().any(|m| rdm_test::estate::at_location(c, m)))
@@ -129,7 +129,7 @@ async fn pending_contract(cell: &str) {
     let first_member_create = member_creates.iter().map(|c| start(c)).min().unwrap();
     assert!(end(handoff) <= first_member_create, "Pending applied ({}) before mesh2's first own create ({first_member_create})", end(handoff));
     // The bootstrap admin's Ready follows its hydration; mesh2's primary is elected afterwards.
-    let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|r| of(r, &bootstrap2)).cloned().expect("mesh2.admin.1 committed Ready");
+    let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|r| of(r, &bootstrap2)).cloned().expect("mesh2.node-admin.1 committed Ready");
     assert!(end(&joined) <= start(&ready), "Ready after hydration");
     // The elected mesh primary owns the Mesh's later lifecycle: it declares the Mesh's state to the
     // fabric primary, which applies it; and the fabric primary applies the fabric's readiness at
@@ -146,7 +146,7 @@ async fn pending_contract(cell: &str) {
     assert!(mesh_declared.iter().all(|d| matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")) || (d["attributes"]["outcome"] == "rejected-not-primary" && d["attributes"]["detail"] == "subject-unknown")), "{mesh_declared:?}");
     let mesh2_applied: Vec<&Value> = named(&spans, DECLARATION)
         .into_iter()
-        .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && of(d, &fabric_primary) && nodes.iter().any(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && d["attributes"]["sender"] == n.node_id.as_str()) && d["attributes"]["outcome"] == "applied")
+        .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && of(d, &fabric_primary) && nodes.iter().any(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && d["attributes"]["sender"] == n.node_id.as_str()) && d["attributes"]["outcome"] == "applied")
         .collect();
     assert!(mesh2_applied.len() <= 1, "mesh2's Ready is applied at most once by one fabric primary, whoever declared it: {mesh2_applied:?}");
     // Every attempt the accepting fabric-primary decides descends from the REST request (the
@@ -190,7 +190,7 @@ async fn pending_contract(cell: &str) {
 
 /// The bootstrap admin (the one handed Pending) of mesh2 or mesh3 that does not hold the fabric-primary role.
 fn bootstrap_admin_not_fabric_primary(settled: &[NodeView]) -> PathName {
-    [Estate::path("mesh2.admin", "1"), Estate::path("mesh3.admin", "1")]
+    [Estate::path("mesh2.node-admin", "1"), Estate::path("mesh3.node-admin", "1")]
         .into_iter()
         .find(|a| settled.iter().any(|n| n.name == *a && !n.is_fabric_primary))
         .expect("at most one admin holds the primary role, so one of the two bootstrap admins is off it")

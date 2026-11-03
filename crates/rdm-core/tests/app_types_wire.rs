@@ -16,7 +16,7 @@ fn digest() -> MeshDigest {
     serde_json::from_value(json!({
         "fabric_id": "1123456789ab",
         "node": {
-            "mesh": "mesh1", "kind": "rpc_node", "node_id": "0123456789ab", "name": {"path": "mesh1.rpc", "name": "1"},
+            "mesh": "mesh1", "type": "node", "node_id": "0123456789ab", "name": {"path": "mesh1.node", "name": "1"},
             "endpoint_id": "endpoint", "transport_addr": "127.0.0.1:12345",
             "incarnation": "yrz49j303yh4", "supersedes": null, "runtime": null
         },

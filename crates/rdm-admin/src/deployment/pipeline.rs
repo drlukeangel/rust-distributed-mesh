@@ -54,7 +54,7 @@
 //! under this executor's endpoint (`rdm.node_admin.deployment.reject.via-lost-executor`); a birth
 //! that joined, and an identity no runtime was made under, stand.
 
-use super::endpoint::KindSpec;
+use super::endpoint::TypeSpec;
 use crate::join::{Deployed, Joins};
 use super::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
 use crate::build::BuildId;
@@ -911,7 +911,7 @@ pub struct CreateRequest {
     /// The owning mesh supplied by the Build or exact predecessor.
     pub mesh: String,
     /// The runtime kind supplied by the same source.
-    pub kind: rdm_core::NodeKind,
+    pub r#type: String,
     /// The Build.
     pub build_id: BuildId,
     /// The attempt.
@@ -919,7 +919,7 @@ pub struct CreateRequest {
     /// The node to create.
     pub node: PathName,
     /// The endpoint plan of the node's kind.
-    pub spec: &'static KindSpec,
+    pub spec: &'static TypeSpec,
     /// The data dir the create's spec names (node-recovery.md sequence step 4: node recovery's
     /// create, over the exited birth's data dir): taken over whole, its endpoint key loaded and never
     /// minted. `None`: a fresh data dir.
@@ -1576,7 +1576,7 @@ impl DeploymentPipeline<'_> {
         let data_dir = req.data_dir.clone().unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &identity.node_id));
         // `find` reads the launch's name, data dir and deployment; the birth's address is bound only once
         // its identity is decided.
-        let spec = ResolvedNodeLaunch { mesh: req.mesh.clone().to_owned(), kind: req.kind, secrets: Default::default(), withhold: Vec::new(), node: req.node.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: SocketAddr::from(([0, 0, 0, 0], 0)), listeners: vec![] };
+        let spec = ResolvedNodeLaunch { mesh: req.mesh.clone().to_owned(), r#type: req.r#type.clone(), secrets: Default::default(), withhold: Vec::new(), node: req.node.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: SocketAddr::from(([0, 0, 0, 0], 0)), listeners: vec![] };
         let span = tracing::info_span!(
             "rdm.node_admin.node.resolve.via-row-allocation",
             node_path = %req.node.path, node_name = %req.node.name,
@@ -1748,7 +1748,7 @@ impl DeploymentPipeline<'_> {
                     _ => Default::default(),
                 };
                 step_span.record("awaiting", "create-row");
-                rows.create_row_with_spec(&req.node, &req.mesh, req.kind, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), &tags, &config, storage_persistence, of)
+                rows.create_row_with_spec(&req.node, &req.mesh, &req.r#type, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), &tags, &config, storage_persistence, of)
                     .await
                     .map_err(|e| format!("path {:?}, name {:?}: the birth {}'s record was refused at the name; nothing is launched: {e}", &req.node.path, &req.node.name, id.node_id))?;
                 done_awaits.push("create-row");
@@ -1800,7 +1800,7 @@ impl DeploymentPipeline<'_> {
             fabric: self.template.fabric.clone(),
             fabric_id: self.template.fabric_id.clone(),
             mesh: req.mesh.clone(),
-            kind: req.kind,
+            r#type: req.r#type.clone(),
             name: req.node.clone(),
             node_id: id.node_id.clone(),
             incarnation: id.incarnation.clone(),
@@ -1816,7 +1816,7 @@ impl DeploymentPipeline<'_> {
             roots: self.template.roots.current(),
             connections_delete_deadline: self.template.connections_delete_deadline,
             // A node-admin is written every declared value it may launch with, beside the root (Q150).
-            declared: if req.kind == rdm_core::NodeKind::NodeAdmin { self.template.declared.custody() } else { Vec::new() },
+            declared: if rdm_core::is_node_admin(&req.r#type) { self.template.declared.custody() } else { Vec::new() },
         };
         // The launch environment; its TRACEPARENT is taken inside the
         // DeployRuntime step, so the runtime's boot span is that step's child.
@@ -1833,7 +1833,7 @@ impl DeploymentPipeline<'_> {
             for (k, v) in &self.template.env {
                 env.entry(k.clone()).or_insert_with(|| v.clone());
             }
-            ResolvedNodeLaunch { mesh: req.mesh.clone().to_owned(), kind: req.kind, secrets: self.template.declared.set_on(req.kind), withhold: self.template.declared.names(),
+            ResolvedNodeLaunch { mesh: req.mesh.clone().to_owned(), r#type: req.r#type.clone(), secrets: self.template.declared.set_on(&req.r#type), withhold: self.template.declared.names(),
                 node: req.node.clone(),
                 deployment_id: id.deployment_id.clone(),
                 executable: self.template.executable.clone(),
@@ -1872,7 +1872,7 @@ impl DeploymentPipeline<'_> {
         }
         let _forget = Forget(self.joins, id.node_id.clone(), req.build_id.to_string(), req.attempt);
         let reported = match handle.fact() {
-            Some(runtime) => Some(self.joins.expect(Deployed { mesh: req.mesh.clone(), kind: req.kind,
+            Some(runtime) => Some(self.joins.expect(Deployed { mesh: req.mesh.clone(), r#type: req.r#type.clone(),
                 name: req.node.clone(),
                 node_id: id.node_id.clone(),
                 incarnation: id.incarnation.clone(),
@@ -1956,7 +1956,7 @@ impl DeploymentPipeline<'_> {
                 }
             })
             .await?;
-        let mut node = Node::allocated(req.node.clone(), req.mesh.clone(), req.kind);
+        let mut node = Node::allocated(req.node.clone(), req.mesh.clone(), &req.r#type);
         node.node_id = id.node_id.clone();
         node.endpoint_id = Some(endpoint_id);
         node.incarnation_id = Some(id.incarnation.clone());
@@ -2212,7 +2212,7 @@ impl DeploymentPipeline<'_> {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, req.operation.clone()).await?;
             let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: DeleteStep::NodeDeleting.name(), reason: format!("path {name_path:?}, name {name_name:?} has no known birth", name_path = &name.path, name_name = &name.name) , code: rdm_core::outcome::Code::FailedPrecondition })?;
-            let op = LifecycleOp { kind: req.node.kind, mesh: req.node.mesh.clone(),
+            let op = LifecycleOp { r#type: req.node.r#type.clone(), mesh: req.node.mesh.clone(),
                 build_id: req.build_id.to_string(),
                 attempt: req.attempt,
                 operation: run.operation.clone(),
@@ -2286,7 +2286,7 @@ impl DeploymentPipeline<'_> {
         // The pre-notice: this executor's journal holds its Claim for the attempt (it runs nothing
         // before that) and now records this operation; every node hears the node is being removed
         // and stops routing to it, while it stays found.
-        let op = LifecycleOp { kind: req.node.kind, mesh: node.mesh.clone(),
+        let op = LifecycleOp { r#type: req.node.r#type.clone(), mesh: node.mesh.clone(),
             build_id: req.build_id.to_string(),
             attempt: req.attempt,
             operation: run.operation.clone(),
@@ -2388,7 +2388,7 @@ impl DeploymentPipeline<'_> {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, req.operation.clone()).await?;
             let mut node = req.node.clone();
-            let op = LifecycleOp { kind: req.node.kind, mesh: node.mesh.clone(),
+            let op = LifecycleOp { r#type: req.node.r#type.clone(), mesh: node.mesh.clone(),
                 build_id: req.build_id.to_string(),
                 attempt: req.attempt,
                 operation: run.operation.clone(),
@@ -2428,7 +2428,7 @@ impl DeploymentPipeline<'_> {
 
     /// The lifecycle op a command's gossip hook carries.
     fn command_op(&self, ctx: &CommandContext, node: &Node) -> Result<LifecycleOp, String> {
-        Ok(LifecycleOp { kind: node.kind, mesh: node.mesh.clone(),
+        Ok(LifecycleOp { r#type: node.r#type.clone(), mesh: node.mesh.clone(),
             build_id: ctx.build_id.clone(),
             attempt: ctx.attempt,
             operation: ctx.operation.clone(),
@@ -2831,7 +2831,7 @@ mod tests {
     fn day_zero_adoption_writes_its_receipts_on_the_blocking_pool() {
         let dir = tempdir("adopt-pool");
         let (waited, a) = op_waits_on_the_blocking_pool(Box::pin(async move { dir }), |dir| {
-            Box::pin(async move { CurrentRuntimeAdoption::begin(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), &dir, &DeploymentId::mint()).await.map(|_| ()) })
+            Box::pin(async move { CurrentRuntimeAdoption::begin(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), &dir, &DeploymentId::mint()).await.map(|_| ()) })
         });
         assert!(waited, "the adoption finished on the runtime's thread while the blocking pool was held");
         a.unwrap();
@@ -2843,7 +2843,7 @@ mod tests {
     async fn an_adoption_receipt_that_cannot_be_written_fails_its_step_naming_the_file() {
         let dir = tempdir("adopt-unwritable");
         std::fs::create_dir_all(dir.join(ADOPTION_RECEIPTS)).unwrap();
-        let err = CurrentRuntimeAdoption::begin(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), &dir, &DeploymentId::mint()).await.map(|_| ()).expect_err("an unwritten receipt is a failed step");
+        let err = CurrentRuntimeAdoption::begin(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), &dir, &DeploymentId::mint()).await.map(|_| ()).expect_err("an unwritten receipt is a failed step");
         assert!(err.reason.contains(ADOPTION_RECEIPTS), "{err}");
     }
 
@@ -2872,12 +2872,12 @@ mod tests {
     }
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
-        BuildStepReceipt { mesh: None, build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), attempt, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), step: step.into(), outcome, output: None, executor: None }
+        BuildStepReceipt { mesh: None, build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), attempt, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), step: step.into(), outcome, output: None, executor: None }
     }
 
     #[test]
     fn ready_requires_a_complete_receipt_for_each_runtime_prerequisite_of_this_run() {
-        let op = &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap());
+        let op = &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "1").unwrap());
         let all: Vec<BuildStepReceipt> = READY_PREREQUISITES.iter().map(|s| receipt(1, s.name(), StepOutcome::Complete)).collect();
         assert!(ready_prerequisites_missing(&all, &BuildId::parse("3qcfk1kq47m9").unwrap(), &None, op, 1).is_empty());
         // One lost receipt is named.
@@ -2885,7 +2885,7 @@ mod tests {
         assert_eq!(ready_prerequisites_missing(&lost, &BuildId::parse("3qcfk1kq47m9").unwrap(), &None, op, 1), vec!["MakeRuntimeFactAvailableToBirth"]);
         // Another operation's receipts are not this run's.
         let other: Vec<_> = all.iter().cloned().map(|mut r| {
-            r.operation = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "2").unwrap());
+            r.operation = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "2").unwrap());
             r
         }).collect();
         assert_eq!(ready_prerequisites_missing(&other, &BuildId::parse("3qcfk1kq47m9").unwrap(), &None, op, 1).len(), 4);
@@ -2963,7 +2963,7 @@ mod tests {
         }
     }
 
-    /// The launch template of a cell whose provider never spawns: mesh1.admin.1's, its data root a
+    /// The launch template of a cell whose provider never spawns: mesh1.node-admin.1's, its data root a
     /// fresh directory named `cell`.
     fn cell_template(cell: &str) -> LaunchTemplate {
         let data_root = tempdir(cell);
@@ -2971,7 +2971,7 @@ mod tests {
             fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root,
@@ -3000,7 +3000,7 @@ mod tests {
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let location = PathName::new("opaque.location", "north").unwrap();
-        let pin = crate::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode };
+        let pin = crate::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: "mesh1".into(), r#type: "node".into() };
         assert_eq!(pipeline.property_target(&build_id, 1, &location, &pin.node_id, async { Ok(pin.clone()) }).await.unwrap(), pin);
         let renamed = location.with_name("south").unwrap();
         assert_eq!(pipeline.property_target(&build_id, 1, &renamed, &pin.node_id, async { panic!("a retry must recover its pin before consulting current topology") }).await.unwrap(), pin);
@@ -3108,7 +3108,7 @@ mod tests {
         let template = cell_template("os-stopped-delete");
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &observer, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         node.status = NodeStatus::PendingReconnect;
         node.incarnation_id = Some(IncarnationId::mint());
         let req = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(node).node_id), build_id: build_id.clone(), attempt: 1, node, handle: process_handle(), unreached: false };
@@ -3155,7 +3155,7 @@ mod tests {
         let template = cell_template("explicit-os-stopped-delete");
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &observer, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
         node.status = NodeStatus::PendingReconnect;
         node.incarnation_id = Some(IncarnationId::mint());
         let req = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(node).node_id), build_id: build_id.clone(), attempt: 1, node, handle: process_handle(), unreached: true };
@@ -3192,7 +3192,7 @@ mod tests {
         let template = cell_template("exited-recovery-delete");
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &observer, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         node.status = NodeStatus::PendingReconnect;
         node.incarnation_id = Some(IncarnationId::mint());
         let req = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(node).node_id), build_id, attempt: 1, node, handle: process_handle(), unreached: true };
@@ -3225,7 +3225,7 @@ mod tests {
         let template = cell_template("inspect-handle");
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &observer, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         node.status = NodeStatus::PendingReconnect;
         node.incarnation_id = Some(IncarnationId::mint());
         let handle = process_handle();
@@ -3246,7 +3246,7 @@ mod tests {
     async fn day_zero_adopts_this_process_with_one_receipt_per_step() {
         let dir = std::env::temp_dir().join(format!("rafka-adopt-current-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let node: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let node: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let a = CurrentRuntimeAdoption::begin(&node, &dir, &DeploymentId::mint()).await.unwrap();
         assert_eq!(adoption_missing(&dir).await.unwrap(), vec!["PublishRuntimeFactAndCurrentRuntimeMetadata"], "Ready waits for publication");
         let published = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -3314,20 +3314,20 @@ mod tests {
         builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: rdm_core::framing::Birth { node_id: template.launcher.node_id.clone(), incarnation: template.launcher.incarnation.clone() } }).await.unwrap();
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let create = |node: PathName| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &node), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node, spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
-        let _ = pipeline.create(&create(PathName::new("mesh1.rpc", "1").unwrap())).await.map(|_| ()).expect_err("the provider launches nothing");
+        let create = |node: PathName| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &node), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt: 1, node, spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let _ = pipeline.create(&create(PathName::new("mesh1.node", "1").unwrap())).await.map(|_| ()).expect_err("the provider launches nothing");
         template.roots.replace(vec![a, b]);
-        let _ = pipeline.create(&create(PathName::new("mesh1.rpc", "2").unwrap())).await.map(|_| ()).expect_err("the provider launches nothing");
+        let _ = pipeline.create(&create(PathName::new("mesh1.node", "2").unwrap())).await.map(|_| ()).expect_err("the provider launches nothing");
         template.roots.replace(vec![]);
-        let _ = pipeline.create(&create(PathName::new("mesh1.rpc", "3").unwrap())).await.map(|_| ()).expect_err("the provider launches nothing");
+        let _ = pipeline.create(&create(PathName::new("mesh1.node", "3").unwrap())).await.map(|_| ()).expect_err("the provider launches nothing");
         let written: Vec<Option<String>> = provider.envs.lock().unwrap().iter().map(|e| e.get(rdm_core::launch::ENV_ROOTS).cloned()).collect();
         let hex = |k: &rdm_core::certs::VerifyingKey| rdm_core::launch::encode_hex(k.as_bytes());
         assert_eq!(written, vec![Some(hex(&a)), Some(format!("{},{}", hex(&a), hex(&b))), None], "each launch carries the set as it stood at that launch");
-        let explicit = CreateRequest { mesh: "actual".into(), kind: rdm_core::NodeKind::Compute, ..create(PathName::new("elsewhere.gateway", "north").unwrap()) };
+        let explicit = CreateRequest { mesh: "actual".into(), r#type: "compute".into(), ..create(PathName::new("elsewhere.gateway", "north").unwrap()) };
         let _ = pipeline.create(&explicit).await.expect_err("the provider launches nothing");
         let env = provider.envs.lock().unwrap().last().cloned().unwrap();
         assert_eq!(env[rdm_core::launch::ENV_MESH], "actual");
-        assert_eq!(env[rdm_core::launch::ENV_NODE_KIND], "compute");
+        assert_eq!(env[rdm_core::launch::ENV_NODE_TYPE], "compute");
         assert_eq!(env[rdm_core::launch::ENV_NODE_PATH], "elsewhere.gateway");
         assert_eq!(env[rdm_core::launch::ENV_NODE_NAME], "north");
         let _ = std::fs::remove_dir_all(&template.data_root);
@@ -3362,7 +3362,7 @@ mod tests {
             let digest = rdm_core::MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: rdm_core::FabricId::mint(),
-                node: rdm_core::MeshNode { mesh: spec.mesh.clone(), kind: spec.kind,
+                node: rdm_core::MeshNode { mesh: spec.mesh.clone(), r#type: spec.r#type.clone(),
                     node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?).map_err(|e| refused(e.to_string()))?,
                     name: spec.node.clone(),
                     endpoint_id: EndpointId(key.public().to_string()),
@@ -3428,7 +3428,7 @@ mod tests {
         builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: rdm_core::framing::Birth { node_id: template.launcher.node_id.clone(), incarnation: template.launcher.incarnation.clone() } }).await.unwrap();
         let timeouts = Timeouts { join: Duration::from_millis(1500), ready: Duration::from_millis(300), ..Timeouts::default() };
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let err = pipeline.create(&req).await.map(|_| ()).expect_err("nothing answers Ready: the create ends at WaitForNodeReady");
         let steps: Vec<(String, StepOutcome)> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| (r.step, r.outcome)).collect();
         assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "WaitForMeshJoin completes from the accepted report with no digest in any view: {err}; receipts {steps:?}");

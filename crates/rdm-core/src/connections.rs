@@ -23,7 +23,7 @@
 //! A Direct fact naming a destination process the topology view no longer holds is not current either.
 
 use crate::ids::{IncarnationId, NodeId};
-use crate::path::{NodeKind, PathName};
+use crate::path::{PathName};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -112,8 +112,8 @@ pub enum ConnectionKind {
 pub struct ConnectionEnd {
     /// The explicitly declared owning mesh.
     pub mesh: String,
-    /// The explicitly declared runtime kind.
-    pub kind: crate::NodeKind,
+    /// The end's node type.
+    pub r#type: String,
     /// The end's `(path, name)`.
     pub name: PathName,
     /// The end's logical node id.
@@ -468,14 +468,14 @@ impl ConnectionsHeld {
 }
 
 /// A protocol's carrier policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CarrierPolicy {
     /// The protocol never travels over a Proxy, even when one exists.
     NoProxy,
-    /// The protocol may travel over a Proxy whose carrier is a node of this kind.
+    /// The protocol may travel over a Proxy whose carrier is a node of this type.
     Proxy {
-        /// The kind a carrier must be.
-        carrier_kind: NodeKind,
+        /// The type a carrier must be.
+        carrier_type: String,
     },
 }
 
@@ -561,33 +561,33 @@ pub fn resolve(held: &ConnectionsHeld, own: &NodeId, destination: &NodeId, polic
 pub fn resolve_for(held: &ConnectionsHeld, own: &NodeId, destination: &NodeId, alpn: &[u8], policy: CarrierPolicy) -> RouteResolution {
     match policy {
         CarrierPolicy::NoProxy => resolve_for_carriers(held, own, destination, alpn, false, &[]),
-        CarrierPolicy::Proxy { carrier_kind } => {
-            resolve_for_carriers(held, own, destination, alpn, true, &[carrier_kind])
+        CarrierPolicy::Proxy { carrier_type } => {
+            resolve_for_carriers(held, own, destination, alpn, true, &[carrier_type])
         }
     }
 }
 
-/// [`resolve_for`] with the protocol's `proxy` flag and eligible `carriers` kinds.
+/// [`resolve_for`] with the protocol's `proxy` flag and eligible `carriers` types.
 pub fn resolve_for_carriers(
     held: &ConnectionsHeld,
     own: &NodeId,
     destination: &NodeId,
     alpn: &[u8],
     proxy: bool,
-    carriers: &[NodeKind],
+    carriers: &[String],
 ) -> RouteResolution {
     let mut delete = Vec::new();
     let mut via = None;
     if proxy && !carriers.is_empty() {
         if let Some(Some(proxy)) = held.own_proxy_for(destination, alpn) {
-            // A valid Proxy through a carrier kind this protocol does not allow is skipped, not
+            // A valid Proxy through a carrier type this protocol does not allow is skipped, not
             // deleted: another protocol may still travel over it.
-            let kind_allowed = proxy
+            let type_allowed = proxy
                 .carrier
                 .as_ref()
-                .is_some_and(|c| carriers.contains(&c.kind));
+                .is_some_and(|c| carriers.contains(&c.r#type));
             match proxy_invalid(held, proxy) {
-                None if kind_allowed => {
+                None if type_allowed => {
                     let carrier = proxy.carrier.as_ref().map(|c| c.node_id.clone()).expect("a valid Proxy names its carrier");
                     via = Some(EffectiveRoute::ViaPeer { carrier, proxy: proxy.clone() });
                 }
@@ -640,15 +640,15 @@ pub fn carrier_order(
     destination: &NodeId,
     destination_incarnation: &IncarnationId,
     proxy: bool,
-    carriers: &[NodeKind],
-    candidates: impl IntoIterator<Item = (NodeId, PathName, String, NodeKind)>,
+    carriers: &[String],
+    candidates: impl IntoIterator<Item = (NodeId, PathName, String, String)>,
 ) -> Vec<NodeId> {
     if !proxy || carriers.is_empty() {
         return Vec::new();
     }
     let mut eligible: Vec<(PathName, NodeId)> = candidates
         .into_iter()
-        .filter(|(c, _, mesh, kind)| c != own && c != destination && mesh == own_mesh && carriers.contains(kind))
+        .filter(|(c, _, mesh, r#type)| c != own && c != destination && mesh == own_mesh && carriers.contains(r#type))
         .map(|(id, location, _, _)| (location, id))
         .collect();
     eligible.sort();
@@ -682,7 +682,7 @@ mod tests {
 
     fn end(name: PathName, node_id: NodeId, incarnation: Option<IncarnationId>) -> ConnectionEnd {
         ConnectionEnd {
-            mesh: "mesh1".into(), kind: NodeKind::RpcNode,
+            mesh: "mesh1".into(), r#type: "node".into(),
             name,
             node_id,
             incarnation,
@@ -696,9 +696,9 @@ mod tests {
     /// "// Proxy only: carrier, carrier_node_id, carrier_incarnation_id; // Direct Failed only: recovery_round, attempt_ordinal"
     #[test]
     fn shape_refusal_and_is_active_direct_enforce_connection_row_invariants() {
-        let src = end(PathName::new("mesh1.rpc", "1").unwrap(), NodeId::mint(), Some(IncarnationId::mint()));
-        let dst = end(PathName::new("mesh1.rpc", "2").unwrap(), NodeId::mint(), Some(IncarnationId::mint()));
-        let car = end(PathName::new("mesh1.rpc", "3").unwrap(), NodeId::mint(), Some(IncarnationId::mint()));
+        let src = end(PathName::new("mesh1.node", "1").unwrap(), NodeId::mint(), Some(IncarnationId::mint()));
+        let dst = end(PathName::new("mesh1.node", "2").unwrap(), NodeId::mint(), Some(IncarnationId::mint()));
+        let car = end(PathName::new("mesh1.node", "3").unwrap(), NodeId::mint(), Some(IncarnationId::mint()));
 
         let valid_direct = NodeConnection {
             id: ConnectionId::mint(),
@@ -799,16 +799,16 @@ mod tests {
     fn held_projection_and_resolve_for_respect_incarnations_and_precedence() {
         let src_id = NodeId::mint();
         let src_inc = IncarnationId::mint();
-        let src = end(PathName::new("mesh1.rpc", "1").unwrap(), src_id.clone(), Some(src_inc.clone()));
+        let src = end(PathName::new("mesh1.node", "1").unwrap(), src_id.clone(), Some(src_inc.clone()));
 
         let dst_id = NodeId::mint();
         let dst_inc1 = IncarnationId::mint();
         let dst_inc2 = IncarnationId::mint();
-        let dst = end(PathName::new("mesh1.rpc", "2").unwrap(), dst_id.clone(), Some(dst_inc1.clone()));
+        let dst = end(PathName::new("mesh1.node", "2").unwrap(), dst_id.clone(), Some(dst_inc1.clone()));
 
         let car_id = NodeId::mint();
         let car_inc = IncarnationId::mint();
-        let car = end(PathName::new("mesh1.rpc", "3").unwrap(), car_id.clone(), Some(car_inc.clone()));
+        let car = end(PathName::new("mesh1.node", "3").unwrap(), car_id.clone(), Some(car_inc.clone()));
 
         let topo = Arc::new(StaticIncarnations::default());
         topo.set(src_id, src.name.clone(), src_inc);
@@ -869,7 +869,7 @@ mod tests {
             &dst.node_id,
             ALPN,
             CarrierPolicy::Proxy {
-                carrier_kind: NodeKind::RpcNode,
+                carrier_type: "node".into(),
             },
         );
         assert_eq!(

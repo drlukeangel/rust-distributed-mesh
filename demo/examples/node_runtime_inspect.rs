@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::workflows::node_runtime_inspect::inspect_runtime;
 use rdm_client::{Filter, MeshNode, NodeStatus, Nodes, PathName, Peers};
-use rdm_core::{NodeKind, RuntimeFact};
+use rdm_core::{RuntimeFact};
 use rdm_core::runtime::{ExitRecord, RuntimeLocator, TRANSPORT_STOPPED_EXIT_CODE};
 
 async fn enter() -> Result<(Peers, PathName)> {
@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_runtime_inspect [<path> <name>]")),
         _ => rows
             .iter()
-            .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .find(|n| n.kind != "node-admin" && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no ready role node in the estate"))?,
     };
     let dir = target.data_dir.as_deref().ok_or_else(|| anyhow!("missing data_dir"))?;

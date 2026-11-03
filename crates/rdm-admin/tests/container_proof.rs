@@ -67,8 +67,8 @@ pub(crate) fn launch(p: &ContainerDeploymentProvider, fabric: &str, n: u32) -> R
     let (first, _) = p.network().node_range();
     let ip = Ipv4Addr::from(u32::from(first) + n);
     let data_dir = std::env::temp_dir().join(format!("{fabric}-node{n}"));
-    ResolvedNodeLaunch { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode, secrets: Default::default(), withhold: Vec::new(),
-        node: rdm_core::PathName::new("mesh1.rpc", (n + 1).to_string()).unwrap(),
+    ResolvedNodeLaunch { mesh: "mesh1".to_owned(), r#type: "node".into(), secrets: Default::default(), withhold: Vec::new(),
+        node: rdm_core::PathName::new("mesh1.node", (n + 1).to_string()).unwrap(),
         deployment_id: DeploymentId::mint(),
         executable: PathBuf::from("/usr/bin/tail"),
         args: vec!["-f".into(), "/dev/null".into()],
@@ -297,8 +297,8 @@ async fn containers_share_a_store_root_with_exclusive_inserts_serialized_appends
     let lines = std::fs::read(store.join("nodes.jsonl")).unwrap().split(|b| *b == b'\n').filter(|l| !l.is_empty()).count();
     assert_eq!(lines, 64, "the store file holds every line both containers appended");
     let names = store.join("locks").join("name");
-    assert_eq!(std::fs::read(names.join("mesh1.rpc.1")).unwrap(), b"writer");
-    assert_eq!(std::fs::read(names.join("mesh1.rpc.2")).unwrap(), b"reader");
+    assert_eq!(std::fs::read(names.join("mesh1.node.1")).unwrap(), b"writer");
+    assert_eq!(std::fs::read(names.join("mesh1.node.2")).unwrap(), b"reader");
     println!("{lines} O_APPEND lines from two containers, {folds} folds of whole lines, create-exclusive locks coherent in both directions");
     assert!(rdm_admin::store_root::qualify(rdm_admin::model::ProviderKind::Container).is_ok(), "the proven container provider is admitted at boot");
     println!("R14 item 6 qualified: store={}, containers={} and {}", store.display(), container_id(&a), container_id(&b));

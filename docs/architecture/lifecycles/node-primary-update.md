@@ -124,7 +124,7 @@ and recording it are separate for every type.
 ## No-successor cases
 
 - **No other node of the type in the mesh:** `node.primary.update` commanded for a type with no other
-  node of that type in the mesh is refused by name, `cannot transfer: no secondary of type <node_type> in
+  node of that type in the mesh is refused by name, `cannot transfer: no secondary of type <type> in
   mesh <mesh>`, until a secondary is available. The primary stays primary, no row is written, and the
   workflow that commanded it (the stop or delete of that node) fails by name with that reason.
   The exceptions that skip the update: the delete of a mesh's only node, and the delete of a type's only

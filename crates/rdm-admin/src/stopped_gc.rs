@@ -442,24 +442,24 @@ mod tests {
         assert!(ttl_from_env(Some("0ms")).is_err());
         assert!(ttl_from_env(Some("10d")).is_err());
 
-        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let node_id = NodeId::mint();
         let inc = IncarnationId::mint();
         let build_id = BuildId::mint();
 
-        let stop_action = AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+        let stop_action = AttemptAction::Stop { r#type: "node".into(), mesh: "mesh1".into(),
             path: path.clone(),
             node_id: node_id.clone(),
             from_incarnation: inc.clone(),
         };
-        let start_action = AttemptAction::Start { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+        let start_action = AttemptAction::Start { r#type: "node".into(), mesh: "mesh1".into(),
             path: path.clone(),
             node_id: node_id.clone(),
             from_incarnation: inc.clone(),
         };
         let steps_action = AttemptAction::Steps { rename_intents: Default::default(),
             steps: vec![],
-            pinned: vec![(path.clone(), PinnedBirth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: node_id.clone(), incarnation: inc.clone() })],
+            pinned: vec![(path.clone(), PinnedBirth { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), incarnation: inc.clone() })],
         };
         assert!(acts_on(&stop_action, &node_id, &inc));
         assert!(acts_on(&steps_action, &node_id, &inc));
@@ -467,7 +467,7 @@ mod tests {
 
         assert!(!acts_on(&stop_action, &NodeId::mint(), &inc));
 
-        let op1 = LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(),
+        let op1 = LifecycleOp { r#type: "node".into(), mesh: "mesh1".to_owned(),
             build_id: build_id.to_string(),
             attempt: 1,
             operation: rdm_core::OperationId::node("node.stop", &node_id),

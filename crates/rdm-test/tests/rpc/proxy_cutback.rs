@@ -5,7 +5,7 @@
 //! cell's name).
 //!
 //! The estate is one mesh, `{mesh1: 2 node-admins, 3 rpc nodes}`, born by a Build. The source is
-//! `mesh1.rpc.1`, the carrier `mesh1.rpc.2`, the destination `mesh1.rpc.3`. A Proxy is seeded on
+//! `mesh1.node.1`, the carrier `mesh1.node.2`, the destination `mesh1.node.3`. A Proxy is seeded on
 //! the source through the testkit originate door (`record-proxy`): the door runs the writer's own
 //! observer path for the Direct Failed observation and writes `Proxy Connected` naming the births
 //! the source's topology view holds now (connections.md section 7); nothing in this repository runs
@@ -18,9 +18,9 @@ use rdm_core::{NodeId, PathName};
 use std::path::PathBuf;
 use std::time::Duration;
 
-fn source_location() -> PathName { PathName::new("mesh1.rpc", "1").unwrap() }
-fn carrier_location() -> PathName { PathName::new("mesh1.rpc", "2").unwrap() }
-fn destination_location() -> PathName { PathName::new("mesh1.rpc", "3").unwrap() }
+fn source_location() -> PathName { PathName::new("mesh1.node", "1").unwrap() }
+fn carrier_location() -> PathName { PathName::new("mesh1.node", "2").unwrap() }
+fn destination_location() -> PathName { PathName::new("mesh1.node", "3").unwrap() }
 
 fn owner(test: &str) -> Owner {
     Owner {

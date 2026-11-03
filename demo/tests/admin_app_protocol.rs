@@ -10,27 +10,27 @@
 
 mod common;
 
-use rdm_core::{NodeKind, PathName};
+use rdm_core::{PathName};
 use rdm_test::originate::{Originate, OriginateReply, OriginateRequest};
 use rdm_transport::{Resend, CallOptions, NodeTarget};
 use serde_json::Value;
 use std::time::Duration;
 
 fn admin() -> PathName {
-    PathName::numbered("mesh1", NodeKind::NodeAdmin, 1)
+    PathName::numbered("mesh1", "node-admin", 1)
 }
 fn gateway() -> PathName {
-    PathName::numbered("mesh1", NodeKind::Gateway, 1)
+    PathName::numbered("mesh1", "gateway", 1)
 }
 fn broker() -> PathName {
-    PathName::numbered("mesh1", NodeKind::Broker, 1)
+    PathName::numbered("mesh1", "broker", 1)
 }
 
 #[test]
 fn the_consumers_day0_admin_answers_a_gateway_and_reaches_the_broker_on_the_data_protocol() {
     common::run(async {
         let test = "the_consumers_day0_admin_answers_a_gateway_and_reaches_the_broker_on_the_data_protocol";
-        let mut estate = common::estate("demo-admin-app-protocol", test, &[(NodeKind::NodeAdmin, 1), (NodeKind::Gateway, 1), (NodeKind::Broker, 1)]).await;
+        let mut estate = common::estate("demo-admin-app-protocol", test, &[("node-admin", 1), ("gateway", 1), ("broker", 1)]).await;
         estate.until_fabric_ready(common::SETTLE).await;
 
         // The gateway's data connection to the admin: admitted, answered by the admin's app.

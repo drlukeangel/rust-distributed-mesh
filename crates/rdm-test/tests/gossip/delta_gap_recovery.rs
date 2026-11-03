@@ -24,7 +24,7 @@ use bytes::Bytes;
 use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
-use rdm_core::{FabricId, MemberStatus, MeshDigest, MeshId, NodeKind};
+use rdm_core::{FabricId, MemberStatus, MeshDigest, MeshId};
 use rdm_client::NodeView;
 use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Frame};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
@@ -38,7 +38,7 @@ use std::time::Duration;
 const CELL: &str = "mesh_member_recovers_delta_gap_from_own_primary";
 /// The member whose gap is read: mesh1's rpc node. Its topology spans name it by its node id.
 fn member_at() -> rdm_core::PathName {
-    Estate::path("mesh1.rpc", "1")
+    Estate::path("mesh1.node", "1")
 }
 
 fn owner() -> Owner {
@@ -165,7 +165,7 @@ impl Observer {
 fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
     nodes
         .iter()
-        .filter(|n| n.kind == NodeKind::NodeAdmin && n.mesh == "mesh1")
+        .filter(|n| n.r#type == "node-admin" && n.mesh == "mesh1")
         .filter_map(|n| {
             let key = n.endpoint_id.as_deref()?.parse::<iroh::PublicKey>().ok()?;
             Some(EndpointAddr::new(key).with_ip_addr(n.transport_addr?))
@@ -207,7 +207,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let nodes = estate.settled_views(&shape).await;
     let member_id = nodes.iter().find(|n| n.name == member_at()).map(|n| n.node_id.to_string()).expect("the member's settled view");
     // A node's own spans and a join's `served_by` name a node by its id; an admin's read by its path and name.
-    let (mesh1_primary_at, mesh2_admin_at) = (rdm_core::PathName::new("mesh1.admin", "1").unwrap(), rdm_core::PathName::new("mesh2.admin", "1").unwrap());
+    let (mesh1_primary_at, mesh2_admin_at) = (rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), rdm_core::PathName::new("mesh2.node-admin", "1").unwrap());
     let id_at = |at: &rdm_core::PathName| nodes.iter().find(|n| &n.name == at).map(|n| n.node_id.to_string()).unwrap_or_else(|| panic!("{at:?} in the settled view"));
     let (primary_id, mesh2_admin_id) = (id_at(&mesh1_primary_at), id_at(&mesh2_admin_at));
     let fabric_view = estate.fabric_view().await;
@@ -221,7 +221,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // NodeIds' draw (the lowest complete NodeId), so it is read from the settled view.
     let held: PathName = nodes
         .iter()
-        .find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode && !n.is_primary)
+        .find(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary)
         .map(|n| n.name.clone())
         .unwrap_or_else(|| panic!("mesh2 holds an rpc node that is not its rpc primary: {nodes:?}"));
     let held = &held;
@@ -252,7 +252,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
             _ => None,
         })
         .unwrap();
-    let mesh2_admin = nodes.iter().find(|n| n.name == PathName::new("mesh2.admin", "1").unwrap()).map(|n| n.node_id.clone()).expect("mesh2.admin.1 in the settled views");
+    let mesh2_admin = nodes.iter().find(|n| n.name == PathName::new("mesh2.node-admin", "1").unwrap()).map(|n| n.node_id.clone()).expect("mesh2.node-admin.1 in the settled views");
     assert_eq!(publisher.node_id, mesh2_admin, "the version belongs to the source Mesh's primary");
     let stripped_full_bytes: usize = {
         // The chunks of the newest forwarded full of mesh2 (one snapshot).
@@ -307,10 +307,10 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         .forwarded_fulls_of("mesh2")
         .iter()
         .find_map(|x| match x.frame.data() {
-            Frame::MeshTopology { digests, .. } => digests.iter().find(|d| d.node.name == Estate::path("mesh2.rpc", "1")).cloned(),
+            Frame::MeshTopology { digests, .. } => digests.iter().find(|d| d.node.name == Estate::path("mesh2.node", "1")).cloned(),
             _ => None,
         })
-        .expect("mesh2.rpc.1 is in the forwarded full");
+        .expect("mesh2.node.1 is in the forwarded full");
     let mut forged = real_digest.clone();
     forged.status = MemberStatus::ConnectionsDeleting;
     let gap_frame = Frame::MeshTopologyDelta {
@@ -340,8 +340,8 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         spans_of(&spans, "rdm.mesh.entry.update.via-top-up", &member_id, t_gap).into_iter().find(|sp| attr(sp, "installed").contains("mesh2@")).cloned()
     })
     .await;
-    assert_eq!((attr(&topped, "mesh_primary_path"), attr(&topped, "mesh_primary_name")), ("mesh1.admin".to_string(), "1".to_string()), "the member's own mesh-primary: {topped}");
-    assert_eq!((attr(&topped, "served_by_path"), attr(&topped, "served_by_name")), ("mesh1.admin".to_string(), "1".to_string()), "{topped}");
+    assert_eq!((attr(&topped, "mesh_primary_path"), attr(&topped, "mesh_primary_name")), ("mesh1.node-admin".to_string(), "1".to_string()), "the member's own mesh-primary: {topped}");
+    assert_eq!((attr(&topped, "served_by_path"), attr(&topped, "served_by_name")), ("mesh1.node-admin".to_string(), "1".to_string()), "{topped}");
     assert!(attr(&topped, "meshes").split(',').all(|m| m == "mesh2"), "only the desynchronized source is topped up: {topped}");
     assert!(attr(&topped, "still_desynced").is_empty(), "the top-up resumed the source: {topped}");
     let installed_version: u64 = attr(&topped, "installed").split(',').find_map(|e| e.strip_prefix("mesh2@")).unwrap().parse().unwrap();
@@ -362,9 +362,9 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // ---- a member cut off from every other process hears the full when it is heard again
     let nodes_json: Vec<Value> = nodes.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
     let ports_of = |names: &[(&str, &str)]| udp_ports(&nodes_json, &names.iter().map(|(path, name)| Estate::path(path, name)).collect::<Vec<_>>());
-    let mut others = ports_of(&[("mesh1.admin", "1"), ("mesh2.admin", "1"), ("mesh2.rpc", "1"), ("mesh2.rpc", "2")]);
+    let mut others = ports_of(&[("mesh1.node-admin", "1"), ("mesh2.node-admin", "1"), ("mesh2.node", "1"), ("mesh2.node", "2")]);
     others.push(observer.endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port());
-    let cut = Partition::start(&ports_of(&[("mesh1.rpc", "1")]), &others).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the member's traffic: {why}"));
+    let cut = Partition::start(&ports_of(&[("mesh1.node", "1")]), &others).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the member's traffic: {why}"));
     let cut_at = now_ns();
     hold.hold();
     let delta_e = until_arrival("the observer hears the delta for the held rpc node while the member is cut", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").into_iter().find(|d| d.0 > cut_at)).await;
@@ -441,7 +441,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let by_mesh1: Vec<&Value> = reads_after_gap(&mesh1_primary_at).into_iter().filter(|sp| at(sp) < cut_at).collect();
     assert_eq!(by_mesh1.len(), 1, "one top-up, one topology read between the gap and the cut: {by_mesh1:?}");
     assert_eq!((attr(by_mesh1[0], "requested"), attr(by_mesh1[0], "snapshots")), ("mesh2".to_string(), "1".to_string()));
-    // The member never queries the remote Mesh's primary: a read mesh2.admin.1 serves its own mesh's
+    // The member never queries the remote Mesh's primary: a read mesh2.node-admin.1 serves its own mesh's
     // members (a mesh2 node reading mesh2 after a re-feed) is theirs, not the member's top-up.
     let caller = |sp: &Value| spans.iter().find(|p| p["span_id"] == sp["parent_span_id"]).map(|p| attr(p, "peer")).unwrap_or_default();
     let by_member: Vec<&Value> = reads_after_gap(&mesh2_admin_at).into_iter().filter(|sp| { let c = caller(sp); c.is_empty() || member_peer.starts_with(&c) }).collect();
@@ -477,7 +477,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
             "resumed_delta": { "base": delta_c.1, "to": delta_c.2, "member_applied_span": { "trace_id": applied_c["trace_id"], "span_id": applied_c["span_id"] } },
         },
         "join_serves_for_member": joins.len(),
-        "topology_reads_after_gap": { "mesh1.admin.1": by_mesh1.len(), "mesh2.admin.1": reads_after_gap(&mesh2_admin_at).len() },
+        "topology_reads_after_gap": { "mesh1.node-admin.1": by_mesh1.len(), "mesh2.node-admin.1": reads_after_gap(&mesh2_admin_at).len() },
         "top_up_install_span": { "trace_id": topup_install["trace_id"], "span_id": topup_install["span_id"], "topology_version": num(topup_install, "topology_version") },
         "forwarded_deltas_by_mesh1_primary": deltas_forwarded.len(),
         "topology_version_bumps_by_mesh2_primary": bumps,

@@ -23,7 +23,7 @@
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{ExactBirth, Filter, Frame, MeshNode, NodeView, Nodes, PathName, Peers, WorkflowStream};
 use rdm_core::build::Step;
-use rdm_core::NodeKind;
+
 use rdm_transport::{NodeTarget, RouteChoice};
 
 async fn enter() -> Result<(Peers, PathName)> {
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
     let all = nodes.get(&Filter::new()).await?;
     peers.learn(&all);
     let row = all.iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
-    let primary = all.iter().find(|n| n.mesh == row.mesh && n.kind == NodeKind::NodeAdmin && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh))?;
+    let primary = all.iter().find(|n| n.mesh == row.mesh && n.kind == "node-admin" && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh))?;
 
     // The precondition: its connections deleted, then its mesh left.
     finish("delete connections, leave mesh", nodes.steps(vec![Step::DeleteConnections { node: node.clone() }, Step::LeaveMesh { node: node.clone() }]).await?).await?;

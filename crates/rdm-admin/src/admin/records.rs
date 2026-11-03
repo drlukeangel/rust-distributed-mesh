@@ -120,8 +120,8 @@ impl AdminConfig {
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let launch = if get(rdm_core::launch::ENV_NODE_ID).is_some() { Some(Launch::from_env(&get)?) } else { None };
         if let Some(launch) = &launch {
-            if launch.kind != NodeKind::NodeAdmin {
-                return Err(format!("{} names {}: this executable serves node_admin", rdm_core::launch::ENV_NODE_KIND, launch.kind.name()));
+            if !rdm_core::is_node_admin(&launch.r#type) {
+                return Err(format!("{} names {}: this executable serves node_admin", rdm_core::launch::ENV_NODE_TYPE, launch.r#type));
             }
         }
         let adopt = match &launch {
@@ -249,7 +249,7 @@ impl AdminConfig {
 /// a missing input is refused by name. `None` when `RDM_NODE_NAME` is not given: Day 0, or a restart on
 /// its own data dir.
 fn adoption_from_env(get: &impl Fn(&str) -> Option<String>) -> Result<Option<PathName>, String> {
-    use rdm_core::launch::{ENV_FABRIC_ID, ENV_FABRIC_PRIMARY, ENV_LAUNCHER, ENV_MESH_PRIMARY, ENV_NODE_NAME, ENV_NODE_PATH, ENV_NODE_KIND};
+    use rdm_core::launch::{ENV_FABRIC_ID, ENV_FABRIC_PRIMARY, ENV_LAUNCHER, ENV_MESH_PRIMARY, ENV_NODE_NAME, ENV_NODE_PATH, ENV_NODE_TYPE};
     let given = |k: &str| get(k).filter(|v| !v.trim().is_empty());
     let Some(name) = given(ENV_NODE_NAME) else { return Ok(None) };
     let adoption = "an adoption launch (RDM_NODE_NAME with no launcher, fabric-recovery.md \"Nothing alive\")";
@@ -258,8 +258,8 @@ fn adoption_from_env(get: &impl Fn(&str) -> Option<String>) -> Result<Option<Pat
     }
     let path = given(ENV_NODE_PATH).ok_or_else(|| format!("{ENV_NODE_PATH} is required for {adoption}"))?;
     let name = PathName::new(path, name).map_err(|e| format!("{ENV_NODE_PATH}/{ENV_NODE_NAME}: {e}"))?;
-    if given(ENV_NODE_KIND).is_some_and(|kind| kind != NodeKind::NodeAdmin.name()) {
-        return Err(format!("{ENV_NODE_KIND}: {adoption} requires node_admin"));
+    if given(ENV_NODE_TYPE).is_some_and(|r#type| !rdm_core::is_node_admin(&r#type)) {
+        return Err(format!("{ENV_NODE_TYPE}: {adoption} requires node_admin"));
     }
     if given(ENV_FABRIC_ID).is_none() {
         return Err(format!("{ENV_FABRIC_ID} is required: {adoption} at {name:?} names the fabric it adopts, whose store root holds it; it mints none"));
@@ -852,12 +852,12 @@ mod tests {
         assert!(day0.adopt.is_none());
         assert!(!day0.fabric_id_named);
 
-        // Valid adoption launch at (mesh1.admin, 1): adopts RDM_FABRIC_ID and RDM_MESH, mints no mesh_id, mints its own node_id.
-        let at = [("RDM_NODE_PATH", "mesh1.admin"), ("RDM_NODE_NAME", "1")];
+        // Valid adoption launch at (mesh1.node-admin, 1): adopts RDM_FABRIC_ID and RDM_MESH, mints no mesh_id, mints its own node_id.
+        let at = [("RDM_NODE_PATH", "mesh1.node-admin"), ("RDM_NODE_NAME", "1")];
         let with = |extra: &[(&'static str, &'static str)]| env_of(&[&at[..], extra].concat());
         let adopted = AdminConfig::from_env(with(&[("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")]))
             .expect("valid adoption launch config succeeds");
-        assert_eq!(adopted.adopt, Some(rdm_core::PathName::new("mesh1.admin", "1").unwrap()));
+        assert_eq!(adopted.adopt, Some(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()));
         assert_eq!(adopted.fabric_id, FabricId::parse("fab000000001").unwrap());
         assert!(adopted.fabric_id_named);
         assert_eq!(adopted.mesh, "mesh1");
@@ -865,16 +865,16 @@ mod tests {
         assert_ne!(adopted.node_id, day0.node_id);
 
         // Refused when RDM_LAUNCHER is set without RDM_NODE_ID.
-        let err = AdminConfig::from_env(with(&[("RDM_LAUNCHER", "mesh1.admin.2"), ("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")])).unwrap_err();
-        assert!(err.contains("RDM_LAUNCHER=mesh1.admin.2 is set without RDM_NODE_ID"), "{err}");
+        let err = AdminConfig::from_env(with(&[("RDM_LAUNCHER", "mesh1.node-admin.2"), ("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")])).unwrap_err();
+        assert!(err.contains("RDM_LAUNCHER=mesh1.node-admin.2 is set without RDM_NODE_ID"), "{err}");
 
         // Refused when RDM_NODE_PATH is missing: the path is never parsed out of the name.
         let err = AdminConfig::from_env(env_of(&[("RDM_NODE_NAME", "1"), ("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")])).unwrap_err();
         assert!(err.contains("RDM_NODE_PATH is required"), "{err}");
 
         // Refused when RDM_NODE_KIND names another kind: the kind is explicit, never read off the path.
-        let rpc = rdm_core::NodeKind::RpcNode.name();
-        let err = AdminConfig::from_env(env_of(&[&at[..], &[("RDM_NODE_KIND", rpc), ("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")]].concat())).unwrap_err();
+        let rpc = "node";
+        let err = AdminConfig::from_env(env_of(&[&at[..], &[("RDM_NODE_TYPE", rpc), ("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")]].concat())).unwrap_err();
         assert!(err.contains("requires node_admin"), "{err}");
 
         // Refused when RDM_FABRIC_ID is missing.
@@ -888,7 +888,7 @@ mod tests {
         // Refused when RDM_MESH_PRIMARY or RDM_FABRIC_PRIMARY is set with an adoption launch.
         for flag in ["RDM_MESH_PRIMARY", "RDM_FABRIC_PRIMARY"] {
             let err = AdminConfig::from_env(env_of(&[&at[..], &[("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store"), (flag, "1")]].concat())).unwrap_err();
-            assert!(err.contains(&format!("{flag} is set with RDM_NODE_NAME=\"1\", RDM_NODE_PATH=\"mesh1.admin\"")), "{err}");
+            assert!(err.contains(&format!("{flag} is set with RDM_NODE_NAME=\"1\", RDM_NODE_PATH=\"mesh1.node-admin\"")), "{err}");
         }
     }
 }

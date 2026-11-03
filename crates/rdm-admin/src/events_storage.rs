@@ -638,12 +638,12 @@ mod tests {
             Event::build_started(&fp, 1_001, &b2),
             Event::build_dispatched(&fp, 1_002, &b1, "mesh1"),
             Event::build_step(&mp, 1_003, &n1, &b1, "mesh1", "create", "node.create", &StepState::Complete),
-            Event::node_investigated(&mp, 1_004, &n2, &inc, "mesh1.rpc", "2", "exited", "recreate"),
+            Event::node_investigated(&mp, 1_004, &n2, &inc, "mesh1.node", "2", "exited", "recreate"),
             Event::build_dispatched(&fp, 1_005, &b2, "mesh1"),
             Event::build_step(&mp, 1_006, &n2, &b2, "mesh1", "create", "node.create", &StepState::Failed { reason: "the provider refused".into(), code: "FAILED_PRECONDITION".into() }),
             Event::build_step(&mp, 1_007, &n1, &b2, "mesh1", "delete", "node.delete", &StepState::Complete),
             Event::build_ended(&fp, 1_008, &b1, &EndedState::Complete),
-            Event::node_investigated(&mp, 1_009, &n1, &inc, "mesh1.rpc", "1", "reached", "rejoin"),
+            Event::node_investigated(&mp, 1_009, &n1, &inc, "mesh1.node", "1", "reached", "rejoin"),
             Event::build_ended(&fp, 1_010, &b2, &EndedState::Failed { step: "create".into(), reason: "the provider refused".into(), code: "FAILED_PRECONDITION".into() }),
         ];
         (events, b1, b2, n1, n2)

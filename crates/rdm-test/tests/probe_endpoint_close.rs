@@ -20,7 +20,7 @@ fn root_span_or_named_loss(evidence: &std::path::Path, stderr: &str) {
 #[test]
 fn probe_with_unresolved_target_via_carrier_leaves_its_span() {
     let key = iroh::SecretKey::generate().public().to_string();
-    let (rt, admin) = serve_on_own_runtime(vec![node(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &NodeId::mint(), Some(key), Some("127.0.0.1:9".parse().unwrap()), Some(IncarnationId::mint()))]);
+    let (rt, admin) = serve_on_own_runtime(vec![node(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", "gateway", &NodeId::mint(), Some(key), Some("127.0.0.1:9".parse().unwrap()), Some(IncarnationId::mint()))]);
     let evidence = std::env::temp_dir().join(format!("rdm-probe-close-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&evidence);
     let ghost = NodeId::mint().to_string();
@@ -49,7 +49,7 @@ fn probe_with_unresolved_target_via_carrier_leaves_its_span() {
 fn probe_with_unresolved_carrier_sends_nothing_and_leaves_its_span() {
     let present = NodeId::mint();
     let key = iroh::SecretKey::generate().public().to_string();
-    let (rt, admin) = serve_on_own_runtime(vec![node(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", rdm_core::NodeKind::Broker, &present, Some(key), Some("127.0.0.1:9".parse().unwrap()), Some(IncarnationId::mint()))]);
+    let (rt, admin) = serve_on_own_runtime(vec![node(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker", &present, Some(key), Some("127.0.0.1:9".parse().unwrap()), Some(IncarnationId::mint()))]);
     let evidence = std::env::temp_dir().join(format!("rdm-probe-close-carrier-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&evidence);
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-rpc-probe"))

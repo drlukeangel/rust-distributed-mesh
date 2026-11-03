@@ -242,7 +242,7 @@ mod tests {
         #[async_trait::async_trait]
         impl crate::offline::TickleCalls for Calls {
             fn caller(&self) -> String {
-                "mesh1.admin.1".into()
+                "mesh1.node-admin.1".into()
             }
             fn deadline(&self) -> std::time::Duration {
                 std::time::Duration::from_secs(1)
@@ -261,7 +261,7 @@ mod tests {
                 Ok(Vec::new())
             }
         }
-        let mut node = crate::model::Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut node = crate::model::Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         node.node_id = crate::model::NodeId::mint();
         node.incarnation_id = Some(crate::model::IncarnationId::mint());
         let view = crate::topology::Topology {

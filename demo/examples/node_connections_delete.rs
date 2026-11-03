@@ -26,7 +26,7 @@ use rdm_client::{
     Peers,
 };
 use rdm_core::status::ConnectionScope;
-use rdm_core::NodeKind;
+
 use rdm_transport::{NodeTarget, RouteChoice};
 
 fn exact(n: &NodeView) -> Result<ExactBirth> {
@@ -58,14 +58,14 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_connections_delete [<path> <name>]")),
         _ => all
             .iter()
-            .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .find(|n| n.kind != "node-admin" && n.status == NodeStatus::Ready)
             .map(|n| n.name.clone())
             .ok_or_else(|| anyhow!("no Ready role node found in estate"))?,
     };
     let row = all.iter().find(|n| n.name == target).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
     let primary = all
         .iter()
-        .find(|n| n.mesh == row.mesh && n.kind == NodeKind::NodeAdmin && n.is_primary)
+        .find(|n| n.mesh == row.mesh && n.kind == "node-admin" && n.is_primary)
         .ok_or_else(|| anyhow!("no row names {}'s mesh-primary", row.mesh))?;
     let birth_target = exact(row)?;
 

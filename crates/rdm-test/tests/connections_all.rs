@@ -29,7 +29,7 @@ async fn call_on(admin: &AdminSide, target: &NodeTarget, req: &StatusRequest, sc
     }
 }
 
-/// A live `mesh1.rpc.7` the admin side has heard Ready and resolves.
+/// A live `mesh1.node.7` the admin side has heard Ready and resolves.
 async fn live_node(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId) -> (Launch, node::RunningNode) {
     let (launch, running, _) = live_node_with(admin, dir, fabric, |b| b).await;
     (launch, running)
@@ -44,8 +44,8 @@ async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &Fabri
         fabric: "fabric1".into(),
         fabric_id: fabric.clone(),
         mesh: "mesh1".into(),
-        kind: rdm_core::NodeKind::RpcNode,
-        name: rdm_core::PathName::new("mesh1.rpc", "7").unwrap(),
+        r#type: "node".into(),
+        name: rdm_core::PathName::new("mesh1.node", "7").unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -77,7 +77,7 @@ async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &Fabri
         digests.changed().await.unwrap();
     }
     let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-    admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+    admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
     (launch, running, seams)
 }
 
@@ -174,7 +174,7 @@ fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
         let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), scope: Some("after-all".into()), ..CallOptions::default() };
         let read = rdm_client::NodeRpc::new(&admin.observer.client).connections_get(&birth, &rdm_core::filter::Filter::new(), &opts).await;
         assert!(read.is_ok(), "the further call is answered: {read:?}");
-        let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let taken: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: taken.clone() };
         assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "a Node RPC connection is no connection the rename counts");
         let _ = std::fs::remove_dir_all(&dir);
@@ -348,7 +348,7 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         assert_eq!(refusals.len(), 1, "one refusal, on its own span: {refusals:#?}");
         assert_eq!((refusals[0].get("at").map(String::as_str), refusals[0].get("destination_node_id").map(String::as_str)), (Some("dial"), Some(admin.launcher.node_id.as_str())), "{refusals:#?}");
 
-        let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let taken: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.clone() };
         assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "a node that opened nothing takes its name");
         assert_eq!(running.topology_view.held_name(&launch.name), taken, "the node holds the applied name");
@@ -415,7 +415,7 @@ fn a_dial_that_connects_after_all_enters_no_pool_and_the_name_is_applied() {
         let refusals = fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block");
         assert_eq!(refusals.len(), 1, "one refusal, on its own span: {refusals:#?}");
         assert_eq!((refusals[0].get("at").map(String::as_str), refusals[0].get("destination_node_id").map(String::as_str)), (Some("pool"), Some(admin.launcher.node_id.as_str())), "{refusals:#?}");
-        let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap() };
+        let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: rdm_core::PathName::new("mesh1.node", "1").unwrap() };
         assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "no late connection makes the node Busy");
         let _ = std::fs::remove_dir_all(&dir);
     })

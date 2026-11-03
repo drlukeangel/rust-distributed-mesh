@@ -52,7 +52,7 @@ fn launch_by(root: &Running, name: PathName, dir: &std::path::Path, store: &std:
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
-        kind: rdm_core::NodeKind::NodeAdmin,
+        r#type: "node-admin".into(),
         name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
@@ -74,7 +74,7 @@ fn launch_by(root: &Running, name: PathName, dir: &std::path::Path, store: &std:
 /// What `root` verifies the join of `launch`'s birth against.
 fn deployed(launch: &Launch, held: Option<&PathName>) -> Deployed {
     let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-    Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
+    Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
@@ -148,13 +148,13 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         .expect("the Day-0 admin takes mesh1's primary role");
         let root_id = root.digest.lock().unwrap().node.node_id.to_string();
 
-        let launch = launch_by(&root, PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
+        let launch = launch_by(&root, PathName::new("mesh1.node-admin", "2").unwrap(), &admin_dir, &root_dir);
         let _ = root.runner.joins.expect(deployed(&launch, None));
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
         let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
         let admin = start_with(admin_cfg, Wiring { node_hooks: passing, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
-        until_ready("mesh1.admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
+        until_ready("mesh1.node-admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
         let first = tokio::time::timeout(DECLARED, async {
             loop {
                 let held = own_declarations(&spans, &launch.name);
@@ -165,13 +165,13 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
             }
         })
         .await
-        .expect("mesh1.admin.2 declares its first start's node.started");
+        .expect("mesh1.node-admin.2 declares its first start's node.started");
         assert_eq!(first.iter().map(|f| f["to_node_id"].clone()).collect::<Vec<_>>(), vec![root_id.clone()], "to its mesh's primary: {first:#?}");
 
         assert!(matches!(call(&root, &launch, &command(&launch, false)).await, StatusReply::Stopped { .. }), "the launched admin stops");
         let _ = root.runner.joins.expect(deployed(&launch, Some(&launch.name)));
         assert_eq!(call(&root, &launch, &command(&launch, true)).await, StatusReply::Started, "the launched admin starts after its stop");
-        until_ready("mesh1.admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
+        until_ready("mesh1.node-admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
         tokio::time::timeout(DECLARED, spans.recorded("rdm.node_admin.node.update.via-command-frame", |f| f.get("node_id").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("frame").map(String::as_str) == Some("node-started"))).await.expect("the mesh-primary records NodeStarted on the open command stream");
         let door = root.status_door().unwrap();
         assert_eq!(door.declared.lock().unwrap().node(&launch.node_id, &launch.incarnation), Some(rdm_core::status::NodeState::Ready));

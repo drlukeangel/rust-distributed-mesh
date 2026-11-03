@@ -5,9 +5,9 @@
 //! carry a scenario-recorded knob (`rdm_test::rafka_time_knob_dir`), applied by the
 //! testkit executable once the node has adopted its authority's time:
 //!
-//! - `mesh2.rpc.1` runs its monotonic time 2 % slow;
-//! - `mesh1.rpc.1` re-adopts a rafka-time 1.5 s ahead of the authority's;
-//! - `mesh2.rpc.2` runs on an OS clock an hour ahead (the clock the binaries never read).
+//! - `mesh2.node.1` runs its monotonic time 2 % slow;
+//! - `mesh1.node.1` re-adopts a rafka-time 1.5 s ahead of the authority's;
+//! - `mesh2.node.2` runs on an OS clock an hour ahead (the clock the binaries never read).
 
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
@@ -38,7 +38,7 @@ fn num(sp: &Value, k: &str) -> Option<i64> {
 }
 
 fn names() -> BTreeSet<rdm_core::PathName> {
-    ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| rdm_core::PathName::new(format!("{m}.admin"), i.to_string()).unwrap()).chain((1..=2).map(move |i| rdm_core::PathName::new(format!("{m}.rpc"), i.to_string()).unwrap()))).collect()
+    ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| rdm_core::PathName::new(format!("{m}.node-admin"), i.to_string()).unwrap()).chain((1..=2).map(move |i| rdm_core::PathName::new(format!("{m}.node"), i.to_string()).unwrap()))).collect()
 }
 
 const OS_CLOCK_SKEW_MS: i64 = 3_600_000;
@@ -67,15 +67,15 @@ async fn a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats() {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, text).unwrap();
     };
-    write(rdm_test::rafka_time_knob_dir(&estate.root), &rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), format!("drift_ppm={DRIFT_PPM}\n"));
-    write(rdm_test::rafka_time_knob_dir(&estate.root), &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), format!("ahead_ms={AHEAD_MS}\n"));
-    write(rdm_test::os_clock_skew_dir(&estate.root), &rdm_core::PathName::new("mesh2.rpc", "2").unwrap(), OS_CLOCK_SKEW_MS.to_string());
+    write(rdm_test::rafka_time_knob_dir(&estate.root), &rdm_core::PathName::new("mesh2.node", "1").unwrap(), format!("drift_ppm={DRIFT_PPM}\n"));
+    write(rdm_test::rafka_time_knob_dir(&estate.root), &rdm_core::PathName::new("mesh1.node", "1").unwrap(), format!("ahead_ms={AHEAD_MS}\n"));
+    write(rdm_test::os_clock_skew_dir(&estate.root), &rdm_core::PathName::new("mesh2.node", "2").unwrap(), OS_CLOCK_SKEW_MS.to_string());
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
     let nodes = estate.settles_to_named(&names(), Duration::from_secs(30)).await;
-    let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).expect("mesh2 has a primary").node_id.to_string();
+    let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 has a primary").node_id.to_string();
     let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).expect("one fabric primary").node_id.to_string();
     let id_at = |path: &str, name: &str| nodes.iter().find(|n| n.name.path == path && n.name.name == name).expect("the named fixture node exists").node_id.to_string();
-    let (slow_id, ahead_id, skewed_id) = (id_at("mesh2.rpc", "1"), id_at("mesh1.rpc", "1"), id_at("mesh2.rpc", "2"));
+    let (slow_id, ahead_id, skewed_id) = (id_at("mesh2.node", "1"), id_at("mesh1.node", "1"), id_at("mesh2.node", "2"));
 
     // The ahead node is told, by its mesh primary's stamps, that it is ahead; the slow node is stepped.
     // No object reports a node's clock discipline: the span the node records is the only place the fact lives.
@@ -92,7 +92,7 @@ async fn a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats() {
 
     // The knobs were applied, by the node they name.
     let knobs = named(&spans, "rdm.mesh.node.update.via-rafka-time-knob");
-    for (path, name, ahead, drift) in [("mesh2.rpc", "1", 0, DRIFT_PPM), ("mesh1.rpc", "1", AHEAD_MS, 0)] {
+    for (path, name, ahead, drift) in [("mesh2.node", "1", 0, DRIFT_PPM), ("mesh1.node", "1", AHEAD_MS, 0)] {
         assert!(knobs.iter().any(|sp| attr(sp, "node_path") == path && attr(sp, "node_name") == name && num(sp, "ahead_ms") == Some(ahead) && num(sp, "drift_ppm") == Some(drift)), "path {path}, name {name} ran under its knob: {knobs:?}");
     }
 
@@ -134,5 +134,5 @@ async fn a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats() {
 
     // The node on the OS clock an hour ahead: its rafka-time never read it.
     let os = skews(&spans, &skewed_id);
-    assert!(!os.is_empty() && os.iter().all(|(_, k)| k.abs() < 1_000), "mesh2.rpc.2 stood within 1 s of the host clock on an OS clock an hour ahead: {os:?}");
+    assert!(!os.is_empty() && os.iter().all(|(_, k)| k.abs() < 1_000), "mesh2.node.2 stood within 1 s of the host clock on an OS clock an hour ahead: {os:?}");
 }

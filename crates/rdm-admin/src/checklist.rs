@@ -4,7 +4,7 @@
 //! [`crate::fabric_status::FabricStates`]'s.
 
 use crate::accepted::FabricTopology;
-use crate::model::{NodeKind, PathName};
+use crate::model::{PathName};
 use crate::status_rpc::MeshReport;
 use rdm_core::framing::Birth;
 use rdm_core::{MemberStatus, MeshDigest};
@@ -135,7 +135,7 @@ pub(crate) fn fabric_missing(meshes: &[(String, Option<Birth>, bool)], my_mesh_d
 /// The report that counts for each of `meshes`, read for the primary `view` names it now
 /// ([`crate::status_rpc::Declared::report_of`]).
 pub(crate) fn reports_of<'a>(declared: &crate::status_rpc::Declared, view: &crate::topology::Topology, meshes: impl Iterator<Item = &'a str>) -> BTreeMap<String, MeshReport> {
-    meshes.filter_map(|m| declared.report_of(m, view.node_type_primary(m, NodeKind::NodeAdmin)).map(|r| (m.to_string(), r))).collect()
+    meshes.filter_map(|m| declared.report_of(m, view.node_type_primary(m, "node-admin")).map(|r| (m.to_string(), r))).collect()
 }
 
 #[cfg(test)]
@@ -145,14 +145,14 @@ mod tests {
     use rdm_core::{FabricId, MeshNode};
     use std::time::Instant;
 
-    fn path(mesh: &str, kind: NodeKind, ord: u32) -> PathName {
-        PathName::numbered(mesh, kind, ord)
+    fn path(mesh: &str, r#type: &str, ord: u32) -> PathName {
+        PathName::numbered(mesh, r#type, ord)
     }
 
     fn digest(p: &PathName, status: MemberStatus) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: MeshNode { mesh: "mesh1".into(), kind: NodeKind::RpcNode,
+            node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: crate::model::NodeId::mint(),
                 name: p.clone(),
                 endpoint_id: crate::model::EndpointId(String::new()),
@@ -177,7 +177,7 @@ mod tests {
     // @feature: node-lifecycle
     #[test]
     fn checklist_names_every_planned_birth_that_has_not_checked_in_since_the_opening() {
-        let (a1, r1, r2, r3) = (path("mesh1", NodeKind::NodeAdmin, 1), path("mesh1", NodeKind::RpcNode, 1), path("mesh1", NodeKind::RpcNode, 2), path("mesh1", NodeKind::RpcNode, 3));
+        let (a1, r1, r2, r3) = (path("mesh1", "node-admin", 1), path("mesh1", "node", 1), path("mesh1", "node", 2), path("mesh1", "node", 3));
         let planned = vec![a1.clone(), r1.clone(), r2.clone(), r3.clone()];
         let ready = digest(&r1, MemberStatus::Ready);
         let pending = digest(&r2, MemberStatus::Pending);

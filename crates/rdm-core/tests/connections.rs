@@ -6,15 +6,15 @@ use rdm_core::connections::{
     ConnectionsHeld, DirectRecovery, EffectiveRoute, NodeConnection, StaticIncarnations, INVALID_CARRIER_SUPERSEDED,
     INVALID_DESTINATION_SUPERSEDED,
 };
-use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
+use rdm_core::{IncarnationId, NodeId, PathName};
 use std::sync::Arc;
 
-fn path(kind: NodeKind, ordinal: u32) -> PathName {
-    PathName::numbered("mesh1", kind, ordinal)
+fn path(r#type: &str, ordinal: u32) -> PathName {
+    PathName::numbered("mesh1", r#type, ordinal)
 }
 
-fn end(kind: NodeKind, ordinal: u32, incarnation: Option<&str>) -> ConnectionEnd {
-    ConnectionEnd { mesh: "mesh1".into(), kind, name: path(kind, ordinal), node_id: NodeId::mint(), incarnation: incarnation.map(|i| IncarnationId::parse(&rdm_core::fixture_crockford60(i)).unwrap()) }
+fn end(r#type: &str, ordinal: u32, incarnation: Option<&str>) -> ConnectionEnd {
+    ConnectionEnd { mesh: "mesh1".into(), r#type: r#type.to_string(), name: path(r#type, ordinal), node_id: NodeId::mint(), incarnation: incarnation.map(|i| IncarnationId::parse(&rdm_core::fixture_crockford60(i)).unwrap()) }
 }
 
 fn direct(source: ConnectionEnd, destination: ConnectionEnd, state: ConnectionState, at: u64) -> NodeConnection {
@@ -37,12 +37,14 @@ fn proxy(source: ConnectionEnd, carrier: ConnectionEnd, destination: ConnectionE
     }
 }
 
-const RPC: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
+fn rpc() -> CarrierPolicy {
+    CarrierPolicy::Proxy { carrier_type: "node".into() }
+}
 
 /// own = rpc.1, carrier = rpc.2, destination = rpc.3; the carrier's connection to the destination
 /// names destination process `d1` and carrier process `c1`.
 fn estate() -> (ConnectionsHeld, ConnectionEnd, ConnectionEnd, ConnectionEnd) {
-    let (own, carrier, dest) = (end(NodeKind::RpcNode, 1, Some("o1")), end(NodeKind::RpcNode, 2, Some("c1")), end(NodeKind::RpcNode, 3, Some("d1")));
+    let (own, carrier, dest) = (end("node", 1, Some("o1")), end("node", 2, Some("c1")), end("node", 3, Some("d1")));
     let mut held = ConnectionsHeld::new();
     held.set_own_source(own.node_id.clone());
     held.mark_complete();
@@ -84,14 +86,14 @@ fn at_one_instant_a_drop_wins_over_a_connect_whichever_arrives_first() {
 #[test]
 fn the_route_prefers_a_valid_proxy_then_an_active_direct_then_none() {
     let (mut held, own, carrier, dest) = estate();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: false });
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false });
 
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: true });
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: true });
 
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::ViaPeer { carrier: carrier.node_id.clone(), proxy: p });
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::ViaPeer { carrier: carrier.node_id.clone(), proxy: p });
 
     assert_eq!(
         resolve(&held, &own.node_id, &dest.node_id, CarrierPolicy::NoProxy).route,
@@ -107,10 +109,10 @@ fn the_route_prefers_a_valid_proxy_then_an_active_direct_then_none() {
 fn a_complete_projection_with_no_direct_fact_dials_and_a_standing_failed_fact_does_not() {
     let (mut held, own, _carrier, dest) = estate();
     assert!(!held.holds_direct_fact(&own.node_id, &dest.node_id));
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: false });
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false });
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 20)).unwrap();
     assert!(held.holds_direct_fact(&own.node_id, &dest.node_id));
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::NoActiveRoute);
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute);
 }
 
 /// CONTRACT (connections.md section 9.1: a reconnect series exists only when the latest Direct is
@@ -122,24 +124,24 @@ fn a_complete_projection_with_no_direct_fact_dials_and_a_standing_failed_fact_do
 fn a_dropped_direct_is_dialled_again_and_only_a_failed_one_waits_for_its_series() {
     let (mut held, own, _carrier, dest) = estate();
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: true });
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: true });
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Disconnected, 30)).unwrap();
     assert!(held.holds_direct_fact(&own.node_id, &dest.node_id));
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: false }, "a drop is no failure: nothing else dials it again");
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "a drop is no failure: nothing else dials it again");
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 40)).unwrap();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::NoActiveRoute, "the series owns a Failed Direct's retry");
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute, "the series owns a Failed Direct's retry");
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 50)).unwrap();
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Disconnected, 60)).unwrap();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: false }, "a later drop supersedes the series' Failed");
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "a later drop supersedes the series' Failed");
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Refused, 70)).unwrap();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: false }, "an acceptor's Refused is no failure of this source");
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "an acceptor's Refused is no failure of this source");
 }
 
 #[test]
 fn an_incomplete_projection_answers_a_direct_dial_it_cannot_vouch_for() {
     let own = NodeId::mint();
     let held = ConnectionsHeld::new();
-    assert_eq!(resolve(&held, &own, &NodeId::mint(), RPC).route, EffectiveRoute::Direct { known: false });
+    assert_eq!(resolve(&held, &own, &NodeId::mint(), rpc()).route, EffectiveRoute::Direct { known: false });
 }
 
 /// The topology view names `own`, `carrier` and `dest` as `estate()` recorded them.
@@ -162,7 +164,7 @@ fn a_stale_destination_incarnation_is_superseded() {
     // The destination restarts: the topology view now holds process d2 at its path.
     m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
-    let r = resolve(&held, &own.node_id, &dest.node_id, RPC);
+    let r = resolve(&held, &own.node_id, &dest.node_id, rpc());
     assert_eq!(r.route, EffectiveRoute::Direct { known: false });
     assert_eq!(r.delete, vec![(p, INVALID_DESTINATION_SUPERSEDED)], "the superseded Proxy is handed back for delete");
 }
@@ -183,7 +185,7 @@ fn a_stale_carrier_incarnation_is_superseded() {
 /// `connection-lost`.
 #[test]
 fn a_proxy_is_valid_without_the_carriers_connection_in_the_sources_held_graph() {
-    let (own, carrier, dest) = (end(NodeKind::RpcNode, 1, Some("o1")), end(NodeKind::RpcNode, 2, Some("c1")), end(NodeKind::RpcNode, 3, Some("d1")));
+    let (own, carrier, dest) = (end("node", 1, Some("o1")), end("node", 2, Some("c1")), end("node", 3, Some("d1")));
     let mut held = ConnectionsHeld::new();
     held.set_own_source(own.node_id.clone());
     held.mark_complete();
@@ -191,7 +193,7 @@ fn a_proxy_is_valid_without_the_carriers_connection_in_the_sources_held_graph() 
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
     assert_eq!(proxy_invalid(&held, &p), None);
-    assert!(matches!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::ViaPeer { .. }));
+    assert!(matches!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::ViaPeer { .. }));
     held.apply(direct(carrier.clone(), dest.clone(), ConnectionState::Disconnected, 40)).unwrap();
     assert_eq!(proxy_invalid(&held, &p), None);
 }
@@ -203,10 +205,10 @@ fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     let (mut held, own, carrier, dest) = estate();
     let m = members(&mut held, &[&carrier, &dest]);
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: true });
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: true });
     assert_eq!(held.active_directs_to(&dest.node_id).unwrap().len(), 2);
     m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: false }, "the fact names d1, the topology view holds d2");
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "the fact names d1, the topology view holds d2");
     assert!(held.active_directs_to(&dest.node_id).unwrap().is_empty(), "no connection names the current destination");
 }
 
@@ -221,13 +223,13 @@ fn a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call
     let (mut held, own, carrier, dest) = estate();
     let m = members(&mut held, &[&carrier, &dest]);
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 20)).unwrap();
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::NoActiveRoute, "the series of the current birth owns the retry");
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute, "the series of the current birth owns the retry");
     m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: false }, "the Failed fact names d1, the topology view holds d2");
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "the Failed fact names d1, the topology view holds d2");
     m.set(dest.node_id.clone(), dest.name.clone(), dest.incarnation.clone().unwrap());
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::NoActiveRoute);
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute);
     m.depart(dest.node_id.clone(), dest.name.clone());
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: false }, "the node the Failed fact names left its path");
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "the node the Failed fact names left its path");
 }
 
 /// CONTRACT: a destination that deleted is no current birth: the Direct fact toward it
@@ -243,7 +245,7 @@ fn a_direct_fact_and_a_proxy_naming_a_deleted_destination_are_not_current() {
     m.depart(dest.node_id.clone(), dest.name.clone());
     assert_eq!(held.active_len(), 0, "no Direct fact names a current destination");
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: false });
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false });
 }
 
 /// CONTRACT (connections.md §8: "If any dependency is superseded, the source writes Proxy
@@ -260,25 +262,25 @@ fn a_proxy_naming_a_deleted_destination_birth_is_handed_back_at_the_next_resolve
     let m = members(&mut held, &[&carrier, &dest]);
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
-    let successor = end(NodeKind::RpcNode, 3, Some("d2"));
+    let successor = end("node", 3, Some("d2"));
     m.set(successor.node_id.clone(), successor.name.clone(), successor.incarnation.clone().unwrap());
-    assert!(resolve(&held, &own.node_id, &successor.node_id, RPC).delete.is_empty(), "the Proxy's births are current: nothing is handed back");
+    assert!(resolve(&held, &own.node_id, &successor.node_id, rpc()).delete.is_empty(), "the Proxy's births are current: nothing is handed back");
     m.depart(dest.node_id.clone(), dest.name.clone());
-    let r = resolve(&held, &own.node_id, &successor.node_id, RPC);
+    let r = resolve(&held, &own.node_id, &successor.node_id, rpc());
     assert_eq!(r.route, EffectiveRoute::Direct { known: false }, "the successor is routed on its own, never over the old birth's Proxy");
     assert_eq!(r.delete, vec![(p, INVALID_DESTINATION_SUPERSEDED)], "the old birth's Proxy is handed back for delete, by name");
 }
 
 #[test]
 fn a_valid_proxy_through_a_carrier_kind_the_protocol_forbids_is_skipped_not_disconnected() {
-    let (own, dest) = (end(NodeKind::RpcNode, 1, Some("o1")), end(NodeKind::RpcNode, 3, Some("d1")));
-    let admin = end(NodeKind::NodeAdmin, 1, Some("a1"));
+    let (own, dest) = (end("node", 1, Some("o1")), end("node", 3, Some("d1")));
+    let admin = end("node-admin", 1, Some("a1"));
     let mut held = ConnectionsHeld::new();
     held.set_own_source(own.node_id.clone());
     held.mark_complete();
     held.apply(direct(admin.clone(), dest.clone(), ConnectionState::Connected, 10)).unwrap();
     held.apply(proxy(own.clone(), admin, dest.clone(), 20)).unwrap();
-    let r = resolve(&held, &own.node_id, &dest.node_id, RPC);
+    let r = resolve(&held, &own.node_id, &dest.node_id, rpc());
     assert_eq!(r.route, EffectiveRoute::Direct { known: false });
     assert!(r.delete.is_empty());
 }
@@ -286,9 +288,9 @@ fn a_valid_proxy_through_a_carrier_kind_the_protocol_forbids_is_skipped_not_disc
 #[test]
 fn another_nodes_proxy_is_never_held() {
     let (mut held, _own, carrier, dest) = estate();
-    let other = end(NodeKind::RpcNode, 4, Some("x1"));
+    let other = end("node", 4, Some("x1"));
     held.apply(proxy(other.clone(), carrier, dest.clone(), 30)).unwrap();
-    assert_eq!(resolve(&held, &other.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: false });
+    assert_eq!(resolve(&held, &other.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false });
 }
 
 #[test]
@@ -313,30 +315,30 @@ fn carriers_are_asked_from_the_topology_in_id_order_spread_by_source() {
     let dest = NodeId::parse(&rdm_core::fixture_crockford60("carrier-9")).unwrap();
     let incarnation = IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap();
     let own = NodeId::parse(&rdm_core::fixture_crockford60("carrier-1")).unwrap();
-    let at_path = |n: &str| rdm_core::PathName::new("mesh1.rpc", n).unwrap();
+    let at_path = |n: &str| rdm_core::PathName::new("mesh1.node", n).unwrap();
     let carrier = |n: &str| NodeId::parse(&rdm_core::fixture_crockford60(&format!("carrier-{n}"))).unwrap();
     // Path order is not node-id order: carrier-4 stands first by path, carrier-2 last.
     let topology = vec![
-        (carrier("4"), at_path("1"), "mesh1".into(), NodeKind::RpcNode),
-        (carrier("2"), at_path("3"), "mesh1".into(), NodeKind::RpcNode),
-        (own.clone(), at_path("0"), "mesh1".into(), NodeKind::RpcNode),
-        (dest.clone(), at_path("9"), "mesh1".into(), NodeKind::RpcNode),
-        (carrier("3"), at_path("2"), "mesh1".into(), NodeKind::RpcNode),
-        (NodeId::parse(&rdm_core::fixture_crockford60("peer")).unwrap(), rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2".into(), NodeKind::RpcNode),
-        (NodeId::parse(&rdm_core::fixture_crockford60("admin")).unwrap(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1".into(), NodeKind::NodeAdmin),
+        (carrier("4"), at_path("1"), "mesh1".into(), "node".into()),
+        (carrier("2"), at_path("3"), "mesh1".into(), "node".into()),
+        (own.clone(), at_path("0"), "mesh1".into(), "node".into()),
+        (dest.clone(), at_path("9"), "mesh1".into(), "node".into()),
+        (carrier("3"), at_path("2"), "mesh1".into(), "node".into()),
+        (NodeId::parse(&rdm_core::fixture_crockford60("peer")).unwrap(), rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2".into(), "node".into()),
+        (NodeId::parse(&rdm_core::fixture_crockford60("admin")).unwrap(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1".into(), "node-admin".into()),
     ];
-    let order = carrier_order(&own, "mesh1", &dest, &incarnation, true, &[NodeKind::RpcNode], topology.clone());
+    let order = carrier_order(&own, "mesh1", &dest, &incarnation, true, &["node".to_string()], topology.clone());
     let in_path_order = [carrier("4"), carrier("3"), carrier("2")];
     let at = (rdm_core::connections::spread(&own.to_string(), &dest.to_string(), incarnation.as_str()) % 3) as usize;
     let expected: Vec<NodeId> = (0..3).map(|k| in_path_order[(at + k) % 3].clone()).collect();
     assert_eq!(order, expected, "the mesh's carriers in path order from the spread, wrapping");
-    assert_eq!(carrier_order(&own, "mesh1", &dest, &incarnation, true, &[NodeKind::RpcNode], topology.clone()), order, "the order is deterministic");
+    assert_eq!(carrier_order(&own, "mesh1", &dest, &incarnation, true, &["node".to_string()], topology.clone()), order, "the order is deterministic");
     let firsts: std::collections::BTreeSet<NodeId> = (1..=8u32)
-        .map(|o| carrier_order(&NodeId::parse(&rdm_core::fixture_crockford60(&format!("source-{o}"))).unwrap(), "mesh1", &dest, &incarnation, true, &[NodeKind::RpcNode], topology.clone())[0].clone())
+        .map(|o| carrier_order(&NodeId::parse(&rdm_core::fixture_crockford60(&format!("source-{o}"))).unwrap(), "mesh1", &dest, &incarnation, true, &["node".to_string()], topology.clone())[0].clone())
         .collect();
     assert!(firsts.len() > 1, "sources spread over the carriers: {firsts:?}");
-    assert!(carrier_order(&own, "mesh1", &dest, &incarnation, false, &[NodeKind::RpcNode], topology.clone()).is_empty(), "a protocol with proxy false asks no carrier");
-    assert!(carrier_order(&own, "mesh1", &dest, &incarnation, true, &[NodeKind::Gateway], topology).is_empty(), "no node of a kind the protocol lets carry");
+    assert!(carrier_order(&own, "mesh1", &dest, &incarnation, false, &["node".to_string()], topology.clone()).is_empty(), "a protocol with proxy false asks no carrier");
+    assert!(carrier_order(&own, "mesh1", &dest, &incarnation, true, &["gateway".to_string()], topology).is_empty(), "no node of a kind the protocol lets carry");
 }
 
 
@@ -364,10 +366,10 @@ fn rename_preserves_routes_and_pair_reuse_keeps_births_independent() {
     held.set_own_source(own.node_id.clone());
     let renamed = proxy(own.clone(), carrier.clone(), dest.clone(), 40);
     assert_eq!(renamed.index(), original_index);
-    assert!(matches!(resolve(&held, &own.node_id, &dest.node_id, RPC).route,
+    assert!(matches!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route,
         EffectiveRoute::ViaPeer { carrier: id, .. } if id == carrier.node_id));
     assert_eq!(held.own_latest_directs(), vec![&failed]);
-    assert_eq!(resolve(&held, &own.node_id, &successor.node_id, RPC).route, EffectiveRoute::Direct { known: false });
+    assert_eq!(resolve(&held, &own.node_id, &successor.node_id, rpc()).route, EffectiveRoute::Direct { known: false });
     assert_eq!(held.own_proxy_for(&successor.node_id, rdm_core::connections::ALPN), Some(None));
     // Equal incarnation strings across different IDs do not merge indexes or stamps.
     let successor_fact = direct(own.clone(), successor.clone(), ConnectionState::Connected, 1);
@@ -377,5 +379,5 @@ fn rename_preserves_routes_and_pair_reuse_keeps_births_independent() {
     held.apply(renamed).unwrap();
     assert_eq!(held.own_active_proxies().len(), 1);
     topology.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::mint());
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).delete.first().map(|(_, reason)| *reason), Some(INVALID_DESTINATION_SUPERSEDED));
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).delete.first().map(|(_, reason)| *reason), Some(INVALID_DESTINATION_SUPERSEDED));
 }

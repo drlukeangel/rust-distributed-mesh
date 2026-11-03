@@ -163,9 +163,9 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     // Every admin of both meshes holds all eight members ready before anything is cut.
     let everyone: Vec<PathName> = nodes.iter().map(|n| location(&n)).collect();
     // The topology spans name an admin by its node id.
-    let admins: Vec<(String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| (s(&n["node_id"]), s(&n["mesh"]))).collect();
+    let admins: Vec<(String, String)> = nodes.iter().filter(|n| n["type"] == "node-admin").map(|n| (s(&n["node_id"]), s(&n["mesh"]))).collect();
     // Each admin is asked at its own location: `node.get` answers as that admin's view holds it.
-    let bases: Vec<(PathName, PathName)> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| (location(n), location(n))).collect();
+    let bases: Vec<(PathName, PathName)> = nodes.iter().filter(|n| n["type"] == "node-admin").map(|n| (location(n), location(n))).collect();
     assert_eq!(admins.len(), 4, "{nodes:#?}");
     for (name, base) in &bases {
         wait_for(&format!("{name:?} holds every member ready before the cut"), Duration::from_secs(60), || async { holds_all(&estate.node_values_at(base).await, &everyone).then_some(()) }).await;
@@ -180,7 +180,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     for n in &nodes {
         // The bootstrap admin is adopted on day 0 and has no provider deployment record.
         let name = location(&n);
-        let pid = if name == Estate::path("mesh1.admin", "1") { estate.bootstrap_pid().expect("the bootstrap admin runs") as u64 } else { estate.pid_of(&name).await };
+        let pid = if name == Estate::path("mesh1.node-admin", "1") { estate.bootstrap_pid().expect("the bootstrap admin runs") as u64 } else { estate.pid_of(&name).await };
         pids.insert(name, pid);
     }
     let before: BTreeMap<PathName, (String, String)> = nodes.iter().map(|n| (location(&n), (s(&n["node_id"]), s(&n["incarnation_id"])))).collect();
@@ -256,7 +256,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     }
     // Ordinary nodes hold the peer mesh as topology (R-G2): nothing they hear is liveness, so no
     // rpc node ever marks a mesh silent, in the cut or before it.
-    let ordinary: BTreeSet<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node").map(|n| s(&n["node_id"])).collect();
+    let ordinary: BTreeSet<String> = nodes.iter().filter(|n| n["type"] == "node").map(|n| s(&n["node_id"])).collect();
     let ordinary_silent: Vec<&(String, String)> = silent.iter().filter(|(o, _)| ordinary.contains(o)).collect();
     assert!(ordinary_silent.is_empty(), "an ordinary node never marks a mesh silent for want of forwarded frames: {ordinary_silent:?}");
     // Interrupted coverage: the peer mesh is unheard by every admin.
@@ -320,7 +320,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let _ = (&fabric_primary_before, t_start);
 
     // ---- deletion: a rpc node is deleted through a Build (a legal removal, never an admin)
-    let victim = after.iter().find(|n| n["kind"] == "rpc_node" && n["mesh"] == "mesh2" && n["is_primary"] == false).cloned().expect("a non-primary rpc node of mesh2");
+    let victim = after.iter().find(|n| n["type"] == "node" && n["mesh"] == "mesh2" && n["is_primary"] == false).cloned().expect("a non-primary rpc node of mesh2");
     let (victim_name, victim_id) = (location(&victim), s(&victim["node_id"]));
     let delete_at = now_ns();
     let mut delete = estate.nodes_obj().await.delete(&victim_name).await.unwrap_or_else(|e| panic!("the node.delete of {victim_name:?} was refused: {e}"));
@@ -369,7 +369,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     // ---- deletion of a node-admin: one non-primary admin of the peer mesh, a Build removal
     // (that mesh keeps its primary admin; never the fabric primary)
     let nodes3 = estate.node_values().await;
-    let admin_victim = nodes3.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] == "mesh2" && n["is_primary"] == false && n["is_fabric_primary"] != true).cloned().expect("a non-primary admin of mesh2");
+    let admin_victim = nodes3.iter().find(|n| n["type"] == "node-admin" && n["mesh"] == "mesh2" && n["is_primary"] == false && n["is_fabric_primary"] != true).cloned().expect("a non-primary admin of mesh2");
     let (av_name, av_id) = (location(&admin_victim), s(&admin_victim["node_id"]));
     let av_pid = pids[&av_name];
     let survivors: Vec<(String, String)> = admins.iter().filter(|(n, _)| *n != av_id).cloned().collect();

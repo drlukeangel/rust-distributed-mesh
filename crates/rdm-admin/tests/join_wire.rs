@@ -16,7 +16,7 @@ fn answer() -> JoinAnswer {
             build: Some(BuildFloor { build_id: rdm_admin::build::BuildId::mint(), attempt: 2 }),
             rafka_time_ms: 1_700_000_000_123,
             member_cert: vec![0xca, 0xfe],
-            name: Some(rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap()),
+            name: Some(rdm_core::PathName::new("mesh1.node", "1-old").unwrap()),
         },
         statuses: vec![],
     }
@@ -77,7 +77,7 @@ fn the_answers_member_cert_name_and_cert_policy_are_the_control_frames_last_fiel
 fn joined_statuses_keep_the_authored_context_and_committed_revision() {
     let mut answer = answer();
     let author = crate::gossip_wire::author();
-    let frame = rdm_transport::topology::Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: 1000 }.authored(&author, 2, 1000);
+    let frame = rdm_transport::topology::Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: Some("mesh2.node-admin.1".into()), changed_at_rafka_ms: 1000 }.authored(&author, 2, 1000);
     answer.statuses.push(frame.clone());
     let restored = answer_from_wire(&answer_to_wire(&answer).unwrap()).unwrap();
     assert_eq!(restored.statuses[0].encode(), frame.encode());

@@ -17,7 +17,7 @@
 //! The shapes run one after another in one test, each on its own fabric.
 
 use crate::build_log;
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
+use rdm_client::{FabricDesired, MeshDesired};
 use rdm_test::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -37,7 +37,7 @@ fn owner(shape: &str) -> Owner {
 /// `(mesh, node_admin, rpc_node)` per mesh.
 async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     let estate = Estate::bootstrap(owner(shape), "fabric1", "mesh1").await;
-    let desired = FabricDesired { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
+    let desired = FabricDesired { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired::of(*m, [("node-admin", *a), ("node", *r)])).collect() };
     let build_id = estate.reconcile(&desired).await.build_id.to_string();
     let build = build_log::build_value(&estate, &build_id).await;
     estate.artifact("build.json", &build);
@@ -45,8 +45,8 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     // Every desired node is live and ready; nothing else exists.
     let mut want: Vec<rdm_core::PathName> = Vec::new();
     for (m, a, r) in meshes {
-        want.extend((1..=*a).map(|i| rdm_core::PathName::new(format!("{m}.admin"), i.to_string()).unwrap()));
-        want.extend((1..=*r).map(|i| rdm_core::PathName::new(format!("{m}.rpc"), i.to_string()).unwrap()));
+        want.extend((1..=*a).map(|i| rdm_core::PathName::new(format!("{m}.node-admin"), i.to_string()).unwrap()));
+        want.extend((1..=*r).map(|i| rdm_core::PathName::new(format!("{m}.node"), i.to_string()).unwrap()));
     }
     want.sort();
     let views = estate.settles_to_named(&want.iter().cloned().collect(), Duration::from_secs(15)).await;
@@ -56,20 +56,20 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     // One primary per node type, one fabric primary (an admin primary).
     let mut primaries: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for n in &nodes {
-        let node_type = (n["mesh"].as_str().unwrap().to_string(), n["kind"].as_str().unwrap().to_string());
-        let e = primaries.entry(node_type).or_default();
+        let r#type = (n["mesh"].as_str().unwrap().to_string(), n["type"].as_str().unwrap().to_string());
+        let e = primaries.entry(r#type).or_default();
         if n["is_primary"] == true {
             e.push(n["node_id"].as_str().unwrap().to_string());
         }
     }
     assert_eq!(primaries.len(), meshes.len() * 2, "{shape}: every declared node type is present");
-    for (node_type, p) in &primaries {
-        assert_eq!(p.len(), 1, "{shape}: node type {node_type:?} has primaries {p:?}");
+    for (r#type, p) in &primaries {
+        assert_eq!(p.len(), 1, "{shape}: node type {:?} has primaries {p:?}", r#type);
     }
     let fabric_primaries: Vec<&Value> = nodes.iter().filter(|n| n["is_fabric_primary"] == true).collect();
     assert_eq!(fabric_primaries.len(), 1, "{shape}: fabric primaries {fabric_primaries:?}");
     let fp = fabric_primaries[0];
-    assert_eq!((fp["kind"].as_str(), fp["is_primary"].as_bool()), (Some("node_admin"), Some(true)), "{shape}: {fp}");
+    assert_eq!((fp["type"].as_str(), fp["is_primary"].as_bool()), (Some("node-admin"), Some(true)), "{shape}: {fp}");
     let fabric = serde_json::to_value(estate.fabric_view().await).expect("a view serializes");
     assert_eq!(fabric["fabric_primary"], fp["node_id"], "{shape}: {fabric}");
     for m in fabric["meshes"].as_array().unwrap() {
@@ -105,7 +105,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
             assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "{shape}: an attempt decided after the role moved starts its own trace: {r}");
         }
     }
-    let bootstrap_location = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+    let bootstrap_location = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     let created: Vec<_> = views.iter().filter(|n| n.name != bootstrap_location).collect();
     for node in created {
         let step = named(&spans, "rdm.node_admin.deployment.update.via-step")

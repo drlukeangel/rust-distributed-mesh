@@ -22,14 +22,14 @@ pub enum InternalMeshFrame {
         org_id: u64,
     },
     /// First frame sent after a peer connection opens. Carries the sender's mesh_id
-    /// and node_type so the receiver can tag peer.connected with peer_mesh_id and
+    /// and type so the receiver can tag peer.connected with peer_mesh_id and
     /// emit a cross-mesh peer.connected span when meshes differ. Mesh-to-mesh phase
     /// 2 substrate per feature `mesh-to-mesh`.
     Hello {
         /// Sender mesh identifier.
         mesh_id: String,
         /// Sender node type.
-        node_type: String,
+        r#type: String,
     },
 }
 
@@ -128,14 +128,14 @@ mod tests {
         let ctx = Context::new();
         let frame = InternalMeshFrame::Hello {
             mesh_id: "mesh-A".into(),
-            node_type: "broker".into(),
+            r#type: "broker".into(),
         };
         let encoded = frame.encode_with_context(&ctx);
         let (_, frame2) = InternalMeshFrame::decode_with_context(&encoded).unwrap();
         match frame2 {
-            InternalMeshFrame::Hello { mesh_id, node_type } => {
+            InternalMeshFrame::Hello { mesh_id, r#type } => {
                 assert_eq!(mesh_id, "mesh-A");
-                assert_eq!(node_type, "broker");
+                assert_eq!(r#type, "broker");
             }
             other => panic!("expected Hello, got {other:?}"),
         }

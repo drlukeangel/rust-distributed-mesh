@@ -3,13 +3,13 @@
 //! `(mesh, kind)` node type). A product reads the primary from node-admin's public view and never
 //! computes it: nothing here orders NodeIds.
 
-use rdm_core::NodeKind;
+
 use rdm_client::NodeView;
 
 /// The node-type primary of `(mesh, kind)` as the view advertises it: the one row with
 /// `is_primary`, or `None` while the view advertises none (an election in flight).
-pub fn primary_of<'a>(view: &'a [NodeView], mesh: &str, kind: NodeKind) -> Option<&'a NodeView> {
-    view.iter().find(|n| n.mesh == mesh && n.kind == kind && n.is_primary)
+pub fn primary_of<'a>(view: &'a [NodeView], mesh: &str, r#type: &str) -> Option<&'a NodeView> {
+    view.iter().find(|n| n.mesh == mesh && n.r#type == r#type && n.is_primary)
 }
 
 /// The fabric primary as the view advertises it.

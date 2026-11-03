@@ -95,7 +95,7 @@ pub struct ResolvedNodeLaunch {
     /// The explicitly declared owning mesh of this runtime.
     pub mesh: String,
     /// The explicitly declared node kind, independent of its pair spelling.
-    pub kind: rdm_core::NodeKind,
+    pub r#type: String,
     /// The node to run.
     pub node: PathName,
     /// The deployment the runtime belongs to.
@@ -627,7 +627,7 @@ mod tests {
     async fn the_held_runtimes_hand_off_is_held_runtimes_1_and_another_format_is_refused_by_name() {
         let dir = crate::test_support::tempdir("held-runtimes");
         assert_eq!(held_runtimes_in(&dir).await.unwrap(), Vec::new(), "a data dir with no hand-off holds no rows");
-        let rows = vec![crate::storage::RuntimeRow { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node_id: crate::model::NodeId::mint(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), incarnation_id: crate::model::IncarnationId::mint(), runtime: fact("process:host-a"), data_dir: Some("/data/mesh1.rpc.1".into()) }];
+        let rows = vec![crate::storage::RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(), node_id: crate::model::NodeId::mint(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), incarnation_id: crate::model::IncarnationId::mint(), runtime: fact("process:host-a"), data_dir: Some("/data/mesh1.node.1".into()) }];
         write_held_runtimes(&dir, &rows).await.unwrap();
         let written: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(HELD_RUNTIMES_FILE)).unwrap()).unwrap();
         assert_eq!(written, serde_json::json!({ "format": "held-runtimes/1", "rows": serde_json::to_value(&rows).unwrap() }), "the hand-off's shape");

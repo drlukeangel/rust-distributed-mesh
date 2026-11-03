@@ -162,7 +162,7 @@ pub struct BuildStepReceipt {
     pub build_id: BuildId,
     /// The attempt.
     pub attempt: u32,
-    /// The operation's idempotency key (`node.create:mesh1.rpc.2`, ...).
+    /// The operation's idempotency key (`node.create:mesh1.node.2`, ...).
     pub operation: rdm_core::OperationId,
     /// The step.
     pub step: String,
@@ -3062,11 +3062,11 @@ mod tests {
 
     #[test]
     fn a_structured_step_without_optional_output_decodes() {
-        let mut without_output = serde_json::to_value(step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()))).unwrap();
+        let mut without_output = serde_json::to_value(step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()))).unwrap();
         without_output.as_object_mut().unwrap().remove("output");
         let receipt: BuildStepReceipt = serde_json::from_value(without_output).unwrap();
         assert_eq!(receipt.output, None);
-        let with = BuildStepReceipt { output: Some(serde_json::json!({"pid": 7})), ..step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap())) };
+        let with = BuildStepReceipt { output: Some(serde_json::json!({"pid": 7})), ..step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
         let back: BuildStepReceipt = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
         assert_eq!(back, with);
     }
@@ -3217,7 +3217,7 @@ mod tests {
 
     #[test]
     fn open_delete_overlays_are_derived_from_the_build_facts() {
-        let op = |name: rdm_core::PathName| { let node_id = rdm_core::NodeId::mint(); rdm_core::LifecycleOp { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        let op = |name: rdm_core::PathName| { let node_id = rdm_core::NodeId::mint(); rdm_core::LifecycleOp { mesh: "mesh1".into(), r#type: "node".into(),
             build_id: rdm_core::fixture_crockford60("b1"),
             attempt: 1,
             operation: rdm_core::OperationId::node("node.delete", &node_id),
@@ -3228,7 +3228,7 @@ mod tests {
             traceparent: None,
             tracestate: None,
         }};
-        let (a, b) = (op(rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), op(rdm_core::PathName::new("mesh1.rpc", "2").unwrap()));
+        let (a, b) = (op(rdm_core::PathName::new("mesh1.node", "1").unwrap()), op(rdm_core::PathName::new("mesh1.node", "2").unwrap()));
         let with = |operation: &rdm_core::OperationId, step: &str, output: &rdm_core::LifecycleOp| {
             BuildFact::Step(BuildStepReceipt {
                 mesh: None,
@@ -3271,20 +3271,20 @@ mod tests {
                 mesh: None,
                 build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
                 attempt: 2,
-                operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
+                operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
                 step: "NodeDeleting".into(),
                 outcome: StepOutcome::Complete,
                 output,
                 executor: None,
             })
         };
-        let old_shape = serde_json::json!({"build_id": rdm_core::fixture_crockford60("b1"), "attempt": 2, "operation": "node.delete:mesh1.rpc.1", "event_at_ms": 1});
+        let old_shape = serde_json::json!({"build_id": rdm_core::fixture_crockford60("b1"), "attempt": 2, "operation": "node.delete:mesh1.node.1", "event_at_ms": 1});
         let facts = vec![BuildFact::Accepted(intent("b1")), step(Some(old_shape))];
         let read = in_flight_ops(&facts, &fold(&facts));
         assert!(read.ops.is_empty(), "an unreadable step opens no overlay");
         assert_eq!(read.unrecognised.len(), 1, "{read:?}");
         let u = &read.unrecognised[0];
-        assert_eq!((u.attempt, &u.operation, u.step.as_str()), (2, &rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), "NodeDeleting"));
+        assert_eq!((u.attempt, &u.operation, u.step.as_str()), (2, &rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), "NodeDeleting"));
         assert!(u.reason.contains("not a LifecycleOp this build reads"), "{}", u.reason);
         let held = [BuildFact::Accepted(intent("b1")), step(None)];
         let none = in_flight_ops(&held, &fold(&held));
@@ -3383,27 +3383,27 @@ mod tests {
         m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         let (inc, other) = (crate::model::IncarnationId::mint(), crate::model::IncarnationId::mint());
         let node_id = crate::model::NodeId::mint();
-        let act = |path: rdm_core::PathName, from: &crate::model::IncarnationId| Some(AttemptAction::Stop { kind: crate::model::NodeKind::RpcNode, mesh: "mesh1".into(), path, node_id: node_id.clone(), from_incarnation: from.clone() });
+        let act = |path: rdm_core::PathName, from: &crate::model::IncarnationId| Some(AttemptAction::Stop { r#type: "node".into(), mesh: "mesh1".into(), path, node_id: node_id.clone(), from_incarnation: from.clone() });
         let mut first = opened("b1", 2, AttemptReason::ProvenDrift);
-        first.action = act(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), &inc);
+        first.action = act(rdm_core::PathName::new("mesh1.node", "2").unwrap(), &inc);
         m.open_attempt(&first).await.unwrap();
         let mut same = opened("b1", 2, AttemptReason::Stop);
-        same.action = act(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), &inc);
+        same.action = act(rdm_core::PathName::new("mesh1.node", "2").unwrap(), &inc);
         same.opened_by = rdm_core::NodeId::parse("100000000003").unwrap();
         m.open_attempt(&same).await.expect("the same action asked again is the same attempt");
         let mut other_node = opened("b1", 2, AttemptReason::Stop);
-        other_node.action = Some(AttemptAction::Stop { kind: crate::model::NodeKind::RpcNode, mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: other.clone() });
+        other_node.action = Some(AttemptAction::Stop { r#type: "node".into(), mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: other.clone() });
         let err = m.open_attempt(&other_node).await.expect_err("another action asked for the held number");
         match &err {
             BuildStateError::AttemptTaken { build_id, attempt, held, wanted } => {
                 assert_eq!((build_id.to_string(), *attempt), (rdm_core::fixture_crockford60("b1"), 2));
-                assert!(held.contains("stop of path \"mesh1.rpc\", name \"2\"") && held.contains("proven-drift"), "the refusal names what holds the number: {held}");
-                assert!(wanted.contains("stop of path \"mesh2.rpc\", name \"1\""), "the refusal names what was asked: {wanted}");
+                assert!(held.contains("stop of path \"mesh1.node\", name \"2\"") && held.contains("proven-drift"), "the refusal names what holds the number: {held}");
+                assert!(wanted.contains("stop of path \"mesh2.node\", name \"1\""), "the refusal names what was asked: {wanted}");
             }
             other => panic!("not AttemptTaken: {other:?}"),
         }
         let mut other_birth = opened("b1", 2, AttemptReason::Stop);
-        other_birth.action = act(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), &other);
+        other_birth.action = act(rdm_core::PathName::new("mesh1.node", "2").unwrap(), &other);
         assert!(matches!(m.open_attempt(&other_birth).await, Err(BuildStateError::AttemptTaken { .. })), "the same path targeted to another birth is another action");
         assert_eq!(m.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(_))).count(), 1, "the refused opens appended nothing");
     }
@@ -3570,9 +3570,9 @@ mod tests {
         let current = j.current().await.unwrap().expect("the old Build is current");
         assert_eq!((current.build_id.clone(), current.state), (BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), BuildState::Complete));
         assert_eq!(current.topology, intent("b1").topology, "read as it is: every entry names none");
-        let admin = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, path: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve }, executable: None, tags: Default::default(), config: Default::default() };
-        let mut rpc = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, path: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
-        rpc.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
+        let admin = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node-admin".into(), path: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve }, executable: None, tags: Default::default(), config: Default::default() };
+        let mut rpc = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node".into(), path: rdm_core::PathName::new("mesh1.node", "1").unwrap(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
+        rpc.executable = Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
         let change = crate::accepted::TopologyChange::Reconcile { based_on: current.build_id.clone(), nodes: vec![admin, rpc] };
         let observed = crate::topology::Topology {
             fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
@@ -3596,11 +3596,11 @@ mod tests {
     async fn an_admin_holds_the_accepted_build_as_the_store_root_records_it_not_as_a_build_message_carried_it() {
         let dir = tmp();
         let mut stored = intent("b1");
-        let rpc: crate::model::PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let rpc: crate::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let m = stored.topology.meshes.get_mut("mesh1").unwrap();
         m.nodes.insert(rpc.clone());
-        let mut spec = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, path: rpc.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
-        spec.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
+        let mut spec = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node".into(), path: rpc.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
+        spec.executable = Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
         m.set_spec(spec).unwrap();
         let writer = open_at(&dir).await.unwrap();
         writer.publish_accepted(&stored).await.unwrap();
@@ -3717,8 +3717,8 @@ mod tests {
 
     /// CONTRACT (node-recovery.md "Failure and receipts", Q159: the no-retry exception is scoped to an
     /// adoption abandoned because a live admin answered, never a generic name conflict): in mesh1's lane of
-    /// one Build, the recovery of mesh1.rpc.1's exited birth fails on a name conflict (NameHeld's code), and
-    /// an adoption launch's attempt for mesh1.admin.1's lost birth is abandoned because a live admin
+    /// one Build, the recovery of mesh1.node.1's exited birth fails on a name conflict (NameHeld's code), and
+    /// an adoption launch's attempt for mesh1.node-admin.1's lost birth is abandoned because a live admin
     /// answered (the same code). The recovery's exit is still owed, so the mesh-primary submits it again;
     /// the abandoned adoption owes none. Must NOT happen: a recovery that failed on a name conflict dropped
     /// from the owed exits, or the abandoned adoption retried against a live admin.
@@ -3726,16 +3726,16 @@ mod tests {
     async fn only_an_adoption_abandoned_because_a_live_admin_answered_owes_no_exit() {
         let m = MemoryBuildStateAdapter::new();
         let b1 = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
-        let (rpc, admin): (crate::model::PathName, crate::model::PathName) = (rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), rdm_core::PathName::new("mesh1.admin", "1").unwrap());
+        let (rpc, admin): (crate::model::PathName, crate::model::PathName) = (rdm_core::PathName::new("mesh1.node", "1").unwrap(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap());
         let (rpc_birth, admin_birth) = ((crate::model::NodeId::mint(), crate::model::IncarnationId::mint()), (crate::model::NodeId::mint(), crate::model::IncarnationId::mint()));
         let lane = || Some("mesh1".to_string());
-        let open = |attempt: u32, reason: AttemptReason, path: &crate::model::PathName, kind: crate::model::NodeKind, birth: &(crate::model::NodeId, crate::model::IncarnationId)| {
+        let open = |attempt: u32, reason: AttemptReason, path: &crate::model::PathName, r#type: &str, birth: &(crate::model::NodeId, crate::model::IncarnationId)| {
             BuildFact::Opened(AttemptOpened {
                 mesh: lane(),
                 build_id: b1.clone(),
                 attempt,
                 reason,
-                action: Some(crate::accepted::AttemptAction::Recover { kind, mesh: "mesh1".into(), path: path.clone(), node_id: birth.0.clone(), from_incarnation: birth.1.clone(), backbone: false }),
+                action: Some(crate::accepted::AttemptAction::Recover { r#type: r#type.to_string(), mesh: "mesh1".into(), path: path.clone(), node_id: birth.0.clone(), from_incarnation: birth.1.clone(), backbone: false }),
                 opened_by: rdm_core::NodeId::parse("200000000000").unwrap(),
                 opened_at_ms: 2,
                 context: None,
@@ -3743,9 +3743,9 @@ mod tests {
         };
         let claimed = |attempt: u32| BuildFact::Claim(BuildAttemptClaim { mesh: lane(), ..claim("b1", attempt, "100000000002", "mesh1") });
         let name_held = |attempt: u32| BuildFact::Attempt(BuildAttemptReceipt { mesh: lane(), ..attempt_of("b1", attempt, AttemptOutcome::Failed { reason: "NameHeld".into(), code: rdm_core::outcome::Code::AlreadyExists }) });
-        m.absorb(&[BuildFact::Accepted(intent("b1")), open(1, AttemptReason::Recovery, &rpc, crate::model::NodeKind::RpcNode, &rpc_birth), claimed(1), name_held(1), open(2, AttemptReason::Adoption, &admin, crate::model::NodeKind::NodeAdmin, &admin_birth), claimed(2), name_held(2)]).await;
+        m.absorb(&[BuildFact::Accepted(intent("b1")), open(1, AttemptReason::Recovery, &rpc, "node", &rpc_birth), claimed(1), name_held(1), open(2, AttemptReason::Adoption, &admin, "node-admin", &admin_birth), claimed(2), name_held(2)]).await;
         let owed: Vec<(rdm_core::PathName, u32)> = m.exits_owed(&b1, "mesh1").await.unwrap().into_iter().map(|o| (o.path, o.attempt)).collect();
-        assert_eq!(owed, vec![(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), 1)], "the recovery failed on a name conflict is owed again; the abandoned adoption is not");
+        assert_eq!(owed, vec![(rdm_core::PathName::new("mesh1.node", "1").unwrap(), 1)], "the recovery failed on a name conflict is owed again; the abandoned adoption is not");
     }
 
     /// CONTRACT (R-BI3: "a caller resubmits it"; one Build in flight): a failed Build may be driven
@@ -3785,7 +3785,7 @@ mod tests {
     /// birth its journal holds recovered.
     #[tokio::test]
     async fn the_recovery_index_is_folded_on_append_replay_and_absorb() {
-        let (path, node_id, incarnation): (crate::model::PathName, _, _) = (rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
+        let (path, node_id, incarnation): (crate::model::PathName, _, _) = (rdm_core::PathName::new("mesh1.node", "1").unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
         // A recovery's receipts as its two operations write them: the delete's NodeDeleted names
         // the exited birth (its lifecycle operation), and each operation's Complete commits no output.
         let receipt = |build: &str, attempt: u32, operation: &str, step: &str| BuildStepReceipt {
@@ -3796,7 +3796,7 @@ mod tests {
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { kind: crate::model::NodeKind::RpcNode, mesh: "mesh1".into(), build_id: rdm_core::fixture_crockford60(build), attempt, operation: if operation == "node.create" { rdm_core::OperationId::location(operation, &path) } else { rdm_core::OperationId::node(operation, &node_id) }, node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: rdm_core::fixture_crockford60(build), attempt, operation: if operation == "node.create" { rdm_core::OperationId::location(operation, &path) } else { rdm_core::OperationId::node(operation, &node_id) }, node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
             }),
             executor: Some(fixture_birth("100000000001")),
         };
@@ -3805,7 +3805,7 @@ mod tests {
             build_id: BuildId::parse(&rdm_core::fixture_crockford60(build)).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { kind: crate::model::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: false }),
+            action: Some(crate::accepted::AttemptAction::Recover { r#type: "node".into(), mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: false }),
             opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
             opened_at_ms: 1,
             context: None,
@@ -3830,7 +3830,7 @@ mod tests {
         }
         let j = open_at(&dir).await.unwrap(); // the admin restarted
         assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "journal replay");
-        assert_eq!(j.recovery_of(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), &node_id, &incarnation).await.unwrap(), None, "another path's operation");
+        assert_eq!(j.recovery_of(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), &node_id, &incarnation).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
         // Gossip delivers in any order: the create's Complete heard first, the attempt's opening last.
         m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("b1", 2, "node.create", "Complete"))]).await;
@@ -3860,7 +3860,7 @@ mod tests {
     #[tokio::test]
     async fn an_exit_whose_workflow_ended_failed_is_owed_until_it_is_done_on_append_replay_and_absorb() {
         let birth = |path: rdm_core::PathName, mesh: &str| (path, crate::model::NodeId::mint(), crate::model::IncarnationId::mint(), mesh.to_owned());
-        let (r, q) = (birth(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2"), birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"));
+        let (r, q) = (birth(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2"), birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"));
         let receipt = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId, String), attempt: u32, operation: &str, step: &str| BuildStepReceipt {
             mesh: None,
             build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
@@ -3869,7 +3869,7 @@ mod tests {
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { kind: crate::model::NodeKind::RpcNode, mesh: b.3.clone(), build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: if operation == "node.create" { rdm_core::OperationId::location(operation, &b.0) } else { rdm_core::OperationId::node(operation, &b.1) }, node_id: b.1.clone(), incarnation: b.2.clone(), name: b.0.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { r#type: "node".into(), mesh: b.3.clone(), build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: if operation == "node.create" { rdm_core::OperationId::location(operation, &b.0) } else { rdm_core::OperationId::node(operation, &b.1) }, node_id: b.1.clone(), incarnation: b.2.clone(), name: b.0.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
             }),
             executor: Some(fixture_birth("100000000003")),
         };
@@ -3878,7 +3878,7 @@ mod tests {
             build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { kind: crate::model::NodeKind::RpcNode, mesh: b.3.clone(), path: b.0.clone(), node_id: b.1.clone(), from_incarnation: b.2.clone(), backbone: false }),
+            action: Some(crate::accepted::AttemptAction::Recover { r#type: "node".into(), mesh: b.3.clone(), path: b.0.clone(), node_id: b.1.clone(), from_incarnation: b.2.clone(), backbone: false }),
             opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
             opened_at_ms: 1,
             context: None,
@@ -3962,7 +3962,7 @@ mod tests {
     /// Must NOT happen: `None` for a birth a workflow deleted, which admits a recovery of it.
     #[tokio::test]
     async fn a_birth_a_delete_deleted_is_answered_by_that_workflow() {
-        let path: crate::model::PathName = rdm_core::PathName::new("mesh2.rpc", "2").unwrap();
+        let path: crate::model::PathName = rdm_core::PathName::new("mesh2.node", "2").unwrap();
         let receipt = |kind: &str, attempt: u32, step: &str, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId| BuildStepReceipt {
             mesh: None,
             build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
@@ -3971,7 +3971,7 @@ mod tests {
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".to_owned(), build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: rdm_core::OperationId::node(kind, node_id), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh2".to_owned(), build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: rdm_core::OperationId::node(kind, node_id), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
             }),
             executor: Some(fixture_birth("100000000003")),
         };
@@ -3991,7 +3991,7 @@ mod tests {
         }
         let j = open_at(&dir).await.unwrap(); // the admin restarted
         assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, rdm_core::OperationId::node("node.delete", &replaced.0))), "journal replay");
-        assert_eq!(j.recovery_of(&rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), &replaced.0, &replaced.1).await.unwrap(), None, "another path's operation");
+        assert_eq!(j.recovery_of(&rdm_core::PathName::new("mesh2.node", "1").unwrap(), &replaced.0, &replaced.1).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
         m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("node.delete", 2, "Complete", &replaced.0, &replaced.1))]).await;
         assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "a Complete alone names no birth");
@@ -4105,7 +4105,7 @@ mod tests {
             build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { kind: crate::model::NodeKind::RpcNode, mesh: mesh.into(), path, node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint(), backbone: false }),
+            action: Some(crate::accepted::AttemptAction::Recover { r#type: "node".into(), mesh: mesh.into(), path, node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint(), backbone: false }),
             opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
             opened_at_ms: 6,
             context: None,
@@ -4129,8 +4129,8 @@ mod tests {
         m.publish_accepted(&intent("b1")).await.unwrap();
         m.claim_attempt(&claim("b1", 1, "100000000001", "mesh1")).await.unwrap();
         m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
-        m.open_attempt(&lane_open("b1", "mesh1", 1, rdm_core::PathName::new("mesh1.rpc", "2").unwrap())).await.expect("mesh1's drift lane opens its attempt 1");
-        m.open_attempt(&lane_open("b1", "mesh2", 1, rdm_core::PathName::new("mesh2.rpc", "2").unwrap())).await.expect("mesh2's drift lane opens its own attempt 1");
+        m.open_attempt(&lane_open("b1", "mesh1", 1, rdm_core::PathName::new("mesh1.node", "2").unwrap())).await.expect("mesh1's drift lane opens its attempt 1");
+        m.open_attempt(&lane_open("b1", "mesh2", 1, rdm_core::PathName::new("mesh2.node", "2").unwrap())).await.expect("mesh2's drift lane opens its own attempt 1");
         assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh1", 1, "100000000001")).await.unwrap(), ClaimOutcome::Won, "mesh1's mesh-primary claims its attempt");
         assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh2", 1, "100000000003")).await.unwrap(), ClaimOutcome::Won, "mesh2's attempt 1 is another key than mesh1's");
         assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh2", 1, "100000000004")).await.unwrap(), ClaimOutcome::Lost { holder: rdm_core::NodeId::parse("100000000003").unwrap() }, "one winner per (build, mesh, attempt)");
@@ -4154,7 +4154,7 @@ mod tests {
         let mut fabric = claim("b1", 1, "100000000001", "mesh1");
         fabric.claimant = Some( rdm_core::NodeId::parse("100000000001").unwrap());
         m.claim_attempt(&fabric).await.unwrap();
-        m.open_attempt(&lane_open("b1", "mesh2", 1, rdm_core::PathName::new("mesh2.rpc", "2").unwrap())).await.unwrap();
+        m.open_attempt(&lane_open("b1", "mesh2", 1, rdm_core::PathName::new("mesh2.node", "2").unwrap())).await.unwrap();
         m.claim_attempt(&lane_claim("b1", "mesh2", 1, "100000000003")).await.unwrap();
         let mut drift_step = step("b1", 1, rdm_core::OperationId::node("node.delete", &rdm_core::NodeId::parse("200000000022").unwrap()));
         drift_step.mesh = Some("mesh2".into());
@@ -4200,7 +4200,7 @@ mod tests {
     /// `AttemptReason::Steps` carrying `AttemptAction::Steps`. Views and spans name the reason `steps`.
     #[test]
     fn an_attempt_of_steps_keeps_the_journal_tags_written_before_the_rename() {
-        let node: crate::model::PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let node: crate::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let mut steps = opened("b1", 2, AttemptReason::Steps);
         steps.action = Some(crate::accepted::AttemptAction::Steps { rename_intents: Default::default(), steps: vec![rdm_core::build::Step::Stop { node }], pinned: vec![] });
         let line = serde_json::to_value(BuildFact::Opened(steps.clone())).unwrap();
@@ -4273,7 +4273,7 @@ mod tests {
         let long = "x".repeat(9_000);
         fp.publish_accepted(&intent("b1")).await.unwrap();
         fp.claim_attempt(&claim("b1", 1, "100000000001", "mesh1")).await.unwrap();
-        let failed = BuildStepReceipt { outcome: StepOutcome::Failed { reason: long.clone(), code: rdm_core::outcome::Code::DeadlineExceeded }, ..step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap())) };
+        let failed = BuildStepReceipt { outcome: StepOutcome::Failed { reason: long.clone(), code: rdm_core::outcome::Code::DeadlineExceeded }, ..step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
         fp.append_step_receipt(&failed).await.unwrap();
 
         assert!(mp.facts().await.unwrap().is_empty(), "the reader's cached log holds nothing: it is not the fabric-primary");
@@ -4289,7 +4289,7 @@ mod tests {
         assert_eq!(fold(&read).get(&id).map(|p| p.attempt), Some(1), "the read folds to the Build's claimed attempt");
 
         // A record committed after the first read is in the next one: nothing is cached.
-        fp.append_step_receipt(&step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "2").unwrap()))).await.unwrap();
+        fp.append_step_receipt(&step("b1", 1, rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()))).await.unwrap();
         assert_eq!(mp.committed_facts(Some(&id)).await.unwrap().len(), 4, "the next read holds the record committed since");
 
         let absent = BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap();
@@ -4324,7 +4324,7 @@ mod tests {
         );
         assert_eq!(crate::store_log::read_file(&root.dir().join(crate::store_root::BUILDS_FILE)).unwrap().len(), 3, "one line per fact: the receipt written again is not appended");
         j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
-        j.open_attempt(&lane_open("b1", "mesh2", 1, rdm_core::PathName::new("mesh2.rpc", "2").unwrap())).await.unwrap();
+        j.open_attempt(&lane_open("b1", "mesh2", 1, rdm_core::PathName::new("mesh2.node", "2").unwrap())).await.unwrap();
         assert_eq!(j.claim_attempt(&lane_claim("b1", "mesh2", 1, "100000000003")).await.unwrap(), ClaimOutcome::Won);
         let mut in_mesh = step("b1", 1, rdm_core::OperationId::node("node.delete", &rdm_core::NodeId::parse("200000000022").unwrap()));
         in_mesh.mesh = Some("mesh2".into());

@@ -161,11 +161,11 @@ async fn connection_failed_dial_inner_not_sent() {
 /// The source of a Proxy `origin -> carrier -> target` and the held projection that records it.
 fn proxied_held(r: &Rig) -> (rdm_core::connections::ConnectionsHeld, NodeId, rdm_core::connections::NodeConnection) {
     use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
-    let own: rdm_core::PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-    let end = |n: &ResolvedNode| ConnectionEnd { mesh: n.mesh.clone(), kind: n.kind, name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
+    let own: rdm_core::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+    let end = |n: &ResolvedNode| ConnectionEnd { mesh: n.mesh.clone(), r#type: n.r#type.clone(), name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let proxy = NodeConnection {
         id: rdm_core::ConnectionId::mint(),
-        source: ConnectionEnd { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
+        source: ConnectionEnd { r#type: "node".into(), mesh: "mesh1".into(), name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
         destination: end(&r.target.resolved),
         kind: ConnectionKind::Proxy,
         alpn: rdm_core::connections::ALPN.to_vec(),
@@ -191,11 +191,11 @@ fn proxied_held(r: &Rig) -> (rdm_core::connections::ConnectionsHeld, NodeId, rdm
 #[tokio::test]
 async fn a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_disconnected() {
     use rdm_core::connections::{resolve, CarrierPolicy, INVALID_CONNECTION_LOST};
-    let policy = CarrierPolicy::Proxy { carrier_kind: rdm_core::NodeKind::RpcNode };
+    let policy = CarrierPolicy::Proxy { carrier_type: "node".into() };
     for (connection, deleted) in [(Some("Direct Failed".to_string()), true), (None, false)] {
         let r = rig_with(Some(Arc::new(ConnectionFact(connection))), true).await;
         let (held, own, proxy) = proxied_held(&r);
-        let resolution = resolve(&held, &own, &r.target.resolved.node_id, policy);
+        let resolution = resolve(&held, &own, &r.target.resolved.node_id, policy.clone());
         let call = r.origin.call_resolved::<Probe>(resolution, &own, &r.target.resolved.name, &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
         assert!(matches!(call.outcome, RpcOutcome::NotSent(_)), "{:?}", call.outcome);
         assert_eq!(call.delete, deleted.then_some((proxy, INVALID_CONNECTION_LOST)).into_iter().collect::<Vec<_>>());
@@ -324,7 +324,7 @@ async fn spy_carrier() -> (NodeRpcClient, NodeTarget, Arc<std::sync::Mutex<Vec<u
         })
         .build(served(&birth))
         .unwrap();
-    let node = start(server, SecretKey::generate(), rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, birth).await;
+    let node = start(server, SecretKey::generate(), rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", birth).await;
     let origin = client_with(&[&node.resolved]).await;
     let target = NodeTarget::ExactNode(node.resolved.node_id.clone());
     (origin, target, seen, node)
@@ -372,7 +372,7 @@ async fn every_inner_indeterminate_cause_crosses_a_carrier_with_its_code() {
                 let typed_inner = cause.into_reason("same explanation".into());
                 Ok::<_, HandlerFault>(ForwardReply::InnerIndeterminate { cause: IndeterminateCause::from_reason(&typed_inner), reason: "same explanation".into() })
             }).build(served(&birth)).unwrap();
-        let carrier = start(server, SecretKey::generate(), rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, birth).await;
+        let carrier = start(server, SecretKey::generate(), rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", birth).await;
         let origin = client_with(&[&carrier.resolved]).await;
         let target = NodeTarget::ExactNode(carrier.resolved.node_id.clone());
         let (out, _) = origin.call_via::<Probe>(&target, &NodeId::mint(), &probe(b"x"), &CallOptions::default()).await;

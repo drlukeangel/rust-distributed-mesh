@@ -202,13 +202,13 @@ pub enum Step {
         node: PathName,
         /// The owning mesh, independent of the path/name.
         mesh: String,
-        /// The runtime kind the explicit executable serves.
-        kind: crate::NodeKind,
+        /// The node's type, which the explicit executable serves.
+        r#type: String,
         /// The executable binding the Build fixes for the node (node-rpc-envelope.md "Build schema";
         /// node-replace.md step 3): whichever admin runs or resumes the step launches it, re-hashed at
         /// the launch, and the node's row records it beside `config`. Absent, the node runs the
         /// executable its seeding row records (the predecessor's, a recovered node's), and only a
-        /// node no row records one for takes its kind's binding from the admin that launches it.
+        /// node no row records one for takes its type's binding from the admin that launches it.
         /// A record written before the step carried it decodes with none.
         #[serde(default)]
         executable: Option<crate::binding::Binding>,
@@ -1036,10 +1036,10 @@ mod tests {
     ///  3. node.create of node[2] at `<name>` ... The Build fixes the bin on its Create step"
     #[test]
     fn replace_step_primitives_preserve_wire_positions_and_reserved_changes_are_refused() {
-        let name: PathName = crate::PathName::new("mesh1.rpc", "1").unwrap();
+        let name: PathName = crate::PathName::new("mesh1.node", "1").unwrap();
         let old_name = name.renamed().unwrap();
         let binding = Binding {
-            launch_id: "rpc_node".into(),
+            launch_id: "node".into(),
             executable: "/bin/rdm-rpc-node-v2".into(),
             sha256: "b".repeat(64),
             image: None,
@@ -1054,7 +1054,7 @@ mod tests {
             Step::Stop {
                 node: old_name.clone(),
             },
-            Step::Create { mesh: "mesh1".into(), kind: crate::NodeKind::RpcNode,
+            Step::Create { mesh: "mesh1".into(), r#type: "node".into(),
                 node: name.clone(),
                 executable: Some(binding),
             },
@@ -1124,14 +1124,14 @@ pub enum StepTargetError {
 
 /// Resolve each original step against explicit admission pins, carrying a pin through renames.
 /// Creates receive their value from `created`; no location spelling supplies identity or metadata.
-pub fn step_targets<T: Clone>(steps: &[Step], mut at: std::collections::BTreeMap<PathName, T>, mut created: impl FnMut(&PathName, &str, crate::NodeKind) -> T) -> Result<Vec<T>, StepTargetError> {
+pub fn step_targets<T: Clone>(steps: &[Step], mut at: std::collections::BTreeMap<PathName, T>, mut created: impl FnMut(&PathName, &str, &str) -> T) -> Result<Vec<T>, StepTargetError> {
     let mut out = Vec::with_capacity(steps.len());
     for (index, step) in steps.iter().enumerate() {
         let position = index as u32 + 1;
         let unknown = || StepTargetError::Unknown { node: step.node().clone(), step: position };
         let target = match step {
-            Step::Create { node, mesh, kind, .. } => {
-                let target = created(node, mesh, *kind);
+            Step::Create { node, mesh, r#type, .. } => {
+                let target = created(node, mesh, r#type);
                 at.insert(node.clone(), target.clone());
                 target
             }

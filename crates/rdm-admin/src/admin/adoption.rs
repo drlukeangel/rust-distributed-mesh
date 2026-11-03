@@ -211,7 +211,7 @@ impl Claimed {
 
 /// The action the fabric-recovery attempt of `lost` carries.
 fn action_of(lost: &crate::storage::NodeRecord) -> AttemptAction {
-    AttemptAction::Recover { kind: NodeKind::NodeAdmin, mesh: lost.mesh.clone(), path: lost.name.clone(), node_id: lost.node_id.clone(), from_incarnation: lost.incarnation_id.clone(), backbone: false }
+    AttemptAction::Recover { r#type: "node-admin".into(), mesh: lost.mesh.clone(), path: lost.name.clone(), node_id: lost.node_id.clone(), from_incarnation: lost.incarnation_id.clone(), backbone: false }
 }
 
 /// The attempt of `current` in `mesh`'s lane the recovery `action` resolves to: the lane's attempt
@@ -524,7 +524,7 @@ pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storag
         step: "NodeDeleted".into(),
         outcome: StepOutcome::Complete,
         output: Some(serde_json::to_value(rdm_core::lifecycle::LifecycleOp {
-            kind: NodeKind::NodeAdmin, mesh: c.lost.mesh.clone(), name: c.lost.name.clone(),
+            r#type: "node-admin".into(), mesh: c.lost.mesh.clone(), name: c.lost.name.clone(),
             build_id: c.row.build_id.to_string(), attempt: c.row.attempt,
             operation: rdm_core::OperationId::node("node.delete", &c.lost.node_id),
             node_id: c.lost.node_id.clone(), incarnation: c.lost.incarnation_id.clone(),
@@ -591,9 +591,9 @@ pub struct ProbeAnswers {
 }
 
 impl ProbeAnswers {
-    fn resolve(&self, node_id: &NodeId, name: &PathName, mesh: &str, kind: NodeKind, endpoint: &EndpointId, addr: SocketAddr, incarnation: &IncarnationId) -> bool {
+    fn resolve(&self, node_id: &NodeId, name: &PathName, mesh: &str, r#type: &str, endpoint: &EndpointId, addr: SocketAddr, incarnation: &IncarnationId) -> bool {
         let Ok(endpoint_id) = endpoint.0.parse::<iroh::PublicKey>() else { return false };
-        self.resolver.apply(rdm_transport::ResolvedNode { mesh: mesh.to_owned(), kind, node_id: node_id.clone(), name: name.clone(), endpoint_id, transport_addr: addr, incarnation: incarnation.clone() }, None);
+        self.resolver.apply(rdm_transport::ResolvedNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: node_id.clone(), name: name.clone(), endpoint_id, transport_addr: addr, incarnation: incarnation.clone() }, None);
         true
     }
 
@@ -605,7 +605,7 @@ impl ProbeAnswers {
 #[async_trait::async_trait]
 impl Answers for ProbeAnswers {
     async fn investigate(&self, lost: &crate::storage::NodeRecord) -> Finding {
-        let mut node = Node::allocated(lost.name.clone(), lost.mesh.clone(), NodeKind::NodeAdmin);
+        let mut node = Node::allocated(lost.name.clone(), lost.mesh.clone(), "node-admin");
         node.node_id = lost.node_id.clone();
         node.incarnation_id = Some(lost.incarnation_id.clone());
         let view = Topology { fabric: self.fabric.clone(), meshes: Vec::new(), nodes: Vec::new() };
@@ -613,7 +613,7 @@ impl Answers for ProbeAnswers {
             let row = self.nodes.runtime(&lost.node_id, &lost.incarnation_id).await.ok().flatten();
             Finding::from(super::rows_writer::inspection_of(&*self.provider, &None, row.as_ref()).await)
         };
-        if !self.resolve(&lost.node_id, &lost.name, &lost.mesh, NodeKind::NodeAdmin, &lost.endpoint_id, lost.transport_addr, &lost.incarnation_id) {
+        if !self.resolve(&lost.node_id, &lost.name, &lost.mesh, "node-admin", &lost.endpoint_id, lost.transport_addr, &lost.incarnation_id) {
             return inspect.await;
         }
         crate::node_investigation::investigate(&node, &view, &self.calls(), inspect).await
@@ -627,19 +627,19 @@ impl Answers for ProbeAnswers {
         let calls = self.calls();
         // Each admin's address is the node's own part of its record (Q333), one point read at its id.
         let mut owns = std::collections::BTreeMap::new();
-        for r in rows.iter().filter(|r| r.kind == NodeKind::NodeAdmin && r.node_id != self.me_id && self.inherited.as_ref() != Some(&r.node_id)) {
+        for r in rows.iter().filter(|r| rdm_core::is_node_admin(&r.r#type) && r.node_id != self.me_id && self.inherited.as_ref() != Some(&r.node_id)) {
             match self.nodes.properties(&r.node_id).await {
                 Ok(Some(own)) => { owns.insert(r.node_id.clone(), own); }
                 Ok(None) => {}
                 Err(e) => return Err(format!("the own part of the record of {} could not be read: {e}", r.node_id)),
             }
         }
-        let probes = rows.iter().filter(|r| r.kind == NodeKind::NodeAdmin && r.node_id != self.me_id && self.inherited.as_ref() != Some(&r.node_id)).filter_map(|r| {
+        let probes = rows.iter().filter(|r| rdm_core::is_node_admin(&r.r#type) && r.node_id != self.me_id && self.inherited.as_ref() != Some(&r.node_id)).filter_map(|r| {
             let b = r.newest_birth()?;
             let own = crate::current_record::of_birth(owns.get(&r.node_id), &r.node_id, &b.incarnation_id)?;
             let (endpoint, addr) = (own.endpoint_id.clone()?, own.transport_addr?);
-            self.resolve(&r.node_id, &r.name, &r.mesh, r.kind, &endpoint, addr, &b.incarnation_id).then(|| {
-                let mut node = Node::allocated(r.name.clone(), r.mesh.clone(), r.kind);
+            self.resolve(&r.node_id, &r.name, &r.mesh, &r.r#type, &endpoint, addr, &b.incarnation_id).then(|| {
+                let mut node = Node::allocated(r.name.clone(), r.mesh.clone(), &r.r#type);
                 node.node_id = r.node_id.clone();
                 node.incarnation_id = Some(b.incarnation_id.clone());
                 let probe = rdm_core::status::StatusRequest::ProbeNodeState { node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone() };
@@ -695,7 +695,7 @@ mod tests {
         let _guard = tracing::dispatcher::set_default(&d);
 
         rt.block_on(async move {
-            let path: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+            let path: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
             let fabric_id = FabricId::parse("fab000000001").unwrap();
             let mesh_id = MeshId::parse("meshd0000001").unwrap();
             let store = PathBuf::from("/tmp/rdm-adoption-unit");
@@ -741,7 +741,7 @@ mod tests {
             .unwrap_err();
             assert!(err.contains("MESH_SPAWN_TYPE=container and the Fabric record names provider process"), "{err}");
 
-            // Populate live mesh1 record and lost fabric-primary row at mesh1.admin.1, plus current Build.
+            // Populate live mesh1 record and lost fabric-primary row at mesh1.node-admin.1, plus current Build.
             crate::storage::write_mesh(
                 &mesh_store,
                 None,
@@ -753,7 +753,7 @@ mod tests {
 
             let lost_id = NodeId::mint();
             let lost_inc = IncarnationId::mint();
-            let mut row = NodeRow::new(path.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, lost_id.clone(), NodeStatus::Ready);
+            let mut row = NodeRow::new(path.clone(), "mesh1", "node-admin", lost_id.clone(), NodeStatus::Ready);
             row.mesh_id = Some(mesh_id.clone());
             let b = row.birth_mut(&lost_inc, &path);
             b.is_primary = Some(1);
@@ -770,7 +770,7 @@ mod tests {
                     submitted_at_ms: 1000,
                 },
                 None,
-                "mesh1.admin.1",
+                "mesh1.node-admin.1",
                 "day-0",
             )
             .await

@@ -22,9 +22,9 @@ fn digest() -> rdm_core::MeshDigest {
     use rdm_core::*;
     MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::mint(),
-        node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::mint(),
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:34567".parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -58,11 +58,11 @@ fn requests_match_the_frozen_wire_schema() {
     assert_eq!(Topology::decode_request(&[1]), Err(DecodeFailure::UnknownVariant));
 }
 
-/// The smallest own row: `m.rpc.1`, ready, one config key, every optional field absent.
+/// The smallest own row: `m.node.1`, ready, one config key, every optional field absent.
 fn own_row() -> rdm_core::views::NodeView {
     rdm_core::views::NodeView {
-        name: rdm_core::PathName::new("m.rpc", "1").unwrap(),
-        kind: rdm_core::NodeKind::RpcNode,
+        name: rdm_core::PathName::new("m.node", "1").unwrap(),
+        r#type: "node".into(),
         mesh: "m".into(),
         node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(),
         endpoint_id: None,
@@ -112,10 +112,10 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
         (Malformed { kind: MalformedKind::Corrupt }, "0802"),
         (Unauthorized { reason: "u".into() }, "090175"),
         (Started, "0a"),
-        (Stored { mesh: "m".into(), mesh_id: None, nodes: vec![StoredNode { mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), name: rdm_core::PathName::new("m.rpc", "1").unwrap(), endpoint_id: rdm_core::EndpointId("k".into()), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 01 6d 00 01 01 6d 01 0c 30 34 72 61 6a 30 39 70 33 7a 70 37 05 6d 2e 72 70 63 01 31 01 6b 0c 79 72 7a 34 39 6a 33 30 33 79 68 34 00 7f 00 00 01 50"),
+        (Stored { mesh: "m".into(), mesh_id: None, nodes: vec![StoredNode { mesh: "m".into(), r#type: "node".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), name: rdm_core::PathName::new("m.node", "1").unwrap(), endpoint_id: rdm_core::EndpointId("k".into()), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 01 6d 00 01 01 6d 01 0c 30 34 72 61 6a 30 39 70 33 7a 70 37 05 6d 2e 72 70 63 01 31 01 6b 0c 79 72 7a 34 39 6a 33 30 33 79 68 34 00 7f 00 00 01 50"),
         (Primaries { kind: PrimaryKind::FabricPrimary, primary: Primary { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 2 }, gone: false }, "0c 01 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 02 00"),
         (Primaries { kind: PrimaryKind::MeshPrimary, primary: Primary { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 300 }, gone: true }, "0c 00 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 ac02 01"),
-        (Stored { mesh: "m".into(), mesh_id: Some(rdm_core::MeshId::parse("04raj09p3zp7").unwrap()), nodes: vec![StoredNode { mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), name: rdm_core::PathName::new("m.rpc", "1").unwrap(), endpoint_id: rdm_core::EndpointId("k".into()), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 016d 01 0c 303472616a303970337a7037 01 01 6d 01 0c 303472616a303970337a7037 05 6d2e7270630131 016b 0c79727a34396a333033796834 00 7f000001 50"),
+        (Stored { mesh: "m".into(), mesh_id: Some(rdm_core::MeshId::parse("04raj09p3zp7").unwrap()), nodes: vec![StoredNode { mesh: "m".into(), r#type: "node".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), name: rdm_core::PathName::new("m.node", "1").unwrap(), endpoint_id: rdm_core::EndpointId("k".into()), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 016d 01 0c 303472616a303970337a7037 01 01 6d 01 0c 303472616a303970337a7037 05 6d2e7270630131 016b 0c79727a34396a333033796834 00 7f000001 50"),
         (RafkaTime { ms: 1_000, kind: None }, "0d e807 00"),
         (RafkaTime { ms: 300, kind: Some(PrimaryKind::FabricPrimary) }, "0d ac02 01 01"),
         (RafkaTime { ms: 7, kind: Some(PrimaryKind::MeshPrimary) }, "0d 07 01 00"),
@@ -145,9 +145,9 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
     use rdm_core::*;
     let d = MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::parse("1123456789ab").unwrap(),
-        node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::parse("0123456789ab").unwrap(),
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:80".parse().unwrap(),
             incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(),
@@ -181,13 +181,13 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
 #[test]
 fn a_snapshot_chunk_round_trips_with_its_digests_and_overlays() {
     let d = digest();
-    let op = LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+    let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(),
         build_id: "b".into(),
         attempt: 1,
-        operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.rpc", "2").unwrap()),
+        operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node", "2").unwrap()),
         node_id: rdm_core::NodeId::mint(),
         incarnation: IncarnationId::mint(),
-        name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
+        name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
         event_at_rafka_ms: 5,
         traceparent: None,
         tracestate: None,

@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
 
     // A non-admin kind in RDM_NODE_KIND is refused by name: the kind is explicit, never read off the path.
     let mut non_admin = base;
-    non_admin.insert("RDM_NODE_KIND", rdm_core::NodeKind::Broker.name().into());
+    non_admin.insert("RDM_NODE_TYPE", "broker".into());
     match AdminConfig::from_env(|k| non_admin.get(k).cloned()) {
         Err(refusal) => println!("with non-admin RDM_NODE_KIND: refused ({refusal})"),
         Ok(_) => return Err(anyhow!("expected non-admin RDM_NODE_KIND to be refused")),

@@ -71,7 +71,7 @@ pub async fn run_on_started(
         node = tracing::field::Empty,
         node_id = %cfg.node_id,
         incarnation_id = tracing::field::Empty,
-        kind = "node_admin",
+        r#type = "node-admin",
         fabric = %cfg.fabric,
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {

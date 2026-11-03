@@ -320,20 +320,20 @@ mod tests {
     use crate::build_state::BuildAttemptClaim;
 
     /// L4's shape (load-testing.md "Profiles"): ten meshes of three node-admins and seventeen rpc
-    /// nodes, a pin on `mesh2.rpc.1`.
+    /// nodes, a pin on `mesh2.node.1`.
     fn l4_acceptance() -> BuildAccepted {
-        use rdm_core::NodeKind;
+        
         let meshes = (1..=10)
             .map(|i| {
                 let name = format!("mesh{i}");
-                let m = crate::accepted::MeshTopology::with_id(&crate::build::MeshDesired::of(name.clone(), [(NodeKind::NodeAdmin, 3), (NodeKind::RpcNode, 17)]), crate::model::MeshId::mint());
+                let m = crate::accepted::MeshTopology::with_id(&crate::build::MeshDesired::of(name.clone(), [("node-admin", 3), ("node", 17)]), crate::model::MeshId::mint());
                 (name, m)
             })
             .collect();
-        let pin = crate::build::PinnedBirth { mesh: "mesh2".into(), kind: rdm_core::NodeKind::RpcNode, node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+        let pin = crate::build::PinnedBirth { mesh: "mesh2".into(), r#type: "node".into(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
         let topology = crate::accepted::FabricTopology {
             section_of: None,
-            pinned: vec![(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), pin)],
+            pinned: vec![(rdm_core::PathName::new("mesh2.node", "1").unwrap(), pin)],
             topology_storage_provider: Some("file".into()),
             fabric: "fabric1".into(),
             meshes,
@@ -434,13 +434,13 @@ mod tests {
     /// operation's `Complete`, which still commits no output.
     #[test]
     fn a_stop_receipt_carries_its_birth_and_time_on_the_build_topic() {
-        let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+        let op = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(),
             build_id: "b1".into(),
             attempt: 2,
-            operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
+            operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
             node_id: crate::model::NodeId::mint(),
             incarnation: crate::model::IncarnationId::mint(),
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             event_at_rafka_ms: 4_242,
             traceparent: None,
             tracestate: None,
@@ -494,15 +494,15 @@ mod tests {
     #[test]
     fn an_attempt_travels_the_build_topic_with_its_steps_and_pinned_births() {
         use rdm_core::build::Step;
-        let node: crate::model::PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-        let pin = crate::build::PinnedBirth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+        let node: crate::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+        let pin = crate::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node".into(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
         let opened = crate::build_state::AttemptOpened {
             mesh: None,
             build_id: BuildId::parse("3qcfk1kq47m9").unwrap(),
             attempt: 2,
             reason: crate::build_state::AttemptReason::Steps,
             action: Some(crate::accepted::AttemptAction::Steps { rename_intents: Default::default(),
-                steps: vec![Step::DeleteConnections { node: node.clone() }, Step::LeaveMesh { node: node.clone() }, Step::Update { node: node.clone(), name: node.renamed().unwrap() }, Step::Stop { node: node.renamed().unwrap() }, Step::Create { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode, node: node.clone(), executable: None }, Step::Delete { node: node.renamed().unwrap() }],
+                steps: vec![Step::DeleteConnections { node: node.clone() }, Step::LeaveMesh { node: node.clone() }, Step::Update { node: node.clone(), name: node.renamed().unwrap() }, Step::Stop { node: node.renamed().unwrap() }, Step::Create { mesh: "mesh1".to_owned(), r#type: "node".into(), node: node.clone(), executable: None }, Step::Delete { node: node.renamed().unwrap() }],
                 pinned: vec![(node.clone(), pin)],
             }),
             opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
@@ -536,7 +536,7 @@ mod tests {
         let source = {
             let changed = Some(primaries.subscribe());
             let (primaries, me, lost) = (primaries.clone(), me.clone(), lost.clone());
-            // The digest view holds mesh2.admin.1; nothing here consults a projected view.
+            // The digest view holds mesh2.node-admin.1; nothing here consults a projected view.
             let read = std::sync::Arc::new(move || crate::primary_watch::fabric_primary_record(primaries.fabric().as_ref(), &me, &lost.lock().unwrap()));
             PrimarySource { read, changed }
         };

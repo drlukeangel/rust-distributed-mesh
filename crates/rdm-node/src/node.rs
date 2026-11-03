@@ -434,7 +434,7 @@ pub async fn start_on(
     let app_types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
     rdm_core::app_types::check(&app_types).map_err(|k| anyhow!("app type declaration: {k:?}"))?;
     rdm_transport::connections::validate_alpns(alpns).map_err(|e| anyhow!("{e}"))?;
-    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node_path = %launch.name.path, node_name = %launch.name.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.kind.name());
+    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node_path = %launch.name.path, node_name = %launch.name.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), "type" = launch.r#type);
     // Boxed: the boot is one large state machine, and its caller holds only the box.
     let started = crate::taskdump::watched("start", Box::pin(start_booted(launch, providers, rafka_time, node_hooks, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot))).await;
     if let Err(e) = &started {
@@ -517,7 +517,7 @@ async fn start_booted(
     let node_rows = topology_storage.node_rows();
     let property_writer = crate::node_records::NodePropertyWriter::new(topology_storage.nodes(), { let handle = topology_storage.clone(); move || handle.provider() });
     let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
-        rdm_core::connections::ConnectionEnd { mesh: launch.mesh.clone(), kind: launch.kind, name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
+        rdm_core::connections::ConnectionEnd { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
         decorate_storage(base_storage),
         Arc::new(std::sync::Mutex::new(rdm_core::connections::ConnectionsHeld::new())),
     ));
@@ -622,7 +622,7 @@ async fn start_booted(
     // This birth's digest as it reports it: the address is the one the bound endpoint holds.
     let digest = MeshDigest { held_hash: rdm_core::app_types::hash(&app_types.iter().cloned().collect()),
         fabric_id: launch.fabric_id.clone(),
-        node: MeshNode { mesh: launch.mesh.clone(), kind: launch.kind,
+        node: MeshNode { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
             node_id: launch.node_id.clone(),
             name: launch.name.clone(),
             endpoint_id: rdm_core::EndpointId(key.public().to_string()),
@@ -653,7 +653,7 @@ async fn start_booted(
         Box::new(move || {
             use crate::node_self::StartFailed;
             let seed = seed.ok_or_else(|| StartFailed { step: "node.join", reason: format!("{} names launcher {} but no seed to reach it at", launch_name, launcher.node_id) })?;
-            let launcher_ref = rdm_transport::ResolvedNode { mesh: launcher.mesh.clone(), kind: rdm_core::NodeKind::NodeAdmin,
+            let launcher_ref = rdm_transport::ResolvedNode { mesh: launcher.mesh.clone(), r#type: "node-admin".into(),
                 node_id: launcher.node_id.clone(),
                 name: launcher.name.clone(),
                 endpoint_id: seed.id,
@@ -756,7 +756,7 @@ async fn start_booted(
                                     })
                                 };
                                 Arc::new(
-                                    crate::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), launch.kind, server.clone(), client.clone(), node_rpc.resolver.clone(), topology_view.clone(), set_status, current, Some(declare), launch.connections_delete_deadline)
+                                    crate::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), launch.r#type.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), topology_view.clone(), set_status, current, Some(declare), launch.connections_delete_deadline)
                                         .with_cancel(cancel.clone())
                                         .with_owed(owed_state.clone()),
                                 )
@@ -781,7 +781,7 @@ async fn start_booted(
                             let pre_node_ready_cell: Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>> = Arc::default();
                             let pre_node_ready_task_cell: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
                             own.set_session(Arc::new(NodeSession {
-                                kind: launch.kind,
+                                r#type: launch.r#type.clone(),
                                 name: launch.name.clone(),
                                 node_id: launch.node_id.clone(),
                                 incarnation: launch.incarnation.clone(),
@@ -804,7 +804,7 @@ async fn start_booted(
                                 pre_node_ready_task: pre_node_ready_task_cell.clone(),
                                 listeners: listener_addrs.clone(),
                             }));
-                            let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), launch.kind, launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
+                            let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), &launch.r#type, launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
                             // The retained config and tags of this node ID are its own row as the hydration sync
                             // handed it (Q234), when that row carries the node's own part; else the launch
                             // snapshot. The start reads nothing from the store (Q227).
@@ -874,7 +874,7 @@ async fn start_booted(
                             let becoming = Becoming {
                                 boot: boot.clone(),
                                 name: topology_view.node_name(),
-                                kind: launch.kind.name(),
+                                r#type: launch.r#type.clone(),
                                 incarnation_id: launch.incarnation.to_string(),
                                 node_id: launch.node_id.clone(),
                                 mesh_id: mesh_id.to_string(),
@@ -893,7 +893,7 @@ async fn start_booted(
                                     incarnation: launch.incarnation.clone(),
                                     fabric_id: launch.fabric_id.clone(),
                                     mesh_id: mesh_id.clone(),
-                                    kind: launch.kind,
+                                    r#type: launch.r#type.clone(),
                                 },
                                 node_hooks: node_hooks.clone(),
                                 events: crate::node_hooks::Events::new(topology_view.digest_view.clone(), addressed),
@@ -959,7 +959,7 @@ fn spawn_publisher(topology_view: &TopologyView, digest: &MeshDigest, status: &A
 /// How an rpc node or role node leaves its mesh when stopped and joins it again when started
 /// (`node_self::Session`): the parts it was born with, kept for the rejoin.
 struct NodeSession {
-    kind: rdm_core::NodeKind,
+    r#type: String,
     name: rdm_core::PathName,
     node_id: NodeId,
     incarnation: IncarnationId,
@@ -1144,7 +1144,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
         let becoming = Becoming {
             boot: self.root.clone(),
             name: s.node_id.to_string(),
-            kind: s.kind.name(),
+            r#type: s.r#type.clone(),
             incarnation_id: s.incarnation.to_string(),
             node_id: s.node_id.clone(),
             mesh_id: s.mesh_id.to_string(),
@@ -1157,7 +1157,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             operation: Some(self.operation.clone()),
         };
         Ok(crate::workflows::node_start::HookParts {
-            birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.kind },
+            birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), r#type: s.r#type.clone() },
             node_hooks: s.node_hooks.clone(),
             events: crate::node_hooks::Events::new(topology_view.digest_view.clone(), s.addressed.clone()),
             cancel: self.birth_cancel.take().expect("the hook's token is handed once"),
@@ -1262,7 +1262,7 @@ impl crate::workflows::node_start::AfterHook for RpcAfterHook {
 struct Becoming {
     boot: tracing::Span,
     name: String,
-    kind: &'static str,
+    r#type: String,
     incarnation_id: String,
     node_id: rdm_core::NodeId,
     mesh_id: String,
@@ -1288,7 +1288,7 @@ impl Becoming {
             parent: &self.boot,
             "rdm.mesh.node.update.via-ready",
             node_id = %self.node_id,
-            kind = self.kind,
+            "type" = %self.r#type,
             incarnation_id = %self.incarnation_id,
             meshes = self.topology_view.meshes_held(),
             mesh_id = %self.mesh_id,
@@ -2091,7 +2091,7 @@ mod primary_tests {
         capture.run(2, async {
             let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
             let (node_id, incarnation, fabric_id, mesh_id) = (NodeId::mint(), IncarnationId::mint(), rdm_core::FabricId::mint(), rdm_core::MeshId::mint());
-            let name = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+            let name = rdm_core::PathName::new("mesh1.node", "2").unwrap();
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
             clock.adopt(1_000_000);
             let g = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
@@ -2099,7 +2099,7 @@ mod primary_tests {
             let digest = MeshDigest {
                 held_hash: [0u8; 32],
                 fabric_id: fabric_id.clone(),
-                node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: node_id.clone(), name, endpoint_id: rdm_core::EndpointId(endpoint.secret_key().public().to_string()), transport_addr: "127.0.0.1:41002".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
+                node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), name, endpoint_id: rdm_core::EndpointId(endpoint.secret_key().public().to_string()), transport_addr: "127.0.0.1:41002".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
                 status: MemberStatus::Pending,
                 node_state: Default::default(),
                 admin_api_base: None,
@@ -2119,7 +2119,7 @@ mod primary_tests {
             let becoming = Becoming {
                 boot: tracing::info_span!("rdm.mesh.node.update.via-start", node_id = %node_id),
                 name: node_id.to_string(),
-                kind: rdm_core::NodeKind::RpcNode.name(),
+                r#type: "node".into(),
                 incarnation_id: incarnation.to_string(),
                 node_id: node_id.clone(),
                 mesh_id: mesh_id.to_string(),

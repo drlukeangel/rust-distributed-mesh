@@ -205,7 +205,7 @@ async fn rename(
     }
     // 2. The writer: the mesh-primary of the node's mesh, or the fabric-primary for a mesh with none (R-OW1).
     if !crate::node_rows::writes_for(now, me_id, &held.mesh) {
-        let held_by = now.node_type_primary(&held.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
+        let held_by = now.node_type_primary(&held.mesh, "node-admin").map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
         let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me_id} does not hold it)", held.mesh, held.node_id);
         span.record("detail", needed.as_str());
         return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
@@ -305,7 +305,7 @@ mod tests {
     // @feature: node-name-update
     #[tokio::test]
     async fn admission_and_validation_enforce_exact_birth_writer_quiet_left_state_and_name_grammar() {
-        let mut subject = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut subject = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         subject.status = NodeStatus::ConnectionsDeleting;
         let inc = IncarnationId::mint();
         subject.incarnation_id = Some(inc.clone());
@@ -348,12 +348,12 @@ mod tests {
         assert_eq!(ok_adm.labels, ("ConnectionsDeleting".into(), "deleted", "left"));
         assert!(ok_adm.quiet.is_ok());
 
-        let mut admin1 = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let mut admin1 = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
         admin1.status = NodeStatus::Ready;
         admin1.is_primary = true;
         admin1.is_fabric_primary = true;
         admin1.incarnation_id = Some(IncarnationId::mint());
-        let admin2 = Node::allocated(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let admin2 = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin");
 
         let view = RwLock::new(Topology {
             fabric: Fabric {

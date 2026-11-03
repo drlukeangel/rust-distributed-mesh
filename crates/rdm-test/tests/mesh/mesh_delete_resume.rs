@@ -20,7 +20,7 @@
 
 use rdm_test::estate::location;
 use crate::build_log;
-use rdm_client::{FabricDesired, Frame, LaunchKind as NodeKind, MeshDesired, PathName};
+use rdm_client::{FabricDesired, Frame, MeshDesired, PathName};
 use rdm_test::typed::BuildSpec;
 use rdm_test::estate::{at_location, names_location, named, Estate, Owner};
 use std::collections::BTreeMap;
@@ -112,22 +112,22 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     // mesh no admin of which survives (mesh-delete.md resume step 2) runs the executable its lost
     // predecessor's row records (node-recovery.md "Retained"; `admin/mesh_delete.rs`
     // `create_deleting_mesh_admin`).
-    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    let mesh1 = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2)]);
-    let mesh2 = MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, mesh2_admins), (NodeKind::RpcNode, 2)]);
+    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
+    let mesh1 = MeshDesired::of("mesh1", [("node-admin", 2)]);
+    let mesh2 = MeshDesired::of("mesh2", [("node-admin", mesh2_admins), ("node", 2)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1.clone(), mesh2] }).await;
-    let mut want: BTreeSet<PathName> = [("mesh1.admin", "1"), ("mesh1.admin", "2"), ("mesh2.rpc", "1"), ("mesh2.rpc", "2")].iter().map(|(path, name)| Estate::path(path, name)).collect();
-    want.extend((1..=mesh2_admins).map(|i| Estate::path("mesh2.admin", &i.to_string())));
+    let mut want: BTreeSet<PathName> = [("mesh1.node-admin", "1"), ("mesh1.node-admin", "2"), ("mesh2.node", "1"), ("mesh2.node", "2")].iter().map(|(path, name)| Estate::path(path, name)).collect();
+    want.extend((1..=mesh2_admins).map(|i| Estate::path("mesh2.node-admin", &i.to_string())));
     let before = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
     // A mesh delete waits for the Build in progress (Q170): the fabric is ready before mesh2
     // goes, so the admin in its role after the primary's loss reads mesh2 deleting from its mesh's own rows.
     estate.until_fabric_ready(Duration::from_secs(90)).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).unwrap_or_else(|| panic!("mesh2 has a minted id"));
-    let primary = before.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));
+    let primary = before.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));
     let lost = (location(&primary), s(&primary["node_id"]), s(&primary["incarnation_id"]));
     let ids: BTreeMap<PathName, String> = before.iter().map(|n| (location(n), s(&n["node_id"]))).collect();
     // A member's delete is keyed by its node id (mesh-delete.md step 3).
-    let member = |name: &str| json!({"Node": ids[&Estate::path("mesh2.rpc", name)]});
+    let member = |name: &str| json!({"Node": ids[&Estate::path("mesh2.node", name)]});
     let door = Door::at(&estate, &lost.0).await;
 
     // Held in tier 1: rpc.2's stop answered `stopped` (its node.connection.delete { All } and its
@@ -197,7 +197,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
             // unheard until mesh-left. The final primary is the one mesh2 birth that is alive.
             let nodes = estate.try_node_views().await.map(|v| Estate::values(&v)).unwrap_or_default();
             let mesh2: Vec<(PathName, String)> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["status"] == "ready").map(|n| (location(n), s(&n["node_id"]))).collect();
-            let deleting: Vec<&Value> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node").collect();
+            let deleting: Vec<&Value> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node").collect();
             if mesh2.len() == 1 && deleting.is_empty() {
                 last = mesh2.into_iter().next();
             }
@@ -317,7 +317,7 @@ pub(crate) fn assert_resumed(run: &Run, next: &PathName, roster: usize) -> Value
     let lost_rows: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| names_location(sp, "subject", &lost.0)).collect();
     assert!(lost_rows.iter().all(|sp| sp["attributes"]["outcome"] == "row-deleted"), "the lost primary's Deleted row is written by its mesh's one writer and never refused: {lost_rows:?}");
     let handed: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-exit-for-writer").into_iter().filter(|sp| at_location(sp, &lost.0)).collect();
-    let writer = if handed.is_empty() { Estate::path("mesh1.admin", "1") } else { next.clone() };
+    let writer = if handed.is_empty() { Estate::path("mesh1.node-admin", "1") } else { next.clone() };
     assert!(lost_rows.len() == 1 && at_location(lost_rows[0], &writer), "the lost primary's Deleted row is written once, by {writer:?}: {lost_rows:?}");
     assert!(s(&applied[0]["attributes"]["final_primary"]).starts_with(&format!("{last_id} ")), "{}", applied[0]);
     assert!(attr_u(applied[0], "attempt") >= 2, "the amendment belongs to a resumed attempt: {}", applied[0]);
@@ -344,7 +344,7 @@ pub(crate) fn assert_resumed(run: &Run, next: &PathName, roster: usize) -> Value
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_admin() {
     let run = primary_lost_mid_leave("a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_admin", 2, Rpc1::Free).await;
-    let survivor = Estate::path("mesh2.admin", if run.lost.0.name == "1" { "2" } else { "1" });
+    let survivor = Estate::path("mesh2.node-admin", if run.lost.0.name == "1" { "2" } else { "1" });
     assert_resumed(&run, &survivor, 4);
     // The survivor admits the leave from the accepted roster plus the amendment, from its own
     // facts or the owner's, and runs only what has no terminal receipt.
@@ -369,10 +369,10 @@ async fn a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_adm
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leave_whose_primary_is_lost_after_a_members_terminate_runtime_receipt_finishes_that_members_delete_under_the_surviving_admin() {
     let run = primary_lost_mid_leave("a_leave_whose_primary_is_lost_after_a_members_terminate_runtime_receipt_finishes_that_members_delete_under_the_surviving_admin", 2, Rpc1::ExitProven).await;
-    let survivor = Estate::path("mesh2.admin", if run.lost.0.name == "1" { "2" } else { "1" });
+    let survivor = Estate::path("mesh2.node-admin", if run.lost.0.name == "1" { "2" } else { "1" });
     let eprint_trace = assert_resumed(&run, &survivor, 4);
     let outer = "mesh.delete";
-    let rpc1 = Estate::path("mesh2.rpc", "1");
+    let rpc1 = Estate::path("mesh2.node", "1");
     let rpc1_id = run.id(&rpc1);
     // The survivor's resumed attempt runs the two ordinary members: rpc.1 holds an exited verdict and is
     // still owed its delete. The lost primary's delete is finished when the fabric-primary wrote its row

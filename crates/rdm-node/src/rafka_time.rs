@@ -187,11 +187,11 @@ mod tests {
     fn a_refused_answer_leaves_the_held_time_unchanged() {
         let time = RafkaTime::unadopted();
         time.adopt(1_000_000);
-        let served = Served { via: "get-topology", served_by: "mesh2.admin.2", ms: 9_000_000, kind: None };
-        assert_eq!(adopt_pulled(&time, Puller::MeshPrimary, "mesh1.admin.1", served).unwrap_err(), Refusal::ServedByAReplica);
+        let served = Served { via: "get-topology", served_by: "mesh2.node-admin.2", ms: 9_000_000, kind: None };
+        assert_eq!(adopt_pulled(&time, Puller::MeshPrimary, "mesh1.node-admin.1", served).unwrap_err(), Refusal::ServedByAReplica);
         assert!(time.now_ms() < 2_000_000, "the offered time was not taken");
         let served = Served { kind: Some(PrimaryKind::FabricPrimary), ..served };
-        adopt_pulled(&time, Puller::MeshPrimary, "mesh1.admin.1", served).unwrap();
+        adopt_pulled(&time, Puller::MeshPrimary, "mesh1.node-admin.1", served).unwrap();
         assert!(time.now_ms() >= 9_000_000);
     }
 

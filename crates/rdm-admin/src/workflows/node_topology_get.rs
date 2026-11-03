@@ -12,7 +12,7 @@ pub use crate::admin::{project, project_at, project_with, view_projector, ViewRe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
+    use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, PathName};
     use crate::span_capture::Capture;
     use crate::topology_read::snapshot_replies;
     use iroh::SecretKey;
@@ -61,7 +61,7 @@ mod tests {
                 &fabric_id,
                 "mesh1",
                 &mesh_id,
-                "mesh1.admin.1",
+                "mesh1.node-admin.1",
                 Arc::new(server_time.clone()),
                 Vec::new(),
                 &[],
@@ -83,7 +83,7 @@ mod tests {
                 &fabric_id,
                 "mesh1",
                 &mesh_id,
-                "mesh1.rpc.1",
+                "mesh1.node.1",
                 Arc::new(caller_time.clone()),
                 Vec::new(),
                 &[],
@@ -95,7 +95,7 @@ mod tests {
             let server_inc = IncarnationId::mint();
             let caller_node_id = NodeId::mint();
             let caller_inc = IncarnationId::mint();
-            let caller_path = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
+            let caller_path = PathName::numbered("mesh1", "node", 1);
 
             let pub_id = PublisherId {
                 incarnation: server_inc.clone(),
@@ -104,9 +104,9 @@ mod tests {
             let own_digest = MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
-                node: MeshNode { mesh: "mesh1".to_string(), kind: NodeKind::NodeAdmin,
+                node: MeshNode { mesh: "mesh1".to_string(), r#type: "node-admin".into(),
                     node_id: server_node_id.clone(),
-                    name: PathName::numbered("mesh1", NodeKind::NodeAdmin, 1),
+                    name: PathName::numbered("mesh1", "node-admin", 1),
                     endpoint_id: EndpointId(server_ep.id().to_string()),
                     transport_addr: server_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("ipv4"),
                     incarnation: server_inc.clone(),
@@ -184,7 +184,7 @@ mod tests {
                     let view = NodeView {
                         properties: Default::default(),
                         name,
-                        kind: NodeKind::RpcNode,
+                        r#type: "node".into(),
                         mesh: "mesh1".to_string(),
                         node_id,
                         endpoint_id: Some(expected),
@@ -226,9 +226,9 @@ mod tests {
                 Box::pin(async move {
                     let mut map = StoredMap::default();
                     map.mesh_ids.insert("mesh2".to_string(), m2);
-                    map.nodes.push(StoredNode { mesh: "mesh2".into(), kind: rdm_core::NodeKind::NodeAdmin,
+                    map.nodes.push(StoredNode { mesh: "mesh2".into(), r#type: "node-admin".into(),
                         node_id: NodeId::mint(),
-                        name: rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
+                        name: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
                         endpoint_id: EndpointId("ep-mesh2-admin-1".to_string()),
                         incarnation: IncarnationId::mint(),
                         transport_addr: "127.0.0.1:29001".parse().expect("addr"),
@@ -261,9 +261,9 @@ mod tests {
 
             let resolver = Arc::new(StaticResolver::new());
             let server_addr = server_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("ipv4");
-            resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin,
+            resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(),
                 node_id: server_node_id.clone(),
-                name: PathName::numbered("mesh1", NodeKind::NodeAdmin, 1),
+                name: PathName::numbered("mesh1", "node-admin", 1),
                 endpoint_id: server_ep.id(),
                 transport_addr: server_addr,
                 incarnation: server_inc.clone(),
@@ -287,10 +287,10 @@ mod tests {
             read.adopt_rafka_time(
                 &caller_time,
                 &caller_view,
-                "mesh1.rpc.1",
+                "mesh1.node.1",
                 "mesh1",
                 &caller_node_id,
-                "mesh1.admin.1",
+                "mesh1.node-admin.1",
             )
             .expect("member adopts rafka-time");
             assert!(caller_time.try_now_ms().is_some());

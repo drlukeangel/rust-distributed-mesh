@@ -14,7 +14,7 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol
 async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, frame: Frame, serial: u64) {
     // A following status on the same channel proves receipt has finished.
     sender.broadcast_neighbors(frame.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
-    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
+    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready".into(), publisher: "mesh1.node-admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.expect("the following frame was applied on this channel");
@@ -36,7 +36,7 @@ fn story(story: Story) {
         learn_addresses(&sender_ep, &[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let mut topic = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
-        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
+        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
         let (sender, _rx) = topic.split();
 
@@ -52,8 +52,8 @@ fn story(story: Story) {
         }
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let id = NodeId::mint();
-        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { mesh: "mesh2".into(), kind: rdm_core::NodeKind::RpcNode, node_id: id.clone(), name: rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(MeshId::mint()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
-        let snapshot = |version, publication, index, count, digests: Vec<MeshDigest>, stamp| Frame::MeshTopology { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.2".into()), topology_version: version, published_at_rafka_ms: stamp, snapshot_id: publication, chunk_index: index, chunk_count: count, digests, in_flight: vec![], deleted: vec![] };
+        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { mesh: "mesh2".into(), r#type: "node".into(), node_id: id.clone(), name: rdm_core::PathName::new("mesh2.node", "1").unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(MeshId::mint()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
+        let snapshot = |version, publication, index, count, digests: Vec<MeshDigest>, stamp| Frame::MeshTopology { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.node-admin.2".into()), topology_version: version, published_at_rafka_ms: stamp, snapshot_id: publication, chunk_index: index, chunk_count: count, digests, in_flight: vec![], deleted: vec![] };
         let read = |digests| Chunk { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 10, snapshot_id: 3, chunk_index: 0, chunk_count: 1, digests, in_flight: vec![], deleted: vec![] };
         let delta = |base, version, changed: Vec<MeshDigest>, stamp| Frame::MeshTopologyDelta { mesh: "mesh2".into(), source_publisher: publisher.clone(), base_version: base, topology_version: version, published_at_rafka_ms: stamp, changed, removed: vec![], in_flight: vec![], deleted: vec![] };
         let baseline = snapshot(10, 1, 0, 1, vec![digest.clone()], 100);
@@ -84,7 +84,7 @@ fn story(story: Story) {
             Story::Inconsistent => send(&sender, &receiver, snapshot(10, 1, 0, 1, vec![changed.clone()], 100), 2).await,
             Story::LowerStamp => { send(&sender, &receiver, snapshot(11, 2, 0, 1, vec![changed.clone()], 1), 2).await; expected = 11; },
             Story::Chunks | Story::PendingConflict => {
-                let mut second = digest.clone(); second.node.node_id = NodeId::mint(); second.node.name = rdm_core::PathName::new("mesh2.rpc", "2").unwrap();
+                let mut second = digest.clone(); second.node.node_id = NodeId::mint(); second.node.name = rdm_core::PathName::new("mesh2.node", "2").unwrap();
                 let first = snapshot(11, 2, 0, 2, vec![changed.clone()], 101);
                 let last = snapshot(11, 2, 1, 2, vec![second.clone()], 101);
                 if matches!(story, Story::Chunks) {
@@ -130,11 +130,11 @@ fn story(story: Story) {
                 let installs = || capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed").count();
                 assert_eq!(installs(), 2, "a second forwarder's counter 1 is a distinct publication install");
                 let repeated = |by: &str| { let mut f = baseline.clone(); if let Frame::MeshTopology { forwarded_by, .. } = &mut f { *forwarded_by = Some(by.into()); } f };
-                send(&sender, &receiver, repeated("mesh1.admin.4"), 3).await;
+                send(&sender, &receiver, repeated("mesh1.node-admin.4"), 3).await;
                 assert_eq!(installs(), 2, "the first owner's resend is still a duplicate after the other owner's publication");
                 send(&sender, &receiver, snapshot(10, 2, 0, 1, vec![digest.clone()], 101), 4).await;
                 assert_eq!(installs(), 3, "the first owner's new counter is a new publication install");
-                send(&sender, &receiver, repeated("mesh1.admin.5"), 5).await;
+                send(&sender, &receiver, repeated("mesh1.node-admin.5"), 5).await;
                 assert_eq!(installs(), 3, "an older exact publication id stays seen after a newer counter");
                 assert_eq!(receiver.digest_view.get(id.as_str()).unwrap().1, heard_before, "a peer mesh projection on this mesh channel supplies no liveness");
             },

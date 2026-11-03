@@ -88,9 +88,9 @@ mod tests {
 
     fn node(i: usize, note: usize) -> rdm_core::views::NodeView {
         let mesh = format!("mesh{}", i / 1000 + 1);
-        let name = rdm_core::PathName::new(format!("{mesh}.rpc"), (i % 1000 + 1).to_string()).unwrap();
+        let name = rdm_core::PathName::new(format!("{mesh}.node"), (i % 1000 + 1).to_string()).unwrap();
         let mut n: rdm_core::views::NodeView = serde_json::from_value(serde_json::json!({
-            "name": name, "kind": "rpc_node", "mesh": mesh, "node_id": rdm_core::NodeId::mint(), "endpoint_id": null,
+            "name": name, "type": "node", "mesh": mesh, "node_id": rdm_core::NodeId::mint(), "endpoint_id": null,
             "incarnation_id": null, "deployment_id": null, "provider": "process", "data_dir": null, "status": "ready",
             "is_primary": false, "is_fabric_primary": false, "admin_api_base": null, "transport_addr": null, "listeners": [],
             "declared": null, "stopped": false, "load": null, "gossip": null, "tags": [], "config": {}, "data_dir_lost": null,

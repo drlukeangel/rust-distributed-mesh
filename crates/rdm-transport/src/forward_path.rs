@@ -346,9 +346,9 @@ mod tests {
     fn digest(ordinal: u32, id: &NodeId, birth: &IncarnationId, seq: u64) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: id.clone(),
-                name: rdm_core::PathName::new("mesh1.rpc", ordinal.to_string()).unwrap(),
+                name: rdm_core::PathName::new("mesh1.node", ordinal.to_string()).unwrap(),
                 endpoint_id: EndpointId(format!("key{ordinal}")),
                 transport_addr: format!("127.0.0.1:{}", 41_000 + ordinal).parse().unwrap(),
                 incarnation: birth.clone(),
@@ -439,9 +439,9 @@ mod tests {
         let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
         path.set_role(true);
         let p = publisher();
-        path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
-        path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
-        path.source("mesh2.admin.1", "mesh1", &p, 12, &source_at(&ids, 12), 3);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 12, &source_at(&ids, 12), 3);
         assert_eq!(rec.seen_after(3).await, vec![(0, 10), (10, 11), (11, 12)]);
     }
 
@@ -492,15 +492,15 @@ mod tests {
         path.set_role(true);
         owes.store(false, Ordering::Relaxed);
         let p = publisher();
-        path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         assert_eq!(rec.seen_after(1).await, vec![(0, 10)]);
         assert!(!owes.load(Ordering::Relaxed), "a forward that was sent owes nothing");
-        path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
 
         let failed = spans.named("rdm.mesh.topology.update.via-forward-send-failed").await;
         assert_eq!(failed.len(), 1, "the refusal is named once");
         let f = &failed[0];
-        assert_eq!(f["node"], "mesh2.admin.1");
+        assert_eq!(f["node"], "mesh2.node-admin.1");
         assert_eq!(f["mesh"], "mesh1");
         assert_eq!(f["source_publisher"], p.to_string());
         assert_eq!(f["topology_version"], "11");
@@ -522,7 +522,7 @@ mod tests {
         let path = ForwardPath { forwarder, queue, owes_full: owes.clone() };
         path.forwarder.lock().unwrap().set_role(true);
         let p = publisher();
-        path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         let failed = spans.named("rdm.mesh.topology.update.via-forward-send-failed").await;
         assert_eq!(failed.len(), 1);
         assert!(failed[0]["cause"].contains("no sender task"), "{}", failed[0]["cause"]);
@@ -580,14 +580,14 @@ mod tests {
         let path = ForwardPath::new(Arc::default(), Arc::default(), gate.sink());
         let p = publisher();
         path.set_role(true);
-        path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         gate.entered.notified().await;
-        path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
-        path.carry("mesh2.admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
+        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+        path.carry("mesh2.node-admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
         path.set_role(false);
         gate.release.add_permits(1);
         path.set_role(true);
-        path.fulls("mesh2.admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 12, source_at(&ids, 12))], 3);
+        path.fulls("mesh2.node-admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 12, source_at(&ids, 12))], 3);
         for _ in 0..400 {
             if gate.seen.lock().unwrap().contains(&(0, 12)) {
                 break;
@@ -613,12 +613,12 @@ mod tests {
         gate.release.add_permits(1);
         let path = ForwardPath::new(Arc::default(), Arc::default(), gate.sink());
         let p = publisher();
-        path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
-        path.fulls("mesh2.admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))], 1);
-        path.carry("mesh2.admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
+        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.fulls("mesh2.node-admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))], 1);
+        path.carry("mesh2.node-admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
         assert!(path.forwarder.lock().unwrap().snapshots().is_empty(), "no baseline is recorded without the role");
         path.set_role(true);
-        path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
         for _ in 0..400 {
             if !gate.seen.lock().unwrap().is_empty() {
                 break;
@@ -638,11 +638,11 @@ mod tests {
         let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
         path.set_role(true);
         let p = publisher();
-        path.fulls("mesh2.admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))], 1);
-        path.carry("mesh2.admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
-        let (replayed, fulls, _) = path.replay("mesh2.admin.1", Vec::new(), || 2);
+        path.fulls("mesh2.node-admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))], 1);
+        path.carry("mesh2.node-admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
+        let (replayed, fulls, _) = path.replay("mesh2.node-admin.1", Vec::new(), || 2);
         assert_eq!((replayed, fulls), (1, 1));
-        path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 3);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 3);
         assert_eq!(rec.seen_after(4).await, vec![(0, 10), (1, 1), (0, 10), (10, 11)]);
     }
 
@@ -664,11 +664,11 @@ mod tests {
         let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
         path.set_role(true);
         let (p, q) = (publisher(), publisher());
-        let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::MeshTopology { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("mesh2.admin.1".into()), topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, deleted: dep }.authored(&test_author(), 0, 1)).len();
+        let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::MeshTopology { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("mesh2.node-admin.1".into()), topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, deleted: dep }.authored(&test_author(), 0, 1)).len();
         assert!(chunks > 1, "the full spans {chunks} chunks");
-        path.source("mesh2.admin.1", "mesh1", &p, 10, &big(10), 1);
-        path.source("mesh2.admin.1", "mesh3", &q, 5, &source_at(&ids, 5), 2);
-        path.source("mesh2.admin.1", "mesh1", &p, 11, &big(11), 3);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &big(10), 1);
+        path.source("mesh2.node-admin.1", "mesh3", &q, 5, &source_at(&ids, 5), 2);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &big(11), 3);
         let seen = rec.seen_after(chunks + 1 + 1).await;
         let mut expected: Vec<(u64, u64)> = vec![(0, 10); chunks];
         expected.push((0, 5));

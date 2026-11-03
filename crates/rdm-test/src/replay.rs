@@ -197,7 +197,7 @@ impl ReplayManifest {
 /// The fault schedule a seed derives for a scenario: one restart of a seeded rpc node before a
 /// seeded operation. The same seed and scenario always derive the same schedule.
 pub fn schedule_from_seed(seed: u64, scenario: &Scenario) -> Vec<ScheduledFault> {
-    let nodes: Vec<PathName> = scenario.meshes.iter().flat_map(|m| (1..=m.rpc_node).map(move |n| PathName::new(format!("{}.rpc", m.name), n.to_string()).expect("declared scenario location"))).collect();
+    let nodes: Vec<PathName> = scenario.meshes.iter().flat_map(|m| (1..=m.rpc_node).map(move |n| PathName::new(format!("{}.node", m.name), n.to_string()).expect("declared scenario location"))).collect();
     if nodes.is_empty() {
         return Vec::new();
     }

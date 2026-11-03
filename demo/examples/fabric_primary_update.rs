@@ -42,8 +42,8 @@ async fn main() -> Result<()> {
     match nodes.fabric_primary_update(&fabric.name, &fabric_primary, &build_id, attempt).await? {
         NodePrimaryUpdateReply::PrimaryUpdated { revisions } => {
             println!("node.fabric-primary.update at {fabric_primary}: updated");
-            for (node_type, from, to, revision) in revisions {
-                println!("  {node_type}: {from:?} -> {to:?} at revision {revision}");
+            for (r#type, from, to, revision) in revisions {
+                println!("  {}: {from:?} -> {to:?} at revision {revision}", r#type);
             }
         }
         refused => println!("node.fabric-primary.update at {fabric_primary}: {refused:?}"),

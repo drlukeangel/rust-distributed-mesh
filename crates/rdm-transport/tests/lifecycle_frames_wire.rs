@@ -25,13 +25,13 @@ fn publisher() -> PublisherId {
 }
 
 fn op(operation: &str) -> LifecycleOp {
-    LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+    LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(),
         build_id: "66h8qrqvaajk".into(),
         attempt: 1,
         operation: rdm_core::OperationId::new(operation, rdm_core::OperationSubject::Birth { node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap() }),
         node_id: NodeId::parse("0123456789ab").unwrap(),
         incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(),
-        name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+        name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
         event_at_rafka_ms: 300,
         traceparent: None,
         tracestate: None,
@@ -47,12 +47,12 @@ fn node_command_frames_match_the_frozen_wire_schema() {
     let fixtures = [
         (Frame::NodeDeleted { op: op("node.delete"), forwarded_by: None }, "04 01 0c363668387172717661616a6b 01 0b 6e6f64652e64656c657465 01 01 0c303132333435363738396162 0c397763707266677776746879 00 00 0c303132333435363738396162 0c397763707266677776746879 09 6d657368312e727063 01 31 05 6d65736831 ac02 00"),
         (Frame::NodeConnectionsDeleting { op: op("node.connections.delete"), forwarded_by: None }, "0a 01 0c363668387172717661616a6b 01 17 6e6f64652e636f6e6e656374696f6e732e64656c657465 01 01 0c303132333435363738396162 0c397763707266677776746879 00 00 0c303132333435363738396162 0c397763707266677776746879 09 6d657368312e727063 01 31 05 6d65736831 ac02 00"),
-        (Frame::NodeLeaving { op: op("node.stop"), forwarded_by: Some("mesh2.admin.1".into()) }, "0b 01 0c363668387172717661616a6b 01 09 6e6f64652e73746f70 01 01 0c303132333435363738396162 0c397763707266677776746879 00 00 0c303132333435363738396162 0c397763707266677776746879 09 6d657368312e727063 01 31 05 6d65736831 ac02 010d6d657368322e61646d696e2e31"),
+        (Frame::NodeLeaving { op: op("node.stop"), forwarded_by: Some("mesh2.node-admin.1".into()) }, "0b 01 0c363668387172717661616a6b 01 09 6e6f64652e73746f70 01 01 0c303132333435363738396162 0c397763707266677776746879 00 00 0c303132333435363738396162 0c397763707266677776746879 09 6d657368312e727063 01 31 05 6d65736831 ac02 010d6d657368322e61646d696e2e31"),
         (Frame::NodeLeft { op: op("node.stop"), forwarded_by: None }, "0c 01 0c363668387172717661616a6b 01 09 6e6f64652e73746f70 01 01 0c303132333435363738396162 0c397763707266677776746879 00 00 0c303132333435363738396162 0c397763707266677776746879 09 6d657368312e727063 01 31 05 6d65736831 ac02 00"),
         (Frame::NodeConnectionsDeleted { op: op("node.connections.delete"), forwarded_by: None }, "0d 01 0c363668387172717661616a6b 01 17 6e6f64652e636f6e6e656374696f6e732e64656c657465 01 01 0c303132333435363738396162 0c397763707266677776746879 00 00 0c303132333435363738396162 0c397763707266677776746879 09 6d657368312e727063 01 31 05 6d65736831 ac02 00"),
         // Reserved since Q183 (node.restart removed): its bytes stand at variant 5, never sent.
         (
-            Frame::NodeRestarting { op: op("node.restart"), forwarded_by: Some("mesh2.admin.1".into()), publisher: publisher(), topology_version: 300 },
+            Frame::NodeRestarting { op: op("node.restart"), forwarded_by: Some("mesh2.node-admin.1".into()), publisher: publisher(), topology_version: 300 },
             "05 01 0c363668387172717661616a6b 01 0c 6e6f64652e72657374617274 01 01 0c303132333435363738396162 0c397763707266677776746879 00 00 0c303132333435363738396162 0c397763707266677776746879 09 6d657368312e727063 01 31 05 6d65736831 ac02 010d6d657368322e61646d696e2e31 0c793073657939677277367933 0c 303132333435363738396162 ac02",
         ),
     ];
@@ -72,9 +72,9 @@ fn node_command_frames_match_the_frozen_wire_schema() {
 fn a_peer_mesh_primary_forwards_node_command_frames_and_the_own_mesh_does_not() {
     for original in [
         Frame::NodeConnectionsDeleting { op: op("node.connections.delete"), forwarded_by: None },
-        Frame::NodeConnectionsDeleted { op: op("node.connections.delete"), forwarded_by: Some("mesh1.admin.1".into()) },
+        Frame::NodeConnectionsDeleted { op: op("node.connections.delete"), forwarded_by: Some("mesh1.node-admin.1".into()) },
     ] {
-        let forwarded = forward_of(original.clone(), "mesh2.admin.1", "mesh2").expect("a peer mesh forwards it");
+        let forwarded = forward_of(original.clone(), "mesh2.node-admin.1", "mesh2").expect("a peer mesh forwards it");
         let (want_op, kind) = match &original {
             Frame::NodeConnectionsDeleting { op, .. } => (op.clone(), 9u8),
             Frame::NodeConnectionsDeleted { op, .. } => (op.clone(), 12),
@@ -84,18 +84,18 @@ fn a_peer_mesh_primary_forwards_node_command_frames_and_the_own_mesh_does_not() 
         match forwarded {
             Frame::NodeConnectionsDeleting { op, forwarded_by } | Frame::NodeConnectionsDeleted { op, forwarded_by } => {
                 assert_eq!(op, want_op, "the op is preserved");
-                assert_eq!(forwarded_by.as_deref(), Some("mesh2.admin.1"));
+                assert_eq!(forwarded_by.as_deref(), Some("mesh2.node-admin.1"));
             }
             other => panic!("{other:?}"),
         }
-        assert!(forward_of(original, "mesh1.admin.1", "mesh1").is_none(), "the frame's own mesh hears the original");
+        assert!(forward_of(original, "mesh1.node-admin.1", "mesh1").is_none(), "the frame's own mesh hears the original");
     }
-    let left = Frame::NodeLeft { op: op("node.stop"), forwarded_by: Some("mesh1.admin.1".into()) };
-    assert!(forward_of(left, "mesh2.admin.1", "mesh2").is_none(), "NodeLeft is refused and never forwarded");
+    let left = Frame::NodeLeft { op: op("node.stop"), forwarded_by: Some("mesh1.node-admin.1".into()) };
+    assert!(forward_of(left, "mesh2.node-admin.1", "mesh2").is_none(), "NodeLeft is refused and never forwarded");
     let leaving = Frame::NodeLeaving { op: op("node.stop"), forwarded_by: None };
-    assert!(forward_of(leaving, "mesh2.admin.1", "mesh2").is_none(), "NodeLeaving is refused and never forwarded");
+    assert!(forward_of(leaving, "mesh2.node-admin.1", "mesh2").is_none(), "NodeLeaving is refused and never forwarded");
     let restarting = Frame::NodeRestarting { op: op("node.restart"), forwarded_by: None, publisher: publisher(), topology_version: 1 };
-    assert!(forward_of(restarting, "mesh2.admin.1", "mesh2").is_none(), "NodeRestarting is reserved (Q183) and never forwarded");
+    assert!(forward_of(restarting, "mesh2.node-admin.1", "mesh2").is_none(), "NodeRestarting is reserved (Q183) and never forwarded");
 }
 
 /// CONTRACT: `MeshLeaving` is variant 14, `MeshLeave` 15 and `MeshLeft` 16, appended after
@@ -133,16 +133,16 @@ fn status_events_match_the_frozen_wire_schema_and_are_forwarded_with_their_publi
         assert_eq!(frame.golden_encode(), expected, "{frame:?}");
         assert_roundtrip(&frame, &expected);
         let kind = frame.type_position();
-        let forwarded = forward_of(frame.clone(), "mesh3.admin.1", "mesh3").expect("a peer mesh forwards it");
+        let forwarded = forward_of(frame.clone(), "mesh3.node-admin.1", "mesh3").expect("a peer mesh forwards it");
         assert_eq!(forwarded.type_position(), kind);
         match (&frame, &forwarded) {
             (Frame::NodeDeleting { op: a, publisher: pa, topology_version: va, .. }, Frame::NodeDeleting { op: b, forwarded_by, publisher: pb, topology_version: vb })
             | (Frame::NodeStopped { op: a, publisher: pa, topology_version: va, .. }, Frame::NodeStopped { op: b, forwarded_by, publisher: pb, topology_version: vb }) => {
                 assert_eq!((a, pa, va), (b, pb, vb), "the op, the publisher and the version are preserved");
-                assert_eq!(forwarded_by.as_deref(), Some("mesh3.admin.1"));
+                assert_eq!(forwarded_by.as_deref(), Some("mesh3.node-admin.1"));
             }
             other => panic!("{other:?}"),
         }
-        assert!(forward_of(frame, "mesh1.admin.1", "mesh1").is_none(), "the frame's own mesh hears the original");
+        assert!(forward_of(frame, "mesh1.node-admin.1", "mesh1").is_none(), "the frame's own mesh hears the original");
     }
 }

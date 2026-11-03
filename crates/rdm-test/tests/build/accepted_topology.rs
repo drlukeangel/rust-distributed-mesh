@@ -24,7 +24,7 @@
 
 use crate::build_log;
 use rdm_core::{NodeId, OperationId, PathName};
-use rdm_client::{BuildId, CallEnd, FabricDesired, Fabrics, LaunchKind as NodeKind, MeshDesired, NodeStatus};
+use rdm_client::{BuildId, CallEnd, FabricDesired, Fabrics, MeshDesired, NodeStatus};
 use rdm_test::typed::BuildSpec;
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
@@ -70,7 +70,7 @@ fn paths(build: &Value, mesh: &str) -> Vec<PathName> {
 }
 
 fn fabric_of(meshes: &[(&str, u32, u32)]) -> FabricDesired {
-    FabricDesired { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() }
+    FabricDesired { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired::of(*m, [("node-admin", *a), ("node", *r)])).collect() }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -78,13 +78,13 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
 
     // 1. Day 0: the first Build, exact.
-    let day0_admin = estate.node_view(&location("mesh1.admin", "1")).await;
+    let day0_admin = estate.node_view(&location("mesh1.node-admin", "1")).await;
     let b0 = current_build(&estate).await;
     // The fabric-primary role appears one gossip interval before the executor's next pass: wait for the Build
     // itself, never for the role that precedes it.
     build_log::build_fact(&estate, &b0, "complete", Duration::from_secs(60), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
     let day0 = build_log::build_value(&estate, &b0).await;
-    assert_eq!(paths(&day0, "mesh1"), [location("mesh1.admin", "1")], "{day0}");
+    assert_eq!(paths(&day0, "mesh1"), [location("mesh1.node-admin", "1")], "{day0}");
     assert_eq!(day0["state"], "complete", "{day0}");
 
     // 2. A change: the next complete Build; one in flight at a time.
@@ -97,7 +97,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let built = build_log::build_value(&estate, &a).await;
-    assert_eq!(paths(&built, "mesh1"), [location("mesh1.admin", "1"), location("mesh1.admin", "2"), location("mesh1.rpc", "1"), location("mesh1.rpc", "2"), location("mesh1.rpc", "3")], "{built}");
+    assert_eq!(paths(&built, "mesh1"), [location("mesh1.node-admin", "1"), location("mesh1.node-admin", "2"), location("mesh1.node", "1"), location("mesh1.node", "2"), location("mesh1.node", "3")], "{built}");
     // The change is history the fabric-primary records with the Build, whole, in the journal on the store
     // root, and the Build read from there carries it (Q292).
     let recorded = rdm_admin::store_log::read_record(&estate.fabric_store_root().join(rdm_admin::store_root::BUILDS_FILE), "build-record", Some(&format!("{a}/accepted"))).unwrap_or_else(|| panic!("the journal holds Build {a}'s acceptance"));
@@ -113,10 +113,10 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert_eq!(current_build(&estate).await, a, "forget is history administration only");
 
     // 4. An admin born later hydrates the current Build, not the history.
-    let mut spawn = estate.create_node("mesh1", NodeKind::NodeAdmin).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node-admin in mesh1: {e}"));
+    let mut spawn = estate.create_node("mesh1", "node-admin").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node-admin in mesh1: {e}"));
     let c = Estate::complete(&mut spawn).await.build_id.to_string();
     let nodes = Estate::values(&estate.settled_views(&[("mesh1", 3, 3)]).await);
-    let late = nodes.iter().find(|n| n["name"]["path"] == "mesh1.admin" && n["name"]["name"] == "3").cloned().unwrap();
+    let late = nodes.iter().find(|n| n["name"]["path"] == "mesh1.node-admin" && n["name"]["name"] == "3").cloned().unwrap();
     let late_path: PathName = serde_json::from_value(late["name"].clone()).expect("separate location fields");
     assert_eq!(estate.fabric_view_at(&late_path).await.expect("the late admin answers fabric.get").build_id.as_deref(), Some(c.as_str()));
     // The late admin reads the Build records from the store root as every admin does (Q185); the completion is a
@@ -129,18 +129,18 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     // 5. A held birth that falls silent is not drift. The hold is a hang (every task but the leader in
     // a tracer's stop), which the provider reads `running`, so node investigation's tickle reaches it
     // once released; a SIGSTOP reads `os-stopped`, which re-creates it (node-investigation.md, Q273).
-    let held_pid = estate.pid_of(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).await as u32;
-    let held_rt = rdm_test::process_faults::ExactRuntime { deployment_id: String::new(), control_domain: rdm_test::process_faults::local_control_domain(), pid: held_pid, start: rdm_test::process_faults::start_token(held_pid).expect("mesh1.rpc.3 has a start token") };
+    let held_pid = estate.pid_of(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await as u32;
+    let held_rt = rdm_test::process_faults::ExactRuntime { deployment_id: String::new(), control_domain: rdm_test::process_faults::local_control_domain(), pid: held_pid, start: rdm_test::process_faults::start_token(held_pid).expect("mesh1.node.3 has a start token") };
     let quiet_from = now_ns();
     let hung = held_rt.hang().expect("the hang is acknowledged by the OS");
-    estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1.rpc.3 is silent in the view", rdm_transport::topology::staleness_floor() + Duration::from_secs(15), |n| n.filter(|n| matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1.node.3 is silent in the view", rdm_transport::topology::staleness_floor() + Duration::from_secs(15), |n| n.filter(|n| matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|_| ())).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     hung.release();
     let quiet_until = now_ns();
-    estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1.rpc.3 is heard again", Duration::from_secs(20), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1.node.3 is heard again", Duration::from_secs(20), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
 
     // 6. An admin that misses a Build catches up to the current Build when it is back.
-    let quiet = estate.node_values().await.into_iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no primary role");
+    let quiet = estate.node_values().await.into_iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no primary role");
     let quiet_name: PathName = serde_json::from_value(quiet["name"].clone()).expect("separate location fields");
     let stopped = estate.pid_of(&quiet_name).await;
     // Stopped across the acceptance only, never past the staleness floor: the admin misses the Build's
@@ -168,11 +168,11 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let before = build_log::build_value(&estate, &r4).await;
     let attempts_before = before["attempt"].as_u64().unwrap();
     let lane_before = before["lanes"]["mesh1"]["attempt"].as_u64().unwrap_or(0);
-    let lost = estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await;
-    let mesh_primary = estate.node_values().await.into_iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh1's primary")["node_id"].as_str().unwrap().to_string();
-    estate.kill_node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await;
+    let lost = estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
+    let mesh_primary = estate.node_values().await.into_iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh1's primary")["node_id"].as_str().unwrap().to_string();
+    estate.kill_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
     let back = estate
-        .until_node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1.rpc.2 is recovered", crate::node_recovery_due(), |n| {
+        .until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1.node.2 is recovered", crate::node_recovery_due(), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             (n["status"] == "ready" && n["node_id"] != lost["node_id"] && n["incarnation_id"] != lost["incarnation_id"]).then_some(n)
         })
@@ -203,13 +203,13 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     // 8. A stop, then a start, each an attempt of the accepted Build, under the same id.
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let restarted_from = estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
-    let (r, started) = estate.stop_then_start(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
+    let restarted_from = estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
+    let (r, started) = estate.stop_then_start(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
     assert_eq!(r.build_id.to_string(), r4, "a stop opens an attempt of the accepted Build: {r:?}");
     assert_eq!(u64::from(r.attempt), attempts_before + 1, "the stop opens the fabric lane's next attempt (the recovery was mesh1's lane's): {r:?}");
     assert!(started.build_id.to_string() == r4 && started.attempt > r.attempt, "the start opens a later attempt of the same Build: {started:?} after {r:?}");
     estate
-        .until_node(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1.rpc.1 is ready again as the same birth", Duration::from_secs(60), |n| {
+        .until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1.node.1 is ready again as the same birth", Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             (n["status"] == "ready" && n["stopped"] == false && n["incarnation_id"] == restarted_from["incarnation_id"] && n["node_id"] == restarted_from["node_id"]).then_some(())
         })
@@ -238,7 +238,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     // holds the fabric-primary role), in process, under the submit.
     let opened = named(&spans, "rdm.node_admin.build.update.via-recovery")
         .into_iter()
-        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["attempt"] == attempt.as_str() && actor_is(sp, &location("mesh1.rpc", "2")))
+        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["attempt"] == attempt.as_str() && actor_is(sp, &location("mesh1.node", "2")))
         .unwrap_or_else(|| panic!("the mesh-primary's door opened the recovery attempt of {r4}"));
     assert_eq!((opened["attributes"]["outcome"].as_str(), opened["attributes"]["route"].as_str()), (Some("admitted"), Some("node-recovery")), "{opened}");
     assert_eq!(opened["parent_span_id"], submit["span_id"], "the door's span is the submit's child: {opened}");
@@ -248,7 +248,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
         .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["lane"] == "mesh1" && sp["attributes"]["reason"] == "recovery" && sp["attributes"]["outcome"] == "converged")
         .unwrap_or_else(|| panic!("the recovery attempt of mesh1's lane of {r4} converged: {ran:?}"));
     assert_eq!(repaired["attributes"]["attempt"], attempt.as_str());
-    assert_eq!(repaired["attributes"]["operations"], format!("{:?}", vec![OperationId::node("node.delete", &NodeId::parse(lost["node_id"].as_str().unwrap()).unwrap()), OperationId::location("node.create", &location("mesh1.rpc", "2"))]), "the recovery's two operations, in order: {repaired}");
+    assert_eq!(repaired["attributes"]["operations"], format!("{:?}", vec![OperationId::node("node.delete", &NodeId::parse(lost["node_id"].as_str().unwrap()).unwrap()), OperationId::location("node.create", &location("mesh1.node", "2"))]), "the recovery's two operations, in order: {repaired}");
     // The mesh-primary runs the attempt it opened under the submit: the recovery's reconcile is the
     // submit's child, in its trace.
     assert_eq!(repaired["parent_span_id"], submit["span_id"], "the recovery's reconcile runs under the submit that opened it: {repaired}");
@@ -257,8 +257,8 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], lost["incarnation_id"], "named by the exact exited birth");
     assert!(
-        named(&spans, "rdm.node_admin.node.create.via-build").iter().any(|sp| sp["trace_id"] == submit["trace_id"] && sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["attempt"] == attempt.as_str() && actor_is(sp, &location("mesh1.rpc", "2"))),
-        "the recovery created mesh1.rpc.2 under the same Build"
+        named(&spans, "rdm.node_admin.node.create.via-build").iter().any(|sp| sp["trace_id"] == submit["trace_id"] && sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["attempt"] == attempt.as_str() && actor_is(sp, &location("mesh1.node", "2"))),
+        "the recovery created mesh1.node.2 under the same Build"
     );
     estate.record_trace_url(submit["trace_id"].as_str().unwrap_or(""));
     // 8: the stop ran as an attempt of the same Build.
@@ -269,7 +269,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     // The stop attempt's context is the stop call's request span, not the span that accepted the Build.
     let rest = named(&spans, "rdm.node_admin.build.update.via-node-rpc")
         .into_iter()
-        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && actor_is(sp, &location("mesh1.rpc", "1")) && sp["attributes"]["attempt"] == r.attempt.to_string().as_str())
+        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && actor_is(sp, &location("mesh1.node", "1")) && sp["attributes"]["attempt"] == r.attempt.to_string().as_str())
         .expect("the stop call's request span");
     assert_eq!(restart["parent_span_id"], rest["span_id"], "the stop's reconcile is the child of the stop call's request span: {restart}");
     assert_eq!(restart["trace_id"], rest["trace_id"]);

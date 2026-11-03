@@ -16,7 +16,7 @@
 //! The in-flight arm — a dial to a birth that moves before it is pooled ends as
 //! `RejectedStale`, never dispatched — is `crates/rafka-node-rpc/tests/pool.rs`.
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
+use rdm_client::{FabricDesired, MeshDesired};
 use rdm_test::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use rdm_core::PathName;
@@ -40,8 +40,8 @@ fn s(v: &Value) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gateway_reaches_the_brokers_same_birth_after_its_restart() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 1)])] }).await;
-    let want = [("mesh1.admin", "1"), ("mesh1.broker", "1"), ("mesh1.broker", "2"), ("mesh1.gateway", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect();
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 2), ("gateway", 1)])] }).await;
+    let want = [("mesh1.node-admin", "1"), ("mesh1.broker", "1"), ("mesh1.broker", "2"), ("mesh1.gateway", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect();
     let broker_location = PathName::new("mesh1.broker", "1").unwrap();
     let gateway_location = PathName::new("mesh1.gateway", "1").unwrap();
     estate.settles_to_named(&want, Duration::from_secs(30)).await;

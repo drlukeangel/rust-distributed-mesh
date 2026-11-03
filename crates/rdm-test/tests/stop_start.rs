@@ -60,8 +60,8 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
             fabric: "fabric1".into(),
             fabric_id: fabric,
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::RpcNode,
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            r#type: "node".into(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -86,7 +86,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
             heard.changed().await.unwrap();
         }
         let (born, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-        admin.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), kind: born.node.kind,
+        admin.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), r#type: born.node.r#type,
             node_id: born.node.node_id.clone(),
             name: born.node.name.clone(),
             endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
@@ -96,8 +96,8 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         let target = NodeTarget::ExactNode(born.node.node_id.clone());
         let (node_id, incarnation) = (born.node.node_id.clone(), born.node.incarnation.clone());
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 2, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 2, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
 
         // A live node refuses a start: only a stopped one starts.
         assert!(matches!(call(&admin, &target, &start).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Ready }), "a start of a live node is refused naming its state");
@@ -167,9 +167,9 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         // keyed by its build and operation, not its attempt (node-rpc-envelope.md: "Reissuing a
         // naturally idempotent uncertain step can settle it"). Another command's start of this live
         // node is still refused naming its state.
-        let reissued = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 3, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
+        let reissued = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 3, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
         assert_eq!(call(&admin, &target, &reissued).await, StatusReply::AlreadyApplied, "the reissued start settles as already applied");
-        let other = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7kq2m9vx4pzr".into(), attempt: 1, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
+        let other = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7kq2m9vx4pzr".into(), attempt: 1, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
         assert!(matches!(call(&admin, &target, &other).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Ready }), "another Build's start of the live node is refused naming its state");
         let _ = std::fs::remove_dir_all(&dir);
     })

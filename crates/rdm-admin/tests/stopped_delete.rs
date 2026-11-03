@@ -108,7 +108,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
         .await
         .unwrap();
     builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
-    let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+    let mut node = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
     node.node_id = NodeId::mint();
     node.incarnation_id = Some(IncarnationId::mint());
     node.provider = Some(ProviderKind::Process);
@@ -118,7 +118,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/stopped-delete".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3072-delete-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3072-delete-store-{}", NodeId::mint())),
@@ -302,7 +302,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
             .await
             .unwrap();
 
-        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         node.node_id = NodeId::mint();
         node.incarnation_id = Some(IncarnationId::mint());
         node.provider = Some(ProviderKind::Process);
@@ -321,7 +321,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
             executable: "/nonexistent/node-stop-chaos".into(),
             seeds: vec![("adminkey".into(), "127.0.0.1:41002".parse().unwrap())],
             launcher: rdm_core::launch::Launcher {
-                mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
+                mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
                 node_id: executor.node_id.clone(),
                 incarnation: executor.incarnation.clone(),
             },

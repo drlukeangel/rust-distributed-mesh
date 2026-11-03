@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
 
-fn node() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.rpc", "1").unwrap() }
+fn node() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.node", "1").unwrap() }
 
 fn owner(test: &str) -> Owner {
     Owner {
@@ -56,7 +56,7 @@ async fn restart_one_member(test: &str) -> (Value, Value, Value, u64, Vec<Value>
     let nodes = estate.settled_views(&[("mesh1", 1, 2)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let admin = nodes.iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.mesh == "mesh1").cloned().expect("the launching admin");
+    let admin = nodes.iter().find(|n| n.r#type == "node-admin" && n.mesh == "mesh1").cloned().expect("the launching admin");
     let before = nodes.iter().find(|n| n.name == node()).cloned().expect("the member to restart");
     let restart_at = now_nano();
     estate.stop_then_start(&node()).await;

@@ -18,8 +18,8 @@ mod tests {
     use rdm_core::status::{NodeState, RetryOn, StatusReply, StatusRequest};
     use std::time::Duration;
 
-    fn make_node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, status: NodeStatus) -> Node {
-        let mut n = Node::allocated(name, mesh, kind);
+    fn make_node(name: rdm_core::PathName, mesh: &str, r#type: &str, status: NodeStatus) -> Node {
+        let mut n = Node::allocated(name, mesh, r#type);
         n.node_id = NodeId::mint();
         n.incarnation_id = Some(IncarnationId::mint());
         n.status = status;
@@ -54,13 +54,13 @@ mod tests {
     #[tokio::test]
     async fn birth_answers_include_current_stopped_and_blocked_and_one_failed_peer_does_not_cancel_the_other()
     {
-        let caller = make_node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready);
-        let target = make_node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::PendingReconnect);
-        let peer1 = make_node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
-        let peer2 = make_node(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
-        let peer3 = make_node(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
-        let silent_peer = make_node(rdm_core::PathName::new("mesh1.rpc", "5").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::PendingReconnect);
-        let other_mesh = make_node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
+        let caller = make_node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::Ready);
+        let target = make_node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", NodeStatus::PendingReconnect);
+        let peer1 = make_node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", NodeStatus::Ready);
+        let peer2 = make_node(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", NodeStatus::Ready);
+        let peer3 = make_node(rdm_core::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node", NodeStatus::Ready);
+        let silent_peer = make_node(rdm_core::PathName::new("mesh1.node", "5").unwrap(), "mesh1", "node", NodeStatus::PendingReconnect);
+        let other_mesh = make_node(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", NodeStatus::Ready);
 
         let target_id = target.node_id.clone();
         let target_inc = target.incarnation_id.clone().unwrap();
@@ -137,7 +137,7 @@ mod tests {
         #[async_trait::async_trait]
         impl TickleCalls for PeerFanoutCalls {
             fn caller(&self) -> String {
-                "mesh1.admin.1".into()
+                "mesh1.node-admin.1".into()
             }
             fn deadline(&self) -> Duration {
                 Duration::from_secs(2)
@@ -200,7 +200,7 @@ mod tests {
                     }
                 );
             }
-            other => panic!("expected Reached via mesh1.rpc.3, got {other:?}"),
+            other => panic!("expected Reached via mesh1.node.3, got {other:?}"),
         }
     }
 }

@@ -19,7 +19,7 @@
 //! admin's start by name, naming the fabric's provider, before anything is bootstrapped.
 
 use rdm_core::launch::{DeclaredSecret, Launch, SecretHex};
-use rdm_core::NodeKind;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -88,8 +88,8 @@ impl DeclaredSecrets {
     }
 
     /// The values set in the environment of a runtime of `kind`: those whose declaration names it.
-    pub fn set_on(&self, kind: NodeKind) -> BTreeMap<String, SecretHex> {
-        self.declared.iter().filter(|d| d.kinds.contains(&kind)).filter_map(|d| Some((d.name.clone(), self.values.get(&d.name)?.clone()))).collect()
+    pub fn set_on(&self, r#type: &str) -> BTreeMap<String, SecretHex> {
+        self.declared.iter().filter(|d| d.types.iter().any(|t| t == r#type)).filter_map(|d| Some((d.name.clone(), self.values.get(&d.name)?.clone()))).collect()
     }
 
     /// Every declared name: withheld from what a process runtime inherits.
@@ -168,8 +168,8 @@ pub fn refuse_rdm_names(declared: &[DeclaredSecret], provider: &str) -> Result<(
 mod tests {
     use super::*;
 
-    fn declared(name: &str, kinds: &[NodeKind]) -> DeclaredSecret {
-        DeclaredSecret { name: name.into(), kinds: kinds.to_vec() }
+    fn declared(name: &str, kinds: &[String]) -> DeclaredSecret {
+        DeclaredSecret { name: name.into(), types: kinds.to_vec() }
     }
 
     fn dir() -> std::path::PathBuf {
@@ -191,12 +191,12 @@ mod tests {
             ("", "no environment variable name"),
             ("1KEY", "no environment variable name"),
         ] {
-            let e = refuse_rdm_names(&[declared(name, &[NodeKind::Broker])], "container").unwrap_err();
+            let e = refuse_rdm_names(&[declared(name, &["broker".to_string()])], "container").unwrap_err();
             assert!(e.starts_with("refusing to start") && e.contains(&format!("`{name}`")) && e.contains(says) && e.contains("the fabric's provider is container"), "{name}: {e}");
         }
-        let e = refuse_rdm_names(&[declared("APP_KEY", &[NodeKind::Broker]), declared("APP_KEY", &[NodeKind::Gateway])], "process").unwrap_err();
+        let e = refuse_rdm_names(&[declared("APP_KEY", &["broker".to_string()]), declared("APP_KEY", &["gateway".to_string()])], "process").unwrap_err();
         assert!(e.contains("`APP_KEY`") && e.contains("declared twice") && e.contains("the fabric's provider is process"), "{e}");
-        assert!(refuse_rdm_names(&[declared("APP_KEY", &[NodeKind::Broker])], "process").is_ok());
+        assert!(refuse_rdm_names(&[declared("APP_KEY", &["broker".to_string()])], "process").is_ok());
     }
 
     /// CONTRACT (Q150): the bootstrap admin reads each declared value from its own environment and
@@ -206,7 +206,7 @@ mod tests {
     /// declared name is withheld, and the debug form names no value.
     #[test]
     fn declared_values_are_read_once_kept_beside_the_data_dir_and_set_on_the_named_kinds_only() {
-        let decl = vec![declared("APP_KEY", &[NodeKind::Broker, NodeKind::Gateway]), declared("APP_ADMIN_KEY", &[NodeKind::NodeAdmin]), declared("APP_UNSET", &[NodeKind::Broker])];
+        let decl = vec![declared("APP_KEY", &["broker".to_string(), "gateway".to_string()]), declared("APP_ADMIN_KEY", &["node-admin".to_string()]), declared("APP_UNSET", &["broker".to_string()])];
         let env = |k: &str| match k {
             "APP_KEY" => Some("bootstrap,value=\nwith a newline".to_string()),
             "APP_ADMIN_KEY" => Some(String::new()),
@@ -214,10 +214,10 @@ mod tests {
         };
         let bootstrap = dir();
         let held = DeclaredSecrets::read(decl.clone(), None, env, &bootstrap, "process").unwrap();
-        assert_eq!(held.set_on(NodeKind::Broker).keys().collect::<Vec<_>>(), ["APP_KEY"], "an unset declared name is set on no launch");
-        assert_eq!(held.set_on(NodeKind::Broker)["APP_KEY"].value("APP_KEY").unwrap(), "bootstrap,value=\nwith a newline");
-        assert!(held.set_on(NodeKind::Compute).is_empty() && held.set_on(NodeKind::RpcNode).is_empty());
-        assert_eq!(held.set_on(NodeKind::NodeAdmin)["APP_ADMIN_KEY"].value("APP_ADMIN_KEY").unwrap(), "", "an empty value is a value");
+        assert_eq!(held.set_on("broker").keys().collect::<Vec<_>>(), ["APP_KEY"], "an unset declared name is set on no launch");
+        assert_eq!(held.set_on("broker")["APP_KEY"].value("APP_KEY").unwrap(), "bootstrap,value=\nwith a newline");
+        assert!(held.set_on("compute").is_empty() && held.set_on("node").is_empty());
+        assert_eq!(held.set_on("node-admin")["APP_ADMIN_KEY"].value("APP_ADMIN_KEY").unwrap(), "", "an empty value is a value");
         assert_eq!(held.names(), ["APP_KEY", "APP_ADMIN_KEY", "APP_UNSET"]);
         assert!(!format!("{held:?}").contains("bootstrap,value") && !format!("{held:?}").contains(&rdm_core::launch::encode_hex(b"bootstrap,value=\nwith a newline")), "{held:?}");
         assert!(!bootstrap.join(KEPT_FILE).exists(), "the read writes nothing");
@@ -225,27 +225,27 @@ mod tests {
         // Started again on its data dir, with another value in its environment: the kept one.
         let other = |k: &str| (k == "APP_KEY").then(|| "another value".to_string());
         let again = DeclaredSecrets::read(decl.clone(), None, other, &bootstrap, "process").unwrap();
-        assert_eq!(again.set_on(NodeKind::Gateway)["APP_KEY"].value("APP_KEY").unwrap(), "bootstrap,value=\nwith a newline", "the value never changes while the fabric runs");
-        assert_eq!(again.set_on(NodeKind::NodeAdmin)["APP_ADMIN_KEY"].value("APP_ADMIN_KEY").unwrap(), "");
+        assert_eq!(again.set_on("gateway")["APP_KEY"].value("APP_KEY").unwrap(), "bootstrap,value=\nwith a newline", "the value never changes while the fabric runs");
+        assert_eq!(again.set_on("node-admin")["APP_ADMIN_KEY"].value("APP_ADMIN_KEY").unwrap(), "");
         let launch = Launch::from_env(|k| match k {
             "RDM_FABRIC" => Some("fabric1".into()),
             "RDM_FABRIC_ID" => Some(rdm_core::FabricId::mint().to_string()),
-            "RDM_NODE_PATH" => Some("mesh2.admin".into()),
+            "RDM_NODE_PATH" => Some("mesh2.node-admin".into()),
             "RDM_NODE_NAME" => Some("1".into()),
             "RDM_MESH" => Some("mesh2".into()),
-            "RDM_NODE_KIND" => Some(NodeKind::NodeAdmin.name().into()),
+            "RDM_NODE_TYPE" => Some("node-admin".into()),
             "RDM_NODE_ID" => Some(rdm_core::NodeId::mint().to_string()),
             "RDM_INCARNATION_ID" => Some(rdm_core::IncarnationId::mint().to_string()),
             "RDM_TRANSPORT_ADDR" => Some("127.0.0.1:0".into()),
             "RDM_DATA_DIR" | "RDM_STORE_DIR" => Some("/tmp/x".into()),
-            "RDM_DECLARED_SECRETS" => Some(rdm_core::launch::encode_custody(&[(declared("APP_KEY", &[NodeKind::Broker]), SecretHex::of_value("custody-value"))])),
+            "RDM_DECLARED_SECRETS" => Some(rdm_core::launch::encode_custody(&[(declared("APP_KEY", &["broker".to_string()]), SecretHex::of_value("custody-value"))])),
             _ => None,
         })
         .unwrap();
         let launched_dir = dir();
         let launched = DeclaredSecrets::read(decl, Some(&launch), env, &launched_dir, "process").unwrap();
-        assert_eq!(launched.set_on(NodeKind::Gateway)["APP_KEY"].value("APP_KEY").unwrap(), "custody-value", "a launched admin's value is its launch's");
-        assert!(launched.set_on(NodeKind::NodeAdmin).is_empty(), "never its own environment's");
+        assert_eq!(launched.set_on("gateway")["APP_KEY"].value("APP_KEY").unwrap(), "custody-value", "a launched admin's value is its launch's");
+        assert!(launched.set_on("node-admin").is_empty(), "never its own environment's");
         let _ = std::fs::remove_dir_all(&bootstrap);
     }
 
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn a_diagnostic_is_scrubbed_of_every_held_value_and_the_custody_document() {
         let held = DeclaredSecrets {
-            declared: vec![declared("APP_KEY", &[NodeKind::Broker]), declared("APP_EMPTY", &[NodeKind::Broker])],
+            declared: vec![declared("APP_KEY", &["broker".to_string()]), declared("APP_EMPTY", &["broker".to_string()])],
             values: BTreeMap::from([("APP_KEY".to_string(), SecretHex::of_value("a,b=c\nsecond-line")), ("APP_EMPTY".to_string(), SecretHex::of_value(""))]),
         };
         let doc = rdm_core::launch::encode_custody(&held.custody());

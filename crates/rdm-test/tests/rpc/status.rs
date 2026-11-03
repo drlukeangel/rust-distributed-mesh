@@ -45,9 +45,9 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
     let nodes = estate.node_values().await;
-    let primary = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == true).expect("a mesh primary").clone();
-    let other_admin = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] != true).expect("a non-primary admin").clone();
-    let rpc1 = estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
+    let primary = nodes.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == true).expect("a mesh primary").clone();
+    let other_admin = nodes.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] != true).expect("a non-primary admin").clone();
+    let rpc1 = estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
     let node = format!("exact:{}", rpc1["node_id"].as_str().unwrap());
     let to = format!("exact:{}", primary["node_id"].as_str().unwrap());
     // What the authority applied is the authority's view: read it there.
@@ -94,13 +94,13 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-not-primary", "{r}");
     assert!(detail.contains("ReceiverNotPrimary"), "{r}");
-    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await["declared"], "Ready", "a refusal applies nothing");
+    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await["declared"], "Ready", "a refusal applies nothing");
 
     // 5. Forward moves apply and the view follows.
     assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting"])).0, "applied");
     assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "stopped"])).0, "applied");
-    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await["declared"], "Stopped");
-    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await["declared"], "Ready", "rpc.2 declared only its birth");
+    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await["declared"], "Stopped");
+    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await["declared"], "Ready", "rpc.2 declared only its birth");
 
     estate.artifact("declarations.json", &json!({"primary": primary["name"], "other_admin": other_admin["name"], "node": rpc1["name"]}));
     estate.stop().await;
@@ -130,7 +130,7 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     assert!(decided.iter().all(|s| ["declare-node-state", "declare-mesh-state", "apply-fabric-event", "apply-mesh-state"].contains(&s["attributes"]["op"].as_str().unwrap_or(""))), "{decided:?}");
     let root_pending: Vec<_> = decided.iter().filter(|s| s["attributes"]["op"] == "apply-mesh-state").collect();
     assert_eq!(root_pending.len(), 1, "exactly one Pending, self-applied by the Day-0 root: {root_pending:?}");
-    let bootstrap = nodes.iter().find(|n| n["name"]["path"] == "mesh1.admin" && n["name"]["name"] == "1").expect("bootstrap fixture");
+    let bootstrap = nodes.iter().find(|n| n["name"]["path"] == "mesh1.node-admin" && n["name"]["name"] == "1").expect("bootstrap fixture");
     assert_eq!(root_pending[0]["attributes"]["sender_node_id"], bootstrap["node_id"], "{root_pending:?}");
     assert!(actor_is(root_pending[0], bootstrap), "the bootstrap applies its own Pending: {root_pending:?}");
     assert_eq!(root_pending[0]["attributes"]["receiver_is_primary"], "false", "applied before any election: {root_pending:?}");
@@ -145,8 +145,8 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
 
 /// CONTRACT (R24, Luke Q11: "dispatch the request to its implementation; if this endpoint has no
 /// implementation for it, answer request not handled here"): an rpc node's Status door has no handler
-/// for an upward declaration. The declare probe makes `mesh1.rpc.2` declare its state straight to
-/// `mesh1.rpc.1`, which answers `RequestNotHandled` naming the request (`declare-node-state`), decided by
+/// for an upward declaration. The declare probe makes `mesh1.node.2` declare its state straight to
+/// `mesh1.node.1`, which answers `RequestNotHandled` naming the request (`declare-node-state`), decided by
 /// dispatch alone, on its reject span `rdm.node.status.reject.via-request-not-handled` (`request`, and
 /// `node` the receiver's held name) in the probe's own trace. Must NOT happen: `RejectedNotPrimary {
 /// ReceiverNotPrimary }`, a missing handler answered as an authority refusal.
@@ -155,7 +155,7 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
     let mut estate = Estate::bootstrap(owner("a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_reject_span"), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
-    let (rpc1, rpc2) = (estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await);
+    let (rpc1, rpc2) = (estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await);
     let node = format!("exact:{}", rpc2["node_id"].as_str().unwrap());
     let to = format!("exact:{}", rpc1["node_id"].as_str().unwrap());
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting"]);
@@ -163,7 +163,7 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
     estate.stop().await;
     let spans = estate.spans();
     let rejected: Vec<&Value> = named(&spans, "rdm.node.status.reject.via-request-not-handled").into_iter().filter(|sp| sp["attributes"]["node"] == rpc1["node_id"]).collect();
-    assert_eq!(rejected.len(), 1, "mesh1.rpc.1 answers the one declaration on its reject span: {rejected:#?}");
+    assert_eq!(rejected.len(), 1, "mesh1.node.1 answers the one declaration on its reject span: {rejected:#?}");
     assert_eq!(rejected[0]["attributes"]["request"], "declare-node-state", "{}", rejected[0]);
     let trace = rejected[0]["trace_id"].as_str().unwrap_or_default().to_string();
     assert!(r["traceparent"].as_str().is_some_and(|tp| tp.contains(&trace)), "the reject span is in the probe's trace: {r} {}", rejected[0]);
@@ -173,10 +173,10 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
 
 /// CONTRACT (i146 Q39: "A node's declaration is owed to the primary of its mesh's primary role,
 /// resolved from the role, never to an admin its view happens to hear"; R24, Luke Q11: an admin holding
-/// no role answers a declaration with its own role decision): `mesh1.admin.1` yields both roles to
-/// `mesh1.admin.2` (`node.stop` runs `node.primary.update` first) and starts again as itself, holding no
-/// role. `mesh1.rpc.1`, restarted, declares its state to `mesh1.admin.2`, the role's primary, which takes
-/// it (`definitive=true`), and to no other admin. A declaration sent straight to `mesh1.admin.1` (the
+/// no role answers a declaration with its own role decision): `mesh1.node-admin.1` yields both roles to
+/// `mesh1.node-admin.2` (`node.stop` runs `node.primary.update` first) and starts again as itself, holding no
+/// role. `mesh1.node.1`, restarted, declares its state to `mesh1.node-admin.2`, the role's primary, which takes
+/// it (`definitive=true`), and to no other admin. A declaration sent straight to `mesh1.node-admin.1` (the
 /// declare probe) is answered `RejectedNotPrimary { ReceiverNotPrimary { needed: "mesh-primary of
 /// mesh1" } }`, its own role decision (`status_rpc.rs`'s `decide`). Must NOT happen: a declaration
 /// addressed to the admin holding no role, or `RequestNotHandled` from a node-admin for a declaration.
@@ -189,23 +189,23 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let (a1, a2, rpc1) = (Estate::path("mesh1.admin", "1"), Estate::path("mesh1.admin", "2"), Estate::path("mesh1.rpc", "1"));
+    let (a1, a2, rpc1) = (Estate::path("mesh1.node-admin", "1"), Estate::path("mesh1.node-admin", "2"), Estate::path("mesh1.node", "1"));
     estate.enter(&a2).await;
-    let mut stop = estate.nodes_obj().await.stop(&a1).await.expect("node.stop of mesh1.admin.1");
+    let mut stop = estate.nodes_obj().await.stop(&a1).await.expect("node.stop of mesh1.node-admin.1");
     let accepted = stop.accepted().clone();
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
-    estate.until_node(&rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1.admin.2 holds the roles", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
-    Estate::workflow("node.start of mesh1.admin.1", estate.nodes_obj().await.start(&a1).await).await;
-    estate.until_node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1.admin.1 runs again holding no primary role", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped && !n.is_primary).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1.node-admin.2 holds the roles", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
+    Estate::workflow("node.start of mesh1.node-admin.1", estate.nodes_obj().await.start(&a1).await).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1.node-admin.1 runs again holding no primary role", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped && !n.is_primary).map(|_| ())).await;
     let before_rpc = estate.node_view(&rpc1).await;
     let restart_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop_then_start(&rpc1).await;
-    estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1.rpc.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1.node.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped).map(|_| ())).await;
 
     // A declaration straight to the admin holding no role: its own role decision.
-    let (rpc1v, a1v, a2v) = (estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.admin", "2").unwrap()).await);
+    let (rpc1v, a1v, a2v) = (estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await);
     assert_eq!(rpc1v["node_id"], before_rpc.node_id.as_str(), "stop/start keeps the node ID");
     assert_eq!(rpc1v["incarnation_id"], serde_json::to_value(&before_rpc.incarnation_id).unwrap(), "stop/start keeps the incarnation");
     let primary_id = a2v["node_id"].as_str().unwrap().to_string();

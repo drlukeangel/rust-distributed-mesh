@@ -15,13 +15,13 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 /// The stub admin's separate path and name.
-pub fn admin_location() -> PathName { PathName::new("mesh1.admin", "9").unwrap() }
+pub fn admin_location() -> PathName { PathName::new("mesh1.node-admin", "9").unwrap() }
 
 /// One node of a served view: `endpoint`, `addr` and `incarnation` are `None` for a node the admin holds
 /// and that is not born yet.
-pub fn node(name: PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &NodeId, endpoint: Option<String>, addr: Option<SocketAddr>, incarnation: Option<IncarnationId>) -> NodeView {
+pub fn node(name: PathName, mesh: &str, r#type: &str, node_id: &NodeId, endpoint: Option<String>, addr: Option<SocketAddr>, incarnation: Option<IncarnationId>) -> NodeView {
     NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
-        kind,
+        r#type: r#type.to_string(),
         mesh: mesh.to_owned(),
         name,
         node_id: node_id.clone(),
@@ -72,7 +72,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let mut me = node(admin_location(), "mesh1", rdm_core::NodeKind::NodeAdmin, &node_id, Some(key.public().to_string()), Some(addr), Some(incarnation.clone()));
+    let mut me = node(admin_location(), "mesh1", "node-admin", &node_id, Some(key.public().to_string()), Some(addr), Some(incarnation.clone()));
     me.is_primary = true;
     me.is_fabric_primary = true;
     let mut held = vec![me];
@@ -111,7 +111,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let birth = MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::NodeAdmin, node_id, name: admin_location(), endpoint_id: EndpointId(key.public().to_string()), transport_addr: addr, incarnation, supersedes: None, runtime: None };
+    let birth = MeshNode { mesh: "mesh1".to_owned(), r#type: "node-admin".into(), node_id, name: admin_location(), endpoint_id: EndpointId(key.public().to_string()), transport_addr: addr, incarnation, supersedes: None, runtime: None };
     AdminView { birth, seen, router }
 }
 

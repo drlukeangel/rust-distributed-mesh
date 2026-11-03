@@ -10,7 +10,7 @@
 //! 3. NoActiveRoute: `NotSent`, no connection opened, nothing served.
 //! 4. Selecting the other broker executes that broker; the first broker's store is untouched.
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
+use rdm_client::{FabricDesired, MeshDesired};
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -29,8 +29,8 @@ fn owner() -> Owner {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_at_all() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 2)])] }).await;
-    let want = [rdm_core::PathName::new("mesh1.admin", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "2").unwrap(), rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), rdm_core::PathName::new("mesh1.gateway", "2").unwrap()].into_iter().collect();
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 2), ("gateway", 2)])] }).await;
+    let want = [rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "2").unwrap(), rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), rdm_core::PathName::new("mesh1.gateway", "2").unwrap()].into_iter().collect();
     estate.settles_to_named(&want, Duration::from_secs(30)).await;
     let (b1, b2) = (estate.node_value(&rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.broker", "2").unwrap()).await);
     let (b1_id, b2_id) = (b1["node_id"].as_str().unwrap().to_string(), b2["node_id"].as_str().unwrap().to_string());

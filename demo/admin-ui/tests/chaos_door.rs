@@ -26,7 +26,7 @@ fn node(name: &PathName, fabric_primary: bool) -> (std::process::Child, NodeFact
 
 #[tokio::test]
 async fn a_fault_aimed_at_the_fabric_primary_is_refused_by_name_and_signals_nothing() {
-    let admin1 = PathName::new("mesh1.admin", "1").unwrap();
+    let admin1 = PathName::new("mesh1.node-admin", "1").unwrap();
     let broker1 = PathName::new("mesh1.broker", "1").unwrap();
     let (mut fp, fp_facts, d1) = node(&admin1, true);
     let (mut broker, broker_facts, d2) = node(&broker1, false);
@@ -42,7 +42,7 @@ async fn a_fault_aimed_at_the_fabric_primary_is_refused_by_name_and_signals_noth
     assert_eq!(cut.detail["refusal"], FABRIC_PRIMARY_REFUSAL, "{cut:?}");
     let cut = chaos.cut(&nodes, &Target::Node(admin1.clone())).await;
     assert_eq!(cut.detail["refusal"], FABRIC_PRIMARY_REFUSAL, "a cut of the fabric-primary by its path and name is refused: {cut:?}");
-    assert_eq!(serde_json::to_value(&cut.target).unwrap(), json!({"scope": "node", "path": "mesh1.admin", "name": "1"}), "a record names its node by path and name");
+    assert_eq!(serde_json::to_value(&cut.target).unwrap(), json!({"scope": "node", "path": "mesh1.node-admin", "name": "1"}), "a record names its node by path and name");
     assert_eq!(serde_json::from_value::<Target>(json!({"scope": "node", "path": "mesh1.broker", "name": "1"})).unwrap(), Target::Node(broker1.clone()), "a cut's body names its node by path and name");
 
     let not_ready = chaos.fault(&nodes, &broker1, "kill", None).await;

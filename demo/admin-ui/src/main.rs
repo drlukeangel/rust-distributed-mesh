@@ -225,7 +225,7 @@ async fn boot_trace(State(s): State<AppState>, Query(q): Query<BootQuery>) -> Re
     let url = match from_evidence {
         Some(trace) => format!("{}/api/traces/{trace}", s.jaeger_url),
         None => {
-            let service = if q.kind == "node_admin" { "rdm-node-admin" } else { "rdm-rpc-node" };
+            let service = if q.kind == "node-admin" { "rdm-node-admin" } else { "rdm-rpc-node" };
             let tags = serde_json::to_string(&json!({"node_id": q.node_id})).unwrap_or_default();
             format!("{}/api/traces?service={service}&operation=rdm.mesh.node.update.via-ready&limit=1&lookback=2h&tags={}", s.jaeger_url, urlencoding::encode(&tags))
         }

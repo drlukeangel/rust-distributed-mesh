@@ -11,7 +11,7 @@
 //! ready, at its separate path and name. What must NOT happen: a view rebuilt on a poll, or a SIGKILLed node
 //! left unrecovered because no event marked its silence.
 
-use rdm_client::{LaunchKind as NodeKind, NodeStatus};
+use rdm_client::{NodeStatus};
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -54,13 +54,13 @@ async fn an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_mark
         .until_view("two ready node-admins and two ready rpc nodes, one rpc node not a primary", Duration::from_secs(60), |views| {
             let v = Estate::values(views);
             let ready = v.iter().filter(|n| n["status"] == "ready").count();
-            (ready == 4 && v.iter().any(|n| n["kind"] == "rpc_node" && n["is_primary"] != true)).then_some(v)
+            (ready == 4 && v.iter().any(|n| n["type"] == "node" && n["is_primary"] != true)).then_some(v)
         })
         .await;
-    let mp_row = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh1's primary");
+    let mp_row = nodes.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh1's primary");
     let mp = s(&mp_row["node_id"]);
     let mp_location: rdm_core::PathName = serde_json::from_value(mp_row["name"].clone()).expect("structured location");
-    let victim_node = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["is_primary"] != true).expect("an rpc node that is no primary").clone();
+    let victim_node = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] != true).expect("an rpc node that is no primary").clone();
     let (victim, victim_id) = (serde_json::from_value::<rdm_core::PathName>(victim_node["name"].clone()).expect("structured location"), s(&victim_node["node_id"]));
 
     // Nothing happens: the estate formed, and it is left alone for a while.
@@ -73,7 +73,7 @@ async fn an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_mark
     let killed_at = now_ns();
     estate
         .until_view(&format!("a new birth at {victim:?} restores two ready rpc nodes"), floor + Duration::from_secs(60), |views| {
-            let ready: Vec<_> = views.iter().filter(|n| n.kind == NodeKind::RpcNode && n.status == NodeStatus::Ready).collect();
+            let ready: Vec<_> = views.iter().filter(|n| n.r#type == "node" && n.status == NodeStatus::Ready).collect();
             (ready.len() == 2 && !ready.iter().any(|n| n.node_id.to_string() == victim_id)).then_some(())
         })
         .await;

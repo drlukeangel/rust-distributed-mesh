@@ -13,7 +13,7 @@ use crate::admin::Records;
 use crate::build_claim::AttemptContexts;
 use crate::build_state::BuildStateAdapter;
 use crate::fabric_state::FabricState;
-use crate::model::{FabricId, IncarnationId, Node, NodeId, NodeKind, PathName};
+use crate::model::{FabricId, IncarnationId, Node, NodeId, PathName};
 use crate::checklist::{fabric_missing, missing_members, reports_of, Missing};
 use crate::topology::Topology;
 use crate::wiring::{FabricHooks, FabricReadyCtx};
@@ -443,7 +443,7 @@ impl FabricStates {
         };
         let mut out = mesh_blockers(view, &meshes, &planned);
         let primaries: Vec<(String, Option<rdm_core::framing::Birth>, bool)> =
-            meshes.iter().map(|m| { let p = view.node_type_primary(m, NodeKind::NodeAdmin); (m.clone(), p.and_then(|n| n.birth()), p.is_some_and(|n| n.node_id == self.env.node_id)) }).collect();
+            meshes.iter().map(|m| { let p = view.node_type_primary(m, "node-admin"); (m.clone(), p.and_then(|n| n.birth()), p.is_some_and(|n| n.node_id == self.env.node_id)) }).collect();
         let reports = reports_of(&self.env.records.declared.lock().unwrap(), view, meshes.iter().map(String::as_str));
         out.extend(fabric_missing(&primaries, self.env.records.declare_gate(), &reports));
         out
@@ -494,7 +494,7 @@ impl FabricStates {
         let mut targets = Vec::new();
         let mut present = Vec::new();
         for m in &view.meshes {
-            let Some(p) = view.node_type_primary(&m.name, NodeKind::NodeAdmin).filter(|p| p.node_id != self.env.node_id) else { continue };
+            let Some(p) = view.node_type_primary(&m.name, "node-admin").filter(|p| p.node_id != self.env.node_id) else { continue };
             present.push(m.name.clone());
             let now = Addressed::of(p, m);
             if adopted.addressed.get(&m.name) != Some(&now) {
@@ -577,12 +577,12 @@ impl FabricStates {
                 .iter()
                 .filter(live)
                 .map(|m| {
-                    let p = i.view.node_type_primary(&m.name, NodeKind::NodeAdmin);
+                    let p = i.view.node_type_primary(&m.name, "node-admin");
                     (m.name.clone(), p.and_then(|p| p.birth()), p.is_some_and(|p| p.node_id == self.env.node_id))
                 })
                 .collect();
             if first {
-                let targets: Vec<(String, Option<Node>)> = i.view.meshes.iter().filter(live).filter(|m| m.name != mesh_name).map(|m| (m.name.clone(), i.view.node_type_primary(&m.name, NodeKind::NodeAdmin).cloned())).collect();
+                let targets: Vec<(String, Option<Node>)> = i.view.meshes.iter().filter(live).filter(|m| m.name != mesh_name).map(|m| (m.name.clone(), i.view.node_type_primary(&m.name, "node-admin").cloned())).collect();
                 for (mesh, p) in &targets {
                     if let (Some(p), Some(m)) = (p, i.view.meshes.iter().find(|m| &m.name == mesh)) {
                         addressed.insert(mesh.clone(), Addressed::of(p, m));
@@ -696,8 +696,8 @@ mod tests {
     use rdm_core::MemberStatus;
     use crate::model::{Fabric, Mesh, NodeStatus, ProviderKind, ScopeStatus};
 
-    fn node(name: PathName, mesh: &str, kind: rdm_core::NodeKind, status: NodeStatus, primary: bool) -> Node {
-        let mut n = Node::allocated(name.clone(), mesh, kind);
+    fn node(name: PathName, mesh: &str, r#type: &str, status: NodeStatus, primary: bool) -> Node {
+        let mut n = Node::allocated(name.clone(), mesh, r#type);
         n.status = status;
         n.incarnation_id = Some(IncarnationId::mint());
         n.is_primary = primary;
@@ -745,11 +745,11 @@ mod tests {
         builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt, executor: executor.clone() }).await.unwrap();
     }
 
-    /// The fabric-primary `mesh1.admin.1` and mesh2's primary, both ready.
+    /// The fabric-primary `mesh1.node-admin.1` and mesh2's primary, both ready.
     fn fabric_primary_and_mesh2() -> (Node, Node) {
-        let mut fp = node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true);
+        let mut fp = node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, true);
         fp.is_fabric_primary = true;
-        (fp, node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true))
+        (fp, node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", NodeStatus::Ready, true))
     }
 
     /// Every mesh is ready as the fabric-primary decides it: its own mesh declared ready,
@@ -853,7 +853,7 @@ mod tests {
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let builds = Arc::new(CountedReads { inner: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()), reads: Default::default() });
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
-        let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])));
+        let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         claim(&builds.inner, &id, 1, &fp.birth().unwrap()).await;
@@ -896,7 +896,7 @@ mod tests {
         use crate::build_state::BuildAccepted;
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
-        let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])));
+        let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         claim(&builds, &id, 1, &fp.birth().unwrap()).await;
@@ -931,10 +931,10 @@ mod tests {
     /// state command naming this admin "the subject node itself" and strands the checklist.
     #[test]
     fn an_admin_finds_its_own_row_by_node_id_while_its_superseded_birth_is_still_in_the_view() {
-        let deleted = node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::ConnectionsDeleting, false);
-        let re_born = node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, false);
-        let view = projected(vec![deleted.clone(), re_born.clone(), node(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true)]);
-        assert_eq!(view.members().filter(|n| n.name == re_born.name).count(), 2, "both births of mesh1.admin.1 are in the view");
+        let deleted = node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::ConnectionsDeleting, false);
+        let re_born = node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, false);
+        let view = projected(vec![deleted.clone(), re_born.clone(), node(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, true)]);
+        assert_eq!(view.members().filter(|n| n.name == re_born.name).count(), 2, "both births of mesh1.node-admin.1 are in the view");
         let me = view.own(&re_born.node_id).expect("this admin is in its view");
         assert_eq!(me.node_id, re_born.node_id, "the re-born admin's own row, not the deleted birth's {}", deleted.node_id);
     }
@@ -947,19 +947,19 @@ mod tests {
         let meshes = vec!["mesh1".to_string(), "mesh2".to_string()];
         let planned = std::collections::BTreeMap::new();
         let ready = projected(vec![
-            node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true),
-            node(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready, false),
-            node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true),
+            node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, true),
+            node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", NodeStatus::Ready, false),
+            node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", NodeStatus::Ready, true),
         ]);
         assert!(mesh_blockers(&ready, &meshes, &planned).is_empty(), "every node of both meshes is ready: nothing blocks entry");
         let one_pending = projected(vec![
-            node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true),
-            node(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Pending, false),
-            node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true),
+            node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, true),
+            node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", NodeStatus::Pending, false),
+            node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", NodeStatus::Ready, true),
         ]);
-        assert!(one_pending.node_type_primary("mesh1", NodeKind::NodeAdmin).is_some(), "mesh1 has its primary");
+        assert!(one_pending.node_type_primary("mesh1", "node-admin").is_some(), "mesh1 has its primary");
         let blockers: Vec<String> = mesh_blockers(&one_pending, &meshes, &planned).iter().map(|m| m.to_string()).collect();
-        let rpc1 = &one_pending.node(&PathName::new("mesh1.rpc", "1").unwrap()).unwrap().node_id;
+        let rpc1 = &one_pending.node(&PathName::new("mesh1.node", "1").unwrap()).unwrap().node_id;
         assert_eq!(blockers, [format!("node_id={rpc1}(not-ready)")], "the one node that is not ready is what blocks entry, by its node id");
     }
 
@@ -972,37 +972,37 @@ mod tests {
     #[test]
     fn a_stopped_birth_holds_neither_its_mesh_nor_the_fabrics_checklist() {
         let stopped = |name: PathName, mesh: &str| {
-            let mut n = node(name, mesh, rdm_core::NodeKind::RpcNode, NodeStatus::Leaving, false);
+            let mut n = node(name, mesh, "node", NodeStatus::Leaving, false);
             n.stopped = true;
             n
         };
         let meshes = vec!["mesh1".to_string(), "mesh2".to_string()];
         let paths = |names: &[PathName]| names.iter().cloned().collect::<std::collections::BTreeSet<_>>();
         let planned: std::collections::BTreeMap<String, std::collections::BTreeSet<PathName>> =
-            [("mesh1".to_string(), paths(&[PathName::new("mesh1.admin", "1").unwrap()])), ("mesh2".to_string(), paths(&[PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.rpc", "1").unwrap(), PathName::new("mesh2.rpc", "2").unwrap()]))].into_iter().collect();
+            [("mesh1".to_string(), paths(&[PathName::new("mesh1.node-admin", "1").unwrap()])), ("mesh2".to_string(), paths(&[PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh2.node", "1").unwrap(), PathName::new("mesh2.node", "2").unwrap()]))].into_iter().collect();
         let one_stopped = projected(vec![
-            node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true),
-            node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true),
-            stopped(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2"),
-            node(PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Ready, false),
+            node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, true),
+            node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", NodeStatus::Ready, true),
+            stopped(PathName::new("mesh2.node", "1").unwrap(), "mesh2"),
+            node(PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", NodeStatus::Ready, false),
         ]);
-        assert_eq!(one_stopped.mesh_unready("mesh2", planned.get("mesh2")), Vec::<Missing>::new(), "the stopped mesh2.rpc.1 holds nothing of mesh2");
+        assert_eq!(one_stopped.mesh_unready("mesh2", planned.get("mesh2")), Vec::<Missing>::new(), "the stopped mesh2.node.1 holds nothing of mesh2");
         assert_eq!(mesh_blockers(&one_stopped, &meshes, &planned), Vec::<Missing>::new(), "a stopped birth holds no checklist: nothing blocks the fabric");
         let all_stopped = projected(vec![
-            node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true),
-            node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true),
-            stopped(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2"),
-            stopped(PathName::new("mesh2.rpc", "2").unwrap(), "mesh2"),
+            node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, true),
+            node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", NodeStatus::Ready, true),
+            stopped(PathName::new("mesh2.node", "1").unwrap(), "mesh2"),
+            stopped(PathName::new("mesh2.node", "2").unwrap(), "mesh2"),
         ]);
         assert_eq!(mesh_blockers(&all_stopped, &meshes, &planned), Vec::<Missing>::new(), "a mesh whose every rpc birth is stopped is ready, chosen by command");
         let one_pending = projected(vec![
-            node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true),
-            node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true),
-            stopped(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2"),
-            node(PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Pending, false),
+            node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, true),
+            node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", NodeStatus::Ready, true),
+            stopped(PathName::new("mesh2.node", "1").unwrap(), "mesh2"),
+            node(PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", NodeStatus::Pending, false),
         ]);
         let blockers: Vec<String> = mesh_blockers(&one_pending, &meshes, &planned).iter().map(|m| m.to_string()).collect();
-        let rpc2 = &one_pending.node(&PathName::new("mesh2.rpc", "2").unwrap()).unwrap().node_id;
+        let rpc2 = &one_pending.node(&PathName::new("mesh2.node", "2").unwrap()).unwrap().node_id;
         assert_eq!(blockers, [format!("node_id={rpc2}(not-ready)")], "the birth that is not stopped and not ready still blocks, the stopped one is not named");
     }
 
@@ -1019,10 +1019,10 @@ mod tests {
         use crate::build::MeshDesired;
         use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
         let builds = Arc::new(MemoryBuildStateAdapter::new());
-        let exe = |sha: &str| rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: sha.into(), image: None };
+        let exe = |sha: &str| rdm_core::binding::Binding { launch_id: "node".into(), executable: "/b/rpc".into(), sha256: sha.into(), image: None };
         let topology = |sha: Option<&str>| {
-            let mut m = MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]));
-            let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+            let mut m = MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)]));
+            let rpc: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
             let mut c = m.spec(&rpc).cloned().unwrap();
             c.executable = sha.map(exe);
             m.set_spec(c).unwrap();
@@ -1070,9 +1070,9 @@ mod tests {
         use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
         use crate::node_rows::WriteRecord;
         let builds = Arc::new(MemoryBuildStateAdapter::new());
-        let admin: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-        let exe = |sha: &str| rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/b/admin".into(), sha256: sha.into(), image: None };
-        let day0 = MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]));
+        let admin: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
+        let exe = |sha: &str| rdm_core::binding::Binding { launch_id: "node-admin".into(), executable: "/b/admin".into(), sha256: sha.into(), image: None };
+        let day0 = MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)]));
         let topology = |sha: Option<&str>| {
             let mut m = day0.clone();
             let mut c = m.spec(&admin).cloned().unwrap();
@@ -1083,7 +1083,7 @@ mod tests {
         let (fp, _) = fabric_primary_and_mesh2();
         // The Day-0 admin's row records the executable it runs.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let mut row = crate::storage::NodeRow::new(admin.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, fp.node_id.clone(), NodeStatus::Ready);
+        let mut row = crate::storage::NodeRow::new(admin.clone(), "mesh1", "node-admin", fp.node_id.clone(), NodeStatus::Ready);
         row.executable = Some(exe("aa"));
         rows.write_record(&row).await.unwrap();
         let a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
@@ -1120,8 +1120,8 @@ mod tests {
     use crate::model::{MeshId, NodeStatus as NS};
     use rdm_transport::topology::DigestView;
 
-    fn member(name: PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool, fabric_primary: bool) -> Node {
-        let mut n = Node::allocated(name.clone(), mesh, kind);
+    fn member(name: PathName, mesh: &str, r#type: &str, primary: bool, fabric_primary: bool) -> Node {
+        let mut n = Node::allocated(name.clone(), mesh, r#type);
         n.status = NS::Ready;
         n.incarnation_id = Some(IncarnationId::mint());
         n.is_primary = primary;
@@ -1140,17 +1140,17 @@ mod tests {
 
     /// `n`'s own digest: its exact birth (node id and incarnation), as the member publishes it.
     fn digest_of(n: &crate::model::Node, status: MemberStatus) -> rdm_core::MeshDigest {
-        let mut d = digest(&n.name, n.mesh.clone(), n.kind, status);
+        let mut d = digest(&n.name, n.mesh.clone(), &n.r#type, status);
         d.node.node_id = n.node_id.clone();
         d.node.incarnation = n.incarnation_id.clone().expect("a member names its birth");
         d
     }
 
-    fn digest(p: &PathName, mesh: String, kind: rdm_core::NodeKind, status: MemberStatus) -> rdm_core::MeshDigest {
+    fn digest(p: &PathName, mesh: String, r#type: &str, status: MemberStatus) -> rdm_core::MeshDigest {
         rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: rdm_core::MeshNode { mesh, kind,
+            node: rdm_core::MeshNode { mesh, r#type: r#type.to_string(),
                 node_id: NodeId::mint(),
                 name: p.clone(),
                 endpoint_id: crate::model::EndpointId(String::new()),
@@ -1205,7 +1205,7 @@ mod tests {
     async fn an_adopted_status_checklist_is_this_admins_states_own_and_rebuilds_per_opening() {
         let capture = crate::span_capture::Capture::new("i143-one-checklist-owner");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let (me, rpc) = (member(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, false), member(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false));
+        let (me, rpc) = (member(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, false), member(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", false, false));
         let v = view(vec![me.clone(), rpc.clone()]);
         let fabric_states = adopted_states_of(&me, v.clone(), Arc::new(Records::default())).await;
         let digest_view = DigestView::default();
@@ -1240,8 +1240,8 @@ mod tests {
     /// that primary appears or changes, once each, and to nobody when it is not the fabric-primary.
     #[tokio::test]
     async fn fabric_primary_addresses_a_mesh_primary_when_its_view_of_it_changes() {
-        let me = member(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true);
-        let first = member(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, false);
+        let me = member(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, true);
+        let first = member(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true, false);
         let v0 = view(vec![me.clone()]);
         let fabric_states = adopted_states_of(&me, v0.clone(), Arc::new(Records::default())).await;
         assert!(fabric_states.changed_mesh_primaries(&v0, true).is_empty(), "no other mesh primary in view: nobody to address");
@@ -1276,7 +1276,7 @@ mod tests {
     #[tokio::test]
     async fn a_successor_fabric_primary_completes_its_checklist_only_on_the_current_mesh_primarys_report() {
         // The role moved to mesh2's primary while mesh1 was being recovered; the new primary adopted the fabric's status.
-        let (me, recovered) = (member(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, true), member(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, false));
+        let (me, recovered) = (member(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true, true), member(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", true, false));
         let v = view(vec![me.clone(), recovered.clone()]);
         let records = Arc::new(Records::default());
         let digest_view = DigestView::default();
@@ -1305,7 +1305,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_successor_fabric_primary_never_waits_for_a_dead_meshs_report() {
-        let (me, other, last) = (member(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, true), member(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, false), member(PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, true, false));
+        let (me, other, last) = (member(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true, true), member(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", true, false), member(PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", true, false));
         let mut v = view(vec![me.clone(), other.clone(), last]);
         v.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh3".into(), status: ScopeStatus::Dead });
         let records = Arc::new(Records::default());
@@ -1321,7 +1321,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn elected_mesh_primary_completes_its_checklist_only_when_every_planned_birth_checks_in_after_it_began() {
-        let (me, rpc) = (member(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, false), member(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false));
+        let (me, rpc) = (member(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, false), member(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", false, false));
         let v = view(vec![me.clone(), rpc.clone()]);
         let digest_view = DigestView::default();
         let fabric_states = adopted_states_of(&me, v.clone(), Arc::new(Records::default())).await;
@@ -1352,8 +1352,8 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn an_elected_mesh_primarys_checklist_is_not_held_by_a_stopped_birth() {
-        let (me, rpc) = (member(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, false), member(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false));
-        let mut at_rest = member(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false);
+        let (me, rpc) = (member(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, false), member(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", false, false));
+        let mut at_rest = member(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", false, false);
         at_rest.status = NS::Leaving;
         at_rest.stopped = true;
         let v = view(vec![me.clone(), rpc.clone(), at_rest.clone()]);
@@ -1362,9 +1362,9 @@ mod tests {
         let awaiting = Announced { mesh_awaiting_checklist: true, fabric_awaiting_checklist: false };
         let planned = vec![me.name.clone(), rpc.name.clone(), at_rest.name.clone()];
         let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), digest_view: &digest_view };
-        assert!(!fabric_states.adopted_step(awaiting, inputs()).mesh, "mesh1.rpc.1 has not checked in");
+        assert!(!fabric_states.adopted_step(awaiting, inputs()).mesh, "mesh1.node.1 has not checked in");
         assert!(digest_view.record(digest_of(&rpc, MemberStatus::Ready)));
-        assert!(fabric_states.adopted_step(awaiting, inputs()).mesh, "every planned birth that is not stopped checked in: the stopped mesh1.rpc.2 holds nothing");
+        assert!(fabric_states.adopted_step(awaiting, inputs()).mesh, "every planned birth that is not stopped checked in: the stopped mesh1.node.2 holds nothing");
     }
 
     /// What the pages say a Reconcile variant does to a ready fabric at its acceptance.
@@ -1381,7 +1381,7 @@ mod tests {
     /// build-deployment.md §3: a member is replaced when its row records another executable than its entry
     /// names): the Reconcile variant matrix's acceptance rows (the drive's rows, and why no cell held the gap,
     /// are tests/reconcile_variants.rs). Each request is compiled by the door's compiler against a Day-0
-    /// fabric (the Day-0 admin's entry names no executable, its row records `aa`; mesh1.rpc.1's entry and row
+    /// fabric (the Day-0 admin's entry names no executable, its row records `aa`; mesh1.node.1's entry and row
     /// name `rr`), accepted while the fabric is ready, and the fabric's state read after the
     /// acceptance and after the ready step. A request naming the executable a row records, an
     /// unchanged request and a tags-only request are
@@ -1400,15 +1400,15 @@ mod tests {
         use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
         type Edit = fn(&mut Vec<NodeSpec>);
         let exe = |id: &str, sha: &str| rdm_core::binding::Binding { launch_id: id.into(), executable: format!("/b/{id}-{sha}").into(), sha256: sha.into(), image: None };
-        let admin: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-        let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let admin: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
+        let rpc: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let held = |admin_entry: Option<&str>| {
-            let mut m = MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]));
+            let mut m = MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)]));
             let mut c = m.spec(&admin).cloned().unwrap();
-            c.executable = admin_entry.map(|sha| exe("node_admin", sha));
+            c.executable = admin_entry.map(|sha| exe("node-admin", sha));
             m.set_spec(c).unwrap();
             let mut c = m.spec(&rpc).cloned().unwrap();
-            c.executable = Some(exe("rpc_node", "rr"));
+            c.executable = Some(exe("node", "rr"));
             m.set_spec(c).unwrap();
             FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
         };
@@ -1416,18 +1416,18 @@ mod tests {
             r.iter_mut().find(|s| s.path == p).expect("the request lists the path")
         }
         let rows: [(&str, Option<&str>, Edit, Back); 9] = [
-            ("the Day-0 admin named on the executable its row records (its entry names none)", None, |r| at(r, PathName::new("mesh1.admin", "1").unwrap()).executable = Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/b/node_admin-aa".into(), sha256: "aa".into(), image: None }), Back::Stays),
+            ("the Day-0 admin named on the executable its row records (its entry names none)", None, |r| at(r, PathName::new("mesh1.node-admin", "1").unwrap()).executable = Some(rdm_core::binding::Binding { launch_id: "node-admin".into(), executable: "/b/node_admin-aa".into(), sha256: "aa".into(), image: None }), Back::Stays),
             ("every path named on the executable its entry names", Some("aa"), |_| {}, Back::Stays),
             ("the unchanged request: every held path naming none", None, |r| r.iter_mut().for_each(|s| s.executable = None), Back::Stays),
-            ("tags only", None, |r| at(r, PathName::new("mesh1.rpc", "1").unwrap()).tags = ["zone_a".to_string()].into(), Back::Stays),
-            ("another executable for mesh1.rpc.1 (a replacement)", None, |r| at(r, PathName::new("mesh1.rpc", "1").unwrap()).executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc_node-cc".into(), sha256: "cc".into(), image: None }), Back::ToPending),
-            ("another executable for the Day-0 admin (a replacement)", None, |r| at(r, PathName::new("mesh1.admin", "1").unwrap()).executable = Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/b/node_admin-cc".into(), sha256: "cc".into(), image: None }), Back::ToPending),
+            ("tags only", None, |r| at(r, PathName::new("mesh1.node", "1").unwrap()).tags = ["zone_a".to_string()].into(), Back::Stays),
+            ("another executable for mesh1.node.1 (a replacement)", None, |r| at(r, PathName::new("mesh1.node", "1").unwrap()).executable = Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/b/rpc_node-cc".into(), sha256: "cc".into(), image: None }), Back::ToPending),
+            ("another executable for the Day-0 admin (a replacement)", None, |r| at(r, PathName::new("mesh1.node-admin", "1").unwrap()).executable = Some(rdm_core::binding::Binding { launch_id: "node-admin".into(), executable: "/b/node_admin-cc".into(), sha256: "cc".into(), image: None }), Back::ToPending),
             ("a new path (a resize)", None, |r| {
-                let spec = at(r, PathName::new("mesh1.rpc", "1").unwrap()).clone();
-                r.push(NodeSpec { path: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), ..spec });
+                let spec = at(r, PathName::new("mesh1.node", "1").unwrap()).clone();
+                r.push(NodeSpec { path: rdm_core::PathName::new("mesh1.node", "2").unwrap(), ..spec });
             }, Back::ToPending),
-            ("a removed path (a resize)", None, |r| r.retain(|s| s.path != PathName::new("mesh1.rpc", "1").unwrap()), Back::ToPending),
-            ("storage only", None, |r| at(r, PathName::new("mesh1.rpc", "1").unwrap()).storage_persistence = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve }, Back::Stays),
+            ("a removed path (a resize)", None, |r| r.retain(|s| s.path != PathName::new("mesh1.node", "1").unwrap()), Back::ToPending),
+            ("storage only", None, |r| at(r, PathName::new("mesh1.node", "1").unwrap()).storage_persistence = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve }, Back::Stays),
         ];
         let mut red = Vec::new();
         for (what, admin_entry, edit, want) in rows {
@@ -1439,11 +1439,11 @@ mod tests {
             claim(&builds, &a, 1, &fp.birth().unwrap()).await;
             let store = Arc::new(crate::storage::MemoryNodesStorage::default());
             let mut recorded = Recorded::new();
-            for (path, kind, node_id, sha, id) in [(&admin, rdm_core::NodeKind::NodeAdmin, fp.node_id.clone(), "aa", "node_admin"), (&rpc, rdm_core::NodeKind::RpcNode, NodeId::mint(), "rr", "rpc_node")] {
-                let mut row = crate::storage::NodeRow::new(path.clone(), "mesh1", kind, node_id.clone(), NodeStatus::Ready);
+            for (path, r#type, node_id, sha, id) in [(&admin, "node-admin", fp.node_id.clone(), "aa", "node-admin"), (&rpc, "node", NodeId::mint(), "rr", "node")] {
+                let mut row = crate::storage::NodeRow::new(path.clone(), "mesh1", r#type, node_id.clone(), NodeStatus::Ready);
                 row.executable = Some(exe(id, sha));
                 store.write_record(&row).await.unwrap();
-                recorded.insert(path.clone(), RecordedRow { mesh: "mesh1".into(), kind, config: None, tags: None, storage_persistence: None, node_id, sha256: Some(sha.into()) });
+                recorded.insert(path.clone(), RecordedRow { mesh: "mesh1".into(), r#type: r#type.to_string(), config: None, tags: None, storage_persistence: None, node_id, sha256: Some(sha.into()) });
             }
             let view = projected(vec![fp.clone()]);
             let records = Arc::new(Records::default());
@@ -1608,7 +1608,7 @@ mod tests {
 
             let mesh1_a = (
                 "mesh1".to_string(),
-                MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])),
+                MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])),
             );
             builds
                 .publish_accepted(&BuildAccepted {
@@ -1724,7 +1724,7 @@ mod tests {
                 "mesh1".to_string(),
                 MeshTopology::of(&MeshDesired::of(
                     "mesh1",
-                    [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)],
+                    [("node-admin", 1), ("node", 1)],
                 )),
             );
             builds
@@ -1760,7 +1760,7 @@ mod tests {
 
             let view_b = projected(vec![
                 fp,
-                node(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready, false),
+                node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", NodeStatus::Ready, false),
             ]);
             let read_b = builds.current().await;
             states

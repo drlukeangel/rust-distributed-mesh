@@ -19,7 +19,7 @@
 use crate::build::BuildId;
 use crate::build_state::{BuildFact, BuildStateAdapter, BuildStateError, BuildStepReceipt, LocalBuildLog, StepOutcome};
 use crate::deployment::pipeline::{RuntimeIdentity, TerminalReceipt};
-use crate::model::{Node, NodeKind};
+use crate::model::{Node};
 use futures_util::future::join_all;
 use rdm_core::{LifecycleOp, MeshId, NodeId};
 use rdm_core::status::{MeshDeleteIdentity, StatusReply, StatusRequest};
@@ -66,7 +66,7 @@ pub struct RosterBirth {
     /// The explicitly declared owning mesh.
     pub mesh: String,
     /// The explicitly declared runtime kind.
-    pub kind: rdm_core::NodeKind,
+    pub r#type: String,
     /// The node's `(path, name)`.
     pub node: crate::model::PathName,
     /// The logical node.
@@ -79,7 +79,7 @@ impl RosterBirth {
     /// The birth `n` holds.
     pub fn of(n: &Node) -> Result<Self, String> {
         let incarnation_id = n.incarnation_id.as_ref().map(|i| i.to_string()).ok_or_else(|| format!("{} has no known birth", n.node_id))?;
-        Ok(Self { mesh: n.mesh.clone(), kind: n.kind, node: n.name.clone(), node_id: n.node_id.to_string(), incarnation_id })
+        Ok(Self { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node: n.name.clone(), node_id: n.node_id.to_string(), incarnation_id })
     }
 
     /// The exact birth the roster names, refused by name when its incarnation is not a Crockford id
@@ -94,7 +94,7 @@ impl RosterBirth {
     /// the birth's durable runtime row). It carries no config: no row is written from it.
     pub fn record(&self) -> Result<Node, String> {
         let name = self.node.clone();
-        let mut n = Node::allocated(name, self.mesh.clone(), self.kind);
+        let mut n = Node::allocated(name, self.mesh.clone(), &self.r#type);
         n.node_id = NodeId::parse(&self.node_id).map_err(|e| format!("the roster birth {}'s node id {} does not parse: {e}", self.node_id, self.node_id))?;
         n.incarnation_id = Some(self.birth().map_err(|e| format!("the roster birth {}: {e}", self.node_id))?);
         n.status = crate::model::NodeStatus::Leaving;
@@ -603,7 +603,7 @@ where
 pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate::model::PathName]) -> Result<crate::model::PathName, String> {
     let occupied: std::collections::BTreeSet<_> = roster.iter().map(|b| b.node.clone()).chain(held.iter().cloned()).collect();
     for ordinal in 1..=u32::MAX {
-        let candidate = crate::model::PathName::numbered(mesh, NodeKind::NodeAdmin, ordinal);
+        let candidate = crate::model::PathName::numbered(mesh, "node-admin", ordinal);
         let predecessor = candidate.renamed().map_err(|e| format!("invalid replacement name: {e:?}"))?;
         if !occupied.contains(&candidate) && !occupied.contains(&predecessor) {
             return Ok(candidate);
@@ -701,7 +701,7 @@ pub fn stored_roster(rows: &[crate::storage::NodeRow], mesh: &str, mesh_id: &Mes
         .filter(|r| r.mesh_id.as_ref().is_none_or(|id| id == mesh_id) && r.mesh == mesh)
         .filter_map(|r| r.newest_birth().map(|b| b.incarnation_id.clone()).or_else(|| r.allocated.as_ref().map(|a| a.incarnation.clone())).map(|inc| (r, inc)))
         .filter(|(r, inc)| r.status != crate::model::NodeStatus::Deleted || began(r, inc))
-        .map(|(r, inc)| RosterBirth { mesh: r.mesh.clone(), kind: r.kind, node: r.name.clone(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() })
+        .map(|(r, inc)| RosterBirth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node: r.name.clone(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() })
         .collect();
     roster.sort();
     roster.dedup();
@@ -814,7 +814,7 @@ where
     }
     tracing::info_span!("rdm.node_admin.mesh.resolve.via-retained-receipts", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation.action, operation_subject = ?key.operation.subject, roster = roster.len(), retained = receipts.len(), remaining = remaining.len(), retained_births = %receipts.iter().map(|t| t.node_id.as_str()).collect::<Vec<_>>().join(","), delete_owed = %owed.iter().map(|b| b.node_id.clone()).collect::<Vec<_>>().join(","))
         .in_scope(|| tracing::info!("members whose delete has every step's receipt keep it; the rest run, a delete that holds only its exited verdict from the step it has no receipt for"));
-    let is_admin = |b: &RosterBirth| b.kind == NodeKind::NodeAdmin;
+    let is_admin = |b: &RosterBirth| rdm_core::is_node_admin(&b.r#type);
     for (tier, admins) in [("ordinary-nodes", false), ("node-admins", true)] {
         let mut failed = Vec::new();
         let mut members: Vec<Node> = Vec::new();
@@ -871,8 +871,8 @@ where
 /// final birth's node.delete wrote its row `Deleted` and proved its exit, so every birth of the mesh
 /// is proven exited. `rows` is the fabric-primary's writer, writing as acting primary of a mesh that
 /// has none left; `proof` the complete proof set; the mesh's state deleted is ensured on `meshes` and
-/// held in `declared`, and the Mesh row deleted on `meshes`, which releases the mesh's name (R-MD1
-/// item 2, R-MN1 item 2).
+/// held in `declared`, and the Mesh row deleted on `meshes`: writing the deleted record frees the
+/// name (R-MD1 item 2, R-MN1 item 2).
 #[allow(clippy::too_many_arguments)]
 pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, meshes: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str, exited: &[TerminalReceipt]) -> Result<(), String> {
     drop_mesh_left_contacts(rows, executor, key, mesh, exited).await?;
@@ -1686,8 +1686,8 @@ where
     Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,
 {
     let outer = &key.operation;
-    let admins: Vec<&Node> = mesh_nodes.iter().filter(|n| n.mesh == mesh && n.kind == NodeKind::NodeAdmin).collect();
-    let ordinary: Vec<&Node> = mesh_nodes.iter().filter(|n| n.mesh == mesh && n.kind != NodeKind::NodeAdmin).collect();
+    let admins: Vec<&Node> = mesh_nodes.iter().filter(|n| n.mesh == mesh && rdm_core::is_node_admin(&n.r#type)).collect();
+    let ordinary: Vec<&Node> = mesh_nodes.iter().filter(|n| n.mesh == mesh && !rdm_core::is_node_admin(&n.r#type)).collect();
     if admins.is_empty() {
         return Err(format!("{outer:?}: {mesh} holds no node-admin birth to delete"));
     }
@@ -1866,8 +1866,8 @@ mod tests {
         MeshDeleteOwner { name: id.to_string(), target: rdm_transport::NodeTarget::ExactNode(id) }
     }
 
-    fn birth(node: crate::model::PathName, mesh: &str, kind: rdm_core::NodeKind, inc: &str) -> RosterBirth {
-        RosterBirth { mesh: mesh.to_owned(), kind, node, node_id: NodeId::mint().to_string(), incarnation_id: rdm_core::fixture_crockford60(inc) }
+    fn birth(node: crate::model::PathName, mesh: &str, r#type: &str, inc: &str) -> RosterBirth {
+        RosterBirth { mesh: mesh.to_owned(), r#type: r#type.to_string(), node, node_id: NodeId::mint().to_string(), incarnation_id: rdm_core::fixture_crockford60(inc) }
     }
     fn receipt(b: &RosterBirth) -> TerminalReceipt {
         TerminalReceipt {
@@ -1893,18 +1893,18 @@ mod tests {
     fn a_roster_captured_from_the_node_rows_holds_the_birth_a_create_in_flight_wrote() {
         use crate::storage::{Allocation, BirthFacts, NodeRow};
         let mesh_id = MeshId::mint();
-        let joined = |name: crate::model::PathName, mesh: &str, kind: rdm_core::NodeKind| {
-            let mut row = NodeRow::new(name.clone(), mesh, kind, NodeId::mint(), crate::model::NodeStatus::Ready);
+        let joined = |name: crate::model::PathName, mesh: &str, r#type: &str| {
+            let mut row = NodeRow::new(name.clone(), mesh, r#type, NodeId::mint(), crate::model::NodeStatus::Ready);
             row.mesh_id = Some(mesh_id.clone());
             row.births.push(BirthFacts::new(crate::model::IncarnationId::mint(), name));
             row
         };
-        let (admin, rpc) = (joined(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), joined(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+        let (admin, rpc) = (joined(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), joined(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"));
         let claimed_inc = crate::model::IncarnationId::mint();
-        let mut claim = NodeRow::new(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeId::mint(), crate::model::NodeStatus::Pending);
-        claim.allocated = Some(Allocation { predecessor: None, build_id: BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "2").unwrap()), incarnation: claimed_inc.clone(), deployment_id: crate::model::DeploymentId::mint() });
+        let mut claim = NodeRow::new(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", NodeId::mint(), crate::model::NodeStatus::Pending);
+        claim.allocated = Some(Allocation { predecessor: None, build_id: BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), incarnation: claimed_inc.clone(), deployment_id: crate::model::DeploymentId::mint() });
         let roster = stored_roster(&[admin.clone(), rpc.clone(), claim.clone()], "mesh1", &mesh_id, &[]);
-        let of = |r: &NodeRow, inc: &crate::model::IncarnationId| RosterBirth { mesh: r.mesh.clone(), kind: r.kind, node: r.name.clone(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() };
+        let of = |r: &NodeRow, inc: &crate::model::IncarnationId| RosterBirth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node: r.name.clone(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() };
         let mut want = vec![of(&admin, &admin.births[0].incarnation_id), of(&rpc, &rpc.births[0].incarnation_id), of(&claim, &claimed_inc)];
         want.sort();
         assert_eq!(roster, want, "the create in flight's claimed birth is a birth of the roster");
@@ -1921,7 +1921,7 @@ mod tests {
         let (first, successor) = (owner(), owner());
         assert_eq!(runs.admit(&key, &first), MeshDeleteAdmission::Start);
         assert_eq!(runs.admit(&key, &successor), MeshDeleteAdmission::Running);
-        let last = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "i3");
+        let last = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "i3");
         let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
         assert!(matches!(runs.exited(&key, &manifest), RunExit::Exited(o) if o == successor), "the handoff goes to the owner that sent delete-mesh last");
         let third = owner();
@@ -1969,7 +1969,7 @@ mod tests {
         let first = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: rdm_core::OperationId::unscoped("mesh.delete:m") };
         let later = MeshDeleteKey { attempt: 2, ..first.clone() };
         let (owner1, owner2) = (owner(), owner());
-        let last = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "i3");
+        let last = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "i3");
         let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
         assert_eq!(runs.admit(&first, &owner1), MeshDeleteAdmission::Start);
 
@@ -2020,12 +2020,12 @@ mod tests {
     fn an_incomplete_report_ends_the_open_leave_at_once_with_its_reason() {
         let mesh_delete_view = MeshDeleteView::default();
         let key = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: rdm_core::OperationId::unscoped("mesh.delete:m") };
-        let last = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "i3");
+        let last = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "i3");
         let runtime = receipt(&last).runtime.unwrap();
         let rx = mesh_delete_view.open(key.clone(), Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime, amendments: Vec::new() });
         assert!(rx.borrow().is_none());
-        assert!(mesh_delete_view.incomplete(&key, "roster births without an exact Exited receipt: mesh2.rpc.1 i1".into()));
-        assert_eq!(rx.borrow().clone(), Some(Err("roster births without an exact Exited receipt: mesh2.rpc.1 i1".into())), "the wait resolves now with the reason");
+        assert!(mesh_delete_view.incomplete(&key, "roster births without an exact Exited receipt: mesh2.node.1 i1".into()));
+        assert_eq!(rx.borrow().clone(), Some(Err("roster births without an exact Exited receipt: mesh2.node.1 i1".into())), "the wait resolves now with the reason");
         let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
         assert!(!mesh_delete_view.resolve(&key, manifest), "the first outcome stands");
         assert!(matches!(rx.borrow().clone(), Some(Err(_))));
@@ -2036,7 +2036,7 @@ mod tests {
     /// named by the first field that is wrong.
     #[test]
     fn a_manifest_covers_the_roster_exactly_and_names_what_it_does_not() {
-        let (a, b, last) = (birth(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, "i1"), birth(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "i2"), birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "i3"));
+        let (a, b, last) = (birth(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", "i1"), birth(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", "i2"), birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "i3"));
         let roster = vec![a.clone(), b.clone(), last.clone()];
         let ok = ExitManifest { mesh_id: "m".into(), roster: roster.clone(), final_primary: last.clone(), final_runtime: Some(receipt(&last).runtime.unwrap()), receipts: vec![receipt(&a), receipt(&b)] };
         assert_eq!(first_mismatch(&ok, &roster, &last, false), None);
@@ -2047,7 +2047,7 @@ mod tests {
         substituted.receipts[0].incarnation_id = "other".into();
         assert_eq!(first_mismatch(&substituted, &roster, &last, false).map(|m| m.0), Some("receipt".into()));
         let mut extra_birth = ok.clone();
-        extra_birth.roster.push(birth(rdm_core::PathName::new("mesh2.rpc", "9").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, "i9"));
+        extra_birth.roster.push(birth(rdm_core::PathName::new("mesh2.node", "9").unwrap(), "mesh2", "node", "i9"));
         assert_eq!(first_mismatch(&extra_birth, &roster, &last, false).map(|m| m.0), Some("roster".into()));
         let mut no_runtime = ok.clone();
         no_runtime.receipts[0].runtime = None;
@@ -2076,7 +2076,7 @@ mod tests {
         let first = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: rdm_core::OperationId::unscoped("mesh.delete:m") };
         let next = MeshDeleteKey { attempt: 2, ..first.clone() };
         let owner = owner();
-        let last = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "i3");
+        let last = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "i3");
         let runtime = RuntimeIdentity { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() };
         let manifest = ExitManifest { mesh_id: first.mesh_id.to_string(), roster: vec![last.clone()], final_primary: last.clone(), final_runtime: Some(runtime.clone()), receipts: vec![] };
         let admitted = Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime, amendments: vec![] };
@@ -2149,7 +2149,7 @@ mod tests {
         meshes.put_mesh(&ready).await.unwrap();
 
         let declared = std::sync::Mutex::new(crate::status_rpc::Declared::default());
-        ensure_mesh_deleted(&meshes, &caches, &declared, "mesh1.admin.1", &key, "mesh2").await.unwrap();
+        ensure_mesh_deleted(&meshes, &caches, &declared, "mesh1.node-admin.1", &key, "mesh2").await.unwrap();
         let stored = meshes.mesh(&key.mesh_id).await.unwrap().expect("mesh2's record stands");
         assert_eq!(stored.state, MeshState::Deleted, "deleted is written over the mesh-primary's ready: {stored:?}");
         assert_eq!(caches.meshes.get(&key.mesh_id), Some(stored), "the copy held is the record written");

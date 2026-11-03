@@ -945,7 +945,7 @@ mod tests {
         let handle = TopologyStorageHandle::open(&providers, "file", scope.clone()).await.unwrap_or_else(|e| panic!("the admin opens its provider: {e}"));
         // What the boot hands its owners: taken once, before the change.
         let (fabric, meshes, nodes, builds, events) = (handle.fabric(), handle.meshes(), handle.nodes(), handle.builds(), handle.events());
-        let name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let name: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let connections = handle.connections(scope.node_id.clone()).await.unwrap();
         let before = MeshRecord::new(crate::model::MeshId::mint(), "meshbefore");
         meshes.put_mesh(&before).await.unwrap();
@@ -961,9 +961,9 @@ mod tests {
         fabric.put_fabric(&FabricRecord::new(identity.clone())).await.unwrap();
         let mesh = MeshRecord::new(crate::model::MeshId::mint(), "meshafter");
         meshes.put_mesh(&mesh).await.unwrap();
-        let row = NodeRow::new(rdm_core::PathName::new("meshafter.rpc", "7").unwrap(), "meshafter", rdm_core::NodeKind::RpcNode, NodeId::mint(), crate::model::NodeStatus::Ready);
+        let row = NodeRow::new(rdm_core::PathName::new("meshafter.node", "7").unwrap(), "meshafter", "node", NodeId::mint(), crate::model::NodeStatus::Ready);
         nodes.put_node(&row).await.unwrap();
-        let runtime = RuntimeRow { kind: rdm_core::NodeKind::RpcNode, mesh: "meshafter".into(), node_id: NodeId::mint(), name: rdm_core::PathName::new("meshafter.rpc", "8").unwrap(), incarnation_id: IncarnationId::mint(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-after")).unwrap(), data_dir: None };
+        let runtime = RuntimeRow { r#type: "node".into(), mesh: "meshafter".into(), node_id: NodeId::mint(), name: rdm_core::PathName::new("meshafter.node", "8").unwrap(), incarnation_id: IncarnationId::mint(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-after")).unwrap(), data_dir: None };
         nodes.put_runtime(&runtime).await.unwrap();
         let build = crate::build_state::BuildAccepted {
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("after")).unwrap(),
@@ -974,8 +974,8 @@ mod tests {
         builds.publish_accepted(&build).await.unwrap();
         let fact = rdm_core::connections::NodeConnection {
             id: rdm_core::ConnectionId::mint(),
-            source: rdm_core::connections::ConnectionEnd { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), name: name.clone(), node_id: scope.node_id.clone(), incarnation: Some(scope.writer.clone()) },
-            destination: rdm_core::connections::ConnectionEnd { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
+            source: rdm_core::connections::ConnectionEnd { r#type: "node-admin".into(), mesh: "mesh1".into(), name: name.clone(), node_id: scope.node_id.clone(), incarnation: Some(scope.writer.clone()) },
+            destination: rdm_core::connections::ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), name: rdm_core::PathName::new("mesh1.node", "2").unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
             kind: rdm_core::connections::ConnectionKind::Direct,
             alpn: b"storage-provider/1".to_vec(),
             state: rdm_core::connections::ConnectionState::Connected,
@@ -1097,12 +1097,12 @@ mod tests {
     /// dir's, so an admin over another data dir reads none of them; the runtime rows are the fabric's
     /// lines in its store root's `nodes.jsonl` (R-SR1), so it reads them too.
     async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(backend: &dyn StorageBackend, first: &StorageScope, re_born: &StorageScope, other: &StorageScope) {
-        let runtime = crate::storage::RuntimeRow { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+        let runtime = crate::storage::RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(),
             node_id: NodeId::mint(),
-            name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
+            name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
             incarnation_id: IncarnationId::mint(),
             runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(),
-            data_dir: Some("/tmp/mesh1.rpc.2".into()),
+            data_dir: Some("/tmp/mesh1.node.2".into()),
         };
         let build = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         let context = rdm_core::context::CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), ..Default::default() };
@@ -1130,7 +1130,7 @@ mod tests {
         let own = crate::storage::NodeRecord { mesh: "mesh1".into(),
             node_id: NodeId::mint(),
             fabric_id: FabricId::mint(),
-            name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
+            name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
             mesh_id: crate::model::MeshId::mint(),
             incarnation_id: IncarnationId::mint(),
             endpoint_id: crate::model::EndpointId(iroh::SecretKey::generate().public().to_string()),

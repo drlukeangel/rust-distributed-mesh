@@ -5,7 +5,7 @@
 //! ([`crate::status::StatusReply::Nodes`] and the rest). Postcard is positional: a field's place
 //! and a variant's place are the wire format, pinned by `tests/status_wire.rs`.
 
-use crate::{FabricId, GossipStats, IncarnationId, MeshId, NodeId, NodeKind, NodeLoad, PathName};
+use crate::{FabricId, GossipStats, IncarnationId, MeshId, NodeId, NodeLoad, PathName};
 use serde::{Deserialize, Serialize};
 
 /// A node's lifecycle state as its node-admin's view holds it.
@@ -139,8 +139,8 @@ pub struct DataDirUnreadable {
 pub struct NodeView {
     /// The node's `(path, name)`.
     pub name: PathName,
-    /// The node's kind.
-    pub kind: NodeKind,
+    /// The node's type.
+    pub r#type: String,
     /// The name of the mesh the node belongs to.
     pub mesh: String,
     /// The node's minted id.
@@ -285,11 +285,6 @@ impl NodeView {
     pub fn node_name(&self) -> String {
         self.name.name()
     }
-
-    /// The node's `node_type`.
-    pub fn node_type(&self) -> &'static str {
-        self.kind.node_type()
-    }
 }
 
 /// One mesh as the answering node-admin's view holds it (`mesh.get`).
@@ -406,7 +401,7 @@ pub struct AtlasNodeView {
     pub status: NodeStatus,
     /// A stopped birth with a live process (a completed node.stop), waiting for a start or a delete.
     pub stopped: bool,
-    /// The operation key (`node.stop:mesh2.rpc.1`) of the command accepted on the node whose attempt
+    /// The operation key (`node.stop:mesh2.node.1`) of the command accepted on the node whose attempt
     /// has not completed; `None` once its receipts are in.
     pub accepted: Option<crate::OperationId>,
     /// Context only: the status the answering admin's gossip view holds for the same birth, when it

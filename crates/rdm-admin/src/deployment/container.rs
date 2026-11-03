@@ -729,7 +729,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         let exe_name = spec.executable.file_name().ok_or_else(|| err(format!("{} names no file", spec.executable.display())))?;
         let exe_in = Path::new(BIN_DIR).join(exe_name);
         // The data dir, the mounts and an earlier birth's runtime record, on the blocking pool.
-        let admin = spec.kind == rdm_core::NodeKind::NodeAdmin;
+        let admin = rdm_core::is_node_admin(&spec.r#type);
         let disk = {
             let (data_dir, env) = (spec.data_dir.clone(), spec.env.clone());
             crate::blocking::blocking_io(move || launch_disk(&data_dir, admin, &env)).await.map_err(err)?
@@ -752,7 +752,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             "--label".into(),
             format!("rafka.node.name={}", spec.node.name),
             "--label".into(),
-            format!("rafka.node.kind={}", spec.kind.name()),
+            format!("rafka.node.kind={}", spec.r#type),
             "--network".into(),
             self.network.name.clone(),
             "--ip".into(),
@@ -1036,7 +1036,7 @@ mod tests {
     #[test]
     fn a_node_admins_launch_mounts_the_executable_dirs_its_environment_names() {
         let root = std::env::temp_dir().join(format!("launch-dirs-{}-{}", std::process::id(), rand::random::<u32>()));
-        let (data, a, b) = (root.join("data").join("mesh1.admin.2"), root.join("a"), root.join("b"));
+        let (data, a, b) = (root.join("data").join("mesh1.node-admin.2"), root.join("a"), root.join("b"));
         for d in [&data, &a, &b] {
             std::fs::create_dir_all(d).unwrap();
         }
@@ -1147,7 +1147,7 @@ mod tests {
 
     #[test]
     fn container_names_carry_only_safe_characters() {
-        assert_eq!(docker_safe("mesh1.rpc.2/x y"), "mesh1.rpc.2-x-y");
+        assert_eq!(docker_safe("mesh1.node.2/x y"), "mesh1.node.2-x-y");
     }
 
     /// CONTRACT (lifecycles/node-create.md: exact provider proof of a runtime's state): the launch
@@ -1201,10 +1201,10 @@ mod tests {
             (rdm_core::launch::ENV_FABRIC_CA_KEY, "ca-key-hex"),
             (rdm_core::launch::ENV_DECLARED_SECRETS, "{\"v\":1,\"declared\":[]}"),
         ];
-        let spec = ResolvedNodeLaunch { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::NodeAdmin,
+        let spec = ResolvedNodeLaunch { mesh: "mesh1".to_owned(), r#type: "node-admin".into(),
             secrets: std::collections::BTreeMap::from([("APP_KEY".to_string(), rdm_core::launch::SecretHex::of_value("app,value=with\nnewline")), ("APP_EMPTY".to_string(), rdm_core::launch::SecretHex::of_value(""))]),
             withhold: vec!["APP_KEY".into(), "APP_EMPTY".into()],
-            node: rdm_core::PathName::new("mesh1.admin", "2").unwrap(),
+            node: rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(),
             deployment_id: crate::model::DeploymentId::mint(),
             executable: "/bin/true".into(),
             args: vec![],
@@ -1296,10 +1296,10 @@ esac
             ContainerDeploymentProvider::prepare_with(Docker::program(self.dir.join("docker").display().to_string()), "fab", super::super::deadline::Deadline::step()).await.unwrap()
         }
         fn spec(&self) -> ResolvedNodeLaunch {
-            ResolvedNodeLaunch { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode,
+            ResolvedNodeLaunch { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 secrets: Default::default(),
                 withhold: Vec::new(),
-                node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+                node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
                 deployment_id: crate::model::DeploymentId::mint(),
                 executable: "/bin/true".into(),
                 args: vec![],

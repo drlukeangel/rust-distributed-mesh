@@ -19,7 +19,7 @@ use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{adopt, inspect_runtime, DeploymentProvider, TerminationMode};
 use rdm_admin::workflows::node_recovery::{tickle_ladder_at_default_budget, VIA_PEER_TICKLE_FANOUT};
 use rdm_client::{await_fact, Builds, Filter, MeshNode, NodeStatus, Nodes, PathName, Peers};
-use rdm_core::{NodeKind, OperationSubject, RuntimeFact};
+use rdm_core::{OperationSubject, RuntimeFact};
 use std::path::Path;
 use std::time::Duration;
 
@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_recovery [<path> <name>]")),
         _ => rows
             .iter()
-            .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .find(|n| n.kind != "node-admin" && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no ready role node in the estate"))?
             .clone(),
     };

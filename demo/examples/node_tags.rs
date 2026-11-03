@@ -15,7 +15,7 @@
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{ExactBirth, Filter, MeshNode, NodeView, Nodes, PathName, Peers};
 use rdm_core::status::TagScope;
-use rdm_core::NodeKind;
+
 use rdm_transport::{NodeTarget, RouteChoice};
 use std::collections::BTreeSet;
 
@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
     let all = nodes.get(&Filter::new()).await?;
     peers.learn(&all);
     let row = all.iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
-    let primary = all.iter().find(|n| n.mesh == row.mesh && n.kind == NodeKind::NodeAdmin && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh))?;
+    let primary = all.iter().find(|n| n.mesh == row.mesh && n.kind == "node-admin" && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh))?;
 
     let labels = BTreeSet::from([label.clone()]);
     let created = nodes.tags_create(&exact(row)?, &primary.node_id, &RouteChoice::Direct, &labels).await?;

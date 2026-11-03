@@ -7,7 +7,7 @@
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::catalog::OpOwner;
-use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
+use rdm_core::{IncarnationId, NodeId, PathName};
 use rdm_node::node_hooks::{PreNodeReady, NodeReadyCtx, NodeHooks, HookOutcome};
 use rdm_node::gossip::{Channel, Event};
 use rdm_test::pre_node_ready_probe::{PreNodeReadyPull, PullReply, PullRequest, Row};
@@ -40,7 +40,7 @@ fn install(cache: &Cache, subject: &str, version: u64, value: &str) -> bool {
         }
     }
 }
-fn kind_of(subject: &str) -> &str {
+fn type_of(subject: &str) -> &str {
     subject.split_once('/').map(|(k, _)| k).unwrap_or(subject)
 }
 fn event(subject: &str, version: u64, value: &str) -> Event {
@@ -102,7 +102,7 @@ impl PreNodeReady for Hydrate {
                 let mut installed = 0u64;
                 for row in rows {
                     let Some((subject, value)) = row.value.split_once('=') else { continue };
-                    if self.kinds.contains(&kind_of(subject)) && install(&self.held, subject, row.version, value) {
+                    if self.kinds.contains(&type_of(subject)) && install(&self.held, subject, row.version, value) {
                         installed += 1;
                     }
                 }
@@ -118,7 +118,7 @@ impl PreNodeReady for Hydrate {
 
 /// A member of `kind` at `ordinal` in the root admin's mesh, launched by the root admin, declaring
 /// `kinds`, hydrating through `hook`.
-async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path, kind: NodeKind, ordinal: u32, kinds: &[&str], hook: NodeHooks) -> rdm_node::node::RunningNode {
+async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path, r#type: &str, ordinal: u32, kinds: &[&str], hook: NodeHooks) -> rdm_node::node::RunningNode {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("demo-proj")).unwrap();
@@ -224,8 +224,8 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         // The first gateway and compute: born into an empty cache, they publish.
         let g1_held: Cache = Default::default();
         let c1_held: Cache = Default::default();
-        let g1 = member(&root, &dir.join("gateway.1"), &root_dir, NodeKind::Gateway, 1, &GATEWAY_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g1_held.clone() }))).await;
-        let c1 = member(&root, &dir.join("compute.1"), &root_dir, NodeKind::Compute, 1, &COMPUTE_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c1_held.clone() }))).await;
+        let g1 = member(&root, &dir.join("gateway.1"), &root_dir, "gateway", 1, &GATEWAY_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g1_held.clone() }))).await;
+        let c1 = member(&root, &dir.join("compute.1"), &root_dir, "compute", 1, &COMPUTE_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c1_held.clone() }))).await;
         assert!(g1_held.lock().unwrap().is_empty() && c1_held.lock().unwrap().is_empty(), "nothing was published yet");
         assert_eq!(g1.topology_view.held_types(), GATEWAY_KINDS.iter().map(|k| k.to_string()).collect());
         assert_eq!(c1.topology_view.held_types(), COMPUTE_KINDS.iter().map(|k| k.to_string()).collect());
@@ -263,7 +263,7 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
             ("demo.principal/alice", 2, "alice@v2"),
         ];
         for (subject, version, value) in &rows {
-            let publisher = match kind_of(subject) {
+            let publisher = match type_of(subject) {
                 k if k == COMPUTE_ONLY => &c1_channels[k],
                 k if k == SHARED && *version == 2 => &c1_channels[k],
                 k => &g1_channels[k],
@@ -291,12 +291,12 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         // A gateway and a compute born now hydrate their own kinds from the cache, before ready.
         let g2_held: Cache = Default::default();
         let c2_held: Cache = Default::default();
-        let g2 = member(&root, &dir.join("gateway.2"), &root_dir, NodeKind::Gateway, 2, &GATEWAY_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g2_held.clone() }))).await;
-        let c2 = member(&root, &dir.join("compute.2"), &root_dir, NodeKind::Compute, 2, &COMPUTE_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c2_held.clone() }))).await;
+        let g2 = member(&root, &dir.join("gateway.2"), &root_dir, "gateway", 2, &GATEWAY_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g2_held.clone() }))).await;
+        let c2 = member(&root, &dir.join("compute.2"), &root_dir, "compute", 2, &COMPUTE_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c2_held.clone() }))).await;
         let g2_rows = g2_held.lock().unwrap().clone();
         let c2_rows = c2_held.lock().unwrap().clone();
-        assert_eq!(g2_rows.keys().map(|s| kind_of(s).to_string()).collect::<std::collections::BTreeSet<_>>(), GATEWAY_KINDS.iter().map(|k| k.to_string()).collect(), "the gateway hydrated exactly its three kinds");
-        assert_eq!(c2_rows.keys().map(|s| kind_of(s).to_string()).collect::<std::collections::BTreeSet<_>>(), COMPUTE_KINDS.iter().map(|k| k.to_string()).collect(), "the compute hydrated exactly its two kinds");
+        assert_eq!(g2_rows.keys().map(|s| type_of(s).to_string()).collect::<std::collections::BTreeSet<_>>(), GATEWAY_KINDS.iter().map(|k| k.to_string()).collect(), "the gateway hydrated exactly its three kinds");
+        assert_eq!(c2_rows.keys().map(|s| type_of(s).to_string()).collect::<std::collections::BTreeSet<_>>(), COMPUTE_KINDS.iter().map(|k| k.to_string()).collect(), "the compute hydrated exactly its two kinds");
         assert_eq!(g2_rows["demo.topic/orders"], (2, "orders@v2 from the compute".to_string()));
         assert_eq!(c2_rows["demo.topic/orders"], (2, "orders@v2 from the compute".to_string()), "the shared kind is the same row on both");
         assert_eq!(g2_rows["demo.principal/alice"], (2, "alice@v2".to_string()));

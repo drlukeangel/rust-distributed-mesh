@@ -29,21 +29,15 @@ pub enum NodeClass {
 }
 
 impl NodeClass {
-    /// The path segment of the class (path `<mesh>.<segment>` and name `<ordinal>`).
+    /// The path segment of the class (path `<mesh>.<segment>` and name `<ordinal>`): its type.
     pub fn segment(self) -> &'static str {
-        match self {
-            NodeClass::NodeAdmin => "admin",
-            NodeClass::RpcNode => "rpc",
-            NodeClass::Compute => "compute",
-            NodeClass::Gateway => "gateway",
-            NodeClass::Broker => "broker",
-        }
+        self.type_name()
     }
-    /// The class's name in the node-admin view and in a Build's mesh request (`kind`).
-    pub fn kind_name(self) -> &'static str {
+    /// The class's type, as the node-admin view and a Build's mesh request name it.
+    pub fn type_name(self) -> &'static str {
         match self {
-            NodeClass::NodeAdmin => "node_admin",
-            NodeClass::RpcNode => "rpc_node",
+            NodeClass::NodeAdmin => "node-admin",
+            NodeClass::RpcNode => "node",
             NodeClass::Compute => "compute",
             NodeClass::Gateway => "gateway",
             NodeClass::Broker => "broker",

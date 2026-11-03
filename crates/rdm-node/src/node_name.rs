@@ -94,9 +94,9 @@ mod tests {
     /// name is refused naming every connection the node holds by its entry's id, and Applied with none.
     #[test]
     fn a_node_takes_another_name_only_while_it_holds_no_connection() {
-        let (new, bare): (PathName, PathName) = (rdm_core::PathName::new("mesh1.rpc", "7").unwrap(), rdm_core::PathName::new("mesh1.rpc", "1").unwrap());
-        let end = |path: &str, name: &str, kind| ConnectionEnd { mesh: "mesh1".into(), kind, name: PathName::new(path, name).unwrap(), node_id: NodeId::mint(), incarnation: None };
-        let route = NodeConnection { id: ConnectionId::parse("3123456789ab").unwrap(), source: end("mesh1.rpc", "7", rdm_core::NodeKind::RpcNode), destination: end("mesh1.admin", "1", rdm_core::NodeKind::NodeAdmin), kind: ConnectionKind::Direct, alpn: rdm_core::connections::ALPN.to_vec(), state: ConnectionState::Connected, carrier: None, recovery: None, reason: None, logged_at_ms: 1 };
+        let (new, bare): (PathName, PathName) = (rdm_core::PathName::new("mesh1.node", "7").unwrap(), rdm_core::PathName::new("mesh1.node", "1").unwrap());
+        let end = |path: &str, name: &str, r#type| ConnectionEnd { mesh: "mesh1".into(), r#type, name: PathName::new(path, name).unwrap(), node_id: NodeId::mint(), incarnation: None };
+        let route = NodeConnection { id: ConnectionId::parse("3123456789ab").unwrap(), source: end("mesh1.node", "7", "node".to_string()), destination: end("mesh1.node-admin", "1", "node-admin".to_string()), kind: ConnectionKind::Direct, alpn: rdm_core::connections::ALPN.to_vec(), state: ConnectionState::Connected, carrier: None, recovery: None, reason: None, logged_at_ms: 1 };
         assert_eq!(decide(&bare, &bare, std::slice::from_ref(&route)), NameApply::AlreadyApplied);
         let busy = decide(&new, &bare, std::slice::from_ref(&route));
         assert_eq!(busy, NameApply::Busy { connections: vec![route.id.clone()], routes: vec![format!("{} (direct, entry 3123456789ab)", route.destination.node_id)] });

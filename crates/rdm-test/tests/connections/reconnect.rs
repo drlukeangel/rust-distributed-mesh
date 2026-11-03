@@ -47,8 +47,8 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
         let root = std::env::temp_dir().join(format!("connections-reconnect-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
-        let src_name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-        let peer_name: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        let src_name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+        let peer_name: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
 
         let launch_of = |name: &PathName| {
             let node_id = NodeId::mint();
@@ -65,7 +65,7 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
                 fabric: "fabric1".into(),
                 fabric_id: fabric.clone(),
                 mesh: "mesh1".into(),
-                kind: rdm_core::NodeKind::RpcNode,
+                r#type: "node".into(),
                 name: name.clone(),
                 node_id,
                 incarnation: IncarnationId::mint(),
@@ -119,17 +119,17 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
             .resolve(&NodeTarget::ExactNode(peer_launch.node_id.clone()))
             .expect("source resolver holds peer");
 
-        let src_end = ConnectionEnd { mesh: src_launch.mesh.clone(), kind: src_launch.kind,
+        let src_end = ConnectionEnd { mesh: src_launch.mesh.clone(), r#type: src_launch.r#type,
             name: src_launch.name.clone(),
             node_id: src_launch.node_id.clone(),
             incarnation: Some(src_launch.incarnation.clone()),
         };
-        let carrier_end = ConnectionEnd { mesh: admin.launcher.mesh.clone(), kind: rdm_core::NodeKind::NodeAdmin,
+        let carrier_end = ConnectionEnd { mesh: admin.launcher.mesh.clone(), r#type: "node-admin".into(),
             name: admin.launcher.name.clone(),
             node_id: admin.launcher.node_id.clone(),
             incarnation: Some(admin.launcher.incarnation.clone()),
         };
-        let peer_end = ConnectionEnd { mesh: resolved_peer.mesh.clone(), kind: resolved_peer.kind,
+        let peer_end = ConnectionEnd { mesh: resolved_peer.mesh.clone(), r#type: resolved_peer.r#type,
             name: resolved_peer.name.clone(),
             node_id: resolved_peer.node_id.clone(),
             incarnation: Some(resolved_peer.incarnation.clone()),

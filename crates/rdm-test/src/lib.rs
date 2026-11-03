@@ -220,13 +220,13 @@ mod tests {
     fn a_knob_rewrite_never_touches_the_file_a_reader_holds_open() {
         let root = std::env::temp_dir().join(format!("pre-node-ready-knob-rewrite-{}", rdm_core::NodeId::mint()));
         let (a, b) = ("the rows of orders are not yet published", "the authority of orders is connections-deleting");
-        write_pre_node_ready_knob(&root, &rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), a).unwrap();
-        let mut held = std::fs::File::open(location_knob_file(&pre_node_ready_knob_dir(&root), &rdm_core::PathName::new("mesh1.rpc", "2").unwrap())).unwrap();
-        write_pre_node_ready_knob(&root, &rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), b).unwrap();
+        write_pre_node_ready_knob(&root, &rdm_core::PathName::new("mesh1.node", "2").unwrap(), a).unwrap();
+        let mut held = std::fs::File::open(location_knob_file(&pre_node_ready_knob_dir(&root), &rdm_core::PathName::new("mesh1.node", "2").unwrap())).unwrap();
+        write_pre_node_ready_knob(&root, &rdm_core::PathName::new("mesh1.node", "2").unwrap(), b).unwrap();
         let mut read = String::new();
         held.read_to_string(&mut read).unwrap();
         assert_eq!(read, a, "the reader that opened the knob before the rewrite reads the text it opened, whole");
-        assert_eq!(std::fs::read_to_string(location_knob_file(&pre_node_ready_knob_dir(&root), &rdm_core::PathName::new("mesh1.rpc", "2").unwrap())).unwrap(), b, "the next open reads the new text");
+        assert_eq!(std::fs::read_to_string(location_knob_file(&pre_node_ready_knob_dir(&root), &rdm_core::PathName::new("mesh1.node", "2").unwrap())).unwrap(), b, "the next open reads the new text");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -265,7 +265,7 @@ pub fn compose(
     b: rdm_transport::ServerBuilder,
     client: std::sync::Arc<rdm_transport::NodeRpcClient>,
 ) -> rdm_transport::ServerBuilder {
-    let b = families::for_kind(role.kind, served_by, b, client);
+    let b = families::for_type(&role.r#type, served_by, b, client);
     LEGACY_ADAPTERS.iter().fold(b, |b, a| {
         b.adapter(rdm_core::catalog::CatalogEntry::transitional(
             a.op,
@@ -336,13 +336,13 @@ pub async fn run_test_node_with(
     crate::node::listen_for_stop();
     let executable = executable_name()?;
     let _telemetry = rdm_transport::init_evidence_telemetry(&executable);
-    let launch = launch_for(role)?;
+    let launch = launch_for(role.clone())?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
         node_path = %launch.name.path, node_name = %launch.name.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
-        kind = role.name(),
+        "type" = role.name(),
         executable = %executable,
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
@@ -353,7 +353,7 @@ pub async fn run_test_node_with(
         use tracing::Instrument;
         let started = crate::node::start_pre_node_ready(&launch, node_hooks, |b, seams| {
             serve_app(oracles.serve(
-                compose(role, &launch.node_id.to_string(), b, seams.client),
+                compose(role.clone(), &launch.node_id.to_string(), b, seams.client),
                 &launch,
                 seams.resolver,
                 &seams.name,
@@ -376,7 +376,7 @@ pub async fn run_test_node_with(
     };
     let _ = oracles.declare_client.set(running.node_rpc.clone());
     let served = running.server.catalog().entries().count();
-    boot.in_scope(|| tracing::info!(served, kind = role.name(), "role process serving on the imported substrate"));
+    boot.in_scope(|| tracing::info!(served, "type" = role.name(), "role process serving on the imported substrate"));
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
     let ended = tokio::select! {

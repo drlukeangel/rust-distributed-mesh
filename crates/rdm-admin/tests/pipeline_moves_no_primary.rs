@@ -74,7 +74,7 @@ impl TopologySink for NoView {
 }
 
 fn primary() -> Node {
-    let mut n = Node::allocated(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let mut n = Node::allocated(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
     n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = true;
@@ -109,7 +109,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-node-admin".into(),
             seeds: vec![("executorkey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), name: rdm_core::PathName::new("mesh2.admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), name: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: std::env::temp_dir().join(format!("role-transfer-step-{}", NodeId::mint())),
             store_dir: std::env::temp_dir().join(format!("role-transfer-step-{}", NodeId::mint())),

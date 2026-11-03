@@ -655,14 +655,14 @@ mod tests {
             let node1 = NodeId::mint();
             let inc1_a = IncarnationId::mint();
             let inc1_b = IncarnationId::mint();
-            let path1: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+            let path1: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
 
             let node2 = NodeId::mint();
             let inc2 = IncarnationId::mint();
-            let path2: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+            let path2: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
 
             let resolver = Arc::new(StaticResolver::new());
-            let resolved1_a = ResolvedNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+            let resolved1_a = ResolvedNode { r#type: "node".into(), mesh: "mesh1".into(),
                 node_id: node1.clone(),
                 name: path1.clone(),
                 incarnation: inc1_a.clone(),
@@ -673,7 +673,7 @@ mod tests {
                 incarnation: inc1_b.clone(),
                 ..resolved1_a.clone()
             };
-            let resolved2 = ResolvedNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(),
+            let resolved2 = ResolvedNode { r#type: "node-admin".into(), mesh: "mesh1".into(),
                 node_id: node2.clone(),
                 name: path2.clone(),
                 incarnation: inc2.clone(),
@@ -862,9 +862,9 @@ mod tests {
                     }
                 }
             });
-            let node = ResolvedNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+            let node = ResolvedNode { r#type: "node".into(), mesh: "mesh1".into(),
                 node_id: NodeId::mint(),
-                name: PathName::new("mesh1.rpc", "1").unwrap(),
+                name: PathName::new("mesh1.node", "1").unwrap(),
                 incarnation: IncarnationId::mint(),
                 endpoint_id: peer_key,
                 transport_addr: peer_addr,

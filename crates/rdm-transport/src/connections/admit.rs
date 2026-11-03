@@ -266,7 +266,7 @@ async fn refuse(
     let floor = rdm_core::cadence::staleness_floor();
     let own = registry.inner.sink.own_birth();
     let key = connection.remote_id();
-    let dialer = registry.inner.resolver.by_endpoint(&key).map(|r| Birth { mesh: r.mesh.clone(), kind: r.kind, name: r.name, node_id: r.node_id, incarnation: r.incarnation });
+    let dialer = registry.inner.resolver.by_endpoint(&key).map(|r| Birth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), name: r.name, node_id: r.node_id, incarnation: r.incarnation });
     let source = dialer.as_ref().map_or_else(|| key.fmt_short().to_string(), |b| b.node_id.to_string());
     // The same fields as an admission's span (node-connections-admit.md Spans): the presented cert's
     // expiry (0 when nothing presented parses as a cert) and the clock the admitter judges on.
@@ -320,7 +320,7 @@ mod tests {
         BirthIdentity, CA_CERT_TTL_SECS, CaKey, ISSUING_CERT_TTL_SECS, IssuingKey, SigningKey,
         cert_to_bytes, issue,
     };
-    use rdm_core::{EndpointId, IncarnationId, NodeId, NodeKind, PathName};
+    use rdm_core::{EndpointId, IncarnationId, NodeId, PathName};
 
     /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:12 — "a correctly signed,
     /// unexpired cert of this fabric is admitted whoever presents it, and the step reads no node
@@ -340,8 +340,8 @@ mod tests {
     /// `no-credential`"
     #[test]
     fn cert_admitter_and_no_certs_admitter_verify_chain_expiries_mesh_and_root_set_replacement() {
-        let caller = Birth { mesh: "mesh1".into(), kind: NodeKind::Gateway,
-            name: PathName::numbered("mesh1", NodeKind::Gateway, 1),
+        let caller = Birth { mesh: "mesh1".into(), r#type: "gateway".into(),
+            name: PathName::numbered("mesh1", "gateway", 1),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
@@ -396,13 +396,13 @@ mod tests {
         let signed = issue(&issuer, &birth_id, 5_000, 65_000).expect("issue member cert");
         let cert_bytes = cert_to_bytes(&signed);
         assert_eq!(presented_expiry(&cert_bytes), 65_000);
-        for other_kind in [
-            NodeKind::Gateway,
-            NodeKind::NodeAdmin,
-            NodeKind::from_segment("rpc").unwrap(),
+        for other_type in [
+            "gateway",
+            "node-admin",
+            "node",
         ] {
-            let presenter = Birth { mesh: "mesh2".into(), kind: other_kind,
-                name: PathName::numbered("mesh2", other_kind, 9),
+            let presenter = Birth { mesh: "mesh2".into(), r#type: other_type.into(),
+                name: PathName::numbered("mesh2", other_type, 9),
                 node_id: NodeId::mint(),
                 incarnation: IncarnationId::mint(),
             };
@@ -423,7 +423,7 @@ mod tests {
         // 6. Mesh mismatch between issuer ("mesh1") and member path ("mesh2.gateway.1") is refused `issuer-mesh-mismatch`.
         time.adopt(10_000);
         let mut wrong_mesh_signed = signed.clone();
-        wrong_mesh_signed.cert.name = PathName::numbered("mesh2", NodeKind::Gateway, 1);
+        wrong_mesh_signed.cert.name = PathName::numbered("mesh2", "gateway", 1);
         wrong_mesh_signed.cert.mesh = "mesh2".to_string();
         let wrong_mesh_bytes = cert_to_bytes(&wrong_mesh_signed);
         assert_eq!(

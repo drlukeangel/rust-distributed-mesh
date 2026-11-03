@@ -567,7 +567,7 @@ fn refusal_of(r: TopologyReply) -> TopologyFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshId, MeshNode, NodeId, NodeKind, PathName};
+    use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshId, MeshNode, NodeId, PathName};
     use std::collections::HashSet;
     use std::net::SocketAddr;
 
@@ -592,7 +592,7 @@ mod tests {
             &fabric_id,
             "mesh1",
             &mesh_id,
-            "mesh1.admin.1",
+            "mesh1.node-admin.1",
             Arc::new(rafka_time.clone()),
             Vec::new(),
             &[],
@@ -603,9 +603,9 @@ mod tests {
         let own_digest = MeshDigest {
             held_hash: Default::default(),
             fabric_id,
-            node: MeshNode { mesh: "mesh1".to_string(), kind: NodeKind::NodeAdmin,
+            node: MeshNode { mesh: "mesh1".to_string(), r#type: "node-admin".into(),
                 node_id: NodeId::mint(),
-                name: PathName::numbered("mesh1", NodeKind::NodeAdmin, 1),
+                name: PathName::numbered("mesh1", "node-admin", 1),
                 endpoint_id: EndpointId(ep.id().to_string()),
                 transport_addr: "127.0.0.1:9000".parse().unwrap(),
                 incarnation: IncarnationId::mint(),

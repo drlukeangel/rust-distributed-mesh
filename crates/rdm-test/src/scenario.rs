@@ -134,16 +134,15 @@ impl Scenario {
     /// Match an explicitly generated location in the declared RPC class; neither field is parsed.
     pub fn is_rpc_node(&self, location: &PathName) -> bool {
         self.meshes.iter().any(|mesh| (1..=mesh.rpc_node).any(|ordinal| {
-            PathName::new(format!("{}.rpc", mesh.name), ordinal.to_string()).as_ref() == Ok(location)
+            PathName::new(format!("{}.node", mesh.name), ordinal.to_string()).as_ref() == Ok(location)
         }))
     }
 
     /// The fabric this scenario's shape reconciles to: what its `build.create` carries.
     pub fn desired(&self) -> rdm_client::FabricDesired {
-        use rdm_client::LaunchKind as NodeKind;
         rdm_client::FabricDesired {
             fabric: self.fabric.clone(),
-            meshes: self.meshes.iter().map(|m| rdm_client::MeshDesired::of(m.name.clone(), [(NodeKind::NodeAdmin, m.node_admin), (NodeKind::RpcNode, m.rpc_node)])).collect(),
+            meshes: self.meshes.iter().map(|m| rdm_client::MeshDesired::of(m.name.clone(), [("node-admin", m.node_admin), ("node", m.rpc_node)])).collect(),
         }
     }
 }
@@ -163,11 +162,11 @@ mod tests {
         assert_eq!(s.operations.len(), 8);
         assert_eq!(
             s.operations[6],
-            Operation::Cas { target: PathName::new("mesh1.rpc", "1").unwrap(), key: 100, expected: "seed-000".into(), value: "seed-000-cas".into() }
+            Operation::Cas { target: PathName::new("mesh1.node", "1").unwrap(), key: 100, expected: "seed-000".into(), value: "seed-000-cas".into() }
         );
-        assert_eq!(s.operations[7], Operation::Delete { target: PathName::new("mesh1.rpc", "3").unwrap(), key: 105 });
+        assert_eq!(s.operations[7], Operation::Delete { target: PathName::new("mesh1.node", "3").unwrap(), key: 105 });
         assert_eq!(s.assert.len(), 3);
-        assert_eq!(s.assert[2], Assertion::Get { target: PathName::new("mesh1.rpc", "3").unwrap(), key: 105, equals: None, absent: Some(true) });
+        assert_eq!(s.assert[2], Assertion::Get { target: PathName::new("mesh1.node", "3").unwrap(), key: 105, equals: None, absent: Some(true) });
     }
 
     #[test]
@@ -182,8 +181,8 @@ mod tests {
     fn unknown_provider_target_and_fields_are_refused() {
         assert_eq!(Scenario::parse(&SEED.replace("provider: process", "provider: vm")), Err(ScenarioError::UnknownProvider("vm".into())));
         assert_eq!(
-            Scenario::parse(&SEED.replace(r#"target: {path: mesh1.rpc, name: "3"}, key: 104"#, r#"target: {path: mesh1.rpc, name: "9"}, key: 104"#)),
-            Err(ScenarioError::UnknownTarget(PathName::new("mesh1.rpc", "9").unwrap()))
+            Scenario::parse(&SEED.replace(r#"target: {path: mesh1.node, name: "3"}, key: 104"#, r#"target: {path: mesh1.node, name: "9"}, key: 104"#)),
+            Err(ScenarioError::UnknownTarget(PathName::new("mesh1.node", "9").unwrap()))
         );
         assert!(matches!(Scenario::parse(&SEED.replace("shape: MN", "shape: MN\nextra: 1")), Err(ScenarioError::Parse(_))));
     }
@@ -192,6 +191,6 @@ mod tests {
     fn legacy_role_names_are_not_rpc_targets() {
         let s = Scenario::parse(SEED).unwrap();
         assert!(!s.is_rpc_node(&PathName::new("mesh1.broker", "1").unwrap()));
-        assert!(s.is_rpc_node(&PathName::new("mesh1.rpc", "3").unwrap()));
+        assert!(s.is_rpc_node(&PathName::new("mesh1.node", "3").unwrap()));
     }
 }

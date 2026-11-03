@@ -288,8 +288,8 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         ));
         std::fs::create_dir_all(&root_dir).unwrap();
 
-        let admin_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-        let mut admin_node = Node::allocated(admin_name.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let admin_name: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
+        let mut admin_node = Node::allocated(admin_name.clone(), "mesh1", "node-admin");
         admin_node.status = NodeStatus::Ready;
         admin_node.is_primary = true;
         admin_node.is_fabric_primary = true;
@@ -297,7 +297,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         let admin_id = admin_node.node_id.clone();
         let executor_birth = admin_node.birth().unwrap();
 
-        let target_name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let target_name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let target_id = NodeId::mint();
         let target_incarnation = IncarnationId::mint();
         let deployment_id = DeploymentId::mint();
@@ -309,7 +309,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         let identity_marker = target_data_dir.join("node-identity.json");
         std::fs::write(&identity_marker, b"{\"retained\":true}").unwrap();
 
-        let mut target_node = Node::allocated(target_name.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut target_node = Node::allocated(target_name.clone(), "mesh1", "node");
         target_node.node_id = target_id.clone();
         target_node.incarnation_id = Some(target_incarnation.clone());
         target_node.deployment_id = Some(deployment_id.clone());
@@ -319,7 +319,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         target_node.status = NodeStatus::Ready;
 
         let store = Arc::new(MemoryNodesStorage::default());
-        let mut initial_row = NodeRow::new(target_name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, target_id.clone(), NodeStatus::Ready);
+        let mut initial_row = NodeRow::new(target_name.clone(), "mesh1", "node", target_id.clone(), NodeStatus::Ready);
         initial_row.birth_mut(&target_incarnation, &target_name);
         store.write_record(&initial_row).await.unwrap();
 
@@ -561,7 +561,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         assert_eq!(recorded_events, vec!["deleting", "stopped", "deleted"]);
 
         // Row is written Deleted at its path.name with config kept, and name claim is released
-        // so a successor node_id can claim mesh1.rpc.1.
+        // so a successor node_id can claim mesh1.node.1.
         let deleted_row = store
             .node(&target_id)
             .await
@@ -570,7 +570,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         assert_eq!(deleted_row.status, NodeStatus::Deleted);
         assert_eq!(deleted_row.births.last().map(|b| b.incarnation_id.clone()), Some(target_incarnation.clone()), "the deleted row keeps its record, its birth included");
         let successor_id = NodeId::mint();
-        rows.create_row(&target_name, "mesh1", rdm_core::NodeKind::RpcNode, &successor_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), None, None, RowFor::Create)
+        rows.create_row(&target_name, "mesh1", "node", &successor_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), None, None, RowFor::Create)
         .await
         .expect("deleted row must release the name claim for a successor node_id");
 
@@ -753,8 +753,8 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         ));
         std::fs::create_dir_all(&root_dir).unwrap();
 
-        let admin_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-        let mut admin_node = Node::allocated(admin_name.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let admin_name: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
+        let mut admin_node = Node::allocated(admin_name.clone(), "mesh1", "node-admin");
         admin_node.status = NodeStatus::Ready;
         admin_node.is_primary = true;
         admin_node.is_fabric_primary = true;
@@ -762,14 +762,14 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let admin_id = admin_node.node_id.clone();
         let executor_birth = admin_node.birth().unwrap();
 
-        let target_name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let target_name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let target_id = NodeId::mint();
         let target_incarnation = IncarnationId::mint();
         let deployment_id = DeploymentId::mint();
         let target_data_dir = rdm_admin::deployment::node_data_dir(&root_dir, &target_id);
         std::fs::create_dir_all(&target_data_dir).unwrap();
 
-        let mut target_node = Node::allocated(target_name.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut target_node = Node::allocated(target_name.clone(), "mesh1", "node");
         target_node.node_id = target_id.clone();
         target_node.incarnation_id = Some(target_incarnation.clone());
         target_node.deployment_id = Some(deployment_id.clone());
@@ -778,7 +778,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         target_node.status = NodeStatus::Ready;
 
         let store = Arc::new(MemoryNodesStorage::default());
-        let mut initial_row = NodeRow::new(target_name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, target_id.clone(), NodeStatus::Ready);
+        let mut initial_row = NodeRow::new(target_name.clone(), "mesh1", "node", target_id.clone(), NodeStatus::Ready);
         initial_row.birth_mut(&target_incarnation, &target_name);
         store.write_record(&initial_row).await.unwrap();
 
@@ -940,7 +940,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             })
             .await
             .unwrap();
-        let deleting_op = LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(),
+        let deleting_op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".to_owned(),
             build_id: build_id.to_string(),
             attempt: 2,
             operation: rdm_core::OperationId::node("node.delete", &target_id),
@@ -1080,7 +1080,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let old_digest = rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: template.fabric_id.clone(),
-            node: rdm_core::MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode,
+            node: rdm_core::MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: target_id.clone(),
                 name: target_name.clone(),
                 endpoint_id: shared_endpoint.clone(),
@@ -1103,7 +1103,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             is_fabric_primary: None,
         };
         assert!(peer_view.record(old_digest.clone()));
-        assert!(peer_view.depart(LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(),
+        assert!(peer_view.depart(LifecycleOp { r#type: "node".into(), mesh: "mesh1".to_owned(),
             build_id: build_id_live.to_string(),
             attempt: 1,
             operation: rdm_core::OperationId::node("node.delete", &target_id),
@@ -1116,7 +1116,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         }));
         let (successor_id, successor_inc) = (NodeId::mint(), IncarnationId::mint());
         let successor_digest = rdm_core::MeshDigest {
-            node: rdm_core::MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode,
+            node: rdm_core::MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: successor_id.clone(),
                 name: target_name.clone(),
                 endpoint_id: shared_endpoint,

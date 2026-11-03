@@ -43,12 +43,12 @@ mod tests {
         let preserved_no_meta = serde_json::to_value(StorageDisposition::PreservedNoMeta {}).unwrap();
         assert_eq!(preserved_no_meta, serde_json::json!({ "arm": "preserved-no-meta" }));
         let released = serde_json::to_value(StorageDisposition::Released {
-            locator: "dir:/var/lib/rdm/mesh1.rpc.1".into(),
+            locator: "dir:/var/lib/rdm/mesh1.node.1".into(),
         })
         .unwrap();
         assert_eq!(
             released,
-            serde_json::json!({ "arm": "released", "locator": "dir:/var/lib/rdm/mesh1.rpc.1" })
+            serde_json::json!({ "arm": "released", "locator": "dir:/var/lib/rdm/mesh1.node.1" })
         );
 
         let graceful = TerminationMode::Graceful {

@@ -1475,7 +1475,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rdm-flame-{}", std::process::id()));
         let sp = dir.join("feat/t1/spans");
         std::fs::create_dir_all(&sp).unwrap();
-        let line = |t: &str, id: &str, p: &str, name: &str, a: u64, b: u64| json!({"trace_id": t, "span_id": id, "parent_span_id": p, "name": name, "service": "svc", "start_unix_nano": a, "end_unix_nano": b, "attributes": {"node": "mesh1.admin.1"}, "events": []}).to_string();
+        let line = |t: &str, id: &str, p: &str, name: &str, a: u64, b: u64| json!({"trace_id": t, "span_id": id, "parent_span_id": p, "name": name, "service": "svc", "start_unix_nano": a, "end_unix_nano": b, "attributes": {"node": "mesh1.node-admin.1"}, "events": []}).to_string();
         let body = [line("aa", "1", "", "root", 0, 9_000_000), line("aa", "2", "1", "child", 1_000_000, 2_000_000), line("bb", "3", "", "x.reject.via-y", 0, 1_000_000)].join("\n");
         std::fs::write(sp.join("svc.1.spans.jsonl"), body).unwrap();
         let l = trace_list(&dir, Some("t1"), "http://j");
@@ -1483,7 +1483,7 @@ mod tests {
         let f = flame(&dir, Some("t1"), "aa", "http://j");
         assert_eq!(f["spans"][1]["parent"], "1");
         assert_eq!(f["spans"][0]["dur_ms"], 9.0);
-        assert_eq!(f["spans"][1]["node"], "mesh1.admin.1");
+        assert_eq!(f["spans"][1]["node"], "mesh1.node-admin.1");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

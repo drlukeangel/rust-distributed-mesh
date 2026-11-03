@@ -61,7 +61,7 @@ fn mesh(name: &str) -> (&str, u32, u32) {
 async fn describe(estate: &Estate, node: &Value) -> Value {
     let name: rdm_core::PathName = serde_json::from_value(node["name"].clone()).expect("structured location");
     let pid = match estate.bootstrap_pid() {
-        Some(p) if name == rdm_core::PathName::new("mesh1.admin", "1").unwrap() => u64::from(p),
+        Some(p) if name == rdm_core::PathName::new("mesh1.node-admin", "1").unwrap() => u64::from(p),
         _ => estate.pid_of(&name).await,
     };
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
@@ -70,7 +70,7 @@ async fn describe(estate: &Estate, node: &Value) -> Value {
     let data_dir = s(&node["data_dir"]);
     let deployment = std::fs::read_to_string(format!("{data_dir}/deployment.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
     json!({
-        "name": name, "mesh": node["mesh"], "kind": node["kind"], "node_id": node["node_id"], "incarnation_id": node["incarnation_id"],
+        "name": name, "mesh": node["mesh"], "type": node["type"], "node_id": node["node_id"], "incarnation_id": node["incarnation_id"],
         "endpoint_id": node["endpoint_id"], "status": node["status"], "is_primary": node["is_primary"], "is_fabric_primary": node["is_fabric_primary"],
         "admin_api_base": node["admin_api_base"], "transport_addr": node["transport_addr"], "listeners": node["listeners"],
         "data_dir": data_dir, "data_dir_exists": std::path::Path::new(&data_dir).is_dir(), "node_key_present": std::path::Path::new(&format!("{data_dir}/node-key")).is_file(),
@@ -106,11 +106,11 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     for n in &before {
         described.insert(s(&n["node_id"]), describe(&estate, n).await);
     }
-    let run_bases: BTreeSet<String> = described.values().filter(|d| d["kind"] == "node_admin").map(|d| s(&d["admin_api_base"])).collect();
-    let admin_base_owner: BTreeMap<String, String> = described.values().filter(|d| d["kind"] == "node_admin").map(|d| (s(&d["admin_api_base"]), s(&d["node_id"]))).collect();
+    let run_bases: BTreeSet<String> = described.values().filter(|d| d["type"] == "node-admin").map(|d| s(&d["admin_api_base"])).collect();
+    let admin_base_owner: BTreeMap<String, String> = described.values().filter(|d| d["type"] == "node-admin").map(|d| (s(&d["admin_api_base"]), s(&d["node_id"]))).collect();
     assert_eq!(run_bases.len(), 4, "four admins, four control endpoints: {run_bases:?}");
     let lost_pids: Vec<(String, u64)> = described.values().filter(|d| d["mesh"] == lost_mesh.as_str()).map(|d| (s(&d["node_id"]), d["host"]["pid"].as_u64().unwrap())).collect();
-    let survivors: Vec<String> = described.values().filter(|d| d["mesh"] == survivor_mesh.as_str() && d["kind"] == "node_admin").map(|d| s(&d["node_id"])).collect();
+    let survivors: Vec<String> = described.values().filter(|d| d["mesh"] == survivor_mesh.as_str() && d["type"] == "node-admin").map(|d| s(&d["node_id"])).collect();
     let survivor_pids: BTreeMap<String, u64> = described.values().filter(|d| survivors.contains(&s(&d["node_id"]))).map(|d| (s(&d["node_id"]), d["host"]["pid"].as_u64().unwrap())).collect();
     let survivor_bases: BTreeSet<String> = survivors.iter().map(|n| s(&described[n]["admin_api_base"])).collect();
     // Control moves to the surviving mesh's admins before the loss: they execute the delete.
@@ -189,7 +189,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
             let f = fabric_view_of_id(&peers, &name.parse().unwrap(), &fabric_id).await?;
             let (primary, advertised) = (f.fabric_primary.clone()?, f.admin_api_base.clone().unwrap_or_default());
             let own = fabric_view_of_id(&peers, &primary, &fabric_id).await?;
-            if !after.iter().any(|n| n["node_id"] == primary.as_str() && n["mesh"] == survivor_mesh && n["kind"] == "node_admin" && n["status"] == "ready") || own.fabric_primary.as_ref() != Some(&primary) || !survivor_bases.contains(&advertised) {
+            if !after.iter().any(|n| n["node_id"] == primary.as_str() && n["mesh"] == survivor_mesh && n["type"] == "node-admin" && n["status"] == "ready") || own.fabric_primary.as_ref() != Some(&primary) || !survivor_bases.contains(&advertised) {
                 return None;
             }
         }
@@ -215,7 +215,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     assert_eq!(s(&primary_record["admin_api_base"]), new_base, "the advertised authority is the holder's own control endpoint");
     assert!(survivor_bases.contains(&new_base), "the authority endpoint belongs to a surviving birth of this run: {new_base} not in {survivor_bases:?}");
     let mut survivors_after = BTreeMap::new();
-    for n in after.iter().filter(|n| n["kind"] == "node_admin") {
+    for n in after.iter().filter(|n| n["type"] == "node-admin") {
         let name = s(&n["node_id"]);
         let base = s(&n["admin_api_base"]);
         let peers = estate.peers().await;

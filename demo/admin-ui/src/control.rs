@@ -28,7 +28,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, post};
 use axum::{Json, Router};
-use rdm_core::{NodeKind, PathName};
+use rdm_core::{PathName};
 use crate::admin::Admin;
 use rdm_client::{Accepted, BuildId, CallEnd, FabricDesired, MeshDesired};
 use serde::Deserialize;
@@ -62,7 +62,7 @@ impl MeshRequest {
     fn desired(&self) -> MeshDesired {
         MeshDesired::of(
             &self.name,
-            [(NodeKind::NodeAdmin, self.node_admin), (NodeKind::Gateway, self.gateway), (NodeKind::Compute, self.compute), (NodeKind::Broker, self.broker)],
+            [("node-admin", self.node_admin), ("gateway", self.gateway), ("compute", self.compute), ("broker", self.broker)],
         )
     }
 }
@@ -82,7 +82,7 @@ struct ReplaceRequest {
 #[derive(Deserialize)]
 struct SpawnRequest {
     mesh: String,
-    kind: NodeKind,
+    r#type: String,
 }
 
 /// The routes, driving the node-admin at `admin` (`None`: every route
@@ -215,7 +215,7 @@ async fn bootstrap(State(c): State<Control>, body: axum::body::Bytes) -> Respons
     let meshes = match &body {
         Some(b) if !b.meshes.is_empty() => b.meshes.iter().map(MeshRequest::desired).collect(),
         // The demo is a rafka replica (Q295): a gateway and brokers, never an RDM rpc node.
-        _ => vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::Gateway, 1), (NodeKind::Broker, 2)])],
+        _ => vec![MeshDesired::of("mesh1", [("node-admin", 2), ("gateway", 1), ("broker", 2)])],
     };
     let first = meshes.first().map(|m| m.name.clone()).unwrap_or_default();
     let desired = FabricDesired { fabric, meshes };

@@ -18,7 +18,7 @@ use rdm_core::NodeId;
 // @feature: node-lifecycle
 /// CONTRACT (build.md §5.3: "the launching admin a birth's runtime row"; node-recovery.md "Detection and
 /// proof" step 3; fabric-primary.md:353: runtime loss after a Build completed is node recovery, which the
-/// lost node's mesh-primary starts): a Day-0 node-admin (mesh1.admin.1, the fabric-primary) is ready and
+/// lost node's mesh-primary starts): a Day-0 node-admin (mesh1.node-admin.1, the fabric-primary) is ready and
 /// its executor runs its passes for six gossip intervals, unstopped. Its pass read every runtime row once,
 /// as it took the fabric-primary role, and no pass after that read any. Must NOT happen: a read of every
 /// runtime row on every executor pass while this admin is the fabric-primary (rust-distributed-mesh#100,
@@ -44,8 +44,8 @@ fn the_fabric_primary_reads_the_runtime_rows_once_as_it_takes_the_role_and_no_ex
         let all = reads.all();
         let after: Vec<Vec<String>> = all[taken..].iter().filter(|s| !s.iter().any(|f| f.starts_with("admin/recovery.rs"))).cloned().collect();
         let by_the_take: Vec<Vec<String>> = all.iter().filter(|s| s.iter().any(|f| f.starts_with("admin/reconcile.rs"))).cloned().collect();
-        eprintln!("mesh1.admin.1 read the runtime rows {} times outside its offline tick after its take: {after:#?}", after.len());
-        eprintln!("mesh1.admin.1's executor read them {} times as it took the fabric-primary role: {by_the_take:#?}", by_the_take.len());
+        eprintln!("mesh1.node-admin.1 read the runtime rows {} times outside its offline tick after its take: {after:#?}", after.len());
+        eprintln!("mesh1.node-admin.1's executor read them {} times as it took the fabric-primary role: {by_the_take:#?}", by_the_take.len());
         assert_eq!(after.len(), 0, "no executor pass of the fabric-primary reads the runtime rows after its take: {after:#?}");
         assert_eq!(by_the_take.len(), 1, "the fabric-primary reads every mesh's runtime rows once, as it takes the role: {by_the_take:#?}");
 

@@ -45,7 +45,7 @@ The fabric-primary dispatches the `mesh-quj7g8-2` section (`attempt="2"`) to `me
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.create.via-build","attributes":{"attempt":"2","build_id":"bid_v9vw-apsq-gpsg","node":"mesh-quj7g8-2.admin.2"}}
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.create.via-build","attributes":{"attempt":"2","build_id":"bid_v9vw-apsq-gpsg","node":"mesh-quj7g8-2.broker.1"}}
 {"service":"rshape-node-admin","name":"rdm.node_admin.mesh.update.via-held-state-adopted","attributes":{"mesh":"mesh-quj7g8-2","mesh_id":"hcf9qk2dxxsv","publisher":"mesh-quj7g8-2.admin.1","served_by":"mesh-quj7g8-2.admin.1","state":"Pending"}}
-{"service":"rshape-broker","name":"rdm.mesh.node.update.via-ready","attributes":{"fabric_id":"bt828feh1cc6","incarnation_id":"8gy3tqk32gkp","kind":"broker","mesh_id":"hcf9qk2dxxsv","node":"mesh-quj7g8-2.broker.1","node_id":"esntk95y25j7"}}
+{"service":"rshape-broker","name":"rdm.mesh.node.update.via-ready","attributes":{"fabric_id":"bt828feh1cc6","incarnation_id":"8gy3tqk32gkp","type":"broker","mesh_id":"hcf9qk2dxxsv","node":"mesh-quj7g8-2.broker.1","node_id":"esntk95y25j7"}}
 {"service":"rshape-node-admin","name":"rdm.mesh.node.update.via-ready","attributes":{"build_id":"v9vwapsqgpsg","fabric_id":"bt828feh1cc6","incarnation_id":"j38n2mvwc805","mesh_id":"hcf9qk2dxxsv","node":"mesh-quj7g8-2.admin.2","node_id":"yka0k0vmrc25"}}
 ```
 
@@ -166,7 +166,7 @@ When `Nodes::start` submits `BuildChange::Start` for `mesh-quj7g8-1.broker.2`, `
 {"service":"rshape-broker","name":"rdm.node.mesh.update.via-joined","attributes":{"mesh":"mesh-quj7g8-1","mesh_id":"6jxatzq1vv58","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","which":"own"}}
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"frame":"node-joined","incarnation_id":"h4471hxp31fq","invocation_id":"n6mkmxhqp7s4/yw9m94ephg4q#348","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.start:mesh-quj7g8-1.broker.2","seq":"1"}}
 {"service":"rshape-broker","name":"rdm.mesh.node.update.via-build-floor","attributes":{"node":"mesh-quj7g8-1.broker.2","owed":"none"}}
-{"service":"rshape-broker","name":"rdm.mesh.node.update.via-ready","attributes":{"fabric_id":"bt828feh1cc6","incarnation_id":"h4471hxp31fq","kind":"broker","mesh_id":"6jxatzq1vv58","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7"}}
+{"service":"rshape-broker","name":"rdm.mesh.node.update.via-ready","attributes":{"fabric_id":"bt828feh1cc6","incarnation_id":"h4471hxp31fq","type":"broker","mesh_id":"6jxatzq1vv58","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7"}}
 {"service":"rshape-broker","name":"rdm.node_admin.status.update.via-command","attributes":{"node":"mesh-quj7g8-1.broker.2","op":"start-node","outcome":"node-started","sender":"mesh-quj7g8-1.admin.1"}}
 {"service":"rshape-node-admin","name":"rdm.mesh.topology.update.from-node-started","attributes":{"incarnation_id":"h4471hxp31fq","node":"mesh-quj7g8-1.admin.1","node_id":"a845t0qjfzw7","prior":"Pending","status":"Ready"}}
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"frame":"node-started","incarnation_id":"h4471hxp31fq","invocation_id":"n6mkmxhqp7s4/yw9m94ephg4q#348","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.start:mesh-quj7g8-1.broker.2","seq":"2"}}
@@ -263,9 +263,9 @@ With `verdict="exited"`, `mesh-quj7g8-1.admin.1` opens a recovery attempt on the
 {"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-reconcile","attributes":{"attempt":"1","build_id":"bid_v9vw-apsq-gpsg","executor":"mesh-quj7g8-1.admin.1","operations":"node.delete:mesh-quj7g8-1.broker.3,node.create:mesh-quj7g8-1.broker.3","outcome":"converged","reason":"recovery"}}
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.delete.via-build","attributes":{"attempt":"1","build_id":"bid_v9vw-apsq-gpsg","incarnation_id":"0t7njf6wzf0q","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t"}}
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.create.via-build","attributes":{"attempt":"1","build_id":"bid_v9vw-apsq-gpsg","incarnation_id":"0t7njf6wzf0q","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t"}}
-{"service":"rshape-broker","name":"rdm.mesh.node.create.via-boot","attributes":{"incarnation_id":"90jswd6qnan2","kind":"broker","node":"mesh-quj7g8-1.broker.3","node_id":"e7gafyzpt3dd"}}
+{"service":"rshape-broker","name":"rdm.mesh.node.create.via-boot","attributes":{"incarnation_id":"90jswd6qnan2","type":"broker","node":"mesh-quj7g8-1.broker.3","node_id":"e7gafyzpt3dd"}}
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-join","attributes":{"admitted_as":"mesh-quj7g8-1.broker.3","incarnation_id":"90jswd6qnan2","node":"mesh-quj7g8-1.broker.3","node_id":"e7gafyzpt3dd","outcome":"installed","served_by":"mesh-quj7g8-1.admin.1"}}
-{"service":"rshape-broker","name":"rdm.mesh.node.update.via-ready","attributes":{"fabric_id":"bt828feh1cc6","incarnation_id":"90jswd6qnan2","kind":"broker","mesh_id":"6jxatzq1vv58","node":"mesh-quj7g8-1.broker.3","node_id":"e7gafyzpt3dd"}}
+{"service":"rshape-broker","name":"rdm.mesh.node.update.via-ready","attributes":{"fabric_id":"bt828feh1cc6","incarnation_id":"90jswd6qnan2","type":"broker","mesh_id":"6jxatzq1vv58","node":"mesh-quj7g8-1.broker.3","node_id":"e7gafyzpt3dd"}}
 ```
 
 ```mermaid

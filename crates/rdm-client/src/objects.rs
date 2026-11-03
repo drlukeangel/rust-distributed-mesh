@@ -166,7 +166,7 @@ impl Nodes {
     ///     let birth = birth_of_line(admin_stdout_line).ok_or("not a birth line")??;
     ///     let peers = Peers::at(&birth).await?;
     ///     let nodes = Nodes::new(peers.carrier_at(birth.name));
-    ///     nodes.get(&Filter::new().eq("kind", ["broker"]).eq("status", ["ready"])).await.map_err(|e| e.to_string())
+    ///     nodes.get(&Filter::new().eq("type", ["broker"]).eq("status", ["ready"])).await.map_err(|e| e.to_string())
     /// }
     /// ```
     pub async fn get(&self, filter: &Filter) -> Result<Vec<NodeView>, CallEnd> {

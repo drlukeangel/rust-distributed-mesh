@@ -20,7 +20,7 @@ use std::process::Command;
 use std::time::Duration;
 
 fn location() -> rdm_core::PathName {
-    rdm_core::PathName::new("mesh1.rpc", "1").unwrap()
+    rdm_core::PathName::new("mesh1.node", "1").unwrap()
 }
 
 fn s(v: &Value) -> String {
@@ -64,7 +64,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     assert_eq!(before["provider"], "container", "{before}");
     let killed = estate.container_of(&location()).await.expect("the rpc node runs in a container labelled with its fabric and node ID");
     assert_eq!(killed.len(), 64, "the immutable container id: {killed}");
-    let survivor = estate.container_of(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await.expect("the other rpc node's container");
+    let survivor = estate.container_of(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await.expect("the other rpc node's container");
 
     // The real kill: SIGKILL to the container's init, from outside every admin.
     estate.fabric_ready();
@@ -74,7 +74,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     // Silent past the staleness floor, proven exited, re-created by the next attempt.
     let floor = rdm_transport::topology::staleness_floor();
     let after = estate
-        .until_node(&location(), "mesh1.rpc.1 re-created ready under a new incarnation", floor + Duration::from_secs(90), |n| {
+        .until_node(&location(), "mesh1.node.1 re-created ready under a new incarnation", floor + Duration::from_secs(90), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             (n["status"] == "ready" && n["node_id"] != before["node_id"] && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
         })
@@ -85,7 +85,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     // The recovery's delete reads the killed container exited (exit 137, SIGKILL) and still terminates
     // it, which removes it (node-recovery.md step 3, Q145): the killed container is gone from the host.
     assert_eq!(docker_state(&killed), "", "the killed container is removed by the recovery's TerminateRuntime");
-    assert_eq!(estate.container_of(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await.as_deref(), Some(survivor.as_str()), "the other node's container was untouched");
+    assert_eq!(estate.container_of(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await.as_deref(), Some(survivor.as_str()), "the other node's container was untouched");
     assert_eq!(after["provider"], "container");
 
     // Evidence: the proof opened the next attempt of the same Build, and that attempt re-created
@@ -108,7 +108,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     let attempt = s(&recovery["attributes"]["attempt"]);
     let deployed = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|sp| {
         let at = &sp["attributes"];
-        s(&at["build_id"]) == build_id && s(&at["attempt"]) == attempt && at["node_path"] == "mesh1.rpc" && at["node_name"] == "1" && at["step"] == "DeployRuntime" && at["outcome"] == "complete"
+        s(&at["build_id"]) == build_id && s(&at["attempt"]) == attempt && at["node_path"] == "mesh1.node" && at["node_name"] == "1" && at["step"] == "DeployRuntime" && at["outcome"] == "complete"
     });
     assert!(deployed, "attempt {attempt} of {build_id} deployed the successor anew");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
@@ -124,7 +124,7 @@ fn gate_dir(tag: &str) -> std::path::PathBuf {
 }
 
 fn give_up_leaves_nothing(tag: &str, exe: &std::path::Path, program: &str) {
-    let node = rdm_core::PathName::new(format!("giveup{tag}{}.admin", std::process::id()), "1").unwrap();
+    let node = rdm_core::PathName::new(format!("giveup{tag}{}.node-admin", std::process::id()), "1").unwrap();
     let dir = gate_dir(tag);
     let t = std::time::Instant::now();
     let e = rdm_test::estate::spawn_admin_in_container_within(Vec::new(), &dir, &dir, &node, exe, &[], Duration::from_secs(3), program).expect_err("the Day-0 container never advertises within 3 s");

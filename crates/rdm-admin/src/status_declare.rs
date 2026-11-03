@@ -38,7 +38,7 @@
 //! Nothing here gates gossip or readiness: the admin's own `Ready` is published by
 //! the topology view as before; the declaration is certainty on top of it.
 
-use crate::model::{IncarnationId, NodeId, NodeKind, PathName};
+use crate::model::{IncarnationId, NodeId, PathName};
 use crate::topology::Topology;
 use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::RpcOutcome;
@@ -283,7 +283,7 @@ impl Declarer {
             .iter()
             .filter(|(key, (_, by, by_birth))| {
                 let now = match key {
-                    Key::OwnState(..) => view.node_type_primary(mesh, NodeKind::NodeAdmin),
+                    Key::OwnState(..) => view.node_type_primary(mesh, "node-admin"),
                     Key::Mesh(..) => view.fabric_primary(),
                 };
                 now.is_some_and(|n| &n.node_id != by || matches!((&n.incarnation_id, by_birth), (Some(now), Some(then)) if now != then))
@@ -332,7 +332,7 @@ impl Declarer {
             let Some(p) = pending.get_mut(&key) else { continue };
             let target = match &p.to {
                 Receiver::FabricPrimary => view.fabric_primary(),
-                Receiver::MeshPrimaryOf(mesh) => view.node_type_primary(mesh, NodeKind::NodeAdmin).or_else(|| self.recovery_executor(me_id, view, mesh)),
+                Receiver::MeshPrimaryOf(mesh) => view.node_type_primary(mesh, "node-admin").or_else(|| self.recovery_executor(me_id, view, mesh)),
             };
             if own && own_held {
                 // Held behind an earlier one: a down op from its mesh-primary still sends it again, once it
@@ -490,7 +490,7 @@ impl Declarer {
     pub(crate) fn withdraw_unowned(&self, me: &PathName, mesh: &str, me_id: &NodeId, view: &Topology) {
         let primary_of = |key: &Key| match key {
             Key::OwnState(..) => None,
-            Key::Mesh(..) => Some(view.node_type_primary(mesh, NodeKind::NodeAdmin)),
+            Key::Mesh(..) => Some(view.node_type_primary(mesh, "node-admin")),
         };
         let lost: Vec<(Key, crate::model::NodeId)> = self
             .requests
@@ -615,7 +615,7 @@ mod tests {
     }
 
     fn node(name: PathName, node_id: NodeId, mesh: &str, primary: bool, fabric_primary: bool) -> Node {
-        let mut n = Node::allocated(name, mesh, rdm_core::NodeKind::NodeAdmin);
+        let mut n = Node::allocated(name, mesh, "node-admin");
         n.node_id = node_id;
         n.status = NodeStatus::Ready;
         n.incarnation_id = Some(IncarnationId::mint());
@@ -625,7 +625,7 @@ mod tests {
     }
 
     fn view(mesh_primary: u8, fabric_primary: u8) -> Topology {
-        let actors = [(1, PathName::new("mesh1.admin", "1").unwrap(), "mesh1"), (2, PathName::new("mesh1.admin", "2").unwrap(), "mesh1"), (3, PathName::new("mesh2.admin", "1").unwrap(), "mesh2")];
+        let actors = [(1, PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1"), (2, PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1"), (3, PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2")];
         Topology {
             fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![
@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn a_former_mesh_primary_withdraws_its_mesh_declaration() {
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let d = Declarer::new();
         owe_all(&d);
         d.withdraw_unowned(&me, "mesh1", &id_of(1), &view(1, 1));
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn a_withdrawn_key_is_owed_afresh_when_the_primary_returns() {
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let d = Declarer::new();
         owe_all(&d);
         d.done.lock().unwrap().insert(Key::Mesh("m1".into(), MeshState::Ready), ("applied".into(), NodeId::mint(), None));
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn a_view_naming_no_primary_withdraws_nothing() {
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let d = Declarer::new();
         owe_all(&d);
         let mut v = view(1, 1);
@@ -688,7 +688,7 @@ mod tests {
 
     #[test]
     fn a_restarted_primary_is_owed_every_declaration_again() {
-        let me: PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
         let d = Declarer::new();
         owe_all(&d);
         let mut v = view(3, 1);
@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     fn a_restart_of_another_admin_re_owes_nothing() {
-        let me: PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
         let d = Declarer::new();
         owe_all(&d);
         let mut v = view(3, 1);
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn a_primary_moved_to_another_node_is_owed_again() {
-        let me: PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
         let d = Declarer::new();
         owe_all(&d);
         let v = view(3, 1);
@@ -831,7 +831,7 @@ mod tests {
 
     /// CONTRACT (node-rpc.md §43, i146 Q44: one Owed call per key, the layer resending it until the
     /// authority answers): a send decided from a `due` read taken before the key's call ended is not made
-    /// once that end finished the key. The gate's `admin_start_declares` red: mesh1.admin.2's
+    /// once that end finished the key. The gate's `admin_start_declares` red: mesh1.node-admin.2's
     /// Ready declared twice 16 ms apart, `applied` then `already-applied`. Must NOT happen: the
     /// stale read sending the answered key again.
     #[test]
@@ -843,7 +843,7 @@ mod tests {
         owe_all(&d);
         let (p, target) = d.due(&me_id, &v, &none).into_iter().find(|(p, _)| p.key == mesh_key()).expect("the Mesh key is owed");
         // The key's call ends answered: its end is recorded, and its in-flight claim released.
-        d.declared(&rdm_core::PathName::new("mesh2.admin", "1").unwrap(), &p, &target, "node-rpc", false, "applied".into(), true, true);
+        d.declared(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), &p, &target, "node-rpc", false, "applied".into(), true, true);
         assert!(!d.still_due(&BTreeMap::new(), &p.key, &Destination::of(&target)), "the read taken before the end sends the answered key again");
     }
 
@@ -875,7 +875,7 @@ mod tests {
     /// the declaration sent to the fabric-primary of another mesh.
     #[test]
     fn a_node_admin_owes_its_own_node_started_to_its_own_mesh_primary() {
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         let v = view(1, 3);
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let none = BTreeSet::new();
@@ -901,7 +901,7 @@ mod tests {
     #[test]
     fn a_node_admins_own_declarations_name_the_operation_that_produced_them() {
         use rdm_core::MemberStatus as M;
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         let me_id = id_of(2);
         let inc = IncarnationId::parse(INC).unwrap();
         let v = view(1, 3);
@@ -941,7 +941,7 @@ mod tests {
     /// happen: an admin deleting its connections whose ConnectionsDeleting no other admin can learn.
     #[test]
     fn a_connections_deleting_node_admin_reports_it_to_its_own_mesh_primary() {
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         let v = view(1, 3);
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
@@ -963,7 +963,7 @@ mod tests {
     /// happen: both calls in flight at once, the mesh-primary applying whichever handler ends first.
     #[tokio::test]
     async fn a_node_admins_own_declarations_go_to_its_mesh_primary_one_in_flight_in_the_order_owed() {
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         let me_id = id_of(2);
         let v = view(1, 3);
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
@@ -1007,13 +1007,13 @@ mod tests {
     /// CONTRACT (states.md "Who sets each state": node Ready is set by "the node's
     /// mesh-primary" from "the node's node.started report, after every start gate"; lifecycles/node-name-update.md:
     /// "a stopped predecessor to or from `<name>-old`", the stopped node reads that name at its next
-    /// start): a node-admin renamed to `mesh1.admin.old.2` while stopped and started again under the
+    /// start): a node-admin renamed to `mesh1.node-admin.old.2` while stopped and started again under the
     /// row's name is the same birth, so once it is ready it owes its node.started to mesh1's primary,
     /// found by the node id it was born with. Must NOT happen: the admin missing from its own view
     /// because its row's name ends `.old`, so it owes nothing and its mesh-primary holds it Pending.
     #[test]
     fn a_node_admin_started_under_a_retained_name_owes_its_node_started_to_its_mesh_primary() {
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         let me_id = id_of(2);
         let mut v = view(1, 3);
         let own = v.nodes.iter_mut().find(|n| n.node_id == me_id).unwrap();
@@ -1031,7 +1031,7 @@ mod tests {
     /// with no topology change, is due at once (the wake that finds it is the declarer's input).
     #[test]
     fn an_obligation_newly_owed_without_a_topology_change_is_due() {
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let v = view(1, 3);
         let d = Declarer::new();
         let ids: BTreeMap<String, String> = [("mesh1".to_string(), MeshId::mint().to_string())].into();
@@ -1090,7 +1090,7 @@ mod tests {
     /// mesh. An admin that is not its mesh's primary owes none: the Mesh declaration is the role's.
     #[test]
     fn a_mesh_primary_whose_own_mesh_row_is_leaving_owes_the_fabric_primary_its_leaving() {
-        let me: PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
         let v = view(1, 1);
         let mesh2 = v.meshes.iter().find(|m| m.name == "mesh2").unwrap().id.clone().unwrap();
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
@@ -1110,7 +1110,7 @@ mod tests {
         owed_from_view(&d, &me, &id_of(3), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, Some(MeshState::Deleting), |_| 7, &v, &ids);
         let keys: Vec<Key> = d.due(&id_of(3), &v, &none).into_iter().map(|(p, _)| p.key).collect();
         assert_eq!(keys, vec![Key::Mesh(mesh2.to_string(), MeshState::Deleting)], "a primary holding Leaving owes no ready declaration");
-        let other: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+        let other: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         let d = Declarer::new();
         owed_from_view(&d, &other, &id_of(2), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, false, Some(MeshState::Deleting), |_| 0, &v, &ids);
         assert_eq!(d.owed(), 0, "an admin that is not its mesh's primary owes no Mesh declaration");
@@ -1118,19 +1118,19 @@ mod tests {
 
     /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): the view holds one row per
     /// path and name (`admin::project_at` keys it by `PathName`), so after a replace of the fabric-primary
-    /// the row at mesh1.admin.1 can be the deleted birth's, live and holding both roles, while the
+    /// the row at mesh1.node-admin.1 can be the deleted birth's, live and holding both roles, while the
     /// re-born admin's own row is absent. The re-born admin decides its roles by the node id it was born
     /// with: it owes no fabric event and no Mesh report, and withdraws the Mesh key it held, because
     /// the role is another birth's. What must NOT happen: the deleted birth's roles read as this
     /// admin's, so it owes the fabric's readiness to every mesh primary as a fabric-primary it is not.
     #[test]
     fn a_re_born_admin_whose_view_names_its_superseded_birth_primary_owes_nothing_as_primary() {
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let mut v = view(1, 1);
         let deleted = v.nodes.iter_mut().find(|n| n.name == me).unwrap();
         deleted.status = NodeStatus::ConnectionsDeleting;
         let deleted = deleted.clone();
-        let mut re_born = node(PathName::new("mesh1.admin", "1").unwrap(), NodeId::mint(), "mesh1", false, false);
+        let mut re_born = node(PathName::new("mesh1.node-admin", "1").unwrap(), NodeId::mint(), "mesh1", false, false);
         re_born.node_id = NodeId::mint();
         assert_ne!(deleted.node_id, re_born.node_id, "a replace mints a new node id");
         assert_eq!(v.fabric_primary().map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds the fabric-primary role in this view");

@@ -27,7 +27,7 @@ pub fn expected_primaries(nodes: &[Value]) -> BTreeMap<NodeType, String> {
     let mut best: BTreeMap<NodeType, String> = BTreeMap::new();
     for n in nodes.iter().filter(|n| n["status"] == "ready") {
         let id = s(&n["node_id"]);
-        let best_id = best.entry((s(&n["mesh"]), s(&n["kind"]))).or_insert_with(|| id.clone());
+        let best_id = best.entry((s(&n["mesh"]), s(&n["type"]))).or_insert_with(|| id.clone());
         if id < *best_id { *best_id = id; }
     }
     best
@@ -37,7 +37,7 @@ pub fn expected_primaries(nodes: &[Value]) -> BTreeMap<NodeType, String> {
 pub fn advertised_primaries(nodes: &[Value]) -> BTreeMap<NodeType, Vec<String>> {
     let mut out: BTreeMap<NodeType, Vec<String>> = BTreeMap::new();
     for n in nodes {
-        let e = out.entry((s(&n["mesh"]), s(&n["kind"]))).or_default();
+        let e = out.entry((s(&n["mesh"]), s(&n["type"]))).or_default();
         if n["is_primary"] == true {
             e.push(s(&n["node_id"]));
         }
@@ -56,13 +56,13 @@ pub fn advertised_fabric_primaries(nodes: &[Value]) -> Vec<String> {
 /// advertised, a node-admin that is also its mesh's primary.
 pub fn primaries_as_expected(nodes: &[Value]) -> Result<(), String> {
     for (c, p) in &advertised_primaries(nodes) {
-        let ready = nodes.iter().any(|n| s(&n["mesh"]) == c.0 && s(&n["kind"]) == c.1 && n["status"] == "ready");
+        let ready = nodes.iter().any(|n| s(&n["mesh"]) == c.0 && s(&n["type"]) == c.1 && n["status"] == "ready");
         if (ready && p.len() != 1) || p.len() > 1 {
             return Err(format!("node type {c:?}: advertised {p:?}, expected exactly one primary"));
         }
     }
     let fp = advertised_fabric_primaries(nodes);
-    let holds_mesh_role = |node_id: &String| nodes.iter().any(|n| &s(&n["node_id"]) == node_id && n["kind"] == "node_admin" && n["is_primary"] == true);
+    let holds_mesh_role = |node_id: &String| nodes.iter().any(|n| &s(&n["node_id"]) == node_id && n["type"] == "node-admin" && n["is_primary"] == true);
     if fp.len() != 1 || !fp.iter().all(holds_mesh_role) {
         return Err(format!("fabric primary: advertised {fp:?}, expected exactly one that is its mesh's primary"));
     }
@@ -99,11 +99,11 @@ mod tests {
         let id = rdm_core::NodeId::mint();
         let incarnation = rdm_core::IncarnationId::mint();
         let original = json!({"node_id": id, "incarnation_id": incarnation,
-            "name": {"path": "mesh1.admin", "name": "north"}, "mesh": "mesh1", "kind": "node_admin",
+            "name": {"path": "mesh1.node-admin", "name": "north"}, "mesh": "mesh1", "type": "node-admin",
             "status": "ready", "is_primary": true, "is_fabric_primary": true});
         let before = vec![original.clone()];
         assert_eq!(advertised_fabric_primaries(&before), vec![id.to_string()]);
-        assert_eq!(expected_primaries(&before).get(&("mesh1".into(), "node_admin".into())), Some(&id.to_string()));
+        assert_eq!(expected_primaries(&before).get(&("mesh1".into(), "node-admin".into())), Some(&id.to_string()));
         let mut renamed = original.clone();
         renamed["name"]["name"] = json!("north-old");
         assert!(primaries_kept(&before, &[renamed.clone()]).is_ok());

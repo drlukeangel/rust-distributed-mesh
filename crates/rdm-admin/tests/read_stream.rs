@@ -16,9 +16,9 @@ use std::sync::Arc;
 
 /// A node row of `mesh` at `ordinal`, its config carrying `note` bytes.
 fn node(mesh: &str, ordinal: usize, note: usize) -> NodeView {
-    let name = serde_json::json!({ "path": format!("{mesh}.rpc"), "name": ordinal.to_string() });
+    let name = serde_json::json!({ "path": format!("{mesh}.node"), "name": ordinal.to_string() });
     let mut n: NodeView = serde_json::from_value(serde_json::json!({
-        "name": name, "kind": "rpc_node", "mesh": mesh, "node_id": NodeId::mint(), "endpoint_id": null,
+        "name": name, "type": "node", "mesh": mesh, "node_id": NodeId::mint(), "endpoint_id": null,
         "incarnation_id": null, "deployment_id": null, "provider": "process", "data_dir": null, "status": "ready",
         "is_primary": false, "is_fabric_primary": false, "admin_api_base": null, "transport_addr": null, "listeners": [],
         "declared": null, "stopped": false, "load": null, "gossip": null, "tags": [], "config": {}, "data_dir_lost": null,
@@ -95,7 +95,7 @@ async fn serve(held: Vec<NodeView>, ending: Ending) -> Served {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation });
+    resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation });
     let client = Arc::new(NodeRpcClient::new(caller.clone(), resolver));
     Served { client, target: NodeTarget::ExactNode(node_id), _router: router, _caller: caller }
 }
@@ -158,7 +158,7 @@ async fn a_cut_stream_a_row_past_the_frame_and_an_unknown_pair_are_failed_reads(
     }
 }
 
-/// `total` connection rows of `mesh1.rpc.1`, alternating `direct` and `proxy`, each carrying `reason`
+/// `total` connection rows of `mesh1.node.1`, alternating `direct` and `proxy`, each carrying `reason`
 /// bytes so the whole list spans several 64 KiB frames.
 fn connection_rows(source: &NodeId, destinations: &[NodeId], carrier: &NodeId, total: usize, reason: usize) -> Vec<ConnectionView> {
     (1..=total)
@@ -227,7 +227,7 @@ async fn serve_connections(node_id: &NodeId, complete: bool, held: Vec<Connectio
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() });
+    resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() });
     let client = Arc::new(NodeRpcClient::new(caller.clone(), resolver));
     let target = NodeTarget::ExactNode(node_id.clone());
     let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };

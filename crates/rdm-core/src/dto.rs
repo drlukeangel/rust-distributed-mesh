@@ -1,7 +1,7 @@
 //! Typed-object and control-plane DTOs (`MeshDesired`, `FabricDesired`, `BuildState`, `StepView`,
 //! `BuildView`, `ClientError`, `Accepted`).
 
-use crate::{BuildId, NodeKind};
+use crate::BuildId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -10,36 +10,20 @@ use std::fmt;
 pub struct MeshDesired {
     /// The mesh's name.
     pub name: String,
-    /// The number of node-admins.
-    pub node_admin: u32,
-    /// The number of rpc nodes.
+    /// The number of nodes of each type, by the type's name; a type not named is at 0.
     #[serde(default)]
-    pub rpc_node: u32,
-    /// The number of brokers.
-    #[serde(default)]
-    pub broker: u32,
-    /// The number of gateways.
-    #[serde(default)]
-    pub gateway: u32,
-    /// The number of compute nodes.
-    #[serde(default)]
-    pub compute: u32,
+    pub counts: std::collections::BTreeMap<String, u32>,
 }
 
 impl MeshDesired {
-    /// A mesh named `name` with `counts` (`NodeKind`, count); every other kind at 0.
-    pub fn of(name: impl Into<String>, counts: impl IntoIterator<Item = (NodeKind, u32)>) -> Self {
-        let mut d = MeshDesired { name: name.into(), node_admin: 0, rpc_node: 0, broker: 0, gateway: 0, compute: 0 };
-        for (k, n) in counts {
-            match k {
-                NodeKind::NodeAdmin => d.node_admin = n,
-                NodeKind::RpcNode => d.rpc_node = n,
-                NodeKind::Broker => d.broker = n,
-                NodeKind::Gateway => d.gateway = n,
-                NodeKind::Compute => d.compute = n,
-            }
-        }
-        d
+    /// A mesh named `name` with `counts` (type, count); every other type at 0.
+    pub fn of<T: Into<String>>(name: impl Into<String>, counts: impl IntoIterator<Item = (T, u32)>) -> Self {
+        Self { name: name.into(), counts: counts.into_iter().map(|(t, n)| (t.into(), n)).collect() }
+    }
+
+    /// The desired count of `type`.
+    pub fn count(&self, r#type: &str) -> u32 {
+        self.counts.get(r#type).copied().unwrap_or(0)
     }
 }
 

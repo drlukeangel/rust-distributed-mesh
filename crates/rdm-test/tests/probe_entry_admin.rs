@@ -40,8 +40,8 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::RpcNode,
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            r#type: "node".into(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -66,8 +66,8 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
         let admin = admin_view::serve(vec![
-            node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &launch.node_id, Some(key.public().to_string()), Some(addr), Some(launch.incarnation.clone())),
-            node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &NodeId::mint(), None, None, None),
+            node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &launch.node_id, Some(key.public().to_string()), Some(addr), Some(launch.incarnation.clone())),
+            node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &NodeId::mint(), None, None, None),
         ])
         .await;
         (admin, launch.node_id.to_string(), router)

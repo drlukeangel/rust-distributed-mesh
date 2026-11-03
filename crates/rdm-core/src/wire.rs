@@ -33,7 +33,7 @@ struct WireRuntime {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct WireNode {
     mesh: String,
-    kind: crate::NodeKind,
+    r#type: String,
     node_id: NodeId,
     name: PathName,
     endpoint_id: EndpointId,
@@ -79,7 +79,8 @@ impl From<&MeshDigest> for WireDigest {
             fabric_id: d.fabric_id.clone(),
             node: WireNode {
                 mesh: n.mesh.clone(),
-                kind: n.kind,                node_id: n.node_id.clone(),
+                r#type: n.r#type.clone(),
+                node_id: n.node_id.clone(),
                 name: n.name.clone(),
                 endpoint_id: n.endpoint_id.clone(),
                 transport_addr: n.transport_addr,
@@ -120,7 +121,7 @@ impl From<WireDigest> for MeshDigest {
         });
         MeshDigest {
             fabric_id: w.fabric_id,
-            node: MeshNode { mesh: n.mesh, kind: n.kind,
+            node: MeshNode { mesh: n.mesh, r#type: n.r#type.clone(),
                 node_id: n.node_id,
                 name: n.name,
                 endpoint_id: n.endpoint_id,

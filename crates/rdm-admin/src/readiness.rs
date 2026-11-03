@@ -32,10 +32,10 @@ pub(crate) fn mesh_not_ready(desired: &MeshDesired, observed: &Topology) -> Vec<
         why.push(format!("mesh {} does not exist", desired.name));
         return why;
     }
-    for (kind, want) in desired.counts() {
-        let ready = observed.nodes_of_type(&desired.name, kind).filter(|n| n.status == NodeStatus::Ready).count() as u32;
+    for (r#type, want) in desired.counts() {
+        let ready = observed.nodes_of_type(&desired.name, &r#type).filter(|n| n.status == NodeStatus::Ready).count() as u32;
         if ready < want {
-            why.push(format!("mesh {}: {ready}/{want} {} ready", desired.name, kind.segment()));
+            why.push(format!("mesh {}: {ready}/{want} {} ready", desired.name, r#type));
         }
     }
     why
@@ -59,15 +59,15 @@ mod tests {
     fn desired(meshes: &[&str]) -> FabricDesired {
         FabricDesired {
             fabric: "fabric1".into(),
-            meshes: meshes.iter().map(|m| MeshDesired::of((*m).to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)])).collect(),
+            meshes: meshes.iter().map(|m| MeshDesired::of((*m).to_string(), [("node-admin", 2), ("node", 3)])).collect(),
         }
     }
 
     fn mesh_nodes(m: &str, status: NodeStatus) -> Vec<Node> {
         let mut v = Vec::new();
-        for (kind, n) in [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)] {
+        for (r#type, n) in [("node-admin", 2), ("node", 3)] {
             for i in 1..=n {
-                let mut node = Node::allocated(rdm_core::PathName::numbered(m, kind, i), m, kind);
+                let mut node = Node::allocated(rdm_core::PathName::numbered(m, r#type, i), m, r#type);
                 node.status = status;
                 v.push(node);
             }
@@ -96,7 +96,7 @@ mod tests {
             Err("mesh mesh2 does not exist".into())
         );
         let mut t = observed(&[("mesh1", NodeStatus::Ready), ("mesh2", NodeStatus::Ready)]);
-        t.nodes.last_mut().unwrap().status = NodeStatus::Pending; // mesh2.rpc.3
+        t.nodes.last_mut().unwrap().status = NodeStatus::Pending; // mesh2.node.3
         assert_eq!(fabric_ready_eligibility(&d, &t), Err("mesh mesh2: 2/3 rpc ready".into()));
         t.nodes.last_mut().unwrap().status = NodeStatus::Ready;
         assert_eq!(fabric_ready_eligibility(&d, &t), Ok(()));

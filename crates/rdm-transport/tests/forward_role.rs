@@ -20,9 +20,9 @@ fn fabric() -> FabricId {
 fn member(ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq: u64, status: MemberStatus) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: "mesh2".into(), kind: rdm_core::NodeKind::RpcNode,
+        node: MeshNode { mesh: "mesh2".into(), r#type: "node".into(),
             node_id: node_id.clone(),
-            name: rdm_core::PathName::new("mesh2.rpc", ordinal.to_string()).unwrap(),
+            name: rdm_core::PathName::new("mesh2.node", ordinal.to_string()).unwrap(),
             endpoint_id: EndpointId(format!("key{ordinal}")),
             transport_addr: format!("127.0.0.1:{}", 41_000 + ordinal).parse().unwrap(),
             incarnation: birth.clone(),
@@ -70,8 +70,8 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
     let dir = crate::evidence_dir();
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-forward-role").expect("the cell's evidence file can be created");
     capture.run(4, async {
-        // mesh2's primary publishes on the backbone; mesh1.admin.2 (no role) hears it there; mesh1.rpc.1
-        // is on mesh1's channel through mesh1.admin.2 alone.
+        // mesh2's primary publishes on the backbone; mesh1.node-admin.2 (no role) hears it there; mesh1.node.1
+        // is on mesh1's channel through mesh1.node-admin.2 alone.
         let (src, admin, rpc) = (node().await, node().await, node().await);
         let (src_addr, admin_addr) = (addr_of(&src.ep), addr_of(&admin.ep));
         learn_addresses(&admin.ep, &[src_addr.clone()]).unwrap();
@@ -79,13 +79,13 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         let fab = fabric();
         let (mesh1, mesh2) = (MeshId::mint(), MeshId::mint());
         let clock = rdm_transport::clock::os_clock;
-        let src_m = TopologyView::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.admin.1", clock(), vec![], &[]).await.unwrap();
-        let admin_m = TopologyView::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.admin.2", clock(), vec![], &[]).await.unwrap();
-        let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.rpc.1", clock(), vec![admin_addr.clone()], &[]).await.unwrap();
+        let src_m = TopologyView::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.node-admin.1", clock(), vec![], &[]).await.unwrap();
+        let admin_m = TopologyView::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.node-admin.2", clock(), vec![], &[]).await.unwrap();
+        let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.node.1", clock(), vec![admin_addr.clone()], &[]).await.unwrap();
         let src_bb = Backbone::join(&src.gossip, &src.ep, &src_m, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let admin_bb = Backbone::join(&admin.gossip, &admin.ep, &admin_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
         src_bb.set_mesh_primary(true);
-        assert!(!admin_bb.is_mesh_primary(), "mesh1.admin.2 holds no role");
+        assert!(!admin_bb.is_mesh_primary(), "mesh1.node-admin.2 holds no role");
         rpc_m.wait_for_neighbour().await;
 
         let ids: Vec<(NodeId, IncarnationId)> = (0..3).map(|_| (NodeId::mint(), IncarnationId::mint())).collect();
@@ -102,7 +102,7 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
             if let Some((_, v)) = admin_bb.held_source("mesh2") {
                 break v;
             }
-            assert!(std::time::Instant::now() < deadline, "mesh1.admin.2 never held mesh2 from the backbone");
+            assert!(std::time::Instant::now() < deadline, "mesh1.node-admin.2 never held mesh2 from the backbone");
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         let v2 = loop {
@@ -111,7 +111,7 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
             if let Some((_, v)) = admin_bb.held_source("mesh2").filter(|(_, v)| *v > v1) {
                 break v;
             }
-            assert!(std::time::Instant::now() < deadline, "mesh1.admin.2 never held mesh2's next version");
+            assert!(std::time::Instant::now() < deadline, "mesh1.node-admin.2 never held mesh2's next version");
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         // Its own publications publish nothing (no role), and its mesh holds nothing of mesh2.
@@ -130,7 +130,7 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
             if let Some((_, v)) = rpc_m.held_source_version("mesh2") {
                 break v;
             }
-            assert!(std::time::Instant::now() < deadline, "the member never installed mesh2 once mesh1.admin.2 held the role");
+            assert!(std::time::Instant::now() < deadline, "the member never installed mesh2 once mesh1.node-admin.2 held the role");
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         assert_eq!(installed, v2);
@@ -139,12 +139,12 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
             n.ep.close().await;
         }
         let all = capture.spans().expect("the cell's spans reached its evidence file");
-        let role: Vec<&Value> = all.iter().filter(|s| s["name"] == "rdm.mesh.backbone.update.via-forwarder" && attr(s, "node") == "mesh1.admin.2" && attr(s, "role") == "start").collect();
+        let role: Vec<&Value> = all.iter().filter(|s| s["name"] == "rdm.mesh.backbone.update.via-forwarder" && attr(s, "node") == "mesh1.node-admin.2" && attr(s, "role") == "start").collect();
         assert_eq!(role.len(), 1, "the forwarder role started once, when the role was given");
         let started = role[0]["start_unix_nano"].as_u64().unwrap();
         let forwards: Vec<(u64, String)> = all
             .iter()
-            .filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.topology.update.via-forwarded-")) && attr(s, "node") == "mesh1.admin.2")
+            .filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.topology.update.via-forwarded-")) && attr(s, "node") == "mesh1.node-admin.2")
             .map(|s| (s["start_unix_nano"].as_u64().unwrap(), s["name"].as_str().unwrap().to_string()))
             .collect();
         assert!(!forwards.is_empty(), "the mesh-primary forwarded");

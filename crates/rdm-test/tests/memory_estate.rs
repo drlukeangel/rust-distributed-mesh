@@ -131,8 +131,8 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 /// step spanned `writes_to = "memory"`; `node.create` of two rpc nodes in mesh1 completes and lists
 /// them ready; once the fabric has first reached ready, `node.stop` of the
 /// first stops it (its node-type primary role moving to the second) and `node.start` brings it back; before
-/// that, a Reconcile changing mesh1.rpc.1's config alone completes and its `UpdateConfig` step of
-/// mesh1.rpc.1 ends complete, on the node's durable apply (build.md §1, "The Build applies the diff";
+/// that, a Reconcile changing mesh1.node.1's config alone completes and its `UpdateConfig` step of
+/// mesh1.node.1 ends complete, on the node's durable apply (build.md §1, "The Build applies the diff";
 /// storage.md §2: the node's record is in its own process, so node.get does not read it); `build.get [id]` of the
 /// create's Build answers it Complete with its step receipts. Through all of it the admin
 /// writes nothing of its own to disk:
@@ -164,14 +164,14 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         })
         .await
         .expect("the admin's view never held it ready in both roles");
-        let admin = ResolvedNode { mesh: me.node.mesh.clone(), kind: me.node.kind, node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
+        let admin = ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type, node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller's endpoint binds");
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(admin);
         let client = Arc::new(NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm"));
         let carrier = BuildCarrier::at_node(client, me.node.node_id.clone());
         let (nodes, builds, fabrics) = (Nodes::new(carrier.clone()), Builds::new(carrier.clone()), Fabrics::new(carrier.clone()));
-        let node = PathName::new("mesh1.rpc", "1").unwrap();
+        let node = PathName::new("mesh1.node", "1").unwrap();
         // The admin started its Day-0 Build by starting: it is followed to its end before anything is
         // submitted, as an estate's is.
         let day_zero = rdm_test::typed::the_fabric(&fabrics).await.unwrap_or_else(|e| panic!("fabric.get: {e}")).build_id.expect("the Day-0 admin holds its Day-0 Build as the current one");
@@ -185,13 +185,13 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         // secondary of its type.
         let current = Current::read(&carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
         let mut two_more = current.counts_of("mesh1");
-        two_more.rpc_node += 2;
+        *two_more.counts.entry("node".into()).or_insert(0) += 2;
         let request = current.resized(&[two_more], false, &executables);
         let created = Estate::workflow("node.create of two rpc nodes in mesh1", nodes.create_named(current.based_on, request).await).await;
         until_status(&nodes, &node, NodeStatus::Ready).await;
-        until_status(&nodes, &rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), NodeStatus::Ready).await;
+        until_status(&nodes, &rdm_core::PathName::new("mesh1.node", "2").unwrap(), NodeStatus::Ready).await;
         until_fabric_ready(&fabrics).await;
-        // A Reconcile that changes mesh1.rpc.1's config alone: the Build's `node.config.update` reads the
+        // A Reconcile that changes mesh1.node.1's config alone: the Build's `node.config.update` reads the
         // entry in the accepted Build the admin's own log holds, and the node carries it.
         let zone: std::collections::BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
         let current = Current::read(&carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
@@ -205,8 +205,8 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         Estate::until_complete(&mut stream).await;
         // Its UpdateConfig step is read from the admin's spans once they are flushed (below).
         let config_build = stream.build_id().log().to_string();
-        Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;
-        Estate::workflow("node.start of mesh1.rpc.1", nodes.start(&node).await).await;
+        Estate::workflow("node.stop of mesh1.node.1", nodes.stop(&node).await).await;
+        Estate::workflow("node.start of mesh1.node.1", nodes.start(&node).await).await;
         until_status(&nodes, &node, NodeStatus::Ready).await;
         let receipts = carrier.build(&created.build_id).await.unwrap_or_else(|e| panic!("build.get [id] of the create's Build {}: {e}", created.build_id));
         assert_eq!(receipts.phase, BuildPhase::Complete, "the create's Build is Complete: {receipts:#?}");
@@ -233,10 +233,10 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
     assert_eq!(opened.len(), 1, "one storage step of this admin's boot: {opened:?}");
     assert_eq!(opened[0]["attributes"]["writes_to"].as_str(), Some("memory"), "the admin's boundaries are the memory backend's: {}", opened[0]);
     eprintln!("span rdm.mesh.node.resolve.via-storage-opened trace_id={} writes_to=memory; spans: {}", opened[0]["trace_id"], artifacts.display());
-    // The Reconcile's UpdateConfig step of mesh1.rpc.1 ends complete only once the node answered Applied,
+    // The Reconcile's UpdateConfig step of mesh1.node.1 ends complete only once the node answered Applied,
     // which it does only after its property write is durable (`NodeConfigs::apply_entry`; the node's
     // ApplyNodeProperties): the node's record is in its own process (storage.md §2), not node.get's.
-    let rpc = PathName::new("mesh1.rpc", "1").unwrap();
+    let rpc = PathName::new("mesh1.node", "1").unwrap();
     let applied: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
         .filter(|sp| {

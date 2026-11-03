@@ -44,7 +44,7 @@ impl crate::build_drive::Gate for RoleGate {
             // A mesh-primary, commanded directly; any other type's primary, commanded through its
             // mesh-primary (this admin itself when it is that mesh-primary).
             if m.mesh_role || m.node_type_role {
-                let role = if m.node_type_role { PrimaryRole::NodeTypePrimary(m.primary.kind) } else { PrimaryRole::MeshPrimary };
+                let role = if m.node_type_role { PrimaryRole::NodePrimary(m.primary.r#type.clone()) } else { PrimaryRole::MeshPrimary };
                 let update = update_operation(role, operation);
                 door.command_update_primary(&m.primary, build_id.as_str(), run, &update).await?;
             }
@@ -89,7 +89,7 @@ impl crate::build_drive::Gate for RoleGate {
 
     async fn atlas_birth(&self, node_id: &rdm_core::NodeId, observed: &crate::topology::Topology) -> Result<Option<crate::accepted::AtlasBirth>, String> {
         let row = self.control.atlas_row_id(node_id, observed).await.map_err(|r| format!("{}: {r:?}", self.handover.node_id))?;
-        let birth = row.filter(|r| r.status != crate::model::NodeStatus::Deleted).and_then(|r| r.incarnation.map(|incarnation| crate::build::PinnedBirth { kind: r.kind, mesh: r.mesh.clone(), node_id: r.node_id, incarnation }));
+        let birth = row.filter(|r| r.status != crate::model::NodeStatus::Deleted).and_then(|r| r.incarnation.map(|incarnation| crate::build::PinnedBirth { r#type: r.r#type.clone(), mesh: r.mesh.clone(), node_id: r.node_id, incarnation }));
         Ok(Some(crate::accepted::AtlasBirth(birth)))
     }
 
@@ -513,7 +513,7 @@ pub async fn reconcile_drift(
         // proves is the one that was asked for.
         // The stop's `Complete` is that birth's when its attempt carried the stop targeted to it.
         let operation = rdm_core::OperationId::node("node.stop", &n.node_id);
-        let stop = n.incarnation_id.clone().map(|from_incarnation| crate::accepted::AttemptAction::Stop { kind: n.kind, mesh: n.mesh.clone(), path: n.name.clone(), node_id: n.node_id.clone(), from_incarnation });
+        let stop = n.incarnation_id.clone().map(|from_incarnation| crate::accepted::AttemptAction::Stop { r#type: n.r#type.clone(), mesh: n.mesh.clone(), path: n.name.clone(), node_id: n.node_id.clone(), from_incarnation });
         if stop.as_ref().is_some_and(|stop| current.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && current.carried(s.attempt, stop))) {
             let key = (current.build_id.clone(), DriftMemo::Stopped { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone() });
             if started.insert(key) {
@@ -529,7 +529,7 @@ pub async fn reconcile_drift(
         // An ordinary member is recovered by its own mesh-primary (node-recovery.md: "The
         // mesh-primary is the reconciler for its own members"), never restarted or replaced from
         // here; only a held mesh's ordinary birth is still inspected, as evidence (R-D1).
-        if n.kind != NodeKind::NodeAdmin && unheard_ms.is_none() {
+        if !rdm_core::is_node_admin(&n.r#type) && unheard_ms.is_none() {
             continue;
         }
         // A node-admin a view holds is never recovered here (Q335: one recovery): an unheard mesh-primary
@@ -538,7 +538,7 @@ pub async fn reconcile_drift(
         // members"); so is a node-admin only the durable runtime rows name in a mesh with a live
         // mesh-primary. What stays here is a node-admin only the durable runtime rows name (`durable_births`)
         // in a mesh with no live mesh-primary to recover it.
-        if n.kind == NodeKind::NodeAdmin && unheard_ms.is_none() && (held_view.members().any(|m| m.node_id == n.node_id) || crate::executor::node_admin_recoverer(&n.name, &n.mesh, t).is_some()) {
+        if rdm_core::is_node_admin(&n.r#type) && unheard_ms.is_none() && (held_view.members().any(|m| m.node_id == n.node_id) || crate::executor::node_admin_recoverer(&n.name, &n.mesh, t).is_some()) {
             continue;
         }
         let held_row = digest_view.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
@@ -599,7 +599,7 @@ pub async fn reconcile_drift(
                     _ => false,
                 };
                 subject_matches && st.output.as_ref().and_then(|value| serde_json::from_value::<rdm_core::LifecycleOp>(value.clone()).ok()).is_some_and(|op| {
-                    op.mesh == n.mesh && op.kind == n.kind && crate::build_state::validate_carried_lifecycle(&current, st, &op, (&n.node_id, incarnation)).is_some()
+                    op.mesh == n.mesh && op.r#type == n.r#type && crate::build_state::validate_carried_lifecycle(&current, st, &op, (&n.node_id, incarnation)).is_some()
                 })
             })
         })
@@ -613,7 +613,7 @@ pub async fn reconcile_drift(
     // The create of a node-admin into a live mesh is a single step on the existing carrier
     // (`BuildChange::Steps`; no new wire variant): the node the create names pins the birth the view
     // holds there, so a later loss of the same path is a different action.
-    let create_of = |admin: &PathName| crate::accepted::steps_action(vec![rdm_core::build::Step::Create { mesh: current.topology.node_spec(admin).expect("the selected admin is an accepted entry").mesh.clone(), kind: NodeKind::NodeAdmin, node: admin.clone(), executable: None }], t);
+    let create_of = |admin: &PathName| crate::accepted::steps_action(vec![rdm_core::build::Step::Create { mesh: current.topology.node_spec(admin).expect("the selected admin is an accepted entry").mesh.clone(), r#type: "node-admin".into(), node: admin.clone(), executable: None }], t);
     let (key, scope, action) = {
         match first_exited {
             Some((path, birth)) => {
@@ -867,11 +867,11 @@ mod tests {
     use rdm_core::status::MeshState;
     use rdm_core::{DeploymentId, RuntimeFact};
 
-    fn sample_digest(fabric_id: FabricId, mesh_id: MeshId, name: &PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &NodeId, incarnation: &IncarnationId) -> MeshDigest {
+    fn sample_digest(fabric_id: FabricId, mesh_id: MeshId, name: &PathName, mesh: &str, r#type: &str, node_id: &NodeId, incarnation: &IncarnationId) -> MeshDigest {
         MeshDigest {
             held_hash: [0u8; 32],
             fabric_id,
-            node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
                 node_id: node_id.clone(),
                 name: name.clone(),
                 endpoint_id: EndpointId("e".repeat(64)),
@@ -905,7 +905,7 @@ mod tests {
 
         let lost_id = NodeId::mint();
         let lost_inc = IncarnationId::mint();
-        let lost_path: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let lost_path: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let hb = HandoverBirth {
             mesh: "mesh1".to_string(),
             node_id: lost_id.clone(),
@@ -914,14 +914,14 @@ mod tests {
 
         // 1. `lost_birth_name` returns None when unknown, and resolves the birth's `(path, name)` once present in `DigestView`.
         assert_eq!(lost_birth_name(&dv, &hb), None);
-        dv.record(sample_digest(fabric_id.clone(), mesh1_id.clone(), &lost_path, "mesh1", rdm_core::NodeKind::NodeAdmin, &lost_id, &lost_inc));
+        dv.record(sample_digest(fabric_id.clone(), mesh1_id.clone(), &lost_path, "mesh1", "node-admin", &lost_id, &lost_inc));
         assert_eq!(lost_birth_name(&dv, &hb), Some(lost_path.clone()));
 
-        let m2_admin1: PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
+        let m2_admin1: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
         let build_id = BuildId::mint();
 
         // 2. `drift_inputs` formats repair and surplus deterministically and counts only `Complete` steps.
-        let mut n2 = Node::allocated(m2_admin1.clone(), "mesh2", rdm_core::NodeKind::NodeAdmin);
+        let mut n2 = Node::allocated(m2_admin1.clone(), "mesh2", "node-admin");
         n2.incarnation_id = Some(IncarnationId::mint());
         n2.status = NodeStatus::Ready;
         let step_complete = BuildStepReceipt {
@@ -949,14 +949,14 @@ mod tests {
     /// "as the mesh's successor primary it adopts the mesh's held state"
     #[tokio::test]
     async fn for_pass_take_entry_control_and_node_admin_not_ready_held_track_tenure_and_entry_floor() {
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let mesh_id = MeshId::mint();
         let fabric_id = FabricId::mint();
 
         // 1. `FabricTenureRows::for_pass` reads runtime rows once when `fabric_primary` is true and clears them when false.
         let nodes = MemoryNodesStorage::default();
         let dep_id = DeploymentId::mint();
-        let row = RuntimeRow { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(),
+        let row = RuntimeRow { r#type: "node-admin".into(), mesh: "mesh1".into(),
             name: me.clone(),
             node_id: NodeId::mint(),
             incarnation_id: IncarnationId::mint(),
@@ -999,7 +999,7 @@ mod tests {
             statuses: vec![rdm_transport::topology::Frame::MeshStatus {
                 mesh: "mesh1".to_string(),
                 status: "ready".to_string(),
-                publisher: "mesh1.admin.2".to_string(),
+                publisher: "mesh1.node-admin.2".to_string(),
                 forwarded_by: None,
                 changed_at_rafka_ms: 4_000,
             }],

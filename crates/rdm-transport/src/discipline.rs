@@ -119,10 +119,10 @@ mod tests {
 
     const MESH: &str = "mesh1";
 
-    fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &NodeId, incarnation: &IncarnationId, status: MemberStatus, at: u64) -> MeshDigest {
+    fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, node_id: &NodeId, incarnation: &IncarnationId, status: MemberStatus, at: u64) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
                 node_id: node_id.clone(),
                 name: name,
                 endpoint_id: EndpointId("key".into()),
@@ -156,8 +156,8 @@ mod tests {
     fn a_member_takes_its_mesh_primarys_ready_digest() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let primaries = with_primary(PrimaryRole::MeshPrimary, MESH, &id, &inc, 1);
-        let d = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &id, &inc, MemberStatus::Ready, 7_000);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &primaries, &d, true), Verdict::Sample { primary: id.to_string(), stamp_ms: 7_000 });
+        let d = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, MemberStatus::Ready, 7_000);
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.node.1", false, &primaries, &d, true), Verdict::Sample { primary: id.to_string(), stamp_ms: 7_000 });
     }
 
     /// CONTRACT: a publisher that has not declared itself ready (pre-adoption) offers no sample.
@@ -166,8 +166,8 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let primaries = with_primary(PrimaryRole::MeshPrimary, MESH, &id, &inc, 1);
         for status in [MemberStatus::Pending, MemberStatus::ConnectionsDeleting, MemberStatus::Leaving] {
-            let d = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &id, &inc, status, 7_000);
-            assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &primaries, &d, true), Verdict::Refused { primary: id.to_string(), reason: "authority-not-ready" }, "{status:?}");
+            let d = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, status, 7_000);
+            assert_eq!(from_mesh_primary_digest(MESH, "mesh1.node.1", false, &primaries, &d, true), Verdict::Refused { primary: id.to_string(), reason: "authority-not-ready" }, "{status:?}");
         }
     }
 
@@ -176,8 +176,8 @@ mod tests {
     fn a_digest_the_view_did_not_admit_offers_no_sample() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let primaries = with_primary(PrimaryRole::MeshPrimary, MESH, &id, &inc, 1);
-        let d = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &id, &inc, MemberStatus::Ready, 7_000);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &primaries, &d, false), Verdict::Refused { primary: id.to_string(), reason: "digest-not-newer" });
+        let d = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, MemberStatus::Ready, 7_000);
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.node.1", false, &primaries, &d, false), Verdict::Refused { primary: id.to_string(), reason: "digest-not-newer" });
     }
 
     /// CONTRACT: only the primary's exact birth is the authority: another member, another
@@ -186,20 +186,20 @@ mod tests {
     fn only_the_exact_birth_recorded_as_mesh_primary_offers_a_sample() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let primaries = with_primary(PrimaryRole::MeshPrimary, MESH, &id, &inc, 1);
-        let other_member = digest(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &NodeId::mint(), &IncarnationId::mint(), MemberStatus::Ready, 7_000);
-        let older_birth = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &id, &IncarnationId::mint(), MemberStatus::Ready, 7_000);
-        let other_mesh = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &id, &inc, MemberStatus::Ready, 7_000);
+        let other_member = digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &NodeId::mint(), &IncarnationId::mint(), MemberStatus::Ready, 7_000);
+        let older_birth = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &IncarnationId::mint(), MemberStatus::Ready, 7_000);
+        let other_mesh = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &id, &inc, MemberStatus::Ready, 7_000);
         for d in [&other_member, &older_birth, &other_mesh] {
-            assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &primaries, d, true), Verdict::NotThePrimary, "{:?}", d.node.name);
+            assert_eq!(from_mesh_primary_digest(MESH, "mesh1.node.1", false, &primaries, d, true), Verdict::NotThePrimary, "{:?}", d.node.name);
         }
-        let d = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &id, &inc, MemberStatus::Ready, 7_000);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &PrimaryView::default(), &d, true), Verdict::NotThePrimary, "no primary record");
+        let d = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, MemberStatus::Ready, 7_000);
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.node.1", false, &PrimaryView::default(), &d, true), Verdict::NotThePrimary, "no primary record");
         // The authority retargets with the primary record: the superseded primary offers nothing.
         let (id2, inc2) = (NodeId::mint(), IncarnationId::mint());
         primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: MESH.into(), node_id: id2.clone(), incarnation: inc2.clone(), revision: 2 });
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &primaries, &d, true), Verdict::NotThePrimary);
-        let heir = digest(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &id2, &inc2, MemberStatus::Ready, 9_000);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &primaries, &heir, true), Verdict::Sample { primary: id2.to_string(), stamp_ms: 9_000 });
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.node.1", false, &primaries, &d, true), Verdict::NotThePrimary);
+        let heir = digest(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", &id2, &inc2, MemberStatus::Ready, 9_000);
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.node.1", false, &primaries, &heir, true), Verdict::Sample { primary: id2.to_string(), stamp_ms: 9_000 });
     }
 
     /// CONTRACT: a mesh primary takes no mesh-channel digest (it observes the backbone), and a node
@@ -208,8 +208,8 @@ mod tests {
     fn a_mesh_primary_and_a_node_itself_take_no_mesh_channel_digest() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let primaries = with_primary(PrimaryRole::MeshPrimary, MESH, &id, &inc, 1);
-        let d = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &id, &inc, MemberStatus::Ready, 7_000);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.admin.2", true, &primaries, &d, true), Verdict::NotThePrimary);
+        let d = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, MemberStatus::Ready, 7_000);
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.node-admin.2", true, &primaries, &d, true), Verdict::NotThePrimary);
         assert_eq!(from_mesh_primary_digest(MESH, id.as_str(), false, &primaries, &d, true), Verdict::NotThePrimary, "a node never takes its own digest");
     }
 
@@ -223,13 +223,13 @@ mod tests {
     fn a_mesh_primary_takes_the_fabric_primarys_aggregate_stamp() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let primaries = with_primary(PrimaryRole::FabricPrimary, "mesh2", &id, &inc, 3);
-        let auth = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &id, &inc, MemberStatus::Ready, 1);
-        let p = publisher("mesh2.admin.1", &id, &inc);
-        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &primaries, &p, Some(&auth), 12_000), Verdict::Sample { primary: id.to_string(), stamp_ms: 12_000 });
+        let auth = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &id, &inc, MemberStatus::Ready, 1);
+        let p = publisher("mesh2.node-admin.1", &id, &inc);
+        assert_eq!(from_fabric_primary_members("mesh1.node-admin.1", true, &primaries, &p, Some(&auth), 12_000), Verdict::Sample { primary: id.to_string(), stamp_ms: 12_000 });
         // Pre-adoption fabric-primary: still pending in its own mesh topology.
-        let pending = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &id, &inc, MemberStatus::Pending, 1);
-        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &primaries, &p, Some(&pending), 12_000), Verdict::Refused { primary: id.to_string(), reason: "authority-not-ready" });
-        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &primaries, &p, None, 12_000), Verdict::Refused { primary: id.to_string(), reason: "authority-not-in-its-aggregate" });
+        let pending = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &id, &inc, MemberStatus::Pending, 1);
+        assert_eq!(from_fabric_primary_members("mesh1.node-admin.1", true, &primaries, &p, Some(&pending), 12_000), Verdict::Refused { primary: id.to_string(), reason: "authority-not-ready" });
+        assert_eq!(from_fabric_primary_members("mesh1.node-admin.1", true, &primaries, &p, None, 12_000), Verdict::Refused { primary: id.to_string(), reason: "authority-not-in-its-aggregate" });
     }
 
     /// CONTRACT: the fabric-primary never adjusts from a follower, and a mesh primary takes no
@@ -238,19 +238,19 @@ mod tests {
     fn only_the_current_fabric_primary_is_observed_and_only_by_a_mesh_primary() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let primaries = with_primary(PrimaryRole::FabricPrimary, "mesh2", &id, &inc, 3);
-        let auth = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &id, &inc, MemberStatus::Ready, 1);
+        let auth = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &id, &inc, MemberStatus::Ready, 1);
         let other_inc = IncarnationId::mint();
-        let other = publisher("mesh3.admin.1", &NodeId::mint(), &other_inc);
-        let other_digest = digest(rdm_core::PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, &NodeId::mint(), &other_inc, MemberStatus::Ready, 1);
+        let other = publisher("mesh3.node-admin.1", &NodeId::mint(), &other_inc);
+        let other_digest = digest(rdm_core::PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", &NodeId::mint(), &other_inc, MemberStatus::Ready, 1);
         // A follower mesh primary's mesh topology.
-        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &primaries, &other, Some(&other_digest), 5), Verdict::NotThePrimary);
+        assert_eq!(from_fabric_primary_members("mesh1.node-admin.1", true, &primaries, &other, Some(&other_digest), 5), Verdict::NotThePrimary);
         // The fabric-primary itself, and a node that is not a mesh primary.
-        let p = publisher("mesh2.admin.1", &id, &inc);
+        let p = publisher("mesh2.node-admin.1", &id, &inc);
         assert_eq!(from_fabric_primary_members(id.as_str(), true, &primaries, &p, Some(&auth), 5), Verdict::NotThePrimary);
-        assert_eq!(from_fabric_primary_members("mesh1.admin.2", false, &primaries, &p, Some(&auth), 5), Verdict::NotThePrimary);
+        assert_eq!(from_fabric_primary_members("mesh1.node-admin.2", false, &primaries, &p, Some(&auth), 5), Verdict::NotThePrimary);
         // A superseded fabric-primary's mesh topology once the role moved.
         let (id2, inc2) = (NodeId::mint(), IncarnationId::mint());
         primaries.take(PrimaryRole::FabricPrimary, &Primary { mesh: "mesh3".into(), node_id: id2, incarnation: inc2, revision: 4 });
-        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &primaries, &p, Some(&auth), 5), Verdict::NotThePrimary);
+        assert_eq!(from_fabric_primary_members("mesh1.node-admin.1", true, &primaries, &p, Some(&auth), 5), Verdict::NotThePrimary);
     }
 }

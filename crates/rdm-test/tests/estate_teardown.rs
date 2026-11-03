@@ -37,7 +37,7 @@ fn holds_fabric_identity_row(store_root: &Path) -> bool {
 /// CONTRACT: the node-admin an estate restarted on its own data dir is the estate's process like the
 /// bootstrap admin; dropping the estate (as a panicking cell does) stops it and whatever it launched,
 /// at once, not when the test binary exits. The bootstrap admin hands off its roles via `node.stop`
-/// (`node.primary.update` to `mesh1.admin.2`) once the Fabric row is durable; every node-admin is then
+/// (`node.primary.update` to `mesh1.node-admin.2`) once the Fabric row is durable; every node-admin is then
 /// lost and it is restarted on its data dir (a launch while a node-admin lives is refused, Q156, Q199).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dropped_estate_leaves_no_process_of_its_root() {
@@ -48,11 +48,11 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mut admin_pids = Vec::new();
-    for admin in estate.node_views().await.into_iter().filter(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.name != Estate::path("mesh1.admin", "1")) {
+    for admin in estate.node_views().await.into_iter().filter(|n| n.r#type == "node-admin" && n.name != Estate::path("mesh1.node-admin", "1")) {
         admin_pids.push(estate.pid_of(&admin.name).await);
     }
-    estate.enter(&Estate::path("mesh1.admin", "2")).await;
-    let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.admin", "1")).await.expect("node.stop of mesh1.admin.1");
+    estate.enter(&Estate::path("mesh1.node-admin", "2")).await;
+    let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.node-admin", "1")).await.expect("node.stop of mesh1.node-admin.1");
     let accepted = stop.accepted().clone();
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
@@ -80,7 +80,7 @@ async fn an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before
     let mut estate = Estate::bootstrap(owner("signal-stop", test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
-    let rpc: Vec<String> = estate.node_values().await.iter().filter(|n| n["kind"] == "rpc_node").filter_map(|n| n["node_id"].as_str().map(str::to_string)).collect();
+    let rpc: Vec<String> = estate.node_values().await.iter().filter(|n| n["type"] == "node").filter_map(|n| n["node_id"].as_str().map(str::to_string)).collect();
     assert_eq!(rpc.len(), 3, "three rpc nodes: {rpc:?}");
 
     let killed = estate.stop().await;

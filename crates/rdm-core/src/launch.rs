@@ -2,7 +2,7 @@
 //! reads back. One contract, one owner.
 
 type Result<T> = std::result::Result<T, String>;
-use crate::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
+use crate::{FabricId, IncarnationId, MeshId, NodeId, PathName};
 use crate::certs::VerifyingKey;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -19,8 +19,8 @@ pub const ENV_NODE_PATH: &str = "RDM_NODE_PATH";
 pub const ENV_NODE_NAME: &str = "RDM_NODE_NAME";
 /// The owning mesh, independent of the path/name.
 pub const ENV_MESH: &str = "RDM_MESH";
-/// The runtime kind registered by the executable.
-pub const ENV_NODE_KIND: &str = "RDM_NODE_KIND";
+/// The node's type: `node`, `node-admin` or a type the Fabric declares.
+pub const ENV_NODE_TYPE: &str = "RDM_NODE_TYPE";
 /// Initial config and tags of this exact launch, as a JSON object.
 pub const ENV_NODE_PROPERTIES: &str = "RDM_NODE_PROPERTIES";
 /// The node's minted id.
@@ -81,8 +81,8 @@ pub const ENV_ROOTS: &str = "RDM_ROOTS";
 /// material"); the CA's cert travels inside the issuing cert. A secret: only in a launch's environment.
 pub const ENV_FABRIC_CA_KEY: &str = "RDM_FABRIC_CA_KEY";
 /// The declared secrets a launched node-admin holds in custody (deployment-provider.md §2.3: "a
-/// declared secret is written to the admins that may launch its kinds and to those processes, never
-/// to a record or a projection"): the custody document, `{"v":1,"declared":[{"name","kinds","value"}]}`
+/// declared secret is written to the admins that may launch its types and to those processes, never
+/// to a record or a projection"): the custody document, `{"v":1,"declared":[{"name","types","value"}]}`
 /// ([`encode_custody`]), so a value holding a separator, `=`, a newline or nothing at all round-trips.
 /// Written into every node-admin's launch beside the root by a launcher that holds declared values, the
 /// way `RDM_CA_SECRET` is. A secret: it travels only in a launch's environment and in the file an admin
@@ -141,24 +141,24 @@ impl SecretHex {
     }
 }
 
-/// A per-process variable an application's wiring declares (Q150): its name and the node kinds whose
+/// A per-process variable an application's wiring declares (Q150): its name and the node types whose
 /// process environment it is set in. Its value is a secret; this names none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredSecret {
-    /// The variable's name, as the processes of `kinds` read it.
+    /// The variable's name, as the processes of `types` read it.
     pub name: String,
-    /// The kinds it is set on.
-    pub kinds: Vec<NodeKind>,
+    /// The types it is set on.
+    pub types: Vec<String>,
 }
 
-/// A node kind's listeners as an application's wiring declares them (Q151): each listener by name.
+/// A node type's listeners as an application's wiring declares them (Q151): each listener by name.
 /// Node-admin assigns each the birth's address with port 0 (`RDM_LISTENERS`); the node binds them,
 /// keeps every bind open through its join and reports the ports the operating system selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredListeners {
-    /// The kind whose processes bind them.
-    pub kind: NodeKind,
-    /// The listeners' names, unique within the kind.
+    /// The type whose processes bind them.
+    pub r#type: String,
+    /// The listeners' names, unique within the type.
     pub names: Vec<String>,
 }
 
@@ -201,8 +201,8 @@ pub struct InitialProperties {
 pub struct Launch {
     /// The owning mesh.
     pub mesh: String,
-    /// The runtime kind the executable must serve.
-    pub kind: NodeKind,
+    /// The node's type the executable must serve.
+    pub r#type: String,
     /// Entry-owned properties to initialize only when this node has no durable record.
     pub initial_properties: InitialProperties,
     /// The Fabric's name (its label) and its identity.
@@ -422,7 +422,7 @@ impl Launch {
         m.insert(ENV_NODE_PATH.into(), self.name.path.clone());
         m.insert(ENV_NODE_NAME.into(), self.name.name.clone());
         m.insert(ENV_MESH.into(), self.mesh.clone());
-        m.insert(ENV_NODE_KIND.into(), self.kind.name().into());
+        m.insert(ENV_NODE_TYPE.into(), self.r#type.clone());
         m.insert(ENV_NODE_PROPERTIES.into(), serde_json::to_string(&self.initial_properties).expect("string maps encode as JSON"));
         m.insert(ENV_NODE_ID.into(), self.node_id.to_string());
         m.insert(ENV_INCARNATION.into(), self.incarnation.to_string());
@@ -468,10 +468,12 @@ impl Launch {
             fabric_id: FabricId::parse(&req(ENV_FABRIC_ID)?).map_err(|e| format!("{ENV_FABRIC_ID}: {e}"))?,
             name: PathName::new(req(ENV_NODE_PATH)?, req(ENV_NODE_NAME)?).map_err(|e| format!("{ENV_NODE_PATH}/{ENV_NODE_NAME}: {e}"))?,
             mesh: req(ENV_MESH)?,
-            kind: {
-                let given = req(ENV_NODE_KIND)?;
-                NodeKind::ALL.into_iter().find(|kind| kind.name() == given)
-                    .ok_or_else(|| format!("{ENV_NODE_KIND} `{given}` is not a registered runtime kind"))?
+            r#type: {
+                let given = req(ENV_NODE_TYPE)?;
+                if let Some(reason) = crate::status::type_refusal(&given) {
+                    return Err(format!("{ENV_NODE_TYPE}: {reason}"));
+                }
+                given
             },
             node_id: NodeId::parse(&req(ENV_NODE_ID)?).map_err(|e| format!("{ENV_NODE_ID}: {e}"))?,
             incarnation: IncarnationId::parse(&req(ENV_INCARNATION)?).map_err(|e| format!("{ENV_INCARNATION}: {e}"))?,
@@ -533,10 +535,10 @@ mod tests {
         BTreeMap::from([
             (ENV_FABRIC.to_string(), "fabric1".to_string()),
             (ENV_FABRIC_ID.to_string(), FabricId::mint().to_string()),
-            (ENV_NODE_PATH.to_string(), "mesh2.admin".to_string()),
+            (ENV_NODE_PATH.to_string(), "mesh2.node-admin".to_string()),
             (ENV_NODE_NAME.to_string(), "1".to_string()),
             (ENV_MESH.to_string(), "mesh2".to_string()),
-            (ENV_NODE_KIND.to_string(), "node_admin".to_string()),
+            (ENV_NODE_TYPE.to_string(), "node-admin".to_string()),
             (ENV_NODE_ID.to_string(), NodeId::mint().to_string()),
             (ENV_INCARNATION.to_string(), IncarnationId::mint().to_string()),
             (ENV_TRANSPORT_ADDR.to_string(), "127.0.0.1:0".to_string()),
@@ -547,13 +549,13 @@ mod tests {
     }
 
     /// CONTRACT (Q150 §0.1, the custody document): `RDM_DECLARED_SECRETS` is the JSON document
-    /// `{"v":1,"declared":[{"name","kinds","value"}]}`, so a value holding a separator, `=`, a newline or
+    /// `{"v":1,"declared":[{"name","types","value"}]}`, so a value holding a separator, `=`, a newline or
     /// nothing at all round-trips through a launch unchanged; a document that does not parse, names an
     /// unknown version or repeats a name is refused by name, echoing none of it.
     #[test]
     fn the_custody_document_round_trips_every_value_and_refuses_a_malformed_one_by_name() {
         let values = [("APP_SEPARATED", "a,b=c\nd=,"), ("APP_EMPTY", ""), ("APP_PLAIN", "plain-value")];
-        let doc = serde_json::json!({ "v": 1, "declared": values.iter().map(|(n, v)| serde_json::json!({ "name": n, "kinds": ["broker", "gateway"], "value": v })).collect::<Vec<_>>() }).to_string();
+        let doc = serde_json::json!({ "v": 1, "declared": values.iter().map(|(n, v)| serde_json::json!({ "name": n, "types": ["broker", "gateway"], "value": v })).collect::<Vec<_>>() }).to_string();
         let env = admin_env_with_custody(&doc);
         let launch = Launch::from_env(|k| env.get(k).cloned()).expect("a launch carrying the custody document");
         assert!(!format!("{launch:?}").contains("plain-value") && !format!("{launch:?}").contains("a,b=c"), "a declared value never prints: {launch:?}");
@@ -563,15 +565,15 @@ mod tests {
         for (name, value) in values {
             let entry = back["declared"].as_array().into_iter().flatten().find(|e| e["name"] == name).unwrap_or_else(|| panic!("{name} is carried: {back}"));
             assert_eq!(entry["value"].as_str(), Some(value), "{name} round-trips unchanged");
-            assert_eq!(entry["kinds"], serde_json::json!(["broker", "gateway"]), "{name}'s kinds round-trip");
+            assert_eq!(entry["types"], serde_json::json!(["broker", "gateway"]), "{name}'s types round-trip");
         }
         assert_eq!(Launch::from_env(|k| written.get(k).cloned()).unwrap(), launch, "written and read back, the launch is the same");
         let secret = "s3cret-never-echoed";
-        let repeated = serde_json::json!({ "v": 1, "declared": [{ "name": "APP_KEY", "kinds": ["broker"], "value": secret }, { "name": "APP_KEY", "kinds": ["gateway"], "value": secret }] }).to_string();
-        let unknown = serde_json::json!({ "v": 2, "declared": [{ "name": "APP_KEY", "kinds": ["broker"], "value": secret }] }).to_string();
+        let repeated = serde_json::json!({ "v": 1, "declared": [{ "name": "APP_KEY", "types": ["broker"], "value": secret }, { "name": "APP_KEY", "types": ["gateway"], "value": secret }] }).to_string();
+        let unknown = serde_json::json!({ "v": 2, "declared": [{ "name": "APP_KEY", "types": ["broker"], "value": secret }] }).to_string();
         let broken = format!("{{\"v\":1,\"declared\":[{{\"name\":\"APP_KEY\",\"value\":\"{secret}\"");
-        let unkinded = serde_json::json!({ "v": 1, "declared": [{ "name": "APP_KEY", "kinds": ["nowhere"], "value": secret }] }).to_string();
-        for (bad, says) in [(repeated, "repeats a name"), (unknown, "unknown version"), (broken.clone(), "does not parse"), (format!("APP_KEY={}", encode_hex(secret.as_bytes())), "does not parse"), (unkinded, "does not parse")] {
+        let untyped = serde_json::json!({ "v": 1, "declared": [{ "name": "APP_KEY", "types": ["No Where"], "value": secret }] }).to_string();
+        for (bad, says) in [(repeated, "repeats a name"), (unknown, "unknown version"), (broken.clone(), "does not parse"), (format!("APP_KEY={}", encode_hex(secret.as_bytes())), "does not parse"), (untyped, "does not parse")] {
             let env = admin_env_with_custody(&bad);
             let e = Launch::from_env(|k| env.get(k).cloned()).unwrap_err();
             assert!(e.starts_with(ENV_DECLARED_SECRETS) && e.contains(says), "refused by name ({says}): {e}");
@@ -585,14 +587,14 @@ mod tests {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
-            kind: crate::NodeKind::RpcNode,
+            r#type: "node".into(),
             name: crate::PathName::new("elsewhere.gateway", "north").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: Some(IncarnationId::mint()),
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
-            launcher: Some(Launcher { mesh: "mesh1".into(), name: crate::PathName::new("mesh1.admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }),
+            launcher: Some(Launcher { mesh: "mesh1".into(), name: crate::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }),
             seeds: vec![("abc".into(), "127.0.0.1:41000".parse().unwrap())],
             data_dir: "/tmp/x".into(),
             store_dir: "/tmp/store".into(),
@@ -600,20 +602,20 @@ mod tests {
             issuing: Some(IssuingMaterial { key: SecretHex("0a".repeat(32)), cert: "00abff".into(), root: SecretHex("0b".repeat(32)), ca_key: SecretHex("0c".repeat(32)) }),
             roots: Vec::new(),
             connections_delete_deadline: Duration::from_millis(750),
-            declared: vec![(DeclaredSecret { name: "APP_KEY".into(), kinds: vec![NodeKind::Broker] }, SecretHex::of_value("app-secret-value"))],
+            declared: vec![(DeclaredSecret { name: "APP_KEY".into(), types: vec!["broker".into()] }, SecretHex::of_value("app-secret-value"))],
         };
         let env = l.to_env();
         assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap(), l);
         assert_eq!(env[ENV_MESH], "mesh1");
-        assert_eq!(env[ENV_NODE_KIND], "rpc_node");
-        for field in [ENV_MESH, ENV_NODE_KIND] {
+        assert_eq!(env[ENV_NODE_TYPE], "node");
+        for field in [ENV_MESH, ENV_NODE_TYPE] {
             let mut missing = env.clone();
             missing.remove(field);
             assert_eq!(Launch::from_env(|k| missing.get(k).cloned()).unwrap_err(), format!("{field} is required and must not be empty"));
         }
-        let mut unknown_kind = env.clone();
-        unknown_kind.insert(ENV_NODE_KIND.into(), "unknown".into());
-        assert!(Launch::from_env(|k| unknown_kind.get(k).cloned()).unwrap_err().starts_with(ENV_NODE_KIND));
+        let mut unknown_type = env.clone();
+        unknown_type.insert(ENV_NODE_TYPE.into(), "unknown".into());
+        assert!(Launch::from_env(|k| unknown_type.get(k).cloned()).unwrap_err().starts_with(ENV_NODE_TYPE));
         assert!(Launch::from_env(|_| None).unwrap_err().contains("RDM_FABRIC is required"));
         // A launch with no store root is refused by name (R14 item 8).
         let mut no_store = env.clone();
@@ -628,7 +630,7 @@ mod tests {
         assert!(!format!("{l:?}").contains(&"0b".repeat(32)), "the root never prints: {l:?}");
         assert_eq!(env.get(ENV_FABRIC_CA_KEY).map(String::len), Some(64), "the CA key rides beside the root");
         assert!(!format!("{l:?}").contains(&"0c".repeat(32)), "the CA key never prints: {l:?}");
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&env[ENV_DECLARED_SECRETS]).unwrap(), serde_json::json!({ "v": 1, "declared": [{ "name": "APP_KEY", "kinds": ["broker"], "value": "app-secret-value" }] }), "the custody document rides the launch");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&env[ENV_DECLARED_SECRETS]).unwrap(), serde_json::json!({ "v": 1, "declared": [{ "name": "APP_KEY", "types": ["broker"], "value": "app-secret-value" }] }), "the custody document rides the launch");
         assert!(!format!("{l:?}").contains(&encode_hex(b"app-secret-value")) && !format!("{l:?}").contains("app-secret-value"), "a declared value never prints: {l:?}");
         assert_eq!(l.declared[0].1.value("APP_KEY").unwrap(), "app-secret-value");
         let mut no_root = env.clone();
@@ -682,8 +684,8 @@ mod tests {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
-            kind: crate::NodeKind::RpcNode,
-            name: crate::PathName::new("mesh1.rpc", "2").unwrap(),
+            r#type: "node".into(),
+            name: crate::PathName::new("mesh1.node", "2").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -721,7 +723,7 @@ mod tests {
 
     // @feature: named-listeners
     /// CONTRACT (docs/architecture/node-rpc-envelope.md:1033):
-    /// "`listeners` is each listener the application's wiring declares on the birth's kind, by name,
+    /// "`listeners` is each listener the application's wiring declares on the birth's type, by name,
     ///  at the address the birth bound: the IP address node-admin assigned and a nonzero port the
     ///  operating system chose (Q151)."
     #[test]
@@ -745,7 +747,7 @@ mod tests {
             (ENV_NODE_PATH.to_string(), "mesh1.gateway".to_string()),
             (ENV_NODE_NAME.to_string(), "1".to_string()),
             (ENV_MESH.to_string(), "mesh1".to_string()),
-            (ENV_NODE_KIND.to_string(), "gateway".to_string()),
+            (ENV_NODE_TYPE.to_string(), "gateway".to_string()),
             (ENV_NODE_ID.to_string(), NodeId::mint().to_string()),
             (ENV_INCARNATION.to_string(), IncarnationId::mint().to_string()),
             (ENV_TRANSPORT_ADDR.to_string(), "127.0.0.1:0".to_string()),

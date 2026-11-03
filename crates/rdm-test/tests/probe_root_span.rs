@@ -71,8 +71,8 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::RpcNode,
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            r#type: "node".into(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -97,7 +97,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
         // A carrier: a node that serves Forward and makes one inner call to the target.
-        let target_record = rdm_transport::ResolvedNode { mesh: launch.mesh.clone(), kind: launch.kind, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() };
+        let target_record = rdm_transport::ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() };
         let carrier_key = SecretKey::generate();
         let (carrier_id, carrier_inc) = (NodeId::mint(), IncarnationId::mint());
         let carrier_resolver = Arc::new(rdm_transport::StaticResolver::new());
@@ -112,8 +112,8 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
         let caddr = cep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _crouter = Router::builder(cep).accept(rdm_transport::ALPN, carrier_server).spawn();
         let served = admin_view::serve(vec![
-            node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &launch.node_id, Some(key.public().to_string()), Some(addr), Some(launch.incarnation.clone())),
-            node(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &carrier_id, Some(carrier_key.public().to_string()), Some(caddr), Some(carrier_inc.clone())),
+            node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &launch.node_id, Some(key.public().to_string()), Some(addr), Some(launch.incarnation.clone())),
+            node(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", "gateway", &carrier_id, Some(carrier_key.public().to_string()), Some(caddr), Some(carrier_inc.clone())),
         ])
         .await;
         let admin = served.birth_arg();

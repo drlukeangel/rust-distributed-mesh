@@ -10,8 +10,8 @@ use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
 use std::sync::Arc;
 
-fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool, fabric_primary: bool) -> Node {
-    let mut n = Node::allocated(name, mesh, kind);
+fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool, fabric_primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, r#type);
     n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = primary;
@@ -19,9 +19,9 @@ fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary:
     n
 }
 
-/// Two meshes of two node-admins each, two rpc nodes in mesh1 and one in mesh2. `mesh1.admin.1` holds
-/// the fabric-primary role and mesh1's, `mesh2.admin.1` holds mesh2's, `mesh1.rpc.1` mesh1's rpc role with
-/// `mesh1.rpc.2` its secondary: a stop, restart or replace of `mesh1.rpc.1` moves its role by
+/// Two meshes of two node-admins each, two rpc nodes in mesh1 and one in mesh2. `mesh1.node-admin.1` holds
+/// the fabric-primary role and mesh1's, `mesh2.node-admin.1` holds mesh2's, `mesh1.node.1` mesh1's rpc role with
+/// `mesh1.node.2` its secondary: a stop, restart or replace of `mesh1.node.1` moves its role by
 /// node.primary.update and is not refused for want of a secondary (proposal Part C1, Q7). The fabric
 /// is pending.
 fn view(status: ScopeStatus) -> Topology {
@@ -29,13 +29,13 @@ fn view(status: ScopeStatus) -> Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status, provider: ProviderKind::Process },
         meshes: ["mesh1", "mesh2"].iter().map(|m| Mesh { id: Some(MeshId::mint()), name: m.to_string(), status: ScopeStatus::Ready }).collect(),
         nodes: vec![
-            node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true),
-            node(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false, false),
-            node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, true, false),
-            node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false),
-            node(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, false),
-            node(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false),
-            node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, true, false),
+            node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, true),
+            node(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false, false),
+            node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", true, false),
+            node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", false, false),
+            node(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true, false),
+            node(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", false, false),
+            node(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", true, false),
         ],
     }
 }
@@ -46,7 +46,7 @@ struct Rig {
     builds: Arc<MemoryBuildStateAdapter>,
 }
 
-/// This admin (`mesh1.admin.1`, the fabric-primary) holds a settled accepted Build of the view; the
+/// This admin (`mesh1.node-admin.1`, the fabric-primary) holds a settled accepted Build of the view; the
 /// fabric has not first reached ready.
 async fn rig(status: ScopeStatus) -> Rig {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
@@ -54,7 +54,7 @@ async fn rig(status: ScopeStatus) -> Rig {
     let admin = t.nodes.iter().find(|n| n.is_fabric_primary).unwrap();
     let executor = rdm_core::framing::Birth { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap() };
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &executor, "mesh1").await.unwrap();
-    let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time()));
+    let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t, crate::adopted_time()));
     Rig { executor, cp, builds }
 }
 
@@ -80,10 +80,10 @@ async fn running(r: &Rig, build: &rdm_admin::build::BuildId, attempt: u32) {
 #[tokio::test]
 async fn a_fabric_delete_before_the_first_ready_interrupts_the_build_in_progress_and_standalone_deletes_stay_refused() {
     let r = rig(ScopeStatus::Pending).await;
-    let grow = r.cp.submit("test", crate::named_request(&r.cp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }).await).await.expect("growth is admitted before the first ready");
+    let grow = r.cp.submit("test", crate::named_request(&r.cp, TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }).await).await.expect("growth is admitted before the first ready");
     running(&r, &grow.build_id, 1).await;
     assert_eq!(r.builds.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(grow.build_id.clone()), "the growth Build is in progress");
-    for change in [TopologyChange::RemoveMesh { mesh: "mesh2".into() }, TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap() }] {
+    for change in [TopologyChange::RemoveMesh { mesh: "mesh2".into() }, TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.node", "1").unwrap() }] {
         match r.cp.submit("test", change.clone()).await {
             Err(Refusal::BuildInProgress(_)) => {}
             other => panic!("the standalone {change:?} was not refused build-in-progress: {other:?}"),

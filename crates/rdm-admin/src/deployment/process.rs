@@ -785,7 +785,7 @@ mod tests {
     /// gone before its open (`NotFound`) or released between the open and the read (`ESRCH`, the node
     /// exiting after its stop) is `Gone`; a read denied any other way (`EACCES`) is `Unreadable`.
     /// Must NOT happen: `ESRCH` read as `Unreadable`, so inspect answers `Unknown` after the stop
-    /// ladder and the terminate is refused (soak seed 1432787 round 113, `node.delete:mesh1.admin.2`).
+    /// ladder and the terminate is refused (soak seed 1432787 round 113, `node.delete:mesh1.node-admin.2`).
     #[test]
     fn a_leader_released_during_its_start_token_read_is_gone_and_a_denied_read_is_unreadable() {
         let path = "/proc/7/stat";
@@ -869,8 +869,8 @@ mod tests {
     }
 
     fn launch(dir: &std::path::Path) -> ResolvedNodeLaunch {
-        ResolvedNodeLaunch { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode, secrets: Default::default(), withhold: Vec::new(),
-            node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+        ResolvedNodeLaunch { mesh: "mesh1".to_owned(), r#type: "node".into(), secrets: Default::default(), withhold: Vec::new(),
+            node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             deployment_id: DeploymentId::mint(),
             executable: "/bin/sleep".into(),
             args: vec!["30".into()],

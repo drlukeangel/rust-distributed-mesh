@@ -1114,7 +1114,7 @@ mod tests {
     use crate::build::MeshDesired;
     use crate::build_state::{BuildAccepted, BuildStateAdapter as _, MemoryBuildStateAdapter};
     use crate::control_plane::InProgress;
-    use crate::model::{MeshId, NodeId, NodeKind};
+    use crate::model::{MeshId, NodeId};
     use rdm_core::meta::NodeSpec;
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -1178,10 +1178,10 @@ mod tests {
         //    and leaves plans without create/config ops untouched without reading the store.
         let adapter = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
-        let node_path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let node_path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
 
         let stop_only = RunPlan {
-            operations: vec![BuildOperation::StopNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+            operations: vec![BuildOperation::StopNode { r#type: "node".into(), mesh: "mesh1".into(),
                 node: node_path.clone(),
                 node_id: NodeId::mint(),
                 from_incarnation: IncarnationId::mint(),
@@ -1191,7 +1191,7 @@ mod tests {
         let untouched = with_entries(&adapter, &build_id, stop_only.clone()).await.unwrap();
         assert_eq!(untouched.operations.len(), 1);
 
-        let mut mesh_top = MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]));
+        let mut mesh_top = MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)]));
         let mut spec = mesh_top.spec(&node_path).unwrap().clone();
         spec.tags = BTreeSet::from(["role-rpc".to_string()]);
         spec.config = BTreeMap::from([("k".to_string(), "v".to_string())]);
@@ -1211,13 +1211,13 @@ mod tests {
 
         let plan_with_create = RunPlan {
             operations: vec![
-                BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+                BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(),
                     node: node_path.clone(),
                     over: None,
                     executable: None,
                     entry: None,
                 },
-                BuildOperation::UpdateConfig { node_id: crate::model::NodeId::mint(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+                BuildOperation::UpdateConfig { node_id: crate::model::NodeId::mint(), r#type: "node".into(), mesh: "mesh1".into(),
                     node: node_path.clone(),
                     entry: None,
                 },

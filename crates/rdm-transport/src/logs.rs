@@ -149,7 +149,7 @@ mod tests {
         crate::enable_callsites();
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("rdm.test.span.update.via-cell");
-            span.in_scope(|| tracing::info!(node = "mesh1.admin.1", "inside the span"));
+            span.in_scope(|| tracing::info!(node = "mesh1.node-admin.1", "inside the span"));
             drop(span);
             tracing::warn!("outside every span");
         });
@@ -162,7 +162,7 @@ mod tests {
         let tc = inside.record.trace_context().expect("the inside event carries trace context");
         assert_eq!(tc.trace_id, span.span_context.trace_id());
         assert_eq!(tc.span_id, span.span_context.span_id());
-        assert!(inside.record.attributes_iter().any(|(k, v)| k.as_str() == "node" && matches!(v, AnyValue::String(s) if s.as_str() == "mesh1.admin.1")));
+        assert!(inside.record.attributes_iter().any(|(k, v)| k.as_str() == "node" && matches!(v, AnyValue::String(s) if s.as_str() == "mesh1.node-admin.1")));
         let outside = records.iter().find(|r| matches!(r.record.body(), Some(AnyValue::String(s)) if s.as_str() == "outside every span")).expect("the outside event");
         assert!(outside.record.trace_context().is_none());
         assert_eq!(outside.record.severity_number(), Some(Severity::Warn));

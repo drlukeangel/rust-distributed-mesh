@@ -6,7 +6,7 @@
 //! executable (`rdm-node-admin`, `faulted-node-admin`, the demo's `rshape-node-admin`, each
 //! `rdm_admin::entry::run_on`) can take its app protocols' `Connections`, so no estate ever had an admin
 //! open an app-protocol connection. The first dial a Day-0 admin made on a registered app ALPN was
-//! Rafka's (Rafka 141: `rdm.node.connection.reject.via-refused{source=mesh1.admin.1 cert_expires_at=0
+//! Rafka's (Rafka 141: `rdm.node.connection.reject.via-refused{source=mesh1.node-admin.1 cert_expires_at=0
 //! reason=no-credential}`).
 //!
 //! The matrix (fabric-certs.md §When a cert is issued, §On a connection; node-connections-admit.md):
@@ -21,7 +21,7 @@ use rdm_admin::certs::CertChoice;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::certs::{self, BirthIdentity, CaKey, IssuingKey, SigningKey, VerifyingKey};
 use rdm_core::digest::MeshNode;
-use rdm_core::{EndpointId, IncarnationId, NodeId, NodeKind};
+use rdm_core::{EndpointId, IncarnationId, NodeId};
 use rdm_transport::clock::RafkaTime;
 use rdm_transport::connections::{Acceptor, Alpn, Birth, ConnectError, ConnectionsRegistry, Dialer, MemoryConnectionsSink};
 use rdm_transport::{LiveNodeResolver, ResolvedNode, StaticResolver};
@@ -45,7 +45,7 @@ fn now_ms() -> u64 {
 }
 
 fn app_alpn() -> Alpn {
-    Alpn { name: APP.to_vec(), proxy: false, carriers: vec![NodeKind::RpcNode] }
+    Alpn { name: APP.to_vec(), proxy: false, carriers: vec!["node".to_string()] }
 }
 
 fn temp_dir(what: &str) -> std::path::PathBuf {
@@ -76,7 +76,7 @@ async fn day0_root(dir: &std::path::Path) -> Running {
 
 /// A launch of `name` by `launcher` into its mesh, admitting on the fabric's root (`RDM_ROOTS`), its
 /// deployment expected by the launcher's join door.
-fn launched_by(launcher: &Running, name: rdm_core::PathName, kind: NodeKind, launcher_dir: &std::path::Path) -> (rdm_core::launch::Launch, std::path::PathBuf) {
+fn launched_by(launcher: &Running, name: rdm_core::PathName, r#type: &str, launcher_dir: &std::path::Path) -> (rdm_core::launch::Launch, std::path::PathBuf) {
     let d = launcher.digest.lock().unwrap().clone();
     let dir = temp_dir("app-dials-launched");
     let runtime = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("app-dials")).unwrap();
@@ -86,13 +86,13 @@ fn launched_by(launcher: &Running, name: rdm_core::PathName, kind: NodeKind, lau
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
-        kind: kind,
+        r#type: r#type.to_string(),
         name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
-        listeners: if kind == NodeKind::NodeAdmin { vec![("control".into(), "127.0.0.1:0".parse().unwrap())] } else { vec![] },
+        listeners: if r#type == "node-admin" { vec![("control".into(), "127.0.0.1:0".parse().unwrap())] } else { vec![] },
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
         launcher: Some(rdm_core::launch::Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.clone(),
@@ -103,7 +103,7 @@ fn launched_by(launcher: &Running, name: rdm_core::PathName, kind: NodeKind, lau
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         declared: Default::default(),
     };
-    let _ = launcher.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
+    let _ = launcher.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
@@ -140,11 +140,11 @@ impl End {
 }
 
 fn conn_birth(b: &MeshNode) -> Birth {
-    Birth { mesh: b.mesh.clone(), kind: b.kind, name: b.name.clone(), node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }
+    Birth { mesh: b.mesh.clone(), r#type: b.r#type.clone(), name: b.name.clone(), node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }
 }
 
 fn resolved(b: &MeshNode) -> ResolvedNode {
-    ResolvedNode { mesh: b.mesh.clone(), kind: b.kind, node_id: b.node_id.clone(), name: b.name.clone(), endpoint_id: b.endpoint_id.0.parse().unwrap(), transport_addr: b.transport_addr, incarnation: b.incarnation.clone() }
+    ResolvedNode { mesh: b.mesh.clone(), r#type: b.r#type.clone(), node_id: b.node_id.clone(), name: b.name.clone(), endpoint_id: b.endpoint_id.0.parse().unwrap(), transport_addr: b.transport_addr, incarnation: b.incarnation.clone() }
 }
 
 /// A node of `mesh1` serving the app protocol and admitting on the fabric's root, presenting a member
@@ -156,11 +156,11 @@ struct Peer {
     _router: iroh::protocol::Router,
 }
 
-async fn peer(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, expiry_ms: Option<u64>, admin: &MeshNode) -> Peer {
+async fn peer(name: rdm_core::PathName, mesh: &str, r#type: &str, expiry_ms: Option<u64>, admin: &MeshNode) -> Peer {
     let key = iroh::SecretKey::generate();
     let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), &[APP.to_vec()]).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the peer binds an IPv4 socket");
-    let birth = MeshNode { mesh: mesh.into(), kind,
+    let birth = MeshNode { mesh: mesh.into(), r#type: r#type.to_string(),
         node_id: NodeId::mint(),
         name,
         endpoint_id: EndpointId(key.public().to_string()),
@@ -222,7 +222,7 @@ async fn assert_dial_admitted(from: &Dialer, from_name: &str, to: &MeshNode, to_
 
 /// The two directions between `end` and a peer admitting on the root.
 async fn assert_both_directions_with_a_peer(mut end: End) {
-    let p = peer(rdm_core::PathName::new("mesh1.rpc", "9").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(now_ms() + 3_600_000), &end.birth).await;
+    let p = peer(rdm_core::PathName::new("mesh1.node", "9").unwrap(), "mesh1", "node", Some(now_ms() + 3_600_000), &end.birth).await;
     end.resolver.apply(resolved(&p.birth), None);
     let mut p_acceptor = p.acceptor;
     let who = end.birth.node_id.to_string();
@@ -265,7 +265,7 @@ fn a_launched_admin_holds_its_joins_member_cert_and_its_app_protocol_dials_are_a
     rt().block_on(async {
         let dir = temp_dir("app-dials-launched-admin");
         let root = day0_root(&dir).await;
-        let (launch, admin_dir) = launched_by(&root, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), NodeKind::NodeAdmin, &dir);
+        let (launch, admin_dir) = launched_by(&root, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", &dir);
         let env = launch.to_env();
         let admin = start_with(
             AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment"),
@@ -292,7 +292,7 @@ fn an_ordinary_node_holds_its_joins_member_cert_and_its_app_protocol_dials_are_a
     rt().block_on(async {
         let dir = temp_dir("app-dials-node");
         let root = day0_root(&dir).await;
-        let (launch, node_dir) = launched_by(&root, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), NodeKind::RpcNode, &dir);
+        let (launch, node_dir) = launched_by(&root, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", &dir);
         let node = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
             .await
             .expect("the node starts");
@@ -314,7 +314,7 @@ fn the_day0_root_and_an_ordinary_node_it_launched_dial_each_other_on_an_app_prot
     rt().block_on(async {
         let dir = temp_dir("app-dials-day0-node");
         let root = day0_root(&dir).await;
-        let (launch, node_dir) = launched_by(&root, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), NodeKind::RpcNode, &dir);
+        let (launch, node_dir) = launched_by(&root, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", &dir);
         let node = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
             .await
             .expect("the node starts");
@@ -342,8 +342,8 @@ fn an_admins_app_protocol_refuses_a_dialer_holding_no_cert_or_an_expired_one_by_
         let root = day0_root(&dir).await;
         let mut end = End::of_admin(&root);
         let skew = rdm_core::cadence::staleness_floor().as_millis() as u64;
-        for (name, expiry, reason) in [(rdm_core::PathName::new("mesh1.rpc", "7").unwrap(), None, "no-credential"), (rdm_core::PathName::new("mesh1.rpc", "8").unwrap(), Some(now_ms() - 3 * skew), "expired")] {
-            let p = peer(name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, expiry, &end.birth).await;
+        for (name, expiry, reason) in [(rdm_core::PathName::new("mesh1.node", "7").unwrap(), None, "no-credential"), (rdm_core::PathName::new("mesh1.node", "8").unwrap(), Some(now_ms() - 3 * skew), "expired")] {
+            let p = peer(name.clone(), "mesh1", "node", expiry, &end.birth).await;
             match tokio::time::timeout(BOUND, p.registry.probe_direct(&conn_birth(&end.birth), APP)).await {
                 Ok(Err(ConnectError::Refused { reason: got })) => assert_eq!(got, reason, "{name:?} is refused by name"),
                 other => panic!("{name:?} ({reason}) must be refused by name: {other:?}"),

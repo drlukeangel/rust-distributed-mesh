@@ -137,10 +137,10 @@ fn recorded(store: &Path, calls: &Calls) -> TopologyStorageProviders {
 
 // @feature: node-lifecycle
 /// CONTRACT (build.md §5.3 the writer map; storage-whole-records.md "The rule"; Q207, Q227): a Day-0
-/// node-admin takes mesh1's writing (its mesh-primary, and the fabric-primary) and mesh1.admin.2,
+/// node-admin takes mesh1's writing (its mesh-primary, and the fabric-primary) and mesh1.node-admin.2,
 /// launched by it, joins; both ready, and the fabric left to settle. The mesh-primary listed mesh1's
 /// records from the store once: its writer's fill as it took the mesh, which its atlas holds too.
-/// mesh1.admin.2, no primary, made no write to the nodes store and read no runtime row at its start;
+/// mesh1.node-admin.2, no primary, made no write to the nodes store and read no runtime row at its start;
 /// its runtime row is its launcher's write, at its join. Must NOT happen: a second listing of the
 /// mesh's records by its writer (the writer's copy filled twice, the atlas filled from the store, an
 /// attempt's completion filling a mesh this admin writes); a runtime row written by an admin that did
@@ -155,22 +155,22 @@ fn a_mesh_primary_lists_its_meshs_records_once_and_an_admin_that_is_no_primary_w
         std::fs::create_dir_all(&root_dir).unwrap();
         let (root_calls, admin_calls) = (Calls::default(), Calls::default());
 
-        // The Day-0 admin does not reconcile: its Build names only itself, and mesh1.admin.2 is launched here.
+        // The Day-0 admin does not reconcile: its Build names only itself, and mesh1.node-admin.2 is launched here.
         let root = start_on(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, recorded(&root_dir, &root_calls)).await.expect("the Day-0 admin comes up");
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
-        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
+        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), &admin_dir, &root_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
         let admin = start_on(admin_cfg, Wiring { node_hooks: NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, recorded(&root_dir, &admin_calls)).await.expect("the launched admin comes up");
-        until_ready("mesh1.admin.2", || admin.digest.lock().unwrap().clone()).await;
+        until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         // Every heard birth's view change has run: a write that follows a birth heard has been made.
         tokio::time::sleep(Duration::from_secs(3)).await;
 
-        eprintln!("mesh1.admin.1 calls on the nodes store: {:#?}", root_calls.0.lock().unwrap());
-        eprintln!("mesh1.admin.2 calls on the nodes store: {:#?}", admin_calls.0.lock().unwrap());
+        eprintln!("mesh1.node-admin.1 calls on the nodes store: {:#?}", root_calls.0.lock().unwrap());
+        eprintln!("mesh1.node-admin.2 calls on the nodes store: {:#?}", admin_calls.0.lock().unwrap());
         let root_id = root.digest.lock().unwrap().node.node_id.to_string();
         // The take of mesh1's writing: the writer's fill (RoleFold's, `WrittenRows::fill`), the install's
         // arrivals, the atlas. The Day-0 admin's start reads before it are not the take: its contradictory-start
@@ -185,13 +185,13 @@ fn a_mesh_primary_lists_its_meshs_records_once_and_an_admin_that_is_no_primary_w
         runtime_writes.sort();
         let mut launched = vec![root_id.clone(), launch.node_id.to_string()];
         launched.sort();
-        assert_eq!(runtime_writes, launched, "the launching admin writes each birth's runtime row once: its own (Day 0) and mesh1.admin.2's at its join: {:#?}", root_calls.0.lock().unwrap());
-        assert_eq!(admin_calls.of("put_runtime"), Vec::<String>::new(), "mesh1.admin.2, no primary and no launcher, writes no runtime row");
-        assert_eq!(admin_calls.of("put_node"), Vec::<String>::new(), "mesh1.admin.2, no primary, writes no node record");
+        assert_eq!(runtime_writes, launched, "the launching admin writes each birth's runtime row once: its own (Day 0) and mesh1.node-admin.2's at its join: {:#?}", root_calls.0.lock().unwrap());
+        assert_eq!(admin_calls.of("put_runtime"), Vec::<String>::new(), "mesh1.node-admin.2, no primary and no launcher, writes no runtime row");
+        assert_eq!(admin_calls.of("put_node"), Vec::<String>::new(), "mesh1.node-admin.2, no primary, writes no node record");
         // The offline tick's read of every runtime row on every admin (`durable_rows`, recovery.rs) is
         // rust-distributed-mesh#99, not this cell's.
         let read_back = admin_calls.not_through("runtimes", &["admin/recovery.rs"]);
-        assert!(read_back.is_empty(), "mesh1.admin.2 reads no runtime row back at its start: {read_back:#?}");
+        assert!(read_back.is_empty(), "mesh1.node-admin.2 reads no runtime row back at its start: {read_back:#?}");
 
         admin.leave().await;
         root.leave().await;

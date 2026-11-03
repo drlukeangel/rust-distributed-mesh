@@ -23,7 +23,7 @@ use rdm_client::{Filter, MeshNode, NodeStatus, Nodes, PathName, Peers};
 use rdm_core::cadence::staleness_floor;
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{Status, StatusReply, StatusRequest};
-use rdm_core::{EndpointId, NodeKind};
+use rdm_core::{EndpointId};
 use rdm_transport::clock::{Clock, RafkaTime};
 use rdm_transport::{CallOptions, NodeTarget};
 use std::path::Path;
@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_cert_renew [<path> <name>]")),
         _ => all
             .iter()
-            .find(|n| n.mesh == birth.mesh && n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .find(|n| n.mesh == birth.mesh && n.kind != "node-admin" && n.status == NodeStatus::Ready)
             .map(|n| n.name.clone())
             .ok_or_else(|| anyhow!("no Ready role member in {}", birth.mesh))?,
     };

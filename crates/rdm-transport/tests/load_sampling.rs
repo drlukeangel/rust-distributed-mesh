@@ -15,12 +15,12 @@ use rdm_transport::topology::{learn_addresses, Backbone, TopologyView};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, ep: &iroh::Endpoint) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, ep: &iroh::Endpoint) -> MeshDigest {
     let port = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
     MeshDigest {
         held_hash: Default::default(),
         fabric_id: FabricId::parse("fab000000001").unwrap(),
-        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+        node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: NodeId::mint(),
             name,
             endpoint_id: EndpointId(ep.id().to_string()),
@@ -101,16 +101,16 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
 
         let fab = FabricId::parse("fab000000001").unwrap();
         let (mesh1_id, mesh2_id) = (MeshId::mint(), MeshId::mint());
-        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let mem_m = TopologyView::join(&mem_node.gossip, &mem_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()], &[]).await.unwrap();
+        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.node-admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let mem_m = TopologyView::join(&mem_node.gossip, &mem_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()], &[]).await.unwrap();
 
-        let src_digest = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &src_node.ep);
+        let src_digest = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &src_node.ep);
         let src_pub = PublisherId {
             incarnation: src_digest.node.incarnation.clone(),
             node_id: src_digest.node.node_id.clone(),
         };
-        let fwd_digest = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &fwd_node.ep);
+        let fwd_digest = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &fwd_node.ep);
         let fwd_pub = PublisherId {
             incarnation: fwd_digest.node.incarnation.clone(),
             node_id: fwd_digest.node.node_id.clone(),
@@ -172,12 +172,12 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
             .filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed")
             .collect();
         assert!(
-            installs.iter().any(|s| s["attributes"]["node"] == "mesh1.admin.1" && s["attributes"]["channel"] == "backbone"),
-            "backbone snapshot install span recorded on mesh1.admin.1: {installs:?}"
+            installs.iter().any(|s| s["attributes"]["node"] == "mesh1.node-admin.1" && s["attributes"]["channel"] == "backbone"),
+            "backbone snapshot install span recorded on mesh1.node-admin.1: {installs:?}"
         );
         assert!(
-            installs.iter().any(|s| s["attributes"]["node"] == "mesh1.rpc.1" && s["attributes"]["channel"] == "mesh-channel"),
-            "forwarded snapshot install span recorded on mesh1.rpc.1: {installs:?}"
+            installs.iter().any(|s| s["attributes"]["node"] == "mesh1.node.1" && s["attributes"]["channel"] == "mesh-channel"),
+            "forwarded snapshot install span recorded on mesh1.node.1: {installs:?}"
         );
     });
 }

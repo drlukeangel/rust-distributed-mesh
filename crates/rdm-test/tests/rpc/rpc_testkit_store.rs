@@ -19,7 +19,7 @@ use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-fn location() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.rpc", "1").unwrap() }
+fn location() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.node", "1").unwrap() }
 
 fn owner() -> Owner {
     Owner {
@@ -67,10 +67,10 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     landed_on(&gone, &first, "delete");
     assert_eq!(gone["reply"]["result"], json!({"found": false}), "the key was already deleted: {gone}");
     // The other rpc node holds none of it.
-    let other_view = estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await;
+    let other_view = estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
     let other_target = format!("exact:{}", other_view["node_id"].as_str().unwrap());
     let other = estate.probe(&["get", "--target", &other_target, "--key", "41"]);
-    landed_on(&other, &estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await, "get");
+    landed_on(&other, &estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await, "get");
     assert_eq!(other["reply"]["result"], json!({"found": false}));
 
     // 5. Limits, refused by name; nothing is written.
@@ -135,7 +135,7 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
     {
         let node = location();
-        let mut stream = estate.nodes_obj().await.steps(rdm_test::steps::replace(&node, "mesh1", rdm_core::NodeKind::RpcNode).expect("valid replacement fixture name")).await.expect("the replace steps were accepted");
+        let mut stream = estate.nodes_obj().await.steps(rdm_test::steps::replace(&node, "mesh1", "node").expect("valid replacement fixture name")).await.expect("the replace steps were accepted");
         Estate::complete(&mut stream).await;
     }
     let replacement = estate
@@ -158,9 +158,9 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     // birth's departure, so the other rpc node answers Gone for the old id, the new primary for
     // the path, and Unknown for an id nobody ever saw.
     let other = other_target.as_str();
-    estate.holds_departure(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", recovered["node_id"].as_str().unwrap()).await;
+    estate.holds_departure(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", recovered["node_id"].as_str().unwrap()).await;
     let gone = estate.probe(&["resolve", "--target", other, "--query", &exact_recovered]);
-    assert_eq!((gone["outcome"].as_str(), gone["reply"]["resolution"].as_str()), (Some("Reply"), Some("gone")), "mesh1.rpc.2 holds the old birth's departure: {gone}");
+    assert_eq!((gone["outcome"].as_str(), gone["reply"]["resolution"].as_str()), (Some("Reply"), Some("gone")), "mesh1.node.2 holds the old birth's departure: {gone}");
     // The admin holds the old birth as the replacement's predecessor until the departure is
     // published, and it is published after the replacement is ready: the admin's view is
     // current-only once the departure has been heard, so the probe's own resolver can only say

@@ -1,7 +1,7 @@
 //! i150 storage contract (Q331, Q333): each node's record in the nodes store, in two parts at its node
 //! id, its mesh-primary's row and the node's own part, the reader taking the latest line of each.
 
-use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, PathName};
 use rdm_node::node_records::{NodeProperties, RecordBirth};
 use rdm_node::nodes_storage::{FileNodesStorage, MemoryNodesStorage, NodeRow, NodesStorage};
 use rdm_node::store_root::StoreRoot;
@@ -26,8 +26,8 @@ fn properties() -> NodeProperties {
     }
 }
 fn record(node_id: NodeId, mesh: &str) -> NodeRow {
-    let name = PathName::new(&format!("{mesh}.rpc"), "north").unwrap();
-    let mut row = NodeRow::new(name.clone(), mesh, NodeKind::RpcNode, node_id, rdm_node::model::NodeStatus::Ready);
+    let name = PathName::new(&format!("{mesh}.node"), "north").unwrap();
+    let mut row = NodeRow::new(name.clone(), mesh, "node", node_id, rdm_node::model::NodeStatus::Ready);
     row.birth_mut(&IncarnationId::mint(), &name);
     row.topology_storage_provider = Some("file".into());
     row
@@ -533,8 +533,8 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
         fabric: "fabric1".into(),
         fabric_id: FabricId::mint(),
         mesh: "mesh1".into(),
-        kind: rdm_core::NodeKind::RpcNode,
-        name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
+        r#type: "node".into(),
+        name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
         node_id: initial.birth.node_id.clone(),
         incarnation: initial.birth.incarnation_id.clone(),
         supersedes: None,

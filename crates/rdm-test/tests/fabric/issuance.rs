@@ -10,7 +10,7 @@
 //! spans, and the testkit's `rdm.testkit.cert.resolve.via-running-node` / `...via-launch` spans, in
 //! which each launched process records the cert it holds (hex) and the issuing cert it was launched with.
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus, PathName};
+use rdm_client::{FabricDesired, MeshDesired, NodeStatus, PathName};
 use rdm_core::NodeId;
 use rdm_core::certs::{self, SignedCert, SignedIssuingCert, VerifyingKey};
 use rdm_test::estate::{named, Estate, Owner};
@@ -70,20 +70,20 @@ fn held_by(spans: &[Value], node: &NodeId) -> Vec<(String, SignedCert)> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    let mesh1 = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)]);
-    let mesh2 = MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]);
+    let mut estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
+    let mesh1 = MeshDesired::of("mesh1", [("node-admin", 2), ("node", 2)]);
+    let mesh2 = MeshDesired::of("mesh2", [("node-admin", 2), ("node", 1)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1, mesh2] }).await;
-    let want: std::collections::BTreeSet<PathName> = [("mesh1.admin", "1"), ("mesh1.admin", "2"), ("mesh1.rpc", "1"), ("mesh1.rpc", "2"), ("mesh2.admin", "1"), ("mesh2.admin", "2"), ("mesh2.rpc", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect();
+    let want: std::collections::BTreeSet<PathName> = [("mesh1.node-admin", "1"), ("mesh1.node-admin", "2"), ("mesh1.node", "1"), ("mesh1.node", "2"), ("mesh2.node-admin", "1"), ("mesh2.node-admin", "2"), ("mesh2.node", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect();
     let views = estate.settles_to_named(&want, Duration::from_secs(30)).await;
 
     // Stop then start the RPC fixture through the Build: a new JoinNode of the same node.
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let before = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
-    let path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+    let before = estate.node_view(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
+    let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
     estate.stop_then_start(&path).await;
-    estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "RPC fixture ready after its stop and start", SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped && n.node_id == before.node_id && n.incarnation_id == before.incarnation_id).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "RPC fixture ready after its stop and start", SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped && n.node_id == before.node_id && n.incarnation_id == before.incarnation_id).map(|_| ())).await;
     let ca = estate.bootstrap_data_dir("mesh1").join("ca-secret");
     estate.stop().await;
     let spans = estate.spans();
@@ -91,7 +91,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
 
     // Every rpc node holds a cert for exactly its birth, verifying to its issuer and the issuer to the root.
     let issued = named(&spans, "rdm.node_admin.cert.create.via-join");
-    for location in [PathName::new("mesh1.rpc", "1").unwrap(), PathName::new("mesh2.rpc", "1").unwrap()] {
+    for location in [PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh2.node", "1").unwrap()] {
         let view = views.iter().find(|v| v.name == location).expect("the node is in the view");
         let node = &view.node_id;
         let held = held_by(&spans, node);
@@ -131,7 +131,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
         let sp = launches.iter().find(|sp| sp["attributes"]["node"] == node.as_str()).unwrap_or_else(|| panic!("no launch span for {node}"));
         certs::decode_issuing_cert(&s(&sp["attributes"]["issuing_cert"])).unwrap_or_else(|e| panic!("{node} was launched with no issuing cert: {e}: {sp}"))
     };
-    for location in [("mesh1.admin", "2"), ("mesh2.admin", "1"), ("mesh2.admin", "2")].map(|(path, name)| PathName::new(path, name).unwrap()) {
+    for location in [("mesh1.node-admin", "2"), ("mesh2.node-admin", "1"), ("mesh2.node-admin", "2")].map(|(path, name)| PathName::new(path, name).unwrap()) {
         let view = views.iter().find(|v| v.name == location).expect("launched admin");
         let node = &view.node_id;
         let mesh = &view.mesh;
@@ -146,7 +146,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
         assert_eq!(ca, issuing.ca, "{node}'s CA is its issuing cert's");
         assert_eq!(sp["attributes"]["ca_key"], "true", "{node} was launched with the fabric CA's key beside the root: {sp}");
     }
-    let mesh2_admins: Vec<_> = views.iter().filter(|v| v.mesh == "mesh2" && v.kind == rdm_core::NodeKind::NodeAdmin).collect();
+    let mesh2_admins: Vec<_> = views.iter().filter(|v| v.mesh == "mesh2" && v.r#type == "node-admin").collect();
     assert_eq!(mesh2_admins.len(), 2);
     assert_eq!(issuing_of(&mesh2_admins[0].node_id), issuing_of(&mesh2_admins[1].node_id), "mesh2's admins carry the one issuer minted at mesh2's birth");
     let minted = named(&spans, "rdm.node_admin.cert.create.via-mesh-birth").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh2").collect::<Vec<_>>();

@@ -590,7 +590,7 @@ mod tests {
     /// "One writer per key: the fabric-primary writes the Fabric record and every topology attempt's Build facts"
     #[test]
     fn fold_steps_and_fold_receipts_map_step_receipts_to_workflow_frames_and_refuse_unknown_steps() {
-        let node: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let node: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let kind = WorkflowKind::Start(node.clone());
         let op = rdm_core::OperationId::location("node.start", &node);
 
@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn step_resume_retains_each_positions_admitted_subject() {
-        let location = PathName::new("services.rpc", "north").unwrap();
+        let location = PathName::new("services.node", "north").unwrap();
         let kind = WorkflowKind::Steps(vec![Step::Stop { node: location.clone() }, Step::Stop { node: location }]);
         let first = rdm_core::OperationId::node("node.stop", &rdm_core::NodeId::mint()).at_step(Some(1));
         let second = rdm_core::OperationId::node("node.stop", &rdm_core::NodeId::mint()).at_step(Some(2)).in_occurrence(rdm_core::OperationOccurrenceId::mint());

@@ -143,7 +143,7 @@ fn silence_marker(inspected: &BTreeMap<PathName, Inspected>, rules: &BTreeMap<St
 
 /// Every admin the view names ready, by its path.name.
 fn ready_admins(nodes: &[Value]) -> Vec<PathName> {
-    nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready").map(|n| location(&n)).collect()
+    nodes.iter().filter(|n| n["type"] == "node-admin" && n["status"] == "ready").map(|n| location(&n)).collect()
 }
 
 /// The views as the JSON the cell records.
@@ -250,7 +250,7 @@ fn span_row(sp: &Value, keys: &[&str]) -> Value {
 /// two meshes (two node-admins and two rpc nodes each), every container of the mesh that does not hold
 /// the fabric-primary is silenced against the rest of the estate (a packet filter in each container's
 /// own network namespace) past the staleness floor, then released. Throughout, every view
-/// sampled holds at most one primary per (mesh, node_type) and at most one fabric-primary, and the
+/// sampled holds at most one primary per (mesh, type) and at most one fabric-primary, and the
 /// fabric-primary stays put. Recovery of the cut mesh's nodes follows node investigation's verdict: every
 /// recovery submitted for one of them names a verdict other than `reached`. After the release every
 /// pre-cut path.name has exactly one live Ready birth and every ready admin's view holds the same
@@ -267,7 +267,7 @@ async fn container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_pe
     let mut estate = Estate::bootstrap(owner(CELL), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     let build_id = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
-    let all: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.admin"), &i.to_string())).chain((1..=2).map(move |i| Estate::path(&format!("{m}.rpc"), &i.to_string())))).collect();
+    let all: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.node-admin"), &i.to_string())).chain((1..=2).map(move |i| Estate::path(&format!("{m}.node"), &i.to_string())))).collect();
     let nodes = values(&estate.settles_to_named(&all, Duration::from_secs(60)).await);
     let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("the view names a fabric primary");
     let kept_mesh = fabric_primary.path.split('.').next().unwrap().to_string();
@@ -285,7 +285,7 @@ async fn container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_pe
     let one_primary = |ns: &[Value]| -> Result<(), String> {
         let mut seen: BTreeMap<(String, String), Vec<PathName>> = BTreeMap::new();
         for n in ns.iter().filter(|n| n["is_primary"] == true && n["status"] == "ready") {
-            seen.entry((s(&n["mesh"]), s(&n["kind"]))).or_default().push(location(&n));
+            seen.entry((s(&n["mesh"]), s(&n["type"]))).or_default().push(location(&n));
         }
         let fps: Vec<PathName> = ns.iter().filter(|n| n["is_fabric_primary"] == true && n["status"] == "ready").map(|n| location(&n)).collect();
         match seen.iter().find(|(_, v)| v.len() > 1) {
@@ -395,7 +395,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     let build_id = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
-    let all: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.admin"), &i.to_string())).chain((1..=2).map(move |i| Estate::path(&format!("{m}.rpc"), &i.to_string())))).collect();
+    let all: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.node-admin"), &i.to_string())).chain((1..=2).map(move |i| Estate::path(&format!("{m}.node"), &i.to_string())))).collect();
     let nodes = values(&estate.settles_to_named(&all, Duration::from_secs(60)).await);
 
     // The side that is cut off is the mesh without the fabric-primary role; control is read through
@@ -403,7 +403,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("the view names a fabric primary");
     let kept_mesh = fabric_primary.path.split('.').next().unwrap().to_string();
     let cut_mesh = if kept_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
-    let kept = nodes.iter().find(|n| n["mesh"] == kept_mesh.as_str() && n["kind"] == "node_admin" && n["status"] == "ready" && n["admin_api_base"].is_string()).expect("a kept admin answers").clone();
+    let kept = nodes.iter().find(|n| n["mesh"] == kept_mesh.as_str() && n["type"] == "node-admin" && n["status"] == "ready" && n["admin_api_base"].is_string()).expect("a kept admin answers").clone();
     let kept_admin = location(&kept);
     estate.enter(&kept_admin).await;
     let nodes = estate.node_values().await;
@@ -411,16 +411,16 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     assert_eq!(mesh_members.len(), 4, "{cut_mesh} holds its four members ready: {mesh_members:?}");
     let isolated_names: Vec<PathName> = match cut {
         Cut::PeerMesh => mesh_members.clone(),
-        Cut::Node => vec![Estate::path(&format!("{cut_mesh}.rpc"), "1")],
+        Cut::Node => vec![Estate::path(&format!("{cut_mesh}.node"), "1")],
     };
     let silenced_subject = if cut == Cut::Node { format!("{:?}", isolated_names[0]) } else { cut_mesh.clone() };
     // A node's own spans and views name it by its node id.
     let id_at = |at: &PathName| node_in(&nodes, at).map(|n| s(&n["node_id"])).unwrap_or_default();
     let isolated_ids: BTreeSet<String> = isolated_names.iter().map(id_at).collect();
     let fabric_primary_id = id_at(&fabric_primary);
-    let target = node_in(&nodes, &Estate::path(&format!("{cut_mesh}.rpc"), "1")).cloned().expect("the isolated mesh's rpc node");
+    let target = node_in(&nodes, &Estate::path(&format!("{cut_mesh}.node"), "1")).cloned().expect("the isolated mesh's rpc node");
     let (target_name, target_id, target_inc) = (location(&target), s(&target["node_id"]), s(&target["incarnation_id"]));
-    let carrier = Estate::path(&format!("{kept_mesh}.rpc"), "1");
+    let carrier = Estate::path(&format!("{kept_mesh}.node"), "1");
     let carrier_id = id_at(&carrier);
     let want_births = births(&nodes);
     let fabric_before = fabric_json(&estate).await;
@@ -449,7 +449,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
 
     // The cut: every container of the mesh silenced against the rest of the estate, held. Each keeps
     // its interface and stays attached to the fabric network.
-    let isolated_admins: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == cut_mesh.as_str() && n["kind"] == "node_admin").map(|n| location(&n)).collect();
+    let isolated_admins: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == cut_mesh.as_str() && n["type"] == "node-admin").map(|n| location(&n)).collect();
     // Q50 A: this is a pre-expiry healing proof. The cut has its own release deadline,
     // independent of the probes, and its plan is refused before any filter is installed.
     let floor = rdm_core::cadence::staleness_floor();
@@ -468,7 +468,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         // unreached, and any verdict but `reached` is "the recovery below, at once": node.delete of the
         // exact birth (TerminateRuntime first) and node.create at the same path.name with a new node.id.
         // The silence is held until that recovery has run, so the old birth is never heard again first.
-        let mesh_primary = nodes.iter().find(|n| n["mesh"] == cut_mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).expect("the silenced node's mesh names its primary node-admin");
+        let mesh_primary = nodes.iter().find(|n| n["mesh"] == cut_mesh.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| location(&n)).expect("the silenced node's mesh names its primary node-admin");
         let mesh_primary_id = id_at(&mesh_primary);
         let old_container = containers_before[&target_name].clone();
         let others: BTreeSet<(PathName, String)> = want_births.iter().filter(|(n, _)| *n != target_name).cloned().collect();
@@ -963,7 +963,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let accepted = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
-    let all: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.admin"), &i.to_string())).chain((1..=2).map(move |i| Estate::path(&format!("{m}.rpc"), &i.to_string())))).collect();
+    let all: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.node-admin"), &i.to_string())).chain((1..=2).map(move |i| Estate::path(&format!("{m}.node"), &i.to_string())))).collect();
     let before = values(&estate.settles_to_named(&all, Duration::from_secs(60)).await);
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
@@ -993,7 +993,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     estate.fabric_ready();
     let mut killed = Vec::new();
     for n in &lost_admins {
-        if estate.bootstrap_pid().is_some() && *n == Estate::path("mesh1.admin", "1") {
+        if estate.bootstrap_pid().is_some() && *n == Estate::path("mesh1.node-admin", "1") {
             estate.kill_bootstrap();
         } else {
             container_faults::docker(&["kill", &containers_before[n]]).unwrap_or_else(|e| panic!("{n:?}: {e}"));
@@ -1052,7 +1052,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     assert_eq!(lost_mesh_rpc_after, lost_mesh_rpc_births, "the lost mesh's rpc nodes were never re-created");
 
     // A recovered rpc node serves.
-    let target = after.iter().find(|n| location(&n) == Estate::path(&format!("{lost_mesh}.rpc"), "1")).cloned().expect("recovered rpc node");
+    let target = after.iter().find(|n| location(&n) == Estate::path(&format!("{lost_mesh}.node"), "1")).cloned().expect("recovered rpc node");
     let put = estate.probe(&["put", "--target", &format!("exact:{}", s(&target["node_id"])), "--key", "lost", "--value", "after-recovery"]);
     assert_eq!(put["outcome"], "Reply", "{put}");
     assert_eq!(put["reply"]["incarnation_id"], target["incarnation_id"], "{put}");
@@ -1066,7 +1066,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     let executor_of = |c: &Value| reconciles.iter().find(|r| r["trace_id"] == c["trace_id"] && attr(r, "attempt") == attr(c, "attempt")).map(|r| attr(r, "executor_node_id").to_string()).expect("the create ran inside a reconcile");
     let admin_creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
-        .filter(|c| attr(c, "build_id") == accepted && attr(c, "node_path") == format!("{lost_mesh}.admin") && at(c) > fault_at)
+        .filter(|c| attr(c, "build_id") == accepted && attr(c, "node_path") == format!("{lost_mesh}.node-admin") && at(c) > fault_at)
         .collect();
     let first = admin_creates.iter().min_by_key(|c| at(c)).copied().expect("the lost mesh's first admin is created after the fault");
     assert_eq!(executor_of(first), primary_id, "the surviving fabric primary ran the first admin's birth");
@@ -1165,7 +1165,7 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
     let lost_mesh = primary.path.split('.').next().unwrap().to_string();
     let survivor_mesh = if lost_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
     // The fabric names its primary by node id: the admins of each mesh, by id.
-    let admin_ids = |mesh: &str| -> BTreeSet<String> { before.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "node_admin").map(|n| s(&n["node_id"])).collect() };
+    let admin_ids = |mesh: &str| -> BTreeSet<String> { before.iter().filter(|n| n["mesh"] == mesh && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect() };
     let (lost_admin_ids, survivor_admin_ids) = (admin_ids(&lost_mesh), admin_ids(&survivor_mesh));
 
     // Every container of the run before the loss, as the daemon holds it.
@@ -1176,7 +1176,7 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
         let ins = container_faults::inspect(&id).unwrap_or_else(|e| panic!("{name:?}: {e}"));
         containers_before.insert(name, (id, ins));
     }
-    let admin_bases: BTreeMap<PathName, String> = before.iter().filter(|n| n["kind"] == "node_admin").map(|n| (location(&n), s(&n["admin_api_base"]))).collect();
+    let admin_bases: BTreeMap<PathName, String> = before.iter().filter(|n| n["type"] == "node-admin").map(|n| (location(&n), s(&n["admin_api_base"]))).collect();
     let run_bases: BTreeSet<String> = admin_bases.values().cloned().collect();
     assert_eq!(run_bases.len(), 4, "four admins, four control endpoints: {run_bases:?}");
     let survivors: Vec<PathName> = admin_bases.keys().filter(|n| n.path.starts_with(&format!("{survivor_mesh}."))).cloned().collect();
@@ -1420,7 +1420,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let floor = rdm_transport::topology::staleness_floor();
     let build_id = estate.accepted_build_id().await;
     let nodes0 = estate.node_values().await;
-    let rpcs: Vec<Value> = nodes0.iter().filter(|n| n["kind"] == "rpc_node").cloned().collect();
+    let rpcs: Vec<Value> = nodes0.iter().filter(|n| n["type"] == "node").cloned().collect();
     assert_eq!(rpcs.len(), 3);
     let (hold_n, kill_n) = (&rpcs[0], &rpcs[1]);
     let (hold, kill) = (location(&hold_n), location(&kill_n));
@@ -1529,7 +1529,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
 
     // ---- A node-admin that is neither mesh primary nor fabric primary: killed by exact container.
     let nodes = estate.node_values().await;
-    let admin_n = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false && n["name"] != "mesh1.admin.1").cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
+    let admin_n = nodes.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == false && n["is_fabric_primary"] == false && n["name"] != "mesh1.node-admin.1").cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
     let admin = location(&admin_n);
     let admin_c = ExactContainer::of(&estate, &admin).await.expect("the admin's container");
     let admin_killed = admin_c.apply(Fault::Kill(estate.fabric_ready())).expect("the admin's exact container is killed");
@@ -1651,7 +1651,7 @@ async fn container_node_silenced_past_the_floor_is_terminated_and_re_created_at_
     let nodes = values(&estate.settled_views(&[("mesh1", 2, 2)]).await);
     let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("the view names a fabric primary");
     // The silenced node holds no node-type primary role: its termination moves none.
-    let target = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["is_primary"] != true).cloned().expect("an rpc node that holds no primary role");
+    let target = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] != true).cloned().expect("an rpc node that holds no primary role");
     let (name, id) = (location(&target), s(&target["node_id"]));
     let old_dir = s(&target["data_dir"]);
     let container = estate.container_of(&name).await.unwrap_or_else(|| panic!("{name:?}: no running container"));

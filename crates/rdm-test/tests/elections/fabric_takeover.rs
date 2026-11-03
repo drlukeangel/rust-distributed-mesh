@@ -33,7 +33,7 @@ fn s(v: &Value) -> String {
 /// A faulted-admin estate (every admin serves the fault door) of `shape`, born ready.
 async fn estate_of(test: &str, shape: &[(&str, u32, u32)]) -> Estate {
     let sha = candidate_sha();
-    let estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"], &[]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", shape).await;
     estate.settles_to(shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
@@ -43,11 +43,11 @@ async fn estate_of(test: &str, shape: &[(&str, u32, u32)]) -> Estate {
 /// Make mesh1 uninspectable to every node-admin outside it (the provider-domain cut), then send
 /// `signal` to every process of mesh1, the Day-0 admin included. The pids signalled.
 async fn lose_mesh1(estate: &Estate, nodes: &[Value], signal: &str) -> Vec<u64> {
-    for n in nodes.iter().filter(|n| n["mesh"] != "mesh1" && n["kind"] == "node_admin") {
+    for n in nodes.iter().filter(|n| n["mesh"] != "mesh1" && n["type"] == "node-admin") {
         Door::at(estate, &location(&n)).await.arm("foreign-domain", json!({"kind": "provider-domain"})).await;
     }
     let mut pids = Vec::new();
-    for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && location(n) != Estate::path("mesh1.admin", "1")) {
+    for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && location(n) != Estate::path("mesh1.node-admin", "1")) {
         pids.push(estate.pid_of(&location(&n)).await);
     }
     pids.extend(estate.bootstrap_pid().map(u64::from));
@@ -65,11 +65,11 @@ async fn lose_mesh1(estate: &Estate, nodes: &[Value], signal: &str) -> Vec<u64> 
 /// every process of mesh1, the Day-0 admin included. The pids killed.
 async fn lose_mesh1_unproven(estate: &Estate, nodes: &[Value]) -> Vec<u64> {
     let mut pids = Vec::new();
-    for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && location(n) != Estate::path("mesh1.admin", "1")) {
+    for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && location(n) != Estate::path("mesh1.node-admin", "1")) {
         pids.push(estate.pid_of(&location(&n)).await);
     }
     pids.extend(estate.bootstrap_pid().map(u64::from));
-    for n in nodes.iter().filter(|n| n["mesh"] != "mesh1" && n["kind"] == "node_admin") {
+    for n in nodes.iter().filter(|n| n["mesh"] != "mesh1" && n["type"] == "node-admin") {
         Door::at(estate, &location(&n)).await.arm("mesh1-unproven", json!({"kind": "provider-unproven", "pids": pids})).await;
     }
     estate.fabric_ready();
@@ -88,19 +88,19 @@ async fn lose_mesh1_unproven(estate: &Estate, nodes: &[Value]) -> Vec<u64> {
 /// (the provider-unproven cut: their inspection answers `Unknown`), and every process of mesh1 is killed.
 /// Fabric recovery does not start before the mark (the staleness floor); from it, mesh2's primary runs
 /// it from the backbone, its node investigation of the lost birth not `reached`, and the node
-/// re-created at mesh1.admin.1 is restored as mesh-primary and fabric-primary. Must NOT happen: fabric
-/// recovery started before the mark, any node but the one at mesh1.admin.1 named fabric-primary, or
+/// re-created at mesh1.node-admin.1 is restored as mesh-primary and fabric-primary. Must NOT happen: fabric
+/// recovery started before the mark, any node but the one at mesh1.node-admin.1 named fabric-primary, or
 /// fabric recovery run by another admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from_the_backbone_on_the_investigations_verdict() {
     let test = "a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from_the_backbone_on_the_investigations_verdict";
     let mut estate = estate_of(test, &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
     let nodes = estate.node_values().await;
-    let fp = &Estate::path("mesh1.admin", "1");
+    let fp = &Estate::path("mesh1.node-admin", "1");
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     assert_eq!(location(&primary), *fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let old_node_id = s(&primary["node_id"]);
-    let backbone_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["is_primary"] == true && n["kind"] == "node_admin").cloned().expect("mesh2's primary");
+    let backbone_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["is_primary"] == true && n["type"] == "node-admin").cloned().expect("mesh2's primary");
     let backbone = location(&backbone_row);
     estate.enter(&backbone).await;
     lose_mesh1_unproven(&estate, &nodes).await;
@@ -136,7 +136,7 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from
 /// `TerminateRuntime`"; Q111: nothing waits for a proof): mesh1, the fabric-primary's mesh, is lost and
 /// its runtimes live in a control domain mesh2's admins do not control (the provider-domain cut), as a
 /// lost host's would. mesh2's admin, running fabric recovery from the backbone, deletes the lost
-/// mesh1.admin.1 all the same: its `TerminateRuntime` reads the runtime `unavailable` and terminates
+/// mesh1.node-admin.1 all the same: its `TerminateRuntime` reads the runtime `unavailable` and terminates
 /// nothing, and its row is written `Deleted`. Must NOT happen: the delete failing on the foreign
 /// runtime, or a terminate sent to it. (The cut also makes this host's own launches read foreign, so
 /// the re-create is `a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir_with_inherited_false`'s.)
@@ -145,21 +145,21 @@ async fn a_lost_fabric_primary_whose_runtime_lives_in_another_control_domain_is_
     let test = "a_lost_fabric_primary_whose_runtime_lives_in_another_control_domain_is_deleted_without_a_terminate";
     let mut estate = estate_of(test, &[("mesh1", 1, 1), ("mesh2", 1, 1)]).await;
     let nodes = estate.node_values().await;
-    let old_id = s(&nodes.iter().find(|n| location(n) == Estate::path("mesh1.admin", "1")).expect("mesh1.admin.1")["node_id"]);
-    let backbone = location(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin").expect("mesh2's admin"));
+    let old_id = s(&nodes.iter().find(|n| location(n) == Estate::path("mesh1.node-admin", "1")).expect("mesh1.node-admin.1")["node_id"]);
+    let backbone = location(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin").expect("mesh2's admin"));
     lose_mesh1(&estate, &nodes, "-KILL").await;
     estate.enter(&backbone).await;
     let floor = rdm_transport::topology::staleness_floor();
-    let deleted = wait_for("the lost mesh1.admin.1's row is written Deleted", floor * 12 + Duration::from_secs(60), || async {
-        let rows = spans_where(&estate.spans(), "rdm.node_admin.node.delete.via-node-row", "subject", &Estate::path("mesh1.admin", "1"));
+    let deleted = wait_for("the lost mesh1.node-admin.1's row is written Deleted", floor * 12 + Duration::from_secs(60), || async {
+        let rows = spans_where(&estate.spans(), "rdm.node_admin.node.delete.via-node-row", "subject", &Estate::path("mesh1.node-admin", "1"));
         rows.into_iter().find(|r| r.contains(&old_id) && r.contains("row-deleted"))
     })
     .await;
     estate.stop().await;
     let spans = estate.spans();
-    let terminates: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &Estate::path("mesh1.admin", "1")) && sp["attributes"]["step"] == "TerminateRuntime").collect();
+    let terminates: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &Estate::path("mesh1.node-admin", "1")) && sp["attributes"]["step"] == "TerminateRuntime").collect();
     assert!(!terminates.is_empty() && terminates.iter().all(|sp| s(&sp["attributes"]["outcome"]) == "complete"), "the delete's TerminateRuntime completes: {terminates:#?}");
-    let inspected: Vec<&Value> = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &Estate::path("mesh1.admin", "1")) && sp["attributes"]["caller"] == "terminate").collect();
+    let inspected: Vec<&Value> = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &Estate::path("mesh1.node-admin", "1")) && sp["attributes"]["caller"] == "terminate").collect();
     assert!(!inspected.is_empty() && inspected.iter().all(|sp| sp["attributes"]["verdict"] == "unavailable"), "the foreign runtime reads unavailable and nothing is terminated: {inspected:#?}");
     eprintln!("deleted without a terminate: {deleted}");
 }
@@ -193,7 +193,7 @@ fn spans_where(spans: &[Value], name: &str, field: &str, at: &PathName) -> Vec<S
 /// at the fabric-primary's path.name, Ready, is restored as mesh-primary and fabric-primary):
 /// mesh1 is the fabric-primary's mesh and is lost, its runtimes uninspectable from mesh2. mesh2's admin
 /// runs fabric recovery from the backbone: its node.delete of the lost birth writes the old row
-/// `Deleted`, and its node.create makes a new node.id at mesh1.admin.1, ready, over a data
+/// `Deleted`, and its node.create makes a new node.id at mesh1.node-admin.1, ready, over a data
 /// dir that is not the old birth's, with a newly minted endpoint key, told `RDM_INHERITED_DATA_DIR=0`;
 /// the old birth's data dir is left as it was. The workflow restores that node as mesh-primary and
 /// fabric-primary, and it installs the roles. Must NOT happen: the old birth's data dir or endpoint
@@ -203,18 +203,18 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
     let test = "a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir_with_inherited_false";
     let mut estate = estate_of(test, &[("mesh1", 1, 1), ("mesh2", 1, 1)]).await;
     let nodes = estate.node_values().await;
-    let old = nodes.iter().find(|n| location(n) == Estate::path("mesh1.admin", "1")).cloned().expect("mesh1.admin.1");
+    let old = nodes.iter().find(|n| location(n) == Estate::path("mesh1.node-admin", "1")).cloned().expect("mesh1.node-admin.1");
     assert_eq!(old["is_fabric_primary"], json!(true), "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let (old_id, old_endpoint) = (s(&old["node_id"]), s(&old["endpoint_id"]));
     let old_dir = estate.bootstrap_data_dir("mesh1");
     let old_key = std::fs::read(old_dir.join("node-key")).expect("the old birth's endpoint key");
-    let backbone = location(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin").expect("mesh2's admin"));
+    let backbone = location(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin").expect("mesh2's admin"));
     lose_mesh1_unproven(&estate, &nodes).await;
     estate.enter(&backbone).await;
     let floor = rdm_transport::topology::staleness_floor();
-    let recreated = new_birth_within(&estate, &Estate::path("mesh1.admin", "1"), &old_id, floor * 12 + Duration::from_secs(120)).await;
+    let recreated = new_birth_within(&estate, &Estate::path("mesh1.node-admin", "1"), &old_id, floor * 12 + Duration::from_secs(120)).await;
     let told = match &recreated {
-        Some(_) => inherited_env(estate.pid_of(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await),
+        Some(_) => inherited_env(estate.pid_of(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await),
         None => None,
     };
     let restored = match &recreated {
@@ -222,7 +222,7 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
             let id = n.node_id.to_string();
             wait_for(&format!("the fabric's views name {id} mesh-primary and fabric-primary"), floor * 12 + Duration::from_secs(60), || async {
                 let views = estate.node_views().await;
-                assert!(views.iter().filter(|v| v.is_fabric_primary).all(|v| v.name == Estate::path("mesh1.admin", "1")), "only the node at mesh1.admin.1 is ever fabric-primary");
+                assert!(views.iter().filter(|v| v.is_fabric_primary).all(|v| v.name == Estate::path("mesh1.node-admin", "1")), "only the node at mesh1.node-admin.1 is ever fabric-primary");
                 views.iter().any(|v| v.node_id.to_string() == id && v.is_fabric_primary && v.is_primary).then_some(())
             })
             .await;
@@ -232,10 +232,10 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
     };
     estate.stop().await;
     let spans = estate.spans();
-    let claims = spans_where(&spans, "rdm.node_admin.node.create.via-node-row", "subject", &Estate::path("mesh1.admin", "1"));
-    let steps = spans_where(&spans, "rdm.node_admin.deployment.update.via-step", "node", &Estate::path("mesh1.admin", "1"));
+    let claims = spans_where(&spans, "rdm.node_admin.node.create.via-node-row", "subject", &Estate::path("mesh1.node-admin", "1"));
+    let steps = spans_where(&spans, "rdm.node_admin.deployment.update.via-step", "node", &Estate::path("mesh1.node-admin", "1"));
     let Some(new) = recreated else {
-        panic!("mesh1.admin.1 was not re-created by fabric recovery; name claims {claims:#?}; create steps {steps:#?}");
+        panic!("mesh1.node-admin.1 was not re-created by fabric recovery; name claims {claims:#?}; create steps {steps:#?}");
     };
     assert_ne!(new.endpoint_id.as_deref(), Some(old_endpoint.as_str()), "a newly minted endpoint key: {new:?}");
     let new_dir = new.data_dir.clone().expect("the re-created admin's data dir");
@@ -243,18 +243,18 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
     assert_eq!(std::fs::read(old_dir.join("node-key")).ok(), Some(old_key), "the old birth's data dir is left as it was");
     assert_eq!(told.as_deref(), Some("0"), "the re-created admin was told inherited = false");
     // The lost birth holds nothing any more: its node.delete wrote its row Deleted.
-    let deleted = spans_where(&spans, "rdm.node_admin.node.delete.via-node-row", "subject", &Estate::path("mesh1.admin", "1"));
+    let deleted = spans_where(&spans, "rdm.node_admin.node.delete.via-node-row", "subject", &Estate::path("mesh1.node-admin", "1"));
     assert!(deleted.iter().any(|r| r.contains(&old_id) && r.contains("row-deleted")), "the lost birth's row is written Deleted by its node.delete: {deleted:#?}");
     // The workflow, run by mesh2's admin from the backbone, restored the re-created admin.
     let ran = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &backbone) && sp["attributes"]["arm"] == "backbone" && s(&sp["attributes"]["outcome"]).starts_with("restored")).count();
-    assert!(restored && ran >= 1, "{backbone:?} ran fabric recovery from the backbone and restored mesh1.admin.1 {}", new.node_id);
+    assert!(restored && ran >= 1, "{backbone:?} ran fabric recovery from the backbone and restored mesh1.node-admin.1 {}", new.node_id);
     estate.record_trace_url(deleted[0].split(' ').next().unwrap_or("").trim_matches('"'));
 }
 
 /// CONTRACT (node-recovery.md "Retained": "the inherited data dir and endpoint key when the verdict is
 /// `exited`"): mesh1 holds the fabric-primary and is lost; mesh2's admin can inspect it, so the old birth's
 /// node.delete reads its runtime exited at its `TerminateRuntime`, and mesh2's primary re-creates
-/// mesh1.admin.1 over the old birth's data dir: a new node.id at mesh1.admin.1, ready, with
+/// mesh1.node-admin.1 over the old birth's data dir: a new node.id at mesh1.node-admin.1, ready, with
 /// the old birth's endpoint key, told `RDM_INHERITED_DATA_DIR=1`. Must NOT happen: a newly allocated
 /// data dir or a newly minted key for an admin whose runtime exited.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -262,13 +262,13 @@ async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_r
     let test = "a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_runtime_exited";
     let mut estate = estate_of(test, &[("mesh1", 1, 1), ("mesh2", 1, 1)]).await;
     let nodes = estate.node_values().await;
-    let old = nodes.iter().find(|n| location(n) == Estate::path("mesh1.admin", "1")).cloned().expect("mesh1.admin.1");
+    let old = nodes.iter().find(|n| location(n) == Estate::path("mesh1.node-admin", "1")).cloned().expect("mesh1.node-admin.1");
     let (old_id, old_endpoint) = (s(&old["node_id"]), s(&old["endpoint_id"]));
     let old_dir = estate.bootstrap_data_dir("mesh1");
-    let winner_name = location(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin").cloned().expect("mesh2's admin"));
+    let winner_name = location(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin").cloned().expect("mesh2's admin"));
     // Lose mesh1, inspectable from mesh2: no provider-domain cut.
     let mut pids = Vec::new();
-    for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && location(n) != Estate::path("mesh1.admin", "1")) {
+    for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && location(n) != Estate::path("mesh1.node-admin", "1")) {
         pids.push(estate.pid_of(&location(&n)).await);
     }
     for pid in pids {
@@ -277,16 +277,16 @@ async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_r
     estate.kill_bootstrap();
     estate.enter(&winner_name).await;
     let floor = rdm_transport::topology::staleness_floor();
-    let recreated = new_birth_within(&estate, &Estate::path("mesh1.admin", "1"), &old_id, floor * 12 + Duration::from_secs(120)).await;
+    let recreated = new_birth_within(&estate, &Estate::path("mesh1.node-admin", "1"), &old_id, floor * 12 + Duration::from_secs(120)).await;
     let told = match &recreated {
-        Some(_) => inherited_env(estate.pid_of(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await),
+        Some(_) => inherited_env(estate.pid_of(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await),
         None => None,
     };
     estate.stop().await;
     let spans = estate.spans();
-    let steps = spans_where(&spans, "rdm.node_admin.deployment.update.via-step", "node", &Estate::path("mesh1.admin", "1"));
+    let steps = spans_where(&spans, "rdm.node_admin.deployment.update.via-step", "node", &Estate::path("mesh1.node-admin", "1"));
     let Some(new) = recreated else {
-        panic!("mesh1.admin.1 was not re-created; create steps {steps:#?}");
+        panic!("mesh1.node-admin.1 was not re-created; create steps {steps:#?}");
     };
     assert_eq!(new.endpoint_id.as_deref(), Some(old_endpoint.as_str()), "the old birth's endpoint key, loaded from its data dir: {new:?}");
     assert_eq!(new.data_dir.as_deref().map(std::path::PathBuf::from), Some(old_dir.clone()), "the old birth's data dir: {new:?}");
@@ -308,12 +308,12 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &PathName, node_id: &
 /// CONTRACT (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives": the backbone
 /// acts only "When the mesh has no node-admin left"; Q335; Q153: "A runtime the executor can inspect
 /// running but cannot reach is unreachable from the executor, not lost"): mesh2's admin that is neither mesh2's primary nor the fabric-primary hears and is
-/// heard by no node (all its UDP dropped) while the fabric-primary mesh1.admin.1 runs. The cut is held
+/// heard by no node (all its UDP dropped) while the fabric-primary mesh1.node-admin.1 runs. The cut is held
 /// past the cut admin's mark of the fabric-primary and past the backbone arm's finding that the fabric-primary's
-/// mesh has a node-admin left (mesh1.admin.2 runs; Q335), so it starts no fabric recovery, and two gossip intervals more. Throughout, the
+/// mesh has a node-admin left (mesh1.node-admin.2 runs; Q335), so it starts no fabric recovery, and two gossip intervals more. Throughout, the
 /// store root holds the fabric-primary's row live and its name held by its node id; no view marks its
 /// birth deleted; nothing is opened for it; and within a floor of the heal every admin's view names
-/// mesh1's members ready and mesh1.admin.1, the same birth, mesh1's one primary and the one
+/// mesh1's members ready and mesh1.node-admin.1, the same birth, mesh1's one primary and the one
 /// fabric-primary, with no wait on any view's retention. Must NOT happen: the fabric-primary's row
 /// written deleted or its name released, a `via-deleted-birth` / `via-node-deleted` for its birth, a
 /// re-create Build of it, or a view without it after the heal.
@@ -328,18 +328,18 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &PathName, node_id: &
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh_left_writes_nothing() {
     let test = "a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh_left_writes_nothing";
-    let fp = &Estate::path("mesh1.admin", "1");
+    let fp = &Estate::path("mesh1.node-admin", "1");
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     let mut estate = estate_of(test, &shape).await;
     let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     assert_eq!(location(&primary), *fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let (fp_id, fp_inc) = (s(&primary["node_id"]), s(&primary["incarnation_id"]));
-    let victim_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] != true && n["is_fabric_primary"] != true).cloned().expect("a mesh2 node-admin that is neither primary");
+    let victim_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] != true && n["is_fabric_primary"] != true).cloned().expect("a mesh2 node-admin that is neither primary");
     let (victim, victim_id) = (location(&victim_row), s(&victim_row["node_id"]));
-    let mesh2_primary_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
+    let mesh2_primary_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
     let (mesh2_primary, mesh2_primary_id) = (location(&mesh2_primary_row), s(&mesh2_primary_row["node_id"]));
-    let admins: Vec<PathName> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| location(&n)).collect();
+    let admins: Vec<PathName> = nodes.iter().filter(|n| n["type"] == "node-admin").map(|n| location(&n)).collect();
     let everyone: Vec<PathName> = nodes.iter().map(|n| location(&n)).collect();
     let mesh1: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == "mesh1").map(|n| location(&n)).collect();
     let others: Vec<PathName> = everyone.iter().filter(|n| **n != victim).cloned().collect();
@@ -382,7 +382,7 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
     // Held past the cut admin's fabric recovery start, at the mark (fabric-recovery.md step 2, Q335).
     let decided = cut_at;
     // And past the backbone arm's check that the fabric-primary's mesh has a node-admin left
-    // (fabric-recovery.md step 2, "When the mesh has no node-admin left"; Q335): mesh1.admin.2 runs, so the
+    // (fabric-recovery.md step 2, "When the mesh has no node-admin left"; Q335): mesh1.node-admin.2 runs, so the
     // cut admin starts no fabric recovery and writes nothing.
     wait_for(&format!("{victim:?} finds a node-admin of mesh1 left and starts no fabric recovery"), floor * 12 + Duration::from_secs(60), || async {
         intact();
@@ -422,7 +422,7 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
             intact();
             let v = estate.node_values_at(admin).await;
             let fps: Vec<PathName> = v.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).collect();
-            let primaries: Vec<PathName> = v.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).collect();
+            let primaries: Vec<PathName> = v.iter().filter(|n| n["mesh"] == "mesh1" && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| location(&n)).collect();
             let ready = mesh1.iter().all(|name| v.iter().any(|n| location(n) == *name && n["status"] == "ready"));
             let same = v.iter().any(|n| location(n) == *fp && s(&n["node_id"]) == fp_id && s(&n["incarnation_id"]) == fp_inc && n["is_primary"] == true && n["is_fabric_primary"] == true);
             (ready && same && fps == vec![fp.clone()] && primaries == vec![fp.clone()]).then_some(())
@@ -500,7 +500,7 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
 /// unreachable from the executor, not lost; a running fabric-primary its own mesh cannot reach is the
 /// own-mesh arm's (Q153)"): mesh1's other node-admin, the lowest Ready one in its own view once
 /// the fabric-primary is unheard, hears and is heard by no node (every datagram to or from its port
-/// dropped) while the fabric-primary mesh1.admin.1 runs and the rest of mesh1 reaches it. The own-mesh arm's
+/// dropped) while the fabric-primary mesh1.node-admin.1 runs and the rest of mesh1 reaches it. The own-mesh arm's
 /// node investigation of the fabric-primary has no eligible peer to tickle through, goes to the provider and
 /// reads it `running`; held two gossip intervals past that read, the store root holds the fabric-primary's
 /// row live and its name held by its node id, nothing is opened against its birth, and after the heal it
@@ -517,14 +517,14 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_and_reads_it_running_writes_nothing() {
     let test = "an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_and_reads_it_running_writes_nothing";
-    let fp = &Estate::path("mesh1.admin", "1");
+    let fp = &Estate::path("mesh1.node-admin", "1");
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     let mut estate = estate_of(test, &shape).await;
     let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     assert_eq!(location(&primary), *fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let (fp_id, fp_inc) = (s(&primary["node_id"]), s(&primary["incarnation_id"]));
-    let victim_row = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && location(n) != *fp).cloned().expect("mesh1's other node-admin");
+    let victim_row = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node-admin" && location(n) != *fp).cloned().expect("mesh1's other node-admin");
     let (victim, victim_id) = (location(&victim_row), s(&victim_row["node_id"]));
     estate.enter(fp).await;
     let root = estate.fabric_store_root();
@@ -611,7 +611,7 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
 /// the name, re-creates the birth as itself, adopts rafka-time from live members, and restores it as
 /// fabric-primary by step 4 once Ready"): a one-mesh fabric's sole node-admin, the
 /// fabric-primary, is killed while its two members serve. A person launches a node-admin at
-/// mesh1.admin.1 over a new data dir, handed the fabric id, mesh1, the store root and the custody in its
+/// mesh1.node-admin.1 over a new data dir, handed the fabric id, mesh1, the store root and the custody in its
 /// environment. It claims the attempt before it writes anything else, releases the lost birth's name,
 /// takes it under a new node.id, joins the members, adopts rafka-time from one of them and is the
 /// fabric-primary and mesh1's primary; its attempt closed, it then grows mesh1 by a Build. Must NOT happen: a second fabric (a new fabric or mesh id on the
@@ -620,7 +620,7 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_its_path_name_that_becomes_fabric_primary() {
     let test = "the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_its_path_name";
-    let fp = &Estate::path("mesh1.admin", "1");
+    let fp = &Estate::path("mesh1.node-admin", "1");
     let shape = [("mesh1", 1, 2)];
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &shape).await;
@@ -631,8 +631,8 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     assert_eq!(location(&primary), *fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let lost_id = s(&primary["node_id"]);
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string());
-    let members: Vec<(PathName, String)> = nodes.iter().filter(|n| n["kind"] != "node_admin").map(|n| (location(&n), s(&n["incarnation_id"]))).collect();
-    let member_ids: Vec<String> = nodes.iter().filter(|n| n["kind"] != "node_admin").map(|n| s(&n["node_id"])).collect();
+    let members: Vec<(PathName, String)> = nodes.iter().filter(|n| n["type"] != "node-admin").map(|n| (location(&n), s(&n["incarnation_id"]))).collect();
+    let member_ids: Vec<String> = nodes.iter().filter(|n| n["type"] != "node-admin").map(|n| s(&n["node_id"])).collect();
     assert_eq!(members.len(), 2, "two members serve: {nodes:#?}");
     let custody = rdm_test::test_certs::custody_of(&estate.bootstrap_data_dir("mesh1"), "mesh1");
     let store = rdm_test::estate::estate_store_dir(&estate.root);
@@ -641,7 +641,7 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     let now_ns = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.kill_bootstrap();
     let lost_at = now_ns();
-    let data_dir = estate.root.join("adopted-mesh1.admin.1");
+    let data_dir = estate.root.join("adopted-mesh1.node-admin.1");
     let fabric_id = estate.fabric_id.clone();
     let mut env: Vec<(&str, String)> = vec![("RDM_NODE_PATH", fp.path.clone()), ("RDM_NODE_NAME", fp.name.clone()), ("RDM_FABRIC_ID", fabric_id.clone()), ("RDM_MESH", "mesh1".into())];
     env.extend(custody);
@@ -651,7 +651,7 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     estate.enter(&adopted).await;
     let after = estate.settles_to(&shape, Duration::from_secs(120)).await;
     let after: Vec<Value> = after.iter().map(|n| serde_json::to_value(n).unwrap()).collect();
-    let new = after.iter().find(|n| location(n) == *fp).cloned().expect("a node at mesh1.admin.1");
+    let new = after.iter().find(|n| location(n) == *fp).cloned().expect("a node at mesh1.node-admin.1");
     assert_ne!(s(&new["node_id"]), lost_id, "a new birth with its own node.id: {new}");
     wait_for("the adopted node-admin is the fabric-primary and mesh1's primary", Duration::from_secs(60), || async {
         let v = estate.node_values().await;

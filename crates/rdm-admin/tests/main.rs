@@ -126,7 +126,7 @@ impl Told {
 
 /// The executable a test request names for a path of `kind`: a file of its own per kind, hashed once,
 /// so the door's acceptance (it hashes every executable a request creates a node on) passes.
-pub fn test_executable(kind: rdm_core::NodeKind) -> rdm_core::binding::Binding {
+pub fn test_executable(r#type: &str) -> rdm_core::binding::Binding {
     use std::os::unix::fs::PermissionsExt;
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     let dir = DIR.get_or_init(|| {
@@ -134,14 +134,14 @@ pub fn test_executable(kind: rdm_core::NodeKind) -> rdm_core::binding::Binding {
         std::fs::create_dir_all(&d).unwrap();
         d
     });
-    let p = dir.join(kind.name());
+    let p = dir.join(r#type);
     if !p.exists() {
-        let tmp = dir.join(format!("{}.{}", kind.name(), rand::random::<u32>()));
-        std::fs::write(&tmp, format!("#!/bin/sh\n# {}\nexit 0\n", kind.name())).unwrap();
+        let tmp = dir.join(format!("{}.{}", r#type, rand::random::<u32>()));
+        std::fs::write(&tmp, format!("#!/bin/sh\n# {}\nexit 0\n", r#type)).unwrap();
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
         let _ = std::fs::rename(&tmp, &p);
     }
-    rdm_core::binding::Binding { launch_id: kind.name().into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
+    rdm_core::binding::Binding { launch_id: r#type.into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
 }
 
 /// `change`, a count form, as the complete-topology request a caller builds from what it reads
@@ -167,7 +167,7 @@ pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, change: 
         .map(|s| {
             let mut s = s.clone();
             if !current.topology.contains(&s.path) && s.executable.is_none() {
-                s.executable = Some(test_executable(s.kind));
+                s.executable = Some(test_executable(&s.r#type));
             }
             s
         })
@@ -189,7 +189,7 @@ pub async fn records_of_views(views: &[&rdm_admin::topology::Topology]) -> std::
     let rows = std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
     let mut seen = std::collections::BTreeSet::new();
     for n in views.iter().flat_map(|t| t.nodes.iter()).filter(|n| seen.insert(n.node_id.clone())) {
-        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), rdm_admin::model::NodeStatus::Ready);
+        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), rdm_admin::model::NodeStatus::Ready);
         if let Some(incarnation) = &n.incarnation_id {
             row.birth_mut(incarnation, &n.name);
         }

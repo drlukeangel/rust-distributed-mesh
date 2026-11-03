@@ -11,7 +11,7 @@ use common::{add_node, admin_side, publish_build, template, LiveMesh, Published}
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_admin::accepted::FabricTopology;
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
-use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{CommandAdmission, Completion,
     CreateRequest, DeploymentPipeline, NodeObserver, DeleteRequest, Timeouts,
 };
@@ -125,11 +125,11 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
             timeouts: timeouts(),
         };
         let created = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: publish_build(&builds, add_node()).await,
                 attempt: 1,
-                node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
-                spec: &RPC_NODE,
+                node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+                spec: &NODE_SPEC,
                 data_dir: None,
                 held_runtimes: Vec::new(), entry: None
             })
@@ -184,11 +184,11 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             template: &template,
             timeouts: timeouts(),
         };
-        let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(),
             build_id,
             attempt: 1,
-            node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
-            spec: &RPC_NODE,
+            node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            spec: &NODE_SPEC,
             data_dir: None,
             held_runtimes: Vec::new(), entry: None
         };

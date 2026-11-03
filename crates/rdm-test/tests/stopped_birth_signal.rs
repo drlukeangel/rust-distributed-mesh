@@ -41,7 +41,7 @@ pub(crate) fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::pat
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
-        kind: rdm_core::NodeKind::RpcNode,
+        r#type: "node".into(),
         name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
@@ -63,7 +63,7 @@ pub(crate) fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::pat
 /// What `root` verifies the join of `launch`'s birth against.
 pub(crate) fn deployed(launch: &Launch) -> Deployed {
     let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-    Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
+    Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
@@ -125,11 +125,11 @@ fn a_stopped_births_signal_runs_no_second_stop() {
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
-        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), &rpc_dir);
+        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node", "1").unwrap(), &rpc_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
         let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the rpc node comes up");
-        until_ready("mesh1.rpc.1", || {
+        until_ready("mesh1.node.1", || {
             let mut d = rpc.digest.clone();
             d.status = *rpc.status.lock().unwrap();
             d
@@ -195,11 +195,11 @@ fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
-        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), &rpc_dir);
+        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node", "1").unwrap(), &rpc_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
         let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the rpc node comes up");
-        until_ready("mesh1.rpc.1", || {
+        until_ready("mesh1.node.1", || {
             let mut d = rpc.digest.clone();
             d.status = *rpc.status.lock().unwrap();
             d

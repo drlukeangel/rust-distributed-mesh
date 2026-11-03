@@ -78,7 +78,7 @@ impl SentBy {
     /// caller's; a node-admin's is the fabric-primary's command sent down, or a carrier of it.
     pub fn of_writer_call(sender: Option<&crate::model::Node>) -> Self {
         match sender {
-            Some(n) if n.kind == rdm_core::NodeKind::NodeAdmin => Self::Other,
+            Some(n) if rdm_core::is_node_admin(&n.r#type) => Self::Other,
             _ => Self::Caller,
         }
     }
@@ -399,7 +399,7 @@ impl NodeConfigs {
 /// The route of a call to `primary`, a primary of `mesh` in `view`: direct first; once an attempt sends
 /// nothing, through each other live node-admin of `mesh` in turn (Forward `0x1A`), never `me_id`.
 fn primary_route(view: &Topology, mesh: &str, primary: &rdm_core::NodeId, me_id: &rdm_core::NodeId) -> rdm_transport::RoutePolicy {
-    let carriers: Vec<(rdm_core::NodeId, crate::model::PathName)> = view.births().filter(|n| n.mesh == mesh && n.kind == rdm_core::NodeKind::NodeAdmin && n.node_id != *primary && n.node_id != *me_id && n.status.is_live()).map(|n| (n.node_id.clone(), n.name.clone())).collect();
+    let carriers: Vec<(rdm_core::NodeId, crate::model::PathName)> = view.births().filter(|n| n.mesh == mesh && rdm_core::is_node_admin(&n.r#type) && n.node_id != *primary && n.node_id != *me_id && n.status.is_live()).map(|n| (n.node_id.clone(), n.name.clone())).collect();
     rdm_transport::RoutePolicy(Arc::new(move |attempt: u32| match carriers.get(attempt.saturating_sub(1) as usize % carriers.len().max(1)) {
         Some((carrier, path)) if attempt > 0 => rdm_transport::route::RouteChoice::ViaPeer { carrier: carrier.clone() },
         _ => rdm_transport::route::RouteChoice::Direct,
@@ -434,7 +434,7 @@ impl NodeConfigs {
         let carried = async {
             let primary = match to {
                 ReadTo::FabricPrimary => view.fabric_primary(),
-                ReadTo::MeshPrimary => view.own(me_id).and_then(|own| view.node_type_primary(&own.mesh, rdm_core::NodeKind::NodeAdmin)),
+                ReadTo::MeshPrimary => view.own(me_id).and_then(|own| view.node_type_primary(&own.mesh, "node-admin")),
             };
             let Some(primary) = primary else {
                 return Err(ReadReply::NotReady { reason: format!("{me_id} answers no {op} from an atlas, and its view names none to send this one on to ({whom})") });
@@ -525,7 +525,7 @@ pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::
                         tracing::Span::current().record(field, me_id.as_str());
                         return Owed::InProcess(view);
                     }
-                    view.node_type_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map(|p| (p.node_id.clone(), p.mesh.clone(), NodeTarget::Primary { mesh: Some(subject.mesh.clone()) })).ok_or_else(|| format!("{} has no mesh-primary in {me_id}'s view", subject.mesh))
+                    view.node_type_primary(&subject.mesh, "node-admin").map(|p| (p.node_id.clone(), p.mesh.clone(), NodeTarget::Primary { mesh: Some(subject.mesh.clone()) })).ok_or_else(|| format!("{} has no mesh-primary in {me_id}'s view", subject.mesh))
                 }
                 Hop::Up | Hop::Root => {
                     if view.is_fabric_primary(me_id) {
@@ -640,7 +640,7 @@ impl NodeConfigs {
         // The writer of the row is the mesh-primary of the node's mesh, and no other admin
         // (fabric-node-lifecycle §4.3); a caller that sent it elsewhere is told whose role it needs.
         if !view.is_mesh_primary(&subject.mesh, me_id) {
-            let held_by = view.node_type_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
+            let held_by = view.node_type_primary(&subject.mesh, "node-admin").map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
             let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me_id} does not hold it)", subject.mesh, subject.node_id);
             span.record("detail", needed.as_str());
             return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
@@ -722,7 +722,7 @@ mod tests {
     async fn local_and_downward_config_use_the_same_durable_writer() {
         use crate::storage::NodesStorage as _;
         use rdm_core::properties::EntryProperties;
-        let mut admin = Node::allocated(rdm_core::PathName::new("unrelated.path", "admin").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let mut admin = Node::allocated(rdm_core::PathName::new("unrelated.path", "admin").unwrap(), "mesh1", "node-admin");
         admin.status = NodeStatus::Ready; admin.stopped = true;
         admin.is_primary = true; admin.is_fabric_primary = true;
         admin.incarnation_id = Some(IncarnationId::mint());

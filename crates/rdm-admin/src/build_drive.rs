@@ -30,7 +30,7 @@ use crate::build_claim::ClaimDoor;
 use crate::build_state::{AttemptOutcome, BuildAttemptReceipt, BuildProjection, BuildState, BuildStateAdapter, BuildStateError};
 use crate::executor::{lead_for, run_of, RunPlan};
 use crate::build::BuildOperation;
-use crate::model::{NodeKind, PathName};
+use crate::model::{PathName};
 use crate::topology::Topology;
 use rdm_core::build::BuildReply;
 use rdm_core::build_claim::BuildClaimReply;
@@ -173,7 +173,7 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::Step { step: Step::Stop { node } | Step::Delete { node } | Step::DeleteConnections { node }, .. }
-            if op.kind() == Some(NodeKind::NodeAdmin) =>
+            if op.r#type().as_deref().is_some_and(rdm_core::is_node_admin) =>
         {
             [PrimaryRole::MeshPrimary, PrimaryRole::FabricPrimary].into_iter().map(|role| PrecedingUpdate { run, mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(role, &key), primary: op.subject() }).collect()
         }
@@ -182,7 +182,7 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::Step { step: Step::Stop { node } | Step::Delete { node } | Step::DeleteConnections { node }, .. } => {
-            vec![PrecedingUpdate { run, mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(PrimaryRole::NodeTypePrimary(op.kind().expect("node operation has kind")), &key), primary: op.subject() }]
+            vec![PrecedingUpdate { run, mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(PrimaryRole::of_type(&op.r#type().expect("a node operation has a type")), &key), primary: op.subject() }]
         }
         _ => Vec::new(),
     }
@@ -1488,7 +1488,7 @@ impl DriveEnv {
                         // nothing of its superseded attempt (build.md, `StaleClaim`).
                         let mesh = op.mesh().unwrap_or_default();
                         let held = self.builds.read_build(&id).await.is_ok_and(|p| p.attempt == attempt && p.executor.as_ref() == Some(&executor));
-                        if held && !t.nodes_of_type(mesh, NodeKind::NodeAdmin).any(|n| n.status == crate::model::NodeStatus::Ready) {
+                        if held && !t.nodes_of_type(mesh, "node-admin").any(|n| n.status == crate::model::NodeStatus::Ready) {
                             self.verdict(&me, &executor, BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: self.door.node_id.clone() } }, None).await;
                             self.release_mesh(&id, attempt, &executor).await;
                         }
@@ -1945,7 +1945,7 @@ impl DriveEnv {
         // attempt waits, named, for the election's result.
         let recovery = first.as_ref().filter(|op| matches!(op, BuildOperation::CreateNode { .. } | BuildOperation::DeleteLiveNode { .. }) && mesh_primary_recovery_admits(p, op));
         let next_primary = match (recovery, p.action.as_ref()) {
-            (Some(op), Some(crate::accepted::AttemptAction::Recover { path, mesh, node_id, .. })) if op.kind() == Some(NodeKind::NodeAdmin) => match crate::executor::unheard_mesh_primary_executor(path, mesh, node_id, &view) {
+            (Some(op), Some(crate::accepted::AttemptAction::Recover { path, mesh, node_id, .. })) if op.r#type().as_deref().is_some_and(rdm_core::is_node_admin) => match crate::executor::unheard_mesh_primary_executor(path, mesh, node_id, &view) {
                 Some(to) => Some(to),
                 None => {
                     let admins: Vec<String> = crate::executor::held_admins(mesh, Some(path), &view).into_iter().map(|n| format!("node {} ({:?})", n.node_id, n.status)).collect();
@@ -2034,7 +2034,7 @@ impl DriveEnv {
             let Some(mesh) = op.mesh().map(str::to_owned) else { continue };
             let to = crate::executor::executor_for(&op, t);
             match to {
-                Some(to) if to != self.door.node_id && !kept.contains(&mesh) && crate::executor::section_create(&op, t, &to) && p.topology.meshes.get(&mesh).and_then(|m| m.spec(&node)).is_some_and(|spec| !t.first_admin_of(&node, &mesh, spec.kind)) && self.unheard_peer(&op).is_none() => {
+                Some(to) if to != self.door.node_id && !kept.contains(&mesh) && crate::executor::section_create(&op, t, &to) && p.topology.meshes.get(&mesh).and_then(|m| m.spec(&node)).is_some_and(|spec| !t.first_admin_of(&node, &mesh, &spec.r#type)) && self.unheard_peer(&op).is_none() => {
                     by.entry(mesh.clone()).or_insert_with(|| (to, Vec::new())).1.push(op);
                 }
                 _ => {
@@ -2613,7 +2613,7 @@ mod tests {
         let fabric_id_for_assert = fabric_id.clone();
 
         let (started_ctx, ended_complete, ended_failed) = rt.block_on(async move {
-            let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+            let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
             let contexts = Arc::new(crate::build_claim::AttemptContexts::in_memory());
             let call_ctx = CallContext {
                 caller_system: Some("test-caller".into()),

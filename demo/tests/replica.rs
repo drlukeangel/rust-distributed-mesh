@@ -11,7 +11,7 @@
 use rdm_client::binding::{sha256_file, Binding, BindingSet, Candidate};
 use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::{NodeId, NodeKind, PathName};
+use rdm_core::{NodeId, PathName};
 use rdm_test::estate::{Estate, Owner};
 use rdm_transport::{Resend, CallOptions, NodeTarget};
 use rshape_consumer::replica::{Records, RecordsReply, RecordsRequest};
@@ -19,10 +19,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 fn gateway() -> PathName {
-    PathName::numbered("mesh1", NodeKind::Gateway, 1)
+    PathName::numbered("mesh1", "gateway", 1)
 }
 fn brokers() -> [PathName; 2] {
-    [PathName::numbered("mesh1", NodeKind::Broker, 1), PathName::numbered("mesh1", NodeKind::Broker, 2)]
+    [PathName::numbered("mesh1", "broker", 1), PathName::numbered("mesh1", "broker", 2)]
 }
 const SETTLE: Duration = Duration::from_secs(120);
 const TOPIC: &str = "orders";
@@ -39,7 +39,7 @@ fn binding_set(candidate: &str) -> BindingSet {
         Binding { launch_id: launch_id.into(), executable, sha256, image: None }
     };
     let bindings = vec![
-        bind("node_admin", env!("CARGO_BIN_EXE_rshape-node-admin")),
+        bind("node-admin", env!("CARGO_BIN_EXE_rshape-node-admin")),
         bind("gateway", env!("CARGO_BIN_EXE_rshape-gateway")),
         bind("broker", env!("CARGO_BIN_EXE_rshape-broker")),
     ];
@@ -105,7 +105,7 @@ fn the_gateway_produces_at_the_broker_primary_and_follows_its_election_with_no_a
     tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap().block_on(async {
         let candidate = candidate();
         let estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&candidate), &candidate, &["gateway", "broker"]).await.unwrap_or_else(|e| panic!("the demo's binding set is refused: {e}"));
-        estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Gateway, 1), (NodeKind::Broker, 2)])] }).await;
+        estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("gateway", 1), ("broker", 2)])] }).await;
         let [first_broker, second_broker] = brokers();
         for node in [gateway(), first_broker, second_broker] {
             ready(&estate, &node).await;

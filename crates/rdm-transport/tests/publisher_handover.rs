@@ -30,11 +30,11 @@ fn attr(sp: &Value, k: &str) -> String {
     }
 }
 
-fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, port: u16) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> MeshDigest {
     let node_id = NodeId::mint();
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+        node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
             name,
             endpoint_id: EndpointId(format!("key-{node_id}")),
@@ -90,7 +90,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 }
 
 fn op_of(d: &MeshDigest, operation: &str) -> LifecycleOp {
-    LifecycleOp { kind: d.node.kind, mesh: d.node.mesh.clone(), build_id: "81ey2zm6h456".into(), attempt: 1, operation: rdm_core::OperationId::new(operation, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+    LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "81ey2zm6h456".into(), attempt: 1, operation: rdm_core::OperationId::new(operation, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
 }
 
 fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {
@@ -98,19 +98,19 @@ fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {
 }
 
 /// CONTRACT (R-RX3; R-RX2; R-RX1): through real gossip on mesh1's channel, the ordinary member
-/// mesh1.rpc.1 holds mesh1's projection from its primary mesh1.admin.1, then from mesh1.admin.2 once
+/// mesh1.node.1 holds mesh1's projection from its primary mesh1.node-admin.1, then from mesh1.node-admin.2 once
 /// the role moved (its full, then its delta). Four frames, each published before what the member
 /// holds of its source and each sent once, arrive after it:
-/// - mesh1.admin.1's full of mesh1, stamped (`published_at_rafka_ms`) before the successor's, at a
+/// - mesh1.node-admin.1's full of mesh1, stamped (`published_at_rafka_ms`) before the successor's, at a
 ///   higher `topology_version` than the successor holds;
-/// - mesh1.admin.1's delta of mesh1, stamped the same;
-/// - mesh1.admin.2's NodeStopped of mesh1.rpc.4 at a `topology_version` below its NodeDeleting of
-///   mesh1.rpc.3, which the member already holds;
-/// - mesh1.rpc.2's heartbeat at a `digest_seq` below the one the member holds.
+/// - mesh1.node-admin.1's delta of mesh1, stamped the same;
+/// - mesh1.node-admin.2's NodeStopped of mesh1.node.4 at a `topology_version` below its NodeDeleting of
+///   mesh1.node.3, which the member already holds;
+/// - mesh1.node.2's heartbeat at a `digest_seq` below the one the member holds.
 /// The receive path ignores each by name (`via-stale` for the lifecycle projection revision,
 /// `via-stale` for the other keyed families), naming
 /// the channel, the frame, its source, the key held and the key offered. The member keeps the
-/// successor's projection at its version, holds no stop of mesh1.rpc.4, holds mesh1.rpc.2 at the
+/// successor's projection at its version, holds no stop of mesh1.node.4, holds mesh1.node.2 at the
 /// newer heartbeat, and marks no source desynchronized. Must NOT happen: a frame refused for who
 /// published it (`via-predecessor-publisher`, `via-non-primary-publisher`), an unknown-revision repair, the
 /// member switched back to the predecessor's projection, a late stop held.
@@ -126,7 +126,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         }
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let (p1_d, p2_d, rpc1, rpc2, rpc3, rpc4) = (digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 41_001), digest(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 41_002), digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 41_011), digest(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 41_012), digest(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 41_013), digest(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 41_014));
+        let (p1_d, p2_d, rpc1, rpc2, rpc3, rpc4) = (digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 41_001), digest(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 41_002), digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 41_011), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 41_012), digest(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", 41_013), digest(rdm_core::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node", 41_014));
         let m1 = TopologyView::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, p1_d.node.node_id.as_str(), clock(), vec![], &[]).await.unwrap();
         let m2 = TopologyView::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, p2_d.node.node_id.as_str(), clock(), vec![a1.clone()], &[]).await.unwrap();
         let m = TopologyView::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, rpc1.node.node_id.as_str(), clock(), vec![a1.clone()], &[]).await.unwrap();
@@ -143,17 +143,17 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
             }
         }
 
-        // mesh1.admin.1 is primary and publishes: the member holds its projection.
+        // mesh1.node-admin.1 is primary and publishes: the member holds its projection.
         bb1.hold_primary(PrimaryRole::MeshPrimary, primary_of(&p1_d, 1));
         bb1.set_mesh_primary(true);
         bb1.publish(&m1, bb1.own_members(&m1)).await;
-        until("the member to hold mesh1.admin.1's projection", || held_at_member().is_some_and(|(p, _)| p == pub1)).await;
+        until("the member to hold mesh1.node-admin.1's projection", || held_at_member().is_some_and(|(p, _)| p == pub1)).await;
         let (_, pred_version) = held_at_member().unwrap();
-        // The instant mesh1.admin.1's late frames are stamped with: before the successor publishes.
+        // The instant mesh1.node-admin.1's late frames are stamped with: before the successor publishes.
         let pred_stamp = m1.clock().now_rafka_ms();
         tokio::time::sleep(Duration::from_millis(5)).await;
 
-        // The role moves to mesh1.admin.2: its full, then its delta.
+        // The role moves to mesh1.node-admin.2: its full, then its delta.
         bb1.set_mesh_primary(false);
         bb2.hold_primary(PrimaryRole::MeshPrimary, primary_of(&p2_d, 2));
         bb2.set_mesh_primary(true);
@@ -165,19 +165,19 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         until("the member to apply the successor's delta", || held_at_member().is_some_and(|(p, v)| p == pub2 && v > v1)).await;
         let (_, v2) = held_at_member().unwrap();
 
-        // mesh1.admin.2 executes mesh1.rpc.3's delete: its NodeDeleting at the version it moved to.
+        // mesh1.node-admin.2 executes mesh1.node.3's delete: its NodeDeleting at the version it moved to.
         let deleting = op_of(&rpc3, "delete-node");
         let (_, deleting_version) = bb2.publish_status_event(StatusEvent::Deleting, &deleting).await;
-        until("the member to hold mesh1.rpc.3's NodeDeleting", || m.digest_view.in_flight().contains(&deleting)).await;
-        // mesh1.rpc.2's heartbeat at digest_seq 7.
+        until("the member to hold mesh1.node.3's NodeDeleting", || m.digest_view.in_flight().contains(&deleting)).await;
+        // mesh1.node.2's heartbeat at digest_seq 7.
         m2.forward(&Frame::Digest { digest: with_seq(&rpc2, 7) }).await.unwrap();
-        until("the member to hold mesh1.rpc.2 at digest_seq 7", || seq_at_member(&rpc2) == Some(7)).await;
+        until("the member to hold mesh1.node.2 at digest_seq 7", || seq_at_member(&rpc2) == Some(7)).await;
 
         // The late frames, each published before what the member holds of its source.
         let late_full = Frame::MeshTopology {
             mesh: "mesh1".into(),
             publisher: pub1.clone(),
-            forwarded_by: Some("mesh1.admin.1".into()),
+            forwarded_by: Some("mesh1.node-admin.1".into()),
             topology_version: v2 + 7,
             published_at_rafka_ms: pred_stamp,
             snapshot_id: 9_001,
@@ -257,13 +257,13 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         learn_addresses(&forwarder.ep, &[source_addr.clone()]).unwrap();
         learn_addresses(&member.ep, &[forwarder_addr.clone()]).unwrap();
         let (source_mesh, own_mesh) = (MeshId::mint(), MeshId::mint());
-        let source_birth = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, 42001);
-        let forwarder_birth = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 42002);
+        let source_birth = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 42001);
+        let forwarder_birth = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 42002);
         let author = PublisherId::from(&source_birth.node);
         let src = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh2", &source_mesh, source_birth.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let fwd = TopologyView::join(&forwarder.gossip, &forwarder.ep, &fabric(), "mesh1", &own_mesh, forwarder_birth.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         // Deliberately a different exact birth at the author's descriptive path.
-        let impostor = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, 42003);
+        let impostor = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 42003);
         assert_ne!(impostor.node.node_id, author.node_id);
         fwd.digest_view.record(impostor);
         let source_bb = Backbone::join(&source.gossip, &source.ep, &src, "mesh2", author.clone(), vec![]).await.unwrap();
@@ -278,7 +278,7 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         assert_eq!(held_author, author, "receipt keeps the supplied author, not the same-name member");
 
         // This neighbour joins after the empty source installed: its baseline is a replayed full.
-        let own = digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 42004);
+        let own = digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 42004);
         let mem = TopologyView::join(&member.gossip, &member.ep, &fabric(), "mesh1", &own_mesh, own.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![forwarder_addr], &[]).await.unwrap();
         until("the new neighbour to install the forwarded replay", || mem.held_source_version("mesh2").is_some()).await;
         assert_eq!(mem.held_source_version("mesh2"), Some((author.clone(), version)));
@@ -292,7 +292,7 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         assert_eq!(read.held_source_version("mesh2"), Some((author.clone(), version)), "a topology read retains the same exact author");
 
         // A subsequent material change uses the same author through the delta path.
-        source_bb.publish(&src, vec![digest(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, 42005)]).await;
+        source_bb.publish(&src, vec![digest(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", 42005)]).await;
         until("the member to apply the next source version", || mem.held_source_version("mesh2").is_some_and(|(_, v)| v > version)).await;
         assert_eq!(mem.held_source_version("mesh2").unwrap().0, author);
         for n in [&source, &forwarder, &member, &reader] { n.ep.close().await; }

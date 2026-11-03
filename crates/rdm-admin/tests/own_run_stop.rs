@@ -19,7 +19,7 @@
 //! build_run rig's stops were all commanded from outside the run (`gate.quiesce()` on a task of the
 //! cell's own), so a run commanding the stop of the gate it holds a turn of had no row.
 //!
-//! The rows. Each runs on the build_run rig: `mesh1.admin.1`'s executor door with its own gate, the
+//! The rows. Each runs on the build_run rig: `mesh1.node-admin.1`'s executor door with its own gate, the
 //! fabric-primary of a one-mesh fabric, and a run whose one operation is the cell's. The gate does not
 //! tell a stop, a connections delete and a delete apart: each holds the admin's tasks
 //! through the one `Session::hold_tasks(commanded_by)`, so the first row runs every one of them.
@@ -124,13 +124,13 @@ impl OperationRunner for OwnAdmin {
     }
 }
 
-/// `mesh1.admin.1`, the fabric-primary of a one-mesh fabric, its executor door and gate, attempt 1 of
+/// `mesh1.node-admin.1`, the fabric-primary of a one-mesh fabric, its executor door and gate, attempt 1 of
 /// the cell's Build claimed for it, and a run of `op`.
 async fn executor(calls: &Arc<Calls>, hold: Hold, op: BuildOperation) -> (RunDoor, StopGate, RunPlan) {
     let memory = Arc::new(MemoryBuildStateAdapter::new());
     let runs = Arc::new(AttemptRuns::default());
     let builds: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(memory.clone(), runs.clone()));
-    let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
     admin.status = NodeStatus::Ready;
     admin.is_primary = true;
     admin.is_fabric_primary = true;
@@ -155,19 +155,19 @@ async fn executor(calls: &Arc<Calls>, hold: Hold, op: BuildOperation) -> (RunDoo
         .await
         .unwrap();
     memory.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
-    let door = RunDoor { me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), builds, exec, runs, local: memory.clone(), gate: gate.clone() };
+    let door = RunDoor { me: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), builds, exec, runs, local: memory.clone(), gate: gate.clone() };
     (door, gate, RunPlan { operations: vec![op], hand_off_to: None })
 }
 
-/// The three operations of `mesh1.admin.1` on itself whose stop its own run commands.
+/// The three operations of `mesh1.node-admin.1` on itself whose stop its own run commands.
 fn own_operations() -> Vec<BuildOperation> {
-    let node: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+    let node: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     let (node_id, birth) = (NodeId::mint(), IncarnationId::mint());
-    let pinned = rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id: node_id.clone(), incarnation: birth.clone() };
+    let pinned = rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: node_id.clone(), incarnation: birth.clone() };
     vec![
-        BuildOperation::StopNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), node: node.clone(), node_id: node_id.clone(), from_incarnation: birth.clone() },
-        BuildOperation::DeleteConnections { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), node: node.clone(), node_id, from_incarnation: birth },
-        BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), node, exited: None, birth: Some(pinned) },
+        BuildOperation::StopNode { r#type: "node-admin".into(), mesh: "mesh1".into(), node: node.clone(), node_id: node_id.clone(), from_incarnation: birth.clone() },
+        BuildOperation::DeleteConnections { r#type: "node-admin".into(), mesh: "mesh1".into(), node: node.clone(), node_id, from_incarnation: birth },
+        BuildOperation::DeleteLiveNode { r#type: "node-admin".into(), mesh: "mesh1".into(), node, exited: None, birth: Some(pinned) },
     ]
 }
 
@@ -227,7 +227,7 @@ async fn its_own_runs_stop_connections_delete_or_delete_of_itself_holds_inside_t
 #[tokio::test(start_paused = true)]
 async fn the_hold_every_other_stop_takes_commanded_from_inside_the_run_waits_on_that_run_until_the_bound() {
     let calls = Arc::new(Calls::default());
-    let op = BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), exited: None, birth: Some(rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id: NodeId::mint(), incarnation: IncarnationId::mint() }) };
+    let op = BuildOperation::DeleteLiveNode { r#type: "node-admin".into(), mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), exited: None, birth: Some(rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }) };
     let (door, _gate, plan) = executor(&calls, Hold::EveryTurn, op).await;
     let Attached::Live { mut reader, .. } = door.attempt_run(&build_id(), 1, &door.exec.executor, &CallContext::default(), &plan).await else { panic!("the claimed attempt is started") };
     let begun = tokio::time::Instant::now();
@@ -269,7 +269,7 @@ where
 }
 
 /// CONTRACT (node-stop.md: the mesh-primary's StopNode to the exact birth; stop_gate.rs: a stop another
-/// node commands waits for every turn): a stop of `mesh1.admin.1` that another Build's executor
+/// node commands waits for every turn): a stop of `mesh1.node-admin.1` that another Build's executor
 /// commands (`commanded_by` names that Build, not the one running here) while this admin's run of the
 /// cell's Build is inside its operation waits for that run, and resolves once it ends. Must NOT happen:
 /// a stop that excludes the turns of a Build other than its commander's.
@@ -279,7 +279,7 @@ async fn a_stop_commanded_by_another_builds_executor_waits_for_the_run_in_progre
 }
 
 /// CONTRACT (node-stop.md steps 2-4 with the node its own subject, i146 Q55: a signal's stop; stop_gate.rs):
-/// a stop of `mesh1.admin.1` from its own signal (no commander: `quiesce()`) while its run is inside its
+/// a stop of `mesh1.node-admin.1` from its own signal (no commander: `quiesce()`) while its run is inside its
 /// operation waits for that run, and resolves once it ends. Must NOT happen: a signal's stop that cuts
 /// while a run is mid-operation.
 #[tokio::test(start_paused = true)]
@@ -288,13 +288,13 @@ async fn a_stop_of_itself_from_a_signal_waits_for_the_run_in_progress_and_resolv
 }
 
 /// CONTRACT (stop_gate.rs: `quiesce_commanded_by` "waits for every turn but that Build's"): a stop
-/// `mesh1.admin.1`'s own run commands, while another task of the admin (`backbone`) is in its turn,
+/// `mesh1.node-admin.1`'s own run commands, while another task of the admin (`backbone`) is in its turn,
 /// waits for that turn and resolves once it ends, inside the bound. Must NOT happen: a stop its own run
 /// commands that skips every turn, so the admin's other work runs on past its cut.
 #[tokio::test(start_paused = true)]
 async fn a_stop_its_own_run_commands_still_waits_for_every_turn_that_is_not_that_builds() {
     let calls = Arc::new(Calls::default());
-    let op = BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), exited: None, birth: Some(rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id: NodeId::mint(), incarnation: IncarnationId::mint() }) };
+    let op = BuildOperation::DeleteLiveNode { r#type: "node-admin".into(), mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), exited: None, birth: Some(rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }) };
     let (door, gate, plan) = executor(&calls, Hold::CommandedBy, op).await;
     let other = gate.turn("backbone").await;
     let Attached::Live { mut reader, .. } = door.attempt_run(&build_id(), 1, &door.exec.executor, &CallContext::default(), &plan).await else { panic!("the claimed attempt is started") };

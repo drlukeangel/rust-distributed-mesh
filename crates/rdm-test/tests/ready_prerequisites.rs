@@ -15,7 +15,7 @@ use rdm_admin::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt,
     ClaimOutcome, MemoryBuildStateAdapter, StepOutcome,
 };
-use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{
     CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Publication, Timeouts, READY_PREREQUISITES,
 };
@@ -125,7 +125,7 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
         template: &template,
         timeouts: Timeouts::default(),
     };
-    let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+    let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
     let result = pipeline.create(&req).await;
     let view = builds.read_build(&build_id).await.unwrap();
     let complete = |s: CreateStep| view.steps.iter().any(|r| r.step == s.name() && r.outcome == StepOutcome::Complete);
@@ -234,7 +234,7 @@ fn ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline() {
             template: &template,
             timeouts: Timeouts { ready: Duration::from_secs(120), ..Timeouts::default() },
         };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id, attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id, attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let asked = std::time::Instant::now();
         let err = pipeline.create(&req).await.err().expect("a create over an exited runtime");
         assert!(asked.elapsed() < Duration::from_secs(60), "the create waited {:?} on a runtime already proven exited", asked.elapsed());

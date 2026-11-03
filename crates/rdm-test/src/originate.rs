@@ -12,7 +12,7 @@ use crate::faults::StorageFault;
 use crate::testkit_store::{TestkitStoreReply, TestkitStoreRequest, TestkitStore};
 use rdm_core::connections::{resolve, CarrierPolicy, ConnectionState, NodeConnection};
 use rdm_core::launch::Launch;
-use rdm_core::{NodeKind, PathName};
+use rdm_core::{PathName};
 use rdm_node::connections_writer::ConnectionsWriter;
 use rdm_transport::{CallOptions, LiveNodeResolver, NodeResolver, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
@@ -23,7 +23,9 @@ use std::sync::Arc;
 
 /// The carrier policy the testkit applies to its testkit-store calls: proxied through an rpc
 /// node (the product's own policies are the product's).
-pub const POLICY: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
+pub fn policy() -> CarrierPolicy {
+    CarrierPolicy::Proxy { carrier_type: "node".into() }
+}
 
 /// The originate door protocol on op `0x73`.
 pub struct Originate;
@@ -443,9 +445,9 @@ pub struct Seams {
     pub own_config: Arc<std::sync::OnceLock<rdm_node::node::OwnConfig>>,
 }
 
-/// Serve the door on this node's own seams, with the testkit's default carrier policy ([`POLICY`]).
+/// Serve the door on this node's own seams, with the testkit's default carrier policy ([`policy`]).
 pub fn serve(b: ServerBuilder, seams: Seams, launch: &Launch) -> ServerBuilder {
-    serve_with_policy(b, seams, launch, POLICY)
+    serve_with_policy(b, seams, launch, policy())
 }
 
 /// Serve the door with the carrier policy the serving application declares: a Proxy held for a
@@ -461,6 +463,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
         let by = AnsweredBy { node_id: node_id.clone(), node: own.clone(), incarnation_id: incarnation_id.clone() };
         let seams = seams.clone();
         let launch_node_id = launch_node_id.clone();
+        let policy = policy.clone();
         async move {
             Ok(match req {
                 OriginateRequest::Call { destination, op } => call(&by, &seams, &launch_node_id, &destination, op, policy).await,
@@ -582,7 +585,7 @@ async fn stream(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::NodeId, 
     let Some(dialer) = seams.data_plane.get() else {
         return failed("no-data-plane-alpn: this node registered no data-plane ALPN".into());
     };
-    let birth = rdm_transport::connections::Birth { mesh: target.mesh.clone(), kind: target.kind, name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
+    let birth = rdm_transport::connections::Birth { mesh: target.mesh.clone(), r#type: target.r#type.clone(), name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
     let conn = match dialer.open(&birth).await {
         Ok(c) => c,
         Err(e) => return failed(format!("open: {e:?}")),
@@ -625,7 +628,7 @@ async fn throughput(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::Node
     let Some(dialer) = seams.data_plane.get() else {
         return failed("no-data-plane-alpn: this node registered no data-plane ALPN".into());
     };
-    let birth = rdm_transport::connections::Birth { mesh: target.mesh.clone(), kind: target.kind, name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
+    let birth = rdm_transport::connections::Birth { mesh: target.mesh.clone(), r#type: target.r#type.clone(), name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
     let opened = std::time::Instant::now();
     let conn = match dialer.open(&birth).await {
         Ok(c) => c,
@@ -688,7 +691,7 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::No
         seams.connections.direct_failed(&dest, "testkit seed: the direct dial ended NotSent");
     }
     seams.connections.observations_landed().await;
-    let end = |n: &rdm_transport::ResolvedNode| ConnectionEnd { mesh: n.mesh.clone(), kind: n.kind, name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
+    let end = |n: &rdm_transport::ResolvedNode| ConnectionEnd { mesh: n.mesh.clone(), r#type: n.r#type.clone(), name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let row = NodeConnection {
         id: rdm_core::ConnectionId::mint(),
         source: seams.connections.own(),
@@ -810,8 +813,8 @@ mod tests {
     use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionsHeld, EffectiveRoute};
     use rdm_core::{IncarnationId, NodeId};
 
-    fn end(kind: NodeKind, ordinal: u32, inc: &str) -> ConnectionEnd {
-        ConnectionEnd { mesh: "mesh1".into(), kind: kind, name: PathName::numbered("mesh1", kind, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap()) }
+    fn end(r#type: &str, ordinal: u32, inc: &str) -> ConnectionEnd {
+        ConnectionEnd { mesh: "mesh1".into(), r#type: r#type.to_string(), name: PathName::numbered("mesh1", r#type, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap()) }
     }
 
     fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
@@ -823,18 +826,18 @@ mod tests {
     /// route stays Direct, the Proxy is not deleted) under the default rpc_node policy.
     #[test]
     fn door_resolves_a_gateway_carried_proxy_only_under_a_gateway_policy() {
-        let (own, carrier, dest) = (end(NodeKind::Compute, 1, "o1"), end(NodeKind::Gateway, 1, "c1"), end(NodeKind::Broker, 1, "d1"));
+        let (own, carrier, dest) = (end("compute", 1, "o1"), end("gateway", 1, "c1"), end("broker", 1, "d1"));
         let mut held = ConnectionsHeld::new();
         held.set_own_source(own.node_id.clone());
         held.mark_complete();
         held.apply(row(&carrier, &dest, ConnectionKind::Direct, None, 10)).unwrap();
         let p = row(&own, &dest, ConnectionKind::Proxy, Some(&carrier), 20);
         held.apply(p.clone()).unwrap();
-        let gateway = CarrierPolicy::Proxy { carrier_kind: NodeKind::Gateway };
+        let gateway = CarrierPolicy::Proxy { carrier_type: "gateway".into() };
         let r = resolve(&held, &own.node_id, &dest.node_id, gateway);
         assert_eq!(r.route, EffectiveRoute::ViaPeer { carrier: carrier.node_id.clone(), proxy: p });
         assert!(r.delete.is_empty());
-        let d = resolve(&held, &own.node_id, &dest.node_id, POLICY);
+        let d = resolve(&held, &own.node_id, &dest.node_id, policy());
         assert_eq!(d.route, EffectiveRoute::Direct { known: false }, "the gateway-carried Proxy is not the route under the rpc_node policy: with no Direct fact the pair dials directly");
         assert!(d.delete.is_empty(), "a Proxy through a kind the policy does not name is skipped, never deleted");
     }

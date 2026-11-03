@@ -5,7 +5,6 @@
 //! binary and the JSONL evidence files. No internal map is read.
 
 use rdm_client::binding::{BindingError, BindingSet, Expect, ProviderImage, Validated};
-use rdm_client::LaunchKind as NodeKind;
 use rdm_client::{birth_of_line, MeshNode, BIRTH_LINE};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -167,7 +166,7 @@ pub fn remove_fabric(fabric_id: &str, artifacts: Option<&Path>) -> Vec<String> {
     let mut left = Vec::new();
     let list = || -> Vec<(String, String)> {
         let mut rows = listed_containers(fabric_id, true);
-        rows.sort_by_key(|row| row["kind"] != "node_admin");
+        rows.sort_by_key(|row| row["type"] != "node-admin");
         let v = rows.into_iter().filter_map(|row| row["id"].as_str().map(|id| (id.to_string(), id.to_string()))).collect();
         v
     };
@@ -480,7 +479,7 @@ impl ExternalLaunch {
     }
 
     fn admin_exe(&self) -> PathBuf {
-        self.validated.resolve(NodeKind::NodeAdmin).expect("node_admin is bound (validated)").executable
+        self.validated.resolve("node-admin").expect("node_admin is bound (validated)").executable
     }
 
     /// The directories the set's executables live in: a container fabric's `RDM_EXECUTABLE_DIRS`.
@@ -752,13 +751,15 @@ impl Estate {
             ("MESH_SPAWN_TYPE", owner.provider.clone()),
             ("RDM_FABRIC", fabric.into()),
             ("RDM_MESH", mesh.into()),
-            ("RDM_DATA_DIR", root.join(format!("{mesh}.admin.1")).display().to_string()),
+            ("RDM_DATA_DIR", root.join(format!("{mesh}.node-admin.1")).display().to_string()),
             ("RDM_STORE_DIR", estate_store_dir(&root).display().to_string()),
             ("RDM_BIN_DIR", bin_dir().display().to_string()),
             ("RDM_EVIDENCE_DIR", evidence.display().to_string()),
             ("RDM_ESTATE_ROOT", root.display().to_string()),
             // The fabric's root the bootstrap admin is started with (fabric-certs.md): the testkit's.
             ("RDM_CA_SECRET", crate::test_certs::test_root_hex()),
+            // The testkit application's node types, the Fabric's from Day 0.
+            ("RDM_NODE_TYPES", crate::test_app::types_document()),
         ];
         for (k, v) in extra_env {
             env.retain(|(name, _)| name != k);
@@ -784,7 +785,7 @@ impl Estate {
                 Some(named) => read_dirs.extend(named.split(',').filter(|d| !d.is_empty()).map(PathBuf::from)),
                 None => env.push(executable_dirs_env(&read_dirs)),
             }
-            spawn_admin_in_container(env, &root, &evidence, &rdm_core::PathName::new(format!("{mesh}.admin"), "1").unwrap(), &admin_exe, &read_dirs)
+            spawn_admin_in_container(env, &root, &evidence, &rdm_core::PathName::new(format!("{mesh}.node-admin"), "1").unwrap(), &admin_exe, &read_dirs)
         } else {
             let (c, b) = spawn_admin(&admin_exe, &env, "bootstrap node-admin");
             (c, b, String::new())
@@ -1080,7 +1081,7 @@ impl Estate {
 
     /// The bootstrap admin's data dir.
     pub fn bootstrap_data_dir(&self, mesh: &str) -> PathBuf {
-        self.root.join(format!("{mesh}.admin.1"))
+        self.root.join(format!("{mesh}.node-admin.1"))
     }
 
     /// Start a node-admin on `data_dir` it ran on before: it finds its own row in nodes.storage and
@@ -1206,7 +1207,7 @@ impl Estate {
         if let Some(mut c) = self.bootstrap.take() {
             // A containerised Day-0 admin: the kill reaches its container, not only the attached CLI.
             if self.owner.provider == "container" {
-                if let Some(id) = self.container_launched_as(&rdm_core::PathName::new(format!("{}.admin", self.root_mesh()), "1").unwrap()) {
+                if let Some(id) = self.container_launched_as(&rdm_core::PathName::new(format!("{}.node-admin", self.root_mesh()), "1").unwrap()) {
                     let _ = docker(&["kill", &id]);
                 }
             }
@@ -1797,7 +1798,7 @@ mod spawn_tests {
         let root = estate_root("reaper-data-dir");
         std::fs::create_dir_all(&root).unwrap();
         let mut owner = Command::new("sleep").arg("120").spawn().unwrap();
-        let mut node = Command::new("sleep").arg("120").env_clear().env("RDM_DATA_DIR", root.join("mesh1.rpc.1-test")).spawn().unwrap();
+        let mut node = Command::new("sleep").arg("120").env_clear().env("RDM_DATA_DIR", root.join("mesh1.node.1-test")).spawn().unwrap();
         let reaper = Command::new("sh")
             .args(["-c", REAPER, "estate-reaper", &owner.id().to_string(), &root.display().to_string()])
             .stdin(Stdio::null())

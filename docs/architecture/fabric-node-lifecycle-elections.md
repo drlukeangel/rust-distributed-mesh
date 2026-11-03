@@ -101,7 +101,7 @@ anywhere else.
 ### 4.1 The nodes of one type in one mesh
 
 For the nodes of every type in every mesh, the one election applies the same eligibility/key rule. A
-node's type is its `node_type` field ([node identity](node-identity-and-state.md)), never its name. That
+node's type is its `type` field ([node identity](node-identity-and-state.md)), never its name. That
 type's primary in that mesh is the node-type primary, and that node's `is_primary`, which the
 mesh-primary records on its row.
 

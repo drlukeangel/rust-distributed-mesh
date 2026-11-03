@@ -1,8 +1,8 @@
 //! Primary roles: who holds a primary role, as a node announces it and a joiner is told it.
 //!
 //! A primary role is a mesh's node-admin primary ([`PrimaryRole::MeshPrimary`]), the fabric primary
-//! ([`PrimaryRole::FabricPrimary`]), or the node-type primary of one other `(mesh, node type)` ([`PrimaryRole::NodeTypePrimary`]:
-//! an rpc, broker, gateway or compute type; the approved proposal
+//! ([`PrimaryRole::FabricPrimary`]), or the node-type primary of one other `(mesh, type)` ([`PrimaryRole::NodePrimary`]:
+//! `node` or a type the application declares; the approved proposal
 //! node-primary-update-fabric-mesh-and-node-type.md Part B1). A primary is an EXACT birth, `(node_id, incarnation)`, in
 //! a mesh, with a `revision`: the number of times the role changed hands as the announcer saw it.
 //! A role does not change hands while its primary lives, so the record a node holds is an input to
@@ -10,11 +10,10 @@
 //! statuses alone.
 
 use crate::ids::{IncarnationId, NodeId};
-use crate::path::NodeKind;
 use serde::{Deserialize, Serialize};
 
 /// A primary role. The discriminants are the wire positions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PrimaryRole {
     /// The node-admin primary of one mesh (named by [`Primary::mesh`]).
     ///
@@ -24,34 +23,30 @@ pub enum PrimaryRole {
     ///
     /// Position 1 on the wire.
     FabricPrimary,
-    /// The node-type primary of the primary's mesh for this node type, every type but `node_admin`
+    /// The node-type primary of the primary's mesh for this type, every type but `node-admin`
     /// (whose role is [`PrimaryRole::MeshPrimary`]): its mesh's primary writes and announces its record
     /// (R-MT1 Q3: the mesh-primary is the mesh's one row writer and sole author of member status).
     ///
     /// Position 2 on the wire.
-    NodeTypePrimary(NodeKind),
+    NodePrimary(String),
 }
 
 impl PrimaryRole {
-    /// The role's name as it appears in spans and evidence.
-    pub fn name(self) -> &'static str {
+    /// The role's name as it appears in spans and evidence: `mesh-primary`, `fabric-primary`, or
+    /// `<type>-primary`.
+    pub fn name(&self) -> String {
         match self {
-            Self::MeshPrimary | Self::NodeTypePrimary(NodeKind::NodeAdmin) => "mesh-primary",
-            Self::FabricPrimary => "fabric-primary",
-            Self::NodeTypePrimary(NodeKind::RpcNode) => "rpc_node-primary",
-            Self::NodeTypePrimary(NodeKind::Broker) => "broker-primary",
-            Self::NodeTypePrimary(NodeKind::Gateway) => "gateway-primary",
-            Self::NodeTypePrimary(NodeKind::Compute) => "compute-primary",
+            Self::MeshPrimary => "mesh-primary".into(),
+            Self::FabricPrimary => "fabric-primary".into(),
+            Self::NodePrimary(t) if crate::meta::is_node_admin(t) => "mesh-primary".into(),
+            Self::NodePrimary(t) => format!("{t}-primary"),
         }
     }
 
-    /// The primary role of node type `kind` in a mesh: the mesh-primary role for `node_admin`, the
+    /// The primary role of type `type` in a mesh: the mesh-primary role for `node-admin`, the
     /// node-type primary role for every other type.
-    pub fn of_node_type(kind: NodeKind) -> Self {
-        match kind {
-            NodeKind::NodeAdmin => Self::MeshPrimary,
-            other => Self::NodeTypePrimary(other),
-        }
+    pub fn of_type(r#type: &str) -> Self {
+        if crate::meta::is_node_admin(r#type) { Self::MeshPrimary } else { Self::NodePrimary(r#type.to_string()) }
     }
 }
 

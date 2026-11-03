@@ -43,7 +43,7 @@ async fn a_birth_is_one_trace_of_its_boot_steps_and_its_heartbeat_is_marked() {
         let id = views.iter().find(|v| v.name == location).unwrap_or_else(|| panic!("{location:?} is in the settled view: {views:?}")).node_id.to_string();
         (location, id)
     };
-    let (admin, rpc) = (node("mesh1.admin", "1"), node("mesh1.rpc", "1"));
+    let (admin, rpc) = (node("mesh1.node-admin", "1"), node("mesh1.node", "1"));
     // The heartbeat is the 5 s cadence: wait out one period so the second mark carries a peer. No
     // object reports a heartbeat mark: the span the node records is the only place the fact lives.
     wait_for("both nodes mark a heartbeat that counts the other", Duration::from_secs(30), || async {

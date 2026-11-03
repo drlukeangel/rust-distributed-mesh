@@ -190,9 +190,9 @@ fn rss_gb(pid: u32) -> Option<f64> {
 /// (`perf record -g`, `<dir>/<role>.<pid>.perf.data`): the flame an idle cost over its baseline is read
 /// from (load-testing.md: a finding is read as a flame before any number moves). The profiler's own cost
 /// is in that run's M8, which `Rows` marks `profiled`.
-fn profile_one_per_role(procs: &[(&'static str, u32, u64)], window: Duration) -> Vec<std::process::Child> {
+fn profile_one_per_role(procs: &[(String, u32, u64)], window: Duration) -> Vec<std::process::Child> {
     let mut seen = std::collections::BTreeSet::new();
-    procs.iter().filter(|(role, ..)| seen.insert(*role)).filter_map(|(role, pid, _)| profile_one(role, *pid, window)).collect()
+    procs.iter().filter(|(role, ..)| seen.insert(role.clone())).filter_map(|(role, pid, _)| profile_one(role, *pid, window)).collect()
 }
 
 /// With `RDM_LOAD_PERF` naming a directory, `pid`'s CPU profile over `window` into
@@ -353,12 +353,12 @@ fn channel_kind(channel: &str) -> String {
 }
 
 /// M8: idle CPU (cores) and RSS (GB) of every runtime over `window`, the largest per role.
-async fn idle_cost(estate: &Estate, window: Duration) -> Vec<(&'static str, f64, f64)> {
+async fn idle_cost(estate: &Estate, window: Duration) -> Vec<(String, f64, f64)> {
     let runtimes = estate.live_runtimes();
     let nodes = estate.node_views().await;
-    let before: Vec<(&'static str, u32, u64)> = runtimes.iter().filter_map(|(dir, pid)| {
+    let before: Vec<(String, u32, u64)> = runtimes.iter().filter_map(|(dir, pid)| {
         let node = nodes.iter().find(|n| n.data_dir.as_deref().is_some_and(|path| std::path::Path::new(path) == dir)).unwrap_or_else(|| panic!("live runtime {} has no matching node metadata", dir.display()));
-        cpu_ticks(*pid).map(|ticks| (node.kind.name(), *pid, ticks))
+        cpu_ticks(*pid).map(|ticks| (node.r#type.clone(), *pid, ticks))
     }).collect();
     let profiles = profile_one_per_role(&before, window);
     tokio::time::sleep(window).await;
@@ -366,7 +366,7 @@ async fn idle_cost(estate: &Estate, window: Duration) -> Vec<(&'static str, f64,
         let _ = p.wait();
     }
     let hz = 100.0;
-    let mut worst: std::collections::BTreeMap<&'static str, (f64, f64)> = Default::default();
+    let mut worst: std::collections::BTreeMap<String, (f64, f64)> = Default::default();
     for (role, pid, t0) in before {
         let (Some(t1), Some(rss)) = (cpu_ticks(pid), rss_gb(pid)) else { continue };
         let cores = (t1.saturating_sub(t0)) as f64 / hz / window.as_secs_f64();
@@ -502,7 +502,7 @@ async fn data_plane(estate: &Estate, meshes: &[String], rpcs: u32, rows: &mut Ro
     }
     let nodes = estate.node_views().await;
     let rpc_id = |mesh: &str, name: u32| {
-        let location = rdm_core::PathName::new(format!("{mesh}.rpc"), name.to_string()).unwrap();
+        let location = rdm_core::PathName::new(format!("{mesh}.node"), name.to_string()).unwrap();
         nodes.iter().find(|n| n.name == location).expect("RPC fixture").node_id.to_string()
     };
     let mut tasks = Vec::new();
@@ -754,7 +754,7 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
         // saturation probe, reported with no target: past the node's ceiling the rate holds and only the
         // queue grows (E6), so its p99 is the queue's. The node's CPU over each window is reported beside it.
         if !evidence {
-            let at = rdm_core::PathName::new(format!("{}.admin", meshes.last().unwrap()), p.admins.to_string()).unwrap();
+            let at = rdm_core::PathName::new(format!("{}.node-admin", meshes.last().unwrap()), p.admins.to_string()).unwrap();
             let node = estate.node_view(&at).await;
             let pid = estate.live_runtimes().into_iter().find(|(dir, _)| node.data_dir.as_deref().is_some_and(|path| std::path::Path::new(path) == dir)).map(|(_, pid)| pid);
             for (callers, target) in [(32, true), (128, false)] {
@@ -804,8 +804,8 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     // of one rpc node, from its Complete to every node-admin's own topology (node.topology.get) holding it
     // stopped, then its node.start to every node-admin holding it ready; 20 samples each (100 in a
     // samples run, the target then on p99).
-    let admins: Vec<rdm_core::PathName> = meshes.iter().flat_map(|m| (1..=p.admins).map(move |i| rdm_core::PathName::new(format!("{m}.admin"), i.to_string()).unwrap())).collect();
-    let subject: rdm_core::PathName = rdm_core::PathName::new(format!("{}.rpc", meshes[0]), "1").unwrap();
+    let admins: Vec<rdm_core::PathName> = meshes.iter().flat_map(|m| (1..=p.admins).map(move |i| rdm_core::PathName::new(format!("{m}.node-admin"), i.to_string()).unwrap())).collect();
+    let subject: rdm_core::PathName = rdm_core::PathName::new(format!("{}.node", meshes[0]), "1").unwrap();
     let views = estate.node_views().await;
     let admin_ids: Vec<_> = admins.iter().map(|location| views.iter().find(|n| &n.name == location).expect("admin fixture").node_id.clone()).collect();
     let member = views.iter().find(|n| n.name == subject).expect("RPC fixture");
@@ -875,7 +875,7 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
         let (mut to_ready, mut to_mark, mut mark_to_ready) = (Vec::new(), Vec::new(), Vec::new());
         for k in 0..10usize {
             let mesh = &meshes[k % meshes.len()];
-            let victim: rdm_core::PathName = rdm_core::PathName::new(format!("{mesh}.rpc"), ((k / meshes.len()) as u32 % p.rpcs + 1).to_string()).unwrap();
+            let victim: rdm_core::PathName = rdm_core::PathName::new(format!("{mesh}.node"), ((k / meshes.len()) as u32 % p.rpcs + 1).to_string()).unwrap();
             let before = estate.node_view(&victim).await.node_id.to_string();
             let killed_ns = now_ns();
             estate.kill_node(&victim).await;

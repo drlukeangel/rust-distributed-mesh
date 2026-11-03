@@ -46,7 +46,7 @@
 //! of the fabric-primary role, and on becoming a mesh primary, when it takes ownership of the role it was
 //! tracking.
 
-use crate::model::{Node, NodeKind, NodeStatus, PathName};
+use crate::model::{Node, NodeStatus, PathName};
 use crate::topology::Topology;
 use rdm_core::ids::{IncarnationId, NodeId};
 use rdm_core::Primary;
@@ -69,7 +69,7 @@ pub struct Incumbency {
     /// The primary record of every other (mesh, node type) node-type primary role, by (mesh, kind)
     /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1). Written by
     /// the mesh's primary, the mesh's one row writer (R-MT1 Q3).
-    pub node_type_primaries: BTreeMap<(String, NodeKind), Primary>,
+    pub node_type_primaries: BTreeMap<(String, String), Primary>,
     /// Exact births known gone, by incarnation (an incarnation names one birth of one node): a
     /// departure was heard, or a later birth announced it replaced them.
     pub lost: HashSet<IncarnationId>,
@@ -116,7 +116,7 @@ pub fn fabric_recovery_target<'a>(nodes: &[Node], inc: &'a Incumbency) -> Option
 /// path and name `at`, the one the workflow re-creates. `None` when the mesh has no such admin: the backbone
 /// arm, run on node investigation's verdict (Q335). The executor takes no primary role.
 pub fn fabric_recovery_executor<'a>(nodes: &'a [Node], inc: &Incumbency, target: &Primary, at: Option<&PathName>) -> Option<&'a Node> {
-    let members: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == target.mesh && n.kind == NodeKind::NodeAdmin && n.node_id != target.node_id && Some(&n.name) != at).map(|(i, _)| i).collect();
+    let members: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == target.mesh && rdm_core::is_node_admin(&n.r#type) && n.node_id != target.node_id && Some(&n.name) != at).map(|(i, _)| i).collect();
     lowest_ready(nodes, &members, inc).map(|i| &nodes[i])
 }
 
@@ -144,22 +144,22 @@ pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
     // elected and nobody is fabric-primary; the workflow restores the node re-created at the target's
     // path and name, and its record names it.
     let recovering = fabric_recovery_target(nodes, inc).map(|h| h.mesh.clone());
-    let mut node_types: BTreeMap<(String, NodeKind), Vec<usize>> = BTreeMap::new();
+    let mut node_types: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for (i, n) in nodes.iter().enumerate() {
-        node_types.entry((n.mesh.clone(), n.kind)).or_default().push(i);
+        node_types.entry((n.mesh.clone(), n.r#type.clone())).or_default().push(i);
     }
     // Every node type by the one rule: its recorded primary while it lives, vacant while the view has not
     // heard the recorded birth, else the lowest Ready. The node-admin type's role is the mesh primary.
     let mut winners = Vec::new();
     let mut mesh_primary: BTreeMap<String, usize> = BTreeMap::new();
-    for ((mesh, kind), members) in &node_types {
-        if *kind == NodeKind::NodeAdmin && recovering.as_deref() == Some(mesh.as_str()) {
+    for ((mesh, r#type), members) in &node_types {
+        if rdm_core::is_node_admin(&r#type) && recovering.as_deref() == Some(mesh.as_str()) {
             continue;
         }
-        let record = if *kind == NodeKind::NodeAdmin { inc.meshes.get(mesh) } else { inc.node_type_primaries.get(&(mesh.clone(), *kind)) };
+        let record = if rdm_core::is_node_admin(&r#type) { inc.meshes.get(mesh) } else { inc.node_type_primaries.get(&(mesh.clone(), r#type.clone())) };
         let winner = match record {
             Some(h) => match holding(nodes, h, inc) {
-                Holding::Living(i) if nodes[i].kind == *kind => (nodes[i].mesh == *mesh).then_some(i),
+                Holding::Living(i) if nodes[i].r#type == *r#type => (nodes[i].mesh == *mesh).then_some(i),
                 Holding::Unseen => None,
                 _ => lowest_ready(nodes, members, inc),
             },
@@ -167,7 +167,7 @@ pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
         };
         if let Some(i) = winner {
             winners.push(i);
-            if *kind == NodeKind::NodeAdmin {
+            if rdm_core::is_node_admin(&r#type) {
                 mesh_primary.insert(mesh.clone(), i);
             }
         }
@@ -195,7 +195,7 @@ fn elected_fabric_primary(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTree
     }
     // The primary lives but is not its mesh's primary in this view (a record this view has not caught up
     // with): its mesh keeps priority while any node-admin birth of it is not known gone or Leaving.
-    let survives = |n: &Node| n.kind == NodeKind::NodeAdmin && n.mesh == h.mesh && !inc.is_lost(n) && n.status != NodeStatus::Leaving;
+    let survives = |n: &Node| rdm_core::is_node_admin(&n.r#type) && n.mesh == h.mesh && !inc.is_lost(n) && n.status != NodeStatus::Leaving;
     if nodes.iter().any(survives) {
         return mesh_primary.get(&h.mesh).copied().filter(|&i| nodes[i].status == NodeStatus::Ready && !inc.is_lost(&nodes[i]) && !(nodes[i].node_id == h.node_id && nodes[i].incarnation_id.as_ref() == Some(&h.incarnation)));
     }
@@ -218,7 +218,7 @@ pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) 
 /// Ready mesh-primary on the backbone"): the lowest Ready node-admin of `lost`'s mesh other than
 /// `lost`, not known gone; else [`fabric_successor_excluding`] with `lost`'s mesh excluded.
 pub fn fabric_successor_after(nodes: &[Node], inc: &Incumbency, lost: &rdm_core::handover::HandoverBirth) -> Option<Node> {
-    let own: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == lost.mesh && n.kind == NodeKind::NodeAdmin && n.node_id != lost.node_id).map(|(i, _)| i).collect();
+    let own: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == lost.mesh && rdm_core::is_node_admin(&n.r#type) && n.node_id != lost.node_id).map(|(i, _)| i).collect();
     if let Some(i) = lowest_ready(nodes, &own, inc) {
         return Some(nodes[i].clone());
     }
@@ -238,7 +238,7 @@ pub fn named_fabric_successor(nodes: &[Node], inc: &Incumbency, primary: &Node, 
     let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), node_type_primaries: inc.node_type_primaries.clone(), lost: inc.lost.clone() };
     resolve_with(&mut hypothetical, &vacated);
     match hypothetical.into_iter().find(|n| n.name == *named) {
-        Some(n) if n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::Ready => Ok(n),
+        Some(n) if rdm_core::is_node_admin(&n.r#type) && n.status == NodeStatus::Ready => Ok(n),
         Some(n) => Err(format!("cannot hand the fabric-primary role to path {:?}, name {:?}: {}'s view holds it {:?}", named.path, named.name, primary.node_id, n.status)),
         None => Err(format!("cannot hand the fabric-primary role to path {:?}, name {:?}: {}'s view holds no such node-admin", named.path, named.name, primary.node_id)),
     }
@@ -250,33 +250,15 @@ pub fn named_fabric_successor(nodes: &[Node], inc: &Incumbency, primary: &Node, 
 /// `primary`'s (mesh, kind) node type other than `primary`, not known gone. `None` when no other node of
 /// its type can take the role.
 pub fn node_type_successor(nodes: &[Node], inc: &Incumbency, primary: &Node) -> Option<Node> {
-    let members: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == primary.mesh && n.kind == primary.kind && n.node_id != primary.node_id).map(|(i, _)| i).collect();
+    let members: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == primary.mesh && n.r#type == primary.r#type && n.node_id != primary.node_id).map(|(i, _)| i).collect();
     lowest_ready(nodes, &members, inc).map(|i| nodes[i].clone())
-}
-
-/// The node type of the node-admin type as the no-successor refusal names it (proposal Part A1:
-/// "`node-admin` is the one value RDM gives meaning to"); every node carries its own `node_type` from
-/// e12.s41, and the node type is read from the parsed kind until then.
-pub const NODE_ADMIN_TYPE: &str = "node-admin";
-
-/// The `node_type` of `kind` as Q7's refusal names it: [`NODE_ADMIN_TYPE`] for the
-/// node-admin type, the kind's name with `-` for `_` for every other (`rpc-node`, `broker`, ...),
-/// the tag-label grammar of proposal Part A1 (Q5).
-pub fn node_type_of(kind: crate::model::NodeKind) -> &'static str {
-    match kind {
-        NodeKind::NodeAdmin => NODE_ADMIN_TYPE,
-        NodeKind::RpcNode => "rpc-node",
-        NodeKind::Broker => "broker",
-        NodeKind::Gateway => "gateway",
-        NodeKind::Compute => "compute",
-    }
 }
 
 /// The successor the mesh-primary's pre-check names for a commanded node.primary.update of `primary`'s
 /// node-type primary role, a node type that is not node-admin (proposal Part C1 step 2): the lowest Ready node of
 /// `primary`'s (mesh, kind) node type other than `primary`. `Err` is Q7's exact text naming its type and mesh.
 pub fn commanded_node_type_successor(nodes: &[Node], inc: &Incumbency, primary: &Node) -> Result<Node, String> {
-    node_type_successor(nodes, inc, primary).ok_or_else(|| no_secondary(node_type_of(primary.kind), &primary.mesh))
+    node_type_successor(nodes, inc, primary).ok_or_else(|| no_secondary(&primary.r#type, &primary.mesh))
 }
 
 /// Which roles a commanded node.primary.update moves from its primary (the approved proposal
@@ -328,13 +310,13 @@ pub fn no_fabric_successor(mesh: &str) -> String {
 /// one names both. A primary of both roles whose mesh has no secondary while another mesh's primary is
 /// Ready cannot move its mesh-primary role: Q7's mesh text. The ordinary election is untouched by this search.
 pub fn commanded_successor(nodes: &[Node], inc: &Incumbency, primary: &Node, moving: Moving) -> Result<Node, String> {
-    let admin = Node { kind: NodeKind::NodeAdmin, ..primary.clone() };
+    let admin = Node { r#type: "node-admin".into(), ..primary.clone() };
     match moving {
-        Moving::MeshRole => node_type_successor(nodes, inc, &admin).ok_or_else(|| no_secondary(NODE_ADMIN_TYPE, &primary.mesh)),
+        Moving::MeshRole => node_type_successor(nodes, inc, &admin).ok_or_else(|| no_secondary(rdm_core::NODE_ADMIN, &primary.mesh)),
         Moving::BothRoles => match node_type_successor(nodes, inc, &admin) {
             Some(n) => Ok(n),
             None if fabric_successor_excluding(nodes, inc, &primary.mesh).is_none() => Err(no_fabric_successor(&primary.mesh)),
-            None => Err(no_secondary(NODE_ADMIN_TYPE, &primary.mesh)),
+            None => Err(no_secondary(rdm_core::NODE_ADMIN, &primary.mesh)),
         },
         Moving::FabricRoleOutside => fabric_successor_excluding(nodes, inc, &primary.mesh).ok_or_else(|| no_fabric_successor(&primary.mesh)),
     }
@@ -377,7 +359,7 @@ where
 pub struct ElectionLog {
     /// This admin's globally unique node ID.
     observer: NodeId,
-    last: Mutex<BTreeMap<NodeKind, Option<PrimaryBirth>>>,
+    last: Mutex<BTreeMap<String, Option<PrimaryBirth>>>,
     /// `None` until the first view.
     last_mesh: Mutex<Option<Option<PrimaryBirth>>>,
     last_fabric: Mutex<Option<Option<PrimaryBirth>>>,
@@ -401,30 +383,30 @@ impl ElectionLog {
     pub fn observe_as(&self, observer: &NodeId, t: &Topology) {
         let Some(mesh) = t.own(observer).map(|n| n.mesh.clone()) else { return };
         let mut last = self.last.lock().unwrap();
-        let mut now: BTreeMap<NodeKind, Option<PrimaryBirth>> = BTreeMap::new();
+        let mut now: BTreeMap<String, Option<PrimaryBirth>> = BTreeMap::new();
         for n in t.members().filter(|n| n.mesh == mesh) {
-            let e = now.entry(n.kind).or_default();
+            let e = now.entry(n.r#type.clone()).or_default();
             if n.is_primary {
                 *e = Some(PrimaryBirth::of(n));
             }
         }
-        for (kind, winner) in &now {
-            let previous = last.get(kind).cloned().flatten();
-            if last.contains_key(kind) && previous == *winner {
+        for (r#type, winner) in &now {
+            let previous = last.get(r#type).cloned().flatten();
+            if last.contains_key(r#type) && previous == *winner {
                 continue;
             }
-            let candidates = t.nodes_of_type(&mesh, *kind).count();
-            let eligible = t.nodes_of_type(&mesh, *kind).filter(|n| n.status == NodeStatus::Ready).count();
+            let candidates = t.nodes_of_type(&mesh, &(*r#type)).count();
+            let eligible = t.nodes_of_type(&mesh, &(*r#type)).filter(|n| n.status == NodeStatus::Ready).count();
             // The exact inputs: every candidate as this view holds it. Two observers that name
             // different winners differ here, never in the function.
-            let inputs: Vec<String> = t.nodes_of_type(&mesh, *kind).map(|n| format!("node_id={}, status={:?}", n.node_id, n.status)).collect();
+            let inputs: Vec<String> = t.nodes_of_type(&mesh, &(*r#type)).map(|n| format!("node_id={}, status={:?}", n.node_id, n.status)).collect();
             let span = tracing::info_span!(
                 parent: None,
                 "rdm.mesh.election.resolve.via-recompute",
-                election_level = "node_type",
+                election_level = "node_type_primary",
                 observer_node_id = %observer,
                 mesh = %mesh,
-                kind = kind_name(*kind),
+                "type" = r#type.as_str(),
                 candidate_count = candidates,
                 eligible_count = eligible,
                 inputs = %inputs.join(","),
@@ -444,7 +426,7 @@ impl ElectionLog {
         drop(last);
 
         // The mesh primary is the node-admin type's winner: the same role.
-        let mesh_primary = now.get(&NodeKind::NodeAdmin).cloned().flatten();
+        let mesh_primary = now.get(rdm_core::NODE_ADMIN).cloned().flatten();
         let mut last_mesh = self.last_mesh.lock().unwrap();
         if last_mesh.as_ref() != Some(&mesh_primary) {
             let previous = last_mesh.clone().flatten();
@@ -458,7 +440,7 @@ impl ElectionLog {
                 winner_path = %field(&mesh_primary, |s| &s.path),
                 winner_name = %field(&mesh_primary, |s| &s.name),
                 previous_node_id = %field(&previous, |s| &s.node_id),
-                source_kind = "node_admin",
+                source_type = "node-admin",
             );
             span.in_scope(|| tracing::info!("mesh primary resolved"));
             *last_mesh = Some(mesh_primary.clone());
@@ -475,10 +457,10 @@ impl ElectionLog {
         drop(owned);
         if owner && (gained || last_fabric.as_ref() != Some(&fabric)) {
             let previous = last_fabric.clone().flatten();
-            let candidates: Vec<String> = t.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.node_id.to_string()).collect();
+            let candidates: Vec<String> = t.members().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.is_primary).map(|n| n.node_id.to_string()).collect();
             // The exact inputs: every node-admin of every mesh as this view holds it, with the id
             // the order is decided on and the status the eligibility is decided on.
-            let inputs: Vec<String> = t.members().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| format!("node_id={}, status={:?}, primary={}", n.node_id, n.status, n.is_primary)).collect();
+            let inputs: Vec<String> = t.members().filter(|n| rdm_core::is_node_admin(&n.r#type)).map(|n| format!("node_id={}, status={:?}, primary={}", n.node_id, n.status, n.is_primary)).collect();
             let span = tracing::info_span!(
                 parent: None,
                 "rdm.mesh.election.resolve.via-fabric-recompute",
@@ -506,10 +488,6 @@ impl ElectionLog {
     }
 }
 
-fn kind_name(k: NodeKind) -> &'static str {
-    k.name()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,8 +496,8 @@ mod tests {
         NodeId::parse(s).unwrap()
     }
 
-    fn node(path: PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &str, ready: bool) -> Node {
-        let mut n = Node::allocated(path, mesh, kind);
+    fn node(path: PathName, mesh: &str, r#type: &str, node_id: &str, ready: bool) -> Node {
+        let mut n = Node::allocated(path, mesh, r#type);
         n.node_id = id(node_id);
         n.status = if ready { NodeStatus::Ready } else { NodeStatus::Pending };
         n
@@ -539,12 +517,12 @@ mod tests {
     #[test]
     fn election_observer_uses_id_after_name_changes() {
         let original = PathName::new("unrelated.place", "north").unwrap();
-        let mut admin = node(original.clone(), "explicit-mesh", NodeKind::NodeAdmin, "100000000001", true);
+        let mut admin = node(original.clone(), "explicit-mesh", "node-admin", "100000000001", true);
         admin.is_primary = true;
         admin.is_fabric_primary = true;
         let log = ElectionLog::new(admin.node_id.clone());
         admin.name = PathName::new("unrelated.place", "south").unwrap();
-        let replacement = node(original, "other-mesh", NodeKind::NodeAdmin, "100000000002", true);
+        let replacement = node(original, "other-mesh", "node-admin", "100000000002", true);
         let topology = Topology {
             fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "f".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
             meshes: vec![], nodes: vec![admin.clone(), replacement],
@@ -562,20 +540,20 @@ mod tests {
 
     #[test]
     fn a_renamed_predecessor_is_never_a_candidate_or_a_primary() {
-        let mut old = node(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "000000000001", true);
+        let mut old = node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "000000000001", true);
         old.renamed_from = Some(old.name.clone());
         old.name = old.name.renamed().unwrap();
-        let successor = node(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "000000000009", true);
+        let successor = node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "000000000009", true);
         let view = crate::topology::Topology {
             fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "f".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
             meshes: vec![],
-            nodes: vec![old, successor, node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "000000000005", true)],
+            nodes: vec![old, successor, node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "000000000005", true)],
         };
         // An election takes the view's members: the renamed predecessor is not among them.
         let mut members: Vec<Node> = view.members().cloned().collect();
         resolve(&mut members);
         assert_eq!(members.len(), 2);
-        assert_eq!(primaries(&members), vec![PathName::new("mesh1.rpc", "1").unwrap(), PathName::new("mesh1.admin", "1").unwrap()]);
+        assert_eq!(primaries(&members), vec![PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh1.node-admin", "1").unwrap()]);
         assert_eq!(view.births().count(), 3, "the predecessor is still a birth the view holds");
         assert_eq!(view.predecessors().count(), 1);
     }
@@ -604,20 +582,20 @@ mod tests {
     fn ordinal_and_mesh_name_never_decide_a_primary() {
         // rpc.3 and the highest-named mesh hold the lowest ids.
         let mut nodes = vec![
-            node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "z00000000001", true),
-            node(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "z00000000002", true),
-            node(PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "100000000000", true),
-            node(PathName::new("mesh3.admin", "2").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, "000000000005", true),
-            node(PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, "000000000006", true),
-            node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "500000000000", true),
-            node(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, "000000000001", false),
-            node(PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, "600000000000", true),
+            node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "z00000000001", true),
+            node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "z00000000002", true),
+            node(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", "100000000000", true),
+            node(PathName::new("mesh3.node-admin", "2").unwrap(), "mesh3", "node-admin", "000000000005", true),
+            node(PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", "000000000006", true),
+            node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "500000000000", true),
+            node(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", "000000000001", false),
+            node(PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", "600000000000", true),
         ];
         resolve(&mut nodes);
         let mut p = primaries(&nodes);
         p.sort();
-        assert_eq!(p, [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.rpc", "3").unwrap(), PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.rpc", "2").unwrap(), PathName::new("mesh3.admin", "2").unwrap()]);
-        assert_eq!(fabric(&nodes), [PathName::new("mesh3.admin", "2").unwrap()], "the lowest mesh-primary NodeId holds the fabric");
+        assert_eq!(p, [PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh2.node", "2").unwrap(), PathName::new("mesh3.node-admin", "2").unwrap()]);
+        assert_eq!(fabric(&nodes), [PathName::new("mesh3.node-admin", "2").unwrap()], "the lowest mesh-primary NodeId holds the fabric");
     }
 
     /// CONTRACT (i143 export gate: provider control domain, locality and runtime metadata are
@@ -626,9 +604,9 @@ mod tests {
     #[test]
     fn provider_locality_and_runtime_metadata_never_decide_a_primary() {
         let mut nodes = vec![
-            node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "300000000000", true),
-            node(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "100000000000", true),
-            node(PathName::new("mesh1.admin", "3").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "200000000000", true),
+            node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "300000000000", true),
+            node(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "100000000000", true),
+            node(PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", "200000000000", true),
         ];
         let plain = {
             let mut n = nodes.clone();
@@ -644,32 +622,32 @@ mod tests {
         }
         resolve(&mut nodes);
         assert_eq!((primaries(&nodes), fabric(&nodes)), plain, "the same roles with or without runtime metadata");
-        assert_eq!(fabric(&nodes), [PathName::new("mesh1.admin", "2").unwrap()], "the lowest ready NodeId, on a container, still holds the primary role");
+        assert_eq!(fabric(&nodes), [PathName::new("mesh1.node-admin", "2").unwrap()], "the lowest ready NodeId, on a container, still holds the primary role");
     }
 
     #[test]
     fn losing_a_winner_moves_each_primary_to_the_next_lowest() {
         let mut nodes = vec![
-            node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "300000000000", true),
-            node(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "100000000000", true),
-            node(PathName::new("mesh1.admin", "3").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "200000000000", true),
-            node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "150000000000", true),
+            node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "300000000000", true),
+            node(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "100000000000", true),
+            node(PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", "200000000000", true),
+            node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "150000000000", true),
         ];
         resolve(&mut nodes);
-        assert_eq!(fabric(&nodes), [PathName::new("mesh1.admin", "2").unwrap()]);
+        assert_eq!(fabric(&nodes), [PathName::new("mesh1.node-admin", "2").unwrap()]);
         nodes[1].status = NodeStatus::PendingReconnect;
         resolve(&mut nodes);
-        assert_eq!(primaries(&nodes), [PathName::new("mesh1.admin", "3").unwrap(), PathName::new("mesh2.admin", "1").unwrap()]);
-        assert_eq!(fabric(&nodes), [PathName::new("mesh2.admin", "1").unwrap()], "the fabric candidates are the mesh primaries only");
+        assert_eq!(primaries(&nodes), [PathName::new("mesh1.node-admin", "3").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap()]);
+        assert_eq!(fabric(&nodes), [PathName::new("mesh2.node-admin", "1").unwrap()], "the fabric candidates are the mesh primaries only");
         // The same node back under its NodeId retakes both roles once ready.
         nodes[1].status = NodeStatus::Ready;
         resolve(&mut nodes);
-        assert_eq!(fabric(&nodes), [PathName::new("mesh1.admin", "2").unwrap()]);
+        assert_eq!(fabric(&nodes), [PathName::new("mesh1.node-admin", "2").unwrap()]);
     }
 
     #[test]
     fn one_admin_is_every_primary_on_day_0() {
-        let mut nodes = vec![node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "k00000000000", true)];
+        let mut nodes = vec![node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "k00000000000", true)];
         resolve(&mut nodes);
         assert!(nodes[0].is_primary && nodes[0].is_fabric_primary);
     }
@@ -677,11 +655,11 @@ mod tests {
     #[test]
     fn every_observer_of_the_same_facts_resolves_the_same_winners() {
         let base = vec![
-            node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "300000000000", true),
-            node(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "100000000000", true),
-            node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "200000000000", true),
-            node(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, "400000000000", true),
-            node(PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, "050000000000", true),
+            node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "300000000000", true),
+            node(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "100000000000", true),
+            node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "200000000000", true),
+            node(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", "400000000000", true),
+            node(PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", "050000000000", true),
         ];
         let mut a = base.clone();
         let mut b: Vec<Node> = base.into_iter().rev().collect();
@@ -696,8 +674,8 @@ mod tests {
 
     // ---- R-A2: a living primary keeps its role; the primary record is an input. ----
 
-    fn born(path: PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &str, inc: &str, status: NodeStatus) -> Node {
-        let mut n = Node::allocated(path, mesh, kind);
+    fn born(path: PathName, mesh: &str, r#type: &str, node_id: &str, inc: &str, status: NodeStatus) -> Node {
+        let mut n = Node::allocated(path, mesh, r#type);
         n.node_id = id(node_id);
         n.incarnation_id = Some(IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap());
         n.status = status;
@@ -721,7 +699,7 @@ mod tests {
     }
 
     fn mesh_primary(nodes: &[Node], mesh: &str) -> Option<PathName> {
-        nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.kind == NodeKind::NodeAdmin).map(|n| n.name.clone())
+        nodes.iter().find(|n| n.is_primary && n.mesh == mesh && rdm_core::is_node_admin(&n.r#type)).map(|n| n.name.clone())
     }
 
     use NodeStatus::{ConnectionsDeleting, Leaving, Pending, PendingReconnect, Ready as Ready};
@@ -731,10 +709,10 @@ mod tests {
     #[test]
     fn a_lower_node_id_in_another_mesh_never_displaces_the_fabric_primary() {
         let inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1)]);
-        let mut nodes = vec![born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "a1", Ready), born(PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, "100000000000", "c1", Ready)];
+        let mut nodes = vec![born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", Ready), born(PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", "100000000000", "c1", Ready)];
         resolve_with(&mut nodes, &inc);
-        assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh1.admin", "1").unwrap()));
-        assert_eq!(mesh_primary(&nodes, "mesh3"), Some(PathName::new("mesh3.admin", "1").unwrap()), "the other mesh still has its own primary");
+        assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh1.node-admin", "1").unwrap()));
+        assert_eq!(mesh_primary(&nodes, "mesh3"), Some(PathName::new("mesh3.node-admin", "1").unwrap()), "the other mesh still has its own primary");
     }
 
     /// CONTRACT (R-A2 cell 2): a lower NodeId appearing inside the incumbent mesh leaves the
@@ -742,10 +720,10 @@ mod tests {
     #[test]
     fn a_lower_node_id_inside_the_incumbent_mesh_never_displaces_the_healthy_primary() {
         let inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1)]);
-        let mut nodes = vec![born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "a1", Ready), born(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "100000000000", "a2", Ready)];
+        let mut nodes = vec![born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", Ready), born(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "100000000000", "a2", Ready)];
         resolve_with(&mut nodes, &inc);
-        assert_eq!(mesh_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.admin", "1").unwrap()));
-        assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh1.admin", "1").unwrap()));
+        assert_eq!(mesh_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node-admin", "1").unwrap()));
+        assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh1.node-admin", "1").unwrap()));
     }
 
     /// CONTRACT (R-A2 cell 8): one incumbent admin still runs, Pending or silent included: no
@@ -755,7 +733,7 @@ mod tests {
         for survivor in [Pending, PendingReconnect] {
             let mut inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1)]);
             lose(&mut inc, "500000000000", "a1");
-            let mut nodes = vec![born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "a1", PendingReconnect), born(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "600000000000", "a2", survivor), born(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "100000000000", "b1", Ready)];
+            let mut nodes = vec![born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", PendingReconnect), born(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "600000000000", "a2", survivor), born(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "100000000000", "b1", Ready)];
             resolve_with(&mut nodes, &inc);
             assert_eq!(fabric_name(&nodes), None, "{survivor:?} survives in the incumbent mesh");
         }
@@ -766,14 +744,14 @@ mod tests {
     #[test]
     fn the_old_mesh_recovering_never_reclaims_the_fabric_primary() {
         let inc = incumbency(primary("mesh3", "700000000000", "c1", 2), &[primary("mesh3", "700000000000", "c1", 1), primary("mesh1", "500000000000", "a1", 1)]);
-        let mut nodes = vec![born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "a1", Ready), born(PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, "700000000000", "c1", Ready)];
+        let mut nodes = vec![born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", Ready), born(PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", "700000000000", "c1", Ready)];
         resolve_with(&mut nodes, &inc);
-        assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh3.admin", "1").unwrap()));
-        assert_eq!(mesh_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.admin", "1").unwrap()), "the old mesh still has its own mesh primary");
+        assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh3.node-admin", "1").unwrap()));
+        assert_eq!(mesh_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node-admin", "1").unwrap()), "the old mesh still has its own mesh primary");
     }
 
     /// CONTRACT (elections §4.3, §5): another mesh's view right after a takeover. The standby
-    /// mesh1.admin.2 took the fabric-primary role from the lost mesh1.admin.1 (record revision 2); this view
+    /// mesh1.node-admin.2 took the fabric-primary role from the lost mesh1.node-admin.1 (record revision 2); this view
     /// still holds mesh1's record naming the lost birth (revision 1) and holds the standby
     /// PendingReconnect. With no Ready admin of its mesh left the role waits in that mesh (mesh
     /// investigation decides the backbone move): it never moves to another mesh on a status.
@@ -782,16 +760,16 @@ mod tests {
         let mut inc = incumbency(primary("mesh1", "720000000000", "s1", 2), &[primary("mesh1", "500000000000", "a1", 1), primary("mesh2", "200000000000", "b1", 1)]);
         lose(&mut inc, "500000000000", "a1");
         let mut nodes = vec![
-            born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "a1", NodeStatus::Dead),
-            born(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "720000000000", "s1", PendingReconnect),
-            born(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "200000000000", "b1", Ready),
-            born(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "270000000000", "b2", Ready),
+            born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", NodeStatus::Dead),
+            born(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "720000000000", "s1", PendingReconnect),
+            born(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "200000000000", "b1", Ready),
+            born(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", "270000000000", "b2", Ready),
         ];
         resolve_with(&mut nodes, &inc);
-        assert_ne!(fabric_name(&nodes), Some(PathName::new("mesh2.admin", "1").unwrap()), "the fabric-primary role left mesh1 while its primary lives: {:?}", fabric_name(&nodes));
+        assert_ne!(fabric_name(&nodes), Some(PathName::new("mesh2.node-admin", "1").unwrap()), "the fabric-primary role left mesh1 while its primary lives: {:?}", fabric_name(&nodes));
         nodes[1].status = Ready;
         resolve_with(&mut nodes, &inc);
-        assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh1.admin", "2").unwrap()), "heard again, the primary is its mesh's primary and keeps the role");
+        assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh1.node-admin", "2").unwrap()), "heard again, the primary is its mesh's primary and keeps the role");
     }
 
     /// CONTRACT (elections §5: "silence past the staleness floor supersedes it"; §4.1): a mesh-primary
@@ -802,25 +780,25 @@ mod tests {
     fn a_mesh_primary_unheard_past_the_floor_is_superseded_by_its_meshs_lowest_ready_admin() {
         for status in [PendingReconnect, NodeStatus::Dead] {
             let inc = incumbency(primary("mesh2", "100000000000", "b1", 1), &[primary("mesh1", "500000000000", "a1", 1), primary("mesh2", "100000000000", "b1", 1)]);
-            let mut nodes = vec![born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "a1", status), born(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "600000000000", "a2", Ready), born(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "100000000000", "b1", Ready)];
+            let mut nodes = vec![born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", status), born(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "600000000000", "a2", Ready), born(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "100000000000", "b1", Ready)];
             resolve_with(&mut nodes, &inc);
-            assert_eq!(mesh_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.admin", "2").unwrap()), "{status:?}");
-            assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh2.admin", "1").unwrap()), "{status:?}");
+            assert_eq!(mesh_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node-admin", "2").unwrap()), "{status:?}");
+            assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh2.node-admin", "1").unwrap()), "{status:?}");
         }
     }
 
-    /// The fabric-primary `mesh1.admin.1` (a1, NodeId 500…), mesh1's primary too, recorded at revision 1;
+    /// The fabric-primary `mesh1.node-admin.1` (a1, NodeId 500…), mesh1's primary too, recorded at revision 1;
     /// mesh1's standby a2, a Ready rpc node r1 whose node type's recorded primary r2 is unheard, and mesh2's
     /// primary b1.
     fn recovering() -> (Incumbency, Vec<Node>) {
         let mut inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1), primary("mesh2", "100000000000", "b1", 1)]);
-        inc.node_type_primaries.insert(("mesh1".into(), NodeKind::RpcNode), primary("mesh1", "800000000000", "r2", 1));
+        inc.node_type_primaries.insert(("mesh1".into(), "node".to_string()), primary("mesh1", "800000000000", "r2", 1));
         let nodes = vec![
-            born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "a1", PendingReconnect),
-            born(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "600000000000", "a2", Ready),
-            born(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "700000000000", "r1", Ready),
-            born(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "800000000000", "r2", PendingReconnect),
-            born(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "100000000000", "b1", Ready),
+            born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", PendingReconnect),
+            born(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "600000000000", "a2", Ready),
+            born(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "700000000000", "r1", Ready),
+            born(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "800000000000", "r2", PendingReconnect),
+            born(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "100000000000", "b1", Ready),
         ];
         (inc, nodes)
     }
@@ -836,8 +814,8 @@ mod tests {
         let check = |nodes: &[Node], case: &str| {
             assert_eq!(fabric_name(nodes), None, "{case}: nobody is fabric-primary");
             assert_eq!(mesh_primary(nodes, "mesh1"), None, "{case}: no node-admin of mesh1 is elected");
-            assert_eq!(rpc_primary(nodes, "mesh1"), Some(PathName::new("mesh1.rpc", "1").unwrap()), "{case}: mesh1's rpc nodes elect as ever");
-            assert_eq!(mesh_primary(nodes, "mesh2"), Some(PathName::new("mesh2.admin", "1").unwrap()), "{case}: mesh2 keeps its primary");
+            assert_eq!(rpc_primary(nodes, "mesh1"), Some(PathName::new("mesh1.node", "1").unwrap()), "{case}: mesh1's rpc nodes elect as ever");
+            assert_eq!(mesh_primary(nodes, "mesh2"), Some(PathName::new("mesh2.node-admin", "1").unwrap()), "{case}: mesh2 keeps its primary");
         };
         resolve_with(&mut nodes, &inc);
         check(&nodes, "unheard");
@@ -845,7 +823,7 @@ mod tests {
         lose(&mut gone, "500000000000", "a1");
         resolve_with(&mut nodes, &gone);
         check(&nodes, "known gone");
-        nodes.retain(|n| n.name.clone() != PathName::new("mesh1.admin", "1").unwrap());
+        nodes.retain(|n| n.name.clone() != PathName::new("mesh1.node-admin", "1").unwrap());
         resolve_with(&mut nodes, &gone);
         check(&nodes, "deleted from the view");
     }
@@ -856,14 +834,14 @@ mod tests {
     #[test]
     fn the_node_the_workflow_restores_is_both_primaries_by_its_record() {
         let (mut inc, mut nodes) = recovering();
-        nodes.retain(|n| n.name.clone() != PathName::new("mesh1.admin", "1").unwrap());
-        nodes.push(born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "900000000000", "a9", Ready));
+        nodes.retain(|n| n.name.clone() != PathName::new("mesh1.node-admin", "1").unwrap());
+        nodes.push(born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "900000000000", "a9", Ready));
         let restored = primary("mesh1", "900000000000", "a9", 2);
         inc.fabric = Some(restored.clone());
         inc.meshes.insert("mesh1".into(), restored);
         resolve_with(&mut nodes, &inc);
-        assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh1.admin", "1").unwrap()));
-        assert_eq!(mesh_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.admin", "1").unwrap()));
+        assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh1.node-admin", "1").unwrap()));
+        assert_eq!(mesh_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node-admin", "1").unwrap()));
         assert_eq!(nodes.iter().find(|n| n.is_fabric_primary).map(|n| n.node_id.clone()), Some(id("900000000000")), "the restored birth, not the standby");
     }
 
@@ -874,19 +852,19 @@ mod tests {
     #[test]
     fn the_lowest_ready_admin_of_the_fabric_primarys_mesh_runs_fabric_recovery() {
         let (inc, mut nodes) = recovering();
-        nodes.push(born(PathName::new("mesh1.admin", "3").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "550000000000", "a3", Pending));
-        let at: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        nodes.push(born(PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", "550000000000", "a3", Pending));
+        let at: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let target = fabric_recovery_target(&nodes, &inc).cloned().expect("the fabric-primary is unheard");
         assert_eq!(target.node_id, id("500000000000"));
-        assert_eq!(fabric_recovery_executor(&nodes, &inc, &target, Some(&at)).map(|n| n.name.clone()), Some(PathName::new("mesh1.admin", "2").unwrap()), "a Pending admin is no candidate");
+        assert_eq!(fabric_recovery_executor(&nodes, &inc, &target, Some(&at)).map(|n| n.name.clone()), Some(PathName::new("mesh1.node-admin", "2").unwrap()), "a Pending admin is no candidate");
         // The node re-created at the target's path and name, Ready with a lower id, is the target, never the executor.
-        nodes.push(born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "200000000000", "a9", Ready));
-        assert_eq!(fabric_recovery_executor(&nodes, &inc, &target, Some(&at)).map(|n| n.name.clone()), Some(PathName::new("mesh1.admin", "2").unwrap()));
-        nodes.retain(|n| n.mesh != "mesh1" || n.kind != NodeKind::NodeAdmin || n.name == at);
+        nodes.push(born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "200000000000", "a9", Ready));
+        assert_eq!(fabric_recovery_executor(&nodes, &inc, &target, Some(&at)).map(|n| n.name.clone()), Some(PathName::new("mesh1.node-admin", "2").unwrap()));
+        nodes.retain(|n| n.mesh != "mesh1" || !rdm_core::is_node_admin(&n.r#type) || n.name == at);
         assert_eq!(fabric_recovery_executor(&nodes, &inc, &target, Some(&at)), None, "no admin of the mesh: the backbone arm");
         let mut heard = nodes.clone();
         heard.retain(|n| n.name != at);
-        heard.push(born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "a1", Ready));
+        heard.push(born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", Ready));
         assert_eq!(fabric_recovery_target(&heard, &inc), None, "a heard fabric-primary is restored by nothing");
     }
 
@@ -894,16 +872,16 @@ mod tests {
     /// explicit yield, a known loss or silence past the floor, never by a lifecycle status. A primary that is ConnectionsDeleting (a
     /// FabricShutdown this observer has not installed yet) or Leaving keeps both its
     /// roles against a lower Ready NodeId of its own mesh. Must NOT happen: the observer reading the
-    /// status as a yield and naming as primary the lower id (gate 144a45bd: mesh2.admin.2 in its role itself over
-    /// the ConnectionsDeleting mesh2.admin.1 95 ms after that primary installed the shutdown).
+    /// status as a yield and naming as primary the lower id (gate 144a45bd: mesh2.node-admin.2 in its role itself over
+    /// the ConnectionsDeleting mesh2.node-admin.1 95 ms after that primary installed the shutdown).
     #[test]
     fn a_connections_deleting_or_leaving_primary_stays_both_primaries() {
         let inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1)]);
         for status in [ConnectionsDeleting, Leaving] {
-            let mut nodes = vec![born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "a1", status), born(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "200000000000", "a2", Ready), born(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "100000000000", "b1", Ready)];
+            let mut nodes = vec![born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", status), born(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "200000000000", "a2", Ready), born(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "100000000000", "b1", Ready)];
             resolve_with(&mut nodes, &inc);
-            assert_eq!(mesh_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.admin", "1").unwrap()), "{status:?}");
-            assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh1.admin", "1").unwrap()), "{status:?}");
+            assert_eq!(mesh_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node-admin", "1").unwrap()), "{status:?}");
+            assert_eq!(fabric_name(&nodes), Some(PathName::new("mesh1.node-admin", "1").unwrap()), "{status:?}");
         }
     }
 
@@ -916,14 +894,14 @@ mod tests {
         let inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1), primary("mesh2", "900000000000", "b1", 1), primary("mesh3", "700000000000", "c1", 1)]);
         for status in [Ready, ConnectionsDeleting] {
             let nodes = vec![
-                born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "a1", status),
-                born(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "100000000000", "a2", Ready),
-                born(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "900000000000", "b1", Ready),
-                born(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "200000000000", "b2", Ready),
-                born(PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, "700000000000", "c1", Ready),
+                born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", status),
+                born(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "100000000000", "a2", Ready),
+                born(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "900000000000", "b1", Ready),
+                born(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", "200000000000", "b2", Ready),
+                born(PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", "700000000000", "c1", Ready),
             ];
             let successor = fabric_successor_excluding(&nodes, &inc, "mesh1").map(|n| n.name.clone());
-            assert_eq!(successor, Some(PathName::new("mesh3.admin", "1").unwrap()), "the lowest Ready mesh primary outside mesh1, its roles held ({status:?})");
+            assert_eq!(successor, Some(PathName::new("mesh3.node-admin", "1").unwrap()), "the lowest Ready mesh primary outside mesh1, its roles held ({status:?})");
         }
     }
 
@@ -932,7 +910,7 @@ mod tests {
     #[test]
     fn a_primary_this_view_has_not_heard_is_held_vacant_for_it() {
         let inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1)]);
-        let mut nodes = vec![born(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "100000000000", "b1", Ready)];
+        let mut nodes = vec![born(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "100000000000", "b1", Ready)];
         resolve_with(&mut nodes, &inc);
         assert_eq!(fabric_name(&nodes), None);
     }
@@ -943,27 +921,27 @@ mod tests {
     fn the_mesh_primary_follows_the_same_rule_in_every_mesh() {
         let inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1), primary("mesh2", "900000000000", "b1", 1)]);
         let mut nodes = vec![
-            born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "a1", Ready),
-            born(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "900000000000", "b1", Ready),
-            born(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "200000000000", "b2", Ready),
+            born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", Ready),
+            born(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "900000000000", "b1", Ready),
+            born(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", "200000000000", "b2", Ready),
         ];
         resolve_with(&mut nodes, &inc);
-        assert_eq!(mesh_primary(&nodes, "mesh2"), Some(PathName::new("mesh2.admin", "1").unwrap()), "the living primary of a non-fabric mesh keeps its role too");
+        assert_eq!(mesh_primary(&nodes, "mesh2"), Some(PathName::new("mesh2.node-admin", "1").unwrap()), "the living primary of a non-fabric mesh keeps its role too");
         // With no record for a mesh, the lowest Ready NodeId fills it.
-        let mut fresh = vec![born(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "900000000000", "b1", Ready), born(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "200000000000", "b2", Ready)];
+        let mut fresh = vec![born(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "900000000000", "b1", Ready), born(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", "200000000000", "b2", Ready)];
         resolve_with(&mut fresh, &Incumbency::default());
-        assert_eq!(mesh_primary(&fresh, "mesh2"), Some(PathName::new("mesh2.admin", "2").unwrap()));
+        assert_eq!(mesh_primary(&fresh, "mesh2"), Some(PathName::new("mesh2.node-admin", "2").unwrap()));
     }
 
     // ---- Every node type keeps a primary record (proposal Part B1, R-MT1: "same for NA as it is for RPC node"). ----
 
     fn rpc_primary(nodes: &[Node], mesh: &str) -> Option<PathName> {
-        nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.kind == NodeKind::RpcNode).map(|n| n.name.clone())
+        nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.r#type == "node").map(|n| n.name.clone())
     }
 
     fn with_rpc_primary(record: Primary) -> Incumbency {
         let mut inc = incumbency(primary("mesh1", "900000000000", "a1", 1), &[primary("mesh1", "900000000000", "a1", 1)]);
-        inc.node_type_primaries.insert((record.mesh.clone(), NodeKind::RpcNode), record);
+        inc.node_type_primaries.insert((record.mesh.clone(), "node".to_string()), record);
         inc
     }
 
@@ -971,23 +949,23 @@ mod tests {
     /// later becomes Ready never displaces it"): an rpc node type whose primary record names a living birth
     /// keeps that primary against a lower Ready NodeId of the node type, as the node-admin type does.
     /// Must NOT happen: the node type recomputed to its lowest Ready NodeId each checklist, so a role that
-    /// node.primary.update moved to mesh1.rpc.2 falls back to mesh1.rpc.1 on the next projection.
+    /// node.primary.update moved to mesh1.node.2 falls back to mesh1.node.1 on the next projection.
     #[test]
     fn a_living_rpc_primary_stays_primary_over_a_lower_ready_node_id() {
         let inc = with_rpc_primary(primary("mesh1", "500000000000", "r2", 2));
-        let mut nodes = vec![born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "900000000000", "a1", Ready), born(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "100000000000", "r1", Ready), born(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "500000000000", "r2", Ready)];
+        let mut nodes = vec![born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "900000000000", "a1", Ready), born(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "100000000000", "r1", Ready), born(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "500000000000", "r2", Ready)];
         resolve_with(&mut nodes, &inc);
-        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.rpc", "2").unwrap()), "the recorded living primary keeps the rpc role");
+        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node", "2").unwrap()), "the recorded living primary keeps the rpc role");
         // A lifecycle status never yields it (R-EL1): a ConnectionsDeleting or Leaving primary keeps it.
         for status in [ConnectionsDeleting, Leaving] {
             nodes[2].status = status;
             resolve_with(&mut nodes, &inc);
-            assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.rpc", "2").unwrap()), "{status:?}");
+            assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node", "2").unwrap()), "{status:?}");
         }
         // Unheard past the floor it is superseded by the lowest Ready node of its type (elections §4.1).
         nodes[2].status = PendingReconnect;
         resolve_with(&mut nodes, &inc);
-        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.rpc", "1").unwrap()));
+        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node", "1").unwrap()));
     }
 
     /// CONTRACT (module docs, "A primary whose record names a birth this view has not heard keeps its
@@ -997,7 +975,7 @@ mod tests {
     #[test]
     fn an_rpc_primary_recorded_but_unheard_is_held_vacant_for_it() {
         let inc = with_rpc_primary(primary("mesh1", "500000000000", "r2", 2));
-        let mut nodes = vec![born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "900000000000", "a1", Ready), born(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "100000000000", "r1", Ready)];
+        let mut nodes = vec![born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "900000000000", "a1", Ready), born(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "100000000000", "r1", Ready)];
         resolve_with(&mut nodes, &inc);
         assert_eq!(rpc_primary(&nodes, "mesh1"), None);
     }
@@ -1009,13 +987,13 @@ mod tests {
     #[test]
     fn an_rpc_primary_proven_gone_or_restarted_hands_over_to_the_lowest_ready() {
         let mut inc = with_rpc_primary(primary("mesh1", "100000000000", "r1", 2));
-        let mut nodes = vec![born(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "900000000000", "a1", Ready), born(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "100000000000", "r1", Ready), born(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "500000000000", "r2", Ready), born(PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "300000000000", "r3", Ready)];
+        let mut nodes = vec![born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "900000000000", "a1", Ready), born(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "100000000000", "r1", Ready), born(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "500000000000", "r2", Ready), born(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", "300000000000", "r3", Ready)];
         lose(&mut inc, "100000000000", "r1");
         resolve_with(&mut nodes, &inc);
-        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.rpc", "3").unwrap()), "known gone: the lowest Ready of the rest");
+        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node", "3").unwrap()), "known gone: the lowest Ready of the rest");
         let inc = with_rpc_primary(primary("mesh1", "500000000000", "r2", 2));
-        nodes[2] = born(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "500000000000", "r9", Ready);
+        nodes[2] = born(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "500000000000", "r9", Ready);
         resolve_with(&mut nodes, &inc);
-        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.rpc", "1").unwrap()), "a later birth of the primary's NodeId holds no primary role");
+        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node", "1").unwrap()), "a later birth of the primary's NodeId holds no primary role");
     }
 }

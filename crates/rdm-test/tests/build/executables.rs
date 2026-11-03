@@ -16,7 +16,7 @@
 //! behaviour, as a new build of it would be.
 
 use crate::build_log;
-use rdm_client::{BuildFrame, CallEnd, Change, FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeView, PathName, ScopeStatus};
+use rdm_client::{BuildFrame, CallEnd, Change, FabricDesired, MeshDesired, NodeView, PathName, ScopeStatus};
 use rdm_core::binding::{sha256_file, Binding};
 use rdm_core::meta::NodeSpec;
 use rdm_core::{OperationId, OperationSubject};
@@ -65,11 +65,11 @@ pub async fn read_request(estate: &Estate) -> (rdm_core::BuildId, Vec<NodeSpec>)
 }
 
 /// `request` with the entry at `path` (added when it lists none) on `executable`.
-fn naming(mut request: Vec<NodeSpec>, p: PathName, mesh: &str, kind: NodeKind, executable: Option<&Binding>) -> Vec<NodeSpec> {
+fn naming(mut request: Vec<NodeSpec>, p: PathName, mesh: &str, r#type: &str, executable: Option<&Binding>) -> Vec<NodeSpec> {
     match request.iter_mut().find(|s| s.path == p) {
         Some(s) => s.executable = executable.cloned(),
         None => {
-            let mut s = NodeSpec::default_for(p.clone(), mesh, kind);
+            let mut s = NodeSpec::default_for(p.clone(), mesh, r#type);
             s.executable = executable.cloned();
             request.push(s);
         }
@@ -142,14 +142,14 @@ async fn fabric_at_its_primary(estate: &Estate) -> (NodeView, ScopeStatus, Optio
 /// when that Build is no longer current, nothing accepted, and the caller re-reads"; "a request that ...
 /// lists no nodes at all, is refused by name pointing to fabric.delete"; "a created path whose config names
 /// no executable is refused by name at acceptance, nothing runs"; rule 3, "Recorded on the row at the claim";
-/// rule 7, read from the records). Two callers read the same topology. B's request adds `(path mesh1.rpc, name 2)` on a
+/// rule 7, read from the records). Two callers read the same topology. B's request adds `(path mesh1.node, name 2)` on a
 /// new executable with the tag `zone_a` and the config {zone: a} (Q166; node-config-update.md: "A Build
 /// applies its entry to new and existing nodes" and "Launch properties initialize an absent own
 /// record") and completes: the node runs that executable, its row records it, the tag and the
 /// config, and the node carries it (`fabric.nodes.get` answers a live node's config from its digest), and `fabric.nodes.get`
 /// returns them. A's request, built from the earlier read, is refused `based-on-not-current`, nothing
-/// accepted and `(path mesh1.rpc, name 2)` untouched. A re-reads: a request listing no node is refused `no-node-listed`
-/// naming fabric.delete, one creating `(path mesh1.rpc, name 3)` with no executable `executable-missing`, one creating it
+/// accepted and `(path mesh1.node, name 2)` untouched. A re-reads: a request listing no node is refused `no-node-listed`
+/// naming fabric.delete, one creating `(path mesh1.node, name 3)` with no executable `executable-missing`, one creating it
 /// on an executable whose bytes do not hash to the sha it names `executable-refused` (build-deployment.md
 /// §2.4, "a differing hash is refused by name"), and a request at the reserved position of the count
 /// form that created a node (`AddNode`'s, proposal §3.10(a)) is an unknown variant
@@ -168,32 +168,32 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let (a_based_on, a_request) = read_request(&estate).await;
     let (b_based_on, b_request) = read_request(&estate).await;
     assert_eq!(a_based_on, b_based_on);
-    let rpc = b_request.iter().find(|s| s.path == PathName::new("mesh1.rpc", "1").unwrap()).and_then(|s| s.executable.clone()).expect("mesh1.rpc.1's row records its executable");
+    let rpc = b_request.iter().find(|s| s.path == PathName::new("mesh1.node", "1").unwrap()).and_then(|s| s.executable.clone()).expect("mesh1.node.1's row records its executable");
     let next = another_build(&estate, &rpc, "next");
 
-    // B: (path mesh1.rpc, name 2), named on the new executable with its tags.
-    let mut b_nodes = naming(b_request, PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(&next));
+    // B: (path mesh1.node, name 2), named on the new executable with its tags.
+    let mut b_nodes = naming(b_request, PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", Some(&next));
     let zone: std::collections::BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
-    let entry = b_nodes.iter_mut().find(|s| s.path == PathName::new("mesh1.rpc", "2").unwrap()).expect("the entry named");
+    let entry = b_nodes.iter_mut().find(|s| s.path == PathName::new("mesh1.node", "2").unwrap()).expect("the entry named");
     entry.tags = ["zone_a".to_string()].into();
     entry.config = zone.clone();
     let b = followed(&estate, estate.submit_change(Change::Reconcile { based_on: b_based_on, nodes: b_nodes }).await).await.build_id.to_string();
-    let created = estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1.rpc.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
-    assert_eq!(exe_of(&estate, &PathName::new("mesh1.rpc", "2").unwrap()).await, next.executable, "the created node runs the executable its request named");
+    let created = estate.until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1.node.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
+    assert_eq!(exe_of(&estate, &PathName::new("mesh1.node", "2").unwrap()).await, next.executable, "the created node runs the executable its request named");
     let row = record_of(&estate, created.node_id.as_str());
     assert_eq!(row["record"]["executable"]["sha256"], json!(next.sha256), "its row records it: {row}");
     let read = fabric_nodes(&estate).await;
-    assert_eq!(read[&PathName::new("mesh1.rpc", "2").unwrap()].executable.as_ref(), Some(&next), "fabric.nodes.get returns it from the row");
-    assert_eq!(read[&PathName::new("mesh1.rpc", "2").unwrap()].tags, ["zone_a".to_string()].into(), "the node carries the tags its entry named, from its claim");
+    assert_eq!(read[&PathName::new("mesh1.node", "2").unwrap()].executable.as_ref(), Some(&next), "fabric.nodes.get returns it from the row");
+    assert_eq!(read[&PathName::new("mesh1.node", "2").unwrap()].tags, ["zone_a".to_string()].into(), "the node carries the tags its entry named, from its claim");
     assert_eq!((&row["record"]["initial_properties"]["config"], &row["record"]["initial_properties"]["tags"]), (&json!({"zone": "a"}), &json!(["zone_a"])), "its claim records its create spec's config and tags as its launch snapshot: {row}");
-    assert_eq!(read[&PathName::new("mesh1.rpc", "2").unwrap()].config, zone, "the node carries the config its create spec named");
+    assert_eq!(read[&PathName::new("mesh1.node", "2").unwrap()].config, zone, "the node carries the config its create spec named");
     // The node writes its own property record from its launch snapshot (its join answer is not where
     // config lives).
     let own = estate.node_properties(&created.node_id).expect("the created node's own property record");
     assert_eq!((own.config.clone(), own.tags.clone()), (zone.clone(), ["zone_a".to_string()].into()), "the created node's own record holds its spec's config and tags: {own:?}");
-    assert_eq!(read[&PathName::new("mesh1.rpc", "1").unwrap()].executable.as_ref(), Some(&rpc), "and every other node's");
+    assert_eq!(read[&PathName::new("mesh1.node", "1").unwrap()].executable.as_ref(), Some(&rpc), "and every other node's");
 
-    // A, from its earlier read: refused, nothing accepted, (path mesh1.rpc, name 2) untouched.
+    // A, from its earlier read: refused, nothing accepted, (path mesh1.node, name 2) untouched.
     let carrier = estate.carrier().await;
     let (reason, detail) = rejected("a request based on the Build before B's", carrier.create(Change::Reconcile { based_on: a_based_on.clone(), nodes: a_request }).await);
     assert_eq!(reason, "based-on-not-current", "{detail}");
@@ -203,26 +203,26 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     // A re-reads.
     let (based_on, request) = read_request(&estate).await;
     assert_eq!(based_on.to_string(), b);
-    assert!(request.iter().any(|s| s.path == PathName::new("mesh1.rpc", "2").unwrap()), "the read holds what B added");
+    assert!(request.iter().any(|s| s.path == PathName::new("mesh1.node", "2").unwrap()), "the read holds what B added");
     let (reason, detail) = rejected("a request listing no node", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: vec![] }).await);
     assert_eq!(reason, "no-node-listed", "{detail}");
     assert!(detail.contains("fabric.delete"), "the refusal names fabric.delete: {detail}");
-    let (reason, detail) = rejected("a created path naming no executable", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None) }).await);
+    let (reason, detail) = rejected("a created path naming no executable", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", None) }).await);
     assert_eq!(reason, "executable-missing", "{detail}");
-    assert!(detail.contains("path `mesh1.rpc`, name `3`"), "{detail}");
+    assert!(detail.contains("path `mesh1.node`, name `3`"), "{detail}");
     let differing = Binding { sha256: "0".repeat(64), ..next.clone() };
-    let (reason, detail) = rejected("a created path on an executable whose bytes hash otherwise", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(&differing)) }).await);
+    let (reason, detail) = rejected("a created path on an executable whose bytes hash otherwise", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", Some(&differing)) }).await);
     assert_eq!(reason, "executable-refused", "{detail}");
-    assert!(detail.contains("path `mesh1.rpc`, name `3`"), "{detail}");
+    assert!(detail.contains("path `mesh1.node`, name `3`"), "{detail}");
     let (reason, detail) = rejected("a request at a count form's reserved position", carrier.create(Change::Reserved2).await);
     assert_eq!((reason.as_str(), detail.as_str()), ("malformed", "UnknownVariant"), "the count forms are reserved positions: a request at one is an unknown variant");
     assert_eq!(estate.accepted_build_id().await, b, "nothing is accepted");
-    assert!(estate.node_value_opt(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).await.is_none(), "nothing runs at mesh1.rpc.3");
+    assert!(estate.node_value_opt(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await.is_none(), "nothing runs at mesh1.node.3");
 
     followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: request }).await).await;
-    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await["node_id"], json!(created.node_id), "the re-read request changes nothing");
+    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await["node_id"], json!(created.node_id), "the re-read request changes nothing");
     // The bootstrap admin is the estate's own process, launched by no pipeline: its row records the binary it starts.
-    let day0 = record_of(&estate, &s(&estate.node_value(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await["node_id"]));
+    let day0 = record_of(&estate, &s(&estate.node_value(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await["node_id"]));
     let started = rdm_test::estate::binary("rdm-node-admin");
     assert_eq!(day0["record"]["executable"]["sha256"], json!(sha256_file(&started).unwrap()), "the bootstrap admin's row records the hash of {} it runs: {day0}", started.display());
     estate.shutdown().await;
@@ -233,9 +233,9 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
 async fn role_fabric(test: &str) -> Estate {
     let sha = candidate_sha();
     let estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set_with_roles(&sha), &sha, &["broker", "gateway", "compute"], &[]).await.expect("the faulted-admin binding set with the role kinds is accepted");
-    let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 2), (NodeKind::Compute, 1)]);
+    let mesh = |m: &str| MeshDesired::of(m, [("node-admin", 2), ("broker", 1), ("gateway", 2), ("compute", 1)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
-    let want: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| [("admin", "1"), ("admin", "2"), ("broker", "1"), ("gateway", "1"), ("gateway", "2"), ("compute", "1")].map(|(group, name)| PathName::new(format!("{m}.{group}"), name).unwrap())).collect();
+    let want: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| [("node-admin", "1"), ("node-admin", "2"), ("broker", "1"), ("gateway", "1"), ("gateway", "2"), ("compute", "1")].map(|(group, name)| PathName::new(format!("{m}.{group}"), name).unwrap())).collect();
     estate.settles_to_named(&want, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     estate
@@ -244,7 +244,7 @@ async fn role_fabric(test: &str) -> Estate {
 /// The request that names `next` for every gateway and leaves every other entry as read.
 async fn gateways_on(estate: &Estate, next: &Binding) -> (rdm_core::BuildId, Vec<NodeSpec>) {
     let (based_on, mut request) = read_request(estate).await;
-    for s in request.iter_mut().filter(|s| s.kind == NodeKind::Gateway) {
+    for s in request.iter_mut().filter(|s| s.r#type == "gateway") {
         assert!(s.executable.is_some(), "{:?}'s row records its executable", s.path);
         s.executable = Some(next.clone());
     }
@@ -255,7 +255,7 @@ async fn gateways_on(estate: &Estate, next: &Binding) -> (rdm_core::BuildId, Vec
 async fn untouched(estate: &Estate, before: &BTreeMap<PathName, NodeView>, build: &str, except: &[&PathName]) {
     let now = fabric_nodes(estate).await;
     let steps = receipts(estate, build).await;
-    for (name, v) in before.iter().filter(|(n, v)| v.kind != NodeKind::Gateway && !except.contains(n)) {
+    for (name, v) in before.iter().filter(|(n, v)| v.r#type != "gateway" && !except.contains(n)) {
         let n = now.get(name).unwrap_or_else(|| panic!("{name:?} is still listed"));
         assert_eq!((&n.node_id, &n.incarnation_id), (&v.node_id, &v.incarnation_id), "{name:?}: the same node.id and incarnation");
         assert_eq!(n.status, rdm_client::NodeStatus::Ready, "{name:?}");
@@ -287,7 +287,7 @@ async fn a_request_changing_only_the_gateways_executables_replaces_every_gateway
     assert_eq!((status, accepted.as_deref()), (ScopeStatus::Ready, Some(build.as_str())), "Complete only once the fabric is ready again under it ({fp:?})");
 
     let steps = receipts(&estate, &build).await;
-    for (name, v) in before.iter().filter(|(_, v)| v.kind == NodeKind::Gateway) {
+    for (name, v) in before.iter().filter(|(_, v)| v.r#type == "gateway") {
         let now = estate.until_node(name, &format!("{name:?} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != v.node_id).cloned()).await;
         assert_ne!(now.incarnation_id, v.incarnation_id, "{name:?}: a new birth");
         assert_eq!(exe_of(&estate, name).await, next.executable, "{name:?} runs the new executable");
@@ -295,7 +295,7 @@ async fn a_request_changing_only_the_gateways_executables_replaces_every_gateway
         assert_eq!(receipts_of(&steps, &OperationId::location("node.create", name), "Complete").len(), 1, "{name:?} is created once");
     }
     for mesh in ["mesh1", "mesh2"] {
-        let (primary, other): (Vec<&NodeView>, Vec<&NodeView>) = before.values().filter(|v| v.kind == NodeKind::Gateway && v.mesh == mesh).partition(|v| v.is_primary);
+        let (primary, other): (Vec<&NodeView>, Vec<&NodeView>) = before.values().filter(|v| v.r#type == "gateway" && v.mesh == mesh).partition(|v| v.is_primary);
         let at = |v: &NodeView| steps.iter().position(|r| r.operation == OperationId::node("node.delete", &v.node_id) && r.step == "NodeDeleted").unwrap();
         assert!(at(other[0]) < at(primary[0]), "{mesh}: its non-primary gateway is replaced before its primary");
     }
@@ -316,8 +316,8 @@ async fn a_request_changing_only_the_gateways_executables_replaces_every_gateway
 async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_rest_to_the_next_attempt() {
     let estate = role_fabric("an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_rest_to_the_next_attempt").await;
     let before = fabric_nodes(&estate).await;
-    let p = before.values().find(|v| v.mesh == "mesh2" && v.kind == NodeKind::NodeAdmin && v.is_primary).map(|v| v.name.clone()).expect("mesh2's primary admin");
-    let first = before.values().find(|v| v.mesh == "mesh2" && v.kind == NodeKind::Gateway && !v.is_primary).map(|v| v.name.clone()).expect("mesh2's non-primary gateway");
+    let p = before.values().find(|v| v.mesh == "mesh2" && v.r#type == "node-admin" && v.is_primary).map(|v| v.name.clone()).expect("mesh2's primary admin");
+    let first = before.values().find(|v| v.mesh == "mesh2" && v.r#type == "gateway" && !v.is_primary).map(|v| v.name.clone()).expect("mesh2's non-primary gateway");
     let door = Door::at(&estate, &p).await;
     door.arm("gateway-created", json!({"kind": "receipt", "step": "Complete", "operation": "node.create", "node": OperationSubject::Location(first.clone())})).await;
     let gateway = before[&PathName::new("mesh1.gateway", "1").unwrap()].executable.clone().expect("a gateway's row records its executable");
@@ -329,14 +329,14 @@ async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_
     let held = door.wait_held("gateway-created").await;
     assert_eq!((s(&held["hit"]["build_id"]), held["hit"]["operation"].clone()), (build.clone(), json!(OperationId::location("node.create", &first))), "{p:?} is held at {first:?}'s create Complete: {held}");
     let successor = estate.until_node(&first, &format!("{first:?}'s successor ready"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != before[&first].node_id).cloned()).await;
-    let left: Vec<PathName> = before.values().filter(|v| v.kind == NodeKind::Gateway && v.name.clone() != first && v.mesh == "mesh2").map(|v| v.name.clone()).collect();
+    let left: Vec<PathName> = before.values().filter(|v| v.r#type == "gateway" && v.name.clone() != first && v.mesh == "mesh2").map(|v| v.name.clone()).collect();
     assert_eq!(left.len(), 1);
     assert_eq!(estate.node_value(&left[0]).await["node_id"], json!(before[&left[0]].node_id), "halfway: mesh2's other gateway is not replaced yet");
     estate.kill_node(&p).await;
 
     followed(&estate, stream).await;
     let steps = receipts(&estate, &build).await;
-    for (name, v) in before.iter().filter(|(_, v)| v.kind == NodeKind::Gateway) {
+    for (name, v) in before.iter().filter(|(_, v)| v.r#type == "gateway") {
         estate.until_node(name, &format!("{name:?} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != v.node_id).map(|_| ())).await;
         assert_eq!(exe_of(&estate, name).await, next.executable, "{name:?} runs the new executable");
         assert_eq!(receipts_of(&steps, &OperationId::node("node.delete", &v.node_id), "NodeDeleted").len(), 1, "{name:?} is deleted once");
@@ -348,14 +348,14 @@ async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_
 
 /// CONTRACT (proposal executable-bindings-at-create.md rule 5, R4 arm A: "a mesh whose only node-admin is to
 /// be replaced first gets a second node-admin on the new executable at a new `(path, name)` of the node-admin
-/// type in that mesh (the next free one, `(path mesh1.admin, name 2)`), whose entry the compiler adds to the accepted
+/// type in that mesh (the next free one, `(path mesh1.node-admin, name 2)`), whose entry the compiler adds to the accepted
 /// topology at acceptance, so every attempt and every read holds it and no attempt removes it as left out;
 /// it is created, Ready and mesh-primary ... before the original is replaced, and stays"; rule 1:
 /// "every node RDM originates ... appears in that read, so the next request lists it"): mesh2 has one
 /// node-admin, and the request names a new executable for it. The accepted Build's topology holds
-/// `(path mesh2.admin, name 2)` from acceptance. Its executor, mesh2's admin, is held at the added admin's create
+/// `(path mesh2.node-admin, name 2)` from acceptance. Its executor, mesh2's admin, is held at the added admin's create
 /// `Complete` and killed there. The next attempts keep the added admin (the same node) and finish: the
-/// original is re-created at `(path mesh2.admin, name 1)` on the new executable. `fabric.nodes.get` lists the added
+/// original is re-created at `(path mesh2.node-admin, name 1)` on the new executable. `fabric.nodes.get` lists the added
 /// admin on the new executable; the next complete request, read after, lists it and is accepted without
 /// touching it, and a request without it, under the stale `based_on`, is refused.
 /// Must NOT happen: the added admin removed as left out, or the original left on its old executable.
@@ -363,44 +363,44 @@ async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_
 async fn a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_executor_is_killed() {
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let estate = Estate::bootstrap_on(owner("a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_executor_is_killed"), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_on(owner("a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_executor_is_killed"), "fabric1", "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let shape = [("mesh1", 2, 1), ("mesh2", 1, 1)];
     estate.reconcile_shape("fabric1", &shape).await;
     estate.settles_to(&shape, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let before = fabric_nodes(&estate).await;
-    let admin = before[&PathName::new("mesh2.admin", "1").unwrap()].executable.clone().expect("mesh2.admin.1's row records its executable");
+    let admin = before[&PathName::new("mesh2.node-admin", "1").unwrap()].executable.clone().expect("mesh2.node-admin.1's row records its executable");
     let next = another_build(&estate, &admin, "next");
-    let door = Door::at(&estate, &rdm_core::PathName::new("mesh2.admin", "1").unwrap()).await;
-    door.arm("added-admin-created", json!({"kind": "receipt", "step": "Complete", "operation": "node.create", "node": OperationSubject::Location(PathName::new("mesh2.admin", "2").unwrap())})).await;
+    let door = Door::at(&estate, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await;
+    door.arm("added-admin-created", json!({"kind": "receipt", "step": "Complete", "operation": "node.create", "node": OperationSubject::Location(PathName::new("mesh2.node-admin", "2").unwrap())})).await;
     let (based_on, request) = read_request(&estate).await;
     let stale = request.clone();
 
-    let stream = estate.submit_change(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request, PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, Some(&next)) }).await;
+    let stream = estate.submit_change(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request, PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", Some(&next)) }).await;
     let build = stream.build_id().to_string();
     let accepted = build_log::build_value(&estate, &build).await;
-    assert!(accepted["topology"]["meshes"]["mesh2"]["nodes"].as_array().is_some_and(|n| n.iter().any(|p| p == &json!(PathName::new("mesh2.admin", "2").unwrap()))), "the added admin is in the accepted topology from acceptance: {}", accepted["topology"]);
+    assert!(accepted["topology"]["meshes"]["mesh2"]["nodes"].as_array().is_some_and(|n| n.iter().any(|p| p == &json!(PathName::new("mesh2.node-admin", "2").unwrap()))), "the added admin is in the accepted topology from acceptance: {}", accepted["topology"]);
     door.wait_held("added-admin-created").await;
-    let added = estate.until_node(&rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2.admin.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
-    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh2.admin", "1").unwrap()).await["node_id"], json!(before[&PathName::new("mesh2.admin", "1").unwrap()].node_id), "the original is not replaced before its second admin is created");
-    estate.kill_node(&rdm_core::PathName::new("mesh2.admin", "1").unwrap()).await;
+    let added = estate.until_node(&rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2.node-admin.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
+    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await["node_id"], json!(before[&PathName::new("mesh2.node-admin", "1").unwrap()].node_id), "the original is not replaced before its second admin is created");
+    estate.kill_node(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await;
 
     followed(&estate, stream).await;
-    estate.until_node(&rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2.admin.1 on the new executable", SETTLE + crate::node_recovery_due(), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != before[&PathName::new("mesh2.admin", "1").unwrap()].node_id && n.executable.as_ref() == Some(&next)).map(|_| ())).await;
-    assert_eq!(exe_of(&estate, &PathName::new("mesh2.admin", "1").unwrap()).await, next.executable, "the original's path runs the new executable");
+    estate.until_node(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2.node-admin.1 on the new executable", SETTLE + crate::node_recovery_due(), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != before[&PathName::new("mesh2.node-admin", "1").unwrap()].node_id && n.executable.as_ref() == Some(&next)).map(|_| ())).await;
+    assert_eq!(exe_of(&estate, &PathName::new("mesh2.node-admin", "1").unwrap()).await, next.executable, "the original's path runs the new executable");
     let read = fabric_nodes(&estate).await;
-    assert_eq!(read[&PathName::new("mesh2.admin", "2").unwrap()].node_id, added.node_id, "the added admin is kept: the same node");
-    assert_eq!(read[&PathName::new("mesh2.admin", "2").unwrap()].executable.as_ref(), Some(&next), "fabric.nodes.get lists the added admin on the new executable");
+    assert_eq!(read[&PathName::new("mesh2.node-admin", "2").unwrap()].node_id, added.node_id, "the added admin is kept: the same node");
+    assert_eq!(read[&PathName::new("mesh2.node-admin", "2").unwrap()].executable.as_ref(), Some(&next), "fabric.nodes.get lists the added admin on the new executable");
     let receipts = receipts(&estate, &build).await;
     assert!(receipts_of(&receipts, &OperationId::node("node.delete", &added.node_id), "NodeDeleted").is_empty(), "the added admin is never deleted");
 
     // The next request, built from the read, lists the added admin and leaves it as it is.
     let (current, again) = read_request(&estate).await;
-    assert!(again.iter().any(|s| s.path == PathName::new("mesh2.admin", "2").unwrap() && s.executable.as_ref() == Some(&next)), "the read lists the node RDM created");
+    assert!(again.iter().any(|s| s.path == PathName::new("mesh2.node-admin", "2").unwrap() && s.executable.as_ref() == Some(&next)), "the read lists the node RDM created");
     let (reason, detail) = rejected("a request without the added admin, under the stale based_on", estate.carrier().await.create(Change::Reconcile { based_on, nodes: stale }).await);
     assert_eq!(reason, "based-on-not-current", "{detail}");
     followed(&estate, estate.submit_change(Change::Reconcile { based_on: current, nodes: again }).await).await;
-    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh2.admin", "2").unwrap()).await["node_id"], json!(added.node_id), "the next request keeps it");
+    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh2.node-admin", "2").unwrap()).await["node_id"], json!(added.node_id), "the next request keeps it");
     estate.shutdown().await;
 }
 
@@ -426,10 +426,10 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
     estate.until_fabric_ready(SETTLE).await;
     let (based_on, request) = read_request(&estate).await;
     let of = |name: PathName| request.iter().find(|s| s.path == name).and_then(|s| s.executable.clone()).expect("the row records its executable");
-    let (admin, rpc) = (of(PathName::new("mesh1.admin", "1").unwrap()), of(PathName::new("mesh1.rpc", "1").unwrap()));
+    let (admin, rpc) = (of(PathName::new("mesh1.node-admin", "1").unwrap()), of(PathName::new("mesh1.node", "1").unwrap()));
     let mut grown = request.clone();
-    for (p, mesh, kind, b) in [(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", NodeKind::NodeAdmin, &admin), (PathName::new("mesh2.admin", "2").unwrap(), "mesh2", NodeKind::NodeAdmin, &admin), (PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", NodeKind::RpcNode, &rpc), (PathName::new("mesh3.admin", "1").unwrap(), "mesh3", NodeKind::NodeAdmin, &admin), (PathName::new("mesh3.rpc", "1").unwrap(), "mesh3", NodeKind::RpcNode, &rpc)] {
-        grown = naming(grown, p, mesh, kind, Some(b));
+    for (p, mesh, r#type, b) in [(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &admin), (PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", &admin), (PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", &rpc), (PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", &admin), (PathName::new("mesh3.node", "1").unwrap(), "mesh3", "node", &rpc)] {
+        grown = naming(grown, p, mesh, r#type, Some(b));
     }
     followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: grown }).await).await;
     estate.settles_to(&[("mesh1", 2, 1), ("mesh2", 2, 1), ("mesh3", 1, 1)], SETTLE).await;
@@ -454,7 +454,7 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
     // mesh1, the fabric-primary's own mesh, left out: the fabric-primary moves first, inside mesh1's
     // mesh.delete, to the other Ready mesh-primary, mesh2's (node-primary-update.md: "the lowest
     // NodeId among the other Ready mesh-primaries"), never to the Dead mesh3's final primary.
-    let mesh2_admin = estate.mesh_node_views("mesh2").await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.status == rdm_client::NodeStatus::Ready).map(|n| n.name).expect("a ready mesh2 admin");
+    let mesh2_admin = estate.mesh_node_views("mesh2").await.into_iter().find(|n| n.r#type == "node-admin" && n.status == rdm_client::NodeStatus::Ready).map(|n| n.name).expect("a ready mesh2 admin");
     estate.enter(&mesh2_admin).await;
     let (based_on, request) = read_request(&estate).await;
     let without1: Vec<_> = request.into_iter().filter(|s| s.mesh != "mesh1").collect();
@@ -493,12 +493,12 @@ async fn members(estate: &Estate) -> BTreeMap<PathName, Member> {
 
 /// The request that names, for every path the read lists, `next` of its kind, and the executables it
 /// names: each kind's current executable copied with one byte appended.
-async fn every_path_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec<NodeSpec>, BTreeMap<NodeKind, Binding>) {
+async fn every_path_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec<NodeSpec>, BTreeMap<String, Binding>) {
     let (based_on, mut request) = read_request(estate).await;
-    let mut next: BTreeMap<NodeKind, Binding> = BTreeMap::new();
+    let mut next: BTreeMap<String, Binding> = BTreeMap::new();
     for s in request.iter_mut() {
         let current = s.executable.clone().unwrap_or_else(|| panic!("{:?}'s row records its executable", s.path));
-        let to = next.entry(s.kind).or_insert_with(|| another_build(estate, &current, "next")).clone();
+        let to = next.entry(s.r#type.clone()).or_insert_with(|| another_build(estate, &current, "next")).clone();
         s.executable = Some(to);
     }
     (based_on, request, next)
@@ -512,7 +512,7 @@ async fn replaced(estate: &Estate, name: &PathName, was: &Member, next: &Binding
     let now = estate.until_node(name, &format!("{name:?} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != was.view.node_id).cloned()).await;
     assert_ne!(now.incarnation_id, was.view.incarnation_id, "{name:?}: a new birth");
     assert_eq!(exe_of(estate, name).await, next.executable, "{name:?} runs the executable its entry names");
-    if matches!(NodeSpec::default_for(was.view.name.clone(), &was.view.mesh, was.view.kind).storage_persistence, rdm_core::meta::StoragePersistence::Persistent { .. }) {
+    if matches!(NodeSpec::default_for(was.view.name.clone(), &was.view.mesh, &was.view.r#type).storage_persistence, rdm_core::meta::StoragePersistence::Persistent { .. }) {
         assert_eq!(now.endpoint_id, was.view.endpoint_id, "{name:?}: its endpoint key kept, loaded from its kept data dir");
         assert_eq!(estate.data_dir(name).await, was.data_dir, "{name:?}: created over its kept data dir");
     } else {
@@ -537,12 +537,12 @@ async fn an_ephemeral_paths_replacement_is_created_over_a_newly_allocated_data_d
     estate.until_fabric_ready(SETTLE).await;
     let before = members(&estate).await;
     let (based_on, request) = read_request(&estate).await;
-    assert_eq!(request.iter().find(|s| s.path == PathName::new("mesh1.rpc", "1").unwrap()).map(|s| s.storage_persistence), Some(rdm_core::meta::StoragePersistence::Ephemeral), "mesh1.rpc.1's path is Ephemeral");
-    let current = before[&PathName::new("mesh1.rpc", "1").unwrap()].view.executable.clone().expect("mesh1.rpc.1's row records its executable");
+    assert_eq!(request.iter().find(|s| s.path == PathName::new("mesh1.node", "1").unwrap()).map(|s| s.storage_persistence), Some(rdm_core::meta::StoragePersistence::Ephemeral), "mesh1.node.1's path is Ephemeral");
+    let current = before[&PathName::new("mesh1.node", "1").unwrap()].view.executable.clone().expect("mesh1.node.1's row records its executable");
     let next = another_build(&estate, &current, "next");
-    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: naming(request, PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(&next)) }).await).await;
-    replaced(&estate, &PathName::new("mesh1.rpc", "1").unwrap(), &before[&PathName::new("mesh1.rpc", "1").unwrap()], &next).await;
-    assert!(std::path::Path::new(&before[&PathName::new("mesh1.rpc", "1").unwrap()].data_dir).is_dir(), "the predecessor's data dir is left where it was (node-delete.md \"Storage\")");
+    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: naming(request, PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Some(&next)) }).await).await;
+    replaced(&estate, &PathName::new("mesh1.node", "1").unwrap(), &before[&PathName::new("mesh1.node", "1").unwrap()], &next).await;
+    assert!(std::path::Path::new(&before[&PathName::new("mesh1.node", "1").unwrap()].data_dir).is_dir(), "the predecessor's data dir is left where it was (node-delete.md \"Storage\")");
     estate.shutdown().await;
 }
 
@@ -609,7 +609,7 @@ async fn a_request_replacing_every_nodes_executable_moves_the_fabric_primary_onc
     let sha = candidate_sha();
     let set = binding_set(&sha);
     let test = "a_request_replacing_every_nodes_executable_moves_the_fabric_primary_once_and_completes_after_ready";
-    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let shape = [("mesh1", 2, 1), ("mesh2", 2, 1)];
     estate.reconcile_shape("fabric1", &shape).await;
     estate.settles_to(&shape, SETTLE).await;
@@ -621,21 +621,21 @@ async fn a_request_replacing_every_nodes_executable_moves_the_fabric_primary_onc
 
     let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
     let build = stream.build_id().to_string();
-    let (frames, moves) = follow_across_replacement(&estate, stream, &[PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.admin", "2").unwrap(), PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap()]).await;
+    let (frames, moves) = follow_across_replacement(&estate, stream, &[PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh2.node-admin", "2").unwrap(), PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node-admin", "2").unwrap()]).await;
     assert_eq!(moves, 1, "the stream ended FabricPrimaryMoved once, at the fabric-primary's own replacement, and the same build_id completed at the new fabric-primary: {frames:?}");
     let (fp, status, accepted) = fabric_at_its_primary(&estate).await;
     assert_eq!((status, accepted.as_deref()), (ScopeStatus::Ready, Some(build.as_str())), "Complete only once the fabric is ready under it ({fp:?})");
 
     for (name, m) in &before {
-        replaced(&estate, name, m, &next[&m.view.kind]).await;
+        replaced(&estate, name, m, &next[&m.view.r#type]).await;
     }
     let steps = receipts(&estate, &build).await;
     for mesh in ["mesh1", "mesh2"] {
-        let admin = |primary: bool| before.iter().find(|(n, m)| m.view.mesh == mesh && m.view.kind == NodeKind::NodeAdmin && m.view.is_primary == primary).map(|(n, _)| n.clone()).expect("an admin");
+        let admin = |primary: bool| before.iter().find(|(n, m)| m.view.mesh == mesh && m.view.r#type == "node-admin" && m.view.is_primary == primary).map(|(n, _)| n.clone()).expect("an admin");
         let (secondary, primary) = (admin(false), admin(true));
         let deleted = |n: &PathName| steps.iter().position(|r| r.operation == OperationId::node("node.delete", &before[n].view.node_id) && r.step == "NodeDeleted").unwrap_or_else(|| panic!("{n:?} is deleted: {steps:?}"));
         assert!(deleted(&secondary) < deleted(&primary), "{mesh}: its non-primary admin {secondary:?} is replaced before its primary {primary:?}");
-        let rpc = before.values().find(|m| m.view.mesh == mesh && m.view.kind == NodeKind::RpcNode).expect("mesh rpc node");
+        let rpc = before.values().find(|m| m.view.mesh == mesh && m.view.r#type == "node").expect("mesh rpc node");
         assert!(deleted(&primary) < deleted(&rpc.view.name), "{mesh}: node-admins before the other types");
         for (n, _) in before.iter().filter(|(_, m)| m.view.mesh == mesh) {
             assert_eq!(receipts_of(&steps, &OperationId::location("node.create", n), "Complete").len(), 1, "{n:?} is created once");
@@ -656,7 +656,7 @@ async fn broker_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec<Nod
     let (based_on, request) = read_request(estate).await;
     let current = request.iter().find(|s| s.path == broker()).and_then(|s| s.executable.clone()).expect("the broker's row records its executable");
     let next = another_build(estate, &current, "next");
-    (based_on, naming(request, broker(), "mesh2", rdm_core::NodeKind::Broker, Some(&next)), next)
+    (based_on, naming(request, broker(), "mesh2", "broker", Some(&next)), next)
 }
 
 fn broker() -> PathName { PathName::new("mesh2.broker", "1").unwrap() }
@@ -675,8 +675,8 @@ fn broker() -> PathName { PathName::new("mesh2.broker", "1").unwrap() }
 async fn an_executor_lost_after_a_replaced_brokers_delete_leaves_its_create_alone_to_the_next_attempt() {
     let estate = role_fabric("an_executor_lost_after_a_replaced_brokers_delete_leaves_its_create_alone_to_the_next_attempt").await;
     let before = members(&estate).await;
-    let p = before.iter().find(|(n, m)| m.view.mesh == "mesh2" && m.view.kind == NodeKind::NodeAdmin && m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's primary");
-    let other = before.iter().find(|(n, m)| m.view.mesh == "mesh2" && m.view.kind == NodeKind::NodeAdmin && !m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's other admin");
+    let p = before.iter().find(|(n, m)| m.view.mesh == "mesh2" && m.view.r#type == "node-admin" && m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's primary");
+    let other = before.iter().find(|(n, m)| m.view.mesh == "mesh2" && m.view.r#type == "node-admin" && !m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's other admin");
     let door = Door::at(&estate, &p).await;
     door.arm("broker-deleted", json!({"kind": "event", "event": "deleted", "node": before[&broker()].view.node_id})).await;
     let (based_on, request, next) = broker_on_another_build(&estate).await;
@@ -714,8 +714,8 @@ async fn an_executor_lost_after_a_replaced_brokers_delete_leaves_its_create_alon
 async fn an_executor_lost_inside_a_replaced_brokers_delete_has_its_successor_created_over_the_kept_data_dir() {
     let estate = role_fabric("an_executor_lost_inside_a_replaced_brokers_delete_has_its_successor_created_over_the_kept_data_dir").await;
     let before = members(&estate).await;
-    let p = before.iter().find(|(n, m)| m.view.mesh == "mesh2" && m.view.kind == NodeKind::NodeAdmin && m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's primary");
-    let other = before.iter().find(|(n, m)| m.view.mesh == "mesh2" && m.view.kind == NodeKind::NodeAdmin && !m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's other admin");
+    let p = before.iter().find(|(n, m)| m.view.mesh == "mesh2" && m.view.r#type == "node-admin" && m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's primary");
+    let other = before.iter().find(|(n, m)| m.view.mesh == "mesh2" && m.view.r#type == "node-admin" && !m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's other admin");
     let door = Door::at(&estate, &p).await;
     door.arm("broker-deleted-row", json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete", "node": OperationSubject::Node(before[&broker()].view.node_id.clone())})).await;
     let (based_on, request, next) = broker_on_another_build(&estate).await;
@@ -776,12 +776,12 @@ async fn a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_ex
     std::fs::create_dir_all(&added).unwrap();
     let added = std::fs::canonicalize(&added).unwrap();
     let dirs = format!("{},{}", bin.display(), added.display());
-    let estate = Estate::bootstrap_on_with_env(Owner { provider: "container".into(), ..owner(test) }, "fabric1", "mesh1", &set, &sha, &["rpc_node"], &[("RDM_EXECUTABLE_DIRS", dirs.as_str())]).await.expect("the container set is accepted");
+    let estate = Estate::bootstrap_on_with_env(Owner { provider: "container".into(), ..owner(test) }, "fabric1", "mesh1", &set, &sha, &["node"], &[("RDM_EXECUTABLE_DIRS", dirs.as_str())]).await.expect("the container set is accepted");
     let shape = [("mesh1", 2, 1), ("mesh2", 2, 0)];
     estate.reconcile_shape("fabric1", &shape).await;
     estate.settles_to(&shape, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
-    for name in [PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.admin", "2").unwrap()] {
+    for name in [PathName::new("mesh1.node-admin", "2").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh2.node-admin", "2").unwrap()] {
         let id = estate.container_of(&name).await.unwrap_or_else(|| panic!("{name:?} runs in a container"));
         let mounts = std::process::Command::new("docker").args(["inspect", "--format", "{{json .Mounts}}", &id]).output().unwrap();
         let mounts: Value = serde_json::from_slice(&mounts.stdout).unwrap();
@@ -792,18 +792,18 @@ async fn a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_ex
             assert!(wrote.map(|o| !o.status.success()).unwrap_or(true), "{name:?}: a write inside {} is refused", dir.display());
         }
     }
-    let rpc = set.bindings.iter().find(|b| b.launch_id == "rpc_node").cloned().expect("the set binds rpc_node");
+    let rpc = set.bindings.iter().find(|b| b.launch_id == "node").cloned().expect("the set binds rpc_node");
     let outside = another_build(&estate, &rpc, "outside");
     let (based_on, request) = read_request(&estate).await;
-    let (reason, detail) = rejected("an executable outside RDM_EXECUTABLE_DIRS", estate.carrier().await.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Some(&outside)) }).await);
+    let (reason, detail) = rejected("an executable outside RDM_EXECUTABLE_DIRS", estate.carrier().await.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", Some(&outside)) }).await);
     assert_eq!(reason, "executable-refused", "{detail}");
-    assert!(detail.contains("path `mesh2.rpc`, name `1`") && detail.contains("RDM_EXECUTABLE_DIRS"), "the refusal names the path and the directories: {detail}");
+    assert!(detail.contains("path `mesh2.node`, name `1`") && detail.contains("RDM_EXECUTABLE_DIRS"), "the refusal names the path and the directories: {detail}");
     assert_eq!(estate.accepted_build_id().await, based_on.to_string(), "nothing is accepted");
     let inside_path = added.join("rpc-node-inside");
     std::fs::copy(&outside.executable, &inside_path).unwrap();
     let inside = Binding { executable: inside_path, ..outside.clone() };
-    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: naming(request, PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Some(&inside)) }).await).await;
-    let created = estate.until_node(&rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2.rpc.1 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
+    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: naming(request, PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", Some(&inside)) }).await).await;
+    let created = estate.until_node(&rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2.node.1 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
     let row = record_of(&estate, created.node_id.as_str());
     assert_eq!(row["record"]["executable"]["executable"], json!(inside.executable.display().to_string()), "mesh2's launched admin launched the executable from the added directory: {row}");
     estate.shutdown().await;
@@ -827,9 +827,9 @@ async fn a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_ex
 async fn a_replacements_delete_of_a_birth_replaced_after_acceptance_is_refused_birth_replaced_and_the_new_birth_is_untouched() {
     let estate = role_fabric("a_replacements_delete_of_a_birth_replaced_after_acceptance_is_refused_birth_replaced_and_the_new_birth_is_untouched").await;
     let before = fabric_nodes(&estate).await;
-    let p1 = before.values().find(|v| v.mesh == "mesh1" && v.kind == NodeKind::NodeAdmin && v.is_primary).map(|v| v.name.clone()).expect("mesh1's primary admin");
-    let first = before.values().find(|v| v.mesh == "mesh1" && v.kind == NodeKind::Gateway && !v.is_primary).map(|v| v.name.clone()).expect("mesh1's non-primary gateway");
-    let target = before.values().find(|v| v.mesh == "mesh2" && v.kind == NodeKind::Gateway && !v.is_primary).map(|v| v.name.clone()).expect("mesh2's non-primary gateway");
+    let p1 = before.values().find(|v| v.mesh == "mesh1" && v.r#type == "node-admin" && v.is_primary).map(|v| v.name.clone()).expect("mesh1's primary admin");
+    let first = before.values().find(|v| v.mesh == "mesh1" && v.r#type == "gateway" && !v.is_primary).map(|v| v.name.clone()).expect("mesh1's non-primary gateway");
+    let target = before.values().find(|v| v.mesh == "mesh2" && v.r#type == "gateway" && !v.is_primary).map(|v| v.name.clone()).expect("mesh2's non-primary gateway");
     let pinned = before[&target].clone();
     let door = Door::at(&estate, &p1).await;
     door.arm("mesh1-gateway-created", json!({"kind": "receipt", "step": "Complete", "operation": "node.create", "node": OperationSubject::Location(first.clone())})).await;

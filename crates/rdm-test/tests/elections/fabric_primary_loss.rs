@@ -42,14 +42,14 @@ fn primaries(nodes: &[Value]) -> Option<(String, bool)> {
 }
 
 /// CONTRACT (Q122; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" steps 1-4;
-/// elections §3, §4.1): a two-mesh estate; mesh1.admin.1, the fabric-primary and mesh1's primary, has its
+/// elections §3, §4.1): a two-mesh estate; mesh1.node-admin.1, the fabric-primary and mesh1's primary, has its
 /// exact runtime held (SIGSTOP) past the staleness floor. From the mark until the workflow restores the
-/// fabric-primary, no view names a fabric-primary or a primary node-admin of mesh1: mesh1.admin.2, the
+/// fabric-primary, no view names a fabric-primary or a primary node-admin of mesh1: mesh1.node-admin.2, the
 /// lowest Ready node-admin of the mesh, runs fabric recovery and takes no primary role. Node
 /// investigation reads the held runtime (not `reached`), so node recovery re-creates the node-admin at
-/// mesh1.admin.1 with a new node id; once it is Ready the workflow restores it as mesh-primary
-/// and fabric-primary. What must NOT happen: mesh1.admin.2 or a node of mesh2 named fabric-primary, or
-/// mesh1.admin.2 named mesh1's primary, while the workflow runs. The held birth stays held for the whole
+/// mesh1.node-admin.1 with a new node id; once it is Ready the workflow restores it as mesh-primary
+/// and fabric-primary. What must NOT happen: mesh1.node-admin.2 or a node of mesh2 named fabric-primary, or
+/// mesh1.node-admin.2 named mesh1's primary, while the workflow runs. The held birth stays held for the whole
 /// cell (what a returning old birth meets is not this cell's); the teardown kills it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fabric_recovery_its_mesh_runs() {
@@ -59,8 +59,8 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
-    let fp = PathName::new("mesh1.admin", "1").unwrap();
-    let standby = PathName::new("mesh1.admin", "2").unwrap();
+    let fp = PathName::new("mesh1.node-admin", "1").unwrap();
+    let standby = PathName::new("mesh1.node-admin", "2").unwrap();
     let standby_id = estate.node_view(&standby).await.node_id;
     let before = estate.node_view(&fp).await;
     let nodes0 = estate.node_values().await;
@@ -71,15 +71,15 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
 
     let held_at = now_ns();
     signal(pid, "-STOP");
-    // Past the mark: nobody holds either role, in every sampled view, until a node at mesh1.admin.1 with a
+    // Past the mark: nobody holds either role, in every sampled view, until a node at mesh1.node-admin.1 with a
     // new node id is Ready and holds both. The standby keeps no atlas: it forwards each read to the
     // mesh-primary its view names (query.md §1; Q243), so the views answered are a primary's, and the
     // standby's own view holding no primary is its refusal naming none (read from its spans below).
     let restored = estate
-        .until_view("the node re-created at mesh1.admin.1 is Ready, mesh-primary and fabric-primary", floor * 12 + Duration::from_secs(120), |views| {
+        .until_view("the node re-created at mesh1.node-admin.1 is Ready, mesh-primary and fabric-primary", floor * 12 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
             let primaries: Vec<PathName> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(location).collect();
-            let mesh1_primary: Vec<PathName> = ns.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true && n["mesh"] == "mesh1").map(location).collect();
+            let mesh1_primary: Vec<PathName> = ns.iter().filter(|n| n["type"] == "node-admin" && n["is_primary"] == true && n["mesh"] == "mesh1").map(location).collect();
             assert!(primaries.iter().all(|h| h == &fp), "only the node at {fp:?} is ever fabric-primary: {primaries:?}");
             assert!(mesh1_primary.iter().all(|h| h == &fp), "only the node at {fp:?} is ever mesh1's primary: {mesh1_primary:?}");
             ns.iter()
@@ -118,13 +118,13 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
 /// "the node-admin at the fabric-primary's separate path and name is re-created and is mesh-primary and
 /// fabric-primary again when it is Ready"; Q156: "a launch that finds a living admin is
 /// refused, never an ordinary admin at the primary's name"; Q199): mesh1 has two node-admins; the
-/// fabric-primary mesh1.admin.1's process is killed (SIGKILL) and a person starts a node-admin again over
-/// its data dir, as the topology-storage restart canaries do, while mesh1.admin.2 lives. The launch is
-/// refused `NameHeld` naming mesh1.admin.2 and exits, having written nothing. Read through mesh1.admin.2,
+/// fabric-primary mesh1.node-admin.1's process is killed (SIGKILL) and a person starts a node-admin again over
+/// its data dir, as the topology-storage restart canaries do, while mesh1.node-admin.2 lives. The launch is
+/// refused `NameHeld` naming mesh1.node-admin.2 and exits, having written nothing. Read through mesh1.node-admin.2,
 /// within the bound of the held-primary cell above, `fabric.get` names the fabric-primary at
-/// mesh1.admin.1, and the views name exactly one birth at mesh1.admin.1, ready, mesh-primary
-/// and fabric-primary: the one mesh1.admin.2's fabric recovery re-created. What must NOT happen: the
-/// launch taking the separate path and name, two births contending for mesh1.admin.1 (a node.delete of the lost birth
+/// mesh1.node-admin.1, and the views name exactly one birth at mesh1.node-admin.1, ready, mesh-primary
+/// and fabric-primary: the one mesh1.node-admin.2's fabric recovery re-created. What must NOT happen: the
+/// launch taking the separate path and name, two births contending for mesh1.node-admin.1 (a node.delete of the lost birth
 /// refused `name-held` by the started one, again and again), or mesh1 left with no fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives_ends_with_one_birth_at_its_path_that_is_fabric_primary() {
@@ -134,8 +134,8 @@ async fn a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives
     estate.settled_views(&[("mesh1", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
-    let fp = PathName::new("mesh1.admin", "1").unwrap();
-    let standby = PathName::new("mesh1.admin", "2").unwrap();
+    let fp = PathName::new("mesh1.node-admin", "1").unwrap();
+    let standby = PathName::new("mesh1.node-admin", "2").unwrap();
     let standby_id = estate.node_view(&standby).await.node_id;
     let before = estate.node_view(&fp).await;
     let nodes0 = estate.node_values().await;

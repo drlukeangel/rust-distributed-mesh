@@ -10,10 +10,10 @@
 
 mod common;
 
-use rdm_core::NodeKind;
+
 
 fn gateway() -> rdm_core::PathName {
-    rdm_core::PathName::numbered("mesh1", NodeKind::Gateway, 1)
+    rdm_core::PathName::numbered("mesh1", "gateway", 1)
 }
 
 /// A Build id's characters, whatever separators its rendering uses.
@@ -24,7 +24,7 @@ fn bare(id: &str) -> String {
 #[test]
 fn on_fabric_ready_produces_the_day_zero_record_through_the_gateway_once() {
     common::run(async {
-        let estate = common::estate("demo-fabric-hooks", "on_fabric_ready_produces_the_day_zero_record_through_the_gateway_once", &[(NodeKind::NodeAdmin, 1), (NodeKind::Gateway, 1), (NodeKind::Broker, 2)]).await;
+        let estate = common::estate("demo-fabric-hooks", "on_fabric_ready_produces_the_day_zero_record_through_the_gateway_once", &[("node-admin", 1), ("gateway", 1), ("broker", 2)]).await;
         estate.until_fabric_ready(common::SETTLE).await;
         let ready_build = bare(&estate.accepted_build_id().await);
         let until = std::time::Instant::now() + common::SETTLE;

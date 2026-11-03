@@ -32,7 +32,7 @@
 //! the host cannot, cells 6-7 are a named skip, a failure under
 //! `RDM_REQUIRE_NETFAULT=1` (CI).
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, PathName};
+use rdm_client::{FabricDesired, MeshDesired, PathName};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::netfault::Partition;
 use rdm_test::link_faults::ports_of;
@@ -56,7 +56,7 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The fabric `fabric` with `mesh1` of two admins and `rpc1` rpc nodes, and `mesh2` of two of each.
 fn shape(fabric: &str, rpc1: u32) -> FabricDesired {
-    FabricDesired { fabric: fabric.into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, rpc1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] }
+    FabricDesired { fabric: fabric.into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", rpc1)]), MeshDesired::of("mesh2", [("node-admin", 2), ("node", 2)])] }
 }
 
 /// MM with two admins and two rpc nodes per mesh, settled.
@@ -64,7 +64,7 @@ async fn mm(estate: &Estate, fabric: &str) -> Vec<Value> {
     estate.reconcile(&shape(fabric, 2)).await;
     let want: BTreeSet<PathName> = ["mesh1", "mesh2"]
         .iter()
-        .flat_map(|m| (1..=2).flat_map(move |i| [PathName::new(format!("{m}.admin"), i.to_string()).unwrap(), PathName::new(format!("{m}.rpc"), i.to_string()).unwrap()]))
+        .flat_map(|m| (1..=2).flat_map(move |i| [PathName::new(format!("{m}.node-admin"), i.to_string()).unwrap(), PathName::new(format!("{m}.node"), i.to_string()).unwrap()]))
         .collect();
     Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await)
 }
@@ -129,7 +129,7 @@ fn verdicts(spans: &[Value], node: &str, mesh: &str) -> Option<String> {
 }
 
 fn primary(nodes: &[Value], mesh: &str) -> Value {
-    nodes.iter().find(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or(Value::Null)
+    nodes.iter().find(|n| n["mesh"] == mesh && n["type"] == "node-admin" && n["is_primary"] == true).cloned().unwrap_or(Value::Null)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -137,8 +137,8 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     let _one = SERIAL.lock().await;
     let mut estate = Estate::bootstrap(owner("topology_rides_mesh_channels_and_the_admin_backbone"), "fabric1", "mesh1").await;
     let nodes = mm(&estate, "fabric1").await;
-    let rpcs: Vec<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node").map(|n| s(&n["node_id"])).collect();
-    let admins: Vec<String> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["node_id"])).collect();
+    let rpcs: Vec<String> = nodes.iter().filter(|n| n["type"] == "node").map(|n| s(&n["node_id"])).collect();
+    let admins: Vec<String> = nodes.iter().filter(|n| n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
 
     // 1. Every ordinary node learns both meshes...
     wait_for("every rpc node holds both meshes", Duration::from_secs(30), || {
@@ -254,7 +254,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
         .node_values()
         .await
         .iter()
-        .filter(|n| n["kind"] == "node_admin" && n["status"] == "ready" && s(&n["node_id"]) != fp_id)
+        .filter(|n| n["type"] == "node-admin" && n["status"] == "ready" && s(&n["node_id"]) != fp_id)
         .map(|n| s(&n["node_id"]))
         .collect();
     assert!(!survivors.is_empty(), "a live admin other than the fabric primary {fp_name}");
@@ -267,7 +267,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
-    if location(&fp) == PathName::new("mesh1.admin", "1").unwrap() {
+    if location(&fp) == PathName::new("mesh1.node-admin", "1").unwrap() {
         estate.kill_bootstrap();
     } else {
         estate.kill_node(&location(&fp)).await;
@@ -306,7 +306,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     let _one = SERIAL.lock().await;
     let mut estate = Estate::bootstrap(owner("gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_heals_to_one_birth_per_path"), "fabric2", "mesh1").await;
     let nodes = mm(&estate, "fabric2").await;
-    let rpcs2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node").map(|n| s(&n["node_id"])).collect();
+    let rpcs2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node").map(|n| s(&n["node_id"])).collect();
     wait_for("mesh2's rpc nodes hold mesh1", Duration::from_secs(30), || {
         let spans = estate.spans();
         let rpcs2 = rpcs2.clone();
@@ -314,19 +314,19 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     })
     .await;
 
-    // 8. Stop then start mesh2.rpc.1: it rejoins as the same birth (node-stop.md "Kept"; node-start.md)
+    // 8. Stop then start mesh2.node.1: it rejoins as the same birth (node-stop.md "Kept"; node-start.md)
     // and is ready again holding both meshes.
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let original = estate.node_value(&PathName::new("mesh2.rpc", "1").unwrap()).await;
+    let original = estate.node_value(&PathName::new("mesh2.node", "1").unwrap()).await;
     let restarted_id = s(&original["node_id"]);
     let before = s(&original["incarnation_id"]);
     let ready_before = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "node_id") == restarted_id && attr(sp, "incarnation_id") == before).count();
-    estate.stop_then_start(&rdm_core::PathName::new("mesh2.rpc", "1").unwrap()).await;
+    estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).await;
     // The Build can complete on another admin: wait for the asked one's view, and for the node's own
     // second ready.
     let restarted = estate
-        .until_node(&rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "the asked admin's view holds the restarted birth ready", Duration::from_secs(15), |n| {
+        .until_node(&rdm_core::PathName::new("mesh2.node", "1").unwrap(), "the asked admin's view holds the restarted birth ready", Duration::from_secs(15), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             let ready_now = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "node_id") == restarted_id && attr(sp, "incarnation_id") == before).count();
             (n["status"] == "ready" && s(&n["node_id"]) == restarted_id && s(&n["incarnation_id"]) == before && ready_now > ready_before).then_some(s(&n["incarnation_id"]))
@@ -338,7 +338,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
         .into_iter()
         .filter(|sp| attr(sp, "node_id") == restarted_id && attr(sp, "incarnation_id") == restarted)
         .max_by_key(|sp| start(sp))
-        .unwrap_or_else(|| panic!("the restarted mesh2.rpc.1 reports ready"))
+        .unwrap_or_else(|| panic!("the restarted mesh2.node.1 reports ready"))
         .clone();
     assert_eq!(attr(&ready, "meshes"), "2", "ready holding both meshes: {ready}");
     let pulled = named(&spans, "rdm.mesh.entry.update.via-topology-pulled")
@@ -375,15 +375,15 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     // (path, name) holds one live birth, the same in every admin's view, and a Build submitted at the
     // fabric-primary then completes.
     let nodes = estate.node_values().await;
-    let lone = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] != true).cloned().unwrap();
+    let lone = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node-admin" && n["is_primary"] != true).cloned().unwrap();
     let lone_name = s(&lone["node_id"]);
     let others: Vec<String> = nodes.iter().map(|n| s(&n["node_id"])).filter(|n| *n != lone_name).collect();
     let pre_cut: BTreeSet<PathName> = nodes.iter().map(location).collect();
-    let admins: Vec<PathName> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(location).collect();
+    let admins: Vec<PathName> = nodes.iter().filter(|n| n["type"] == "node-admin").map(location).collect();
     let one_primary = |view: &[Value]| -> Result<(), String> {
         let mut seen: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
         for n in view.iter().filter(|n| n["is_primary"] == true && n["status"] == "ready") {
-            seen.entry((s(&n["mesh"]), s(&n["kind"]))).or_default().push(s(&n["node_id"]));
+            seen.entry((s(&n["mesh"]), s(&n["type"]))).or_default().push(s(&n["node_id"]));
         }
         let fps: Vec<String> = view.iter().filter(|n| n["is_fabric_primary"] == true && n["status"] == "ready").map(|n| s(&n["node_id"])).collect();
         match seen.iter().find(|(_, v)| v.len() > 1) {
@@ -445,7 +445,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     drop(isolation);
     // The estate was entered at the fabric-primary's first birth, which the isolated admin's fabric
     // recovery may have re-created: it is entered again through a node-admin the cut never touched.
-    let entry: PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
+    let entry: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
     estate.enter(&entry).await;
     // Healed: every pre-cut (path, name) holds exactly one live Ready birth, the same in every
     // admin's view (a new NodeId where its recovery re-created it). The untouched admin is read first:
@@ -490,7 +490,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     let mut grow = at_fp.create(estate.shape_change_at(&at_fp, &shape("fabric2", 3)).await).await.unwrap_or_else(|e| panic!("build.create at the fabric-primary {fp_id} was refused: {e}"));
     Estate::until_complete(&mut grow).await;
     let mut want: BTreeSet<PathName> = pre_cut.clone();
-    want.insert(PathName::new("mesh1.rpc", "3").unwrap());
+    want.insert(PathName::new("mesh1.node", "3").unwrap());
     let after = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await);
     // Relearned with the topology view after the heal: every birth's current
     // runtime metadata (i143.e4.s16), no Build history replayed.

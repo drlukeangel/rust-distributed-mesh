@@ -13,11 +13,11 @@ use rdm_transport::topology::TopologyView;
 use serde_json::Value;
 use std::time::Duration;
 
-fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, ep: &iroh::Endpoint) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, ep: &iroh::Endpoint) -> MeshDigest {
     let port = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
     MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::parse("fab000000001").unwrap(),
-        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+        node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: NodeId::mint(),
             name,
             endpoint_id: EndpointId(ep.id().to_string()),
@@ -70,7 +70,7 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         rdm_transport::topology::learn_addresses(&b.ep, &[iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).map(|s| std::net::SocketAddr::from(([127, 0, 0, 1], s.port()))).unwrap())]).unwrap();
         let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
         // Each node joins under its node id, as every node does; its digest names its (path, name).
-        let (da, db) = (digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &a.ep), digest(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &b.ep));
+        let (da, db) = (digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &a.ep), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep));
         let (a_id, b_id) = (da.node.node_id.clone(), db.node.node_id.clone());
         let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, a_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let seed = iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())));
@@ -89,10 +89,10 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         let ran = started.elapsed();
 
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
-        let beats: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-heartbeat" && s["attributes"]["node_path"] == "mesh1.rpc" && s["attributes"]["node_name"] == "1").collect();
+        let beats: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-heartbeat" && s["attributes"]["node_path"] == "mesh1.node" && s["attributes"]["node_name"] == "1").collect();
         // ~6.5 s of 500 ms digests is 13 publishes: the heartbeat is the 5 s cadence, not the digest cadence.
         let due = (ran.as_millis() / rdm_transport::topology::HEARTBEAT_EVERY.as_millis()) as usize + 1;
-        assert!(beats.len() == due || beats.len() + 1 == due, "heartbeat spans of mesh1.rpc.1 over {ran:?} ({due} due at most, one fewer when the last mark falls at the window's edge): {beats:#?}");
+        assert!(beats.len() == due || beats.len() + 1 == due, "heartbeat spans of mesh1.node.1 over {ran:?} ({due} due at most, one fewer when the last mark falls at the window's edge): {beats:#?}");
         let last = beats.iter().max_by_key(|s| num(s, "digest_seq")).unwrap();
         assert_eq!(num(last, "peer_count"), 1, "the heartbeat counts the other member, not itself: {last}");
         assert!(num(last, "wall_time_ms") > 0 && last["attributes"].get("clock_skew_ms").is_some(), "{last}");

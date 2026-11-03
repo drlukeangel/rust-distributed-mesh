@@ -19,8 +19,8 @@
 //! Build: `cargo build --example declared_secrets` in `demo/`.
 use anyhow::{anyhow, Result};
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_core::launch::{DeclaredSecret, ENV_NODE_KIND, ENV_NODE_NAME, ENV_NODE_PATH};
-use rdm_core::NodeKind;
+use rdm_core::launch::{DeclaredSecret, ENV_NODE_TYPE, ENV_NODE_NAME, ENV_NODE_PATH};
+
 
 const SERVICE: &str = "example-declared-secrets";
 /// The application's one declared secret.
@@ -28,23 +28,23 @@ const TOKEN: &str = "EXAMPLE_APP_TOKEN";
 
 /// The application's declarations, as every one of its node-admins registers them.
 fn declared() -> Vec<DeclaredSecret> {
-    vec![DeclaredSecret { name: TOKEN.to_string(), kinds: vec![NodeKind::Broker] }]
+    vec![DeclaredSecret { name: TOKEN.to_string(), kinds: vec!["broker"] }]
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // The kind the launch names (`RDM_NODE_KIND`, written by the launching admin), never read from the
     // node's `(path, name)`; the bootstrap admin is given none.
-    let launched_as = std::env::var(ENV_NODE_KIND).ok();
+    let launched_as = std::env::var(ENV_NODE_TYPE).ok();
     let (path, name) = (std::env::var(ENV_NODE_PATH).unwrap_or_default(), std::env::var(ENV_NODE_NAME).unwrap_or_default());
     match launched_as.as_deref() {
-        Some(kind) if kind == NodeKind::Broker.name() => {
+        Some(kind) if kind == "broker" => {
             // The broker's own read of its secret. Its value is the application's: log only that it is held.
             let held = std::env::var(TOKEN).map_err(|_| anyhow!("path {path:?}, name {name:?} was launched without {TOKEN}"))?;
             eprintln!("path {path:?}, name {name:?}: {TOKEN} held ({} bytes)", held.len());
-            rdm_node::run(rdm_node::Role { kind: NodeKind::Broker }, &[]).await
+            rdm_node::run(rdm_node::Role { r#type: "broker".into() }, &[]).await
         }
-        Some(kind) if kind != NodeKind::NodeAdmin.name() => Err(anyhow!("path {path:?}, name {name:?}: this example runs node-admins and brokers only")),
+        Some(kind) if kind != "node-admin" => Err(anyhow!("path {path:?}, name {name:?}: this example runs node-admins and brokers only")),
         _ => {
             rdm_admin::entry::run_with(SERVICE, |cfg| Wiring {
                 declared: declared(),

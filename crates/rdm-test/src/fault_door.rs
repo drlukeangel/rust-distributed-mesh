@@ -496,7 +496,7 @@ mod tests {
             CutSpec::TopologyRead,
             CutSpec::Announcement { announcement: "aggregate-in-flight".into(), channel: "any".into() },
             CutSpec::ProviderTerminate { pid: Some(4242) },
-            CutSpec::StorageStep { node: Some(PathName::new("mesh2.rpc", "1").unwrap()) },
+            CutSpec::StorageStep { node: Some(PathName::new("mesh2.node", "1").unwrap()) },
             CutSpec::StorageSwitch,
         ]
     }
@@ -521,15 +521,15 @@ mod tests {
     fn every_reply_variant_encodes_and_round_trips() {
         let row = |spec: CutSpec, hit: Option<Hit>| CutRow { spec, armed: false, held: true, released: true, hit, held_for_ms: Some(7), seen_while_held: 1 };
         let cuts: BTreeMap<String, CutRow> = [
-            ("a".to_string(), row(CutSpec::TopologyRead, Some(Hit::TopologyRead { node: "mesh1.admin.4".into(), reads_from: "mesh1.admin.1".into() }))),
+            ("a".to_string(), row(CutSpec::TopologyRead, Some(Hit::TopologyRead { node: "mesh1.node-admin.4".into(), reads_from: "mesh1.node-admin.1".into() }))),
             ("b".to_string(), row(CutSpec::ClaimedAttempt { attempt: None }, Some(Hit::Claimed { build_id: "b".into(), attempt: 1, executor: rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() } }))),
             ("c".to_string(), row(CutSpec::ProviderDomain, None)),
         ]
         .into();
         let all = [
-            FaultReply::Armed { node: "mesh1.admin.1".into(), id: "c".into(), spec: CutSpec::Receipt { step: "StartNode".into(), operation: None, node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("100000000000").unwrap())), failed: false } },
-            FaultReply::Released { node: "mesh1.admin.1".into(), id: "c".into(), was_held: true, held_ms: Some(3) },
-            FaultReply::State(FaultState { node: "mesh1.admin.1".into(), cuts, receipts_seen: 4 }),
+            FaultReply::Armed { node: "mesh1.node-admin.1".into(), id: "c".into(), spec: CutSpec::Receipt { step: "StartNode".into(), operation: None, node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("100000000000").unwrap())), failed: false } },
+            FaultReply::Released { node: "mesh1.node-admin.1".into(), id: "c".into(), was_held: true, held_ms: Some(3) },
+            FaultReply::State(FaultState { node: "mesh1.node-admin.1".into(), cuts, receipts_seen: 4 }),
             FaultReply::Refused { reason: "r".into() },
             FaultReply::PeerUnresolved { reason: "r".into() },
             FaultReply::NotReady { reason: "r".into() },

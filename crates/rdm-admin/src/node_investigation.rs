@@ -353,19 +353,19 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
 
-    fn ready(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Node {
-        let mut n = Node::allocated(name, mesh, kind);
+    fn ready(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Node {
+        let mut n = Node::allocated(name, mesh, r#type);
         n.node_id = NodeId::mint();
         n.incarnation_id = Some(IncarnationId::mint());
         n.status = NodeStatus::Ready;
         n
     }
 
-    /// The silent `mesh1.rpc.1`, its mesh's ready members, this admin, and a ready node of mesh2.
+    /// The silent `mesh1.node.1`, its mesh's ready members, this admin, and a ready node of mesh2.
     fn world() -> (Node, Topology) {
-        let mut node = ready(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut node = ready(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         node.status = NodeStatus::PendingReconnect;
-        let nodes = vec![ready(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), node.clone(), ready(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), ready(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), ready(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), ready(rdm_core::PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode)];
+        let nodes = vec![ready(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), node.clone(), ready(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), ready(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"), ready(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node"), ready(rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node")];
         (node, Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes })
     }
 
@@ -374,7 +374,7 @@ mod tests {
     }
 
     fn end(n: &Node) -> ConnectionEnd {
-        ConnectionEnd { mesh: n.mesh.clone(), kind: n.kind, name: n.name.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone() }
+        ConnectionEnd { mesh: n.mesh.clone(), r#type: n.r#type.clone(), name: n.name.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone() }
     }
 
     fn row(source: &Node, destination: &Node, kind: ConnectionKind, state: ConnectionState) -> NodeConnection {
@@ -397,11 +397,11 @@ mod tests {
     #[test]
     fn the_leads_are_the_ready_sources_in_any_mesh_of_the_active_direct_rows_to_the_exact_birth() {
         let (node, view) = world();
-        let me = of(&view, rdm_core::PathName::new("mesh1.admin", "1").unwrap());
-        let (r2, r3, m1, m2) = (of(&view, rdm_core::PathName::new("mesh1.rpc", "2").unwrap()), of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()), of(&view, rdm_core::PathName::new("mesh2.rpc", "1").unwrap()), of(&view, rdm_core::PathName::new("mesh2.rpc", "2").unwrap()));
+        let me = of(&view, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap());
+        let (r2, r3, m1, m2) = (of(&view, rdm_core::PathName::new("mesh1.node", "2").unwrap()), of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()), of(&view, rdm_core::PathName::new("mesh2.node", "1").unwrap()), of(&view, rdm_core::PathName::new("mesh2.node", "2").unwrap()));
         let other_birth = Node { incarnation_id: Some(IncarnationId::mint()), ..node.clone() };
         let earlier_source = Node { incarnation_id: Some(IncarnationId::mint()), ..r3.clone() };
-        let unheld = ready(rdm_core::PathName::new("mesh3.rpc", "1").unwrap(), "mesh3", rdm_core::NodeKind::RpcNode);
+        let unheld = ready(rdm_core::PathName::new("mesh3.node", "1").unwrap(), "mesh3", "node");
         let rows = vec![
             row(&m1, &node, ConnectionKind::Direct, ConnectionState::Connected),
             row(&r2, &node, ConnectionKind::Direct, ConnectionState::Connected),
@@ -415,10 +415,10 @@ mod tests {
             row(&node, &node, ConnectionKind::Direct, ConnectionState::Connected),
         ];
         let names = |v: Vec<Node>| v.into_iter().map(|n| n.name.clone()).collect::<Vec<_>>();
-        assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), [rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), rdm_core::PathName::new("mesh2.rpc", "1").unwrap()], "the active Direct sources in any mesh, once each, in path order");
+        assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), [rdm_core::PathName::new("mesh1.node", "2").unwrap(), rdm_core::PathName::new("mesh2.node", "1").unwrap()], "the active Direct sources in any mesh, once each, in path order");
         let mut view = view;
         view.nodes.iter_mut().find(|n| n.node_id == m1.node_id).unwrap().status = NodeStatus::PendingReconnect;
-        assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), [rdm_core::PathName::new("mesh1.rpc", "2").unwrap()], "a source the view holds off ready carries nothing");
+        assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), [rdm_core::PathName::new("mesh1.node", "2").unwrap()], "a source the view holds off ready carries nothing");
         assert!(leads_of(&rows, &view, &Node { incarnation_id: None, ..node.clone() }, None).is_empty(), "no birth, no leads");
     }
 
@@ -430,7 +430,7 @@ mod tests {
         rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: rdm_core::MeshNode { mesh: n.mesh.clone(), kind: n.kind, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation, supersedes: None, runtime },
+            node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation, supersedes: None, runtime },
             status: rdm_core::MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
@@ -464,7 +464,7 @@ mod tests {
         let empty = rdm_transport::topology::DigestView::default();
         let none = birth_runtime(&empty, Some(&nodes), &node).await.unwrap_err();
         assert!(none.contains("no digest of this exact birth") && none.contains("no runtime row"), "{none}");
-        nodes.put_runtime(&crate::storage::RuntimeRow { kind: node.kind, mesh: node.mesh.clone(), node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), runtime: fact(2), data_dir: Some("/data/from-the-row".into()) }).await.unwrap();
+        nodes.put_runtime(&crate::storage::RuntimeRow { r#type: node.r#type.clone(), mesh: node.mesh.clone(), node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), runtime: fact(2), data_dir: Some("/data/from-the-row".into()) }).await.unwrap();
         let from_row = BirthRuntime { fact: fact(2), data_dir: Some("/data/from-the-row".into()), incarnation: inc.clone() };
         assert_eq!(birth_runtime(&empty, Some(&nodes), &node).await, Ok(from_row.clone()), "no digest: the durable row");
         for (held_digest, why) in [(digest(&node, IncarnationId::mint(), Some(fact(3))), "a digest of another birth"), (digest(&node, inc.clone(), None), "a digest with no runtime fact")] {
@@ -507,7 +507,7 @@ mod tests {
             }
         }
         fn carriers(&self, view: &Topology, node: &Node) -> Vec<Node> {
-            let me = of(view, rdm_core::PathName::new("mesh1.admin", "1").unwrap()).node_id;
+            let me = of(view, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).node_id;
             crate::offline::eligible_carriers(view, node, Some(&me)).cloned().collect()
         }
         async fn leads(&self, _view: &Topology, _node: &Node) -> Result<Vec<Node>, String> {
@@ -543,7 +543,7 @@ mod tests {
         // The inspect first (Q273): exited or os-stopped is the verdict, and no tickle is sent.
         for said in [Finding::Exited { code: Some(137) }, Finding::OsStopped] {
             let asked = AtomicBool::new(false);
-            let r = rig(Some(current(&node)), Some((of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id, current(&node))));
+            let r = rig(Some(current(&node)), Some((of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()).node_id, current(&node))));
             assert_eq!(investigate(&node, &view, &r, provider_says(said.clone(), &asked)).await, said, "the provider proved the runtime gone: its verdict");
             assert!(asked.load(Ordering::SeqCst), "the provider is asked first");
             assert!(r.asked.lock().unwrap().is_empty(), "no tickle is sent once the inspect proved it gone: {:?}", r.asked.lock().unwrap());
@@ -554,11 +554,11 @@ mod tests {
             let asked = AtomicBool::new(false);
             let found = investigate(&node, &view, &rig(Some(current(&node)), None), provider_says(said.clone(), &asked)).await;
             assert_eq!(found, Finding::Reached { answer: current(&node), carrier: None });
-            let found = investigate(&node, &view, &rig(None, Some((of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id, current(&node)))), provider_says(said.clone(), &asked)).await;
-            assert_eq!(found, Finding::Reached { answer: current(&node), carrier: Some(of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id) });
-            assert_eq!((found.name(), found.detail()), ("reached", of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id.to_string()));
+            let found = investigate(&node, &view, &rig(None, Some((of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()).node_id, current(&node)))), provider_says(said.clone(), &asked)).await;
+            assert_eq!(found, Finding::Reached { answer: current(&node), carrier: Some(of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()).node_id) });
+            assert_eq!((found.name(), found.detail()), ("reached", of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()).node_id.to_string()));
             let another_birth = Node { incarnation_id: Some(IncarnationId::mint()), ..node.clone() };
-            let r = rig(Some(current(&another_birth)), Some((of(&view, rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).node_id, current(&another_birth))));
+            let r = rig(Some(current(&another_birth)), Some((of(&view, rdm_core::PathName::new("mesh1.node", "2").unwrap()).node_id, current(&another_birth))));
             assert_eq!(investigate(&node, &view, &r, provider_says(said.clone(), &asked)).await, said, "nobody reached the exact birth: the inspect's answer");
             assert_eq!(r.asked.lock().unwrap().first().map(String::as_str), Some("direct"), "the direct probe first");
         }
@@ -576,8 +576,8 @@ mod tests {
     #[tokio::test]
     async fn the_exact_births_answer_reaches_a_member_and_a_primary_alike() {
         let (node, view) = world();
-        let carrier = of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id;
-        let primary = Node { kind: rdm_core::NodeKind::NodeAdmin, is_primary: true, ..node.clone() };
+        let carrier = of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()).node_id;
+        let primary = Node { r#type: "node-admin".into(), is_primary: true, ..node.clone() };
         for (direct, carried) in [(Some(current(&node)), None), (None, Some((carrier.clone(), current(&node))))] {
             for (looked_at, what) in [(&node, "a member"), (&primary, "a node-admin primary")] {
                 let rig = Rig { direct: direct.clone(), carried: carried.clone(), asked: Mutex::default() };
@@ -634,20 +634,20 @@ mod tests {
                 }
             }
             fn carriers(&self, view: &Topology, node: &Node) -> Vec<Node> {
-                let me = of(view, rdm_core::PathName::new("mesh1.admin", "1").unwrap()).node_id;
+                let me = of(view, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).node_id;
                 crate::offline::eligible_carriers(view, node, Some(&me))
                     .cloned()
                     .collect()
             }
             async fn leads(&self, view: &Topology, node: &Node) -> Result<Vec<Node>, String> {
-                let me = of(view, rdm_core::PathName::new("mesh1.admin", "1").unwrap()).node_id;
+                let me = of(view, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).node_id;
                 Ok(leads_of(&self.rows, view, node, Some(&me)))
             }
         }
 
         let (node, view) = world();
-        let m1 = of(&view, rdm_core::PathName::new("mesh2.rpc", "1").unwrap());
-        let r3 = of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap());
+        let m1 = of(&view, rdm_core::PathName::new("mesh2.node", "1").unwrap());
+        let r3 = of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap());
         let rows = vec![
             row(&m1, &node, ConnectionKind::Direct, ConnectionState::Connected),
             row(&r3, &node, ConnectionKind::Direct, ConnectionState::Connected),
@@ -664,7 +664,7 @@ mod tests {
             investigate(&node, &view, &rig, async move {
                 let outcome = crate::deployment::provider::Inspected::Running;
                 span_inspection(
-                    "mesh1.admin.1",
+                    "mesh1.node-admin.1",
                     &node_for_inspect,
                     &outcome,
                     None,
@@ -683,7 +683,7 @@ mod tests {
                 r3.node_id.to_string(),
                 m1.node_id.to_string()
             ],
-            "direct probe first, then the two leads in path order before non-lead mesh1.rpc.2"
+            "direct probe first, then the two leads in path order before non-lead mesh1.node.2"
         );
 
         let direct_spans = capture.named("rdm.node.tickle.resolve.via-direct");

@@ -43,12 +43,12 @@ fn line_with<'a>(file: &'a str, parts: &[&str]) -> Option<&'a str> {
 /// a noq or iroh line in either process's span evidence (R-TL1), or a side with no file. The
 /// dialler's connect failure names the trace of its exported dial span. The maker is launched as the
 /// estate launches the bootstrap admin (a mesh and a data dir, no node name), and its header still
-/// names it: `name="mesh1.admin.1"`, `mesh="mesh1"`.
+/// names it: `name="mesh1.node-admin.1"`, `mesh="mesh1"`.
 #[test]
 fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs() {
     let cell = "a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs";
     let root = cell_dir(cell);
-    let (run, maker_dir, dialler_dir) = (root.join("spans"), root.join("mesh1.admin.1"), root.join("mesh1.rpc.9-diag"));
+    let (run, maker_dir, dialler_dir) = (root.join("spans"), root.join("mesh1.node-admin.1"), root.join("mesh1.node.9-diag"));
     // As the estate launches the bootstrap admin: an evidence run, a mesh and a data dir, no node name.
     let env = [
         ("RDM_EVIDENCE_DIR", Some(run.as_os_str())),
@@ -74,7 +74,7 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
         let target = NodeId::mint();
         // The entry admin the probe reads its view from: a third endpoint of this process, whose view
         // names the target at the maker's address under another endpoint's key.
-        let served = admin_view::serve(vec![node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &target, Some(expected.to_string()), Some(maker_addr), Some(IncarnationId::mint()))]).await;
+        let served = admin_view::serve(vec![node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &target, Some(expected.to_string()), Some(maker_addr), Some(IncarnationId::mint()))]).await;
         let admin = served.birth_arg();
         let (run, dialler_dir) = (run.clone(), dialler_dir.clone());
         let mut dialler = tokio::task::spawn_blocking(move || {
@@ -82,7 +82,7 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
                 .args(["--admin-birth", &admin, "get", "--target", &format!("exact:{target}"), "--key", "k"])
                 .env("RDM_EVIDENCE_DIR", &run)
                 .env("RDM_DATA_DIR", &dialler_dir)
-                .env("RDM_NODE_PATH", "mesh1.rpc")
+                .env("RDM_NODE_PATH", "mesh1.node")
                 .env("RDM_NODE_NAME", "9")
                 .output()
                 .unwrap()
@@ -116,7 +116,7 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     let run_field = format!("run={:?}", run.display().to_string());
     // The dialler is named by its launch's path and name (RDM_NODE_PATH, RDM_NODE_NAME); the maker, launched
     // with neither, by its node log directory's name, in `name`.
-    for (side, file, node) in [("maker", &maker, " name=\"mesh1.admin.1\""), ("dialler", &dialler, " path=\"mesh1.rpc\" name=\"9\"")] {
+    for (side, file, node) in [("maker", &maker, " name=\"mesh1.node-admin.1\""), ("dialler", &dialler, " path=\"mesh1.node\" name=\"9\"")] {
         let header = file.lines().next().unwrap_or_default();
         assert!(header.starts_with("transport-diag ") && header.contains(&run_field) && header.contains(node), "the {side}'s header names another run or node: {header}");
         assert!(line_with(file, &["step=\"endpoint-bound\"", "endpoint_id=", "bound="]).is_some(), "the {side} logged no bound endpoint:\n{file}");
@@ -153,7 +153,7 @@ fn a_process_outside_an_evidence_run_installs_no_transport_diagnostics() {
     let cell = "a_process_outside_an_evidence_run_installs_no_transport_diagnostics";
     let data_dir = cell_dir(cell);
     // A node outside an evidence run: a node log dir and a node name, no evidence dir.
-    let env = [("RDM_EVIDENCE_DIR", None), ("RUST_LOG", None), ("RDM_DATA_DIR", Some(data_dir.as_os_str())), ("RDM_NODE_PATH", Some(std::ffi::OsStr::new("mesh1.rpc"))), ("RDM_NODE_NAME", Some(std::ffi::OsStr::new("1")))];
+    let env = [("RDM_EVIDENCE_DIR", None), ("RUST_LOG", None), ("RDM_DATA_DIR", Some(data_dir.as_os_str())), ("RDM_NODE_PATH", Some(std::ffi::OsStr::new("mesh1.node"))), ("RDM_NODE_NAME", Some(std::ffi::OsStr::new("1")))];
     if crate::own_process::delegated_with_env(module_path!(), cell, &env) {
         return;
     }

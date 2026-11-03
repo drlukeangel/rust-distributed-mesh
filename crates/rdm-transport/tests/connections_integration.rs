@@ -11,13 +11,17 @@ use crate::common;
 use common::*;
 use rdm_core::connections::{CarrierPolicy, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute};
 use rdm_core::reconnect::owed_direct_restored;
-use rdm_core::{NodeKind, PathName};
+use rdm_core::{PathName};
 use rdm_transport::{Resend, CallOptions, ConnectedCall, PoolKey, RouteLeg};
 use rdm_core::outcome::RpcOutcome;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-const POLICY: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
+fn policy() -> CarrierPolicy {
+
+    CarrierPolicy::Proxy { carrier_type: "node".into() }
+
+}
 
 async fn connected(rig: &Rig, held: &ConnectionsHeld, own: &rdm_core::connections::ConnectionEnd, target: &Node, payload: &[u8]) -> ConnectedCall<ProbeReply> {
     rig.origin
@@ -26,7 +30,7 @@ async fn connected(rig: &Rig, held: &ConnectionsHeld, own: &rdm_core::connection
             &own.node_id,
             &target.resolved.name,
             &target.resolved.node_id,
-            POLICY,
+            policy(),
             &probe(payload),
             &CallOptions { resend: Resend::with_time_limit(Duration::from_millis(1500)), ..Default::default() },
         )
@@ -51,7 +55,7 @@ fn proxied(rig: &Rig, own: &rdm_core::connections::ConnectionEnd) -> Connections
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_active_proxy_is_reused_without_a_fresh_direct_dial_ladder() {
     let r = rig().await;
-    let own = own_end(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let own = own_end(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
     let held = proxied(&r, &own);
     let first = connected(&r, &held, &own, &r.b, b"first").await;
     assert_eq!(served_by(&first.outcome).map(|s| s.0).as_deref(), Some(r.b.resolved.node_id.as_str()), "{:?}", first.outcome);
@@ -76,7 +80,7 @@ async fn an_active_proxy_is_reused_without_a_fresh_direct_dial_ladder() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_indeterminate_alone_never_invalidates_a_proxy() {
     let r = rig().await;
-    let own = own_end(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let own = own_end(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
     let held = proxied(&r, &own);
     // B commits the carried request and never answers within the budget: Indeterminate, over the Proxy.
     let held_call = connected(&r, &held, &own, &r.b, b"hold").await;
@@ -97,7 +101,7 @@ async fn an_indeterminate_alone_never_invalidates_a_proxy() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_back_only_after_it_is_durable() {
     let r = rig().await;
-    let own = own_end(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let own = own_end(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
     let me = own.clone();
     let mut held = proxied(&r, &own);
     // The direct connection to B returns (whichever path opened it): Direct Connected beside the
@@ -130,7 +134,7 @@ async fn a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_complete_projection_with_no_fact_dials_the_destination_directly() {
     let r = rig().await;
-    let own = own_end(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let own = own_end(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
     let held = held_for(&own.node_id);
     let call = connected(&r, &held, &own, &r.b, b"cold").await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });
@@ -145,7 +149,7 @@ async fn a_complete_projection_with_no_fact_dials_the_destination_directly() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fact_naming_a_superseded_birth_still_dials_the_current_one() {
     let r = rig().await;
-    let own = own_end(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let own = own_end(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
     let mut held = held_for(&own.node_id);
     held.apply(connection(own.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
     let members = std::sync::Arc::new(rdm_core::connections::StaticIncarnations::default());

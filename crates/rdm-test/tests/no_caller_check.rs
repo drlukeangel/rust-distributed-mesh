@@ -51,8 +51,8 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
             fabric: "fabric1".into(),
             fabric_id: fabric,
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::RpcNode,
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            r#type: "node".into(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -77,7 +77,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
             heard.changed().await.unwrap();
         }
         let (born, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-        let resolved = ResolvedNode { mesh: born.node.mesh.clone(), kind: born.node.kind,
+        let resolved = ResolvedNode { mesh: born.node.mesh.clone(), r#type: born.node.r#type,
             node_id: born.node.node_id.clone(),
             name: born.node.name.clone(),
             endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
@@ -87,7 +87,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         admin.observer.resolver.insert(resolved.clone());
         let target = NodeTarget::ExactNode(born.node.node_id.clone());
         let (node_id, incarnation) = (born.node.node_id.clone(), born.node.incarnation.clone());
-        let stop = |attempt: u32, incarnation: &IncarnationId| StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), attempt, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
+        let stop = |attempt: u32, incarnation: &IncarnationId| StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), attempt, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
 
         // The admin the node knows stops it: the node stops, and hears no digest from now on.
@@ -111,7 +111,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         let stale = IncarnationId::mint();
         assert_eq!(call(&stranger, &target, &stop(3, &stale)).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() });
         // The node id the request names is never a reason to refuse: the birth the call reached answers it.
-        let another = StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), attempt: 4, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "9").unwrap()) };
+        let another = StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), attempt: 4, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "9").unwrap()) };
         let reply = call(&stranger, &NodeTarget::ExactNode(node_id.clone()), &another).await;
         assert_eq!(reply, stopped, "a stop naming another node id is answered by the birth it reached, as the stop of a stopped birth: {reply:?}");
 

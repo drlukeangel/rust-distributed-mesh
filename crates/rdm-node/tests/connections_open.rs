@@ -37,8 +37,8 @@ fn launch(store: &Path) -> Launch {
         fabric: "fabric1".into(),
         fabric_id: FabricId::mint(),
         mesh: "mesh1".into(),
-        kind: rdm_core::NodeKind::RpcNode,
-        name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
+        r#type: "node".into(),
+        name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -60,7 +60,7 @@ fn fact(source: ConnectionEnd, ordinal: u32) -> NodeConnection {
     NodeConnection {
         id: ConnectionId::mint(),
         source,
-        destination: ConnectionEnd { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, name: rdm_core::PathName::new("mesh1.rpc", ordinal.to_string()).unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
+        destination: ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), name: rdm_core::PathName::new("mesh1.node", ordinal.to_string()).unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
         kind: ConnectionKind::Direct,
         alpn: rdm_core::connections::ALPN.to_vec(),
         state: ConnectionState::Connected,
@@ -88,7 +88,7 @@ async fn a_nodes_connections_store_opens_over_a_file_it_cannot_fold_and_appends_
 
     let providers = NodeStorageProviders::new().register("file", Arc::new(FileNodeBackend::at(&store)));
     let handle = NodeStorageHandle::open(&providers, &launch).await.unwrap_or_else(|e| panic!("the node opens its connections store without reading it: {e}"));
-    let written = fact(ConnectionEnd { mesh: launch.mesh.clone(), kind: launch.kind, name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) }, 3);
+    let written = fact(ConnectionEnd { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) }, 3);
     handle.connections().put_connection(&written).await.unwrap_or_else(|e| panic!("the node appends its fact: {e}"));
 
     let bytes = std::fs::read(&file).unwrap();
@@ -139,7 +139,7 @@ impl ConnectionsStorage for ReadsCounted {
 /// happen: a writer that needs a read of the store before it can answer a route.
 #[tokio::test]
 async fn a_connections_writer_is_born_complete_and_reads_nothing_back() {
-    let own = ConnectionEnd { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) };
+    let own = ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) };
     let store = Arc::new(ReadsCounted::default());
     let writer = ConnectionsWriter::new(own.clone(), store.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
     {
@@ -165,7 +165,7 @@ async fn connection_history_is_scoped_by_source_id_and_explicit_writer() {
     let directory = store_dir("source-id");
     let root = StoreRoot::open(&directory, &FabricId::mint()).unwrap();
     let location = rdm_core::PathName::new("apps.east", "worker").unwrap();
-    let predecessor = ConnectionEnd { mesh: "explicit-mesh".into(), kind: rdm_core::NodeKind::RpcNode,
+    let predecessor = ConnectionEnd { mesh: "explicit-mesh".into(), r#type: "node".into(),
         name: location.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) };
     let successor = ConnectionEnd { node_id: NodeId::mint(), ..predecessor.clone() };
     let old_writer = LogWriter::new(&predecessor.node_id, predecessor.incarnation.as_ref().unwrap());
@@ -198,8 +198,8 @@ async fn location_keyed_connection_formats_are_refused_when_read() {
         let directory = store_dir("old-format");
         let root = StoreRoot::open(&directory, &FabricId::mint()).unwrap();
         let writer = LogWriter::mint();
-        let source = ConnectionEnd { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: writer.node_id.clone(), incarnation: Some(writer.incarnation_id.clone()) };
+        let source = ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), node_id: writer.node_id.clone(), incarnation: Some(writer.incarnation_id.clone()) };
         let row = fact(source, 2);
         let op = Op { node_id: writer.node_id.to_string(), incarnation_id: writer.incarnation_id.to_string(), seq: 1 };
         let bytes = encode_line(&op, format, "obsolete-location-index", &serde_json::to_vec(&row).unwrap());

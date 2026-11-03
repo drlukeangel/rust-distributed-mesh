@@ -86,12 +86,12 @@ struct Node {
 }
 
 impl Node {
-    async fn boot(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, storage: Arc<dyn ConnectionsStorage>) -> Self {
-        let birth = Birth { mesh: mesh.to_owned(), kind, name, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    async fn boot(name: rdm_core::PathName, mesh: &str, r#type: &str, storage: Arc<dyn ConnectionsStorage>) -> Self {
+        let birth = Birth { mesh: mesh.to_owned(), r#type: r#type.to_string(), name, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let key = SecretKey::generate();
         let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), &[ALPN.to_vec()]).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let resolved = ResolvedNode { mesh: birth.mesh.clone(), kind: birth.kind, node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: birth.incarnation.clone() };
+        let resolved = ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: birth.incarnation.clone() };
         let resolver = Arc::new(StaticResolver::new());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = Arc::new(ConnectionsWriter::new(birth.to_end(), storage, held));
@@ -121,8 +121,8 @@ impl Node {
 }
 
 async fn pair(source_store: Arc<OverTheConnection>) -> (Node, Node) {
-    let source = Node::boot(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, source_store).await;
-    let dest = Node::boot(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", rdm_core::NodeKind::Broker, Arc::new(MemoryConnectionsStorage::default())).await;
+    let source = Node::boot(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", "gateway", source_store).await;
+    let dest = Node::boot(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker", Arc::new(MemoryConnectionsStorage::default())).await;
     source.resolver.insert(dest.resolved.clone());
     dest.resolver.insert(source.resolved.clone());
     dest.accept_all();
@@ -308,7 +308,7 @@ fn a_start_hold_and_a_settlement_never_wait_behind_a_refused_writes_backoff() {
 async fn a_root_set_that_drops_the_root_a_births_cert_chains_under_is_refused_by_name() {
     use rdm_core::certs::{BirthIdentity, CaKey, IssuingKey};
     use rdm_core::status::{RootsPhase, StatusReply};
-    let node = Node::boot(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Arc::new(MemoryConnectionsStorage::default())).await;
+    let node = Node::boot(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Arc::new(MemoryConnectionsStorage::default())).await;
     let (root_a, root_b) = (rdm_core::certs::mint_key(), rdm_core::certs::mint_key());
     let ca = CaKey::mint(&root_a, 3600, 1_000);
     let issuing = IssuingKey::mint(&ca, "mesh1", 1_000, 2_000_000).unwrap();
@@ -317,7 +317,7 @@ async fn a_root_set_that_drops_the_root_a_births_cert_chains_under_is_refused_by
     node.registry.set_member_cert(rdm_core::certs::cert_to_bytes(&cert));
     node.registry.roots().replace(vec![root_a.verifying_key()]);
     let hex = |k: &rdm_core::certs::SigningKey| rdm_core::launch::encode_hex(k.verifying_key().as_bytes());
-    let install = |roots: Vec<String>| rdm_node::roots_update::install_roots(&node.registry, "mesh1.rpc.1", &node.birth.node_id, &node.birth.incarnation, &roots, RootsPhase::Distributed, false);
+    let install = |roots: Vec<String>| rdm_node::roots_update::install_roots(&node.registry, "mesh1.node.1", &node.birth.node_id, &node.birth.incarnation, &roots, RootsPhase::Distributed, false);
 
     let both = install(vec![hex(&root_a), hex(&root_b)]);
     assert!(matches!(&both, StatusReply::RootsUpdated { roots, .. } if roots.len() == 2), "{both:?}");

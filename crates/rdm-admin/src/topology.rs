@@ -6,7 +6,7 @@
 //! own mesh's `mesh-primary`. Mesh and Fabric views publish the primary's control API base; callers
 //! switch control only from these views.
 
-use crate::model::{Fabric, Mesh, Node, NodeId, NodeKind, NodeStatus, PathName};
+use crate::model::{Fabric, Mesh, Node, NodeId, NodeStatus, PathName};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -38,18 +38,18 @@ pub enum TopologyViolation {
         mesh: String,
     },
     /// A `(mesh, kind)` group has no primary.
-    NoNodeTypePrimary {
+    NoNodePrimary {
         /// The mesh concerned.
         mesh: String,
         /// The kind of the group.
-        kind: NodeKind,
+        r#type: String,
     },
     /// A `(mesh, kind)` group has more than one primary.
-    SplitNodeTypePrimary {
+    SplitNodePrimary {
         /// The mesh concerned.
         mesh: String,
         /// The kind of the group.
-        kind: NodeKind,
+        r#type: String,
         /// The nodes that hold the primary role.
         primaries: Vec<PathName>,
     },
@@ -69,9 +69,9 @@ impl fmt::Display for TopologyViolation {
             Self::DuplicateNode(p) => write!(f, "node {p:?} appears twice"),
             Self::DuplicateMesh(m) => write!(f, "mesh {m} appears twice"),
             Self::NodeInUnknownMesh { node, mesh } => write!(f, "node {node:?} names mesh {mesh}, which is not in the fabric"),
-            Self::NoNodeTypePrimary { mesh, kind } => write!(f, "node type ({mesh}, {kind:?}) has no primary"),
-            Self::SplitNodeTypePrimary { mesh, kind, primaries } => {
-                write!(f, "node type ({mesh}, {kind:?}) has {} primaries: {primaries:?}", primaries.len())
+            Self::NoNodePrimary { mesh, r#type } => write!(f, "node type ({mesh}, {:?}) has no primary", r#type),
+            Self::SplitNodePrimary { mesh, r#type, primaries } => {
+                write!(f, "node type ({mesh}, {:?}) has {} primaries: {primaries:?}", r#type, primaries.len())
             }
             Self::PrimaryNotLive(p) => write!(f, "primary {p:?} is not live"),
             Self::FabricPrimaryCount(n) => write!(f, "{n} fabric primaries, expected exactly one"),
@@ -148,9 +148,16 @@ impl Topology {
     }
 
     /// Every node of one type in `mesh`, among the members.
-    pub fn nodes_of_type(&self, mesh: &str, kind: NodeKind) -> impl Iterator<Item = &Node> {
-        let mesh = mesh.to_string();
-        self.members().filter(move |n| n.mesh == mesh && n.kind == kind)
+    pub fn nodes_of_type(&self, mesh: &str, r#type: &str) -> impl Iterator<Item = &Node> + '_ {
+        let (mesh, r#type) = (mesh.to_string(), r#type.to_string());
+        self.members().filter(move |n| n.mesh == mesh && n.r#type == r#type)
+    }
+
+    /// The types of the members of `mesh`, `node-admin` first, then by name.
+    pub fn types_in(&self, mesh: &str) -> Vec<String> {
+        let mut all: Vec<String> = self.members().filter(|n| n.mesh == mesh).map(|n| n.r#type.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        all.sort_by_key(|t| !rdm_core::is_node_admin(t));
+        all
     }
 
     /// Whether a node.create of the node-admin `node` makes it its mesh's first admin: it is a node-admin
@@ -158,8 +165,8 @@ impl Topology {
     /// view that has not heard the mesh lost, or the exited birth a recovery creates over) never
     /// counting against it. The one rule of every node.create of a node-admin (e4.s11;
     /// node-create.md "A node-admin created into a live mesh").
-    pub fn first_admin_of(&self, node: &PathName, mesh: &str, kind: NodeKind) -> bool {
-        kind == NodeKind::NodeAdmin && self.nodes_of_type(mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live())
+    pub fn first_admin_of(&self, node: &PathName, mesh: &str, r#type: &str) -> bool {
+        rdm_core::is_node_admin(&r#type) && self.nodes_of_type(mesh, "node-admin").filter(|n| n.name != *node).all(|n| !n.status.is_live())
     }
 
     /// Why `mesh` is not ready: a mesh is ready when it has a primary node-admin and
@@ -173,7 +180,7 @@ impl Topology {
     pub fn mesh_unready(&self, mesh: &str, planned: Option<&std::collections::BTreeSet<PathName>>) -> Vec<crate::checklist::Missing> {
         use crate::checklist::Missing;
         let mut out = Vec::new();
-        if self.node_type_primary(mesh, NodeKind::NodeAdmin).is_none() {
+        if self.node_type_primary(mesh, "node-admin").is_none() {
             out.push(Missing { who: mesh.to_string().into(), why: "no-primary" });
         }
         let paths: Vec<PathName> = match planned {
@@ -196,8 +203,8 @@ impl Topology {
     /// Until the next election over this view, a ConnectionsDeleting, Leaving or silent primary is still
     /// the one named here. A caller that needs an admin it can reach checks the holder's
     /// status itself.
-    pub fn node_type_primary(&self, mesh: &str, kind: NodeKind) -> Option<&Node> {
-        let mut p = self.nodes_of_type(mesh, kind).filter(|n| n.is_primary);
+    pub fn node_type_primary(&self, mesh: &str, r#type: &str) -> Option<&Node> {
+        let mut p = self.nodes_of_type(mesh, r#type).filter(|n| n.is_primary);
         let first = p.next()?;
         p.next().is_none().then_some(first)
     }
@@ -227,7 +234,7 @@ impl Topology {
 
     /// Whether the node born as `node_id` is `mesh`'s primary node-admin in this view.
     pub fn is_mesh_primary(&self, mesh: &str, node_id: &NodeId) -> bool {
-        self.node_type_primary(mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == *node_id)
+        self.node_type_primary(mesh, "node-admin").is_some_and(|n| n.node_id == *node_id)
     }
 
     /// Whether the node born as `me` is the primary above the node `node_id` of `mesh` in this view
@@ -246,7 +253,7 @@ impl Topology {
 
     /// The control endpoint of `mesh`'s primary (its admin primary's).
     pub(crate) fn mesh_control_endpoint(&self, mesh: &str) -> Option<&str> {
-        self.node_type_primary(mesh, NodeKind::NodeAdmin)?.admin_api_base.as_deref()
+        self.node_type_primary(mesh, "node-admin")?.admin_api_base.as_deref()
     }
 
     /// The fabric-primary's control endpoint.
@@ -308,16 +315,16 @@ impl Topology {
             }
         }
         // One primary per declared node type in a mesh that has a live member.
-        let mut node_types: BTreeMap<(String, NodeKind), Vec<&Node>> = BTreeMap::new();
+        let mut node_types: BTreeMap<(String, String), Vec<&Node>> = BTreeMap::new();
         for n in self.members().filter(|n| n.status.is_live()) {
-            node_types.entry((n.mesh.clone(), n.kind)).or_default().push(n);
+            node_types.entry((n.mesh.clone(), n.r#type.clone())).or_default().push(n);
         }
-        for ((mesh, kind), members) in &node_types {
+        for ((mesh, r#type), members) in &node_types {
             let primaries: Vec<PathName> = members.iter().filter(|n| n.is_primary).map(|n| n.name.clone()).collect();
             match primaries.len() {
-                0 => out.push(V::NoNodeTypePrimary { mesh: mesh.clone(), kind: *kind }),
+                0 => out.push(V::NoNodePrimary { mesh: mesh.clone(), r#type: r#type.clone() }),
                 1 => {}
-                _ => out.push(V::SplitNodeTypePrimary { mesh: mesh.clone(), kind: *kind, primaries }),
+                _ => out.push(V::SplitNodePrimary { mesh: mesh.clone(), r#type: r#type.clone(), primaries }),
             }
         }
         // Exactly one fabric primary, a node-admin that is its mesh's admin primary.
@@ -326,7 +333,7 @@ impl Topology {
             out.push(V::FabricPrimaryCount(fps.len()));
         }
         for fp in fps {
-            if fp.kind != NodeKind::NodeAdmin {
+            if !rdm_core::is_node_admin(&fp.r#type) {
                 out.push(V::FabricPrimaryNotAdmin(fp.name.clone()));
             } else if !fp.is_primary {
                 out.push(V::FabricPrimaryNotMeshPrimary(fp.name.clone()));
@@ -349,7 +356,7 @@ impl Topology {
             id: m.id.clone(),
             name: m.name.clone(),
             status: m.status,
-            primary_admin: self.node_type_primary(&m.name, NodeKind::NodeAdmin).map(|n| n.node_id.clone()),
+            primary_admin: self.node_type_primary(&m.name, "node-admin").map(|n| n.node_id.clone()),
             admin_api_base: self.mesh_control_endpoint(&m.name).map(str::to_string),
             nodes,
         })
@@ -374,13 +381,13 @@ mod tests {
     use super::*;
     use crate::model::*;
 
-    fn node(name: PathName, mesh: &str, kind: rdm_core::NodeKind, status: NodeStatus, primary: bool, fabric_primary: bool) -> Node {
-        let mut n = Node::allocated(name, mesh, kind);
+    fn node(name: PathName, mesh: &str, r#type: &str, status: NodeStatus, primary: bool, fabric_primary: bool) -> Node {
+        let mut n = Node::allocated(name, mesh, r#type);
         n.status = status;
         n.is_primary = primary;
         n.is_fabric_primary = fabric_primary;
-        if n.kind == NodeKind::NodeAdmin {
-            // Each admin its own port in the fixture: mesh1.admin.1 serves 18001, mesh1.admin.2 18002.
+        if rdm_core::is_node_admin(&n.r#type) {
+            // Each admin its own port in the fixture: mesh1.node-admin.1 serves 18001, mesh1.node-admin.2 18002.
             n.admin_api_base = Some(format!("http://127.0.0.1:{}", 18000 + n.name.name.parse::<u16>().expect("the fixture's admins are numbered")));
         }
         n
@@ -392,11 +399,11 @@ mod tests {
             fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
             nodes: vec![
-                node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true, true),
-                node(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, false, false),
-                node(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, true, false),
-                node(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, false, false),
-                node(PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, false, false),
+                node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", R, true, true),
+                node(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", R, false, false),
+                node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", R, true, false),
+                node(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", R, false, false),
+                node(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", R, false, false),
             ],
         }
     }
@@ -411,10 +418,10 @@ mod tests {
         let incarnation = IncarnationId::mint();
         view.nodes[0].incarnation_id = Some(incarnation.clone());
         let id = view.nodes[0].node_id.clone();
-        let op = crate::build::BuildOperation::StopNode { node: location.clone(), mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, node_id: id.clone(), from_incarnation: incarnation.clone() };
+        let op = crate::build::BuildOperation::StopNode { node: location.clone(), mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: id.clone(), from_incarnation: incarnation.clone() };
         let subject = op.subject().unwrap();
         view.nodes[0].name = PathName::new(&location.path, format!("{}-old", location.name)).unwrap();
-        let mut successor = Node::allocated(location.clone(), "mesh1", NodeKind::NodeAdmin);
+        let mut successor = Node::allocated(location.clone(), "mesh1", "node-admin");
         successor.incarnation_id = Some(IncarnationId::mint());
         let successor_id = successor.node_id.clone();
         view.nodes.push(successor);
@@ -441,27 +448,27 @@ mod tests {
     fn a_node_admin_is_the_first_admin_when_no_other_node_admin_of_its_mesh_is_live() {
         use NodeStatus::{Dead, Ready as R};
         let mut t = mn();
-        let admin1: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-        let admin2: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
-        assert!(!t.first_admin_of(&admin1, "mesh1", NodeKind::NodeAdmin), "admin.2 is live: admin.1 is not the first");
+        let admin1: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
+        let admin2: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
+        assert!(!t.first_admin_of(&admin1, "mesh1", "node-admin"), "admin.2 is live: admin.1 is not the first");
         t.nodes[1].status = Dead;
-        assert!(t.first_admin_of(&admin1, "mesh1", NodeKind::NodeAdmin), "admin.1's own live birth does not count against it: no other node-admin lives");
-        assert!(!t.first_admin_of(&admin2, "mesh1", NodeKind::NodeAdmin), "admin.1 is live: admin.2 is not the first");
+        assert!(t.first_admin_of(&admin1, "mesh1", "node-admin"), "admin.1's own live birth does not count against it: no other node-admin lives");
+        assert!(!t.first_admin_of(&admin2, "mesh1", "node-admin"), "admin.1 is live: admin.2 is not the first");
         t.nodes[0].status = Dead;
-        assert!(t.first_admin_of(&admin1, "mesh1", NodeKind::NodeAdmin) && t.first_admin_of(&admin2, "mesh1", NodeKind::NodeAdmin), "no node-admin lives: either create is the first");
+        assert!(t.first_admin_of(&admin1, "mesh1", "node-admin") && t.first_admin_of(&admin2, "mesh1", "node-admin"), "no node-admin lives: either create is the first");
         t.nodes[0].status = R;
         t.nodes.retain(|n| n.name != admin2);
-        assert!(!t.first_admin_of(&admin2, "mesh1", NodeKind::NodeAdmin), "a path the view holds nothing at, beside a live admin.1: not the first");
-        assert!(!t.first_admin_of(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode), "a node that is not a node-admin is never a mesh's first admin");
+        assert!(!t.first_admin_of(&admin2, "mesh1", "node-admin"), "a path the view holds nothing at, beside a live admin.1: not the first");
+        assert!(!t.first_admin_of(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), "a node that is not a node-admin is never a mesh's first admin");
     }
 
     #[test]
     fn settled_mn_is_converged_with_one_primary_per_node_type() {
         let t = mn();
         assert_eq!(t.violations(), vec![]);
-        assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().name, PathName::new("mesh1.admin", "1").unwrap());
-        assert_eq!(t.node_type_primary("mesh1", NodeKind::RpcNode).unwrap().name, PathName::new("mesh1.rpc", "1").unwrap());
-        assert_eq!(t.fabric_primary().unwrap().name, PathName::new("mesh1.admin", "1").unwrap());
+        assert_eq!(t.node_type_primary("mesh1", "node-admin").unwrap().name, PathName::new("mesh1.node-admin", "1").unwrap());
+        assert_eq!(t.node_type_primary("mesh1", "node").unwrap().name, PathName::new("mesh1.node", "1").unwrap());
+        assert_eq!(t.fabric_primary().unwrap().name, PathName::new("mesh1.node-admin", "1").unwrap());
     }
 
     #[test]
@@ -470,17 +477,17 @@ mod tests {
         t.nodes[3].is_primary = true; // second rpc primary
         t.nodes[0].is_primary = false; // node-admin type loses its primary
         let v = t.violations();
-        assert!(v.contains(&TopologyViolation::NoNodeTypePrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");
+        assert!(v.contains(&TopologyViolation::NoNodePrimary { mesh: "mesh1".into(), r#type: "node-admin".into() }), "{v:?}");
         assert!(
-            v.contains(&TopologyViolation::SplitNodeTypePrimary {
+            v.contains(&TopologyViolation::SplitNodePrimary {
                 mesh: "mesh1".into(),
-                kind: NodeKind::RpcNode,
-                primaries: vec![rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), rdm_core::PathName::new("mesh1.rpc", "2").unwrap()],
+                r#type: "node".into(),
+                primaries: vec![rdm_core::PathName::new("mesh1.node", "1").unwrap(), rdm_core::PathName::new("mesh1.node", "2").unwrap()],
             }),
             "{v:?}"
         );
-        assert!(v.contains(&TopologyViolation::FabricPrimaryNotMeshPrimary(rdm_core::PathName::new("mesh1.admin", "1").unwrap())), "{v:?}");
-        assert_eq!(t.node_type_primary("mesh1", NodeKind::RpcNode), None, "a split node type has no single primary");
+        assert!(v.contains(&TopologyViolation::FabricPrimaryNotMeshPrimary(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap())), "{v:?}");
+        assert_eq!(t.node_type_primary("mesh1", "node"), None, "a split node type has no single primary");
     }
 
     #[test]
@@ -493,7 +500,7 @@ mod tests {
         t.nodes[0].is_fabric_primary = false;
         t.nodes[2].is_fabric_primary = true;
         let v = t.violations();
-        assert!(v.contains(&TopologyViolation::FabricPrimaryNotAdmin(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), "{v:?}");
+        assert!(v.contains(&TopologyViolation::FabricPrimaryNotAdmin(rdm_core::PathName::new("mesh1.node", "1").unwrap())), "{v:?}");
         let mut t = mn();
         t.nodes[0].is_fabric_primary = false;
         assert!(t.violations().contains(&TopologyViolation::FabricPrimaryCount(0)));
@@ -507,9 +514,9 @@ mod tests {
         let mut t = mn();
         t.nodes[0].status = NodeStatus::PendingReconnect;
         let v = t.violations();
-        assert!(v.contains(&TopologyViolation::PrimaryNotLive(rdm_core::PathName::new("mesh1.admin", "1").unwrap())), "{v:?}");
-        assert!(v.contains(&TopologyViolation::NoNodeTypePrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");
-        assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(t.nodes[0].node_id.clone()), "the silent primary is still the one named");
+        assert!(v.contains(&TopologyViolation::PrimaryNotLive(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap())), "{v:?}");
+        assert!(v.contains(&TopologyViolation::NoNodePrimary { mesh: "mesh1".into(), r#type: "node-admin".into() }), "{v:?}");
+        assert_eq!(t.node_type_primary("mesh1", "node-admin").map(|n| n.node_id.clone()), Some(t.nodes[0].node_id.clone()), "the silent primary is still the one named");
         assert_eq!(t.mesh_control_endpoint("mesh1"), Some("http://127.0.0.1:18001"), "the holder's endpoint is the mesh's control endpoint");
     }
 
@@ -543,8 +550,8 @@ mod tests {
         t.nodes.push(t.nodes[4].clone());
         t.nodes[2].mesh = "mesh9".into();
         let v = t.violations();
-        assert!(v.contains(&TopologyViolation::DuplicateNode(rdm_core::PathName::new("mesh1.rpc", "3").unwrap())), "{v:?}");
-        assert!(v.contains(&TopologyViolation::NodeInUnknownMesh { node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), mesh: "mesh9".into() }), "{v:?}");
+        assert!(v.contains(&TopologyViolation::DuplicateNode(rdm_core::PathName::new("mesh1.node", "3").unwrap())), "{v:?}");
+        assert!(v.contains(&TopologyViolation::NodeInUnknownMesh { node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), mesh: "mesh9".into() }), "{v:?}");
     }
 
     /// CONTRACT (R-OW1: "`admin_api_base` is config, never checked"; lifecycles/node-name-update.md: "Config on the

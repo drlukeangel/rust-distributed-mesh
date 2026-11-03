@@ -12,7 +12,7 @@
 //! [`plan`] decides what a pass owes, from the view and births already inspected; [`run`] drives it.
 
 use crate::admin::Records;
-use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
+use crate::model::{IncarnationId, Node, NodeId, NodeStatus, PathName};
 use crate::topology::Topology;
 use rdm_core::Primary;
 use rdm_transport::topology::TopologyView;
@@ -79,7 +79,7 @@ fn primary_record(which: &str, record: Option<&Primary>, me: &Birth, lost: &Hash
 pub fn plan(view: &Topology, mesh: &str, me_birth: &Birth, said: &mut Said, was_mesh_primary: &dyn Fn(&Node) -> bool, marked: &dyn Fn(&Node) -> bool) -> Plan {
     // Silent by its gossip, or marked at once for a call whose attempts are spent (node-investigation.md:
     // "A node that does not answer a call is silent, whatever it gossips"; Q332, Q338).
-    let silent_of = |n: &Node| n.kind == NodeKind::NodeAdmin && (n.status == NodeStatus::PendingReconnect || marked(n));
+    let silent_of = |n: &Node| rdm_core::is_node_admin(&n.r#type) && (n.status == NodeStatus::PendingReconnect || marked(n));
     let silent: HashSet<Birth> = view.members().filter(|n| silent_of(n)).filter_map(birth).collect();
     said.investigated.retain(|b| silent.contains(b));
     let mut plan = Plan::default();
@@ -160,7 +160,7 @@ impl Looker {
     /// one check both the fabric-primary's recovery of a mesh-primary with no successor and fabric
     /// recovery's backbone arm make.
     pub async fn node_admin_left(&self, view: &Topology, mesh: &str, lost: &NodeId) -> Option<Node> {
-        let others: Vec<Node> = view.nodes_of_type(mesh, NodeKind::NodeAdmin).filter(|n| n.node_id != *lost && n.incarnation_id.is_some()).cloned().collect();
+        let others: Vec<Node> = view.nodes_of_type(mesh, "node-admin").filter(|n| n.node_id != *lost && n.incarnation_id.is_some()).cloned().collect();
         for n in others {
             let finding = self.look(view, &n).await;
             if matches!(finding, Finding::Reached { .. } | Finding::Running) {
@@ -240,7 +240,7 @@ pub async fn run(w: Watch) {
         let fabric_mesh = w.topology_view.primaries().fabric().map(|h| h.mesh.clone());
         // A node-admin in the view whose digest has returned (`Ready`).
         let commands = view.own(&w.me_id).is_some_and(|me| me.is_fabric_primary);
-        for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::Ready) {
+        for n in view.members().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.status == NodeStatus::Ready) {
             if let Some(b) = birth(n) {
                 // A primary this watch said unreachable, heard again by its digest, is commanded
                 // back through node.mesh.join by the fabric-primary (Q87), on its own task.
@@ -325,7 +325,7 @@ pub async fn run(w: Watch) {
             // fabric-recovery.md "When the mesh has no node-admin left"; Q153): one with a node-admin left
             // elects it, and it recovers the lost birth. Nothing is written here; the birth is not looked at
             // again in this silence.
-            let no_successor = !view.nodes_of_type(&node.mesh, NodeKind::NodeAdmin).any(|n| n.node_id != node.node_id && n.status == NodeStatus::Ready);
+            let no_successor = !view.nodes_of_type(&node.mesh, "node-admin").any(|n| n.node_id != node.node_id && n.status == NodeStatus::Ready);
             let left = if recovers && no_successor { w.looker.node_admin_left(&view, &node.mesh, &node.node_id).await } else { None };
             let submitted = match (&finding, w.recovery.clone(), finding.inspected()) {
                 (Finding::Reached { .. }, _, _) => false,
@@ -394,8 +394,8 @@ fn heard_since(digest_view: &rdm_transport::topology::DigestView, node: &Node, s
 mod tests {
     use super::*;
 
-    fn admin(path: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, id: &str, inc: &str, status: NodeStatus) -> Node {
-        let mut n = Node::allocated(path, mesh, kind);
+    fn admin(path: rdm_core::PathName, mesh: &str, r#type: &str, id: &str, inc: &str, status: NodeStatus) -> Node {
+        let mut n = Node::allocated(path, mesh, r#type);
         n.node_id = NodeId::parse(id).unwrap();
         n.incarnation_id = Some(IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap());
         n.status = status;
@@ -411,11 +411,11 @@ mod tests {
         (n.node_id.clone(), n.incarnation_id.clone().unwrap())
     }
     fn world() -> (Topology, Node, Node, Node) {
-        let mut primary = admin(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "300000000000", "h1", NodeStatus::PendingReconnect);
+        let mut primary = admin(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "300000000000", "h1", NodeStatus::PendingReconnect);
         primary.is_primary = true;
         primary.is_fabric_primary = true;
-        let standby = admin(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "400000000000", "s1", NodeStatus::Ready);
-        let mut outsider = admin(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "100000000000", "o1", NodeStatus::Ready);
+        let standby = admin(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "400000000000", "s1", NodeStatus::Ready);
+        let mut outsider = admin(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "100000000000", "o1", NodeStatus::Ready);
         outsider.is_primary = true;
         (view(vec![primary.clone(), standby.clone(), outsider.clone()]), primary, standby, outsider)
     }
@@ -480,10 +480,10 @@ mod tests {
         let (mut t, primary, standby, _) = world();
         let mut said = Said::default();
         let own = plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false);
-        assert_eq!(own.investigate.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), vec![rdm_core::PathName::new("mesh1.admin", "1").unwrap()]);
+        assert_eq!(own.investigate.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), vec![rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()]);
         assert!(plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false).investigate.is_empty(), "once per mark");
         // A silent admin of a third mesh that holds nothing.
-        t.nodes.push(admin(rdm_core::PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, "500000000000", "x1", NodeStatus::PendingReconnect));
+        t.nodes.push(admin(rdm_core::PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", "500000000000", "x1", NodeStatus::PendingReconnect));
         assert!(plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false).investigate.is_empty());
         let _ = primary;
     }
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn an_admin_does_not_treat_a_former_birth_at_its_path_as_itself() {
         let (t, primary, _, _) = world();
-        let successor = admin(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "600000000000", "r2", NodeStatus::Ready);
+        let successor = admin(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "600000000000", "r2", NodeStatus::Ready);
         let p = plan(&t, &successor.mesh, &me_of(&successor), &mut Said::default(), &|_| false, &|_| false);
         assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&primary)]);
     }
@@ -505,13 +505,13 @@ mod tests {
     /// node-admin of a peer mesh that was never its primary is that mesh's primary's to investigate.
     #[test]
     fn the_fabric_primary_investigates_a_peer_meshs_former_primary_after_the_election_replaced_it() {
-        let mut fp = admin(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "300000000000", "h1", NodeStatus::Ready);
+        let mut fp = admin(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "300000000000", "h1", NodeStatus::Ready);
         fp.is_primary = true;
         fp.is_fabric_primary = true;
-        let former = admin(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "100000000000", "o1", NodeStatus::PendingReconnect);
-        let mut elected = admin(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "200000000000", "o2", NodeStatus::Ready);
+        let former = admin(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "100000000000", "o1", NodeStatus::PendingReconnect);
+        let mut elected = admin(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", "200000000000", "o2", NodeStatus::Ready);
         elected.is_primary = true;
-        let member = admin(rdm_core::PathName::new("mesh2.admin", "3").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "500000000000", "o3", NodeStatus::PendingReconnect);
+        let member = admin(rdm_core::PathName::new("mesh2.node-admin", "3").unwrap(), "mesh2", "node-admin", "500000000000", "o3", NodeStatus::PendingReconnect);
         let t = view(vec![fp.clone(), former.clone(), elected, member]);
         let replaced = |n: &Node| n.node_id == former.node_id;
         let p = plan(&t, &fp.mesh, &me_of(&fp), &mut Said::default(), &replaced, &|_| false);
@@ -524,7 +524,7 @@ mod tests {
         rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: rdm_core::MeshNode { mesh: n.mesh.clone(), kind: n.kind, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
@@ -540,12 +540,12 @@ mod tests {
         }
     }
 
-    /// The fabric-primary mesh1.admin.1 and mesh2's primary mesh2.admin.1, unheard past the floor.
+    /// The fabric-primary mesh1.node-admin.1 and mesh2's primary mesh2.node-admin.1, unheard past the floor.
     fn unheard_peer_primary() -> (Node, Node, Topology) {
-        let mut fp = admin(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "300000000000", "h1", NodeStatus::Ready);
+        let mut fp = admin(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "300000000000", "h1", NodeStatus::Ready);
         fp.is_primary = true;
         fp.is_fabric_primary = true;
-        let mut peer = admin(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "100000000000", "o1", NodeStatus::PendingReconnect);
+        let mut peer = admin(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "100000000000", "o1", NodeStatus::PendingReconnect);
         peer.is_primary = true;
         let t = view(vec![fp.clone(), peer.clone()]);
         (fp, peer, t)
@@ -629,24 +629,24 @@ mod tests {
     /// that mesh-primary when it is unheard.
     #[test]
     fn the_fabric_primary_leaves_a_silent_secondary_admin_of_its_own_mesh_to_its_mesh_primary() {
-        let mut fp = admin(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "300000000000", "h1", NodeStatus::Ready);
+        let mut fp = admin(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "300000000000", "h1", NodeStatus::Ready);
         fp.is_primary = true;
         fp.is_fabric_primary = true;
-        let secondary = admin(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "400000000000", "s1", NodeStatus::PendingReconnect);
-        let other = admin(rdm_core::PathName::new("mesh1.admin", "3").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "500000000000", "s3", NodeStatus::Ready);
+        let secondary = admin(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "400000000000", "s1", NodeStatus::PendingReconnect);
+        let other = admin(rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", "500000000000", "s3", NodeStatus::Ready);
         let t = view(vec![fp.clone(), secondary.clone(), other.clone()]);
         assert!(plan(&t, &fp.mesh, &me_of(&fp), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty(), "the fabric-primary opens no investigation of a secondary node-admin of its own mesh");
         assert_eq!(plan(&t, &other.mesh, &me_of(&other), &mut Said::default(), &|_| false, &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&secondary)], "an admin that is not the fabric-primary still looks");
-        let mut fp_only = admin(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "300000000000", "h1", NodeStatus::Ready);
+        let mut fp_only = admin(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "300000000000", "h1", NodeStatus::Ready);
         fp_only.is_fabric_primary = true;
-        let mut primary = admin(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "400000000000", "s1", NodeStatus::PendingReconnect);
+        let mut primary = admin(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "400000000000", "s1", NodeStatus::PendingReconnect);
         primary.is_primary = true;
         let t = view(vec![fp_only.clone(), primary.clone(), other.clone()]);
         assert_eq!(plan(&t, &fp_only.mesh, &me_of(&fp_only), &mut Said::default(), &|_| false, &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&primary)], "an unheard mesh-primary of its own mesh is the fabric-primary's");
         // The election replaced it: the view names another mesh-primary, the primary view the replaced birth.
         let former = Node { is_primary: false, ..primary.clone() };
         let elected = Node { is_primary: true, ..other };
-        let never = admin(rdm_core::PathName::new("mesh1.admin", "4").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "600000000000", "s4", NodeStatus::PendingReconnect);
+        let never = admin(rdm_core::PathName::new("mesh1.node-admin", "4").unwrap(), "mesh1", "node-admin", "600000000000", "s4", NodeStatus::PendingReconnect);
         let t = view(vec![fp_only.clone(), former.clone(), elected, never]);
         let replaced = |n: &Node| n.node_id == former.node_id;
         assert_eq!(plan(&t, &fp_only.mesh, &me_of(&fp_only), &mut Said::default(), &replaced, &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&former)], "the replaced mesh-primary of its own mesh only, never a secondary node-admin");

@@ -16,12 +16,12 @@ use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
 use std::sync::Arc;
 
-fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool) -> Node {
-    let mut n = Node::allocated(name, mesh, kind);
+fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, r#type);
     n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = primary;
-    if n.kind == NodeKind::NodeAdmin {
+    if n.r#type == "node-admin" {
         n.is_fabric_primary = primary;
     }
     n
@@ -31,7 +31,7 @@ fn observed() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
-        nodes: vec![node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true), node(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false), node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, true)],
+        nodes: vec![node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true), node(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false), node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", true)],
     }
 }
 
@@ -39,12 +39,12 @@ fn mesh(name: &str) -> MeshDesired {
     serde_json::from_value(serde_json::json!({"name": name, "node_admin": 1})).unwrap()
 }
 
-/// The fabric-primary `mesh1.admin.1` holding one settled Build (B0) of the observed topology.
+/// The fabric-primary `mesh1.node-admin.1` holding one settled Build (B0) of the observed topology.
 async fn fabric_primary() -> (Arc<ControlPlane>, Arc<MemoryBuildStateAdapter>, BuildId) {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = observed();
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
-    let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time()));
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t, crate::adopted_time()));
     let b0 = builds.list_active().await.unwrap();
     assert!(b0.is_empty(), "the seeded Build is settled: {b0:?}");
     let facts = builds.facts().await.unwrap();

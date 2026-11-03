@@ -22,11 +22,11 @@ fn run(malformed: bool) {
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let mut topic = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
-        let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![addr], &[]).await.unwrap();
+        let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![addr], &[]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
         let (sender, _rx) = topic.split();
         let author = crate::gossip_author(&fabric);
-        let status = |scope: &str, stamp| Frame::MeshStatus { mesh: scope.into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: stamp };
+        let status = |scope: &str, stamp| Frame::MeshStatus { mesh: scope.into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: stamp };
         let (event, parent) = {
             let upstream = tracing::info_span!("rdm.test.gossip.update.via-upstream");
             let span = tracing::info_span!("rdm.test.gossip.update.via-author");
@@ -62,7 +62,7 @@ fn run(malformed: bool) {
                 context.traceparent = parent_context.traceparent.clone(); context.tracestate = parent_context.tracestate.clone(); f.encode()
             };
             let older = traced(status("traced", 0));
-            let inconsistent = traced(Frame::MeshStatus { mesh: "traced".into(), status: "leaving".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 });
+            let inconsistent = traced(Frame::MeshStatus { mesh: "traced".into(), status: "leaving".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 });
             let gap = traced(Frame::MeshTopologyDelta { mesh: "mesh2".into(), source_publisher: rdm_core::PublisherId { node_id: author.node.clone(), incarnation: author.incarnation.clone() }, base_version: 10, topology_version: 11, published_at_rafka_ms: 1, changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] });
             let (mut attrs, _): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&event.encode()).unwrap();
             attrs.retain(|(n, _)| n != "sequence"); attrs.iter_mut().find(|(n, _)| n == "type").unwrap().1 = "rdm.mesh.concern".into();

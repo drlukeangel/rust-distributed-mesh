@@ -72,7 +72,7 @@ fn main() -> Result<()> {
             fabric: config(&root_dir).fabric,
             fabric_id: d.fabric_id.clone(),
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::Broker,
+            r#type: "broker".into(),
             name: rdm_core::PathName::new("mesh1.broker", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),

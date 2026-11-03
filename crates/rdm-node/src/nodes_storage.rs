@@ -164,7 +164,7 @@ pub struct RuntimeRow {
     /// Explicit birth ownership and runtime kind.
     pub mesh: String,
     /// The explicit runtime kind of this birth.
-    pub kind: rdm_core::NodeKind,
+    pub r#type: String,
     /// The node's minted id.
     pub node_id: NodeId,
     /// The node's `(path, name)`.
@@ -197,7 +197,7 @@ pub struct NodeRow {
     /// The explicitly declared owning mesh.
     pub mesh: String,
     /// The explicitly declared runtime kind.
-    pub kind: rdm_core::NodeKind,
+    pub r#type: String,
     /// The node's `(path, name)`.
     pub name: PathName,
     /// The node that held the name when the row was written.
@@ -310,8 +310,8 @@ pub struct Allocation {
 
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
-    pub fn new(name: PathName, mesh: impl Into<String>, kind: rdm_core::NodeKind, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { name, mesh: mesh.into(), kind, node_id, status, allocated: None, initial_properties: None, renamed_from: None, replacement_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, topology_storage_provider: None, writer: None }
+    pub fn new(name: PathName, mesh: impl Into<String>, r#type: &str, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
+        Self { name, mesh: mesh.into(), r#type: r#type.to_string(), node_id, status, allocated: None, initial_properties: None, renamed_from: None, replacement_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, topology_storage_provider: None, writer: None }
     }
 
     /// Write `to` as the node's status, set by its mesh-primary at the transition states.md "Who sets
@@ -373,11 +373,6 @@ impl NodeRow {
     /// The node's name within its path (an ordinary name, or `<name>-old` for an explicitly replaced predecessor).
     pub fn node_name(&self) -> String {
         self.name.name()
-    }
-
-    /// The node's `node_type`.
-    pub fn node_type(&self) -> &'static str {
-        self.kind.node_type()
     }
 
     /// The facts of the birth `incarnation_id`, if the record keeps them.
@@ -694,7 +689,7 @@ mod tests {
     #[test]
     fn declared_state_is_the_greatest_declared() {
         let inc = IncarnationId::mint();
-        let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let mut birth = BirthFacts::new(inc, name.clone());
         assert_eq!(birth.declared_state(), None);
 

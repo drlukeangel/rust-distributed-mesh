@@ -1,14 +1,14 @@
 //! A live node takes the name its mesh-primary's row now holds (`ApplyNodeName`; node-rpc-envelope.md
 //! "Meta and config", R12/R13, R-CR1).
 //!
-//! CONTRACT: a node born `mesh1.rpc.7` that originated a data-plane connection to its admin
-//! answers `ApplyNodeName { name: mesh1.rpc.1 }` with `BusyHoldingConnections` naming that connection
+//! CONTRACT: a node born `mesh1.node.7` that originated a data-plane connection to its admin
+//! answers `ApplyNodeName { name: mesh1.node.1 }` with `BusyHoldingConnections` naming that connection
 //! by the minted id of its open entry (proposal node-properties-own-commands.md §2.2 step 6), and holds nothing:
-//! its digest still says `mesh1.rpc.7`. The cell runs lifecycles/node-name-update.md's order ("Rename precondition": the
+//! its digest still says `mesh1.node.7`. The cell runs lifecycles/node-name-update.md's order ("Rename precondition": the
 //! node's `node.connection.delete { All }` has completed): `All`, held open by one call in flight
 //! at the node until the cell releases it, answers `ConnectionsDeleted` with an `Established`
 //! receipt counting that call and closing the route; only then is the name applied: `Applied`, and
-//! the node holds `mesh1.rpc.1`; the same name again is `AlreadyApplied`, and a stale incarnation is
+//! the node holds `mesh1.node.1`; the same name again is `AlreadyApplied`, and a stale incarnation is
 //! refused naming the one held. What must NOT happen: a name taken while the node holds a
 //! connection, `All` answered while the call it admitted is in flight, or a digest naming the new
 //! name before the apply.
@@ -43,13 +43,13 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
-        let born: PathName = rdm_core::PathName::new("mesh1.rpc", "7").unwrap();
-        let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let born: PathName = rdm_core::PathName::new("mesh1.node", "7").unwrap();
+        let taken: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric,
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::RpcNode,
+            r#type: "node".into(),
             name: born.clone(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
@@ -91,7 +91,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         }
         let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
         assert_eq!(d.node.name, born);
-        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let client = &admin.observer.client;
@@ -155,10 +155,10 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         let deletes = fields_of("rdm.node_admin.connection.delete.via-connection-delete");
         assert_eq!(deletes.len(), 1, "All deletes the one data-plane connection, on its own span: {deletes:#?}");
         let get = |f: &std::collections::BTreeMap<String, String>, k: &str| f.get(k).cloned().unwrap_or_default();
-        assert_eq!((get(&deletes[0], "entry"), get(&deletes[0], "node"), get(&deletes[0], "destination_path"), get(&deletes[0], "destination_name")), (closed.clone(), launch.node_id.to_string(), "mesh1.admin".to_string(), "1".to_string()), "{deletes:#?}");
+        assert_eq!((get(&deletes[0], "entry"), get(&deletes[0], "node"), get(&deletes[0], "destination_path"), get(&deletes[0], "destination_name")), (closed.clone(), launch.node_id.to_string(), "mesh1.node-admin".to_string(), "1".to_string()), "{deletes:#?}");
         let observed = fields_of("rdm.node_admin.connection.update.via-observed");
         let dialled = observed.iter().find(|f| f.get("entry") == Some(&closed)).unwrap_or_else(|| panic!("the observed fact names the entry All closed ({closed}): {observed:#?}"));
-        assert_eq!((get(dialled, "source_id"), get(dialled, "source_path"), get(dialled, "source_name"), get(dialled, "destination_path"), get(dialled, "destination_name"), get(dialled, "origin")), (launch.node_id.to_string(), "mesh1.rpc".to_string(), "7".to_string(), "mesh1.admin".to_string(), "1".to_string(), "dial".to_string()), "{dialled:#?}");
+        assert_eq!((get(dialled, "source_id"), get(dialled, "source_path"), get(dialled, "source_name"), get(dialled, "destination_path"), get(dialled, "destination_name"), get(dialled, "origin")), (launch.node_id.to_string(), "mesh1.node".to_string(), "7".to_string(), "mesh1.node-admin".to_string(), "1".to_string(), "dial".to_string()), "{dialled:#?}");
         assert!(dialled.get("peer").is_some_and(|p| !p.is_empty()) && dialled.get("peer") == deletes[0].get("peer"), "the observed fact and the delete name the same peer: {dialled:#?} vs {deletes:#?}");
         assert!(fields_of("rdm.node_rpc.connection.delete.via-hard-cut").is_empty(), "All hard-cuts no pool");
         assert_eq!(call(apply.clone()).await, StatusReply::Applied);

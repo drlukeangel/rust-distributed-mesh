@@ -666,7 +666,7 @@ impl StorageChanges {
     async fn command_mesh(&self, door: &Arc<StatusDoor>, change: &StorageChange, mesh: &str, command: MeshCommand) {
         let mut backoff = Duration::from_millis(250);
         loop {
-            let primary = door.topology.read().await.node_type_primary(mesh, rdm_core::NodeKind::NodeAdmin).cloned();
+            let primary = door.topology.read().await.node_type_primary(mesh, "node-admin").cloned();
             let span = tracing::info_span!("rdm.node_admin.storage.update.via-mesh-command", change_id = %change.change_id, mesh = %mesh, command = command.name(), mesh_primary = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty);
             let reply = match &primary {
                 None => Err(format!("the view names no mesh-primary of {mesh} yet")),

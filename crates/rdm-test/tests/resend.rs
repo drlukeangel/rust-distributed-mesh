@@ -29,7 +29,7 @@
 //! `on_call_failed` for the one call, `on_call_failed` before the call ended, an investigation started
 //! by silence instead of the spent call, the member held, or a second `on_node_investigated` for the birth.
 use rdm_client::{NodeStatus, PathName};
-use rdm_core::NodeKind;
+
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha};
 use rdm_test::process_faults::ExactRuntime;
@@ -77,14 +77,14 @@ fn ms(from: u64, to: u64) -> i64 {
 async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_the_birth_is_investigated_and_re_created() {
     let floor_ms = FLOOR.as_millis().to_string();
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_on_with_env(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[("RDM_STALENESS_MS", floor_ms.as_str())]).await.expect("the testkit binding set is accepted");
+    let mut estate = Estate::bootstrap_on_with_env(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"], &[("RDM_STALENESS_MS", floor_ms.as_str())]).await.expect("the testkit binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     let views = estate.settles_to(&[("mesh1", 1, 2)], SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
-    let primary = views.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().expect("the view names mesh1's mesh-primary");
+    let primary = views.iter().find(|n| n.r#type == "node-admin" && n.is_primary).cloned().expect("the view names mesh1's mesh-primary");
     // An rpc member holding no role: a node-type primary runs node.primary.update before its own stop
     // or delete (lifecycles/node-connections-delete.md step 0), which is not the member workflow here.
-    let node = views.iter().filter(|n| n.kind == NodeKind::RpcNode && !n.is_primary && !n.is_fabric_primary).min_by_key(|n| n.name.clone()).cloned().expect("an rpc member of mesh1 that holds no role");
+    let node = views.iter().filter(|n| n.r#type == "node" && !n.is_primary && !n.is_fabric_primary).min_by_key(|n| n.name.clone()).cloned().expect("an rpc member of mesh1 that holds no role");
     let path: PathName = node.name.clone();
     let node_id = node.node_id.to_string();
     let incarnation = node.incarnation_id.clone().expect("the member's birth");

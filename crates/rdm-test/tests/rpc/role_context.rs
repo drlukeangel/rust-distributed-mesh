@@ -8,7 +8,7 @@
 //! The malformed-value arm (a bad traceparent is dropped on a `via-context-dropped` span and the
 //! outcome is unchanged) is `rafka-node-base/tests/role_process.rs` on the gateway's own client.
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
+use rdm_client::{FabricDesired, MeshDesired};
 use rdm_test::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -27,8 +27,8 @@ fn owner() -> Owner {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_call_through_a_gateway_to_a_broker_is_one_trace_across_three_processes() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 1), (NodeKind::Gateway, 1)])] }).await;
-    let want = [rdm_core::PathName::new("mesh1.admin", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "1").unwrap(), rdm_core::PathName::new("mesh1.gateway", "1").unwrap()].into_iter().collect();
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 1), ("gateway", 1)])] }).await;
+    let want = [rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "1").unwrap(), rdm_core::PathName::new("mesh1.gateway", "1").unwrap()].into_iter().collect();
     estate.settles_to_named(&want, Duration::from_secs(30)).await;
     let broker = estate.node_value(&rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await;
     let broker_id = broker["node_id"].as_str().unwrap().to_string();

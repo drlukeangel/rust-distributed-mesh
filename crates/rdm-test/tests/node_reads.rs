@@ -8,7 +8,7 @@
 use rdm_core::connections::NodeConnection;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, NodeKind, PathName};
+use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rdm_client::{BuildCarrier, CallEnd, Connections, ConnectionsView, ExactBirth, Fabrics, Filter, Meshes, NodeRpc, NodeStatus, Nodes};
 use rdm_core::status::TagScope;
 use rdm_core::status::StatusReply;
@@ -70,7 +70,7 @@ fn node_ids(nodes: &[rdm_client::NodeView]) -> Vec<NodeId> {
 /// view holds it, with its row's status as its atlas holds it (Q233, query.md §1: Ready
 /// once its row took it; primary of its mesh and of the fabric, its birth, its load and gossip stats
 /// when its view carries them); `[id: the admin]` is that one node and `[id: another]` the empty list;
-/// `[mesh: mesh1] [kind: admin]` the admin and `[mesh: mesh1] [kind: gateway]` nothing (AND across
+/// `[mesh: mesh1] [type: node-admin]` the admin and `[mesh: mesh1] [type: gateway]` nothing (AND across
 /// pairs); `[mesh: mesh9]`, a mesh the admin does not hold, the empty list. `mesh.get []` lists
 /// every mesh the view holds, by name; `[name: mesh1]` and `[id: mesh1's id]` the one mesh with the
 /// admin its primary and only node; `[name: mesh9]` the empty list (no `unknown-mesh`). `fabric.get
@@ -119,7 +119,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         })
         .await
         .expect("the admin's view never held it ready and primary of its mesh and of the fabric, with its record ready");
-        let admin = ResolvedNode { mesh: me.node.mesh.clone(), kind: me.node.kind, node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
+        let admin = ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type, node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
         let carrier = BuildCarrier::at_node(client.clone(), me.node.node_id.clone());
         let nodes = Nodes::new(carrier.clone());
@@ -137,7 +137,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         let held = view.births().find(|n| n.node_id == me.node.node_id).cloned().expect("the admin's view holds the admin");
         assert_eq!(node_ids(&every_node), vec![held.node_id.clone()], "the fabric topology is mesh1's one node: {every_node:#?}");
         let got = &every_node[0];
-        assert_eq!((got.name.clone(), got.kind, got.mesh.as_str(), got.node_id.clone()), (held.name.clone(), NodeKind::NodeAdmin, "mesh1", me.node.node_id.clone()));
+        assert_eq!((got.name.clone(), got.r#type.as_str(), got.mesh.as_str(), got.node_id.clone()), (held.name.clone(), "node-admin", "mesh1", me.node.node_id.clone()));
         assert_eq!((got.incarnation_id.clone(), got.endpoint_id.clone(), got.transport_addr), (Some(me.node.incarnation.clone()), Some(me.node.endpoint_id.0.clone()), Some(me.node.transport_addr)));
         assert_eq!((got.status, got.is_primary, got.is_fabric_primary), (NodeStatus::Ready, true, true), "{got:#?}");
         let (load, gossip) = loads.get(me.node.node_id.as_str()).cloned().unwrap_or((None, None));
@@ -147,8 +147,8 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         assert_eq!(by_id.iter().map(|n| (n.name.clone(), n.node_id.clone(), n.incarnation_id.clone())).collect::<Vec<_>>(), vec![(held.name.clone(), me.node.node_id.clone(), Some(me.node.incarnation.clone()))], "[id] is the one node: {by_id:#?}");
         assert!(nodes_get(Filter::new().eq("id", [NodeId::mint().to_string()])).await.is_empty(), "an id the admin does not hold is the empty list");
         // AND across pairs; a mesh the admin does not hold is the empty list.
-        assert_eq!(node_ids(&nodes_get(Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["admin"])).await), vec![me.node.node_id.clone()], "[mesh: mesh1] [kind: admin]");
-        assert!(nodes_get(Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["gateway"])).await.is_empty(), "[mesh: mesh1] [kind: gateway]: mesh1 holds no gateway");
+        assert_eq!(node_ids(&nodes_get(Filter::new().eq("mesh", ["mesh1"]).eq("type", ["node-admin"])).await), vec![me.node.node_id.clone()], "[mesh: mesh1] [type: node-admin]");
+        assert!(nodes_get(Filter::new().eq("mesh", ["mesh1"]).eq("type", ["gateway"])).await.is_empty(), "[mesh: mesh1] [type: gateway]: mesh1 holds no gateway");
         assert!(nodes_get(Filter::new().eq("mesh", ["mesh9"])).await.is_empty(), "[mesh: mesh9]: a mesh the admin does not hold answers the empty list");
         assert_eq!(node_ids(&nodes_get(Filter::new().eq("is_fabric_primary", ["true"]).eq("status", ["ready"])).await), vec![me.node.node_id.clone()], "a boolean and an enum by their page names");
 
@@ -230,7 +230,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
     let at = |f: &std::collections::BTreeMap<String, String>, k: &str, v: &str| f.get(k).map(String::as_str) == Some(v);
     assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "read", "node.get") && at(f, "properties", "") && at(f, "nodes", "1")), "node.get [] served");
     assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "id") && at(f, "nodes", "0")), "node.get [id: unheld] served, matching nothing");
-    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "mesh,kind") && at(f, "pairs", "(mesh, [mesh1]) (kind, [gateway])") && at(f, "nodes", "0")), "node.get [mesh: mesh1] [kind: gateway] served, matching nothing");
+    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "mesh,kind") && at(f, "pairs", "(mesh, [mesh1]) (kind, [gateway])") && at(f, "nodes", "0")), "node.get [mesh: mesh1] [type: gateway] served, matching nothing");
     assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "mesh") && at(f, "pairs", "(mesh, [mesh9])") && at(f, "nodes", "0")), "node.get [mesh: mesh9] served, matching nothing");
     assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "outcome", "rejected-filter") && f.get("detail").is_some_and(|d| d.contains("(zone, [eu-1])"))), "node.get [zone: eu-1] refused naming the pair");
     assert!(served("rdm.node_admin.mesh.serve.via-get", &|f| at(f, "properties", "name") && at(f, "meshes", "1")), "mesh.get [name: mesh1] served");
@@ -288,7 +288,7 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
         })
         .await
         .expect("the admin's view never held it ready in both roles under a ready fabric");
-        let admin = ResolvedNode { mesh: me.node.mesh.clone(), kind: me.node.kind, node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
+        let admin = ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type, node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
         let carrier = BuildCarrier::at_node(client.clone(), me.node.node_id.clone());
         let nodes = Nodes::new(carrier);
@@ -404,7 +404,7 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
 /// rows): an rpc node answers `node.connection.get { node }` of its exact birth itself, with exactly the
 /// connections it holds (its latest Direct per destination that is connected and its active
 /// Proxies), named by the minted ids `node.connection.delete` names, its route to its admin among
-/// them; the answer names the node by the name it holds. `[destination: mesh1.admin.1] [kind:
+/// them; the answer names the node by the name it holds. `[destination: mesh1.node-admin.1] [kind:
 /// direct]` answers the route to its admin alone, `[kind: proxy]` nothing, and `[state: open]` (no
 /// state) is refused naming the pair. What must NOT happen: a control API in the path, or a
 /// connection the node does not hold.
@@ -418,7 +418,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         let root = std::env::temp_dir().join(format!("node-reads-rpc-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
-        let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let node_id = NodeId::mint();
         let dir = root.join(node_id.as_str());
         std::fs::create_dir_all(&dir).unwrap();
@@ -428,7 +428,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
             fabric: "fabric1".into(),
             fabric_id: fabric.clone(),
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::RpcNode,
+            r#type: "node".into(),
             name: name.clone(),
             node_id,
             incarnation: IncarnationId::mint(),
@@ -468,7 +468,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         seams.connections.observations_landed().await;
 
         let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-        let rpc = ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr };
+        let rpc = ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr };
         let (client, _endpoint) = caller(&[rpc]).await;
         let reads = Connections::new(BuildCarrier::at_node(client.clone(), launch.node_id.clone()));
         let birth = ExactBirth { target: NodeTarget::ExactNode(launch.node_id.clone()), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() };
@@ -482,9 +482,9 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         assert_eq!(ids(&connections), own, "exactly the connections the node holds: {connections:#?}");
         let to_admin = connections.connections.iter().find(|c| c.destination == admin.launcher.node_id.as_str()).unwrap_or_else(|| panic!("the node's route to its admin is listed: {connections:#?}"));
         assert_eq!((to_admin.source.as_str(), to_admin.kind.as_str(), to_admin.state.as_str()), (launch.node_id.as_str(), "direct", "connected"));
-        let direct = reads.get(&birth, &Filter::new().eq("destination", [admin.launcher.node_id.to_string()]).eq("kind", ["direct"])).await.unwrap_or_else(|e| panic!("node.connection.get [destination] [kind] of {name:?}: {e}"));
-        assert_eq!(ids(&direct), [to_admin.id.clone()].into(), "[destination: mesh1.admin.1] [kind: direct] is the route to its admin: {direct:#?}");
-        assert!(reads.get(&birth, &Filter::new().eq("kind", ["proxy"])).await.unwrap_or_else(|e| panic!("node.connection.get [kind: proxy]: {e}")).connections.is_empty(), "the node holds no proxy");
+        let direct = reads.get(&birth, &Filter::new().eq("destination", [admin.launcher.node_id.to_string()]).eq("type", ["direct"])).await.unwrap_or_else(|e| panic!("node.connection.get [destination] [kind] of {name:?}: {e}"));
+        assert_eq!(ids(&direct), [to_admin.id.clone()].into(), "[destination: mesh1.node-admin.1] [kind: direct] is the route to its admin: {direct:#?}");
+        assert!(reads.get(&birth, &Filter::new().eq("type", ["proxy"])).await.unwrap_or_else(|e| panic!("node.connection.get [kind: proxy]: {e}")).connections.is_empty(), "the node holds no proxy");
         match reads.get(&birth, &Filter::new().eq("state", ["open"])).await {
             Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains("(state, [open])"), "refused naming the pair: {reason}: {detail}"),
             other => panic!("a state no connection takes is refused by name, not {other:?}"),
@@ -502,16 +502,16 @@ fn spans_of(spans: &crate::common::Spans, name: &str) -> Vec<std::collections::B
 
 // @feature: fabric-build
 /// CONTRACT (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`": `build.get` caller → fabric-primary;
-/// Luke: "only FP reads the builds"): a Day-0 node-admin, mesh1.admin.1 (the fabric-primary), and
-/// mesh1.admin.2, launched by it, both ready. A caller that enters at mesh1.admin.2 reads `build.get`:
-/// mesh1.admin.2 serves no Build read, refusing it NotFabricPrimary naming mesh1.admin.1, and the
+/// Luke: "only FP reads the builds"): a Day-0 node-admin, mesh1.node-admin.1 (the fabric-primary), and
+/// mesh1.node-admin.2, launched by it, both ready. A caller that enters at mesh1.node-admin.2 reads `build.get`:
+/// mesh1.node-admin.2 serves no Build read, refusing it NotFabricPrimary naming mesh1.node-admin.1, and the
 /// carrier follows to it. The fabric-primary answers from its own Build log: every Build it holds,
-/// newest first, each whole, its current Build marked, header, topology (mesh1.admin.1's create spec)
+/// newest first, each whole, its current Build marked, header, topology (mesh1.node-admin.1's create spec)
 /// and receipts as its log folds them. `[current: true]` is that Build alone, `[phase: failed]` and
 /// `[id: another]` the empty list, and a pair naming no property of the Build header is refused
-/// INVALID_ARGUMENT naming the pair. Each read is served by mesh1.admin.1 alone: its serve span names
-/// `build.get` and ends `end`, and mesh1.admin.2's only Build spans are its refusals naming
-/// mesh1.admin.1. Must NOT happen: a build.get served by an admin that is not the fabric-primary, the
+/// INVALID_ARGUMENT naming the pair. Each read is served by mesh1.node-admin.1 alone: its serve span names
+/// `build.get` and ends `end`, and mesh1.node-admin.2's only Build spans are its refusals naming
+/// mesh1.node-admin.1. Must NOT happen: a build.get served by an admin that is not the fabric-primary, the
 /// current Build unmarked, or a Build answered without its topology or receipts.
 #[test]
 fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current_one_marked() {
@@ -529,17 +529,17 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
         let root = start_with(launch_day0(&root_dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-        let launch = launch_by(&root, PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
+        let launch = launch_by(&root, PathName::new("mesh1.node-admin", "2").unwrap(), &admin_dir, &root_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let env = launch.to_env();
         let admin = start_with(AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment"), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() })
             .await
-            .unwrap_or_else(|e| panic!("mesh1.admin.2 starts: {e}"));
-        until_ready("mesh1.admin.2", || admin.digest.lock().unwrap().clone()).await;
+            .unwrap_or_else(|e| panic!("mesh1.node-admin.2 starts: {e}"));
+        until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         let (fp, other) = (root.digest.lock().unwrap().node.clone(), admin.digest.lock().unwrap().node.clone());
-        let resolved = |n: &rdm_core::MeshNode| ResolvedNode { mesh: n.mesh.clone(), kind: n.kind, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.0.parse().unwrap(), incarnation: n.incarnation.clone(), transport_addr: n.transport_addr };
+        let resolved = |n: &rdm_core::MeshNode| ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.0.parse().unwrap(), incarnation: n.incarnation.clone(), transport_addr: n.transport_addr };
         let (client, _endpoint) = caller(&[resolved(&fp), resolved(&other)]).await;
-        // The caller enters at mesh1.admin.2, an admin that is not the fabric-primary.
+        // The caller enters at mesh1.node-admin.2, an admin that is not the fabric-primary.
         let builds = rdm_client::Builds::new(BuildCarrier::at_node(client.clone(), other.node_id.clone()));
         let get = |f: Filter| {
             let builds = builds.clone();
@@ -556,7 +556,7 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
         assert_eq!((got.attempt, got.executor.clone(), got.last_failure.clone(), got.steps.len()), (held.attempt, held.executor.clone(), held.last_failure.clone(), held.steps.len()), "the header and receipts are the log's: {got:#?}");
         let specs: Vec<rdm_core::meta::NodeSpec> = held.topology.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
         assert_eq!(got.nodes, specs, "the topology is every node's create spec");
-        assert!(got.nodes.iter().any(|s| s.path == fp.name), "the Day-0 Build names mesh1.admin.1: {:?}", got.nodes);
+        assert!(got.nodes.iter().any(|s| s.path == fp.name), "the Day-0 Build names mesh1.node-admin.1: {:?}", got.nodes);
 
         let one = get(Filter::new().eq("current", ["true"])).await.unwrap_or_else(|e| panic!("build.get [current: true]: {e}"));
         assert_eq!(one.iter().map(|b| (b.build_id.clone(), b.current)).collect::<Vec<_>>(), vec![(held.build_id.clone(), true)], "[current: true] is the current Build alone");
@@ -567,7 +567,7 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
             other => panic!("a pair naming no Build header property is refused by name, not {other:?}"),
         }
 
-        // Served by the fabric-primary alone; mesh1.admin.2 only refused, naming it.
+        // Served by the fabric-primary alone; mesh1.node-admin.2 only refused, naming it.
         let serves: Vec<_> = spans_of(&spans, "rdm.node_admin.build.serve.via-node-rpc").into_iter().filter(|f| f.get("call").map(String::as_str) == Some("build.get")).collect();
         assert!(!serves.is_empty(), "build.get was served");
         let actor_is = |fields: &std::collections::BTreeMap<String, String>, location: &PathName| {

@@ -30,13 +30,13 @@ impl ConnectionObserver for Observed {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_source_observes_its_own_direct_connections_opening_and_failing_once_each() {
     let (bk, be) = bind().await;
-    let b = node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None, bk, be).await;
+    let b = node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", None, bk, be).await;
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(b.resolved.clone());
     // An unreachable birth: a key nobody serves, at a port nobody listens on.
-    let nobody = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+    let nobody = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(),
         node_id: NodeId::mint(),
-        name: rdm_core::PathName::new("mesh1.rpc", "9").unwrap(),
+        name: rdm_core::PathName::new("mesh1.node", "9").unwrap(),
         endpoint_id: iroh::SecretKey::generate().public(),
         transport_addr: "127.0.0.1:1".parse().unwrap(),
         incarnation: IncarnationId::mint(),
@@ -84,9 +84,9 @@ async fn an_accepted_connection_is_handed_to_the_accept_trigger_once() {
 
     let (ak, ae) = bind().await;
     let (dk, de) = bind().await;
-    let dialer = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+    let dialer = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(),
         node_id: NodeId::mint(),
-        name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
+        name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
         endpoint_id: dk.public(),
         transport_addr: de.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(),
         incarnation: IncarnationId::mint(),
@@ -101,13 +101,13 @@ async fn an_accepted_connection_is_handed_to_the_accept_trigger_once() {
         .with_accept_trigger(resolver, accepts.clone())
         .serve::<Probe, _, _>(OpOwner::Product("test".into()), |_peer: PeerContext, req: ProbeRequest| async move {
             let ProbeRequest::Probe { payload } = req;
-            Ok::<_, HandlerFault>(ProbeReply::Probed { payload, served_by: "mesh1.rpc.1".into(), caller: String::new() })
+            Ok::<_, HandlerFault>(ProbeReply::Probed { payload, served_by: "mesh1.node.1".into(), caller: String::new() })
         })
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let addr = ae.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let _router = Router::builder(ae).accept(rdm_transport::ALPN, server).spawn();
-    let acceptor = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), endpoint_id: ak.public(), transport_addr: addr, incarnation };
+    let acceptor = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id, name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), endpoint_id: ak.public(), transport_addr: addr, incarnation };
     let sr = Arc::new(StaticResolver::new());
     sr.insert(acceptor.clone());
     let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(1500)), ..Default::default() };

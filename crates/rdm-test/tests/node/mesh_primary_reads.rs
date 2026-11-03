@@ -6,7 +6,7 @@
 //! mesh, a read naming no mesh, and `fabric.get`.
 
 use rdm_client::{ExactBirth, Filter, NodeView, Nodes};
-use rdm_core::NodeKind;
+
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::process_faults::{ExactRuntime, Fault};
 use serde_json::Value;
@@ -41,10 +41,10 @@ fn birth_of(n: &NodeView) -> ExactBirth {
 
 // @feature: node-lifecycle
 /// CONTRACT (query.md §1: "a mesh-primary answers a read of its own mesh from its atlas and carries any
-/// other read up to the fabric-primary"; Q224): two meshes, the fabric-primary mesh1.admin.1 and
-/// mesh2's mesh-primary with one rpc node, each of mesh1.admin.1 and mesh2's rpc node carrying a tag on
+/// other read up to the fabric-primary"; Q224): two meshes, the fabric-primary mesh1.node-admin.1 and
+/// mesh2's mesh-primary with one rpc node, each of mesh1.node-admin.1 and mesh2's rpc node carrying a tag on
 /// its row. `node.get` sent to mesh2's mesh-primary naming mesh1, and one naming no mesh, answer
-/// mesh1.admin.1 by its tag: carried up to the fabric-primary, whose atlas holds mesh1's rows
+/// mesh1.node-admin.1 by its tag: carried up to the fabric-primary, whose atlas holds mesh1's rows
 /// (`rdm.node_admin.node.serve.via-forward` at mesh2's mesh-primary naming the fabric-primary). With
 /// the fabric-primary's runtime held (SIGSTOP), `node.get` of mesh2 sent to mesh2's mesh-primary still
 /// answers mesh2's rpc node by its tag, from its own lifecycle view and node-owned property records
@@ -61,8 +61,8 @@ async fn a_mesh_primary_answers_its_own_meshs_read_with_the_fabric_primary_held_
     estate.enter_fabric_primary().await;
     let views = estate.node_views().await;
     let fp = views.iter().find(|n| n.is_fabric_primary).cloned().unwrap_or_else(|| panic!("a fabric-primary: {views:#?}"));
-    let mp = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
-    let rpc = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode).cloned().unwrap_or_else(|| panic!("mesh2's rpc node: {views:#?}"));
+    let mp = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
+    let rpc = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").cloned().unwrap_or_else(|| panic!("mesh2's rpc node: {views:#?}"));
     assert_eq!(fp.mesh, "mesh1", "the fabric-primary is mesh1's: {fp:?}");
 
     // Commands go down: each tag is sent to the fabric-primary, which sends it to the node's mesh-primary.

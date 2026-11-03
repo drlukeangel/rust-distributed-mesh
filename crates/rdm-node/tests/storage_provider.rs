@@ -37,8 +37,8 @@ fn launch(provider: &str, data_dir: &Path) -> Launch {
         fabric: "fabric1".into(),
         fabric_id: FabricId::mint(),
         mesh: "mesh1".into(),
-        kind: rdm_core::NodeKind::RpcNode,
-        name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
+        r#type: "node".into(),
+        name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -56,12 +56,12 @@ fn launch(provider: &str, data_dir: &Path) -> Launch {
     }
 }
 
-/// A Direct Connected fact of `launch`'s node toward `mesh1.rpc.<ordinal>`: its own index key.
+/// A Direct Connected fact of `launch`'s node toward `mesh1.node.<ordinal>`: its own index key.
 fn fact(launch: &Launch, ordinal: u32) -> NodeConnection {
     NodeConnection {
         id: ConnectionId::mint(),
-        source: ConnectionEnd { mesh: launch.mesh.clone(), kind: launch.kind, name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
-        destination: ConnectionEnd { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, name: rdm_core::PathName::new("mesh1.rpc", ordinal.to_string()).unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
+        source: ConnectionEnd { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
+        destination: ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), name: rdm_core::PathName::new("mesh1.node", ordinal.to_string()).unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
         kind: ConnectionKind::Direct,
         alpn: b"storage-provider/1".to_vec(),
         state: ConnectionState::Connected,

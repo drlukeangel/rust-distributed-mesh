@@ -984,7 +984,7 @@ mod tests {
     use rdm_core::IncarnationId;
 
     fn op(action: &str, node_id: &rdm_core::NodeId, incarnation: &IncarnationId) -> LifecycleOp {
-        LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), build_id: "b1".into(), attempt: 1, operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() }), node_id: node_id.clone(), incarnation: incarnation.clone(), name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+        LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b1".into(), attempt: 1, operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() }), node_id: node_id.clone(), incarnation: incarnation.clone(), name: rdm_core::PathName::new("mesh1.node", "2").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
     }
 
     /// CONTRACT (gossip.md §3.1 NodeStopped: "stays in the in-flight overlay until the next lifecycle
@@ -1006,7 +1006,7 @@ mod tests {
 
     /// CONTRACT (gossip.md §3.3, Q130: "A node that installs a pulled copy older than a delta it
     /// dropped while the pull was in flight pulls again"; the red of `node_delete` at e6s8-1918053cb:
-    /// mesh1.rpc.1 dropped mesh2's delta 9 -> 10 while its pull was in flight, installed v9 from that
+    /// mesh1.node.1 dropped mesh2's delta 9 -> 10 while its pull was in flight, installed v9 from that
     /// pull and resumed as current): a source desynchronized by a gap, then sent a delta it drops,
     /// stays desynchronized when the read installs a copy older than that delta, and resumes only at a
     /// copy that reaches it. Must NOT happen: the older read clearing the gap.
@@ -1028,7 +1028,7 @@ mod tests {
     }
 
     fn chunk(publisher: &PublisherId, topology_version: u64) -> Chunk {
-        Chunk { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.1".into()), topology_version, snapshot_id: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] }
+        Chunk { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.node-admin.1".into()), topology_version, snapshot_id: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] }
     }
 
     /// CONTRACT: the receiver enforces its installed floor, including for direct callers. An

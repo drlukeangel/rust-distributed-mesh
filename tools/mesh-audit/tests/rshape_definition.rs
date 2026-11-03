@@ -426,9 +426,9 @@ fn check_matrix(m: &Value, reg: &Value) -> Vec<String> {
     let seed = m["seed"].as_u64().unwrap_or(0);
 
     // Shapes: 2/2/3/3 x 2 = 20 canonical; 2/1/1/1 x 2 = 10 fast, never export-qualifying.
-    let total = |sh: &Value| sh["meshes"].as_u64().unwrap_or(0) * ["node_admin", "compute", "gateway", "broker"].iter().map(|k| sh["per_mesh"][k].as_u64().unwrap_or(0)).sum::<u64>();
+    let total = |sh: &Value| sh["meshes"].as_u64().unwrap_or(0) * ["node-admin", "compute", "gateway", "broker"].iter().map(|k| sh["per_mesh"][k].as_u64().unwrap_or(0)).sum::<u64>();
     let can = &m["shapes"]["canonical"];
-    let canonical_counts = ["node_admin", "compute", "gateway", "broker"].map(|k| can["per_mesh"][k].as_u64().unwrap_or(0));
+    let canonical_counts = ["node-admin", "compute", "gateway", "broker"].map(|k| can["per_mesh"][k].as_u64().unwrap_or(0));
     if canonical_counts != [2, 2, 3, 3] || can["meshes"] != 2 || total(can) != 20 || can["total"] != 20 {
         v.push(format!("rshape-definition-shape: canonical must be node-admin/compute/gateway/broker = 2/2/3/3 x 2 meshes = 20, is {canonical_counts:?} x {} = {}", can["meshes"], total(can)));
     }

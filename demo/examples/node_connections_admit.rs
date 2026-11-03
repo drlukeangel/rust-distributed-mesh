@@ -25,7 +25,7 @@ use rdm_admin::certs::{BirthIdentity, CertChoice};
 use rdm_admin::rafka_time::adopt_own_clock;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_client::{Filter, MeshNode, NodeStatus, Nodes, Peers};
-use rdm_core::{IncarnationId, NodeId, NodeKind};
+use rdm_core::{IncarnationId, NodeId};
 use rdm_node::connections::Birth;
 use rdm_transport::clock::RafkaTime;
 use rdm_transport::connections::{validate_alpns, Admitter, Alpn, CertAdmitter, RootSet};
@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
     let admin_row = all.iter().find(|n| n.name == birth.name).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", birth.name.path, birth.name.name))?;
     let member = all
         .iter()
-        .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+        .find(|n| n.kind != "node-admin" && n.status == NodeStatus::Ready)
         .ok_or_else(|| anyhow!("no Ready role member in estate"))?;
     let admin_dir = Path::new(admin_row.data_dir.as_deref().ok_or_else(|| anyhow!("no admin data_dir"))?);
 
@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
     let key = rdm_node::node::load_or_mint_key(&gw_dir).map_err(|e| anyhow!(e))?;
     let launch = rdm_core::launch::Launch {
         mesh: "mesh1".into(),
-        kind: NodeKind::Gateway,
+        r#type: "gateway".into(),
         initial_properties: Default::default(),
         topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: config(&dir).fabric,

@@ -4,7 +4,7 @@
 //! Who is primary is the election's result. The primary, commanded from above with
 //! [`NodePrimaryUpdateRequest::UpdatePrimary`], computes its successor by the election over its own view
 //! with itself excluded and calls [`NodePrimaryUpdateRequest::PrimaryUpdate`] on the successor's exact
-//! birth, carrying the election's result: one entry per primary that moves, `(node_type, primary,
+//! birth, carrying the election's result: one entry per primary that moves, `(type, primary,
 //! successor, revision)`, the fabric-primary a second entry of node type `fabric`. The successor
 //! installs it in its own view and answers [`NodePrimaryUpdateReply::PrimaryUpdated`]
 //! (node.primary.updated); the primary hands that answer up to its commander. The receiver refuses
@@ -31,7 +31,7 @@ pub const FABRIC: &str = "fabric";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodePrimaryUpdateRequest {
     /// node.primary.update, the primary to its successor's exact birth: the election's result the
-    /// successor installs, one entry or two, each `(node_type, primary, successor, revision)`, the
+    /// successor installs, one entry or two, each `(type, primary, successor, revision)`, the
     /// revision the next one.
     ///
     /// Position 0 on the wire.
@@ -46,13 +46,13 @@ pub enum NodePrimaryUpdateRequest {
         /// The update's operation identity, `node.primary.update:<build_id>:<run>:<op>`.
         operation: crate::OperationId,
     },
-    /// node.primary.update commanded from above, on the primary of `node_type` in the receiver's mesh,
+    /// node.primary.update commanded from above, on the primary of `type` in the receiver's mesh,
     /// or on the mesh-primary for another type's primary of its mesh: the primary runs the sequence.
     ///
     /// Position 1 on the wire.
     UpdatePrimary {
         /// The node type whose primary moves.
-        node_type: String,
+        r#type: String,
         /// The Build whose stop, delete, replace or node.connection.delete the update precedes.
         build_id: String,
         /// The run of that Build.
@@ -113,7 +113,7 @@ pub enum NodePrimaryUpdateReply {
     /// Position 4 on the wire.
     RejectedStaleRevision {
         /// The node type whose revision moved (`fabric`).
-        node_type: String,
+        r#type: String,
         /// The revision the call named.
         expected: u64,
         /// The revision the receiver holds.

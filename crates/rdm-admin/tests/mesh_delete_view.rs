@@ -24,11 +24,11 @@ use tracing::Instrument as _;
 
 
 
-fn digest(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, mesh_id: &MeshId) -> MeshDigest {
+fn digest(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, r#type: &str, mesh_id: &MeshId) -> MeshDigest {
     let node_id = NodeId::mint();
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric.clone(),
-        node: MeshNode { mesh: mesh.into(), kind,
+        node: MeshNode { mesh: mesh.into(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
             name,
             endpoint_id: EndpointId(format!("key-{node_id}-{}", "x".repeat(40))),
@@ -58,8 +58,8 @@ fn start_ns(sp: &Value) -> u64 {
     sp["start_ns"].as_u64().unwrap_or(0)
 }
 
-/// CONTRACT: mesh1's last admin, mesh1.admin.1, still its primary after mesh.deleted, is stopped by the
-/// fabric-primary mesh3.admin.1 as the executor of its node.delete right after the fabric-primary
+/// CONTRACT: mesh1's last admin, mesh1.node-admin.1, still its primary after mesh.deleted, is stopped by the
+/// fabric-primary mesh3.node-admin.1 as the executor of its node.delete right after the fabric-primary
 /// recorded mesh1's mesh.deleted receipt. The receipt is what `record_mesh_deleted` does
 /// (admin/leave.rs: "self.records.hold_mesh_deleted(&key.mesh_id); ... self.refresh_view().await"):
 /// the mesh held deleted, then the view installed again from the stores. Before it the view names
@@ -82,8 +82,8 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-        let own = digest(&fabric, PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, &mesh3);
-        let last = digest(&fabric, PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &mesh1);
+        let own = digest(&fabric, PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", &mesh3);
+        let last = digest(&fabric, PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &mesh1);
         let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh3", &mesh3, own.node.node_id.as_str(), Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
         let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh3", rdm_core::PublisherId { incarnation: own.node.incarnation.clone(), node_id: own.node.node_id.clone() }, vec![]).await.unwrap();
         backbone.set_mesh_primary(true);
@@ -110,7 +110,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
             records.install_read(&me, &view, &digest_view, &fabric, rebuild).await;
             let after_receipt = status_of(&*view.read().await);
             // At once: the node.delete's stop of the last admin, from its matching stopped reply.
-            let stop = LifecycleOp { kind: last.node.kind, mesh: last.node.mesh.clone(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &last.node.node_id), node_id: last.node.node_id.clone(), incarnation: last.node.incarnation.clone(), name: last.node.name.clone(), event_at_rafka_ms: 1_000_100, traceparent: None, tracestate: None };
+            let stop = LifecycleOp { r#type: last.node.r#type.clone(), mesh: last.node.mesh.clone(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &last.node.node_id), node_id: last.node.node_id.clone(), incarnation: last.node.incarnation.clone(), name: last.node.name.clone(), event_at_rafka_ms: 1_000_100, traceparent: None, tracestate: None };
             lifecycle.stopped(&stop).await;
             after_receipt
         }
@@ -129,7 +129,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
 
     assert_eq!(live_before, Some(ScopeStatus::Ready), "before the receipt the view names mesh1 live");
     assert_eq!(after_receipt, Some(ScopeStatus::Dead), "the view installed at the receipt holds mesh1 deleted");
-    let event = mine("rdm.mesh.topology.update.via-status-event").into_iter().find(|s| attr(s, "subject_path") == "mesh1.admin" && attr(s, "subject_name") == "1" && attr(s, "frame") == "node-stopped");
+    let event = mine("rdm.mesh.topology.update.via-status-event").into_iter().find(|s| attr(s, "subject_path") == "mesh1.node-admin" && attr(s, "subject_name") == "1" && attr(s, "frame") == "node-stopped");
     let event = event.unwrap_or_else(|| panic!("the stop of the last admin was published as a status event in the cell's trace {trace_id}"));
     assert_eq!(attr(&event, "role"), "executor", "the fabric-primary stops the deleted mesh's last admin as executor and never stamps a deleted mesh's topology: {event}");
     let published: Vec<Value> = mine("rdm.mesh.backbone.update.via-deleted-mesh");

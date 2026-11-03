@@ -19,7 +19,7 @@
 use anyhow::{anyhow, Result};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::launch::DeclaredListeners;
-use rdm_core::NodeKind;
+
 use tokio::io::AsyncWriteExt;
 
 const SERVICE: &str = "example-named-listeners";
@@ -28,7 +28,7 @@ const CLIENT: &str = "client";
 
 /// The application's listener declarations, as every one of its node-admins registers them.
 fn listeners() -> Vec<DeclaredListeners> {
-    vec![DeclaredListeners { kind: NodeKind::Gateway, names: vec![CLIENT.to_string()] }]
+    vec![DeclaredListeners { r#type: "gateway".into(), names: vec![CLIENT.to_string()] }]
 }
 
 /// The gateway: RDM's node runtime brings it up and binds its listeners; the application serves on
@@ -36,7 +36,7 @@ fn listeners() -> Vec<DeclaredListeners> {
 async fn gateway() -> Result<()> {
     rdm_node::node::listen_for_stop();
     let _telemetry = rdm_transport::init_evidence_telemetry(SERVICE);
-    let launch = rdm_node::launch_for(rdm_node::Role { kind: NodeKind::Gateway })?;
+    let launch = rdm_node::launch_for(rdm_node::Role { r#type: "gateway".into() })?;
     let running = rdm_node::node::start_pre_node_ready(&launch, rdm_node::node_hooks::NodeHooks::none(), |b, _| b).await?;
     let (_, bound) = running.listeners().iter().find(|(name, _)| name == CLIENT).ok_or_else(|| anyhow!("path {:?}, name {:?} was launched without its {CLIENT} listener", launch.name.path, launch.name.name))?;
     let std_listener = bound.try_clone()?;
@@ -59,10 +59,10 @@ async fn gateway() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let launched_as = std::env::var(rdm_core::launch::ENV_NODE_KIND).ok().and_then(|k| NodeKind::ALL.into_iter().find(|kind| kind.name() == k));
+    let launched_as = std::env::var(rdm_core::launch::ENV_NODE_TYPE).ok().and_then(|k| NodeKind::ALL.into_iter().find(|kind| kind.name() == k));
     match launched_as {
-        Some(NodeKind::Gateway) => gateway().await,
-        Some(kind) if kind != NodeKind::NodeAdmin => Err(anyhow!("{}: this example runs node-admins and gateways only", kind.name())),
+        Some("gateway") => gateway().await,
+        Some(kind) if kind != "node-admin" => Err(anyhow!("{}: this example runs node-admins and gateways only", kind.name())),
         _ => {
             rdm_admin::entry::run_with(SERVICE, |cfg| Wiring {
                 listeners: listeners(),

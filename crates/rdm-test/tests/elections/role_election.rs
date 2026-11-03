@@ -9,7 +9,7 @@
 //!   killed path whatever NodeId it drew (elections §5) — read the way a product reads it, by
 //!   `is_primary` on `node.get` (`Nodes::get`), never computed product-side.
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
+use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
 use rdm_test::elections::{advertised_primaries, primaries_as_expected, NodeType};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -46,20 +46,20 @@ async fn settle(estate: &Estate, label: &str) -> Vec<Value> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 3), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 3), ("gateway", 1), ("compute", 1)])] }).await;
     let brokers: NodeType = ("mesh1".into(), "broker".into());
     let nodes = settle(&estate, "roles").await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    assert_eq!(nodes.iter().filter(|n| n["kind"] == "broker").count(), 3, "{nodes:#?}");
+    assert_eq!(nodes.iter().filter(|n| n["type"] == "broker").count(), 3, "{nodes:#?}");
     let primaries = advertised_primaries(&nodes);
-    assert_eq!(primaries.keys().map(|c| c.1.as_str()).collect::<Vec<_>>(), ["broker", "compute", "gateway", "node_admin"]);
+    assert_eq!(primaries.keys().map(|c| c.1.as_str()).collect::<Vec<_>>(), ["broker", "compute", "gateway", "node-admin"]);
     let killed_id = primaries[&brokers][0].clone();
     let killed: rdm_core::PathName = serde_json::from_value(nodes.iter().find(|n| n["node_id"] == killed_id).unwrap()["name"].clone()).expect("the node view carries separate path/name fields");
 
     // The successor, decided from the pre-kill view: the lowest NodeId among the other ready brokers.
     let (succ, succ_id) = nodes
         .iter()
-        .filter(|n| n["kind"] == "broker" && n["node_id"] != killed_id.as_str())
+        .filter(|n| n["type"] == "broker" && n["node_id"] != killed_id.as_str())
         .map(|n| (serde_json::from_value::<rdm_core::PathName>(n["name"].clone()).expect("a structured node location"), s(&n["node_id"])))
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap();
@@ -73,7 +73,7 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
             .iter()
             .any(|sp| {
                 let a = &sp["attributes"];
-                a["election_level"] == "node_type" && a["mesh"] == "mesh1" && a["kind"] == "broker" && a["winner_node_id"] == succ_id.as_str() && a["previous_node_id"] == killed_id.as_str()
+                a["election_level"] == "node_type_primary" && a["mesh"] == "mesh1" && a["type"] == "broker" && a["winner_node_id"] == succ_id.as_str() && a["previous_node_id"] == killed_id.as_str()
             })
             .then_some(())
     })
@@ -87,7 +87,7 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     // birth is no longer ready anywhere in the view.
     let view = estate
         .until_view("the view's one broker primary is the announced successor and the killed birth is gone", rdm_transport::topology::staleness_floor() + Duration::from_secs(30), |view| {
-            let advertised: Vec<_> = view.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::Broker && n.is_primary).collect();
+            let advertised: Vec<_> = view.iter().filter(|n| n.mesh == "mesh1" && n.r#type == "broker" && n.is_primary).collect();
             let killed_gone = !view.iter().any(|n| n.node_id.to_string() == killed_id && n.status == NodeStatus::Ready);
             (advertised.len() == 1 && advertised[0].node_id.to_string() == succ_id && killed_gone).then(|| view.to_vec())
         })
@@ -95,6 +95,6 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     estate.artifact("view-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "successor": succ, "view": view}));
     estate.stop().await;
     let spans = estate.spans();
-    let announced = named(&spans, "rdm.mesh.election.resolve.via-recompute").into_iter().find(|sp| sp["attributes"]["kind"] == "broker" && sp["attributes"]["winner_node_id"] == succ_id.as_str()).cloned().unwrap();
+    let announced = named(&spans, "rdm.mesh.election.resolve.via-recompute").into_iter().find(|sp| sp["attributes"]["type"] == "broker" && sp["attributes"]["winner_node_id"] == succ_id.as_str()).cloned().unwrap();
     estate.record_trace_url(announced["trace_id"].as_str().unwrap_or(""));
 }

@@ -141,13 +141,13 @@ pub fn binding_set(sha: &str) -> BindingSet {
     };
     BindingSet {
         candidate: Candidate { sha: sha.into(), build: "rdm-test".into() },
-        launch_ids: vec!["node_admin".into(), "rpc_node".into()],
-        bindings: vec![bind("node_admin", "faulted-node-admin"), bind("rpc_node", "rdm-rpc-node")],
+        launch_ids: vec!["node-admin".into(), "node".into()],
+        bindings: vec![bind("node-admin", "faulted-node-admin"), bind("node", "rdm-rpc-node")],
     }
 }
 
 /// [`binding_set`] with the launch ids `broker`, `gateway` and `compute` bound too, each to the one
-/// node executable the node base builds (`rdm-node`), which takes its node_type from the launch.
+/// node executable the node base builds (`rdm-node`), which takes its type from the launch.
 pub fn binding_set_with_roles(sha: &str) -> BindingSet {
     let mut set = binding_set(sha);
     let path = executable_in(&bin_dir(), "rdm-node");

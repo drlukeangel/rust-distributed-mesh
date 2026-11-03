@@ -58,7 +58,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-acceptance").expect("the cell's evidence file can be created");
     capture.run(2, async {
         let fabric = FabricId::mint();
-        let (me, peer) = ("mesh1.admin.1", "mesh2.admin.1");
+        let (me, peer) = ("mesh1.node-admin.1", "mesh2.node-admin.1");
         let base = Instant::now();
         let ms = Duration::from_millis;
 
@@ -144,7 +144,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         let fwd = forward_of(first.clone(), peer, "mesh2").expect("a peer mesh's status is forwarded");
         assert!(matches!(&fwd, Frame::MeshStatus { mesh, publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, status } if mesh == "mesh1" && publisher == me && by == peer && status == "pending"));
         assert!(forward_of(first.clone(), me, "mesh1").is_none(), "a primary does not forward its own mesh's status");
-        assert!(forward_of(fwd.clone(), "mesh3.admin.1", "mesh3").is_none(), "a forwarded copy is not forwarded again");
+        assert!(forward_of(fwd.clone(), "mesh3.node-admin.1", "mesh3").is_none(), "a forwarded copy is not forwarded again");
         let fab = fabric_pub.observe("connections-deleting", None, true, base + ms(200_000), 30).unwrap();
         let fab_fwd = forward_of(fab.clone(), peer, "mesh2").unwrap();
         assert!(matches!(&fab_fwd, Frame::FabricStatus { publisher, forwarded_by: Some(by), changed_at_rafka_ms: 30, .. } if publisher == me && by == peer));
@@ -304,7 +304,7 @@ fn a_mesh_status_publisher_sends_only_a_state_it_holds() {
     let base = Instant::now();
     let fact = |status: &str, at: u64| rdm_transport::topology::StatusFact { status: status.into(), changed_at_rafka_ms: at };
     let publisher = || {
-        let mut p = StatusPublisher::new("mesh2.admin.1", StatusScope::Mesh("mesh2".into()));
+        let mut p = StatusPublisher::new("mesh2.node-admin.1", StatusScope::Mesh("mesh2".into()));
         p.set_role(true);
         p
     };
@@ -353,7 +353,7 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
         .unwrap();
     rt.block_on(async {
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let me = "mesh1.admin.1";
+        let me = "mesh1.node-admin.1";
         let (endpoint, gossip) = {
             let transport = iroh::endpoint::QuicTransportConfig::builder().build();
             let ep = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
@@ -377,7 +377,7 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
         let pending = Frame::MeshStatus { mesh: "mesh1".into(), status: "pending".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 0 };
         assert!(topology_view.digest_view.statuses.take(&pending, &fabric));
         let lost_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: lost_node, incarnation: lost_inc };
-        let mesh2_ready = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1_000 }
+        let mesh2_ready = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1_000 }
             .authored(&lost_author, 3, 1_000);
         assert!(topology_view.digest_view.statuses.take(&mesh2_ready, &fabric));
 
@@ -394,7 +394,7 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
             for _ in 0..ITERATIONS {
                 let frames = join_tv.status_frames(me);
                 assert!(
-                    frames.iter().any(|f| matches!(f.data(), Frame::MeshStatus { mesh, publisher, .. } if mesh == "mesh2" && publisher == "mesh2.admin.1")),
+                    frames.iter().any(|f| matches!(f.data(), Frame::MeshStatus { mesh, publisher, .. } if mesh == "mesh2" && publisher == "mesh2.node-admin.1")),
                     "the join answer serves mesh2's status with its original publisher: {frames:?}"
                 );
                 tokio::task::yield_now().await;

@@ -15,7 +15,7 @@ use rdm_core::views::NodeView;
 use rdm_core::{NodeId, PathName};
 use rdm_test::estate::{Estate, Owner};
 use rdm_test::faults::{binding_set_with_roles, candidate_sha};
-use rdm_test::test_app::{LISTENERS, LISTENER_KIND};
+use rdm_test::test_app::{LISTENERS, LISTENER_TYPE};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -43,14 +43,14 @@ async fn estate_on(test: &str, provider: &str) -> Estate {
 
 /// mesh1 with `gateways` gateways beside its two node-admins.
 fn mesh_with_gateways(gateways: u32) -> FabricDesired {
-    FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 0, broker: 0, gateway: gateways, compute: 0 }] }
+    FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("gateway", gateways)])] }
 }
 
 /// Expected locations are pairs; the fixture declares each path and name separately.
 fn wanted(gateways: u32) -> BTreeSet<PathName> {
     let mut locations = BTreeSet::from([
-        PathName { path: "mesh1.admin".into(), name: "1".into() },
-        PathName { path: "mesh1.admin".into(), name: "2".into() },
+        PathName { path: "mesh1.node-admin".into(), name: "1".into() },
+        PathName { path: "mesh1.node-admin".into(), name: "2".into() },
     ]);
     locations.extend((1..=gateways).map(|n| PathName { path: "mesh1.gateway".into(), name: n.to_string() }));
     locations
@@ -120,7 +120,7 @@ async fn a_gateways_listeners_are_bound_reported_at_join_and_published_on_its_ro
     estate.reconcile(&mesh_with_gateways(1)).await;
     let want = wanted(1);
     let views = estate.settles_to_named(&want, SETTLE).await;
-    let gateway = views.iter().find(|n| n.kind == LISTENER_KIND).expect("the gateway is in the view");
+    let gateway = views.iter().find(|n| n.r#type == LISTENER_TYPE).expect("the gateway is in the view");
     estate.artifact("views.json", &json!(Estate::values(&views)));
     estate.artifact("row.json", &row_of(&estate, gateway));
     let listeners = published(&estate, gateway).await;
@@ -130,7 +130,7 @@ async fn a_gateways_listeners_are_bound_reported_at_join_and_published_on_its_ro
         let who = rdm_admin::deployment::endpoint::port_holder(*a, rdm_admin::deployment::endpoint::SlotTransport::Tcp).unwrap();
         assert!(who.contains("listen") && who.contains(&format!("pid {pid} ")), "{n} at {a} is held listening by the gateway's process (pid {pid}): {who}");
     }
-    for v in views.iter().filter(|n| n.kind != LISTENER_KIND) {
+    for v in views.iter().filter(|n| n.r#type != LISTENER_TYPE) {
         assert!(v.listeners.is_empty(), "{:?}: a kind that declares none binds none: {:?}", v.name, v.listeners);
     }
     estate.stop().await;
@@ -147,7 +147,7 @@ async fn two_gateways_launched_at_once_bind_their_listeners_with_no_conflict() {
     let views = estate.settles_to_named(&want, SETTLE).await;
     estate.artifact("views.json", &json!(Estate::values(&views)));
     let mut ports: BTreeMap<SocketAddr, (NodeId, String)> = BTreeMap::new();
-    let gateways: Vec<&NodeView> = views.iter().filter(|n| n.kind == LISTENER_KIND).collect();
+    let gateways: Vec<&NodeView> = views.iter().filter(|n| n.r#type == LISTENER_TYPE).collect();
     assert_eq!(gateways.len(), 2, "both gateways are ready");
     for g in gateways {
         for (n, a) in published(&estate, g).await {
@@ -174,7 +174,7 @@ async fn a_container_fabrics_gateway_listeners_are_on_the_containers_own_address
     estate.reconcile(&mesh_with_gateways(1)).await;
     let want = wanted(1);
     let views = estate.settles_to_named(&want, SETTLE).await;
-    let gateway = views.iter().find(|n| n.kind == LISTENER_KIND).expect("the gateway is in the view");
+    let gateway = views.iter().find(|n| n.r#type == LISTENER_TYPE).expect("the gateway is in the view");
     estate.artifact("views.json", &json!(Estate::values(&views)));
     estate.artifact("row.json", &row_of(&estate, gateway));
     let listeners = published(&estate, gateway).await;

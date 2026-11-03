@@ -602,8 +602,8 @@ mod tests {
         assert_eq!(IssuingKey::mint(&ca, "mesh1", 1_000, 101_001).map(|_| ()), Err(CertError::IssuerOutlivesCa));
         let issuer = IssuingKey::mint(&ca, "mesh1", 1_000, ca.expiry_ms()).expect("cut to the CA's expiry");
         assert_eq!(issuer.cert().ca, *ca.cert(), "the issuing cert carries its CA cert");
-        assert_eq!(issue(&issuer, &birth(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), 1_000, 101_001).map(|_| ()), Err(CertError::MemberOutlivesIssuer));
-        let member = issue(&issuer, &birth(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), 1_000, 101_000).expect("cut to the issuer's expiry");
+        assert_eq!(issue(&issuer, &birth(PathName::new("mesh1.node", "1").unwrap(), "mesh1"), 1_000, 101_001).map(|_| ()), Err(CertError::MemberOutlivesIssuer));
+        let member = issue(&issuer, &birth(PathName::new("mesh1.node", "1").unwrap(), "mesh1"), 1_000, 101_000).expect("cut to the issuer's expiry");
         assert_eq!(verify(&member, &[root_key.verifying_key()], 101_000, 0), Ok(()), "member → issuer → CA → root");
         assert_eq!(verify_issuer(&member.issuer, &[root_key.verifying_key()]), Ok(()));
         assert_eq!(verify_issuer(&member.issuer, &[SigningKey::from_bytes(&[29u8; 32]).verifying_key()]), Err(CertError::CaBadSignature));
@@ -809,8 +809,8 @@ mod tests {
     fn a_member_cert_never_outlives_its_issuer() {
         let root_key = root();
         let issuer = issuer_under(&root_key, "mesh1", 100, 1000); // expiry 101_000
-        assert_eq!(issue(&issuer, &birth(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), 1_000, 101_001), Err(CertError::MemberOutlivesIssuer));
-        let cut = issue(&issuer, &birth(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), 1_000, issuer.expiry_ms()).expect("cut to the issuer's expiry");
+        assert_eq!(issue(&issuer, &birth(PathName::new("mesh1.node", "1").unwrap(), "mesh1"), 1_000, 101_001), Err(CertError::MemberOutlivesIssuer));
+        let cut = issue(&issuer, &birth(PathName::new("mesh1.node", "1").unwrap(), "mesh1"), 1_000, issuer.expiry_ms()).expect("cut to the issuer's expiry");
         assert_eq!(cut.cert.expiry_ms, issuer.cert().cert.expiry_ms);
         assert_eq!(verify(&cut, &[root_key.verifying_key()], 101_000, 0), Ok(()));
     }

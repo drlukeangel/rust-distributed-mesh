@@ -27,13 +27,13 @@ struct RoleProcess {
     _dir: tempdir::Dir,
 }
 
-/// The role comes from explicit kind metadata ([`Role::of`]); location fields carry no type information.
-async fn born(name: PathName, mesh: &str, kind: rdm_core::NodeKind) -> RoleProcess {
-    born_on(name, mesh, kind, None).await.0
+/// The role comes from explicit type metadata ([`Role::of`]); location fields carry no type information.
+async fn born(name: PathName, mesh: &str, r#type: &str) -> RoleProcess {
+    born_on(name, mesh, r#type, None).await.0
 }
 
 /// [`born`], also registering the data-plane `alpn` when one is given: its accept half returned.
-async fn born_on(name: PathName, mesh: &str, kind: rdm_core::NodeKind, alpn: Option<rdm_transport::connections::Alpn>) -> (RoleProcess, Option<rdm_transport::connections::Acceptor>) {
+async fn born_on(name: PathName, mesh: &str, r#type: &str, alpn: Option<rdm_transport::connections::Alpn>) -> (RoleProcess, Option<rdm_transport::connections::Acceptor>) {
     let dir = tempdir::Dir::new();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir.path()).unwrap();
     let key = node::load_or_mint_key(dir.path()).unwrap();
@@ -44,7 +44,7 @@ async fn born_on(name: PathName, mesh: &str, kind: rdm_core::NodeKind, alpn: Opt
         fabric: "fabric1".into(),
         fabric_id,
         mesh: mesh.into(),
-        kind: kind,
+        r#type: r#type.to_string(),
         name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
@@ -81,7 +81,7 @@ impl RoleProcess {
     async fn peer(&self) -> (NodeRpcClient, NodeTarget) {
         let addr = self.running.routers[0].endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode { mesh: self.launch.mesh.clone(), kind: self.launch.kind,
+        resolver.insert(ResolvedNode { mesh: self.launch.mesh.clone(), r#type: self.launch.r#type.clone(),
             node_id: self.launch.node_id.clone(),
             name: self.launch.name.clone(),
             endpoint_id: self.key.public(),
@@ -95,7 +95,7 @@ impl RoleProcess {
 
 #[tokio::test]
 async fn a_role_process_serves_core_ping_on_its_one_endpoint() {
-    let broker = born(PathName::new("mesh1.broker", "1").unwrap(), "mesh1", rdm_core::NodeKind::Broker).await;
+    let broker = born(PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker").await;
     assert_eq!(broker.running.routers.len(), 1, "one Iroh endpoint carries gossip and Node RPC");
     let (client, target) = broker.peer().await;
     let (out, _) = client.call::<Ping>(&target, &PingRequest::Ping { payload: b"role".to_vec() }, &CallOptions::default()).await;
@@ -105,7 +105,7 @@ async fn a_role_process_serves_core_ping_on_its_one_endpoint() {
 
 #[tokio::test]
 async fn a_tag_the_catalog_does_not_hold_is_unserved_421() {
-    let gateway = born(PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway).await;
+    let gateway = born(PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", "gateway").await;
     let absent = 0x6E;
     assert!(gateway.running.server.catalog().lookup(absent).is_none());
     let (client, target) = gateway.peer().await;
@@ -122,7 +122,7 @@ async fn a_tag_the_catalog_does_not_hold_is_unserved_421() {
 
 #[tokio::test]
 async fn the_products_adapter_is_catalogued_and_unserved_on_the_node_rpc_alpn() {
-    let compute = born(PathName::new("mesh1.compute", "1").unwrap(), "mesh1", rdm_core::NodeKind::Compute).await;
+    let compute = born(PathName::new("mesh1.compute", "1").unwrap(), "mesh1", "compute").await;
     let adapter = &LEGACY_ADAPTERS[0];
     let held = compute.running.server.catalog().lookup(adapter.op).expect("the adapter is catalogued");
     assert_eq!(held.owner, OpOwner::Product(adapter.owner.into()), "built under the ledger's owner");
@@ -141,7 +141,7 @@ async fn the_products_adapter_is_catalogued_and_unserved_on_the_node_rpc_alpn() 
 /// The birth `p` runs, as a peer's resolver holds it.
 fn birth_of(p: &RoleProcess) -> ResolvedNode {
     let addr = p.running.routers[0].endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    ResolvedNode { mesh: p.launch.mesh.clone(), kind: p.launch.kind, node_id: p.launch.node_id.clone(), name: p.launch.name.clone(), endpoint_id: p.key.public(), transport_addr: addr, incarnation: p.launch.incarnation.clone() }
+    ResolvedNode { mesh: p.launch.mesh.clone(), r#type: p.launch.r#type.clone(), node_id: p.launch.node_id.clone(), name: p.launch.name.clone(), endpoint_id: p.key.public(), transport_addr: addr, incarnation: p.launch.incarnation.clone() }
 }
 
 // @feature: mesh-rpc
@@ -164,9 +164,9 @@ fn a_blocked_direct_node_rpc_dial_ends_not_sent_and_a_carrier_of_the_sources_mes
     let cap = crate::common::capture("a_blocked_direct_node_rpc_dial_ends_not_sent_and_a_carrier_of_the_sources_mesh_still_reaches_the_destination");
     let seen = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        let broker = born(PathName::new("mesh2.broker", "1").unwrap(), "mesh2", rdm_core::NodeKind::Broker).await;
-        let source = born(PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway).await;
-        let carrier = born(PathName::new("mesh1.gateway", "2").unwrap(), "mesh1", rdm_core::NodeKind::Gateway).await;
+        let broker = born(PathName::new("mesh2.broker", "1").unwrap(), "mesh2", "broker").await;
+        let source = born(PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", "gateway").await;
+        let carrier = born(PathName::new("mesh1.gateway", "2").unwrap(), "mesh1", "gateway").await;
         // Each view holds the births it calls, as the topology view would feed them.
         let (b, c) = (birth_of(&broker), birth_of(&carrier));
         source.running.node_rpc.resolver.apply(b.clone(), None);
@@ -220,8 +220,8 @@ fn a_blocked_direct_node_rpc_dial_ends_not_sent_and_a_carrier_of_the_sources_mes
 // @feature: connections
 /// CONTRACT (states.md "Stopped nodes": "Stopped: in the system with its identity kept, receiving no
 /// traffic, silent on gossip and not advancing"; connections.md §9.4: the node's one reconciler):
-/// rpc node mesh1.rpc.1's Direct dials toward mesh1.rpc.2 on the app protocol are blocked, so its one
-/// dial lands a `Direct Failed` whose next attempt is due one backoff later. mesh1.rpc.1 stops before
+/// rpc node mesh1.node.1's Direct dials toward mesh1.node.2 on the app protocol are blocked, so its one
+/// dial lands a `Direct Failed` whose next attempt is due one backoff later. mesh1.node.1 stops before
 /// that due time (its stop's span `rdm.mesh.node.update.via-leave-shutdown`). Past the due time and two
 /// reconciler ticks past it, the stopped node has dialled nothing: no
 /// `rdm.node_admin.connection.create.via-recovery-dial` of its own begins after its stop's span.
@@ -237,11 +237,11 @@ fn a_stopped_node_dials_no_recovery_attempt_after_its_stop() {
     let cap = crate::common::capture("a_stopped_node_dials_no_recovery_attempt_after_its_stop");
     let seen = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        let (dest, _dest_accepts) = born_on(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(app_protocol())).await;
-        let (source, _source_accepts) = born_on(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(app_protocol())).await;
+        let (dest, _dest_accepts) = born_on(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", Some(app_protocol())).await;
+        let (source, _source_accepts) = born_on(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Some(app_protocol())).await;
         let dst = dest.launch.name.clone();
         let (src_s, dst_s) = (source.launch.node_id.to_string(), dest.launch.node_id.to_string());
-        let to = Birth { mesh: dest.launch.mesh.clone(), kind: dest.launch.kind, name: dst.clone(), node_id: dest.launch.node_id.clone(), incarnation: dest.launch.incarnation.clone() };
+        let to = Birth { mesh: dest.launch.mesh.clone(), r#type: dest.launch.r#type, name: dst.clone(), node_id: dest.launch.node_id.clone(), incarnation: dest.launch.incarnation.clone() };
 
         // One blocked Direct dial: its Direct Failed lands and arms the series (connections.md §9.4).
         rdm_test::connection_faults::block_direct(&source.running, &dest.launch.node_id, APP_PROTOCOL);
@@ -300,8 +300,8 @@ mod tempdir {
 #[tokio::test]
 async fn the_product_family_round_trips_to_a_broker_and_is_unserved_at_a_compute() {
     use rdm_test::families::{BrokerData, BrokerDataReply, BrokerDataRequest};
-    let broker = born(PathName::new("mesh1.broker", "1").unwrap(), "mesh1", rdm_core::NodeKind::Broker).await;
-    let compute = born(PathName::new("mesh1.compute", "1").unwrap(), "mesh1", rdm_core::NodeKind::Compute).await;
+    let broker = born(PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker").await;
+    let compute = born(PathName::new("mesh1.compute", "1").unwrap(), "mesh1", "compute").await;
     let (client, target) = broker.peer().await;
     let (out, _) = client.call::<BrokerData>(&target, &BrokerDataRequest::Append { key: "k".into(), value: b"v1".to_vec() }, &CallOptions::default()).await;
     let served_by = broker.launch.node_id.to_string();
@@ -326,12 +326,12 @@ async fn the_product_family_round_trips_to_a_broker_and_is_unserved_at_a_compute
 #[tokio::test]
 async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
     use rdm_test::families::{BrokerData, BrokerDataReply, BrokerDataRequest, PROOF_FAULT, PROOF_HANG};
-    let broker = born(PathName::new("mesh1.broker", "1").unwrap(), "mesh1", rdm_core::NodeKind::Broker).await;
-    let gateway = born(PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway).await;
+    let broker = born(PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker").await;
+    let gateway = born(PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", "gateway").await;
     // The gateway's live resolver learns the broker's birth, as the topology view would feed it.
     let addr = broker.running.routers[0].endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     gateway.running.node_rpc.resolver.apply(
-        ResolvedNode { mesh: broker.launch.mesh.clone(), kind: broker.launch.kind,
+        ResolvedNode { mesh: broker.launch.mesh.clone(), r#type: broker.launch.r#type,
             node_id: broker.launch.node_id.clone(),
             name: broker.launch.name.clone(),
             endpoint_id: broker.key.public(),
@@ -383,7 +383,7 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
 async fn a_malformed_traceparent_is_dropped_and_the_call_is_unchanged() {
     use rdm_test::families::{BrokerData, BrokerDataReply, BrokerDataRequest};
     use rdm_core::context::CallContext;
-    let broker = born(PathName::new("mesh1.broker", "1").unwrap(), "mesh1", rdm_core::NodeKind::Broker).await;
+    let broker = born(PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker").await;
     let (client, target) = broker.peer().await;
     let opts = CallOptions {
         context: Some(CallContext { caller_system: Some("rdm".into()), traceparent: Some("not-a-traceparent".into()), tracestate: None, baggage: None }),

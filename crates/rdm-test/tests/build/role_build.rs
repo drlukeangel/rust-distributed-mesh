@@ -1,5 +1,5 @@
 //! i143.e11.s3 process E2E: the role binaries on the base are born by node-admin as
-//! explicit `NodeKind::{Broker, Gateway, Compute}` metadata (PRD §13.1).
+//! an explicit type, broker, gateway or compute (the testkit declares them) (PRD §13.1).
 //!
 //! One fresh fabric; one `build.create` asks for `{node_admin: 1, broker: 1, gateway: 1,
 //! compute: 1}`; from public surfaces only:
@@ -14,7 +14,7 @@ use crate::build_log;
 use rdm_core::PathName;
 
 fn location(node: &Value) -> PathName { serde_json::from_value(node["name"].clone()).expect("separate path and name fields") }
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeView};
+use rdm_client::{FabricDesired, MeshDesired, NodeView};
 use rdm_test::estate::{wait_for, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,21 +31,19 @@ fn owner(test: &str) -> Owner {
     }
 }
 
-fn kind_of(kind: &str) -> NodeKind {
-    match kind {
-        "broker" => NodeKind::Broker,
-        "gateway" => NodeKind::Gateway,
-        "compute" => NodeKind::Compute,
-        other => panic!("{other} is not a role kind"),
+fn type_of(r#type: &str) -> String {
+    match r#type {
+        "broker" | "gateway" | "compute" => r#type.to_string(),
+        other => panic!("{other} is not a type the testkit declares"),
     }
 }
 
 /// `(kind, count)` of mesh1 beside its one node-admin.
 async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, Vec<Value>) {
-    let mesh = MeshDesired::of("mesh1", std::iter::once((NodeKind::NodeAdmin, 1)).chain(roles.iter().map(|(kind, n)| (kind_of(kind), *n))));
+    let mesh = MeshDesired::of("mesh1", std::iter::once(("node-admin".to_string(), 1)).chain(roles.iter().map(|(r#type, n)| (type_of(r#type), *n))));
     let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh] }).await.build_id.to_string();
     estate.artifact(&format!("build-{label}.json"), &build_log::build_value(&estate, &build_id).await);
-    let mut expected = BTreeMap::from([(PathName::new("mesh1.admin", "1").unwrap(), "node_admin")]);
+    let mut expected = BTreeMap::from([(PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin")]);
     for (kind, n) in roles {
         expected.extend((1..=*n).map(|i| (PathName::new(format!("mesh1.{kind}"), i.to_string()).unwrap(), *kind)));
     }
@@ -53,7 +51,7 @@ async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, 
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(15)).await);
     for n in &nodes {
         let name = location(n);
-        assert_eq!(n["kind"], expected[&name], "{label}: {name:?} has the explicit fixture kind: {n}");
+        assert_eq!(n["type"], expected[&name], "{label}: {name:?} has the explicit fixture kind: {n}");
         assert_eq!(n["status"], "ready", "{label}: {n}");
     }
     (build_id, nodes)
@@ -69,18 +67,18 @@ async fn roles_are_born_by_build_under_their_kind() {
     // One primary per node type (a node type of one is its own primary); one fabric primary, the admin.
     let mut primaries: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for n in &nodes {
-        let e = primaries.entry(n["kind"].as_str().unwrap().to_string()).or_default();
+        let e = primaries.entry(n["type"].as_str().unwrap().to_string()).or_default();
         if n["is_primary"] == true {
             e.push(n["node_id"].as_str().unwrap().to_string());
         }
     }
-    assert_eq!(primaries.keys().cloned().collect::<Vec<_>>(), ["broker", "compute", "gateway", "node_admin"]);
-    for (node_type, p) in &primaries {
-        assert_eq!(p.len(), 1, "node type {node_type} has primaries {p:?}");
+    assert_eq!(primaries.keys().cloned().collect::<Vec<_>>(), ["broker", "compute", "gateway", "node-admin"]);
+    for (r#type, p) in &primaries {
+        assert_eq!(p.len(), 1, "node type {} has primaries {p:?}", r#type);
     }
     let fabric_primaries: Vec<&Value> = nodes.iter().filter(|n| n["is_fabric_primary"] == true).collect();
     assert_eq!(fabric_primaries.len(), 1, "{fabric_primaries:?}");
-    assert_eq!(fabric_primaries[0]["kind"], "node_admin");
+    assert_eq!(fabric_primaries[0]["type"], "node-admin");
 
     // Every node, whatever its kind, publishes its own CPU and RAM in its mesh digest, and the
     // node-admin's view serves it. The load travels on the node's own digest only (the primary's
@@ -124,7 +122,7 @@ async fn roles_are_born_by_build_under_their_kind() {
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let (second, after) = build(&estate, "without-compute", &[("broker", 1), ("gateway", 1)]).await;
     let after = births(&after);
-    let compute = nodes.iter().find(|n| n["kind"] == "compute").expect("fixture compute");
+    let compute = nodes.iter().find(|n| n["type"] == "compute").expect("fixture compute");
     assert!(!after.contains_key(compute["node_id"].as_str().unwrap()));
     for (name, birth) in &after {
         assert_eq!(before.get(name), Some(birth), "{name} was restarted by the shrink");
@@ -155,14 +153,14 @@ async fn roles_are_born_by_build_under_their_kind() {
             .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation_id"])
             .unwrap_or_else(|| panic!("{node:?} wrote no boot span"))
             .clone();
-        assert_eq!(boot["attributes"]["kind"], *kind, "{node:?}'s boot names its kind: {boot}");
+        assert_eq!(boot["attributes"]["type"], *kind, "{node:?}'s boot names its kind: {boot}");
         assert!(descends_from(&spans, &boot, &step), "{node:?} booted under the step that launched it");
         let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
             .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation_id"])
             .unwrap_or_else(|| panic!("{node:?} wrote no ready span"))
             .clone();
-        assert_eq!(ready["attributes"]["kind"], *kind, "{node:?}'s ready span names its kind: {ready}");
+        assert_eq!(ready["attributes"]["type"], *kind, "{node:?}'s ready span names its kind: {ready}");
     }
     let delete = named(&spans, "rdm.node_admin.node.delete.via-build")
         .into_iter()
@@ -173,13 +171,13 @@ async fn roles_are_born_by_build_under_their_kind() {
     estate.record_trace_url(first_accepted["trace_id"].as_str().unwrap_or(""));
 }
 
-/// The one node executable of node-admin's built-in set: every node_type but `node_admin` runs it.
+/// The one node executable of node-admin's built-in set: every type but `node_admin` runs it.
 const NODE_EXECUTABLE: &str = "rdm-node";
 
 /// CONTRACT: the estate supplies explicit executable bindings from its built-in set: the
 /// node-admin and the shared node executable. A broker, gateway and compute created by one Build
 /// each run that explicitly selected node executable, and each boots as the
-/// node_type its launch names: the boot span (`rdm.mesh.node.create.via-deployment`) names the
+/// type its launch names: the boot span (`rdm.mesh.node.create.via-deployment`) names the
 /// executable the process runs and the kind it took from its launch, and runs under the
 /// DeployRuntime step that launched it. No product role binary is launched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -197,8 +195,8 @@ async fn a_build_with_explicit_role_bindings_launches_every_role_from_the_one_no
         .unwrap_or_else(|| panic!("no span accepted build {build_id}"))
         .clone();
     let mut launched = Vec::new();
-    for (kind, _) in &roles {
-        let node = PathName::new(format!("mesh1.{kind}"), "1").unwrap();
+    for (r#type, _) in &roles {
+        let node = PathName::new(format!("mesh1.{}", r#type), "1").unwrap();
         let view = nodes.iter().find(|n| location(n) == node).expect("fixture role node");
         let step = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
@@ -213,8 +211,8 @@ async fn a_build_with_explicit_role_bindings_launches_every_role_from_the_one_no
             .clone();
         assert!(descends_from(&spans, &boot, &step), "{node:?} booted under the DeployRuntime step that launched it");
         assert_eq!(boot["attributes"]["executable"], NODE_EXECUTABLE, "{node:?} runs the one node executable of the built-in set: {boot}");
-        assert_eq!(boot["attributes"]["kind"], *kind, "{node:?} booted as the node_type its launch names: {boot}");
-        launched.push(json!({"node_id": view["node_id"], "path": node.path, "name": node.name, "executable": boot["attributes"]["executable"], "kind": boot["attributes"]["kind"], "trace_id": boot["trace_id"]}));
+        assert_eq!(boot["attributes"]["type"], *r#type, "{node:?} booted as the type its launch names: {boot}");
+        launched.push(json!({"node_id": view["node_id"], "path": node.path, "name": node.name, "executable": boot["attributes"]["executable"], "type": boot["attributes"]["type"], "trace_id": boot["trace_id"]}));
     }
     estate.artifact("launched.json", &json!(launched));
     estate.record_trace_url(accepted["trace_id"].as_str().unwrap_or(""));

@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool, fabric_primary: bool) -> Node {
-    let mut n = Node::allocated(name, mesh, kind);
+fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool, fabric_primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, r#type);
     n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
@@ -30,7 +30,7 @@ fn view() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
-        nodes: vec![node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true), node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false)],
+        nodes: vec![node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, true), node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", false, false)],
     }
 }
 
@@ -123,18 +123,18 @@ impl BuildStateAdapter for Held {
 
 async fn rig() -> (Arc<Held>, Arc<ControlPlane>) {
     let t = view();
-    let held = Arc::new(Held { predecessor: t.node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap().node_id.clone(), successor: rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() }, inner: MemoryBuildStateAdapter::new(), first: AtomicBool::new(false), entered: Notify::new(), release: Notify::new(), moves_at_accept: AtomicBool::new(false), moved: AtomicBool::new(false) });
+    let held = Arc::new(Held { predecessor: t.node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().node_id.clone(), successor: rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() }, inner: MemoryBuildStateAdapter::new(), first: AtomicBool::new(false), entered: Notify::new(), release: Notify::new(), moves_at_accept: AtomicBool::new(false), moved: AtomicBool::new(false) });
     // The seed is written before the hold is armed.
     held.first.store(true, Ordering::SeqCst);
-    let accepted = AcceptedStore::seeded(&*held, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*held, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
     held.first.store(false, Ordering::SeqCst);
-    let mut cp = crate::control_plane(held.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time());
+    let mut cp = crate::control_plane(held.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t.clone(), crate::adopted_time());
     cp.topology = Arc::new(tokio::sync::RwLock::new(t));
     (held, Arc::new(cp))
 }
 
 fn add_rpc() -> TopologyChange {
-    TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }
+    TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }
 }
 
 /// CONTRACT: two topology submissions that both arrive while the accepted Build is settled admit

@@ -2,9 +2,9 @@
 //! node owns its name, and the join answer hands it the row's; lifecycles/node-create.md step 4: the
 //! accepting authority admits a held birth under its row's name).
 //!
-//! CONTRACT: a node-admin process boots under `mesh1.admin.2`, the name its authority last accepted for
-//! its exact birth, while its row stands at `mesh1.admin.3`. The authority admits it under the row's
-//! name and its view holds the birth (its node id and incarnation) as `mesh1.admin.3`. Its Node RPC
+//! CONTRACT: a node-admin process boots under `mesh1.node-admin.2`, the name its authority last accepted for
+//! its exact birth, while its row stands at `mesh1.node-admin.3`. The authority admits it under the row's
+//! name and its view holds the birth (its node id and incarnation) as `mesh1.node-admin.3`. Its Node RPC
 //! router opens once its Status authority is filled and that view holds its exact birth: a Ping from
 //! its mesh's primary is answered. What must NOT happen: the router gated on the boot name, which no
 //! view lists, so every call to the admin is refused typed `NotReady` for the life of the process.
@@ -59,7 +59,7 @@ fn launch_by(root: &Running, name: &PathName, dir: &std::path::Path) -> Launch {
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
-        kind: rdm_core::NodeKind::NodeAdmin,
+        r#type: "node-admin".into(),
         name: name.clone(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
@@ -95,12 +95,12 @@ fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
-        // The process boots under `mesh1.admin.2`, the name last accepted for its birth; its row stands
-        // at `mesh1.admin.3`, the name the authority admits it under.
-        let (boot, row): (PathName, PathName) = (rdm_core::PathName::new("mesh1.admin", "2").unwrap(), rdm_core::PathName::new("mesh1.admin", "3").unwrap());
+        // The process boots under `mesh1.node-admin.2`, the name last accepted for its birth; its row stands
+        // at `mesh1.node-admin.3`, the name the authority admits it under.
+        let (boot, row): (PathName, PathName) = (rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), rdm_core::PathName::new("mesh1.node-admin", "3").unwrap());
         let launch = launch_by(&root, &boot, &admin_dir);
         let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-        let _ = root.runner.joins.expect(Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
+        let _ = root.runner.joins.expect(Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
             name: row.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),

@@ -9,7 +9,7 @@
 //! birth a view the estate read over Node RPC lists for it.
 
 use crate::estate::Estate;
-use rdm_client::{LaunchKind as NodeKind, PathName};
+use rdm_client::{PathName};
 use rdm_client::{
     birth_of_view, Accepted, BuildCarrier, BuildFrame, BuildId, BuildStream, Builds, CallEnd, Change, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshView, Meshes, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
 };
@@ -144,7 +144,7 @@ impl Estate {
     fn note(&self, peers: &Peers, views: &[NodeView]) {
         peers.learn_known(views);
         let mut births = self.births.lock().unwrap();
-        for n in views.iter().filter(|n| n.kind == NodeKind::NodeAdmin && !matches!(n.status, NodeStatus::Dead | NodeStatus::Deleted)) {
+        for n in views.iter().filter(|n| rdm_core::is_node_admin(&n.r#type) && !matches!(n.status, NodeStatus::Dead | NodeStatus::Deleted)) {
             if let Some(birth) = birth_of_view(n) {
                 births.insert(n.name.clone(), birth);
             }
@@ -175,7 +175,7 @@ impl Estate {
     /// view"). Empty when the node does not answer within 2 s.
     pub async fn held_values_at(&self, node: &PathName) -> Vec<serde_json::Value> {
         let Some(held) = self.held_topology_at(node).await else { return Vec::new() };
-        held.members.iter().map(|d| serde_json::json!({"name": d.node.name, "mesh": d.node.mesh, "kind": d.node.kind, "node_id": d.node.node_id.to_string(), "status": serde_json::to_value(d.status).unwrap_or_default()})).collect()
+        held.members.iter().map(|d| serde_json::json!({"name": d.node.name, "mesh": d.node.mesh, "kind": d.node.r#type, "node_id": d.node.node_id.to_string(), "status": serde_json::to_value(d.status).unwrap_or_default()})).collect()
     }
 
     /// What the node `node` holds itself, never a primary's atlas (query.md §2: a node queries its own
@@ -507,14 +507,14 @@ impl Estate {
     /// role's data dir), where no call is held open. `within` bounds the wait and a view that does not settle
     /// is named.
     pub async fn settles_to(&self, meshes: &[(&str, u32, u32)], within: std::time::Duration) -> Vec<NodeView> {
-        let want: std::collections::BTreeMap<(String, NodeKind), usize> =
-            meshes.iter().flat_map(|(m, a, r)| [((m.to_string(), NodeKind::NodeAdmin), *a as usize), ((m.to_string(), NodeKind::RpcNode), *r as usize)]).filter(|(_, n)| *n > 0).collect();
+        let want: std::collections::BTreeMap<(String, String), usize> =
+            meshes.iter().flat_map(|(m, a, r)| [((m.to_string(), "node-admin".to_string()), *a as usize), ((m.to_string(), "node".to_string()), *r as usize)]).filter(|(_, n)| *n > 0).collect();
         let named: std::collections::BTreeSet<&str> = meshes.iter().map(|(m, _, _)| *m).collect();
         self.until_view(&format!("the view settles on {want:?}, every node ready"), within, |views| {
             let views: Vec<NodeView> = views.iter().filter(|n| named.contains(n.mesh.as_str())).cloned().collect();
-            let mut have: std::collections::BTreeMap<(String, NodeKind), usize> = std::collections::BTreeMap::new();
+            let mut have: std::collections::BTreeMap<(String, String), usize> = std::collections::BTreeMap::new();
             for n in &views {
-                *have.entry((n.mesh.clone(), n.kind)).or_default() += 1;
+                *have.entry((n.mesh.clone(), n.r#type.clone())).or_default() += 1;
             }
             (have == want && views.iter().all(|n| n.status == NodeStatus::Ready)).then_some(views)
         })
@@ -524,11 +524,11 @@ impl Estate {
     /// The view once every `(mesh, kind)` node type of the fabric holds exactly its count of nodes in `want`, every
     /// one ready: the view of the whole fabric, every mesh and kind named, as `mesh.nodes.get` reads it at
     /// the admin the estate asks. `within` bounds the wait and a view that does not settle is named.
-    pub async fn settles_to_counts(&self, want: std::collections::BTreeMap<(String, NodeKind), usize>, within: std::time::Duration) -> Vec<NodeView> {
+    pub async fn settles_to_counts(&self, want: std::collections::BTreeMap<(String, String), usize>, within: std::time::Duration) -> Vec<NodeView> {
         self.until_view(&format!("the view settles on {want:?}, every node ready"), within, |views| {
-            let mut have: std::collections::BTreeMap<(String, NodeKind), usize> = std::collections::BTreeMap::new();
+            let mut have: std::collections::BTreeMap<(String, String), usize> = std::collections::BTreeMap::new();
             for n in views {
-                *have.entry((n.mesh.clone(), n.kind)).or_default() += 1;
+                *have.entry((n.mesh.clone(), n.r#type.clone())).or_default() += 1;
             }
             (have == want && views.iter().all(|n| n.status == NodeStatus::Ready)).then(|| views.to_vec())
         })
@@ -663,7 +663,7 @@ impl Estate {
     pub async fn advertised_data_dir(&self, node: &PathName) -> Option<String> {
         let entry = self.entry().await;
         let mut admins = vec![entry.clone()];
-        admins.extend(self.node_views().await.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::Ready && n.name != entry).map(|n| n.name));
+        admins.extend(self.node_views().await.into_iter().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.status == NodeStatus::Ready && n.name != entry).map(|n| n.name));
         for admin in admins {
             let Some(views) = self.node_views_at(&admin).await else { continue };
             if let Some(dir) = views.into_iter().find(|n| &n.name == node).and_then(|n| n.data_dir) {
@@ -747,15 +747,15 @@ impl Estate {
     /// `node.create` of one more `kind` node in `mesh`, at the lowest free ordinal of its kind, on the
     /// estate's executable for it: the complete topology with the path added
     /// ([`rdm_client::Nodes::create_named`]). Not accepted: how the call ended.
-    pub async fn create_node(&self, mesh: &str, kind: NodeKind) -> Result<WorkflowStream, CallEnd> {
-        let (based_on, nodes) = self.create_node_request(mesh, kind).await;
+    pub async fn create_node(&self, mesh: &str, r#type: &str) -> Result<WorkflowStream, CallEnd> {
+        let (based_on, nodes) = self.create_node_request(mesh, r#type).await;
         self.nodes_obj().await.create_named(based_on, nodes).await
     }
 
     /// The `based_on` and complete topology of [`Self::create_node`], for a cell that submits it itself.
-    pub async fn create_node_request(&self, mesh: &str, kind: NodeKind) -> (BuildId, Vec<rdm_core::meta::NodeSpec>) {
+    pub async fn create_node_request(&self, mesh: &str, r#type: &str) -> (BuildId, Vec<rdm_core::meta::NodeSpec>) {
         let current = self.current().await;
-        let nodes = current.with_one_more(mesh, kind, &self.executables);
+        let nodes = current.with_one_more(mesh, r#type, &self.executables);
         (current.based_on, nodes)
     }
 
@@ -792,7 +792,7 @@ impl Estate {
     /// `build.create` of the fabric reconciled to `meshes`, each `(name, node_admin, rpc_node)`, accepted:
     /// the stream of the Build, for a cell that acts while the Build runs (its fabric change held, Q154).
     pub async fn submit_shape(&self, fabric: &str, meshes: &[(&str, u32, u32)]) -> BuildStream {
-        let desired = FabricDesired { fabric: fabric.into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired { name: (*m).into(), node_admin: *a, rpc_node: *r, broker: 0, gateway: 0, compute: 0 }).collect() };
+        let desired = FabricDesired { fabric: fabric.into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired::of(*m, [("node-admin", *a), ("node", *r)])).collect() };
         self.submit(&BuildSpec::Fabric(desired)).await
     }
 

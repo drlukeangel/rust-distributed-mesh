@@ -127,17 +127,17 @@ fn main() -> Result<()> {
             println!("before create-exclusive insertion");
             fs::create_dir_all(&names)?;
             File::open(root.join("locks"))?.sync_all()?;
-            ensure!(insert(&names, ".mesh1.rpc.1.writer.tmp", "mesh1.rpc.1", b"writer")?, "the first insert of a free name makes it");
+            ensure!(insert(&names, ".mesh1.node.1.writer.tmp", "mesh1.node.1", b"writer")?, "the first insert of a free name makes it");
             fs::write(control.join("inserted"), b"inserted")?;
             println!("create-exclusive insertion under locks/: file and directory fsync complete");
         }
         "reader" => {
             idle_until(&control.join("inserted"));
-            ensure!(fs::read(names.join("mesh1.rpc.1"))? == b"writer", "the inserted lock is coherent");
-            let expected: BTreeSet<_> = ["mesh1.rpc.1"].into_iter().map(str::to_string).collect();
+            ensure!(fs::read(names.join("mesh1.node.1"))? == b"writer", "the inserted lock is coherent");
+            let expected: BTreeSet<_> = ["mesh1.node.1"].into_iter().map(str::to_string).collect();
             ensure!(listing(&names)? == expected, "the locks listing is coherent and complete");
-            ensure!(!insert(&names, ".mesh1.rpc.1.reader.tmp", "mesh1.rpc.1", b"reader")?, "a create-exclusive insert must refuse a standing lock");
-            ensure!(fs::read(names.join("mesh1.rpc.1"))? == b"writer", "the refused insert changed the standing lock");
+            ensure!(!insert(&names, ".mesh1.node.1.reader.tmp", "mesh1.node.1", b"reader")?, "a create-exclusive insert must refuse a standing lock");
+            ensure!(fs::read(names.join("mesh1.node.1"))? == b"writer", "the refused insert changed the standing lock");
             ensure!(listing(&names)? == expected, "the refused insert left an entry in locks/");
             fs::write(control.join("collision-complete"), b"complete")?;
             println!("create-exclusive insertion refused across containers; the lock unchanged");
@@ -172,15 +172,15 @@ fn main() -> Result<()> {
     idle_until(&control.join("reverse"));
     match role.as_str() {
         "reader" => {
-            ensure!(insert(&names, ".mesh1.rpc.2.reader.tmp", "mesh1.rpc.2", b"reader")?, "the reader's insert of a free name makes it");
+            ensure!(insert(&names, ".mesh1.node.2.reader.tmp", "mesh1.node.2", b"reader")?, "the reader's insert of a free name makes it");
             fs::write(control.join("reader-inserted"), b"inserted")?;
         }
         "writer" => {
             wait_until(&control.join("reader-inserted"), Instant::now() + Duration::from_secs(10), "the reader did not insert its lock")?;
-            ensure!(fs::read(names.join("mesh1.rpc.2"))? == b"reader", "the reverse insert is coherent");
-            let expected: BTreeSet<_> = ["mesh1.rpc.1", "mesh1.rpc.2"].into_iter().map(str::to_string).collect();
+            ensure!(fs::read(names.join("mesh1.node.2"))? == b"reader", "the reverse insert is coherent");
+            let expected: BTreeSet<_> = ["mesh1.node.1", "mesh1.node.2"].into_iter().map(str::to_string).collect();
             ensure!(listing(&names)? == expected, "the reverse locks listing is coherent and complete");
-            ensure!(fs::read(names.join("mesh1.rpc.1"))? == b"writer", "the first insertion remains unchanged");
+            ensure!(fs::read(names.join("mesh1.node.1"))? == b"writer", "the first insertion remains unchanged");
             fs::write(control.join("writer-complete"), b"complete")?;
             println!("reverse insert and complete locks listing visible on the writer");
         }

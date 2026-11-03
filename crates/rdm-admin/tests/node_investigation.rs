@@ -69,8 +69,8 @@ impl Capture {
     }
 }
 
-fn ready_node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Node {
-    let mut n = Node::allocated(name, mesh, kind);
+fn ready_node(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Node {
+    let mut n = Node::allocated(name, mesh, r#type);
     n.node_id = NodeId::mint();
     n.incarnation_id = Some(IncarnationId::mint());
     n.status = NodeStatus::Ready;
@@ -106,13 +106,13 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
     std::fs::create_dir_all(&dir).unwrap();
 
     let lead_id = rt.block_on(async {
-        let admin = ready_node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
-        let mut target = ready_node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let admin = ready_node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
+        let mut target = ready_node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         target.status = NodeStatus::PendingReconnect;
         let target_id = target.node_id.clone();
         let target_inc = target.incarnation_id.clone().unwrap();
 
-        let lead_carrier = ready_node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode);
+        let lead_carrier = ready_node(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node");
         let lead_id = lead_carrier.node_id.to_string();
         let lead_id = lead_carrier.node_id.clone();
         let lead_inc = lead_carrier.incarnation_id.clone().unwrap();
@@ -128,17 +128,17 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
             nodes: vec![admin.clone(), target.clone(), lead_carrier.clone()],
         };
 
-        // 1. Seed the by-destination connections index with an active Direct row from mesh2.rpc.1 to mesh1.rpc.1.
+        // 1. Seed the by-destination connections index with an active Direct row from mesh2.node.1 to mesh1.node.1.
         let connections = Arc::new(MemoryConnectionsStorage::default());
         connections
             .put_connection(&NodeConnection {
                 id: rdm_core::ConnectionId::mint(),
-                source: ConnectionEnd { mesh: lead_carrier.mesh.clone(), kind: lead_carrier.kind,
+                source: ConnectionEnd { mesh: lead_carrier.mesh.clone(), r#type: lead_carrier.r#type.clone(),
                     name: lead_carrier.name.clone(),
                     node_id: lead_id.clone(),
                     incarnation: Some(lead_inc.clone()),
                 },
-                destination: ConnectionEnd { mesh: target.mesh.clone(), kind: target.kind,
+                destination: ConnectionEnd { mesh: target.mesh.clone(), r#type: target.r#type.clone(),
                     name: target.name.clone(),
                     node_id: target_id.clone(),
                     incarnation: Some(target_inc.clone()),
@@ -214,9 +214,9 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
             .accept(rdm_transport::ALPN, server)
             .spawn();
 
-        // Admin resolver holds `mesh2.rpc.1` (lead carrier), NOT `mesh1.rpc.1`, so step 2 direct fails NotSent immediately.
+        // Admin resolver holds `mesh2.node.1` (lead carrier), NOT `mesh1.node.1`, so step 2 direct fails NotSent immediately.
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode { mesh: lead_carrier.mesh.clone(), kind: lead_carrier.kind,
+        resolver.insert(ResolvedNode { mesh: lead_carrier.mesh.clone(), r#type: lead_carrier.r#type.clone(),
             node_id: lead_id.clone(),
             name: lead_carrier.name.clone(),
             endpoint_id: carrier_key.public(),
@@ -278,7 +278,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
 
         let nodes_store = MemoryNodesStorage::default();
         nodes_store
-            .put_runtime(&RuntimeRow { kind: target.kind, mesh: target.mesh.clone(),
+            .put_runtime(&RuntimeRow { r#type: target.r#type.clone(), mesh: target.mesh.clone(),
                 node_id: target_id.clone(),
                 name: target.name.clone(),
                 incarnation_id: target_inc.clone(),
@@ -303,7 +303,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
                 inspect_birth_with_handle(&provider, &digest_view, Some(&nodes_store), &target_b)
                     .await;
             span_inspection(
-                "mesh1.admin.1",
+                "mesh1.node-admin.1",
                 &target_b,
                 &outcome,
                 handle.as_ref(),

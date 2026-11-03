@@ -24,7 +24,7 @@ use rdm_core::reconnect::{
     deterministic_jitter, due, first_failure_for, next_due, next_failure, owed_direct_restored,
     reconnect_backoff, reconnect_plan, DIRECT_RESTORED,
 };
-use rdm_core::{ConnectionId, IncarnationId, NodeKind};
+use rdm_core::{ConnectionId, IncarnationId};
 
 fn to_end(n: &NodeView) -> Result<ConnectionEnd> {
     Ok(ConnectionEnd {
@@ -51,16 +51,16 @@ async fn main() -> Result<()> {
 
     let src = all
         .iter()
-        .find(|n| n.kind == NodeKind::Compute && n.status == NodeStatus::Ready)
+        .find(|n| n.kind == "compute" && n.status == NodeStatus::Ready)
         .ok_or_else(|| anyhow!("no Ready compute node in estate"))?;
     let dst = all
         .iter()
-        .find(|n| n.kind == NodeKind::Broker && n.status == NodeStatus::Ready && n.mesh != src.mesh)
-        .or_else(|| all.iter().find(|n| n.kind == NodeKind::Broker && n.status == NodeStatus::Ready))
+        .find(|n| n.kind == "broker" && n.status == NodeStatus::Ready && n.mesh != src.mesh)
+        .or_else(|| all.iter().find(|n| n.kind == "broker" && n.status == NodeStatus::Ready))
         .ok_or_else(|| anyhow!("no Ready broker node in estate"))?;
     let gw = all
         .iter()
-        .find(|n| n.kind == NodeKind::Gateway && n.status == NodeStatus::Ready)
+        .find(|n| n.kind == "gateway" && n.status == NodeStatus::Ready)
         .ok_or_else(|| anyhow!("no Ready gateway node in estate"))?;
 
     let (src_end, dst_end, gw_end) = (to_end(src)?, to_end(dst)?, to_end(gw)?);

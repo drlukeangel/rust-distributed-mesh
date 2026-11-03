@@ -231,7 +231,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
     let server = rdm_admin::fabric_handover::serve(pinged, slot.clone()).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let resolved = ResolvedNode { mesh: mesh.into(), kind: rdm_core::NodeKind::NodeAdmin, node_id: node_id.clone(), name: path.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
+    let resolved = ResolvedNode { mesh: mesh.into(), r#type: "node-admin".into(), node_id: node_id.clone(), name: path.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let topology = Arc::new(tokio::sync::RwLock::new(view(vec![])));
     let finishes: Arc<std::sync::atomic::AtomicUsize> = Arc::default();
     let (writes_finish, writes_gate) = tokio::sync::watch::channel(true);
@@ -290,7 +290,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
-    let mut n = Node::allocated(a.resolved.name.clone(), a.resolved.mesh.clone(), a.resolved.kind);
+    let mut n = Node::allocated(a.resolved.name.clone(), a.resolved.mesh.clone(), &a.resolved.r#type);
     n.node_id = a.resolved.node_id.clone();
     n.incarnation_id = Some(a.resolved.incarnation.clone());
     n.endpoint_id = Some(EndpointId(a.resolved.endpoint_id.to_string()));
@@ -312,9 +312,9 @@ fn primary_of(a: &Admin, revision: u64) -> Primary {
     Primary { mesh: a.resolved.mesh.clone(), node_id: a.resolved.node_id.clone(), incarnation: a.resolved.incarnation.clone(), revision }
 }
 
-/// One entry of a call's election result: `node_type`, `from` to `to`, at `revision`.
-fn entry(node_type: &str, from: &ResolvedNode, to: &ResolvedNode, revision: u64) -> (String, Birth, Birth, u64) {
-    (node_type.to_string(), exact(from), exact(to), revision)
+/// One entry of a call's election result: `type`, `from` to `to`, at `revision`.
+fn entry(r#type: &str, from: &ResolvedNode, to: &ResolvedNode, revision: u64) -> (String, Birth, Birth, u64) {
+    (r#type.to_string(), exact(from), exact(to), revision)
 }
 
 /// One call; a call with no reply panics naming the outcome and the leg it used.
@@ -451,8 +451,8 @@ impl Drop for TraceCapture {
     }
 }
 
-/// mesh1: P (`mesh1.admin.1`) is mesh1's mesh-primary at revision 3; N (`mesh1.admin.2`) is the lowest
-/// Ready NodeId of mesh1's other node-admins, the successor P's election names; M (`mesh1.admin.3`) is a
+/// mesh1: P (`mesh1.node-admin.1`) is mesh1's mesh-primary at revision 3; N (`mesh1.node-admin.2`) is the lowest
+/// Ready NodeId of mesh1's other node-admins, the successor P's election names; M (`mesh1.node-admin.3`) is a
 /// Ready admin of the same mesh with a higher NodeId. mesh2: X, its mesh-primary and only node-admin, with
 /// the lowest NodeId of the fabric (so an election across meshes would name X, never N). [`FabricPrimary`]
 /// says who is the fabric-primary at revision 7.
@@ -486,10 +486,10 @@ async fn fabric_n_ready_on_probe(fp: FabricPrimary) -> Primaries {
 
 async fn primaries_fabric_over(fp: FabricPrimary, n_ready: bool) -> Primaries {
     let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryFabricStorage>::default());
-    let p = admin(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "000000000002", true, status.clone()).await;
-    let n = admin(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "000000000003", n_ready, status.clone()).await;
-    let m = admin(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.admin", "3").unwrap(), "000000000009", true, status.clone()).await;
-    let x = admin(&fabric_id, "mesh2", &rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "000000000001", true, status).await;
+    let p = admin(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "000000000002", true, status.clone()).await;
+    let n = admin(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "000000000003", n_ready, status.clone()).await;
+    let m = admin(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), "000000000009", true, status.clone()).await;
+    let x = admin(&fabric_id, "mesh2", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "000000000001", true, status).await;
     let pn = node_of(&p, NodeStatus::Ready, fp == FabricPrimary::P);
     let mut nn = node_of(&n, NodeStatus::Ready, false);
     nn.is_primary = false;
@@ -536,14 +536,14 @@ async fn member(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_i
     let server = rdm_admin::fabric_handover::serve_member(ServerBuilder::new(), slot.clone()).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let resolved = ResolvedNode { mesh: mesh.into(), kind: rdm_core::NodeKind::RpcNode, node_id: node_id.clone(), name: path.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
-    let door = Arc::new(rdm_admin::fabric_handover::MemberDoor::new(path.clone(), rdm_core::NodeKind::RpcNode, node_id, incarnation, topology_view, client));
+    let resolved = ResolvedNode { mesh: mesh.into(), r#type: "node".into(), node_id: node_id.clone(), name: path.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
+    let door = Arc::new(rdm_admin::fabric_handover::MemberDoor::new(path.clone(), "node", node_id, incarnation, topology_view, client));
     let _ = slot.set(door.clone());
     Member { door, resolved, resolver, fabric: fabric.clone(), _router: router }
 }
 
 fn member_node(m: &Member, primary: bool) -> Node {
-    let mut n = Node::allocated(m.resolved.name.clone(), m.resolved.mesh.clone(), m.resolved.kind);
+    let mut n = Node::allocated(m.resolved.name.clone(), m.resolved.mesh.clone(), &m.resolved.r#type);
     n.node_id = m.resolved.node_id.clone();
     n.incarnation_id = Some(m.resolved.incarnation.clone());
     n.endpoint_id = Some(EndpointId(m.resolved.endpoint_id.to_string()));
@@ -557,7 +557,7 @@ fn member_node(m: &Member, primary: bool) -> Node {
 fn digest_of(r: &ResolvedNode, fabric: &FabricId) -> rdm_core::MeshDigest {
     rdm_core::MeshDigest {
         fabric_id: fabric.clone(),
-        node: rdm_core::MeshNode { mesh: r.mesh.clone(), kind: r.kind, node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: rdm_core::EndpointId(r.endpoint_id.to_string()), transport_addr: r.transport_addr, incarnation: r.incarnation.clone(), supersedes: None, runtime: None },
+        node: rdm_core::MeshNode { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: rdm_core::EndpointId(r.endpoint_id.to_string()), transport_addr: r.transport_addr, incarnation: r.incarnation.clone(), supersedes: None, runtime: None },
         status: rdm_core::MemberStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
@@ -578,10 +578,10 @@ fn member_primary(m: &Member, revision: u64) -> Primary {
     Primary { mesh: m.resolved.mesh.clone(), node_id: m.resolved.node_id.clone(), incarnation: m.resolved.incarnation.clone(), revision }
 }
 
-const RPC: rdm_admin::model::NodeKind = rdm_admin::model::NodeKind::RpcNode;
+const RPC: &str = "node";
 
 /// P is mesh1's mesh-primary (revision 3), X is mesh2's and the fabric-primary (revision 7). B1
-/// (`mesh1.rpc.1`) is mesh1's rpc-node primary at revision 2; B2 (`mesh1.rpc.2`) is that type's other
+/// (`mesh1.node.1`) is mesh1's rpc-node primary at revision 2; B2 (`mesh1.node.2`) is that type's other
 /// node, born only when `with_b2`; every node's view holds the other rpc node Ready.
 struct TypeFabric {
     p: Admin,
@@ -604,10 +604,10 @@ async fn type_fabric(with_b2: bool) -> TypeFabric {
 /// mesh-primary's view holds B2 Ready either way.
 async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
     let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryFabricStorage>::default());
-    let p = admin(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "000000000008", true, status.clone()).await;
-    let x = admin(&fabric_id, "mesh2", &rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "000000000001", true, status).await;
-    let b1 = member(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "000000000004").await;
-    let b2 = if with_b2 { Some(member(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "000000000006").await) } else { None };
+    let p = admin(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "000000000008", true, status.clone()).await;
+    let x = admin(&fabric_id, "mesh2", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "000000000001", true, status).await;
+    let b1 = member(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "000000000004").await;
+    let b2 = if with_b2 { Some(member(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.node", "2").unwrap(), "000000000006").await) } else { None };
     let mut pn = node_of(&p, NodeStatus::Ready, false);
     pn.is_primary = true;
     let xn = node_of(&x, NodeStatus::Ready, true);
@@ -622,14 +622,14 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
         primary_at(a, PrimaryRole::FabricPrimary, &primary_of(&x, 7)).await;
         primary_at(a, PrimaryRole::MeshPrimary, &primary_of(&p, 3)).await;
         primary_at(a, PrimaryRole::MeshPrimary, &primary_of(&x, 1)).await;
-        primary_at(a, PrimaryRole::NodeTypePrimary(RPC), &member_primary(&b1, 2)).await;
+        primary_at(a, PrimaryRole::NodePrimary(RPC.to_string()), &member_primary(&b1, 2)).await;
     }
     let members: Vec<&Member> = std::iter::once(&b1).chain(b2.iter()).collect();
     for m in &members {
         for r in &resolved {
             m.resolver.insert(r.clone());
         }
-        m.door.topology_view().primaries().take(PrimaryRole::NodeTypePrimary(RPC), &member_primary(&b1, 2));
+        m.door.topology_view().primaries().take(PrimaryRole::NodePrimary(RPC.to_string()), &member_primary(&b1, 2));
         for other in members.iter().filter(|o| o.resolved.node_id != m.resolved.node_id && (b1_hears_b2 || m.resolved.node_id != b1.resolved.node_id)) {
             assert!(m.door.topology_view().digest_view.record(digest_of(&other.resolved, &other.fabric)));
             // Its mesh-primary's projection holds it Ready.
@@ -672,7 +672,7 @@ fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_a
             assert_eq!(a.door.topology_view.primaries().fabric(), Some(primary_of(&f.n, 8)), "{:?}", a.resolved.name);
         }
         let pv = f.p.door.topology.read().await.clone();
-        assert_eq!(pv.node_type_primary("mesh1", rdm_admin::model::NodeKind::NodeAdmin).map(|n| n.node_id.clone()).as_ref(), Some(&f.n.resolved.node_id), "P's view names N mesh-primary");
+        assert_eq!(pv.node_type_primary("mesh1", "node-admin").map(|n| n.node_id.clone()).as_ref(), Some(&f.n.resolved.node_id), "P's view names N mesh-primary");
         assert_eq!(fabric_primary_of(&pv).as_ref(), Some(&f.n.resolved.node_id), "P's view names N fabric-primary");
         let mut d = digest_of(&f.n.resolved, &FabricId::mint());
         f.n.door.digest_view.recorded_primaries(&mut d);
@@ -689,7 +689,7 @@ fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_a
 /// CONTRACT (node-primary-update.md failure contract, "Discovery is not installation": "The resuming
 /// executor installs from the election locally and obtains the successor's `node.primary.updated` ...
 /// before it commands the departing primary's destructive step"): only a departing primary's update is
-/// acknowledged. M (`mesh1.admin.3`) was never mesh1's primary: X, resuming an attempt whose node.stop
+/// acknowledged. M (`mesh1.node-admin.3`) was never mesh1's primary: X, resuming an attempt whose node.stop
 /// acts on M, finds no update to acknowledge and makes no call. Once P's update to N happened (P
 /// replaced by N at 4 in X's view), the same read of the update named for P obtains N's
 /// node.primary.updated on a call. Must NOT happen: a node that was never primary read as a deleted
@@ -701,14 +701,14 @@ fn an_update_named_for_a_node_that_was_never_primary_is_no_update_and_calls_no_o
     let _file = SpanFile(spans.clone());
     cap.run(async {
         let f = primaries_fabric(FabricPrimary::X).await;
-        let m_name: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.admin", "3").unwrap();
+        let m_name: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node-admin", "3").unwrap();
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.m.resolved.node_id));
         assert_eq!(f.x.door.row_acknowledged("mesh1", &op, Some(&rdm_core::OperationSubject::Birth { node_id: f.m.resolved.node_id.clone(), incarnation: f.m.resolved.incarnation.clone() }), "b1", 2).await, Ok(false), "M was never primary: no update to acknowledge");
         let calls = |spans: &Spans| spans.named(CALL).into_iter().filter(|c| c["op"] == "33").count();
         assert_eq!(calls(&spans), 0, "no 0x21 call for a node that was never primary");
         // P's update to N happened: X holds N at 4, P replaced.
         primary_at(&f.x, PrimaryRole::MeshPrimary, &primary_of(&f.n, 4)).await;
-        let p_name: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let p_name: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let p_op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
         assert_eq!(f.x.door.row_acknowledged("mesh1", &p_op, Some(&rdm_core::OperationSubject::Birth { node_id: f.p.resolved.node_id.clone(), incarnation: f.p.resolved.incarnation.clone() }), "b1", 2).await, Ok(true), "P's update to N is acknowledged on N's node.primary.updated");
         assert_eq!(calls(&spans), 1, "one 0x21 call, to N");
@@ -718,7 +718,7 @@ fn an_update_named_for_a_node_that_was_never_primary_is_no_update_and_calls_no_o
 
 /// CONTRACT (node-primary-update.md Roles: "For the node-admin type the primary is the mesh-primary and
 /// the commander is the fabric-primary"; node-rpc-envelope.md: "the fabric-primary commands a
-/// mesh-primary's update with `UpdatePrimary { node_type, build_id, run, operation, successor }` on the
+/// mesh-primary's update with `UpdatePrimary { type, build_id, run, operation, successor }` on the
 /// primary, `successor` none: a node-admin computes the election itself ...
 /// The primary runs the sequence and answers `PrimaryUpdated { revisions }`"): X, the fabric-primary,
 /// commands P's update. P names N by the election over its own view, calls it, and answers X with N's
@@ -731,7 +731,7 @@ fn the_fabric_primary_commands_a_mesh_primarys_update_and_installs_the_successor
     let _file = SpanFile(spans.clone());
     cap.run(async {
         let f = primaries_fabric(FabricPrimary::X).await;
-        let p = node_at(&f.x, &rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
+        let p = node_at(&f.x, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
         let revisions = f.x.door.command_update_primary(&p, "b1", 1, &op).await.expect("the command answers node.primary.updated");
         assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)]);
@@ -790,8 +790,8 @@ fn a_primary_update_call_is_never_refused_for_the_birth_it_names() {
 /// at 7, and X of mesh2, mesh-primary at 1, at `x_status` in every view.
 async fn lone_fabric(x_status: NodeStatus) -> (Admin, Admin) {
     let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryFabricStorage>::default());
-    let p = admin(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "000000000009", true, status.clone()).await;
-    let x = admin(&fabric_id, "mesh2", &rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "000000000005", true, status).await;
+    let p = admin(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "000000000009", true, status.clone()).await;
+    let x = admin(&fabric_id, "mesh2", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "000000000005", true, status).await;
     let nodes = vec![node_of(&p, NodeStatus::Ready, true), node_of(&x, x_status, false)];
     for a in [&p, &x] {
         *a.door.topology.write().await = view(nodes.clone());
@@ -807,7 +807,7 @@ async fn lone_fabric(x_status: NodeStatus) -> (Admin, Admin) {
 
 /// CONTRACT (node-primary-update.md "No-successor cases": "`node.primary.update` commanded for a type
 /// with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary of type
-/// <node_type> in mesh <mesh>` ... The primary stays primary"; "The fabric-primary" search step 3:
+/// <type> in mesh <mesh>` ... The primary stays primary"; "The fabric-primary" search step 3:
 /// "neither found: refused by name, `cannot transfer fabric-primary: no other node-admin Ready in
 /// mesh <mesh>, no other mesh-primary Ready`"; node-rpc-envelope.md: the commanded arm ends
 /// `Failed { step, reason, code }`): P, the only node-admin of mesh1, cannot move its mesh-primary; with
@@ -916,8 +916,8 @@ fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_fo
     let _file = SpanFile(spans.clone());
     cap.run(async {
         let f = type_fabric(true).await;
-        let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
-        let op = update_operation(PrimaryRole::NodeTypePrimary(RPC), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
+        let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
+        let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
         let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await.expect("mesh1's rpc-node primary moves");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
         assert_eq!(f.p.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
@@ -939,13 +939,13 @@ fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_o
     let cap = trace_capture("fabric-handover");
     cap.run(async {
         let f = type_fabric_heard(true, false).await;
-        let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
-        let op = update_operation(PrimaryRole::NodeTypePrimary(RPC), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
+        let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
+        let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
         let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await.expect("the hand-over completes on the successor P named");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
         assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
-        let bare = f.b1.door.serve(Request::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b1".into(), run: 1, operation: update_operation(PrimaryRole::NodeTypePrimary(RPC), &rdm_core::OperationId::node("node.stop", &f.b2.as_ref().unwrap().resolved.node_id)), successor: None }).await;
-        assert!(matches!(&bare, Reply::Failed { reason, .. } if reason == r#"path "mesh1.rpc", name "1" is a rpc-node primary: its mesh-primary's command names no successor"#), "{bare:?}");
+        let bare = f.b1.door.serve(Request::UpdatePrimary { r#type: "rpc-node".into(), build_id: "b1".into(), run: 1, operation: update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b2.as_ref().unwrap().resolved.node_id)), successor: None }).await;
+        assert!(matches!(&bare, Reply::Failed { reason, .. } if reason == r#"path "mesh1.node", name "1" is a rpc-node primary: its mesh-primary's command names no successor"#), "{bare:?}");
         let _ = &f.x;
     });
 }
@@ -961,8 +961,8 @@ fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
     let _file = SpanFile(spans.clone());
     cap.run(async {
         let f = type_fabric(true).await;
-        let b1 = node_at(&f.x, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
-        let op = update_operation(PrimaryRole::NodeTypePrimary(RPC), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
+        let b1 = node_at(&f.x, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
+        let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
         let revisions = f.x.door.command_update_primary(&b1, "b1", 1, &op).await.expect("the command answers");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
         assert_eq!(f.x.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
@@ -972,15 +972,15 @@ fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
 }
 
 /// CONTRACT (node-primary-update.md "No-successor cases": "refused by name, `cannot transfer: no
-/// secondary of type <node_type> in mesh <mesh>`"; step 2: the writer's pre-check): mesh1 has one rpc node,
+/// secondary of type <type> in mesh <mesh>`"; step 2: the writer's pre-check): mesh1 has one rpc node,
 /// B1. P's command of its update fails by that text before B1 is commanded; B1 stays the rpc-node primary.
 #[test]
 fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() {
     let cap = trace_capture("fabric-handover");
     cap.run(async {
         let f = type_fabric(false).await;
-        let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
-        let op = update_operation(PrimaryRole::NodeTypePrimary(RPC), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
+        let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
+        let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
         let r = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await;
         assert!(matches!(&r, Err(Reply::Failed { reason, .. }) if reason == "cannot transfer: no secondary of type rpc-node in mesh mesh1"), "{r:?}");
         assert_eq!(f.p.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "B1 stays the rpc-node primary");
@@ -1030,7 +1030,7 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
         // call (`fabric_n_ready_on_probe`): P finishes writes, calls N (which fails `NotReady`),
         // runs node investigation on N (`verdict = reached`), retries `PrimaryUpdate`, and succeeds.
         f.p.writes_finish.send_replace(true);
-        let p_at_x = node_at(&f.x, &rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
+        let p_at_x = node_at(&f.x, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
         let revisions = f
             .x
             .door
@@ -1105,7 +1105,7 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
             }
         }
         let _ = f.m._router.shutdown().await;
-        let n_at_x = node_at(&f.x, &rdm_core::PathName::new("mesh1.admin", "2").unwrap()).await;
+        let n_at_x = node_at(&f.x, &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await;
         let op2 = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.n.resolved.node_id));
         let err = f
             .x
@@ -1180,8 +1180,8 @@ fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_
         );
 
         // 2. Fabric-primary search step 1 & commanded step: in `primaries_fabric(FabricPrimary::P)`,
-        // X (`mesh2.admin.1`, NodeId `000000000001`) has a lower NodeId than N (`mesh1.admin.2`,
-        // NodeId `000000000003`) and M (`mesh1.admin.3`, NodeId `000000000009`), but the
+        // X (`mesh2.node-admin.1`, NodeId `000000000001`) has a lower NodeId than N (`mesh1.node-admin.2`,
+        // NodeId `000000000003`) and M (`mesh1.node-admin.3`, NodeId `000000000009`), but the
         // fabric-primary stays in its own mesh (`mesh1`) by preference and chooses N, the lowest
         // Ready node-admin NodeId there.
         let f = primaries_fabric(FabricPrimary::P).await;

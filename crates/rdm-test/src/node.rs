@@ -167,7 +167,7 @@ pub const APP_PROTOCOL_PROXY_KNOB: &str = "app-protocol-proxy.knob";
 
 /// [`APP_PROTOCOL`] as the `Alpn` a node or a node-admin registers.
 pub fn app_protocol() -> rdm_transport::connections::Alpn {
-    rdm_transport::connections::Alpn { name: APP_PROTOCOL.to_vec(), proxy: false, carriers: vec![rdm_core::NodeKind::RpcNode] }
+    rdm_transport::connections::Alpn { name: APP_PROTOCOL.to_vec(), proxy: false, carriers: vec!["node".to_string()] }
 }
 
 /// [`app_protocol`], proxied through an rpc node carrier.

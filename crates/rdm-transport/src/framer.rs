@@ -101,7 +101,7 @@ mod tests {
             any::<u64>().prop_map(|org_id| InternalMeshFrame::Ping { org_id }),
             any::<u64>().prop_map(|org_id| InternalMeshFrame::Pong { org_id }),
             ("[a-zA-Z0-9_-]{0,32}", "[a-zA-Z0-9_-]{0,32}")
-                .prop_map(|(mesh_id, node_type)| InternalMeshFrame::Hello { mesh_id, node_type }),
+                .prop_map(|(mesh_id, r#type)| InternalMeshFrame::Hello { mesh_id, r#type }),
         ]
     }
 

@@ -18,9 +18,9 @@ use std::time::Duration;
 fn birth_at(ep: &iroh::Endpoint, name: &str) -> ResolvedNode {
     ResolvedNode {
         mesh: "mesh1".into(),
-        kind: rdm_core::NodeKind::RpcNode,
+        r#type: "node".into(),
         node_id: NodeId::mint(),
-        name: PathName::new("mesh1.rpc", name).unwrap(),
+        name: PathName::new("mesh1.node", name).unwrap(),
         endpoint_id: ep.secret_key().public(),
         transport_addr: ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(),
         incarnation: IncarnationId::mint(),
@@ -59,7 +59,7 @@ impl CallEndObserver for Told {
 async fn a_nodes_spent_call_is_reported_to_its_mesh_primary_and_a_spent_report_is_dropped() {
     // The mesh-primary of mesh1: serves Status, keeps every request, answers `Applied`.
     let primary_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let primary = ResolvedNode { kind: rdm_core::NodeKind::NodeAdmin, name: PathName::new("mesh1.admin", "1").unwrap(), ..birth_at(&primary_ep, "1") };
+    let primary = ResolvedNode { r#type: "node-admin".into(), name: PathName::new("mesh1.node-admin", "1").unwrap(), ..birth_at(&primary_ep, "1") };
     let (heard_tx, mut heard) = tokio::sync::mpsc::unbounded_channel::<StatusRequest>();
     let served = ServerBuilder::new()
         .serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
@@ -80,7 +80,7 @@ async fn a_nodes_spent_call_is_reported_to_its_mesh_primary_and_a_spent_report_i
     resolver.apply(primary.clone(), None);
     resolver.apply(receiver.clone(), None);
     resolver.set_primary(Some("mesh1".into()), Some(primary.node_id.clone()));
-    let me = (NodeId::mint(), IncarnationId::mint(), PathName::new("mesh1.rpc", "3").unwrap());
+    let me = (NodeId::mint(), IncarnationId::mint(), PathName::new("mesh1.node", "3").unwrap());
     let caller_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let slot = CallEndsSlot::default();
     let client = NodeRpcClient::new(caller_ep, resolver.clone()).with_call_ends(slot.clone());
@@ -108,7 +108,7 @@ async fn a_nodes_spent_call_is_reported_to_its_mesh_primary_and_a_spent_report_i
     assert!(matches!(tokio::time::timeout(bound, heard.recv()).await.expect("heard"), Some(StatusRequest::ReportCallFailed { .. })), "the report sent again by the cell");
 
     // The role now names a birth that answers nothing: the report's own attempts are spent.
-    let dead = ResolvedNode { kind: rdm_core::NodeKind::NodeAdmin, name: PathName::new("mesh1.admin", "2").unwrap(), endpoint_id: SecretKey::generate().public(), ..birth_at(&primary_ep, "1") };
+    let dead = ResolvedNode { r#type: "node-admin".into(), name: PathName::new("mesh1.node-admin", "2").unwrap(), endpoint_id: SecretKey::generate().public(), ..birth_at(&primary_ep, "1") };
     resolver.apply(dead.clone(), None);
     resolver.set_primary(Some("mesh1".into()), Some(dead.node_id.clone()));
     let before = told.calls.lock().unwrap().len();
@@ -138,7 +138,7 @@ async fn a_nodes_spent_call_is_reported_to_its_mesh_primary_and_a_spent_report_i
 async fn a_spent_call_to_a_mesh_primary_is_reported_to_the_fabric_primary_and_one_to_the_fabric_primary_to_nobody() {
     // The fabric-primary, of mesh0: serves Status, keeps every request, answers `Applied`.
     let fp_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let fabric_primary = ResolvedNode { mesh: "mesh0".into(), kind: rdm_core::NodeKind::NodeAdmin, name: PathName::new("mesh0.admin", "1").unwrap(), ..birth_at(&fp_ep, "9") };
+    let fabric_primary = ResolvedNode { mesh: "mesh0".into(), r#type: "node-admin".into(), name: PathName::new("mesh0.node-admin", "1").unwrap(), ..birth_at(&fp_ep, "9") };
     let (heard_tx, mut heard) = tokio::sync::mpsc::unbounded_channel::<StatusRequest>();
     let served = ServerBuilder::new()
         .serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
@@ -152,11 +152,11 @@ async fn a_spent_call_to_a_mesh_primary_is_reported_to_the_fabric_primary_and_on
         .unwrap();
     let _router = Router::builder(fp_ep.clone()).accept(rdm_transport::ALPN, served).spawn();
     // mesh1's mesh-primary: a birth whose key no process at its address holds.
-    let mesh_primary = ResolvedNode { kind: rdm_core::NodeKind::NodeAdmin, name: PathName::new("mesh1.admin", "1").unwrap(), endpoint_id: SecretKey::generate().public(), ..birth_at(&fp_ep, "1") };
+    let mesh_primary = ResolvedNode { r#type: "node-admin".into(), name: PathName::new("mesh1.node-admin", "1").unwrap(), endpoint_id: SecretKey::generate().public(), ..birth_at(&fp_ep, "1") };
     let resolver = Arc::new(LiveNodeResolver::default());
     resolver.apply(mesh_primary.clone(), None);
     resolver.set_primary(Some("mesh1".into()), Some(mesh_primary.node_id.clone()));
-    let me = (NodeId::mint(), IncarnationId::mint(), PathName::new("mesh1.rpc", "3").unwrap());
+    let me = (NodeId::mint(), IncarnationId::mint(), PathName::new("mesh1.node", "3").unwrap());
     let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(ep.clone(), resolver.clone());
     let report = ReportToPrimary::new(resolver.clone(), &client, me.0.clone(), me.1.clone(), me.2.clone());

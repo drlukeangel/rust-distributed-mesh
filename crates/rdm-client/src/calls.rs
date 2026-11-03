@@ -578,7 +578,7 @@ impl<'a> NodeRpc<'a> {
     pub async fn primary_update(&self, _fabric: &str, primary: &NodeId, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
-            node_type: rdm_core::NodeKind::NodeAdmin.node_type().to_string(),
+            r#type: "node-admin".to_string(),
             build_id: build_id.to_string(),
             run: attempt,
             operation: rdm_core::OperationId::node("node.primary.update", primary),
@@ -601,7 +601,7 @@ impl<'a> NodeRpc<'a> {
     pub async fn fabric_primary_update(&self, _fabric: &str, primary: &NodeId, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
-            node_type: rdm_core::handover::FABRIC.to_string(),
+            r#type: rdm_core::handover::FABRIC.to_string(),
             build_id: build_id.to_string(),
             run: attempt,
             operation: rdm_core::OperationId::node("node.fabric-primary.update", primary),

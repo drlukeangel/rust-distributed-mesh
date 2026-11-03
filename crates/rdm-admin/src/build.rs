@@ -5,9 +5,10 @@
 //! carries, and every attempt plans `topology − observed` from it, so an operation already
 //! satisfied is not replayed and a re-run of an operation is the same operation.
 
-use crate::model::{IncarnationId, NodeId, NodeKind, PathName};
+use crate::model::{IncarnationId, NodeId, PathName};
 use crate::topology::Topology;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// The Build identity (`docs/architecture/build.md` §1): a Crockford id like every other id
@@ -39,67 +40,38 @@ impl EntrySpec {
     }
 }
 
-/// The desired counts of one mesh's nodes by kind.
+/// The desired counts of one mesh's nodes by type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeshDesired {
     /// The mesh's name.
     pub name: String,
-    /// The number of node-admins.
-    pub node_admin: u32,
-    /// The number of rpc nodes.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub rpc_node: u32,
-    /// The number of brokers.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub broker: u32,
-    /// The number of gateways.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub gateway: u32,
-    /// The number of compute nodes.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub compute: u32,
-}
-
-fn is_zero(n: &u32) -> bool {
-    *n == 0
+    /// The number of nodes of each type, by the type's name; a type not named is at 0.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub counts: BTreeMap<String, u32>,
 }
 
 impl MeshDesired {
-    /// The desired count of every kind, `node_admin` first.
-    pub fn counts(&self) -> [(NodeKind, u32); 5] {
-        [
-            (NodeKind::NodeAdmin, self.node_admin),
-            (NodeKind::RpcNode, self.rpc_node),
-            (NodeKind::Broker, self.broker),
-            (NodeKind::Gateway, self.gateway),
-            (NodeKind::Compute, self.compute),
-        ]
+    /// The desired count of every type the mesh names, `node-admin` first.
+    pub fn counts(&self) -> Vec<(String, u32)> {
+        let mut all: Vec<(String, u32)> = self.counts.iter().map(|(t, n)| (t.clone(), *n)).collect();
+        all.sort_by_key(|(t, _)| !rdm_core::is_node_admin(t));
+        all
     }
 
-    /// The desired count of `kind`.
-    pub fn count(&self, kind: NodeKind) -> u32 {
-        self.counts().into_iter().find(|(k, _)| *k == kind).map(|(_, n)| n).unwrap_or(0)
+    /// The desired count of `type`.
+    pub fn count(&self, r#type: &str) -> u32 {
+        self.counts.get(r#type).copied().unwrap_or(0)
     }
 
-    /// A mesh named `name` with `counts`; every other kind at 0.
-    pub fn of(name: impl Into<String>, counts: impl IntoIterator<Item = (NodeKind, u32)>) -> Self {
-        let mut d = MeshDesired { name: name.into(), node_admin: 0, rpc_node: 0, broker: 0, gateway: 0, compute: 0 };
-        for (k, n) in counts {
-            *d.count_mut(k) = n;
-        }
-        d
+    /// A mesh named `name` with `counts`; every other type at 0.
+    pub fn of<T: Into<String>>(name: impl Into<String>, counts: impl IntoIterator<Item = (T, u32)>) -> Self {
+        Self { name: name.into(), counts: counts.into_iter().map(|(t, n)| (t.into(), n)).collect() }
     }
 
-    /// The desired count of `kind`, mutably.
-    pub fn count_mut(&mut self, kind: NodeKind) -> &mut u32 {
-        match kind {
-            NodeKind::NodeAdmin => &mut self.node_admin,
-            NodeKind::RpcNode => &mut self.rpc_node,
-            NodeKind::Broker => &mut self.broker,
-            NodeKind::Gateway => &mut self.gateway,
-            NodeKind::Compute => &mut self.compute,
-        }
+    /// The desired count of `type`, mutably.
+    pub fn count_mut(&mut self, r#type: &str) -> &mut u32 {
+        self.counts.entry(r#type.to_string()).or_insert(0)
     }
 }
 
@@ -135,7 +107,7 @@ pub enum BuildOperation {
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
-        kind: NodeKind,
+        r#type: String,
         /// Node recovery's create (node-recovery.md sequence step 4): the exited birth whose data
         /// dir the new node takes over whole, with the endpoint key it holds. `None`: a fresh data dir.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,7 +133,7 @@ pub enum BuildOperation {
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
-        kind: NodeKind,
+        r#type: String,
         /// The node id of the birth the gates pinned (build.md §4.4).
         node_id: NodeId,
         /// The birth whose connections are deleted.
@@ -175,7 +147,7 @@ pub enum BuildOperation {
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
-        kind: NodeKind,
+        r#type: String,
         /// The node id of the birth the gates pinned (build.md §4.4).
         node_id: NodeId,
         /// The birth stopped.
@@ -189,7 +161,7 @@ pub enum BuildOperation {
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
-        kind: NodeKind,
+        r#type: String,
         /// The node id of the birth the gates pinned (build.md §4.4).
         node_id: NodeId,
         /// The birth started.
@@ -204,7 +176,7 @@ pub enum BuildOperation {
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
-        kind: NodeKind,
+        r#type: String,
         /// The node id of the birth the gates pinned (build.md §4.4).
         node_id: NodeId,
         /// The birth deleted.
@@ -218,7 +190,7 @@ pub enum BuildOperation {
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
-        kind: NodeKind,
+        r#type: String,
         /// A crashed target (node-delete.md "Crashed target"; node-recovery.md sequence step 3): the
         /// exact exited birth, deleted on its mesh-primary's recorded exited verdict. Its stop steps are
         /// already done, and nothing is sent to it. `None`: the live or stopped `birth`.
@@ -245,7 +217,7 @@ pub enum BuildOperation {
         /// The explicitly declared mesh owning this step.
         mesh: String,
         /// The admitted kind of the subject.
-        kind: NodeKind,
+        r#type: String,
         /// The exact birth the step is targeted to, for a node the Build did not create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         birth: Option<PinnedBirth>,
@@ -276,7 +248,7 @@ pub enum BuildOperation {
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
-        kind: NodeKind,
+        r#type: String,
         /// The birth's node.id.
         node_id: rdm_core::NodeId,
         /// The birth.
@@ -295,7 +267,7 @@ pub enum BuildOperation {
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
-        kind: NodeKind,
+        r#type: String,
         /// The node's entry in the accepted Build, as the fabric-primary that dispatched the run holds
         /// it ([`EntrySpec`]): the config the row is written with.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -311,7 +283,7 @@ pub enum BuildOperation {
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
-        kind: NodeKind,
+        r#type: String,
         /// The labels the row gains.
         labels: std::collections::BTreeSet<String>,
     },
@@ -325,7 +297,7 @@ pub enum BuildOperation {
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
-        kind: NodeKind,
+        r#type: String,
         /// The labels the row loses.
         labels: std::collections::BTreeSet<String>,
     },
@@ -376,15 +348,15 @@ impl BuildOperation {
         }
     }
 
-    /// The explicitly admitted node kind for an operation on a node.
-    pub fn kind(&self) -> Option<NodeKind> {
+    /// The admitted type of the node an operation acts on.
+    pub fn r#type(&self) -> Option<String> {
         match self {
-            Self::CreateNode { kind, .. } | Self::DeleteConnections { kind, .. }
-            | Self::StopNode { kind, .. } | Self::StartNode { kind, .. }
-            | Self::DeleteNode { kind, .. } | Self::DeleteLiveNode { kind, .. }
-            | Self::TerminateNode { kind, .. } | Self::UpdateConfig { kind, .. }
-            | Self::CreateTags { kind, .. } | Self::DeleteTags { kind, .. }
-            | Self::Step { kind, .. } => Some(*kind),
+            Self::CreateNode { r#type, .. } | Self::DeleteConnections { r#type, .. }
+            | Self::StopNode { r#type, .. } | Self::StartNode { r#type, .. }
+            | Self::DeleteNode { r#type, .. } | Self::DeleteLiveNode { r#type, .. }
+            | Self::TerminateNode { r#type, .. } | Self::UpdateConfig { r#type, .. }
+            | Self::CreateTags { r#type, .. } | Self::DeleteTags { r#type, .. }
+            | Self::Step { r#type, .. } => Some(r#type.clone()),
             _ => None,
         }
     }
@@ -449,7 +421,7 @@ pub(crate) fn admitted_step_key(step: &rdm_core::build::Step, birth: Option<&Pin
 #[serde(deny_unknown_fields)]
 pub struct PinnedBirth {
     /// The immutable kind of the pinned birth.
-    pub kind: NodeKind,
+    pub r#type: String,
     /// The mesh owning this exact birth, independent of its path and name.
     pub mesh: String,
     /// The node.id.
@@ -461,7 +433,7 @@ pub struct PinnedBirth {
 impl PinnedBirth {
     /// The birth `n` is, when it holds an incarnation.
     pub fn of(n: &crate::model::Node) -> Option<Self> {
-        n.incarnation_id.clone().map(|incarnation| Self { kind: n.kind, mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation })
+        n.incarnation_id.clone().map(|incarnation| Self { r#type: n.r#type.clone(), mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation })
     }
 
     /// The executing mesh-primary's check before any effect of `operation` on `node` (build.md §4.4:
@@ -487,7 +459,7 @@ impl PinnedBirth {
             refusal
         };
         if let Some(n) = view.births().find(|n| n.node_id == self.node_id) {
-            return match n.kind == self.kind && n.mesh == self.mesh && n.incarnation_id.as_ref() == Some(&self.incarnation) {
+            return match n.r#type == self.r#type && n.mesh == self.mesh && n.incarnation_id.as_ref() == Some(&self.incarnation) {
                 true => Ok(Some(n.clone())),
                 false => Err(refused(n)),
             };
@@ -500,7 +472,7 @@ impl PinnedBirth {
 
     /// Whether `n` is this birth: its node id and its incarnation.
     pub fn is(&self, n: &crate::model::Node) -> bool {
-        n.kind == self.kind && n.mesh == self.mesh && n.node_id == self.node_id && n.incarnation_id.as_ref() == Some(&self.incarnation)
+        n.r#type == self.r#type && n.mesh == self.mesh && n.node_id == self.node_id && n.incarnation_id.as_ref() == Some(&self.incarnation)
     }
 }
 
@@ -557,8 +529,8 @@ pub fn delete_admits(stopped: bool, live: bool, heard_dead: bool, verdict: Optio
 /// birth, its runtime read from its row.
 pub fn step_delete(node: &PathName, birth: &PinnedBirth, held: Option<&crate::model::Node>) -> BuildOperation {
     match held.filter(|n| birth.is(n)) {
-        Some(n) if !n.stopped => BuildOperation::DeleteLiveNode { mesh: birth.mesh.clone(), kind: birth.kind, node: node.clone(), exited: None, birth: Some(birth.clone()) },
-        _ => BuildOperation::DeleteNode { mesh: birth.mesh.clone(), kind: birth.kind, node: node.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() },
+        Some(n) if !n.stopped => BuildOperation::DeleteLiveNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node: node.clone(), exited: None, birth: Some(birth.clone()) },
+        _ => BuildOperation::DeleteNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node: node.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() },
     }
 }
 
@@ -741,7 +713,7 @@ pub enum BuildReject {
         mesh: String,
         /// What the Build would do to it (`node.connection.delete`, `stop`, `delete`).
         action: String,
-        /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, or the
+        /// Q7's exact text: `cannot transfer: no secondary of type <type> in mesh <mesh>`, or the
         /// fabric-primary role's `cannot transfer fabric-primary: ...` naming both searches.
         refusal: String,
     },
@@ -759,7 +731,7 @@ pub enum BuildReject {
         /// What the Build would do to it (`node.connection.delete`, `stop`, `delete`,
         /// `delete`).
         action: String,
-        /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`.
+        /// Q7's exact text: `cannot transfer: no secondary of type <type> in mesh <mesh>`.
         refusal: String,
     },
     /// The stopped-node garbage collector's delete of a birth that is no longer the one stopped
@@ -976,10 +948,10 @@ mod tests {
     /// of its first node-admin and nothing else.
     #[test]
     fn only_a_create_operation_names_the_node_it_creates() {
-        let node: PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
-        assert_eq!(BuildOperation::CreateNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".into(), node: node.clone(), over: None, executable: None, entry: None }.created_node(), Some(&node));
-        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".to_owned(), step: Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: node.clone(), executable: None }, birth: None, entry: None }.created_node(), Some(&node));
-        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".to_owned(), step: Step::Stop { node: node.clone() }, birth: None, entry: None }.created_node(), None);
-        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".to_owned(), step: Step::Start { node: node.clone() }, birth: None, entry: None }.created_node(), None);
+        let node: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
+        assert_eq!(BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh2".into(), node: node.clone(), over: None, executable: None, entry: None }.created_node(), Some(&node));
+        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, r#type: "node-admin".into(), mesh: "mesh2".to_owned(), step: Step::Create { mesh: "mesh1".into(), r#type: "node".into(), node: node.clone(), executable: None }, birth: None, entry: None }.created_node(), Some(&node));
+        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, r#type: "node-admin".into(), mesh: "mesh2".to_owned(), step: Step::Stop { node: node.clone() }, birth: None, entry: None }.created_node(), None);
+        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, r#type: "node-admin".into(), mesh: "mesh2".to_owned(), step: Step::Start { node: node.clone() }, birth: None, entry: None }.created_node(), None);
     }
 }

@@ -18,12 +18,12 @@ use rdm_admin::build_run::{AttemptRuns, FramedBuilds, RunDoor};
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::executor::{BuildExecutor, OperationRunner};
 use rdm_transport::{NodeRpcClient, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::control_plane::ControlPlane;
 use rdm_admin::join::Joins;
-use rdm_admin::model::{Fabric, Mesh, Node, NodeKind, NodeStatus, PathName, ProviderKind, ScopeStatus};
+use rdm_admin::model::{Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rdm_admin::topology::Topology;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -179,27 +179,27 @@ impl TopologySink for Published {
     }
 }
 
-fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool) -> Node {
-    let mut n = Node::allocated(name, mesh, kind);
+fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, r#type);
     n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.incarnation_id = Some(IncarnationId::mint());
-    if n.kind == NodeKind::NodeAdmin {
+    if n.r#type == "node-admin" {
         n.admin_api_base = Some("http://127.0.0.1:18001".into());
         n.is_fabric_primary = primary;
     }
     n
 }
 
-/// One mesh: `mesh1.admin.1` (the fabric-primary), `mesh1.rpc.1` and `mesh1.rpc.2`, which holds mesh1's
-/// rpc role. The cells stop `mesh1.rpc.1`, which holds no role, so no node.primary.update precedes
+/// One mesh: `mesh1.node-admin.1` (the fabric-primary), `mesh1.node.1` and `mesh1.node.2`, which holds mesh1's
+/// rpc role. The cells stop `mesh1.node.1`, which holds no role, so no node.primary.update precedes
 /// the stop (proposal Part C1) and the drive's gate of this fixture, which moves no role, is never
 /// asked to; a recovery of an exited birth moves no role (`executor::role_move`).
 fn mn() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
-        nodes: vec![node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true), node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false), node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, true)],
+        nodes: vec![node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true), node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", false), node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", true)],
     }
 }
 
@@ -213,8 +213,8 @@ async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
 /// executor's departure from `departure`.
 async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<RunDoor>) -> Arc<dyn Dispatcher>, departure: Arc<dyn ExecutorInspection>) -> Arc<BuildDoor> {
     let t = mn();
-    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
-    let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     // The fabric-primary's node records, one store for its door and its writer (boot.rs): its door
     // accepts an action on a birth from its record, never from the gossip view (Q197).
     let records = crate::records_of(&t).await;
@@ -257,13 +257,13 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
 }
 
-/// The Build door of `mesh1.admin.2`, a node-admin of the fabric that does not hold the fabric-primary
-/// role (`mesh1.admin.1` holds it): its claim door carries its own birth's node id.
+/// The Build door of `mesh1.node-admin.2`, a node-admin of the fabric that does not hold the fabric-primary
+/// role (`mesh1.node-admin.1` holds it): its claim door carries its own birth's node id.
 async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
     let mut t = mn();
-    t.nodes.push(node(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false));
-    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
-    let me: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+    t.nodes.push(node(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false));
+    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
     let executor_birth = t.node(&me).unwrap().birth().unwrap();
     let control = Arc::new(crate::control_plane(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join: Duration::from_millis(300) });
@@ -303,8 +303,8 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
     // The executor's own log beside the fabric's shared Build storage, the fabric-primary's log (Q292).
     rig.local.persist_in(fp.clone());
     let t = mn();
-    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*fp, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
-    let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*fp, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     let executor_birth = t.node(&me).unwrap().birth().unwrap();
     let control = Arc::new(crate::control_plane(fp.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
@@ -391,19 +391,19 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     // answers is followed once and ends at the door again.
     let fabric_primary = door.control.topology.read().await.fabric_primary().map(|n| n.node_id.clone()).filter(|id| *id != node_id);
     if let Some(fp) = fabric_primary {
-        resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id: fp, name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: incarnation.clone() });
+        resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: fp, name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: incarnation.clone() });
     }
-    resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id, name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation });
+    resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id, name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation });
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = Arc::new(NodeRpcClient::new(caller, resolver).with_caller_system("rdm"));
-    Served { router, carrier: BuildCarrier::new(client, rdm_core::PathName::new("mesh1.admin", "1").unwrap()), door }
+    Served { router, carrier: BuildCarrier::new(client, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()), door }
 }
 
 /// `node.create` of mesh1's next rpc node, named on its executable (proposal
 /// executable-bindings-at-create.md rule 1: the complete-topology request, the count expanded at the
 /// door), over `nodes`, built from what `served`'s door reads.
 async fn create_rpc(nodes: &Nodes, served: &Served) -> Result<WorkflowStream, CallEnd> {
-    let rdm_admin::accepted::TopologyChange::Reconcile { based_on, nodes: entries, .. } = crate::named_request(&served.door.control, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await else {
+    let rdm_admin::accepted::TopologyChange::Reconcile { based_on, nodes: entries, .. } = crate::named_request(&served.door.control, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }).await else {
         unreachable!("a create is named as the complete topology")
     };
     nodes.create_named(based_on, entries).await
@@ -434,7 +434,7 @@ impl Rig {
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/node-objects".into(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -463,7 +463,7 @@ impl Rig {
             template: &self.template,
             timeouts: Timeouts { bind: join, join, ..Timeouts::default() },
         };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", name), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build.clone(), attempt, node: name.clone(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", name), mesh: "mesh1".into(), r#type: "node".into(), build_id: build.clone(), attempt, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
@@ -488,7 +488,7 @@ impl Rig {
                 let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
                 let digest = MeshDigest { held_hash: Default::default(),
                     fabric_id: FabricId::mint(),
-                    node: MeshNode { mesh: view.topology.node_spec(&name).unwrap().mesh.clone(), kind: view.topology.node_spec(&name).unwrap().kind, node_id, name: name.clone(), endpoint_id, transport_addr: "127.0.0.1:34567".parse().unwrap(), incarnation, supersedes: None, runtime: Some(runtime.clone()) },
+                    node: MeshNode { mesh: view.topology.node_spec(&name).unwrap().mesh.clone(), r#type: view.topology.node_spec(&name).unwrap().r#type.clone(), node_id, name: name.clone(), endpoint_id, transport_addr: "127.0.0.1:34567".parse().unwrap(), incarnation, supersedes: None, runtime: Some(runtime.clone()) },
                     status: MemberStatus::Pending,
                     node_state: Default::default(),
                     admin_api_base: None,
@@ -619,7 +619,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
     let cap = capture();
     let (blocked, after) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let why = "mesh1.rpc.3: pre_node_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready";
+        let why = "mesh1.node.3: pre_node_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready";
         *rig.topology_view.not_ready.lock().unwrap() = Some(why.to_string());
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
@@ -627,7 +627,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         let build = stream.accepted().build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
-            async move { rig.report_bind(&build, &PathName::new("mesh1.rpc", "3").unwrap()).await }
+            async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
         });
         let mut blocked = None;
         while blocked.is_none() {
@@ -647,9 +647,9 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
     assert_eq!(
         blocked,
         Frame::Blocked {
-            operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "3").unwrap()),
+            operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "3").unwrap()),
             step: "WaitForNodeReady".into(),
-            reason: "mesh1.rpc.3: pre_node_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready".into()
+            reason: "mesh1.node.3: pre_node_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready".into()
         }
     );
     assert_eq!(after, [Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete], "a repeated blocker makes no second frame, and the ready node ends the stream: {after:?}");
@@ -663,14 +663,14 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
     let cap = capture();
     let (frames, end) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        *rig.topology_view.pending.lock().unwrap() = Some("mesh1.rpc.3 reports Pending".to_string());
+        *rig.topology_view.pending.lock().unwrap() = Some("mesh1.node.3 reports Pending".to_string());
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
-            async move { rig.report_bind(&build, &PathName::new("mesh1.rpc", "3").unwrap()).await }
+            async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
         });
         tokio::time::sleep(Duration::from_millis(450)).await;
         *rig.topology_view.pending.lock().unwrap() = None;
@@ -729,7 +729,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         let disposition = resumed.disposition();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
-            async move { rig.report_bind(&build, &PathName::new("mesh1.rpc", "3").unwrap()).await }
+            async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
         });
         let (final_frames, resumed_end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(resumed_end.is_none(), "the resumed stream ends with its terminal frame: {resumed_end:?}");
@@ -745,7 +745,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     };
     assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "build.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
     assert_eq!(completed_steps(&receipts_after_cut, 1), ATTEMPT_ONE_STEPS);
-    assert_eq!(resume.from, Some((rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "3").unwrap()), "WaitForBind".to_string())), "the resume starts at the first step without a Complete receipt");
+    assert_eq!(resume.from, Some((rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), "WaitForBind".to_string())), "the resume starts at the first step without a Complete receipt");
     assert_eq!(resume.completed.len(), ATTEMPT_ONE_STEPS.len());
     assert_eq!(disposition, rdm_core::build::Disposition::Attached, "the re-submit attached to the Build the cut left running");
 
@@ -788,7 +788,7 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
         let accepted = stream.accepted().clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
-            async move { rig.report_bind(&build, &PathName::new("mesh1.rpc", "3").unwrap()).await }
+            async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
         });
         let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
@@ -826,7 +826,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         let accepted = stream.accepted().clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
-            async move { rig.report_bind(&build, &PathName::new("mesh1.rpc", "3").unwrap()).await }
+            async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
         });
         let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
@@ -939,7 +939,7 @@ fn a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothi
         let before = rig.builds.current_build().await.unwrap();
         assert_eq!(before, CurrentBuild::InProgress(b0.clone()), "the stop's attempt is in progress when the tick reads the current Build");
         rig.builds
-            .append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "mesh1.rpc.2: stop-node was not admitted".into(), code: rdm_core::outcome::Code::DeadlineExceeded } })
+            .append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "mesh1.node.2: stop-node was not admitted".into(), code: rdm_core::outcome::Code::DeadlineExceeded } })
             .await
             .unwrap();
         let read = rig.builds.read_build(&b0).await.unwrap();
@@ -978,7 +978,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         let rig = Arc::new(Rig::new());
         let door = door(&rig, Duration::from_secs(30)).await;
         let cp = door.control.clone();
-        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         let exited = cp.topology.read().await.node(&path).unwrap().clone();
         let (node_id, birth) = (exited.node_id.clone(), exited.incarnation_id.clone().unwrap());
         let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
@@ -999,7 +999,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         // The recovery's receipts as its two workflows write them, in the lane its door opened it in
         // (R-BI7: the member's mesh's lane): the delete's NodeDeleted names the exited birth, and
         // each operation's Complete commits no output; the create is the last.
-        let deleted = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), build_id: b0.to_string(), attempt: recovering.attempt, operation: rdm_core::OperationId::node("node.delete", &node_id), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let deleted = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".to_owned(), build_id: b0.to_string(), attempt: recovering.attempt, operation: rdm_core::OperationId::node("node.delete", &node_id), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         for (operation, step, output) in [("node.delete", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("node.delete", "Complete", None), ("node.create", "Complete", None)] {
             rig.builds
                 .append_step_receipt(&BuildStepReceipt { mesh: recovering.mesh.clone(), build_id: b0.clone(), attempt: recovering.attempt, operation: if operation == "node.create" { rdm_core::OperationId::location(operation, &path) } else { rdm_core::OperationId::node(operation, &node_id) }, step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor_birth.clone()) })
@@ -1049,7 +1049,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         let accepted = stream.accepted().clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
-            async move { rig.report_bind(&build, &PathName::new("mesh1.rpc", "3").unwrap()).await }
+            async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
         });
         let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
@@ -1090,7 +1090,7 @@ fn a_build_sends_started_at_its_first_claim_then_ended_and_a_successor_that_adop
         let accepted = stream.accepted().clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
-            async move { rig.report_bind(&build, &PathName::new("mesh1.rpc", "3").unwrap()).await }
+            async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
         });
         let (frames, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
@@ -1198,7 +1198,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
         // The rename reaches the node's mesh-primary only with a name within the grammar.
         let (mp, route) = (NodeId::mint(), rdm_transport::RouteChoice::Direct);
         for (bad, says) in [("Rpc", "name `Rpc` must contain"), (".old", "name `.old` must contain"), ("", "name `` must contain")] {
-            let refused = nodes.name_update(&birth, &mp, &route, &rdm_core::PathName { path: "mesh1.rpc".into(), name: bad.into() }).await.expect("a typed refusal");
+            let refused = nodes.name_update(&birth, &mp, &route, &rdm_core::PathName { path: "mesh1.node".into(), name: bad.into() }).await.expect("a typed refusal");
             assert!(matches!(&refused, rdm_core::status::StatusReply::RejectedName { reason } if reason.contains(says)), "{bad:?}: {refused:?}");
         }
         // Labels that are not a node's tag set, and a filter its entity's schema refuses (Q167), are refused here.
@@ -1243,9 +1243,9 @@ fn every_pipeline_step_is_named_by_the_client() {
     let rpc_id = NodeId::mint();
     let admin_id = NodeId::mint();
     let create: Vec<&str> = CreateStep::ORDER.iter().map(|s| s.name()).collect();
-    let f = rdm_client::fold(&WorkflowKind::Create, &view(&rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "3").unwrap()), create), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Create, &view(&rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), create), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
-    let name: rdm_core::PathName = rdm_core::PathName::new("mesh1.rpc", "3").unwrap();
+    let name: rdm_core::PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
     let delete: Vec<&str> = DeleteStep::ORDER.iter().map(|s| s.name()).collect();
     let f = rdm_client::fold(&WorkflowKind::Delete(name.clone()), &view(&rdm_core::OperationId::node("node.delete", &rpc_id), delete.clone()), 1).unwrap();
     assert_eq!(
@@ -1255,7 +1255,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     // A node-admin's workflow is any node's: its roles move by node.primary.update before the operation
     // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
     // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
-    let admin: rdm_core::PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+    let admin: rdm_core::PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
     let f = rdm_client::fold(&WorkflowKind::Delete(admin.clone()), &view(&rdm_core::OperationId::node("node.delete", &admin_id), delete.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
@@ -1280,10 +1280,10 @@ fn every_pipeline_step_is_named_by_the_client() {
     ] {
         assert_eq!(rdm_client::fold(&kind, &view(&op, steps), 1).unwrap_err(), CallEnd::UnrecognisedReceipt { operation: op.clone(), step: "SeatTransfer".into() }, "{kind:?}");
     }
-    let unknown = view(&rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "3").unwrap()), vec!["AllocateIdentity", "InventedStep"]);
+    let unknown = view(&rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), vec!["AllocateIdentity", "InventedStep"]);
     assert_eq!(
         rdm_client::fold(&WorkflowKind::Create, &unknown, 1).unwrap_err(),
-        CallEnd::UnrecognisedReceipt { operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "3").unwrap()), step: "InventedStep".into() }
+        CallEnd::UnrecognisedReceipt { operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "3").unwrap()), step: "InventedStep".into() }
     );
 }
 
@@ -1298,7 +1298,7 @@ fn deletion_progress_does_not_infer_lifecycle_state_from_path_or_name() {
             "last_failure": null, "reason": "delete"
         })).unwrap()
     };
-    for location in [PathName::new("mesh1.rpc", "3-old").unwrap(), PathName::new("mesh1.rpc.old", "3").unwrap(), PathName::new("mesh1.rpc", "3").unwrap()] {
+    for location in [PathName::new("mesh1.node", "3-old").unwrap(), PathName::new("mesh1.node.old", "3").unwrap(), PathName::new("mesh1.node", "3").unwrap()] {
         let kind = WorkflowKind::Delete(location);
         let pending = rdm_client::Resume::from_view(&kind, &view(vec!["NodeDeleting"]), 1).unwrap();
         assert_eq!(pending.from, Some((operation.clone(), "StopNode".into())), "a spelling is not proof of a stopped birth");
@@ -1317,7 +1317,7 @@ impl InnerStream for Script {
     }
 }
 
-/// The executor of a stop of `mesh1.rpc.1`, attempt by attempt. The first run is lost once its
+/// The executor of a stop of `mesh1.node.1`, attempt by attempt. The first run is lost once its
 /// `StopNode` frame has reached the fabric-primary: the receipt lived in the lost executor's own
 /// log alone (its broadcast never left), so no Build log the successor reads holds it, and the
 /// executor's exact runtime is proven exited. The next run holds no `StopNode` receipt: it
@@ -1377,7 +1377,7 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
         let script = Arc::new(LostAfterStopNode { runs: Mutex::new(0), exits: exits.clone() });
         let door = door_via(&rig, Duration::from_secs(60), move |_| script, exits).await;
         let served = serve(door).await;
-        let mut stream = nodes_over(&served.carrier).stop(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await.expect("the fabric-primary accepts the stop");
+        let mut stream = nodes_over(&served.carrier).stop(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await.expect("the fabric-primary accepts the stop");
         let (frames, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "the stream ends with its terminal frame: {end:?} after {frames:?}");
         frames
@@ -1409,7 +1409,7 @@ fn a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_
     let end = cap.run(async {
         let rig = Arc::new(Rig::new());
         let served = serve(door_not_fabric_primary(&rig).await).await;
-        served.carrier.create(rdm_core::build::BuildChange::Stop { node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap() }).await.err()
+        served.carrier.create(rdm_core::build::BuildChange::Stop { node: rdm_core::PathName::new("mesh1.node", "1").unwrap() }).await.err()
     });
     match &end {
         Some(CallEnd::Rejected { reason, detail }) => {
@@ -1423,7 +1423,7 @@ fn a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_
     // Once at the first call and once at the redirect it named, the same door.
     assert_eq!(refused.len(), 2, "the refusal has its own reject span: {spans:?}");
     let a = &refused[0]["attributes"];
-    assert_eq!((a["route"].as_str(), a["node_path"].as_str(), a["node_name"].as_str(), a["fabric_primary"].as_str().is_some_and(|f| !f.is_empty())), (Some("build.create"), Some("mesh1.admin"), Some("2"), true), "the reject span names the call, the refusing admin and the fabric-primary it named: {}", refused[0]);
+    assert_eq!((a["route"].as_str(), a["node_path"].as_str(), a["node_name"].as_str(), a["fabric_primary"].as_str().is_some_and(|f| !f.is_empty())), (Some("build.create"), Some("mesh1.node-admin"), Some("2"), true), "the reject span names the call, the refusing admin and the fabric-primary it named: {}", refused[0]);
     for door in ["rdm.node_admin.build.create.via-node-rpc", "rdm.node_admin.build.update.via-node-rpc"] {
         assert!(spans_named(&spans, door).is_empty(), "nothing was admitted: no {door} span: {spans:?}");
     }

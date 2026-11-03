@@ -966,7 +966,7 @@ pub(crate) async fn put_silence_status(store: &dyn crate::storage::NodesStorage,
             .in_scope(|| tracing::info!("the node's silence status names no birth: nothing is written"));
         return Err(why);
     };
-    let base = crate::storage::NodeRow::new(node.name.clone(), node.mesh.clone(), node.kind, node.node_id.clone(), node.status);
+    let base = crate::storage::NodeRow::new(node.name.clone(), node.mesh.clone(), &node.r#type, node.node_id.clone(), node.status);
     let marked = written.update(store, &node.node_id, Some(base), |r| r.birth_mut(&incarnation_id, &node.name).silence = status).await;
     if let Err(e) = marked {
         tracing::info_span!("rdm.node_admin.node.reject.via-nodes-storage", node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, incarnation_id = %incarnation_id.as_str(), status = word, store = "nodes.storage", error = %e)
@@ -1022,7 +1022,7 @@ pub(crate) mod tests {
     const PROBE_DELAY: u64 = FLOOR / 2;
 
     fn silent(id: &str) -> Vec<SilentNode> {
-        vec![SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.rpc", id).unwrap(), incarnation: None, marked_at_ms: None }]
+        vec![SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.node", id).unwrap(), incarnation: None, marked_at_ms: None }]
     }
 
     /// How a cell says the via-peer rung of a ladder ended, when the direct probe did not answer.
@@ -1203,7 +1203,7 @@ pub(crate) mod tests {
         const INTERVAL: Duration = Duration::from_millis(500);
 
         fn marked(id: &str) -> SilentNode {
-            SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.rpc", id).unwrap(), incarnation: Some(crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60(&format!("inc-of-{id}"))).unwrap()), marked_at_ms: Some(0) }
+            SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.node", id).unwrap(), incarnation: Some(crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60(&format!("inc-of-{id}"))).unwrap()), marked_at_ms: Some(0) }
         }
 
         /// CONTRACT (node-recovery.md step 2, per member, and the one loop on every gossip interval):
@@ -1265,7 +1265,7 @@ pub(crate) mod tests {
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
             let gate = crate::stop_gate::StopGate::new();
             let ended = Arc::new(AtomicUsize::new(0));
-            let mut t = OfflineTickle::observed_by("mesh1.admin.1".into(), gate.clone());
+            let mut t = OfflineTickle::observed_by("mesh1.node-admin.1".into(), gate.clone());
             let tick = async |t: &mut OfflineTickle, now: u64| {
                 t.tick(
                     now,
@@ -1399,22 +1399,22 @@ pub(crate) mod tests {
             StatusReply::CurrentStopped { node_id: b.0.clone(), incarnation: b.1.clone() }
         }
 
-        /// The silent member `mesh1.rpc.1` at birth `b`, and its mesh: two ready members, this
+        /// The silent member `mesh1.node.1` at birth `b`, and its mesh: two ready members, this
         /// admin (never a carrier) and the member itself.
         fn member_and_view(b: &(NodeId, IncarnationId)) -> (Node, crate::topology::Topology) {
             use crate::model::{Fabric, FabricId, NodeStatus, ProviderKind, ScopeStatus};
-            let ready = |name: crate::model::PathName, mesh: &str, kind: rdm_core::NodeKind| {
-                let mut n = Node::allocated(name, mesh, kind);
+            let ready = |name: crate::model::PathName, mesh: &str, r#type: &str| {
+                let mut n = Node::allocated(name, mesh, r#type);
                 n.node_id = NodeId::mint();
                 n.incarnation_id = Some(IncarnationId::mint());
                 n.status = NodeStatus::Ready;
                 n
             };
-            let mut node = ready(crate::model::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+            let mut node = ready(crate::model::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
             node.node_id = b.0.clone();
             node.incarnation_id = Some(b.1.clone());
             node.status = NodeStatus::PendingReconnect;
-            let mut view = crate::topology::Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![ready(crate::model::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), node.clone(), ready(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), ready(crate::model::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), ready(crate::model::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode)] };
+            let mut view = crate::topology::Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![ready(crate::model::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), node.clone(), ready(crate::model::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), ready(crate::model::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"), ready(crate::model::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node")] };
             view.nodes[0].node_id = crate::model::NodeId::parse("100000000001").unwrap();
             (node, view)
         }
@@ -1514,24 +1514,24 @@ pub(crate) mod tests {
             let (node, view) = member_and_view(&b);
             let capture = crate::span_capture::Capture::new("node-tickle-leads");
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            let rig = Rig::new(probe(Duration::ZERO, None), vec![]).leading(&[crate::model::PathName::new("mesh2.rpc", "1").unwrap()]);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![]).leading(&[crate::model::PathName::new("mesh2.node", "1").unwrap()]);
             let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("no answer: unreached") };
-            assert_eq!(u.carriers(), [view.node(&crate::model::PathName::new("mesh2.rpc", "1").unwrap()).unwrap().node_id.as_str(), view.node(&crate::model::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().node_id.as_str()].join(","), "the lead of another mesh first, then the first eligible peer of the node's mesh");
+            assert_eq!(u.carriers(), [view.node(&crate::model::PathName::new("mesh2.node", "1").unwrap()).unwrap().node_id.as_str(), view.node(&crate::model::PathName::new("mesh1.node", "2").unwrap()).unwrap().node_id.as_str()].join(","), "the lead of another mesh first, then the first eligible peer of the node's mesh");
             drop(u);
             let leads_of = |name: &str| capture.named(name).iter().map(|s| s.attributes.get("leads").cloned().unwrap_or_default()).collect::<Vec<_>>();
-            assert_eq!(leads_of("rdm.node.tickle.resolve.via-direct"), [view.node(&crate::model::PathName::new("mesh2.rpc", "1").unwrap()).unwrap().node_id.to_string()]);
-            assert_eq!(leads_of("rdm.node.tickle.returns-unknown.via-unreached"), [view.node(&crate::model::PathName::new("mesh2.rpc", "1").unwrap()).unwrap().node_id.to_string()]);
+            assert_eq!(leads_of("rdm.node.tickle.resolve.via-direct"), [view.node(&crate::model::PathName::new("mesh2.node", "1").unwrap()).unwrap().node_id.to_string()]);
+            assert_eq!(leads_of("rdm.node.tickle.returns-unknown.via-unreached"), [view.node(&crate::model::PathName::new("mesh2.node", "1").unwrap()).unwrap().node_id.to_string()]);
             let mut peers: Vec<(String, String)> = capture.named("rdm.node.tickle.resolve.via-peer").iter().map(|s| (s.attributes.get("carrier").cloned().unwrap_or_default(), s.attributes.get("lead").cloned().unwrap_or_default())).collect();
             peers.sort();
-            let mut expected_peers = [(view.node(&crate::model::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().node_id.to_string(), "false".to_string()), (view.node(&crate::model::PathName::new("mesh2.rpc", "1").unwrap()).unwrap().node_id.to_string(), "true".to_string())];
+            let mut expected_peers = [(view.node(&crate::model::PathName::new("mesh1.node", "2").unwrap()).unwrap().node_id.to_string(), "false".to_string()), (view.node(&crate::model::PathName::new("mesh2.node", "1").unwrap()).unwrap().node_id.to_string(), "true".to_string())];
             expected_peers.sort();
             assert_eq!(peers, expected_peers, "each carrier says whether it was a lead");
-            let rig = Rig::new(probe(Duration::ZERO, None), vec![]).leading(&[crate::model::PathName::new("mesh1.rpc", "3").unwrap()]);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![]).leading(&[crate::model::PathName::new("mesh1.node", "3").unwrap()]);
             let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("no answer: unreached") };
-            assert_eq!(u.carriers(), [view.node(&crate::model::PathName::new("mesh1.rpc", "3").unwrap()).unwrap().node_id.as_str(), view.node(&crate::model::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().node_id.as_str()].join(","), "a lead that is an eligible peer is asked once, first");
-            let rig = Rig::new(probe(Duration::ZERO, None), vec![]).leading(&[crate::model::PathName::new("mesh2.rpc", "1").unwrap(), crate::model::PathName::new("mesh1.rpc", "3").unwrap()]);
+            assert_eq!(u.carriers(), [view.node(&crate::model::PathName::new("mesh1.node", "3").unwrap()).unwrap().node_id.as_str(), view.node(&crate::model::PathName::new("mesh1.node", "2").unwrap()).unwrap().node_id.as_str()].join(","), "a lead that is an eligible peer is asked once, first");
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![]).leading(&[crate::model::PathName::new("mesh2.node", "1").unwrap(), crate::model::PathName::new("mesh1.node", "3").unwrap()]);
             let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("no answer: unreached") };
-            assert_eq!(u.carriers(), [view.node(&crate::model::PathName::new("mesh2.rpc", "1").unwrap()).unwrap().node_id.as_str(), view.node(&crate::model::PathName::new("mesh1.rpc", "3").unwrap()).unwrap().node_id.as_str()].join(","), "two leads take the whole fan-out");
+            assert_eq!(u.carriers(), [view.node(&crate::model::PathName::new("mesh2.node", "1").unwrap()).unwrap().node_id.as_str(), view.node(&crate::model::PathName::new("mesh1.node", "3").unwrap()).unwrap().node_id.as_str()].join(","), "two leads take the whole fan-out");
         }
 
         /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:29
@@ -1548,7 +1548,7 @@ pub(crate) mod tests {
         async fn the_direct_answer_ends_the_ladder_before_any_peer_is_asked() {
             let b = birth();
             let (node, view) = member_and_view(&b);
-            let rig = Rig::new(probe(Duration::from_millis(5), Some(current(&b))), vec![(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), probe(BUDGET, Some(current(&b))))]);
+            let rig = Rig::new(probe(Duration::from_millis(5), Some(current(&b))), vec![(crate::model::PathName::new("mesh1.node", "2").unwrap(), probe(BUDGET, Some(current(&b))))]);
             match tickle(&node, &view, &rig).await.unwrap() {
                 Tickle::Reached { answer, carrier: None } => assert_eq!(answer, current(&b)),
                 other => panic!("the direct answer is reached, with no carrier: {other:?}"),
@@ -1564,11 +1564,11 @@ pub(crate) mod tests {
         async fn the_tickle_spends_one_budget_on_both_peer_probes() {
             let b = birth();
             let (node, view) = member_and_view(&b);
-            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), probe(BUDGET, None)), (crate::model::PathName::new("mesh1.rpc", "3").unwrap(), probe(BUDGET, None))]);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.node", "2").unwrap(), probe(BUDGET, None)), (crate::model::PathName::new("mesh1.node", "3").unwrap(), probe(BUDGET, None))]);
             let start = Instant::now();
             let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("no answer: unreached") };
             assert_eq!(start.elapsed(), tickle_ladder(BUDGET) - BUDGET, "the two peer probes overlap: one budget, not two");
-            assert_eq!(u.carriers(), [view.node(&crate::model::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().node_id.as_str(), view.node(&crate::model::PathName::new("mesh1.rpc", "3").unwrap()).unwrap().node_id.as_str()].join(","), "both carriers of the birth's mesh, this admin never one: {u:?}");
+            assert_eq!(u.carriers(), [view.node(&crate::model::PathName::new("mesh1.node", "2").unwrap()).unwrap().node_id.as_str(), view.node(&crate::model::PathName::new("mesh1.node", "3").unwrap()).unwrap().node_id.as_str()].join(","), "both carriers of the birth's mesh, this admin never one: {u:?}");
             assert_eq!(rig.ended.load(Ordering::SeqCst), 3, "no answer: the direct and both carried probes ran to their end");
         }
 
@@ -1579,10 +1579,10 @@ pub(crate) mod tests {
         async fn the_tickle_takes_the_second_peers_answer_after_the_first_fails() {
             let b = birth();
             let (node, view) = member_and_view(&b);
-            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), probe(Duration::from_secs(1), None)), (crate::model::PathName::new("mesh1.rpc", "3").unwrap(), probe(Duration::from_secs(3), Some(current(&b))))]);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.node", "2").unwrap(), probe(Duration::from_secs(1), None)), (crate::model::PathName::new("mesh1.node", "3").unwrap(), probe(Duration::from_secs(3), Some(current(&b))))]);
             let start = Instant::now();
             match tickle(&node, &view, &rig).await.unwrap() {
-                Tickle::Reached { carrier: Some(c), .. } => assert_eq!(c, view.node(&crate::model::PathName::new("mesh1.rpc", "3").unwrap()).unwrap().node_id),
+                Tickle::Reached { carrier: Some(c), .. } => assert_eq!(c, view.node(&crate::model::PathName::new("mesh1.node", "3").unwrap()).unwrap().node_id),
                 other => panic!("the second peer's answer is reached through it: {other:?}"),
             }
             assert_eq!(start.elapsed(), Duration::from_secs(3), "the second peer's answer, not the first's failure, ends the ladder");
@@ -1594,9 +1594,9 @@ pub(crate) mod tests {
         async fn the_tickle_drops_the_peer_probe_still_running_at_an_answer() {
             let b = birth();
             let (node, view) = member_and_view(&b);
-            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), probe(BUDGET, None)), (crate::model::PathName::new("mesh1.rpc", "3").unwrap(), probe(Duration::from_secs(1), Some(current(&b))))]);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.node", "2").unwrap(), probe(BUDGET, None)), (crate::model::PathName::new("mesh1.node", "3").unwrap(), probe(Duration::from_secs(1), Some(current(&b))))]);
             let start = Instant::now();
-            assert!(matches!(tickle(&node, &view, &rig).await.unwrap(), Tickle::Reached { carrier: Some(c), .. } if c == view.node(&crate::model::PathName::new("mesh1.rpc", "3").unwrap()).unwrap().node_id));
+            assert!(matches!(tickle(&node, &view, &rig).await.unwrap(), Tickle::Reached { carrier: Some(c), .. } if c == view.node(&crate::model::PathName::new("mesh1.node", "3").unwrap()).unwrap().node_id));
             assert_eq!(start.elapsed(), Duration::from_secs(1));
             sleep(BUDGET * 2).await;
             assert_eq!(rig.ended.load(Ordering::SeqCst), 2, "the probe still running was cancelled with the ladder");
@@ -1609,9 +1609,9 @@ pub(crate) mod tests {
         async fn a_stopped_primary_answering_current_through_a_peer_ends_the_ladder() {
             let b = birth();
             let (node, view) = member_and_view(&b);
-            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), probe(Duration::from_millis(5), Some(StatusReply::NotReady { reason: "carrier not ready".into() }))), (crate::model::PathName::new("mesh1.rpc", "3").unwrap(), probe(Duration::from_millis(20), Some(stopped(&b))))]);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.node", "2").unwrap(), probe(Duration::from_millis(5), Some(StatusReply::NotReady { reason: "carrier not ready".into() }))), (crate::model::PathName::new("mesh1.node", "3").unwrap(), probe(Duration::from_millis(20), Some(stopped(&b))))]);
             match tickle(&node, &view, &rig).await.unwrap() {
-                Tickle::Reached { answer, carrier: Some(c) } => assert_eq!((answer, c.as_str()), (stopped(&b), view.node(&crate::model::PathName::new("mesh1.rpc", "3").unwrap()).unwrap().node_id.as_str())),
+                Tickle::Reached { answer, carrier: Some(c) } => assert_eq!((answer, c.as_str()), (stopped(&b), view.node(&crate::model::PathName::new("mesh1.node", "3").unwrap()).unwrap().node_id.as_str())),
                 other => panic!("CurrentStopped through a peer is reached: {other:?}"),
             }
         }
@@ -1677,35 +1677,35 @@ pub(crate) mod tests {
             let capture = crate::span_capture::Capture::new("node-tickle-spans");
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             // Nobody reaches the birth: the caller says the inspection follows (node-tickle.md "What follows").
-            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), probe(Duration::from_secs(1), None)), (crate::model::PathName::new("mesh1.rpc", "3").unwrap(), probe(Duration::from_secs(1), Some(StatusReply::NotReady { reason: "carrier not ready".into() })))]);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.node", "2").unwrap(), probe(Duration::from_secs(1), None)), (crate::model::PathName::new("mesh1.node", "3").unwrap(), probe(Duration::from_secs(1), Some(StatusReply::NotReady { reason: "carrier not ready".into() })))]);
             let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("unreached") };
             u.next("verdict");
             drop(u);
             let direct = capture.named("rdm.node.tickle.resolve.via-direct");
             assert_eq!(direct.len(), 1, "one direct probe span: {direct:?}");
             let a = &direct[0].attributes;
-            assert_eq!((a.get("node_path").map(String::as_str), a.get("node_name").map(String::as_str), a.get("node_id").map(String::as_str), a.get("incarnation").map(String::as_str), a.get("caller").map(String::as_str)), (Some("mesh1.rpc"), Some("1"), Some(b.0.as_str()), Some(b.1.as_str()), Some("100000000001")), "{a:?}");
+            assert_eq!((a.get("node_path").map(String::as_str), a.get("node_name").map(String::as_str), a.get("node_id").map(String::as_str), a.get("incarnation").map(String::as_str), a.get("caller").map(String::as_str)), (Some("mesh1.node"), Some("1"), Some(b.0.as_str()), Some(b.1.as_str()), Some("100000000001")), "{a:?}");
             assert_eq!(a.get("failure").map(String::as_str), Some("NotSent: not sent: Deadline"), "{a:?}");
             assert_eq!(a.get("deadline_ms").map(String::as_str), Some("10000"), "{a:?}");
             let mut peers = capture.named("rdm.node.tickle.resolve.via-peer");
-            peers.sort_by_key(|x| x.attributes.get("carrier").map(String::as_str) == Some(view.node(&crate::model::PathName::new("mesh1.rpc", "3").unwrap()).unwrap().node_id.as_str()));
-            assert_eq!(peers.iter().map(|p| p.attributes.get("carrier").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec![view.node(&crate::model::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().node_id.to_string(), view.node(&crate::model::PathName::new("mesh1.rpc", "3").unwrap()).unwrap().node_id.to_string()], "one span per carrier: {peers:?}");
+            peers.sort_by_key(|x| x.attributes.get("carrier").map(String::as_str) == Some(view.node(&crate::model::PathName::new("mesh1.node", "3").unwrap()).unwrap().node_id.as_str()));
+            assert_eq!(peers.iter().map(|p| p.attributes.get("carrier").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec![view.node(&crate::model::PathName::new("mesh1.node", "2").unwrap()).unwrap().node_id.to_string(), view.node(&crate::model::PathName::new("mesh1.node", "3").unwrap()).unwrap().node_id.to_string()], "one span per carrier: {peers:?}");
             assert_eq!(peers[0].attributes.get("failure").map(String::as_str), Some("NotSent: not sent: Deadline"), "{:?}", peers[0].attributes);
             assert_eq!(peers[1].attributes.get("answer").map(String::as_str), Some("not-ready"), "a reply that is not the birth's is named as it came: {:?}", peers[1].attributes);
             let unreached = capture.named("rdm.node.tickle.returns-unknown.via-unreached");
             assert_eq!(unreached.len(), 1, "one unreached span: {unreached:?}");
             let a = &unreached[0].attributes;
-            assert_eq!((a.get("node_id").map(String::as_str), a.get("carriers").map(String::as_str), a.get("next").map(String::as_str)), (Some(b.0.as_str()), Some([view.node(&crate::model::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().node_id.as_str(), view.node(&crate::model::PathName::new("mesh1.rpc", "3").unwrap()).unwrap().node_id.as_str()].join(",").as_str()), Some("verdict")), "{a:?}");
+            assert_eq!((a.get("node_id").map(String::as_str), a.get("carriers").map(String::as_str), a.get("next").map(String::as_str)), (Some(b.0.as_str()), Some([view.node(&crate::model::PathName::new("mesh1.node", "2").unwrap()).unwrap().node_id.as_str(), view.node(&crate::model::PathName::new("mesh1.node", "3").unwrap()).unwrap().node_id.as_str()].join(",").as_str()), Some("verdict")), "{a:?}");
             for sp in direct.iter().chain(&peers).chain(&unreached) {
                 eprintln!("span {} trace_id={} {:?}", sp.name, sp.trace_id, sp.attributes);
             }
             // A peer's answer: its span carries the answer, and no unreached span follows.
-            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), probe(Duration::from_secs(1), None)), (crate::model::PathName::new("mesh1.rpc", "3").unwrap(), probe(Duration::from_millis(10), Some(current(&b))))]);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![(crate::model::PathName::new("mesh1.node", "2").unwrap(), probe(Duration::from_secs(1), None)), (crate::model::PathName::new("mesh1.node", "3").unwrap(), probe(Duration::from_millis(10), Some(current(&b))))]);
             assert!(matches!(tickle(&node, &view, &rig).await.unwrap(), Tickle::Reached { carrier: Some(_), .. }));
             assert_eq!(capture.named("rdm.node.tickle.resolve.via-direct").len(), 2);
             let answered: Vec<_> = capture.named("rdm.node.tickle.resolve.via-peer").into_iter().filter(|p| p.attributes.get("answer").map(String::as_str) == Some("current")).collect();
             assert_eq!(answered.len(), 1, "the carrier's span carries the birth's answer: {answered:?}");
-            assert_eq!(answered[0].attributes.get("carrier").map(String::as_str), Some(view.node(&crate::model::PathName::new("mesh1.rpc", "3").unwrap()).unwrap().node_id.as_str()));
+            assert_eq!(answered[0].attributes.get("carrier").map(String::as_str), Some(view.node(&crate::model::PathName::new("mesh1.node", "3").unwrap()).unwrap().node_id.as_str()));
             assert_eq!(capture.named("rdm.node.tickle.returns-unknown.via-unreached").len(), 1, "an answered ladder has no unreached span");
         }
 
@@ -1726,11 +1726,11 @@ pub(crate) mod tests {
         async fn the_provider_is_owed_only_after_both_peer_probes_of_the_ladder_ended() {
             let b = birth();
             let (node, view) = member_and_view(&b);
-            let rig = Arc::new(Rig::new(probe(BUDGET, None), vec![(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), probe(BUDGET, None)), (crate::model::PathName::new("mesh1.rpc", "3").unwrap(), probe(BUDGET, None))]));
+            let rig = Arc::new(Rig::new(probe(BUDGET, None), vec![(crate::model::PathName::new("mesh1.node", "2").unwrap(), probe(BUDGET, None)), (crate::model::PathName::new("mesh1.node", "3").unwrap(), probe(BUDGET, None))]));
             let (node, view) = (Arc::new(node), Arc::new(view));
             let mut t = OfflineTickle::new();
             let id = b.0.to_string();
-            let set = || vec![SilentNode { node_id: b.0.to_string(), path: crate::model::PathName::new("mesh1.rpc", "1").unwrap(), incarnation: Some(b.1.clone()), marked_at_ms: None }];
+            let set = || vec![SilentNode { node_id: b.0.to_string(), path: crate::model::PathName::new("mesh1.node", "1").unwrap(), incarnation: Some(b.1.clone()), marked_at_ms: None }];
             // The instant each ladder's ladder ended.
             let verdict_at: Arc<Mutex<Vec<Instant>>> = Arc::default();
             let ladder = async |t: &mut OfflineTickle, now: u64| {
@@ -1792,7 +1792,7 @@ pub(crate) mod tests {
     /// sighting (a window that grows by the time between the mark and the tick that saw it).
     #[tokio::test(start_paused = true)]
     async fn the_one_tickle_is_made_half_a_floor_after_the_mark_not_after_the_tick_that_first_saw_it() {
-        let marked = |id: &str| vec![SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.rpc", id).unwrap(), incarnation: None, marked_at_ms: Some(0) }];
+        let marked = |id: &str| vec![SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.node", id).unwrap(), incarnation: None, marked_at_ms: Some(0) }];
         let mut t = OfflineTickle::new();
         assert!(tick(&mut t, 700, true, marked("a"), false, no_path()).await.tickled.is_empty(), "listed 700 ms after its mark: no tickle yet");
         let r = tick(&mut t, PROBE_DELAY, true, marked("a"), false, no_path()).await;
@@ -1813,9 +1813,9 @@ pub(crate) mod tests {
     fn the_silent_set_marks_each_birth_at_its_last_receipt_plus_the_floor() {
         use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode};
         let floor = std::time::Duration::from_secs(3);
-        let digest = |name: crate::model::PathName, mesh: &str, kind: rdm_core::NodeKind| MeshDigest { held_hash: Default::default(),
+        let digest = |name: crate::model::PathName, mesh: &str, r#type: &str| MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode { mesh: mesh.to_owned(), kind, node_id: crate::model::NodeId::mint(), name, endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
+            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: crate::model::NodeId::mint(), name, endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
             status: MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
@@ -1828,14 +1828,14 @@ pub(crate) mod tests {
             data_dir: None, is_primary: None, is_fabric_primary: None
         };
         let node_of = |d: &MeshDigest| {
-            let mut n = crate::model::Node::allocated(d.node.name.clone(), d.node.mesh.clone(), d.node.kind);
+            let mut n = crate::model::Node::allocated(d.node.name.clone(), d.node.mesh.clone(), &d.node.r#type);
             n.node_id = d.node.node_id.clone();
             n.incarnation_id = Some(d.node.incarnation.clone());
             n
         };
         let digest_view = rdm_transport::topology::DigestView::default();
         let t0 = std::time::Instant::now();
-        let (silent, fresh, re_born, unheld) = (digest(crate::model::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), digest(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), digest(crate::model::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), digest(crate::model::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+        let (silent, fresh, re_born, unheld) = (digest(crate::model::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), digest(crate::model::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), digest(crate::model::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"), digest(crate::model::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node"));
         digest_view.record_at(silent.clone(), t0);
         digest_view.record_at(fresh.clone(), t0 + floor);
         digest_view.record_at(re_born.clone(), t0);
@@ -1847,7 +1847,7 @@ pub(crate) mod tests {
         let marks: Vec<(crate::model::PathName, Option<u64>)> = set.iter().map(|s| (s.path.clone(), s.marked_at_ms)).collect();
         assert_eq!(
             marks,
-            vec![(crate::model::PathName::new("mesh1.rpc", "1").unwrap(), Some(9_300)), (crate::model::PathName::new("mesh1.rpc", "2").unwrap(), None), (crate::model::PathName::new("mesh1.rpc", "3").unwrap(), None), (crate::model::PathName::new("mesh1.rpc", "4").unwrap(), None)],
+            vec![(crate::model::PathName::new("mesh1.node", "1").unwrap(), Some(9_300)), (crate::model::PathName::new("mesh1.node", "2").unwrap(), None), (crate::model::PathName::new("mesh1.node", "3").unwrap(), None), (crate::model::PathName::new("mesh1.node", "4").unwrap(), None)],
             "marked 700 ms before now, at its receipt plus the floor; heard within the floor, another incarnation and no receipt carry no mark"
         );
     }
@@ -1875,8 +1875,8 @@ pub(crate) mod tests {
     async fn a_ladder_nobody_answers_is_the_verdict_at_its_fold_and_opens_no_hold_down() {
         let capture = crate::span_capture::Capture::new("q181-one-ladder-no-hold-down");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let mut t = OfflineTickle::observed_by("mesh1.admin.1".into(), crate::stop_gate::StopGate::new());
-        let admin = vec![SilentNode { node_id: "a".into(), path: crate::model::PathName::new("mesh1.admin", "2").unwrap(), incarnation: None, marked_at_ms: Some(0) }];
+        let mut t = OfflineTickle::observed_by("mesh1.node-admin.1".into(), crate::stop_gate::StopGate::new());
+        let admin = vec![SilentNode { node_id: "a".into(), path: crate::model::PathName::new("mesh1.node-admin", "2").unwrap(), incarnation: None, marked_at_ms: Some(0) }];
         assert!(tick(&mut t, 0, true, admin.clone(), false, no_path()).await.tickled.is_empty(), "nothing before half a floor after the mark");
         let r = tick(&mut t, PROBE_DELAY, true, admin.clone(), false, no_path()).await;
         assert_eq!(r.tickled, vec!["a".to_string()], "the one ladder runs half a floor after the mark");
@@ -1886,7 +1886,7 @@ pub(crate) mod tests {
         assert!(capture.named("rdm.node_admin.node.update.via-offline-hold-down-opened").is_empty(), "no hold-down is opened");
         let offline = capture.named("rdm.node_admin.node.update.via-true-offline");
         assert_eq!(offline.len(), 1, "one offline mark, at the fold of the one ladder");
-        assert_eq!(offline[0].attributes.get("node_path").map(String::as_str), Some("mesh1.admin"), "{:?}", offline[0].attributes);
+        assert_eq!(offline[0].attributes.get("node_path").map(String::as_str), Some("mesh1.node-admin"), "{:?}", offline[0].attributes);
     }
 
     /// CONTRACT (node-recovery.md step 2: the one ladder, half a floor after the mark; step 3: the
@@ -1903,7 +1903,7 @@ pub(crate) mod tests {
         let verdict_at = PROBE_DELAY + 2 * BUDGET;
         let capture = crate::span_capture::Capture::new("q181-offline-from-verdict");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let mut t = OfflineTickle::observed_by("mesh1.admin.1".into(), crate::stop_gate::StopGate::new());
+        let mut t = OfflineTickle::observed_by("mesh1.node-admin.1".into(), crate::stop_gate::StopGate::new());
         let ladder = async |t: &mut OfflineTickle, now: u64| {
             t.tick(
                 now,
@@ -2060,13 +2060,13 @@ pub(crate) mod tests {
     async fn the_silence_mark_is_written_on_the_whole_record_held_with_no_read_first() {
         use crate::model::{IncarnationId, Node, NodeStatus};
         use crate::storage::NodesStorage;
-        let mut held = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut held = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         held.incarnation_id = Some(IncarnationId::mint());
         let store = ReadCounting::default();
         let written = crate::node_rows::WrittenRows::default();
         let inc = held.incarnation_id.clone().unwrap();
         // The record as its writer holds it: the birth's declared state is on it.
-        let mut row = crate::storage::NodeRow::new(held.name.clone(), "mesh1".to_owned(), rdm_core::NodeKind::RpcNode, held.node_id.clone(), NodeStatus::Ready);
+        let mut row = crate::storage::NodeRow::new(held.name.clone(), "mesh1".to_owned(), "node", held.node_id.clone(), NodeStatus::Ready);
         row.birth_mut(&inc, &held.name).declared.insert(rdm_core::status::NodeState::Ready);
         written.hold(&row);
 
@@ -2130,7 +2130,7 @@ pub(crate) mod tests {
     async fn a_refused_silence_status_write_is_spanned_with_the_birth_the_status_and_the_stores_cause() {
         use crate::model::{IncarnationId, Node, NodeStatus};
         use crate::storage::NodesStorage;
-        let mut held = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut held = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         held.incarnation_id = Some(IncarnationId::mint());
         let store = SilenceRefusing::default();
         let capture = crate::span_capture::Capture::new("i143-3051-silence-refused");
@@ -2149,7 +2149,7 @@ pub(crate) mod tests {
         assert_eq!(spans.len(), 1, "one span for the one refused put: {spans:?}");
         let a = &spans[0].attributes;
         let attr = |k: &str| a.get(k).map(String::as_str).unwrap_or_default().to_string();
-        assert_eq!((attr("node_path"), attr("node_name")), ("mesh1.rpc".to_string(), "1".to_string()), "{a:?}");
+        assert_eq!((attr("node_path"), attr("node_name")), ("mesh1.node".to_string(), "1".to_string()), "{a:?}");
         assert_eq!(attr("node_id"), held.node_id.to_string(), "{a:?}");
         assert_eq!(attr("incarnation_id"), held.incarnation_id.clone().unwrap().as_str(), "the exact birth: {a:?}");
         assert_eq!(attr("status"), "dead", "the status it was writing: {a:?}");
@@ -2160,7 +2160,7 @@ pub(crate) mod tests {
         let no_birth = capture.named("rdm.node_admin.node.reject.via-no-birth");
         assert_eq!(no_birth.len(), 1, "the unborn record is its own refusal: {no_birth:?}");
         let b = &no_birth[0].attributes;
-        assert_eq!((b.get("node_path").map(String::as_str), b.get("node_name").map(String::as_str), b.get("status").map(String::as_str)), (Some("mesh1.rpc"), Some("1"), Some("pending-reconnect")), "{b:?}");
+        assert_eq!((b.get("node_path").map(String::as_str), b.get("node_name").map(String::as_str), b.get("status").map(String::as_str)), (Some("mesh1.node"), Some("1"), Some("pending-reconnect")), "{b:?}");
         eprintln!("span rdm.node_admin.node.reject.via-no-birth trace_id={} {b:?}", no_birth[0].trace_id);
     }
 }

@@ -6,7 +6,7 @@ use rdm_admin::atlas::Atlas;
 use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::fabric_storage::MemoryFabricStorage;
 use rdm_admin::model::{
-    EndpointId, Fabric, FabricId, IncarnationId, MeshId, Node, NodeId, NodeKind, NodeStatus,
+    EndpointId, Fabric, FabricId, IncarnationId, MeshId, Node, NodeId, NodeStatus,
     PathName, ProviderKind, ScopeStatus,
 };
 use rdm_admin::status_rpc::{Declared, StatusDoor};
@@ -86,7 +86,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         let fabric_id = FabricId::mint();
         let mesh_id = MeshId::mint();
 
-        let admin_name = PathName::numbered("mesh1", NodeKind::NodeAdmin, 1);
+        let admin_name = PathName::numbered("mesh1", "node-admin", 1);
         let admin_id = NodeId::mint();
         let admin_inc = IncarnationId::mint();
         let admin_key = SecretKey::generate();
@@ -102,11 +102,11 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
             .find(|a| a.is_ipv4())
             .expect("ipv4");
 
-        let rpc_name = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
+        let rpc_name = PathName::numbered("mesh1", "node", 1);
         let rpc_id = NodeId::mint();
         let rpc_inc = IncarnationId::mint();
 
-        let mut admin_node = Node::allocated(admin_name.clone(), "mesh1", NodeKind::NodeAdmin);
+        let mut admin_node = Node::allocated(admin_name.clone(), "mesh1", "node-admin");
         admin_node.node_id = admin_id.clone();
         admin_node.incarnation_id = Some(admin_inc.clone());
         admin_node.endpoint_id = Some(EndpointId(admin_key.public().to_string()));
@@ -115,7 +115,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         admin_node.is_primary = true;
         admin_node.is_fabric_primary = true;
 
-        let mut rpc_node = Node::allocated(rpc_name.clone(), "mesh1", NodeKind::RpcNode);
+        let mut rpc_node = Node::allocated(rpc_name.clone(), "mesh1", "node");
         rpc_node.node_id = rpc_id.clone();
         rpc_node.incarnation_id = Some(rpc_inc.clone());
         rpc_node.status = NodeStatus::Ready;
@@ -131,23 +131,23 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
             nodes: vec![admin_node, rpc_node],
         }));
 
-        let deleted_name = PathName::numbered("mesh1", NodeKind::RpcNode, 2);
+        let deleted_name = PathName::numbered("mesh1", "node", 2);
         let deleted_id = NodeId::mint();
         let deleted_inc = IncarnationId::mint();
 
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
-        let mut admin_row = NodeRow::new(admin_name.clone(), "mesh1", NodeKind::NodeAdmin, admin_id.clone(), NodeStatus::Ready);
+        let mut admin_row = NodeRow::new(admin_name.clone(), "mesh1", "node-admin", admin_id.clone(), NodeStatus::Ready);
         admin_row
             .birth_mut(&admin_inc, &admin_name)
             .declared
             .insert(rdm_core::status::NodeState::Ready);
-        let mut rpc_row = NodeRow::new(rpc_name.clone(), "mesh1", NodeKind::RpcNode, rpc_id.clone(), NodeStatus::Ready);
+        let mut rpc_row = NodeRow::new(rpc_name.clone(), "mesh1", "node", rpc_id.clone(), NodeStatus::Ready);
         rpc_row
             .birth_mut(&rpc_inc, &rpc_name)
             .declared
             .insert(rdm_core::status::NodeState::Ready);
         let mut deleted_row =
-            NodeRow::new(deleted_name.clone(), "mesh1", NodeKind::RpcNode, deleted_id.clone(), NodeStatus::Deleted);
+            NodeRow::new(deleted_name.clone(), "mesh1", "node", deleted_id.clone(), NodeStatus::Deleted);
         deleted_row.birth_mut(&deleted_inc, &deleted_name);
         nodes_storage.put_node(&admin_row).await.unwrap();
         nodes_storage.put_node(&rpc_row).await.unwrap();
@@ -246,7 +246,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         .expect("bind caller ep");
         let resolver = Arc::new(LiveNodeResolver::default());
         resolver.apply(
-            ResolvedNode { kind: NodeKind::NodeAdmin, mesh: "mesh1".to_owned(),
+            ResolvedNode { r#type: "node-admin".into(), mesh: "mesh1".to_owned(),
                 node_id: admin_id.clone(),
                 name: admin_name.clone(),
                 endpoint_id: admin_key.public(),

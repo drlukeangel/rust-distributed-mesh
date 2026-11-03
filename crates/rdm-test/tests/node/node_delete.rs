@@ -1,7 +1,7 @@
 //! i143 process E2E: removing one node is a lifecycle op with two events (i143.e6.s10).
 //!
 //! From public surfaces and span evidence only, on an MM estate: mesh1 (two admins, two rpc
-//! nodes) and mesh2 (one admin, two rpc nodes). `node.delete` of mesh2.rpc.2 reaches the
+//! nodes) and mesh2 (one admin, two rpc nodes). `node.delete` of mesh2.node.2 reaches the
 //! fabric-primary, which accepts a Build without the node; mesh2's primary claims the attempt
 //! and executes the deletion.
 //!
@@ -20,7 +20,7 @@
 
 use rdm_core::PathName;
 use rdm_test::estate::location;
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, ScopeStatus};
+use rdm_client::{FabricDesired, MeshDesired, ScopeStatus};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
@@ -28,12 +28,12 @@ use std::time::Duration;
 
 /// The node deleted: mesh2's second rpc node.
 fn victim() -> PathName {
-    Estate::path("mesh2.rpc", "2")
+    Estate::path("mesh2.node", "2")
 }
 
 /// The peer mesh's rpc node that witnesses the departure.
 fn witness_node() -> PathName {
-    Estate::path("mesh1.rpc", "1")
+    Estate::path("mesh1.node", "1")
 }
 
 fn owner(test: &str) -> Owner {
@@ -60,7 +60,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let mut estate = Estate::bootstrap(owner("deleting_a_node_is_a_pre_notice_then_a_proven_departure"), "fabric1", "mesh1").await;
     let shape = |a1: u32, r1: u32, a2: u32, r2: u32| FabricDesired {
         fabric: "fabric1".into(),
-        meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, a1), (NodeKind::RpcNode, r1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, a2), (NodeKind::RpcNode, r2)])],
+        meshes: vec![MeshDesired::of("mesh1", [("node-admin", a1), ("node", r1)]), MeshDesired::of("mesh2", [("node-admin", a2), ("node", r2)])],
     };
     estate.reconcile(&shape(2, 2, 1, 2)).await;
     let before = Estate::values(&estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 1, 2)]).await);
@@ -102,7 +102,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // Every ordinary node of the peer mesh, not only its primary, holds mesh2 at the version that
     // carries the departure (gossip.md §3.3, Q130): a node whose pull came back older than a delta it
     // dropped while the pull was in flight pulls again until it does.
-    for node in after.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node").map(|n| location(&n)) {
+    for node in after.iter().filter(|n| n["mesh"] == "mesh1" && n["type"] == "node").map(|n| location(&n)) {
         estate.holds_departure(&node, "mesh2", &victim_id).await;
         let held = estate.probe(&["resolve", "--target", &rdm_test::estate::path_target(&node), "--query", &exact_victim]);
         assert_eq!(resolution(&held), "gone", "{node:?} holds the departure of {victim_at:?}: {held}");
@@ -111,26 +111,26 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert_eq!(resolution(&gone), "gone", "{gone}");
     let path = estate.probe(&["resolve", "--target", &witness, "--query", &rdm_test::estate::path_target(&victim_at)]);
     assert_eq!(resolution(&path), "unknown", "the path has no holder: {path}");
-    let survivor = estate.probe(&["resolve", "--target", &witness, "--query", &rdm_test::estate::path_target(&Estate::path("mesh2.rpc", "1"))]);
+    let survivor = estate.probe(&["resolve", "--target", &witness, "--query", &rdm_test::estate::path_target(&Estate::path("mesh2.node", "1"))]);
     assert_eq!(resolution(&survivor), "found", "the surviving node is untouched: {survivor}");
     let never = estate.probe(&["resolve", "--target", &witness, "--query", &format!("exact:{}", rdm_core::NodeId::mint())]);
     assert_eq!(resolution(&never), "unknown", "{never}");
     estate.artifact("resolutions.json", &json!({"gone": gone, "path": path, "survivor": survivor, "never": never}));
 
     // 2. A node born after the events learns the departure from the retained mesh topology.
-    let mut spawn = estate.create_node("mesh1", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
+    let mut spawn = estate.create_node("mesh1", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
     Estate::complete(&mut spawn).await;
     let late = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 1)]).await);
-    let newcomer = late.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
+    let newcomer = late.iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
     estate.holds_departure(&location(&newcomer), "mesh2", &victim_id).await;
     let late_gone = estate.probe(&["resolve", "--target", &rdm_test::estate::path_target(&location(&newcomer)), "--query", &exact_victim]);
     assert_eq!(resolution(&late_gone), "gone", "the newcomer holds the departure it never heard as an event: {late_gone}");
     // And one born into the executor's own mesh, which learns it from its own primary's
     // overlays rather than a forwarded mesh topology.
-    let mut spawn2 = estate.create_node("mesh2", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
+    let mut spawn2 = estate.create_node("mesh2", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
     Estate::complete(&mut spawn2).await;
     let late2 = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 2)]).await);
-    let newcomer2 = late2.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
+    let newcomer2 = late2.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
     estate.holds_departure(&location(&newcomer2), "mesh2", &victim_id).await;
     let own_mesh_gone = estate.probe(&["resolve", "--target", &rdm_test::estate::path_target(&location(&newcomer2)), "--query", &exact_victim]);
     assert_eq!(resolution(&own_mesh_gone), "gone", "the newcomer in the executor's own mesh holds the departure: {own_mesh_gone}");
@@ -152,7 +152,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let row_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "subject", &victim_at)).collect();
     assert_eq!(row_deleted.len(), 1, "one Deleted row for one delete: {row_deleted:?}");
     let a = &row_deleted[0]["attributes"];
-    assert_eq!((s(&a["outcome"]), s(&a["node_id"]), s(&a["node_path"]), s(&a["node_name"])), ("row-deleted".to_string(), victim_id.clone(), "mesh2.admin".to_string(), "1".to_string()), "{a}");
+    assert_eq!((s(&a["outcome"]), s(&a["node_id"]), s(&a["node_path"]), s(&a["node_name"])), ("row-deleted".to_string(), victim_id.clone(), "mesh2.node-admin".to_string(), "1".to_string()), "{a}");
     let row_created: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "subject", &victim_at) && sp["attributes"]["node_id"] == newcomer2["node_id"] && sp["attributes"]["moment"] == "create").collect();
     assert_eq!(row_created.len(), 1, "the newcomer at {victim_at:?} writes its row once: {row_created:?}");
     let a = &row_created[0]["attributes"];
@@ -164,7 +164,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], victim_inc, "the departure names the exact birth");
     let executor_claim = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
-        .filter(|sp| sp["attributes"]["build_id"] == build_id && before.iter().any(|n| location(n) == Estate::path("mesh2.admin", "1") && sp["attributes"]["executor_node_id"] == n["node_id"]))
+        .filter(|sp| sp["attributes"]["build_id"] == build_id && before.iter().any(|n| location(n) == Estate::path("mesh2.node-admin", "1") && sp["attributes"]["executor_node_id"] == n["node_id"]))
         .map(start)
         .min()
         .expect("mesh2's primary claimed the removal");
@@ -281,7 +281,7 @@ fn unix_nanos() -> u64 {
 /// from the Exited evidence and records the complete delete receipt. The exited node cannot publish
 /// its own terminal proof or serve that stream"; "NodeDeleting / NodeDeleted are peer
 /// dissemination"): mesh1 (one admin, one rpc node) and mesh2 (two admins, two rpc nodes), every
-/// node-admin the testkit's faulted node-admin. `node.delete` of mesh2.rpc.2 is executed by mesh2's
+/// node-admin the testkit's faulted node-admin. `node.delete` of mesh2.node.2 is executed by mesh2's
 /// primary P. The fault door holds P at the `deleted` event cut: the victim's runtime is proven
 /// terminal and the NodeDeleted receipt (its row Deleted inside) is durable, and NodeDeleted is not
 /// yet published. Once mesh2's other admin NA2 holds that receipt in its own Build log, P is killed
@@ -294,7 +294,7 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
     const SETTLE: Duration = Duration::from_secs(120);
     let test = "a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publish";
     let sha = candidate_sha();
-    let estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let shape = [("mesh1", 1, 1), ("mesh2", 2, 2)];
     estate.reconcile_shape("fabric1", &shape).await;
     estate.settles_to(&shape, Duration::from_secs(90)).await;
@@ -303,9 +303,9 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
     let nodes = estate.node_values().await;
     let fp = location(nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary"));
     assert!(!fp.path.starts_with("mesh2."), "the fabric-primary is not in mesh2: {fp:?}");
-    let p = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
+    let p = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
     let p_name = location(&p);
-    let na2 = location(nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != p["name"]).expect("mesh2's other node-admin"));
+    let na2 = location(nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["name"] != p["name"]).expect("mesh2's other node-admin"));
     let (victim_at, witness_at) = (victim(), witness_node());
     let victim = nodes.iter().find(|n| location(n) == victim_at).cloned().expect("the victim");
     let (victim_id, victim_inc) = (s(&victim["node_id"]), s(&victim["incarnation_id"]));

@@ -181,7 +181,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
         .await
         .unwrap();
     builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
-    let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+    let mut node = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
     node.node_id = target_id.clone();
     node.incarnation_id = Some(IncarnationId::mint());
     node.status = NodeStatus::Ready;
@@ -189,7 +189,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
@@ -353,15 +353,15 @@ async fn fabric_builds(executor: &rdm_core::framing::Birth, local: std::sync::Ar
     (endpoint, builds)
 }
 
-/// A standalone node.connection.delete of a ready `mesh1.rpc.1` as attempt 1 of `build_id`, through `builds`.
+/// A standalone node.connection.delete of a ready `mesh1.node.1` as attempt 1 of `build_id`, through `builds`.
 async fn connections_delete_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, executor: &rdm_core::framing::Birth, target_id: &NodeId) -> Result<(), rdm_admin::deployment::pipeline::PipelineError> {
     standalone_through(builds, build_id, &Answers, false, executor, target_id).await
 }
 
-/// A standalone node.connection.delete (or, with `stop`, a standalone stop) of a ready `mesh1.rpc.1` as attempt 1 of
+/// A standalone node.connection.delete (or, with `stop`, a standalone stop) of a ready `mesh1.node.1` as attempt 1 of
 /// `build_id`, through `builds`, its commands answered by `observer`.
 async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, observer: &dyn NodeObserver, stop: bool, executor: &rdm_core::framing::Birth, target_id: &NodeId) -> Result<(), rdm_admin::deployment::pipeline::PipelineError> {
-    let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+    let mut node = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
     node.node_id = target_id.clone();
     node.incarnation_id = Some(IncarnationId::mint());
     node.status = NodeStatus::Ready;
@@ -369,7 +369,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
@@ -390,7 +390,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
     }
 }
 
-/// Build `build_id` accepted and its attempt 1 claimed by `mesh1.admin.1`, in `builds`.
+/// Build `build_id` accepted and its attempt 1 claimed by `mesh1.node-admin.1`, in `builds`.
 async fn accepted_and_claimed(builds: &dyn BuildStateAdapter, build_id: &BuildId, executor: &rdm_core::framing::Birth) {
     builds
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })

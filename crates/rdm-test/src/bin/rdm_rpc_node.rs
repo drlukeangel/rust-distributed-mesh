@@ -27,7 +27,7 @@ async fn main() {
         node = %launch.node_id, node_path = %launch.name.path, node_name = %launch.name.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
-        kind = "rpc_node",
+        r#type = "node",
         os_clock_skew_ms = skew.unwrap_or(0),
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {

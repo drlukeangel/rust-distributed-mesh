@@ -23,17 +23,34 @@ use rdm_admin::wiring::{BuildEndedCtx, BuildStartedCtx, FabricHooks, FabricReady
 use std::sync::Arc;
 use tracing::Instrument;
 
-/// The testkit application's declared secret: set in the process environment of [`DECLARED_KINDS`]
+/// The testkit application's node types, declared on the Fabric at Day 0 (`RDM_NODE_TYPES`), each
+/// extending `node`: a broker keeps its storage across a restart and a delete; a gateway's and a
+/// compute's are ephemeral. No executable: every create names its own.
+pub fn types() -> Vec<rdm_core::NodeType> {
+    use rdm_core::meta::{PersistentDisposition, StoragePersistence};
+    vec![
+        rdm_core::NodeType { name: "broker".into(), storage_persistence: StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve }, executable: None },
+        rdm_core::NodeType { name: "gateway".into(), storage_persistence: StoragePersistence::Ephemeral, executable: None },
+        rdm_core::NodeType { name: "compute".into(), storage_persistence: StoragePersistence::Ephemeral, executable: None },
+    ]
+}
+
+/// [`types`] as `RDM_NODE_TYPES` carries them.
+pub fn types_document() -> String {
+    serde_json::to_string(&types()).expect("node types encode as JSON")
+}
+
+/// The testkit application's declared secret: set in the process environment of [`DECLARED_TYPES`]
 /// only.
 pub const DECLARED_SECRET: &str = "TESTKIT_DECLARED_SECRET";
 
 /// The kinds [`DECLARED_SECRET`] is set on.
-pub const DECLARED_KINDS: [rdm_core::NodeKind; 2] = [rdm_core::NodeKind::Broker, rdm_core::NodeKind::Gateway];
+pub const DECLARED_TYPES: [&str; 2] = ["broker", "gateway"];
 
 /// The kind the testkit application declares listeners on (Q151).
-pub const LISTENER_KIND: rdm_core::NodeKind = rdm_core::NodeKind::Gateway;
+pub const LISTENER_TYPE: &str = "gateway";
 
-/// The listeners the testkit application declares on [`LISTENER_KIND`], as Rafka's gateway names its
+/// The listeners the testkit application declares on [`LISTENER_TYPE`], as Rafka's gateway names its
 /// own.
 pub const LISTENERS: [&str; 3] = ["kafka", "rest", "proxy"];
 
@@ -149,12 +166,12 @@ pub fn topology_storage_providers(cfg: &rdm_admin::admin::AdminConfig) -> rdm_ad
 
 /// The testkit application's listener declarations, as its wiring registers them.
 pub fn listeners() -> Vec<rdm_core::launch::DeclaredListeners> {
-    vec![rdm_core::launch::DeclaredListeners { kind: LISTENER_KIND, names: LISTENERS.iter().map(|n| n.to_string()).collect() }]
+    vec![rdm_core::launch::DeclaredListeners { r#type: LISTENER_TYPE.to_string(), names: LISTENERS.iter().map(|n| n.to_string()).collect() }]
 }
 
 /// The testkit application's declarations, as its wiring registers them.
 pub fn declared() -> Vec<rdm_core::launch::DeclaredSecret> {
-    vec![rdm_core::launch::DeclaredSecret { name: DECLARED_SECRET.into(), kinds: DECLARED_KINDS.to_vec() }]
+    vec![rdm_core::launch::DeclaredSecret { name: DECLARED_SECRET.into(), types: DECLARED_TYPES.iter().map(|t| t.to_string()).collect() }]
 }
 
 /// The hooks of this application: each notice records a span.

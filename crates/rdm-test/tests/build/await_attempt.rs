@@ -6,7 +6,7 @@
 //! attempts left behind; released, it returns the Build at that attempt, complete.
 
 use crate::build_log;
-use rdm_client::{Frame, LaunchKind as NodeKind, NodeStatus};
+use rdm_client::{Frame, NodeStatus};
 use rdm_admin::deployment::pipeline::DeleteStep;
 use rdm_test::estate::{Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
@@ -33,15 +33,15 @@ fn owner() -> Owner {
 async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let mut estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
 
     // A lone admin hears no other member and is cut off: two admins before anything else.
     let shape = estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
     assert_eq!(shape.attempt, 1, "an accepted Build answers its first attempt: {shape:?}");
     estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
-    let first = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-    let mut spawn = estate.create_node("mesh1", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
+    let first = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+    let mut spawn = estate.create_node("mesh1", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
     let created = Estate::complete(&mut spawn).await;
     assert_eq!(created.attempt, 1, "{created:?}");
     estate.until_node(&first, &format!("{first:?} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
@@ -49,16 +49,16 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     // of the role's node moves the role first and needs a secondary to move it to
     // (node-primary-update-fabric-mesh-and-node-type.md Part C1, "no secondary"). The stop opens an
     // attempt of the second create's Build, the accepted one.
-    let mut second = estate.create_node("mesh1", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a second rpc node in mesh1: {e}"));
+    let mut second = estate.create_node("mesh1", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a second rpc node in mesh1: {e}"));
     let created = Estate::complete(&mut second).await;
     assert_eq!(created.attempt, 1, "{created:?}");
     let build_id = created.build_id.to_string();
-    estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1.rpc.2 ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1.node.2 ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
     let views = estate.node_views().await;
-    let subject = views.iter().find(|n| n.kind == NodeKind::RpcNode && n.mesh == "mesh1" && !n.is_primary).expect("one rpc node without a role");
+    let subject = views.iter().find(|n| n.r#type == "node" && n.mesh == "mesh1" && !n.is_primary).expect("one rpc node without a role");
     let node = &subject.name;
 
-    let primary = estate.node_views().await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == "mesh1" && n.is_primary).expect("mesh1 has an admin primary");
+    let primary = estate.node_views().await.into_iter().find(|n| n.r#type == "node-admin" && n.mesh == "mesh1" && n.is_primary).expect("mesh1 has an admin primary");
     let door = Door::at(&estate, &primary.name).await;
 
     let cut = "stop:StopNode";

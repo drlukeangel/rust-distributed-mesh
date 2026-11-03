@@ -92,7 +92,7 @@ fn passing() -> NodeHooks {
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
 /// A launch of `name` by `root` over its own data dir `dir`, on the fabric's store root `store` (the
 /// root's): every admin of a fabric reads the one Build storage (Q292).
-fn launch_by(root: &Running, name: PathName, kind: rdm_core::NodeKind, dir: &std::path::Path, store: &std::path::Path, listeners: Vec<(String, std::net::SocketAddr)>) -> Launch {
+fn launch_by(root: &Running, name: PathName, r#type: &str, dir: &std::path::Path, store: &std::path::Path, listeners: Vec<(String, std::net::SocketAddr)>) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
@@ -100,7 +100,7 @@ fn launch_by(root: &Running, name: PathName, kind: rdm_core::NodeKind, dir: &std
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
-        kind,
+        r#type: r#type.to_string(),
         name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
@@ -123,7 +123,7 @@ fn launch_by(root: &Running, name: PathName, kind: rdm_core::NodeKind, dir: &std
 /// at its start after a stop (`held: true`, the name it last accepted for the birth).
 fn deployed(launch: &Launch, held: Option<&PathName>) -> Deployed {
     let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-    Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
+    Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
@@ -239,18 +239,18 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
         // A node-admin's first start: launched by the root.
-        let admin_launch = launch_by(&root, PathName::new("mesh1.admin", "2").unwrap(), rdm_core::NodeKind::NodeAdmin, &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
+        let admin_launch = launch_by(&root, PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
         let _ = root.runner.joins.expect(deployed(&admin_launch, None));
         let env = admin_launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
         let admin = start_with(admin_cfg, Wiring { node_hooks: passing(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
-        until_ready("mesh1.admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
+        until_ready("mesh1.node-admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
 
         // An rpc node's first start: launched by the root.
-        let rpc_launch = launch_by(&root, PathName::new("mesh1.rpc", "1").unwrap(), rdm_core::NodeKind::RpcNode, &rpc_dir, &root_dir, vec![]);
+        let rpc_launch = launch_by(&root, PathName::new("mesh1.node", "1").unwrap(), "node", &rpc_dir, &root_dir, vec![]);
         let _ = root.runner.joins.expect(deployed(&rpc_launch, None));
         let rpc = rdm_test::node::start_pre_node_ready(&rpc_launch, passing(), |b, _| b).await.expect("the rpc node comes up");
-        until_ready("mesh1.rpc.1 (first start)", || {
+        until_ready("mesh1.node.1 (first start)", || {
             let mut d = rpc.digest.clone();
             d.status = *rpc.status.lock().unwrap();
             d
@@ -262,7 +262,7 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         let _ = root.runner.joins.expect(deployed(&admin_launch, Some(&admin_launch.name)));
         let started = tokio::time::timeout(WRONG, command(&root, &admin_launch, &start(&admin_launch))).await.expect("the admin's start answers");
         assert_eq!(started, StatusReply::Started, "the launched admin starts after its stop");
-        until_ready("mesh1.admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
+        until_ready("mesh1.node-admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
 
         // The rpc node's stop and its start after the stop, commanded by the root over Node RPC.
         assert!(matches!(command(&root, &rpc_launch, &stop(&rpc_launch)).await, StatusReply::Stopped { .. }), "the rpc node stops");
@@ -290,7 +290,7 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
             assert_eq!(step.get("rafka_time").map(String::as_str), Some("adopted"), "{path} adopts the rafka-time of its one topology reply in its topology step: {step:?}");
         }
         // No read these nodes made named a source version: every one was answered whole.
-        for (who, launch) in [("mesh1.admin.2", &admin_launch), ("mesh1.rpc.1", &rpc_launch)] {
+        for (who, launch) in [("mesh1.node-admin.2", &admin_launch), ("mesh1.node.1", &rpc_launch)] {
             let endpoint = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap().public().to_string();
             let served = topology_served_to(&spans, &endpoint);
             assert!(!served.is_empty(), "{who}: the authority served its topology reads");
@@ -425,7 +425,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
         held.store(true, Ordering::SeqCst);
 
         // A node-admin's first start, launched by the root: its join is answered with no Build.
-        let admin_launch = launch_by(&root, PathName::new("mesh1.admin", "2").unwrap(), rdm_core::NodeKind::NodeAdmin, &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
+        let admin_launch = launch_by(&root, PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
         let _ = root.runner.joins.expect(deployed(&admin_launch, None));
         let env = admin_launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
@@ -443,7 +443,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
             }
         })
         .await
-        .expect("mesh1.admin.2 never acted on the no-pointer blocker at its Build floor");
+        .expect("mesh1.node-admin.2 never acted on the no-pointer blocker at its Build floor");
 
         let (joins, reads, repeats) = {
             let all = spans.0.lock().unwrap();
@@ -460,13 +460,13 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
             let repeats = all.values().filter(|(n, _, f)| n == ENTRY_REPEAT && f.get("node_path") == Some(&admin_launch.name.path) && f.get("node_name") == Some(&admin_launch.name.name)).count();
             (joins, reads, repeats)
         };
-        assert_eq!(joins.len(), 1, "the authority serves exactly one JoinNode for mesh1.admin.2; the no-pointer blocker is read, never joined again; served joins by outcome: {joins:?}");
+        assert_eq!(joins.len(), 1, "the authority serves exactly one JoinNode for mesh1.node-admin.2; the no-pointer blocker is read, never joined again; served joins by outcome: {joins:?}");
         assert_eq!(repeats, 0, "no {ENTRY_REPEAT}: the no-pointer blocker is read from the Build storage, never by a second JoinNode");
         assert!(!reads.is_empty(), "the no-pointer blocker is read from the Build storage: the reads ended {reads:?}");
 
         // The start completes on the storage's current Build, read whole.
         held.store(false, Ordering::SeqCst);
-        until_ready("mesh1.admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
+        until_ready("mesh1.node-admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
         let (joins, absorbed) = {
             let all = spans.0.lock().unwrap();
             let joins = all.values().filter(|(n, _, f)| n == JOIN_SERVED && f.get("node_id").map(String::as_str) == Some(admin_launch.node_id.as_str())).count();

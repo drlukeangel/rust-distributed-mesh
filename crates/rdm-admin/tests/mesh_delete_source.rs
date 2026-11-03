@@ -70,7 +70,7 @@ fn source_failed<T: std::fmt::Debug>(r: &Result<T, StatusReply>) -> (String, Str
 fn a_mesh_deleted_report_whose_manifest_cannot_be_read_is_refused_by_name_and_the_leave_stays_open() {
     let mesh_id = MeshId::mint();
     let k = key(&mesh_id);
-    let fp = RosterBirth { mesh: "mesh2".into(), kind: rdm_core::NodeKind::NodeAdmin, node: rdm_core::PathName::new("mesh2.admin", "1").unwrap(), node_id: NodeId::mint().to_string(), incarnation_id: "i1".into() };
+    let fp = RosterBirth { mesh: "mesh2".into(), r#type: "node-admin".into(), node: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), node_id: NodeId::mint().to_string(), incarnation_id: "i1".into() };
     let runtime = RuntimeIdentity { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() };
     let admitted = Admitted { roster: vec![fp.clone()], final_primary: fp, final_runtime: runtime, amendments: Vec::new() };
     let reference = manifest_reference(k.build_id.as_str(), 1, &k.operation, false);
@@ -79,14 +79,14 @@ fn a_mesh_deleted_report_whose_manifest_cannot_be_read_is_refused_by_name_and_th
         let root = tracing::info_span!("rdm.test.mesh.reject.via-manifest-unread", mesh_id = %mesh_id);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
-        let unreached = handoff_verdict_from_read(Err(BuildStateError::Io("builds.jsonl: no such device".into())), &k, &admitted, &reference, "mesh1.admin.1", "mesh2.admin.1");
-        let not_ready = handoff_verdict_from_read(Err(BuildStateError::Io("builds.jsonl: interrupted".into())), &k, &admitted, &reference, "mesh1.admin.1", "mesh2.admin.1");
+        let unreached = handoff_verdict_from_read(Err(BuildStateError::Io("builds.jsonl: no such device".into())), &k, &admitted, &reference, "mesh1.node-admin.1", "mesh2.node-admin.1");
+        let not_ready = handoff_verdict_from_read(Err(BuildStateError::Io("builds.jsonl: interrupted".into())), &k, &admitted, &reference, "mesh1.node-admin.1", "mesh2.node-admin.1");
         (unreached, not_ready, trace_id)
     });
     let spans = cap.spans();
     keep("manifest_unread", &trace_id, &spans);
     let (source, op, cause) = source_failed(&unreached);
-    assert!(source.contains("Build storage") && source.contains("mesh2.admin.1") && op.contains("read-committed pdz453kf4br6") && op.contains("for the manifest ManifestReference {") && cause.contains("no such device"), "{source} | {op} | {cause}");
+    assert!(source.contains("Build storage") && source.contains("mesh2.node-admin.1") && op.contains("read-committed pdz453kf4br6") && op.contains("for the manifest ManifestReference {") && cause.contains("no such device"), "{source} | {op} | {cause}");
     let (_, _, cause) = source_failed(&not_ready);
     assert!(cause.contains("interrupted"), "the storage read's failure is a fact of the read: {cause}");
     let named = refusals(&spans, &trace_id);
@@ -114,20 +114,20 @@ fn a_delete_mesh_hands_back_over_its_call_else_to_the_fabric_primary_else_is_ref
     let k = key(&mesh_id);
     let caller = MeshDeleteOwner { target: NodeTarget::Endpoint { endpoint_id: iroh::SecretKey::generate().public(), addr: "127.0.0.1:4100".parse().unwrap() }, name: "the admin at its call's endpoint".into() };
     let fp_id = NodeId::mint();
-    let fp = MeshDeleteOwner { target: NodeTarget::ExactNode(fp_id), name: "mesh1.admin.1".into() };
+    let fp = MeshDeleteOwner { target: NodeTarget::ExactNode(fp_id), name: "mesh1.node-admin.1".into() };
     let cap = capture();
     let (none, trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.mesh.reject.via-no-owner", mesh_id = %mesh_id);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
-        assert_eq!(leave_owner(Some(caller.clone()), Some(fp.clone()), "mesh2.admin.1", &k), Ok(caller.clone()), "the handoff goes back over the call that sent delete-mesh");
-        assert_eq!(leave_owner(None, Some(fp.clone()), "mesh2.admin.1", &k), Ok(fp.clone()), "else to the fabric-primary the view names");
-        (leave_owner(None, None, "mesh2.admin.1", &k), trace_id)
+        assert_eq!(leave_owner(Some(caller.clone()), Some(fp.clone()), "mesh2.node-admin.1", &k), Ok(caller.clone()), "the handoff goes back over the call that sent delete-mesh");
+        assert_eq!(leave_owner(None, Some(fp.clone()), "mesh2.node-admin.1", &k), Ok(fp.clone()), "else to the fabric-primary the view names");
+        (leave_owner(None, None, "mesh2.node-admin.1", &k), trace_id)
     });
     let spans = cap.spans();
     keep("no_owner", &trace_id, &spans);
     let (source, op, cause) = source_failed(&none);
-    assert!(source == "the view of mesh2.admin.1" && op.contains("owner") && op.contains(&mesh_id.to_string()) && cause.contains("no call") && cause.contains("no fabric-primary"), "{source} | {op} | {cause}");
+    assert!(source == "the view of mesh2.node-admin.1" && op.contains("owner") && op.contains(&mesh_id.to_string()) && cause.contains("no call") && cause.contains("no fabric-primary"), "{source} | {op} | {cause}");
     assert_eq!(refusals(&spans, &trace_id), vec![("delete-mesh".to_string(), source, op, cause)], "one reject span, naming the call and the three fields");
 }
 
@@ -174,12 +174,12 @@ fn a_mesh_deleted_report_naming_a_runtime_the_provider_cannot_adopt_is_refused_b
         let root = tracing::info_span!("rdm.test.mesh.reject.via-provider-refused", mesh_id = %mesh_id);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
-        assert_eq!(adopt_final_runtime(&Host, &fact(DOMAIN), "mesh1.admin.1", &k), Ok(()), "a runtime in the provider's domain is adopted");
-        (adopt_final_runtime(&Host, &fact("another-host"), "mesh1.admin.1", &k), trace_id)
+        assert_eq!(adopt_final_runtime(&Host, &fact(DOMAIN), "mesh1.node-admin.1", &k), Ok(()), "a runtime in the provider's domain is adopted");
+        (adopt_final_runtime(&Host, &fact("another-host"), "mesh1.node-admin.1", &k), trace_id)
     });
     let spans = cap.spans();
     keep("provider_refused", &trace_id, &spans);
     let (source, op, cause) = source_failed(&foreign);
-    assert!(source.contains("provider of mesh1.admin.1") && op.contains("adopt") && op.contains(&rdm_core::fixture_crockford60("dep-final")) && cause.contains("control domain"), "{source} | {op} | {cause}");
+    assert!(source.contains("provider of mesh1.node-admin.1") && op.contains("adopt") && op.contains(&rdm_core::fixture_crockford60("dep-final")) && cause.contains("control domain"), "{source} | {op} | {cause}");
     assert_eq!(refusals(&spans, &trace_id), vec![("mesh-deleted".to_string(), source, op, cause)], "one reject span, naming the call and the three fields");
 }

@@ -76,7 +76,7 @@ impl ProcessNodeRpc {
 /// The resolver's view of a held birth; `None` when its transport id is not an
 /// Iroh key (it cannot be dialed).
 pub fn resolved(d: &MeshDigest) -> Option<ResolvedNode> {
-    Some(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind,
+    Some(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(),
         node_id: d.node.node_id.clone(),
         name: d.node.name.clone(),
         endpoint_id: d.node.endpoint_id.0.parse().ok()?,

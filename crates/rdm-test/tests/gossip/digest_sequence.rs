@@ -61,9 +61,9 @@ impl Birth {
     fn digest(&self, seq: u64, at_rafka_ms: u64, status: MemberStatus) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: self.fabric.clone(),
-            node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: self.node_id.clone(),
-                name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+                name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
                 endpoint_id: EndpointId("k".into()),
                 transport_addr: "127.0.0.1:7000".parse().unwrap(),
                 incarnation: self.incarnation.clone(),
@@ -168,7 +168,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
             (ep, g)
         };
         let hand = Arc::new(HandClock::default());
-        let me = "mesh1.rpc.1";
+        let me = "mesh1.node.1";
         let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, hand.clone(), vec![], &[]).await.unwrap();
         let sender_id = NodeId::mint();
         let sender = Birth::first(&fabric, &sender_id);

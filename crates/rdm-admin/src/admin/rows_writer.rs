@@ -85,7 +85,7 @@ impl MeshRowsWriter {
         // none, and a whole write from this admin's older copy would replace what its primary wrote.
         let primaried: std::collections::BTreeSet<&str> = held
             .iter()
-            .filter(|d| d.node.mesh != self.mesh && d.node.kind == crate::model::NodeKind::NodeAdmin && d.is_primary.is_some() && !deleted(&d.node.node_id))
+            .filter(|d| d.node.mesh != self.mesh && rdm_core::is_node_admin(&d.node.r#type) && d.is_primary.is_some() && !deleted(&d.node.node_id))
             .map(|d| d.node.mesh.as_str())
             .collect();
         // A deleted birth is never written: its node's record is written `Deleted` by its delete.
@@ -209,7 +209,7 @@ pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshSto
         let Some(b) = r.newest_birth() else { continue };
         let record = |revision| rdm_core::Primary { mesh: r.mesh.clone(), node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone(), revision };
         if let Some(revision) = b.is_primary {
-            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::of_node_type(r.kind), &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
+            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::of_type(&r.r#type), &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
         }
         if let Some(revision) = b.is_fabric_primary {
             taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::FabricPrimary, &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));

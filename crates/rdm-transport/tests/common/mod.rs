@@ -102,7 +102,7 @@ pub struct Node {
 }
 
 /// A node serving Probe (answering with its own name) and, with `client`, carrying Probe for others.
-pub async fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, carrier_client: Option<Arc<NodeRpcClient>>, key: SecretKey, ep: iroh::Endpoint) -> Node {
+pub async fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, carrier_client: Option<Arc<NodeRpcClient>>, key: SecretKey, ep: iroh::Endpoint) -> Node {
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let handled = Arc::new(AtomicU64::new(0));
     let (h, me) = (handled.clone(), node_id.to_string());
@@ -123,7 +123,7 @@ pub async fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind
     let server = b.build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let resolved = ResolvedNode { mesh: mesh.to_owned(), kind, node_id, name, endpoint_id: key.public(), transport_addr: addr, incarnation };
+    let resolved = ResolvedNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id, name, endpoint_id: key.public(), transport_addr: addr, incarnation };
     Node { _router: router, key, resolved, handled }
 }
 
@@ -143,15 +143,15 @@ pub struct Rig {
 /// B and C are two semantically eligible targets; P is a carrier that can reach both.
 pub async fn rig() -> Rig {
     let (bk, be) = bind().await;
-    let b = node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None, bk, be).await;
+    let b = node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", None, bk, be).await;
     let (ck, ce) = bind().await;
-    let c = node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None, ck, ce).await;
+    let c = node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", None, ck, ce).await;
     let (pk, pe) = bind().await;
     let p_resolver = Arc::new(StaticResolver::new());
     p_resolver.insert(b.resolved.clone());
     p_resolver.insert(c.resolved.clone());
     let p_client = Arc::new(NodeRpcClient::new(pe.clone(), p_resolver));
-    let p = node(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(p_client), pk, pe).await;
+    let p = node(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", Some(p_client), pk, pe).await;
     let resolver = Arc::new(StaticResolver::new());
     for n in [&b, &c, &p] {
         resolver.insert(n.resolved.clone());
@@ -190,11 +190,11 @@ pub async fn routed(rig: &Rig, target: &Node, route: RouteChoice, payload: &[u8]
 
 /// Connections fixtures, as the held projection records them.
 pub fn end(n: &Node) -> ConnectionEnd {
-    ConnectionEnd { mesh: n.resolved.mesh.clone(), kind: n.resolved.kind, name: n.resolved.name.clone(), node_id: n.resolved.node_id.clone(), incarnation: Some(n.resolved.incarnation.clone()) }
+    ConnectionEnd { mesh: n.resolved.mesh.clone(), r#type: n.resolved.r#type.clone(), name: n.resolved.name.clone(), node_id: n.resolved.node_id.clone(), incarnation: Some(n.resolved.incarnation.clone()) }
 }
 
-pub fn own_end(own: &PathName, mesh: &str, kind: rdm_core::NodeKind) -> ConnectionEnd {
-    ConnectionEnd { mesh: mesh.to_owned(), kind, name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
+pub fn own_end(own: &PathName, mesh: &str, r#type: &str) -> ConnectionEnd {
+    ConnectionEnd { mesh: mesh.to_owned(), r#type: r#type.to_string(), name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
 }
 
 /// A connections fact at stamp `at`, in the shape the writer records it.

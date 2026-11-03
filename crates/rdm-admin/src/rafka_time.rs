@@ -151,7 +151,7 @@ pub(crate) async fn adopt_from_reachable(
         let mut candidates = contacts;
         for d in topology_view.digest_view.current(topology_view.digest_view.staleness_floor()) {
             if d.node.node_id != *me_id && !candidates.iter().any(|c| c.node_id == d.node.node_id) {
-                candidates.push(crate::reenter::MapNode { mesh: d.node.mesh.clone(), kind: d.node.kind,
+                candidates.push(crate::reenter::MapNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(),
                     node_id: d.node.node_id.clone(),
                     name: d.node.name.clone(),
                     endpoint_id: d.node.endpoint_id.clone(),
@@ -232,7 +232,7 @@ mod tests {
         let app_handle = time.clone();
         assert_eq!(app_handle.try_now_ms(), None);
 
-        let adopted = adopt_own_clock(&tracing::Span::none(), &time, "mesh1.admin.1", OWN_CLOCK_DAY0_ROOT);
+        let adopted = adopt_own_clock(&tracing::Span::none(), &time, "mesh1.node-admin.1", OWN_CLOCK_DAY0_ROOT);
         assert_eq!(adopted.previous_ms, None);
         assert!(app_handle.now_ms() >= adopted.reference_ms);
 
@@ -244,7 +244,7 @@ mod tests {
 
         let spans = capture.named("rdm.mesh.entry.update.via-rafka-time-adopted");
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].attributes.get("node").map(String::as_str), Some("mesh1.admin.1"));
+        assert_eq!(spans[0].attributes.get("node").map(String::as_str), Some("mesh1.node-admin.1"));
         assert_eq!(spans[0].attributes.get("source").map(String::as_str), Some("own-clock"));
         assert_eq!(spans[0].attributes.get("reason").map(String::as_str), Some(OWN_CLOCK_DAY0_ROOT));
     }

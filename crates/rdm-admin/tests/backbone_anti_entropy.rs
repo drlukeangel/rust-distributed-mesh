@@ -130,7 +130,7 @@ struct Capture {
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rdm_transport::span_capture("mesh1.admin.1", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("mesh1.node-admin.1", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
@@ -203,7 +203,7 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
         learn_addresses(&ep, &[seed.clone()]).unwrap();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(root.emitted_at_rafka_ms);
-        let observer = TopologyView::join(&gossip, &ep, &root.fabric_id, "mesh2", &MeshId::mint(), "mesh2.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        let observer = TopologyView::join(&gossip, &ep, &root.fabric_id, "mesh2", &MeshId::mint(), "mesh2.node-admin.1", Arc::new(time), vec![], &[]).await.unwrap();
         let _observer_bb = Backbone::join(&gossip, &ep, &observer, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![seed]).await.unwrap();
         let unheard = || observer.digest_view.mesh_unheard(&root.node.mesh, std::time::Instant::now());
         tokio::time::timeout(NEVER, async {
@@ -245,7 +245,7 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
     std::fs::write(artifact.join("spans.jsonl"), spans.iter().map(|s| s.to_string() + "\n").collect::<String>()).unwrap();
     let receipts: Vec<(u64, String)> = spans
         .iter()
-        .filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed" && s["attributes"]["node"] == "mesh2.admin.1" && s["attributes"]["channel"] == "backbone" && s["attributes"]["mesh"] == "mesh1")
+        .filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed" && s["attributes"]["node"] == "mesh2.node-admin.1" && s["attributes"]["channel"] == "backbone" && s["attributes"]["mesh"] == "mesh1")
         .map(|s| (s["start_ns"].as_u64().unwrap_or(0), s["attributes"]["snapshot_id"].as_str().unwrap_or_default().to_string()))
         .collect();
     let held_spans = spans.iter().filter(|s| s["name"] == "cell.store.update.via-held-read").count();

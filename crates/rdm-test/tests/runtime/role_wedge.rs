@@ -9,7 +9,7 @@
 //!   for a proof of termination.
 //! - The broker primary is heard throughout and stays primary (elections §5).
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
+use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -32,10 +32,10 @@ fn s(v: &Value) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_fresh_data_dir() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 1)])] }).await.build_id.to_string();
-    let want = [("mesh1.admin", "1"), ("mesh1.broker", "1"), ("mesh1.broker", "2"), ("mesh1.gateway", "1")].into_iter().map(|(path, name)| rdm_core::PathName::new(path, name).unwrap()).collect();
+    let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 2), ("gateway", 1)])] }).await.build_id.to_string();
+    let want = [("mesh1.node-admin", "1"), ("mesh1.broker", "1"), ("mesh1.broker", "2"), ("mesh1.gateway", "1")].into_iter().map(|(path, name)| rdm_core::PathName::new(path, name).unwrap()).collect();
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await);
-    let target = nodes.iter().find(|n| n["kind"] == "broker" && n["is_primary"] == false).cloned().expect("a non-primary broker");
+    let target = nodes.iter().find(|n| n["type"] == "broker" && n["is_primary"] == false).cloned().expect("a non-primary broker");
     let path: rdm_core::PathName = serde_json::from_value(target["name"].clone()).expect("structured location");
     // Born ready, the broker declared its readiness to its mesh primary by itself (the status op). No stream
     // announces it: the admin's view carries it (`declared`).
@@ -43,7 +43,7 @@ async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_f
 
     // Frozen: pending-reconnect at the floor, then re-created at its (path, name).
     let floor = rdm_transport::topology::staleness_floor();
-    let primary_before = nodes.iter().find(|n| n["kind"] == "broker" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("a broker primary");
+    let primary_before = nodes.iter().find(|n| n["type"] == "broker" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("a broker primary");
     let pid = estate.pid_of(&path).await;
     assert!(std::process::Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success(), "SIGSTOP {pid} ({path:?})");
     let old_id = s(&target["node_id"]);
@@ -51,7 +51,7 @@ async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_f
         let primary_before = primary_before.clone();
         move |views: &[rdm_client::NodeView]| {
             let ns = Estate::values(views);
-            let primary = ns.iter().find(|n| n["kind"] == "broker" && n["is_primary"] == true).map(|n| s(&n["node_id"]));
+            let primary = ns.iter().find(|n| n["type"] == "broker" && n["is_primary"] == true).map(|n| s(&n["node_id"]));
             assert_eq!(primary.as_deref(), Some(primary_before.as_str()), "the heard broker primary stays primary: {ns:#?}");
             ns
         }

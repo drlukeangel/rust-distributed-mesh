@@ -15,7 +15,7 @@
 //!   created again gets a new MeshId, a node removed and created again at the
 //!   same path a new NodeId; the Fabric keeps its id throughout.
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, Meshes, NodeStatus, PathName};
+use rdm_client::{FabricDesired, MeshDesired, Meshes, NodeStatus, PathName};
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,11 +47,11 @@ fn canonical(what: &str, v: &Value) -> String {
 }
 
 fn shape(meshes: &[&str], rpc: u32) -> FabricDesired {
-    FabricDesired { fabric: "fabric1".into(), meshes: meshes.iter().map(|m| MeshDesired::of(*m, [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, rpc)])).collect() }
+    FabricDesired { fabric: "fabric1".into(), meshes: meshes.iter().map(|m| MeshDesired::of(*m, [("node-admin", 2), ("node", rpc)])).collect() }
 }
 
 fn names(meshes: &[&str], rpc: u32) -> BTreeSet<PathName> {
-    meshes.iter().flat_map(|m| (1..=2).map(move |i| PathName::new(format!("{m}.admin"), i.to_string()).unwrap()).chain((1..=rpc).map(move |i| PathName::new(format!("{m}.rpc"), i.to_string()).unwrap()))).collect()
+    meshes.iter().flat_map(|m| (1..=2).map(move |i| PathName::new(format!("{m}.node-admin"), i.to_string()).unwrap()).chain((1..=rpc).map(move |i| PathName::new(format!("{m}.node"), i.to_string()).unwrap()))).collect()
 }
 
 async fn build(estate: &Estate, body: &FabricDesired) {
@@ -92,7 +92,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         let transport = s(&n["endpoint_id"]);
         assert!(!transport.is_empty() && transport != s(&n["node_id"]) && transport != fabric_id, "transport identity is not product identity: {n}");
     }
-    for admin in nodes.iter().filter(|n| n["kind"] == "node_admin") {
+    for admin in nodes.iter().filter(|n| n["type"] == "node-admin") {
         let own = json_of(&rdm_test::typed::fabric_view_of_id(estate.peers().await.as_ref(), &s(&admin["node_id"]).parse().unwrap(), &fabric_id).await.unwrap_or_else(|| panic!("{} does not answer fabric.get for this Fabric", admin["name"])));
         assert_eq!(s(&own["id"]), fabric_id, "{} names the Fabric by the same id", admin["name"]);
     }
@@ -101,29 +101,29 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // A restart, node.stop then node.start (Q183), keeps NodeId, FabricId and the incarnation: the
     // process is stopped and started.
-    let before = nodes.iter().find(|n| location(n) == PathName::new("mesh2.rpc", "2").unwrap()).unwrap().clone();
-    let (a, _) = estate.stop_then_start(&rdm_core::PathName::new("mesh2.rpc", "2").unwrap()).await;
+    let before = nodes.iter().find(|n| location(n) == PathName::new("mesh2.node", "2").unwrap()).unwrap().clone();
+    let (a, _) = estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "2").unwrap()).await;
     let after = estate
-        .until_node(&rdm_core::PathName::new("mesh2.rpc", "2").unwrap(), "mesh2.rpc.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).map(json_of))
+        .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).map(json_of))
         .await;
     assert_eq!(after["node_id"], before["node_id"], "restart keeps the node id");
     assert_eq!(after["incarnation_id"], before["incarnation_id"], "restart keeps the incarnation");
 
     // A second stop and start of the same node are later attempts of the same Build: the first
     // start's finished run hands them nothing, so they stop and start the node again.
-    let (_, again) = estate.stop_then_start(&rdm_core::PathName::new("mesh2.rpc", "2").unwrap()).await;
+    let (_, again) = estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "2").unwrap()).await;
     assert_eq!(again.build_id, a.build_id, "a restart is an attempt of the accepted Build: {again:?}");
     let third = estate
-        .until_node(&rdm_core::PathName::new("mesh2.rpc", "2").unwrap(), "mesh2.rpc.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).map(json_of))
+        .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).map(json_of))
         .await;
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
     assert_eq!(third["incarnation_id"], before["incarnation_id"], "and the incarnation");
-    // What mesh1.admin.1, a node-admin of the peer mesh, holds of the restarted birth: its own view,
+    // What mesh1.node-admin.1, a node-admin of the peer mesh, holds of the restarted birth: its own view,
     // from the newest version of mesh2's projection it installed (gossip.md §3.1, `MeshTopology`:
     // "Receivers install the complete snapshot atomically"). The Digest it holds names the node and
     // the incarnation the views show, as Crockford ids.
     let held = estate
-        .until_view_at(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1.admin.1 holds the restarted mesh2.rpc.2 ready, same node and incarnation", Duration::from_secs(30), |views| {
+        .until_view_at(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1.node-admin.1 holds the restarted mesh2.node.2 ready, same node and incarnation", Duration::from_secs(30), |views| {
             views
                 .iter()
                 .find(|n| n.node_id.as_str() == before["node_id"].as_str().unwrap() && n.status == NodeStatus::Ready)
@@ -136,12 +136,12 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let restart_build = again.build_id.to_string();
 
     // Replacement of a node: removed, then created again at the same path.
-    let replaced = node_ids[&PathName::new("mesh1.rpc", "2").unwrap()].clone();
-    let mut removal = estate.nodes_obj().await.delete(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh1.rpc.2: {e}"));
+    let replaced = node_ids[&PathName::new("mesh1.node", "2").unwrap()].clone();
+    let mut removal = estate.nodes_obj().await.delete(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh1.node.2: {e}"));
     Estate::complete(&mut removal).await;
     build(&estate, &shape(&["mesh1", "mesh2"], 2)).await;
     let regrown = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await);
-    let new_id = canonical("node id", &regrown.iter().find(|n| location(n) == PathName::new("mesh1.rpc", "2").unwrap()).unwrap()["node_id"]);
+    let new_id = canonical("node id", &regrown.iter().find(|n| location(n) == PathName::new("mesh1.node", "2").unwrap()).unwrap()["node_id"]);
     assert_ne!(new_id, replaced, "a recreated node is a new logical node");
 
     // Replacement of a mesh: removed, then created again. mesh.delete ends at mesh.deleted with
@@ -163,7 +163,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // R-NS1 item 1 + states.md ("A mesh id is never reissued; deleted is final ... a mesh created again
     // under that name is a new mesh with a new id"): the removed mesh2 was deleted, and Dead belongs to its
     // id. No admin's view states the new mesh2 Dead.
-    for n in recreated.iter().filter(|n| n["kind"] == "node_admin") {
+    for n in recreated.iter().filter(|n| n["type"] == "node-admin") {
         let carrier = estate.peers().await.carrier_for(s(&n["node_id"]).parse().unwrap());
         let m = json_of(&rdm_test::typed::one_mesh(&Meshes::new(carrier), "mesh2").await.unwrap_or_else(|e| panic!("mesh.get [name: mesh2] at {}: {e}", n["name"])).unwrap_or_else(|| panic!("{} holds mesh2", n["name"])));
         assert_ne!(s(&m["status"]), "dead", "{} states the recreated mesh2 Dead: {m}", s(&n["name"]));
@@ -197,7 +197,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
 
     // The second restart's return reached the peer mesh's admin. mesh2's primary authored the
     // birth's Ready (`from-node-started`), and its next publication bumped mesh2's
-    // topology_version (gossip.md §3.1, `MeshTopology`: "at once on a material change"). mesh1.admin.1
+    // topology_version (gossip.md §3.1, `MeshTopology`: "at once on a material change"). mesh1.node-admin.1
     // installed that version of mesh2's projection or a later one: a receiver holds the newest
     // version it installed, and a snapshot overtaken by a later one is ignored in the gossip receive
     // path (gossip.md receiver rules: `MeshTopology` order by `published_at_rafka_ms`, then
@@ -210,7 +210,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
             a["node_id"] == before["node_id"] && a["incarnation_id"] == after["incarnation_id"] && a["status"] == "Ready"
         })
         .max_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0))
-        .unwrap_or_else(|| panic!("mesh2's primary authored the restarted mesh2.rpc.2's Ready at incarnation {}", after["incarnation_id"]));
+        .unwrap_or_else(|| panic!("mesh2's primary authored the restarted mesh2.node.2's Ready at incarnation {}", after["incarnation_id"]));
     let returned_ns = returned_at["start_unix_nano"].as_u64().unwrap_or(0);
     let bumped = named(&spans, "rdm.mesh.backbone.update.via-topology-version")
         .into_iter()
@@ -220,12 +220,12 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let (publisher, version) = (s(&bumped["attributes"]["publisher"]), s(&bumped["attributes"]["topology_version"]).parse::<u64>().expect("a topology_version is a number"));
     let installed: Vec<String> = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed")
         .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == node_ids[&PathName::new("mesh1.admin", "1").unwrap()] && sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["publisher"]) == publisher)
+        .filter(|sp| sp["attributes"]["node"] == node_ids[&PathName::new("mesh1.node-admin", "1").unwrap()] && sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["publisher"]) == publisher)
         .map(|sp| s(&sp["attributes"]["topology_version"]))
         .collect();
     assert!(
         installed.iter().any(|v| v.parse::<u64>().is_ok_and(|v| v >= version)),
-        "mesh1.admin.1 installed mesh2's projection by {publisher} at topology_version {version} (the second restart's return) or later: it installed {installed:?}"
+        "mesh1.node-admin.1 installed mesh2's projection by {publisher} at topology_version {version} (the second restart's return) or later: it installed {installed:?}"
     );
 
     // The removed mesh2's last admin published MeshStatus Dead while it lived, and it left with MeshLeft;
@@ -250,14 +250,14 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .into_iter()
         .filter(|sp| {
             let at = &sp["attributes"];
-            s(&at["build_id"]) == restart_build && at["node_path"] == "mesh2.rpc" && at["node_name"] == "2" && at["step"] == "StartNode" && at["outcome"] == "complete"
+            s(&at["build_id"]) == restart_build && at["node_path"] == "mesh2.node" && at["node_name"] == "2" && at["step"] == "StartNode" && at["outcome"] == "complete"
         })
         .count();
     assert!(ran >= 2, "each restart ran its own StartNode, none reused: {ran} complete StartNode steps under {restart_build}");
 
     // R-MN1: mesh2's removal deleted every roster birth (each member's row by its node.delete under
     // the mesh.delete, the last admin's by its own node.delete, the fabric-primary its executor) and
-    // wrote the mesh row deleted; mesh2 created again wrote mesh2.admin.1's row over the Deleted row, its
+    // wrote the mesh row deleted; mesh2 created again wrote mesh2.node-admin.1's row over the Deleted row, its
     // fresh properties, under a new MeshId.
     let deleted = named(&spans, "rdm.node_admin.node.delete.via-node-row");
     for n in regrown.iter().filter(|n| n["mesh"] == "mesh2") {
@@ -269,14 +269,14 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     }
     let dead = named(&spans, "rdm.node_admin.mesh.update.via-deleted-row");
     assert!(dead.iter().any(|sp| s(&sp["attributes"]["mesh_id"]) == mesh_ids["mesh2"] && sp["attributes"]["outcome"] == "applied"), "the old mesh2's row is written deleted: {dead:?}");
-    let old_admin = regrown.iter().find(|n| location(n) == PathName::new("mesh2.admin", "1").unwrap()).unwrap();
-    let new_admin = recreated.iter().find(|n| location(n) == PathName::new("mesh2.admin", "1").unwrap()).unwrap();
+    let old_admin = regrown.iter().find(|n| location(n) == PathName::new("mesh2.node-admin", "1").unwrap()).unwrap();
+    let new_admin = recreated.iter().find(|n| location(n) == PathName::new("mesh2.node-admin", "1").unwrap()).unwrap();
     assert_ne!(new_admin["node_id"], old_admin["node_id"], "the recreated mesh's admin is a new node");
     let admin_row = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| {
         let a = &sp["attributes"];
-        a["subject_path"] == "mesh2.admin" && a["subject_name"] == "1" && a["moment"] == "create" && s(&a["node_id"]) == s(&new_admin["node_id"])
+        a["subject_path"] == "mesh2.node-admin" && a["subject_name"] == "1" && a["moment"] == "create" && s(&a["node_id"]) == s(&new_admin["node_id"])
     });
-    let admin_row = admin_row.unwrap_or_else(|| panic!("the recreated mesh2.admin.1 {} writes its row", new_admin["node_id"]));
+    let admin_row = admin_row.unwrap_or_else(|| panic!("the recreated mesh2.node-admin.1 {} writes its row", new_admin["node_id"]));
     assert_eq!(admin_row["attributes"]["outcome"], "row-written", "a new mesh starts a fresh node row: {admin_row}");
     assert_eq!(s(&admin_row["attributes"]["seeded_from"]), "", "a deleted row is not replacement provenance: {admin_row}");
     assert_eq!(s(&new_admin["mesh"]), "mesh2");
@@ -284,7 +284,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // writer (Q109), before anything else of the mesh is written, at CreateMesh by the
     // fabric-primary as the acting primary of a mesh with none (R13); the removed mesh2's Mesh row is
     // written deleted, which releases the name; the recreated mesh2 writes its row at the released name under its new
-    // MeshId, before the recreated mesh2.admin.1's row is written, by the same
+    // MeshId, before the recreated mesh2.node-admin.1's row is written, by the same
     // writer. No mesh's write conflicts with itself across creation and a write again.
     let mesh_writes = named(&spans, "rdm.node_admin.mesh.create.via-mesh-row");
     let mesh_write_of = |id: &str| mesh_writes.iter().find(|sp| sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["mesh_id"]) == id && sp["attributes"]["moment"] == "write" && sp["attributes"]["outcome"] == "row-written").copied();
@@ -303,10 +303,10 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let writer_location = PathName::new(s(&admin_row["attributes"]["node_path"]), s(&admin_row["attributes"]["node_name"])).expect("the row's writer has separate location fields");
     let writer = recreated.iter().find(|node| location(node) == writer_location).expect("the row's writer is in the retained node view");
     assert_eq!(new_write["attributes"]["node"], writer["node_id"], "the recreated mesh2's row is written by the writer of its first admin's row, the fabric-primary: {new_write} {admin_row}");
-    assert!(new_write["end_unix_nano"].as_u64().unwrap() <= admin_row["start_unix_nano"].as_u64().unwrap(), "the recreated mesh2's row write ends before mesh2.admin.1's row is written: {new_write} {admin_row}");
+    assert!(new_write["end_unix_nano"].as_u64().unwrap() <= admin_row["start_unix_nano"].as_u64().unwrap(), "the recreated mesh2's row write ends before mesh2.node-admin.1's row is written: {new_write} {admin_row}");
     assert!(mesh_writes.iter().all(|c| c["attributes"]["outcome"] == "row-written" || c["attributes"]["outcome"] == "row-held-by-mesh"), "no mesh's write is refused: {mesh_writes:?}");
     eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={} outcome=row-written over={}", s(&new_write["trace_id"]), s(&m2["id"]), mesh_ids["mesh2"]);
-    let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == new_admin["node_id"] && sp["attributes"]["incarnation_id"] == new_admin["incarnation_id"]).expect("the recreated mesh2.admin.1 reports ready");
+    let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == new_admin["node_id"] && sp["attributes"]["incarnation_id"] == new_admin["incarnation_id"]).expect("the recreated mesh2.node-admin.1 reports ready");
     assert_eq!(s(&ready["attributes"]["mesh_id"]), s(&m2["id"]), "under the new MeshId");
     // A mesh created again is a new mesh (R-MN1): the removed mesh's births deleted at mesh-left,
     // so its first admin enters from none of them, and each member is a create over the Deleted

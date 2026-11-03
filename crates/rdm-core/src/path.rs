@@ -1,85 +1,7 @@
-//! Separate node path and name, and explicit runtime kinds.
+//! Separate node path and name.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
-
-/// The runtime kind explicitly selected for a node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NodeKind {
-    /// A node-admin.
-    ///
-    /// Position 0 on the wire.
-    NodeAdmin,
-    /// A plain product node that serves core protocols only.
-    ///
-    /// Position 1 on the wire.
-    RpcNode,
-    /// A broker.
-    ///
-    /// Position 2 on the wire.
-    Broker,
-    /// A gateway.
-    ///
-    /// Position 3 on the wire.
-    Gateway,
-    /// A compute node.
-    ///
-    /// Position 4 on the wire.
-    Compute,
-}
-
-impl NodeKind {
-    /// Every kind, `node_admin` first.
-    pub const ALL: [NodeKind; 5] = [NodeKind::NodeAdmin, NodeKind::RpcNode, NodeKind::Broker, NodeKind::Gateway, NodeKind::Compute];
-
-    /// The kind's name as a mesh field (`node_admin`, `rpc_node`, `broker`, ...).
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::NodeAdmin => "node_admin",
-            Self::RpcNode => "rpc_node",
-            Self::Broker => "broker",
-            Self::Gateway => "gateway",
-            Self::Compute => "compute",
-        }
-    }
-}
-
-impl NodeKind {
-    /// The conventional path component generated for the explicit kind: `admin`, `rpc`, `broker`, `gateway` or `compute`.
-    pub fn segment(self) -> &'static str {
-        match self {
-            Self::NodeAdmin => "admin",
-            Self::RpcNode => "rpc",
-            Self::Broker => "broker",
-            Self::Gateway => "gateway",
-            Self::Compute => "compute",
-        }
-    }
-
-    /// The kind an explicit kind token names, `None` for any other segment.
-    pub fn from_segment(s: &str) -> Option<Self> {
-        match s {
-            "admin" => Some(Self::NodeAdmin),
-            "rpc" => Some(Self::RpcNode),
-            "broker" => Some(Self::Broker),
-            "gateway" => Some(Self::Gateway),
-            "compute" => Some(Self::Compute),
-            _ => None,
-        }
-    }
-
-    /// The node's `node_type` identifier (`node-admin`, `rpc-node`, `broker`, `gateway` or `compute`).
-    pub fn node_type(self) -> &'static str {
-        match self {
-            Self::NodeAdmin => "node-admin",
-            Self::RpcNode => "rpc-node",
-            Self::Broker => "broker",
-            Self::Gateway => "gateway",
-            Self::Compute => "compute",
-        }
-    }
-}
 
 /// A structured location containing two separate properties: path says where the node is,
 /// and name is the node's name. This is a composite lookup index, never node identity.
@@ -167,10 +89,10 @@ impl PathName {
         format!("node-location-{}", hash.finalize().to_hex())
     }
 
-    /// The conventional name minted by the counts convenience API. Ownership is supplied
-    /// independently wherever the resulting pair is used.
-    pub fn numbered(mesh: impl Into<String>, kind: NodeKind, ordinal: u32) -> Self {
-        Self::new(format!("{}.{}", mesh.into(), kind.segment()), ordinal.to_string())
+    /// The conventional name minted by the counts convenience API: path `<mesh>.<type>`, name the
+    /// ordinal. Ownership is supplied independently wherever the resulting pair is used.
+    pub fn numbered(mesh: impl Into<String>, r#type: &str, ordinal: u32) -> Self {
+        Self::new(format!("{}.{}", mesh.into(), r#type), ordinal.to_string())
             .expect("count expansion supplies a valid path and name")
     }
 
@@ -228,19 +150,19 @@ mod tests {
     /// predecessor to `<name>-old` at the same path"): the pair is two fields in every shape that
     /// carries it, and each shape gives back the same two fields: the pair's own JSON, an operation's
     /// `Location` subject, the node.get `path`/`name` filter and the launch environment's
-    /// `RDM_NODE_PATH`/`RDM_NODE_NAME`. A free-text path is never parsed for a mesh, a kind or an
+    /// `RDM_NODE_PATH`/`RDM_NODE_NAME`. A free-text path is never parsed for a mesh, a type or an
     /// ordinal; the dot-free name is refused by name when it holds a dot, is empty or is too long; the
     /// replacement move keeps the path and changes only the name. Must NOT happen: a joined string read
     /// as a pair, or a pair whose path and name trade bytes across the dot.
     #[test]
     fn separate_path_and_name_read_back_as_written() {
         let pairs = [
-            PathName::new("mesh1.rpc", "north").unwrap(),
+            PathName::new("mesh1.node", "north").unwrap(),
             PathName::new("production.east.apps", "north-1").unwrap(),
             PathName::new("apps", "1").unwrap(),
             PathName::new("a.b", "c").unwrap(),
             PathName::new("a", "b.c".replace('.', "~")).unwrap(),
-            PathName::numbered("mesh2", NodeKind::Broker, 7),
+            PathName::numbered("mesh2", "broker", 7),
         ];
         // Two pairs whose joined string would be the same bytes stay two pairs.
         assert_ne!(PathName::new("a.b", "c").unwrap(), PathName::new("a", "b~c").unwrap());
@@ -265,7 +187,7 @@ mod tests {
                 (crate::launch::ENV_NODE_PATH.to_string(), pair.path.clone()),
                 (crate::launch::ENV_NODE_NAME.to_string(), pair.name.clone()),
                 (crate::launch::ENV_MESH.to_string(), "mesh1".to_string()),
-                (crate::launch::ENV_NODE_KIND.to_string(), "rpc_node".to_string()),
+                (crate::launch::ENV_NODE_TYPE.to_string(), "node".to_string()),
                 (crate::launch::ENV_NODE_ID.to_string(), crate::NodeId::mint().to_string()),
                 (crate::launch::ENV_INCARNATION.to_string(), crate::IncarnationId::mint().to_string()),
                 (crate::launch::ENV_TRANSPORT_ADDR.to_string(), "127.0.0.1:0".to_string()),
@@ -282,7 +204,7 @@ mod tests {
             assert_eq!((moved.path.as_str(), moved.name.clone()), (pair.path.as_str(), format!("{}-old", pair.name)), "the predecessor moves to <name>-old at the same path");
             assert_eq!(serde_json::from_value::<PathName>(serde_json::to_value(&moved).unwrap()).unwrap(), moved);
         }
-        // The path is free text: nothing reads a mesh, a kind or an ordinal out of it.
+        // The path is free text: nothing reads a mesh, a type or an ordinal out of it.
         let free = PathName::new("not.a.mesh.path", "x").unwrap();
         assert_eq!((free.path(), free.name()), ("not.a.mesh.path".to_string(), "x".to_string()));
         // Grammar: refused by name, the refused field named.
@@ -295,11 +217,11 @@ mod tests {
         }
         assert!(matches!(PathName::new("valid", "a".repeat(65)), Err(PathNameError::Name(_))), "a name over 64 characters is refused");
         // A decode is checked: an invalid pair, an extra field or a joined string is no pair.
-        for bad in [serde_json::json!({"path": "valid", "name": "has.dot"}), serde_json::json!({"path": "valid", "name": "a", "mesh": "mesh1"}), serde_json::json!("mesh1.rpc.north"), serde_json::json!({"path": "mesh1.rpc"})] {
+        for bad in [serde_json::json!({"path": "valid", "name": "has.dot"}), serde_json::json!({"path": "valid", "name": "a", "mesh": "mesh1"}), serde_json::json!("mesh1.node.north"), serde_json::json!({"path": "mesh1.node"})] {
             assert!(serde_json::from_value::<PathName>(bad.clone()).is_err(), "{bad} is not a pair");
         }
         let env_err = crate::launch::Launch::from_env(|k| match k {
-            crate::launch::ENV_NODE_PATH => Some("mesh1.rpc".into()),
+            crate::launch::ENV_NODE_PATH => Some("mesh1.node".into()),
             crate::launch::ENV_NODE_NAME => Some("has.dot".into()),
             crate::launch::ENV_FABRIC => Some("fabric1".into()),
             crate::launch::ENV_FABRIC_ID => Some(crate::FabricId::mint().to_string()),

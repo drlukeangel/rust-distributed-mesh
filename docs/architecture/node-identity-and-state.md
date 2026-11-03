@@ -47,7 +47,7 @@ The lifecycle architecture rests on five design rules:
 the mesh-primary's whole row line and the node's own line, the reader folding the latest of each (Q333).
 The node writes its own properties in it: config, tags, bound addresses and
 application declarations. Its mesh-primary writes the status and role flags in the same record,
-beside identity, explicit mesh/kind, certificates, executable and placement facts.
+beside identity, explicit mesh and type, certificates and executable facts.
 A current-pair lookup reads the node records by their path and name; it never uses the last writer at a path.
 Gossip is a projection, not persistence or evidence that a lifecycle operation completed.
 
@@ -62,8 +62,8 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
 | id | what it is | uniqueness | who sees it |
 |---|---|---|---|
 | **`endpoint_id`** | the node's iroh key (ed25519 public key, hex) — its identity on the FABRIC, the thing a dial resolves to. A FIELD of the node record | globally unique across every mesh | **THE TRANSPORT ONLY.** Never on a public interface — not a REST body, not a wire response, not an audit row, not a log line or span attribute NAMING a node (§9 rule 4). The one exception is a span whose SUBJECT is the routing key itself — a dial's target, the handshake, the identity load/mint before an id exists to log — never a narrative "which node did this" field. Exposing the routing id outside those is a security breach |
-| **`path`, `name`** | path is the node location in the tree and name is its name; they are separate stored fields, never concatenated or parsed as one identifier; the name has no dot, and both are free text the caller chooses at node.create (`<mesh>.<kind>.<name>` by convention, a name, never an ordinal); the node's type is its own field, `node_type` (§2), never read from the path | unique per (path, name), checked against the node records by their writer | what topic placement and `replica.targets` store (§2.2); a Build step key names its target by it (`node.create:<path.name>`) |
-| **`id` — the node's minted id** | the node row's own id — minted once, 60 bits, 12 Crockford characters, bare internally | globally unique, by the same property every minted id in the platform has | **the PUBLIC, STORED and AUDIT identity.** It names one node instance: what the audit log names a node by (§2.4) and what REST and the wire render for a node. Its external form renders the type prefix from `node_type`; a client only ever names a BROKER, so **`brk_<crockford>` is the only form a client sees** |
+| **`path`, `name`** | path is the node location in the tree and name is its name; they are separate stored fields, never concatenated or parsed as one identifier; the name has no dot, and both are free text the caller chooses at node.create (`<mesh>.<kind>.<name>` by convention, a name, never an ordinal); the node's type is its own field, `type` (§2), never read from the path | unique per (path, name), checked against the node records by their writer | what topic placement and `replica.targets` store (§2.2); a Build step key names its target by it (`node.create:<path.name>`) |
+| **`id` — the node's minted id** | the node row's own id — minted once, 60 bits, 12 Crockford characters, bare internally | globally unique, by the same property every minted id in the platform has | **the PUBLIC, STORED and AUDIT identity.** It names one node instance: what the audit log names a node by (§2.4) and what REST and the wire render for a node. Its external form renders the type prefix from `type`; a client only ever names a BROKER, so **`brk_<crockford>` is the only form a client sees** |
 
 - **One minter, no second form.** The id is `mint_id()` like every other entity's — no short form,
   no per-mesh structured mint, no separate allocator. Random collision is n²/2⁶¹ and negligible
@@ -84,10 +84,14 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   a new node with its own. The process reads it once at boot (`RDM_INCARNATION_ID`, written by node-admin at launch). A reader
   compares incarnations for EQUALITY only: it is not a counter, and it is not the writer incarnation that refuses stale writes
   a writer's rows. `node.get` returns it per node.
-- **A node has a `node_type`.** `node_type` is a field of the node record, a string the caller sets in
+- **A node has a `type`.** `type` is a field of the node record, a string the caller sets in
   node.create's spec. An omitted or empty value is stored as `node`. Its grammar is the tag-label grammar,
   1-64 characters of `a-z 0-9 - _ . ~` with no leading `.`; a value outside it, or with leading or trailing
   whitespace, is refused by name at node.create. It is immutable: node.update refuses a change by name.
+  RDM ships two types: `node`, the base every type extends, and `node-admin`. The application
+  declares its own on the Fabric (`types`), each overriding `node`'s defaults (`storage_persistence`,
+  `executable`); a node naming an undeclared type is refused by name at node.create, and neither of
+  RDM's two can be declared again.
 - **A node's `path.name` is what placement references.** Nodes use the same
   `path.name` mechanism as every entity: the path and the name are free text set at node.create;
   nothing is derived from either. A single node is created, for example, as `mesh1.broker.north`. A node advertises its `path.name`, its `endpoint_id` and its minted
@@ -106,7 +110,7 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
 
 ### 2.0 One id space, four HUMAN-READABLE prefixes — so the DECODER enforces the type, not the renderer
 
-The prefix renders from `node_type` over ONE 12-character id space, human-readable by node type: `brk_` = broker, `adm_` = node admin,
+The prefix renders from `type` over ONE 12-character id space, human-readable by node type: `brk_` = broker, `adm_` = node admin,
 `gtw_` = gateway, `cmp_` = compute. A Build id is the bare 12-character Crockford60 on the wire, in every store row and in every page example, and renders `bid_xxxx-xxxx-xxxx` (`BuildId::log()`) in log lines and span fields only; nothing parses or stores that form.
 
 ### 2.2 The node `path.name` is what a reference STORES — the `endpoint_id` is resolved at dial time
@@ -212,7 +216,7 @@ which are there because one of those two put them there.
 
 | | where | written by |
 |---|---|---|
-| identity (`id`, `endpoint_id`, `name`, `node_type`) and STATUS CHANGES | the durable record on `ops.nodes` | that mesh's primary node-admin, alone |
+| identity (`id`, `endpoint_id`, `name`, `type`) and STATUS CHANGES | the durable record on `ops.nodes` | that mesh's primary node-admin, alone |
 | per-heartbeat liveness — `cpu_used`, `ram_used`, reachability | gossip, in memory only | every node, about itself |
 
 In normal operation nothing reads `ops.nodes` back — the mesh-primary holds the record. The store

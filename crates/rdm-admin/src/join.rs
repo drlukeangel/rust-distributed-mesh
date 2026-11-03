@@ -36,7 +36,7 @@ pub struct Deployed {
     /// The owning mesh supplied at deployment.
     pub mesh: String,
     /// The runtime kind supplied at deployment.
-    pub kind: crate::model::NodeKind,
+    pub r#type: String,
     /// The deployed node's `(path, name)`.
     pub name: PathName,
     /// The deployed node's id.
@@ -102,7 +102,7 @@ impl Deployed {
         }
         same("node_id", &self.node_id, &d.node.node_id)?;
         same("mesh", &self.mesh, &d.node.mesh)?;
-        same("kind", &self.kind, &d.node.kind)?;
+        same("kind", &self.r#type, &d.node.r#type)?;
         // The name is reconciled apart from identity (node-create.md step 4): a held birth is
         // admitted under its row's name or the name this authority last accepted for it; a first
         // start under its create spec's name only.
@@ -228,7 +228,7 @@ impl Joins {
     pub async fn keep_admitted(&self, d: &MeshDigest) -> Result<(), String> {
         let Some(runtimes) = &self.runtimes else { return Ok(()) };
         let runtime = d.node.runtime.clone().ok_or_else(|| format!("{}: the admitted report names no runtime", d.node.node_id))?;
-        let row = RuntimeRow { kind: d.node.kind, mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
+        let row = RuntimeRow { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
         runtimes.put_runtime(&row).await.map_err(|e| format!("{}: the admitted report's runtime row could not be kept: {e}", d.node.node_id))
     }
 
@@ -487,8 +487,8 @@ impl JoinDoor {
                 // Q333). A write refused leaves nothing installed, and the join is retried.
                 if let (Some((storage, written)), true) = (&self.nodes, !issue.bytes.is_empty()) {
                     let dates = (!issue.bytes.is_empty()).then(|| crate::cert_renewal::dates_of(&issue));
-                    let signing = (!issue.bytes.is_empty() && d.node.kind == crate::model::NodeKind::NodeAdmin).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
-                    let base = crate::storage::NodeRow::new(birth.name.clone(), birth.mesh.clone(), d.node.kind, birth.node_id.clone(), crate::model::NodeStatus::Pending);
+                    let signing = (!issue.bytes.is_empty() && rdm_core::is_node_admin(&d.node.r#type)).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
+                    let base = crate::storage::NodeRow::new(birth.name.clone(), birth.mesh.clone(), &d.node.r#type, birth.node_id.clone(), crate::model::NodeStatus::Pending);
                     let put = written.update(&**storage, &birth.node_id, Some(base), |r| {
                         let b = r.birth_mut(&birth.incarnation, &birth.name);
                         if let Some(dates) = dates {
@@ -586,8 +586,8 @@ mod tests {
     }
 
     fn deployed() -> Deployed {
-        Deployed { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+        Deployed { mesh: "mesh1".into(), r#type: "node".into(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -603,7 +603,7 @@ mod tests {
     fn digest_of(d: &Deployed) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
-            node: MeshNode { mesh: d.mesh.clone(), kind: d.kind,
+            node: MeshNode { mesh: d.mesh.clone(), r#type: d.r#type.clone(),
                 node_id: d.node_id.clone(),
                 name: d.name.clone(),
                 endpoint_id: d.endpoint_id.clone(),
@@ -632,7 +632,7 @@ mod tests {
         let dep = Deployed {
             name: rdm_core::PathName::new("elsewhere.gateway", "north").unwrap(),
             mesh: "mesh2".into(),
-            kind: rdm_core::NodeKind::Compute,
+            r#type: "compute".into(),
             ..deployed()
         };
         let rx = joins.expect(dep.clone());
@@ -646,7 +646,7 @@ mod tests {
         assert_eq!(mismatch.field, "mesh");
         assert!(mismatch.deployed.contains("mesh2") && mismatch.reported.contains("elsewhere"));
         let mut wrong_kind = d;
-        wrong_kind.node.kind = rdm_core::NodeKind::Gateway;
+        wrong_kind.node.r#type = "gateway".to_string();
         assert_eq!(dep.verify(&wrong_kind, &[]).unwrap_err().field, "kind");
     }
 
@@ -678,10 +678,10 @@ mod tests {
         assert_eq!(joins.standing(&d, &[]), Standing::Unknown);
     }
 
-    /// The deployment of a birth this authority holds, stopped as `mesh1.rpc.1` and renamed in its
-    /// row to `mesh1.rpc.old.1` while stopped (R-JN1).
+    /// The deployment of a birth this authority holds, stopped as `mesh1.node.1` and renamed in its
+    /// row to `mesh1.node.old.1` while stopped (R-JN1).
     fn renamed_while_stopped() -> Deployed {
-        Deployed { name: rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap(), last_accepted_name: Some(rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), held: true, ..deployed() }
+        Deployed { name: rdm_core::PathName::new("mesh1.node", "1-old").unwrap(), last_accepted_name: Some(rdm_core::PathName::new("mesh1.node", "1").unwrap()), held: true, ..deployed() }
     }
 
     // @feature: node-lifecycle
@@ -692,17 +692,17 @@ mod tests {
     fn a_held_births_join_accepts_the_rows_or_the_last_accepted_name_and_refuses_any_other_naming_all_three() {
         let dep = renamed_while_stopped();
         let mut held = digest_of(&dep);
-        held.node.name = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        held.node.name = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         assert_eq!(dep.verify(&held, &[]), Ok(()), "the name last accepted for this exact birth is admitted");
         assert_eq!(dep.verify(&digest_of(&dep), &[]), Ok(()), "the row's name is admitted");
         let mut other = digest_of(&dep);
-        other.node.name = rdm_core::PathName::new("mesh1.rpc", "7").unwrap();
+        other.node.name = rdm_core::PathName::new("mesh1.node", "7").unwrap();
         let m = dep.verify(&other, &[]).unwrap_err();
         assert_eq!(m.field, "name");
         assert!(m.reported.contains("\"7\"") && m.deployed.contains("\"1-old\"") && m.deployed.contains("last accepted") && m.deployed.contains("\"1\""), "the refusal names all three: {m:?}");
         let first = deployed();
         let mut off_spec = digest_of(&first);
-        off_spec.node.name = rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap();
+        off_spec.node.name = rdm_core::PathName::new("mesh1.node", "1-old").unwrap();
         assert_eq!(first.verify(&off_spec, &[]).unwrap_err().field, "name", "a first start off its create spec is still refused");
         let mut moved_path = digest_of(&dep);
         moved_path.node.name = PathName::new("another.path", dep.name.name.clone()).unwrap();
@@ -718,10 +718,10 @@ mod tests {
         let joins = Joins::default();
         let stopped = renamed_while_stopped();
         joins.expect(stopped.clone());
-        let replacement = Deployed { name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), endpoint_id: EndpointId("k2".into()), ..deployed() };
+        let replacement = Deployed { name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), endpoint_id: EndpointId("k2".into()), ..deployed() };
         let replacement_rx = joins.expect(replacement.clone());
         let mut d = digest_of(&stopped);
-        d.node.name = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        d.node.name = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         assert!(matches!(joins.standing(&d, &[]), Standing::Deployed { .. }), "the stopped birth is admitted by its node id, whatever name it presents");
         joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
         assert!(replacement_rx.borrow().is_none(), "the replacement's deployment heard nothing of the stopped node's join");
@@ -818,7 +818,7 @@ mod tests {
             let installed_clone = installed_addrs.clone();
 
             let door = JoinDoor {
-                me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
+                me: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
                 joins: joins.clone(),
                 answer: Arc::new(|| {
                     Box::pin(async {
@@ -854,8 +854,8 @@ mod tests {
 
             let dep_key = iroh::SecretKey::generate().public();
             let mut dep = deployed();
-            dep.name = rdm_core::PathName::new("elsewhere.rpc", "administrator").unwrap();
-            dep.kind = rdm_core::NodeKind::NodeAdmin;
+            dep.name = rdm_core::PathName::new("elsewhere.node", "administrator").unwrap();
+            dep.r#type = "node-admin".to_string();
             dep.endpoint_id = EndpointId(dep_key.to_string());
 
             // 1. Unknown birth -> `NotPrimary { primary }`.

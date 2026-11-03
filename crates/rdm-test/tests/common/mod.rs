@@ -99,7 +99,7 @@ use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_admin::accepted::{FabricTopology, MeshTopology};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{
     CreateRequest, CreateStep, DeploymentPipeline, LaunchTemplate, Timeouts, TopologySink,
 };
@@ -352,7 +352,7 @@ pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTop
 
 /// mesh1 with one admin and one rpc node: what the smoke deploys toward.
 pub fn add_node() -> FabricTopology {
-    FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)])))].into() }
+    FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])))].into() }
 }
 
 /// What `deploy_through_every_step` found.
@@ -408,7 +408,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     let data_root = template.data_root.clone();
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;
-    let node_name = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+    let node_name = rdm_core::PathName::new("mesh1.node", "1").unwrap();
     let sink = Published::default();
     let pipeline = DeploymentPipeline {
         provider: &*provider,
@@ -422,7 +422,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     };
 
     let created = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node_name)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: node_name, spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node_name)), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt: 1, node: node_name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await;
     let created = match created {
         Ok(c) => c,

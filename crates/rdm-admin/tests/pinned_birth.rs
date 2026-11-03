@@ -16,8 +16,8 @@ use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
 use std::sync::Arc;
 
-fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool) -> Node {
-    let mut n = Node::allocated(name, mesh, kind);
+fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, r#type);
     n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.is_fabric_primary = primary;
@@ -30,7 +30,7 @@ fn view() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
-        nodes: vec![node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true), node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false), node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false)],
+        nodes: vec![node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true), node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", false), node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", false)],
     }
 }
 
@@ -52,9 +52,9 @@ fn birth(t: &Topology, path: &PathName) -> PinnedBirth {
 
 async fn control_plane(t: &Topology) -> (Arc<MemoryBuildStateAdapter>, ControlPlane) {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(t), &t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
     let contexts = Arc::new(MemoryBuildStateAdapter::new());
-    let mut cp = crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time())
+    let mut cp = crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t.clone(), crate::adopted_time())
         .with_contexts(Arc::new(AttemptContexts::on(contexts as Arc<dyn LocalBuildLog>)));
     // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
     crate::bind_records(&cp, &[t]).await;
@@ -77,9 +77,9 @@ fn as_json(b: &PinnedBirth) -> (serde_json::Value, serde_json::Value) {
 #[tokio::test]
 async fn a_stop_carries_the_node_id_and_incarnation_the_gates_pinned() {
     let t = view();
-    let pinned = birth(&t, &PathName::new("mesh1.rpc", "1").unwrap());
+    let pinned = birth(&t, &PathName::new("mesh1.node", "1").unwrap());
     let (builds, cp) = control_plane(&t).await;
-    let opened = cp.open_attempt_in(tracing::info_span!("pinned-stop"), "pinned-stop", AttemptReason::Stop, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), ActionKind::Stop).await.expect("the stop is admitted");
+    let opened = cp.open_attempt_in(tracing::info_span!("pinned-stop"), "pinned-stop", AttemptReason::Stop, rdm_core::PathName::new("mesh1.node", "1").unwrap(), ActionKind::Stop).await.expect("the stop is admitted");
     let build = builds.read_build(&opened.build_id).await.unwrap();
     let action = serde_json::to_value(build.action.as_ref().expect("the attempt carries its action")).unwrap();
     assert_eq!((action["node_id"].clone(), action["from_incarnation"].clone()), as_json(&pinned), "the stop's action carries the pinned birth: {action}");
@@ -96,9 +96,9 @@ async fn a_stop_carries_the_node_id_and_incarnation_the_gates_pinned() {
 #[tokio::test]
 async fn a_node_delete_build_carries_the_birth_it_was_accepted_on() {
     let t = view();
-    let pinned = birth(&t, &PathName::new("mesh1.rpc", "2").unwrap());
+    let pinned = birth(&t, &PathName::new("mesh1.node", "2").unwrap());
     let (builds, cp) = control_plane(&t).await;
-    let opened = cp.submit("pinned-delete", TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.rpc", "2").unwrap() }).await.expect("the delete is accepted");
+    let opened = cp.submit("pinned-delete", TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.node", "2").unwrap() }).await.expect("the delete is accepted");
     let build = builds.read_build(&opened.build_id).await.unwrap();
     let ops = plan_for_build(&build, &t).operations;
     let delete = ops.iter().find(|op| op.key() == rdm_core::OperationId::node("node.delete", &pinned.node_id)).unwrap_or_else(|| panic!("the delete is planned: {ops:?}"));
@@ -115,16 +115,16 @@ async fn a_node_delete_build_carries_the_birth_it_was_accepted_on() {
 #[tokio::test]
 async fn a_birth_replaced_under_the_same_incarnation_is_refused_birth_replaced() {
     let t = view();
-    let pinned = birth(&t, &PathName::new("mesh1.rpc", "1").unwrap());
-    let now = replaced(&t, &PathName::new("mesh1.rpc", "1").unwrap(), true);
-    let held = birth(&now, &PathName::new("mesh1.rpc", "1").unwrap());
+    let pinned = birth(&t, &PathName::new("mesh1.node", "1").unwrap());
+    let now = replaced(&t, &PathName::new("mesh1.node", "1").unwrap(), true);
+    let held = birth(&now, &PathName::new("mesh1.node", "1").unwrap());
     assert_eq!(held.incarnation, pinned.incarnation);
-    let path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+    let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
     let refused = pinned.held_in(&now, &rdm_core::OperationId::node("node.stop", &pinned.node_id), &path).expect_err("the replaced birth is refused");
     assert_eq!(refused.reason(), "birth-replaced");
     assert_eq!((refused.expected.clone(), refused.observed.clone()), (pinned.clone(), Some(held.clone())), "the refusal names the pinned birth and the birth the view holds");
     assert!(refused.to_string().starts_with("birth-replaced: "), "{refused}");
-    assert_eq!(birth(&now, &PathName::new("mesh1.rpc", "1").unwrap()), held, "the replacement is untouched");
+    assert_eq!(birth(&now, &PathName::new("mesh1.node", "1").unwrap()), held, "the replacement is untouched");
 }
 
 /// CONTRACT (build.md §4.4): the check against the executing mesh-primary's view. A birth with
@@ -134,17 +134,17 @@ async fn a_birth_replaced_under_the_same_incarnation_is_refused_birth_replaced()
 #[tokio::test]
 async fn the_check_hands_the_operation_only_the_pinned_birth() {
     let t = view();
-    let path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-    let pinned = birth(&t, &PathName::new("mesh1.rpc", "1").unwrap());
-    let now = replaced(&t, &PathName::new("mesh1.rpc", "1").unwrap(), false);
+    let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+    let pinned = birth(&t, &PathName::new("mesh1.node", "1").unwrap());
+    let now = replaced(&t, &PathName::new("mesh1.node", "1").unwrap(), false);
     let refused = pinned.held_in(&now, &rdm_core::OperationId::node("node.delete", &pinned.node_id), &path).expect_err("another birth at the path is refused");
-    assert_eq!((refused.reason(), refused.observed.clone()), ("birth-replaced", Some(birth(&now, &PathName::new("mesh1.rpc", "1").unwrap()))));
+    assert_eq!((refused.reason(), refused.observed.clone()), ("birth-replaced", Some(birth(&now, &PathName::new("mesh1.node", "1").unwrap()))));
     let held = pinned.held_in(&t, &rdm_core::OperationId::node("node.delete", &pinned.node_id), &path).expect("the pinned birth passes").expect("the view holds it");
     assert_eq!(PinnedBirth::of(&held), Some(pinned.clone()));
     // Renamed to `<name>-old` at the unchanged path and a successor at the path: the pinned birth is the renamed one.
-    let mut renamed = replaced(&t, &PathName::new("mesh1.rpc", "1").unwrap(), false);
+    let mut renamed = replaced(&t, &PathName::new("mesh1.node", "1").unwrap(), false);
     let mut old = t.node(&path).unwrap().clone();
-    old.name = rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap();
+    old.name = rdm_core::PathName::new("mesh1.node", "1-old").unwrap();
     renamed.nodes.push(old);
     let held = pinned.held_in(&renamed, &rdm_core::OperationId::node("node.stop", &pinned.node_id), &path).expect("the renamed pinned birth passes").expect("the view holds it");
     assert_eq!(PinnedBirth::of(&held), Some(pinned.clone()));
@@ -161,8 +161,8 @@ async fn the_check_hands_the_operation_only_the_pinned_birth() {
 #[test]
 fn a_dead_births_step_delete_composes_its_stop() {
     let t = view();
-    let path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-    let pinned = birth(&t, &PathName::new("mesh1.rpc", "1").unwrap());
+    let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+    let pinned = birth(&t, &PathName::new("mesh1.node", "1").unwrap());
     let mut dead = t.node(&path).unwrap().clone();
     dead.status = NodeStatus::Dead;
     let op = rdm_admin::build::step_delete(&path, &pinned, Some(&dead));
@@ -196,7 +196,7 @@ impl rdm_admin::executor::OperationRunner for PinnedRunner {
         let BuildOperation::StopNode { node, node_id, from_incarnation, .. } = op else {
             return Err(rdm_admin::executor::RunEnd::failed(format!("unexpected operation: {op:?}")));
         };
-        let pin = PinnedBirth { mesh: op.mesh().unwrap().to_owned(), kind: op.kind().unwrap(), node_id: node_id.clone(), incarnation: from_incarnation.clone() };
+        let pin = PinnedBirth { mesh: op.mesh().unwrap().to_owned(), r#type: op.r#type().unwrap(), node_id: node_id.clone(), incarnation: from_incarnation.clone() };
         let held = pin
             .held_in(&*self.topology.read().await, &op.key(), node)
             .map_err(|r| rdm_admin::executor::RunEnd::failed(r.to_string()))?;
@@ -239,15 +239,15 @@ async fn a_not_yet_held_pinned_birth_ends_incomplete_and_resumes_on_that_birth_o
     use rdm_admin::build_state::{AttemptOutcome, BuildFact, BuildState};
 
     let full = view();
-    let path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-    let pinned = birth(&full, &PathName::new("mesh1.rpc", "1").unwrap());
+    let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+    let pinned = birth(&full, &PathName::new("mesh1.node", "1").unwrap());
     let (builds, cp) = control_plane(&full).await;
     let opened = cp
         .open_attempt_in(tracing::info_span!("pinned-resume"), "pinned-resume", AttemptReason::Stop, path.clone(), ActionKind::Stop)
         .await
         .expect("the stop is admitted");
 
-    // Start with the executor's view missing `mesh1.rpc.1`.
+    // Start with the executor's view missing `mesh1.node.1`.
     let mut missing = full.clone();
     missing.nodes.retain(|n| n.name != path);
     let topology = Arc::new(tokio::sync::RwLock::new(missing));
@@ -257,7 +257,7 @@ async fn a_not_yet_held_pinned_birth_ends_incomplete_and_resumes_on_that_birth_o
         permanent_error: std::sync::atomic::AtomicBool::new(false),
         acted_on: std::sync::Mutex::new(Vec::new()),
     });
-    let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+    let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     let fp_id = full.node(&me).unwrap().node_id.clone();
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner.clone());
     let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
@@ -311,7 +311,7 @@ async fn a_not_yet_held_pinned_birth_ends_incomplete_and_resumes_on_that_birth_o
     assert_eq!(*runner.acted_on.lock().unwrap(), vec![pinned.clone()], "resumed on the exact pinned birth");
 
     // Reopen with another birth at the name -> refused `birth-replaced` (`BuildState::Failed`).
-    let replaced_view = replaced(&full, &PathName::new("mesh1.rpc", "1").unwrap(), false);
+    let replaced_view = replaced(&full, &PathName::new("mesh1.node", "1").unwrap(), false);
     records.install_projected(&topology, || replaced_view).await;
     let reopened = cp
         .open_attempt_in(tracing::info_span!("pinned-replaced"), "pinned-replaced", AttemptReason::Stop, path.clone(), ActionKind::Stop)

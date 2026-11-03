@@ -20,11 +20,11 @@ use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;
 
 const TTL: Duration = Duration::from_secs(60);
-fn stopped() -> PathName { PathName::new("mesh1.rpc", "1").unwrap() }
-fn young() -> PathName { PathName::new("mesh1.rpc", "2").unwrap() }
+fn stopped() -> PathName { PathName::new("mesh1.node", "1").unwrap() }
+fn young() -> PathName { PathName::new("mesh1.node", "2").unwrap() }
 
-fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool, fabric_primary: bool) -> Node {
-    let mut n = Node::allocated(name, mesh, kind);
+fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool, fabric_primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, r#type);
     n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = primary;
@@ -32,12 +32,12 @@ fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary:
     n
 }
 
-/// One mesh: two node-admins (`fabric` holds the fabric-primary role) and three rpc nodes; `mesh1.rpc.1`
-/// and `mesh1.rpc.2` are stopped (Leaving, the process alive).
+/// One mesh: two node-admins (`fabric` holds the fabric-primary role) and three rpc nodes; `mesh1.node.1`
+/// and `mesh1.node.2` are stopped (Leaving, the process alive).
 fn view(fabric: &PathName) -> Topology {
-    let mut nodes = vec![node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, *fabric == PathName::new("mesh1.admin", "1").unwrap(), *fabric == PathName::new("mesh1.admin", "1").unwrap()), node(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, *fabric == PathName::new("mesh1.admin", "2").unwrap(), *fabric == PathName::new("mesh1.admin", "2").unwrap()), node(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, true, false)];
+    let mut nodes = vec![node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", *fabric == PathName::new("mesh1.node-admin", "1").unwrap(), *fabric == PathName::new("mesh1.node-admin", "1").unwrap()), node(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", *fabric == PathName::new("mesh1.node-admin", "2").unwrap(), *fabric == PathName::new("mesh1.node-admin", "2").unwrap()), node(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", true, false)];
     for p in [stopped(), young()] {
-        let mut n = node(p, "mesh1", rdm_core::NodeKind::RpcNode, false, false);
+        let mut n = node(p, "mesh1", "node", false, false);
         n.status = NodeStatus::Leaving;
         n.stopped = true;
         nodes.push(n);
@@ -116,10 +116,10 @@ fn replace_steps(b: &(PathName, NodeId, IncarnationId)) -> AttemptAction {
             Step::LeaveMesh { node: node.clone() },
             Step::Update { node: node.clone(), name: node.renamed().unwrap() },
             Step::Stop { node: node.renamed().unwrap() },
-            Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: node.clone(), executable: None },
+            Step::Create { mesh: "mesh1".into(), r#type: "node".into(), node: node.clone(), executable: None },
             Step::Delete { node: node.renamed().unwrap() },
         ],
-        pinned: vec![(node, rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: b.1.clone(), incarnation: b.2.clone() })],
+        pinned: vec![(node, rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node".into(), node_id: b.1.clone(), incarnation: b.2.clone() })],
     }
 }
 
@@ -135,11 +135,11 @@ async fn period(cp: &ControlPlane, builds: &MemoryBuildStateAdapter, (path, node
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     let (action, reason, operation) = if stop {
-        (AttemptAction::Stop { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }, AttemptReason::Stop, rdm_core::OperationId::node("node.stop", &node_id))
+        (AttemptAction::Stop { mesh: "mesh1".into(), r#type: "node".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }, AttemptReason::Stop, rdm_core::OperationId::node("node.stop", &node_id))
     } else {
-        (AttemptAction::Start { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }, AttemptReason::Start, rdm_core::OperationId::node("node.start", &node_id))
+        (AttemptAction::Start { mesh: "mesh1".into(), r#type: "node".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }, AttemptReason::Start, rdm_core::OperationId::node("node.start", &node_id))
     };
-    let op = LifecycleOp { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: b0.to_string(), attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: at_ms, traceparent: None, tracestate: None };
+    let op = LifecycleOp { mesh: "mesh1".into(), r#type: "node".into(), build_id: b0.to_string(), attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: at_ms, traceparent: None, tracestate: None };
     builds.absorb(&[
         BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason, action: Some(action), opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: at_ms, context: None }),
         BuildFact::Claim(BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: executor(&cp).await }),
@@ -152,19 +152,19 @@ fn now(cp: &ControlPlane) -> u64 {
     cp.time.now_ms()
 }
 
-/// CONTRACT (§6.9 Action, Effect, Span): `mesh1.rpc.1`, stopped ten ttl ago by its own receipted
-/// stop, and `mesh1.rpc.2`, stopped just now, are both stopped. One sweep accepts exactly one
-/// ordinary node.delete Build, the one `DELETE /api/nodes/mesh1.rpc.1` accepts (`RemoveNode`), whose
-/// topology lacks `mesh1.rpc.1` and still names `mesh1.rpc.2`; the sweep is spanned
+/// CONTRACT (§6.9 Action, Effect, Span): `mesh1.node.1`, stopped ten ttl ago by its own receipted
+/// stop, and `mesh1.node.2`, stopped just now, are both stopped. One sweep accepts exactly one
+/// ordinary node.delete Build, the one `DELETE /api/nodes/mesh1.node.1` accepts (`RemoveNode`), whose
+/// topology lacks `mesh1.node.1` and still names `mesh1.node.2`; the sweep is spanned
 /// `rdm.node_admin.node.delete.via-stopped-ttl` with the node, its stop receipt's time, the ttl and
 /// the Build. Must NOT happen: a delete of the node stopped inside the ttl, or any write beside the Build.
 #[tokio::test]
 async fn a_node_stopped_past_the_ttl_is_collected_by_one_ordinary_delete_build() {
     let (spans, _g) = capture("i143-3072-collected");
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view(&PathName::new("mesh1.admin", "1").unwrap());
+    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
     let (old, young) = (birth(&t, &stopped()), birth(&t, &young()));
-    let cp = plane(builds.clone(), t, &PathName::new("mesh1.admin", "1").unwrap()).await;
+    let cp = plane(builds.clone(), t, &PathName::new("mesh1.node-admin", "1").unwrap()).await;
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     let stopped_at = now(&cp) - 10 * TTL.as_millis() as u64;
     period(&cp, &builds, &old, true, stopped_at).await;
@@ -182,7 +182,7 @@ async fn a_node_stopped_past_the_ttl_is_collected_by_one_ordinary_delete_build()
     let collected = spans.spans("rdm.node_admin.node.delete.via-stopped-ttl");
     assert_eq!(collected.len(), 1, "{collected:?}");
     let a = &collected[0].1;
-    assert_eq!(((a["node_path"].as_str(), a["node_name"].as_str()), a["stopped_at"].as_str(), a["ttl"].as_str(), a["build_id"].as_str()), (("mesh1.rpc", "1"), stopped_at.to_string().as_str(), "60000", build_id.as_str()), "{a:?}");
+    assert_eq!(((a["node_path"].as_str(), a["node_name"].as_str()), a["stopped_at"].as_str(), a["ttl"].as_str(), a["build_id"].as_str()), (("mesh1.node", "1"), stopped_at.to_string().as_str(), "60000", build_id.as_str()), "{a:?}");
 }
 
 /// CONTRACT (§6.9 Setting): unset, `RDM_STOPPED_NODE_TTL` is RDM's shipped 30 minutes; blank means
@@ -201,16 +201,16 @@ async fn a_blank_ttl_runs_no_sweep() {
     assert!(ttl_from_env(Some("0s")).unwrap_err().contains("RDM_STOPPED_NODE_TTL"), "a zero ttl is refused: blank is how forever is said, never zero");
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view(&PathName::new("mesh1.admin", "1").unwrap());
+    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
     let old = birth(&t, &stopped());
-    let cp = plane(builds.clone(), t, &PathName::new("mesh1.admin", "1").unwrap()).await;
+    let cp = plane(builds.clone(), t, &PathName::new("mesh1.node-admin", "1").unwrap()).await;
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     period(&cp, &builds, &old, true, 1).await;
     assert_eq!(cp.sweep_stopped(None).await, Swept::Forever);
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0), "nothing was submitted");
 }
 
-/// CONTRACT (§6.9 Recheck): the scan selects `mesh1.rpc.1`, stopped past the ttl. Before the
+/// CONTRACT (§6.9 Recheck): the scan selects `mesh1.node.1`, stopped past the ttl. Before the
 /// delete is admitted the node is started (its start receipted, the view holding it live again):
 /// the admission runs the stopped check again and refuses by name, `node-not-stopped`; a second
 /// candidate, referenced by a Build opened after the scan, is refused `referenced-by-open-build`.
@@ -219,16 +219,16 @@ async fn a_blank_ttl_runs_no_sweep() {
 async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     let (spans, _g) = capture("i143-3072-recheck");
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view(&PathName::new("mesh1.admin", "1").unwrap());
+    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
     let (old, other) = (birth(&t, &stopped()), birth(&t, &young()));
-    let cp = plane(builds.clone(), t, &PathName::new("mesh1.admin", "1").unwrap()).await;
+    let cp = plane(builds.clone(), t, &PathName::new("mesh1.node-admin", "1").unwrap()).await;
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     period(&cp, &builds, &old, true, 1).await;
     period(&cp, &builds, &other, true, 2).await;
     let candidates: Vec<_> = cp.scan_stopped(TTL, now(&cp)).await.into_iter().filter_map(|v| if let Verdict::Expired(c) = v { Some(c) } else { None }).collect();
     assert_eq!(candidates.iter().map(|c| c.node.clone()).collect::<Vec<_>>(), vec![stopped(), young()], "both are stopped past the ttl at the scan");
 
-    // After the scan: mesh1.rpc.1 is started.
+    // After the scan: mesh1.node.1 is started.
     period(&cp, &builds, &old, false, now(&cp)).await;
     cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == old.0).for_each(|n| {
         n.stopped = false;
@@ -237,7 +237,7 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     let refused = cp.collect_stopped(&candidates[0], TTL).await;
     assert!(matches!(&refused, Err(Refusal::Reject(r)) if r.reason() == "node-not-stopped"), "{refused:?}");
 
-    // After the scan: the accepted Build opens the replace steps of mesh1.rpc.2's birth, whose attempt
+    // After the scan: the accepted Build opens the replace steps of mesh1.node.2's birth, whose attempt
     // fails part-way: the Build is open, not in flight, and keeps the birth as its rollback point.
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     builds.absorb(&[
@@ -257,16 +257,16 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
 }
 
 /// CONTRACT (§6.9 Selection: "except a birth an open Build still references (a replace
-/// mid-transfer keeps its rollback point)"): `mesh1.rpc.1`, stopped past the ttl, is the birth a
+/// mid-transfer keeps its rollback point)"): `mesh1.node.1`, stopped past the ttl, is the birth a
 /// replace steps left part-way (its attempt failed, the Build is not settled). The scan says it is
 /// referenced by that Build and the sweep submits nothing for it.
 #[tokio::test]
 async fn a_stopped_birth_an_open_replace_build_references_is_skipped() {
     let (spans, _g) = capture("i143-3072-referenced");
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view(&PathName::new("mesh1.admin", "1").unwrap());
+    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
     let old = birth(&t, &stopped());
-    let cp = plane(builds.clone(), t, &PathName::new("mesh1.admin", "1").unwrap()).await;
+    let cp = plane(builds.clone(), t, &PathName::new("mesh1.node-admin", "1").unwrap()).await;
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     period(&cp, &builds, &old, true, 1).await;
     let young = birth(&cp.topology.read().await.clone(), &young());
@@ -286,17 +286,17 @@ async fn a_stopped_birth_an_open_replace_build_references_is_skipped() {
     assert!(skipped.iter().any(|(_, a)| (a["node_path"].as_str(), a["node_name"].as_str()) == (stopped().path.as_str(), stopped().name.as_str())), "{skipped:?}");
 }
 
-/// CONTRACT (§6.9 Age: "never an earlier stop before a later start"): `mesh1.rpc.1` was stopped ten
+/// CONTRACT (§6.9 Age: "never an earlier stop before a later start"): `mesh1.node.1` was stopped ten
 /// ttl ago, started, and stopped again just now: its age is the latest stop, and it is young.
-/// `mesh1.rpc.2` was stopped ten ttl ago and started, and is stopped with no stop receipt of its own
+/// `mesh1.node.2` was stopped ten ttl ago and started, and is stopped with no stop receipt of its own
 /// since: no receipt opens its current stopped period, so it is skipped by name, never expired.
 #[tokio::test]
 async fn an_earlier_stop_before_a_later_start_does_not_count() {
     let (spans, _g) = capture("i143-3072-current-period");
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view(&PathName::new("mesh1.admin", "1").unwrap());
+    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
     let (a, b) = (birth(&t, &stopped()), birth(&t, &young()));
-    let cp = plane(builds.clone(), t, &PathName::new("mesh1.admin", "1").unwrap()).await;
+    let cp = plane(builds.clone(), t, &PathName::new("mesh1.node-admin", "1").unwrap()).await;
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     let long_ago = now(&cp) - 10 * TTL.as_millis() as u64;
     period(&cp, &builds, &a, true, long_ago).await;
@@ -321,12 +321,12 @@ async fn an_earlier_stop_before_a_later_start_does_not_count() {
 #[tokio::test]
 async fn a_candidate_refused_build_in_progress_is_collected_on_a_later_sweep() {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view(&PathName::new("mesh1.admin", "1").unwrap());
+    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
     let (a, b) = (birth(&t, &stopped()), birth(&t, &young()));
-    let cp = plane(builds.clone(), t, &PathName::new("mesh1.admin", "1").unwrap()).await;
+    let cp = plane(builds.clone(), t, &PathName::new("mesh1.node-admin", "1").unwrap()).await;
     period(&cp, &builds, &a, true, 1).await;
     period(&cp, &builds, &b, true, 2).await;
-    let other = cp.submit("build.create", crate::named_request(&cp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await).await.expect("a topology change is accepted").build_id;
+    let other = cp.submit("build.create", crate::named_request(&cp, TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }).await).await.expect("a topology change is accepted").build_id;
 
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::BuildInProgress { node: a.0.clone(), current_build_id: other.clone() });
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(other.clone()));
@@ -343,31 +343,31 @@ async fn a_candidate_refused_build_in_progress_is_collected_on_a_later_sweep() {
 }
 
 /// CONTRACT (§6.9 Who: "On a fabric-primary handover the successor sweeps from the same durable
-/// receipts"): the Build log of the old fabric-primary is held by its successor `mesh1.admin.2`.
-/// The successor ages `mesh1.rpc.1` from the same stop receipt (its time, never the handover's) and
+/// receipts"): the Build log of the old fabric-primary is held by its successor `mesh1.node-admin.2`.
+/// The successor ages `mesh1.node.1` from the same stop receipt (its time, never the handover's) and
 /// collects it; the old primary, no longer holding the fabric-primary role, sweeps nothing.
 #[tokio::test]
 async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view(&PathName::new("mesh1.admin", "1").unwrap());
+    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
     let old = birth(&t, &stopped());
-    let first = plane(builds.clone(), t.clone(), &PathName::new("mesh1.admin", "1").unwrap()).await;
+    let first = plane(builds.clone(), t.clone(), &PathName::new("mesh1.node-admin", "1").unwrap()).await;
     let stopped_at = now(&first) - 10 * TTL.as_millis() as u64;
     period(&first, &builds, &old, true, stopped_at).await;
 
-    // The handover: mesh1.admin.2 holds the role and the same Build log.
+    // The handover: mesh1.node-admin.2 holds the role and the same Build log.
     let mut moved = t.clone();
     for n in moved.nodes.iter_mut() {
-        n.is_fabric_primary = n.name == rdm_core::PathName::new("mesh1.admin", "2").unwrap();
-        if n.kind == NodeKind::NodeAdmin {
+        n.is_fabric_primary = n.name == rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
+        if n.r#type == "node-admin" {
             n.is_primary = n.is_fabric_primary;
         }
     }
     *first.topology.write().await = moved.clone();
     let held = Arc::new(MemoryBuildStateAdapter::new());
     held.absorb(&builds.facts().await.unwrap()).await;
-    let accepted = AcceptedStore::seeded(&*held, moved.fabric.id.clone(), desired(&moved), &moved.node(&PathName::new("mesh1.admin", "2").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
-    let successor = crate::control_plane(held.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), moved, crate::adopted_time());
+    let accepted = AcceptedStore::seeded(&*held, moved.fabric.id.clone(), desired(&moved), &moved.node(&PathName::new("mesh1.node-admin", "2").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let successor = crate::control_plane(held.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), moved, crate::adopted_time());
     let b = successor.builds.current_build().await.unwrap().into_build_id().unwrap();
     if !matches!(held.read_build(&b).await.unwrap().state, rdm_admin::build_state::BuildState::Complete) {
         settle(&held, &b, &executor(&successor).await).await;
@@ -380,7 +380,7 @@ async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
 }
 
 /// CONTRACT (§6.9 Selection, "Distinct facts get distinct arms and distinct spans"): once the sweep's
-/// node.delete Build of `mesh1.rpc.1` is accepted, the view still holds the stopped birth until the
+/// node.delete Build of `mesh1.node.1` is accepted, the view still holds the stopped birth until the
 /// delete runs. The next sweep says why it is not collected again: its delete is under way, spanned
 /// `rdm.node_admin.node.reject.via-delete-under-way` with the node. Must NOT happen: that fact told as
 /// a missing stop receipt (`via-no-current-stop-receipt`).
@@ -388,9 +388,9 @@ async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
 async fn a_stopped_node_whose_delete_is_under_way_is_skipped_by_its_own_name() {
     let (spans, _g) = capture("i143-3072-delete-under-way");
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view(&PathName::new("mesh1.admin", "1").unwrap());
+    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
     let old = birth(&t, &stopped());
-    let cp = plane(builds.clone(), t, &PathName::new("mesh1.admin", "1").unwrap()).await;
+    let cp = plane(builds.clone(), t, &PathName::new("mesh1.node-admin", "1").unwrap()).await;
     period(&cp, &builds, &old, true, 1).await;
     let Swept::Submitted { build_id, .. } = cp.sweep_stopped(Some(TTL)).await else { panic!("the expired node is collected") };
 
@@ -403,7 +403,7 @@ async fn a_stopped_node_whose_delete_is_under_way_is_skipped_by_its_own_name() {
 }
 
 /// CONTRACT (§6.9 Age: "A birth whose receipt cannot be read is skipped by name, never treated as
-/// expired"): `mesh1.rpc.1`'s current stop receipt is held but does not decode as the stop's
+/// expired"): `mesh1.node.1`'s current stop receipt is held but does not decode as the stop's
 /// lifecycle op. The sweep skips it, spanned `rdm.node_admin.node.reject.via-unreadable-stop-receipt`
 /// with the node and the decode error, and submits nothing. Must NOT happen: that fact told as no
 /// receipt at all (`via-no-current-stop-receipt`), or a delete.
@@ -411,13 +411,13 @@ async fn a_stopped_node_whose_delete_is_under_way_is_skipped_by_its_own_name() {
 async fn a_stopped_node_whose_stop_receipt_cannot_be_read_is_skipped_by_its_own_name() {
     let (spans, _g) = capture("i143-3072-unreadable-receipt");
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view(&PathName::new("mesh1.admin", "1").unwrap());
+    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
     let (path, node_id, incarnation) = birth(&t, &stopped());
-    let cp = plane(builds.clone(), t, &PathName::new("mesh1.admin", "1").unwrap()).await;
+    let cp = plane(builds.clone(), t, &PathName::new("mesh1.node-admin", "1").unwrap()).await;
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Stop, action: Some(AttemptAction::Stop { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation }), opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, context: None }),
+        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Stop, action: Some(AttemptAction::Stop { mesh: "mesh1".into(), r#type: "node".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation }), opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, context: None }),
         BuildFact::Claim(BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: executor(&cp).await }),
         BuildFact::Step(BuildStepReceipt { mesh: None, build_id: b0.clone(), attempt, operation: rdm_core::OperationId::node("node.stop", &node_id), step: "Complete".into(), outcome: StepOutcome::Complete, output: Some(serde_json::json!("not a lifecycle op")), executor: Some(executor(&cp).await) }),
         BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Converged }),
@@ -495,14 +495,14 @@ impl rdm_admin::build_state::BuildStateAdapter for UnreadableCurrent {
 #[tokio::test]
 async fn a_stopped_node_whose_current_build_cannot_be_read_is_skipped_as_an_unreadable_build_log() {
     let (spans, _g) = capture("i143-3072-unreadable-accepted");
-    let t = view(&PathName::new("mesh1.admin", "1").unwrap());
+    let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
     let held = MemoryBuildStateAdapter::new();
-    let accepted = AcceptedStore::seeded(&held, t.fabric.id.clone(), desired(&t), &t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
-    let cp = crate::control_plane(Arc::new(UnreadableCurrent(held)), accepted.clone(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time());
+    let accepted = AcceptedStore::seeded(&held, t.fabric.id.clone(), desired(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let cp = crate::control_plane(Arc::new(UnreadableCurrent(held)), accepted.clone(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t.clone(), crate::adopted_time());
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     let unreadable = spans.spans("rdm.node_admin.node.reject.via-unreadable-build-log");
     assert!(unreadable.iter().any(|(_, a)| (a["node_path"].as_str(), a["node_name"].as_str()) == (stopped().path.as_str(), stopped().name.as_str()) && a["reason"].contains("refuses the acceptance-order index read")), "{unreadable:?}");
-    let empty = crate::control_plane(Arc::new(MemoryBuildStateAdapter::new()), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time());
+    let empty = crate::control_plane(Arc::new(MemoryBuildStateAdapter::new()), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t, crate::adopted_time());
     assert_eq!(empty.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     let none = spans.spans("rdm.node_admin.node.reject.via-no-current-build");
     assert!(none.iter().any(|(_, a)| (a["node_path"].as_str(), a["node_name"].as_str()) == (stopped().path.as_str(), stopped().name.as_str())), "{none:?}");

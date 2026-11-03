@@ -22,7 +22,7 @@ use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
 use rdm_core::outcome::{Code, MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
 use rdm_core::filter::Filter;
-use rdm_core::{IncarnationId, MemberStatus, NodeId, NodeKind, PathName};
+use rdm_core::{IncarnationId, MemberStatus, NodeId, PathName};
 use rdm_node::node_hooks::{CallFailedCtx, OnCallFailed};
 use rdm_node::operation::{Decision, OperationStore, Operations, Recorded};
 use rdm_transport::topology::TopologyView;
@@ -283,7 +283,7 @@ pub struct Node {
 impl Node {
     /// The node id of its mesh's broker primary, as its topology holds it now.
     fn broker_primary(&self) -> Option<NodeId> {
-        self.view.get()?.primaries().node_type_primary(&self.mesh, NodeKind::Broker).map(|p| p.node_id)
+        self.view.get()?.primaries().node_type_primary(&self.mesh, "broker").map(|p| p.node_id)
     }
 
     /// The broker a forward asks now ([`choose`]): the broker primary its topology holds, or, once
@@ -291,7 +291,7 @@ impl Node {
     fn broker_to_ask(&self) -> Option<NodeId> {
         let view = self.view.get()?;
         let ready: Vec<(NodeId, IncarnationId)> = view
-            .nodes_get(&Filter::new().eq("mesh", [self.mesh.clone()]).eq("kind", [NodeKind::Broker.segment()]).eq("status", ["ready"]))
+            .nodes_get(&Filter::new().eq("mesh", [self.mesh.clone()]).eq("type", ["broker"]).eq("status", ["ready"]))
             .unwrap_or_default()
             .into_iter()
             .map(|d| (d.node.node_id, d.node.incarnation))
@@ -587,7 +587,7 @@ mod tests {
     async fn on_call_failed_passes_its_receiver_over_and_a_broker_naming_it_primary_sends_the_gateway_back() {
         let passed = PassedOver::default();
         let (receiver, _) = broker();
-        let birth = |node_id: NodeId| rdm_node::node_hooks::CallFailedBirth { node_id, incarnation: IncarnationId::mint(), name: PathName::numbered("mesh1", NodeKind::Broker, 1) };
+        let birth = |node_id: NodeId| rdm_node::node_hooks::CallFailedBirth { node_id, incarnation: IncarnationId::mint(), name: PathName::numbered("mesh1", "broker", 1) };
         let reason = rdm_transport::CallFailedReason::NotSent(rdm_core::outcome::NotSentReason::Deadline);
         PassOver(passed.clone()).on_call_failed(&CallFailedCtx { sender: birth(NodeId::mint()), receiver: Some(birth(receiver.clone())), reason }).await;
         assert!(passed.0.borrow().contains_key(&receiver), "the spent call's receiver is passed over");

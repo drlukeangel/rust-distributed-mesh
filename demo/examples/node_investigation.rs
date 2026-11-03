@@ -12,7 +12,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::inspect_runtime;
-use rdm_admin::model::{Fabric, Mesh, Node, NodeId, NodeKind, NodeStatus, PathName, ScopeStatus};
+use rdm_admin::model::{Fabric, Mesh, Node, NodeId, NodeStatus, PathName, ScopeStatus};
 use rdm_admin::node_investigation::investigate;
 use rdm_admin::offline::TickleClient;
 use rdm_admin::topology::Topology;
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_investigation [<path> <name>]")),
         _ => model_nodes
             .iter()
-            .find(|n| n.mesh == admin.mesh && n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .find(|n| n.mesh == admin.mesh && n.kind != "node-admin" && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no ready role node in {}", admin.mesh))?,
     };
     let dir = target.data_dir.as_deref().ok_or_else(|| anyhow!("missing data_dir"))?;

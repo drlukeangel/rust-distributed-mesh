@@ -136,8 +136,8 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             fabric,
             fabric_id,
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::NodeAdmin,
-            name: rdm_core::PathName::new("mesh1.admin", "2").unwrap(),
+            r#type: "node-admin".into(),
+            name: rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -154,7 +154,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             declared: Default::default(),
         };
         let runtime = rdm_core::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
-        let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
+        let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
@@ -189,7 +189,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         // Blocked { node_id, incarnation, reason, retry_on }, and the executor's `ready_blocker` names it.
         let PreNodeReadyState::Blocked { reason: hook_reason, .. } = blocked.clone() else { unreachable!() };
         let joiner_digest = joiner.digest.lock().unwrap().clone();
-        let mut subject = rdm_admin::model::Node::allocated(joiner_digest.node.name.clone(), joiner_digest.node.mesh.clone(), joiner_digest.node.kind);
+        let mut subject = rdm_admin::model::Node::allocated(joiner_digest.node.name.clone(), joiner_digest.node.mesh.clone(), &joiner_digest.node.r#type);
         subject.node_id = joiner_digest.node.node_id.clone();
         subject.incarnation_id = Some(joiner_digest.node.incarnation.clone());
         let observer = rdm_admin::admin::TopologyObserver {
@@ -220,7 +220,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
                     .lock()
                     .unwrap()
                     .values()
-                    .filter(|(n, _, f)| n == "rdm.node_admin.runtime.reject.via-not-ready" && f.get("node_path").map(String::as_str) == Some("mesh1.admin") && f.get("node_name").map(String::as_str) == Some("2"))
+                    .filter(|(n, _, f)| n == "rdm.node_admin.runtime.reject.via-not-ready" && f.get("node_path").map(String::as_str) == Some("mesh1.node-admin") && f.get("node_name").map(String::as_str) == Some("2"))
                     .filter_map(|(_, _, f)| f.get("detail").cloned())
                     .collect();
                 if found.iter().any(|d| d.contains("pre_node_ready is blocked")) {

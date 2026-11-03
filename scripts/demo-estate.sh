@@ -75,8 +75,11 @@ up() {
   # the UI submits naming each path's executable (the consumer's, beside the UI in $BIN, by sha256).
   # RDM_BIN_DIR is where the node-admin itself is found, never a launch source.
   export RDM_EVIDENCE_DIR=$ROOT/evidence
-  MESH_SPAWN_TYPE=process RDM_FABRIC=$FABRIC RDM_MESH=$M1 \
-  RDM_DATA_DIR=$ROOT/$M1.admin.1 RDM_STORE_DIR=$ROOT/store RDM_ESTATE_ROOT=$ROOT \
+  # The demo's own node types, declared on the Fabric at Day 0 (RDM_NODE_TYPES): a broker keeps its
+  # storage, a gateway's and a compute's are ephemeral.
+  local types='[{"name":"broker","storage_persistence":{"persistence":"persistent","disposition":"preserve"}},{"name":"gateway","storage_persistence":{"persistence":"ephemeral"}},{"name":"compute","storage_persistence":{"persistence":"ephemeral"}}]'
+  MESH_SPAWN_TYPE=process RDM_FABRIC=$FABRIC RDM_MESH=$M1 RDM_NODE_TYPES=$types \
+  RDM_DATA_DIR=$ROOT/$M1.node-admin.1 RDM_STORE_DIR=$ROOT/store RDM_ESTATE_ROOT=$ROOT \
   RDM_BIN_DIR=$BIN \
   RDM_NODE_ADMIN_API_BIND=127.0.0.1:0 \
     setsid nohup "$BIN/rshape-node-admin" > "$ROOT/admin1.log" 2>&1 < /dev/null &
@@ -96,10 +99,10 @@ up() {
   # The UI's port is the one it bound, as its admin's row config holds it (admin_ui_port).
   local port=""
   for _ in $(seq 1 120); do
-    port=$(ui_port "$M1.admin.1")
+    port=$(ui_port "$M1.node-admin.1")
     [ -n "$port" ] && curl -sf "http://${UI_BIND%:*}:$port/api/health" >/dev/null 2>&1 && break; sleep 0.5
   done
-  [ -n "$port" ] || { echo "the UI's port is not on $M1.admin.1's row config; see $ROOT/ui.log"; exit 1; }
+  [ -n "$port" ] || { echo "the UI's port is not on $M1.node-admin.1's row config; see $ROOT/ui.log"; exit 1; }
   UI_BIND=${UI_BIND%:*}:$port; echo "$UI_BIND" > "$ROOT/ui_bind"
   echo "UI up: http://$UI_BIND"
   for _ in $(seq 1 120); do

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 // Identity, path and port types are the Mesh EF's (rafka-mesh-entity);
 // node-admin uses them, it does not redefine them.
 pub use crate::path::is_valid_mesh_name;
-pub use crate::{DeploymentId, EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName, PathNameError};
+pub use crate::{DeploymentId, EndpointId, FabricId, IncarnationId, MeshId, NodeId, PathName, PathNameError};
 
 /// Node lifecycle status as published on views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -151,10 +151,8 @@ pub struct Node {
     pub renamed_from: Option<PathName>,
     /// The node's separate path and name fields.
     pub name: PathName,
-    /// The node's kind.
-    pub kind: NodeKind,
-    /// The immutable node type declared at creation, independent of its path and name.
-    pub node_type: String,
+    /// The node's immutable type, set at creation, independent of its path and name.
+    pub r#type: String,
     /// The name of the node's mesh.
     pub mesh: String,
     /// The node's minted id.
@@ -209,11 +207,10 @@ impl Node {
     }
 
     /// A newly allocated node: identity only, nothing realised yet.
-    pub fn allocated(name: PathName, mesh: impl Into<String>, kind: NodeKind) -> Self {
+    pub fn allocated(name: PathName, mesh: impl Into<String>, r#type: &str) -> Self {
         Self {
             renamed_from: None,
-            kind,
-            node_type: kind.node_type().to_string(),
+            r#type: r#type.to_string(),
             mesh: mesh.into(),
             name,
             node_id: NodeId::mint(),
@@ -235,7 +232,7 @@ impl Node {
         }
     }
 
-    /// The node's immutable path, separate from its name and explicit mesh/kind metadata.
+    /// The node's immutable path, separate from its name and explicit mesh and type.
     pub fn path(&self) -> String {
         self.name.path()
     }
@@ -245,27 +242,26 @@ impl Node {
         self.name.name()
     }
 
-    /// The node's `node_type`.
-    pub fn node_type(&self) -> &str {
-        &self.node_type
+    /// Whether the node is a node-admin.
+    pub fn is_node_admin(&self) -> bool {
+        crate::meta::is_node_admin(&self.r#type)
     }
 
-    /// Set the node's `node_type` at creation (`node.create`), normalizing an empty string to
-    /// [`crate::status::DEFAULT_NODE_TYPE`] (`"node"`) and refusing any value
-    /// outside the shared identifier grammar by name (`node_type`).
-    pub fn with_node_type(mut self, node_type: &str) -> Result<Self, String> {
-        let normalized = crate::status::normalize_node_type(node_type);
-        if let Some(reason) = crate::status::node_type_refusal(&normalized) {
+    /// Set the node's `type` at creation (`node.create`), normalizing an empty string to `node` and
+    /// refusing any value outside the shared identifier grammar by name (`type`).
+    pub fn with_type(mut self, r#type: &str) -> Result<Self, String> {
+        let normalized = crate::status::normalize_type(r#type);
+        if let Some(reason) = crate::status::type_refusal(&normalized) {
             return Err(reason);
         }
-        self.node_type = normalized;
+        self.r#type = normalized;
         Ok(self)
     }
 
-    /// Attempt to update `node_type` after creation (`node.update`): always refused by name
-    /// (`node_type` is immutable once set at `node.create`).
-    pub fn update_node_type(&mut self, requested_node_type: &str) -> Result<(), String> {
-        Err(crate::status::node_type_update_refusal(self.node_type(), requested_node_type))
+    /// Attempt to update `type` after creation (`node.update`): always refused by name (`type` is
+    /// immutable once set at `node.create`).
+    pub fn update_type(&mut self, requested: &str) -> Result<(), String> {
+        Err(crate::status::type_update_refusal(&self.r#type, requested))
     }
 }
 
@@ -299,22 +295,22 @@ mod tests {
 
     #[test]
     fn path_name_round_trips() {
-        for (path, name) in [("mesh1.rpc", "2"), ("mesh1.admin", "1"), ("m-2.rpc", "17")] {
+        for (path, name) in [("mesh1.node", "2"), ("mesh1.node-admin", "1"), ("m-2.node", "17")] {
             let p = PathName::new(path, name).unwrap();
             assert_eq!((&*p.path, &*p.name), (path, name));
             let json = serde_json::to_string(&p).unwrap();
             assert_eq!(serde_json::from_str::<PathName>(&json).unwrap(), p);
         }
-        let p: PathName = crate::PathName::new("mesh1.rpc", "2").unwrap();
-        assert_eq!(p, PathName::numbered("mesh1", NodeKind::RpcNode, 2));
+        let p: PathName = crate::PathName::new("mesh1.node", "2").unwrap();
+        assert_eq!(p, PathName::numbered("mesh1", "node", 2));
     }
 
     #[test]
     fn path_name_refuses_invalid_fields_and_accepts_free_text() {
-        assert!(PathName::new("Mesh1.rpc", "1").is_err());
+        assert!(PathName::new("Mesh1.node", "1").is_err());
         assert!(PathName::new("mesh1..rpc", "1").is_err());
-        assert!(PathName::new("mesh1.rpc", "a.b").is_err());
-        for (path, name) in [("mesh1.registry", "1"), ("mesh1.rpc", "0"), ("mesh1.rpc", "01"), ("arbitrary.path", "north")] {
+        assert!(PathName::new("mesh1.node", "a.b").is_err());
+        for (path, name) in [("mesh1.registry", "1"), ("mesh1.node", "0"), ("mesh1.node", "01"), ("arbitrary.path", "north")] {
             let location = PathName::new(path, name).unwrap();
             assert_eq!((&*location.path, &*location.name), (path, name));
         }
@@ -341,12 +337,11 @@ mod tests {
             assert_eq!(serde_json::to_value(status).unwrap(), spelled, "the row status is spelled as states.md names it");
             assert_eq!(postcard::to_allocvec(&status).unwrap(), [at], "appended after Withdrawn: no position moves");
         }
-        assert_eq!(serde_json::to_value(NodeKind::RpcNode).unwrap(), "rpc_node");
-        assert_eq!(serde_json::to_value(NodeKind::NodeAdmin).unwrap(), "node_admin");
-        let n = Node::allocated(crate::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", crate::NodeKind::RpcNode);
+        let n = Node::allocated(crate::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node");
         let v = serde_json::to_value(&n).unwrap();
-        assert_eq!(v["name"], serde_json::json!({"path": "mesh1.rpc", "name": "2"}));
-        assert_eq!(v["kind"], "rpc_node");
+        assert_eq!(v["name"], serde_json::json!({"path": "mesh1.node", "name": "2"}));
+        assert_eq!(v["type"], "node");
+        assert!(v.get("kind").is_none() && v.get("node_type").is_none(), "one field names the type: {v}");
         assert_eq!(v["mesh"], "mesh1");
         assert_eq!(v["status"], "pending");
     }
@@ -370,22 +365,22 @@ pub struct FabricIdentity {
 }
 
 #[cfg(test)]
-mod node_type_tests {
+mod type_tests {
     use super::*;
 
     // @feature: node-records
-    /// CONTRACT (i150 R1): a declared node type is stored as its own field; changing the
+    /// CONTRACT (i150 R1): a node's type is stored as its own field; changing the
     /// path/name cannot change that type, and a later type update is refused.
     #[test]
-    fn a_declared_node_type_is_independent_of_the_path() {
-        let mut node = Node::allocated(crate::PathName::new("mesh1.rpc", "north").unwrap(), "mesh1", crate::NodeKind::RpcNode).with_node_type("application-worker").unwrap();
-        assert_eq!(node.node_type(), "application-worker");
+    fn a_nodes_type_is_independent_of_the_path() {
+        let mut node = Node::allocated(crate::PathName::new("mesh1.node", "north").unwrap(), "mesh1", "node").with_type("application-worker").unwrap();
+        assert_eq!(node.r#type, "application-worker");
         node.name = crate::PathName::new("mesh2.gateway", "south").unwrap();
-        assert_eq!(node.node_type(), "application-worker");
-        assert!(node.update_node_type("gateway").unwrap_err().contains("application-worker"));
+        assert_eq!(node.r#type, "application-worker");
+        assert!(node.update_type("gateway").unwrap_err().contains("application-worker"));
         let encoded = serde_json::to_vec(&node).unwrap();
         let decoded: Node = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(decoded.node_type(), "application-worker");
-        assert_eq!(Node::allocated(node.name, "mesh1", crate::NodeKind::RpcNode).with_node_type("").unwrap().node_type(), crate::status::DEFAULT_NODE_TYPE);
+        assert_eq!(decoded.r#type, "application-worker");
+        assert_eq!(Node::allocated(node.name, "mesh1", "node").with_type("").unwrap().r#type, crate::meta::NODE);
     }
 }

@@ -96,13 +96,13 @@ impl OperationRunner for CallingOut {
     }
 }
 
-/// `mesh1.admin.1`'s executor door with its own gate, attempt 1 of the cell's Build claimed for it by
+/// `mesh1.node-admin.1`'s executor door with its own gate, attempt 1 of the cell's Build claimed for it by
 /// a fabric-primary elsewhere, and a run of two operations it plans.
 async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, RunPlan) {
     let memory = Arc::new(MemoryBuildStateAdapter::new());
     let runs = Arc::new(AttemptRuns::default());
     let builds: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(memory.clone(), runs.clone()));
-    let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
     admin.status = NodeStatus::Ready;
     admin.is_primary = true;
     admin.is_fabric_primary = true;
@@ -121,12 +121,12 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, R
         .await
         .unwrap();
     memory.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
-    let door = RunDoor { me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), builds, exec, runs, local: memory.clone(), gate: gate.clone() };
+    let door = RunDoor { me: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), builds, exec, runs, local: memory.clone(), gate: gate.clone() };
     let plan = RunPlan { operations: vec![BuildOperation::CreateMesh { mesh: "mesh2".into(), mesh_id: MeshId::mint() }, BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }], hand_off_to: None };
     (door, gate, plan)
 }
 
-/// CONTRACT (node-stop.md steps 3-4, R-ON1; stop_gate.rs:5-11): `mesh1.admin.1` serves
+/// CONTRACT (node-stop.md steps 3-4, R-ON1; stop_gate.rs:5-11): `mesh1.node-admin.1` serves
 /// `build.attempt.run` for a fabric-primary elsewhere and its run is inside its first operation when
 /// the admin's stop holds its gate. The stop's quiesce names the run (`build-run`) among the turns it
 /// waits for and resolves only once the run has ended: every call the run makes (its second
@@ -134,7 +134,7 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, R
 /// that resolves while the run is mid-operation, so the stopped admin's run calls out after its cut.
 #[tokio::test(start_paused = true)]
 async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cut_and_calls_out_no_more() {
-    let (capture, _guard) = capture("mesh1.admin.1");
+    let (capture, _guard) = capture("mesh1.node-admin.1");
     let calls = Arc::new(Calls::default());
     let (door, gate, plan) = executor(&calls, true).await;
     let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&build_id(), 1, &door.exec.executor, &CallContext::default(), &plan).await else { panic!("the claimed attempt is started") };
@@ -175,14 +175,14 @@ async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cu
 }
 
 /// CONTRACT (node-stop: a stopped node does nothing outward until it is started; stop_gate.rs:5-11):
-/// `mesh1.admin.1` is stopped (its gate stopped) when a fabric-primary elsewhere calls
+/// `mesh1.node-admin.1` is stopped (its gate stopped) when a fabric-primary elsewhere calls
 /// `build.attempt.run` for the attempt it claimed for it. The stopped admin answers the call (the run
 /// is started, so a later call reattaches to it) and its run waits at the gate: it makes no call while
 /// the admin is stopped. Once the admin starts, the run makes its calls and reaches its terminal.
 /// Must NOT happen: a run of a stopped admin calling out.
 #[tokio::test(start_paused = true)]
 async fn a_run_served_while_its_admin_is_stopped_calls_out_only_once_the_admin_starts() {
-    let (capture, _guard) = capture("mesh1.admin.1");
+    let (capture, _guard) = capture("mesh1.node-admin.1");
     let calls = Arc::new(Calls::default());
     let (door, gate, plan) = executor(&calls, false).await;
     let _ = gate.quiesce().await;
@@ -216,7 +216,7 @@ async fn a_run_served_while_its_admin_is_stopped_calls_out_only_once_the_admin_s
 /// waits on it, so neither ends and the stop never cuts.
 #[tokio::test(start_paused = true)]
 async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_under_its_turn_and_never_waits_at_the_gate() {
-    let (capture, _guard) = capture("mesh1.admin.1");
+    let (capture, _guard) = capture("mesh1.node-admin.1");
     let calls = Arc::new(Calls::default());
     let (door, gate, plan) = executor(&calls, false).await;
     let pass = gate.turn("build-drive").await;
@@ -260,12 +260,12 @@ async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_und
 /// path and name separately. Another node is refused, even with the same incarnation.
 #[tokio::test(start_paused = true)]
 async fn a_renamed_admin_runs_a_claimed_attempt_under_its_new_name() {
-    let (capture, _guard) = capture("mesh1.admin.1");
+    let (capture, _guard) = capture("mesh1.node-admin.1");
     let calls = Arc::new(Calls::default());
     let memory = Arc::new(MemoryBuildStateAdapter::new());
     let runs = Arc::new(AttemptRuns::default());
     let builds: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(memory.clone(), runs.clone()));
-    let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.admin", "9").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "9").unwrap(), "mesh1", "node-admin");
     admin.status = NodeStatus::Ready;
     admin.is_primary = true;
     admin.is_fabric_primary = true;
@@ -279,11 +279,11 @@ async fn a_renamed_admin_runs_a_claimed_attempt_under_its_new_name() {
     let gate = StopGate::new();
     let runner = Arc::new(CallingOut { calls: calls.clone(), gate: gate.clone(), hold_first: false });
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: builds.clone(), topology: topology.clone(), runner });
-    let door = RunDoor { me: rdm_core::PathName::new("mesh1.admin", "9").unwrap(), builds, exec, runs, local: memory.clone(), gate };
+    let door = RunDoor { me: rdm_core::PathName::new("mesh1.node-admin", "9").unwrap(), builds, exec, runs, local: memory.clone(), gate };
     let plan = RunPlan { operations: vec![BuildOperation::CreateMesh { mesh: "mesh2".into(), mesh_id: MeshId::mint() }, BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }], hand_off_to: None };
 
     // Only the name changes; attempt 1 remains claimed for the same exact birth.
-    topology.write().await.nodes[0].name = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+    topology.write().await.nodes[0].name = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     memory
         .publish_accepted(&BuildAccepted { build_id: build_id(), topology: FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
         .await
@@ -317,7 +317,7 @@ async fn a_renamed_admin_runs_a_claimed_attempt_under_its_new_name() {
     crate::assert_own_story(spans.iter().map(|s| s["name"].as_str().unwrap()));
     for name in ["rdm.node_admin.build.serve.via-attempt-run", "rdm.node_admin.build.serve.via-run-turn", "rdm.node_admin.build.reject.via-not-executor"] {
         for s in spans.iter().filter(|s| s["name"] == name) {
-            assert_eq!((s["attributes"]["node_path"].as_str(), s["attributes"]["node_name"].as_str()), (Some("mesh1.admin"), Some("1")), "{name} names the admin's held name: {s}");
+            assert_eq!((s["attributes"]["node_path"].as_str(), s["attributes"]["node_name"].as_str()), (Some("mesh1.node-admin"), Some("1")), "{name} names the admin's held name: {s}");
         }
     }
     let reconcile = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile").expect("the run's reconcile span was exported");

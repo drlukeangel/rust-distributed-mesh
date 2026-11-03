@@ -103,8 +103,8 @@ fn healthy(family: Family) -> Evidence {
     e.control = Some(Control {
         roles_as_expected: [true; 3],
         roles_detail: String::new(),
-        fabric_primary: ["mesh1.admin.1".into(), "mesh1.admin.1".into(), "mesh1.admin.1".into()],
-        fabric_home: "mesh1.admin.1".into(),
+        fabric_primary: ["mesh1.node-admin.1".into(), "mesh1.node-admin.1".into(), "mesh1.node-admin.1".into()],
+        fabric_home: "mesh1.node-admin.1".into(),
         primary_may_move: false,
         incarnation: ["inc-a".into(), "inc-a".into(), "inc-a".into()],
         attempts: [1, 1],
@@ -157,20 +157,20 @@ fn plants() -> Vec<(&'static str, &'static str, Plant)> {
         ("roles diverge from the public candidates", NO_CONTROL_CONSEQUENCE, |e| {
             let c = e.control.as_mut().unwrap();
             c.roles_as_expected[1] = false;
-            c.roles_detail = "fabric primary: advertised [\"mesh1.admin.2\"], expected Some(\"mesh1.admin.1\")".into();
+            c.roles_detail = "fabric primary: advertised [\"mesh1.node-admin.2\"], expected Some(\"mesh1.node-admin.1\")".into();
         }),
-        ("authority moves across a stall of a live admin", NO_CONTROL_CONSEQUENCE, |e| e.control.as_mut().unwrap().fabric_primary[2] = "mesh1.admin.2".into()),
+        ("authority moves across a stall of a live admin", NO_CONTROL_CONSEQUENCE, |e| e.control.as_mut().unwrap().fabric_primary[2] = "mesh1.node-admin.2".into()),
         // A hold that began while a takeover's hand-back was owed: the role stays with its temporary
         // holder after the stall instead of going home (fabric-recovery.md step 4).
         ("the role stays with its temporary primary across a stall", NO_CONTROL_CONSEQUENCE, |e| {
-            e.control.as_mut().unwrap().fabric_primary = ["mesh2.admin.1".into(), "mesh2.admin.1".into(), "mesh2.admin.1".into()];
+            e.control.as_mut().unwrap().fabric_primary = ["mesh2.node-admin.1".into(), "mesh2.node-admin.1".into(), "mesh2.node-admin.1".into()];
         }),
         ("a stalled membership change moves authority and the public candidates disagree", NO_CONTROL_CONSEQUENCE, |e| {
             let c = e.control.as_mut().unwrap();
             c.primary_may_move = true;
-            c.fabric_primary[2] = "mesh2.admin.1".into();
+            c.fabric_primary[2] = "mesh2.node-admin.1".into();
             c.roles_as_expected[2] = false;
-            c.roles_detail = "fabric primary: advertised [\"mesh2.admin.1\"], expected Some(\"mesh1.admin.1\")".into();
+            c.roles_detail = "fabric primary: advertised [\"mesh2.node-admin.1\"], expected Some(\"mesh1.node-admin.1\")".into();
         }),
         ("a running silent runtime is replaced", SILENT_RUNTIME_JUDGED_DEAD, |e| e.control.as_mut().unwrap().replaced_during = true),
         ("a running silent runtime is re-born", SILENT_RUNTIME_JUDGED_DEAD, |e| e.control.as_mut().unwrap().incarnation[2] = "inc-b".into()),
@@ -238,7 +238,7 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
     // primary advertised before it is the temporary one, and the role going home during the hold is the
     // hand-back, never a consequence of the stall.
     let mut owed = healthy(Family::SilentRuntime);
-    owed.control.as_mut().unwrap().fabric_primary[0] = "mesh2.admin.1".into();
+    owed.control.as_mut().unwrap().fabric_primary[0] = "mesh2.node-admin.1".into();
     judge(&owed).unwrap_or_else(|r| panic!("the role going home across a stall was refused: {r}"));
 
     // A held proof mutation never reconciled: the RPC ledger's own algebra, inside the detector.
@@ -299,7 +299,7 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
 // ---------------------------------------------------------------------------------------------
 
 use crate::build_log;
-use rdm_client::{BuildStream, CallEnd, LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
+use rdm_client::{BuildStream, CallEnd, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
 use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
 use rdm_admin::deployment::pipeline::{CreateStep, DeleteStep};
@@ -479,7 +479,7 @@ impl Run {
 
     async fn member_door(&self, mesh: &str) -> Door {
         let nodes = self.estate.node_views().await;
-        let primary = nodes.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == mesh && n.is_primary).unwrap_or_else(|| panic!("{mesh} has an admin primary: {nodes:?}"));
+        let primary = nodes.iter().find(|n| n.r#type == "node-admin" && n.mesh == mesh && n.is_primary).unwrap_or_else(|| panic!("{mesh} has an admin primary: {nodes:?}"));
         self.door_of(&primary.name).await
     }
 
@@ -514,8 +514,8 @@ impl Run {
     }
 
     /// `node.create` of a `kind` node in mesh1, accepted: the stream of the Build that runs it.
-    async fn spawn(&self, kind: NodeKind) -> WorkflowStream {
-        self.estate.create_node("mesh1", kind).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a {kind:?} in mesh1: {e}"))
+    async fn spawn(&self, r#type: &str) -> WorkflowStream {
+        self.estate.create_node("mesh1", r#type).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a {:?} in mesh1: {e}", r#type))
     }
 
     /// `node.delete` of `node`, accepted: the stream of the Build that runs it.
@@ -539,9 +539,9 @@ impl Run {
     }
 
     /// An unarmed create: the node it makes, once ready.
-    async fn plain_create(&self, kind: NodeKind) -> PathName {
+    async fn plain_create(&self, r#type: &str) -> PathName {
         let before = self.names().await;
-        let mut stream = self.spawn(kind).await;
+        let mut stream = self.spawn(r#type).await;
         self.complete(&mut stream).await;
         self.estate
             .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.name) && n.status == NodeStatus::Ready).map(|n| n.name.clone()))
@@ -557,7 +557,7 @@ impl Run {
 
     /// The pid of the admin at `name`: the bootstrap admin's, or its data dir's (named by its node id).
     async fn admin_pid(&self, name: &PathName) -> Option<u64> {
-        if *name == Estate::path("mesh1.admin", "1") {
+        if *name == Estate::path("mesh1.node-admin", "1") {
             return self.estate.bootstrap_pid().map(u64::from);
         }
         let id = self.estate.node_values().await.iter().find(|n| location(n) == *name).map(|n| s(&n["node_id"]))?;
@@ -606,7 +606,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     ev.primitive = Some(Primitive { armed: true, ack: ack.clone() });
     let (build_id, triggered) = match &trigger {
         Trigger::Spawn => {
-            let stream = run.spawn(NodeKind::RpcNode).await;
+            let stream = run.spawn("node").await;
             (Run::id_of(&stream), Triggered::Workflow(stream))
         }
         Trigger::Delete(node) => {
@@ -614,12 +614,12 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
             (Run::id_of(&stream), Triggered::Workflow(stream))
         }
         Trigger::CreateMesh(mesh) => {
-            let stream = run.estate.submit(&BuildSpec::CreateMesh(MeshDesired::of(mesh.as_str(), [(NodeKind::NodeAdmin, 1)]))).await;
+            let stream = run.estate.submit(&BuildSpec::CreateMesh(MeshDesired::of(mesh.as_str(), [("node-admin", 1)]))).await;
             (stream.build_id().to_string(), Triggered::Build(stream))
         }
         Trigger::SpawnRequest => {
             let nodes = Nodes::new(run.estate.carrier_at(&door.name).await);
-            let (based_on, request) = run.estate.create_node_request("mesh1", NodeKind::RpcNode).await;
+            let (based_on, request) = run.estate.create_node_request("mesh1", "node").await;
             let task = tokio::spawn(async move { nodes.create_named(based_on, request).await });
             (String::new(), Triggered::Request(task))
         }
@@ -762,7 +762,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
     let current_before = run.fabric_build_id().await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
     ev.primitive = Some(Primitive { armed: true, ack: ack.clone() });
-    let mut stream = run.spawn(NodeKind::NodeAdmin).await;
+    let mut stream = run.spawn("node-admin").await;
     let build_id = Run::id_of(&stream);
     let door = Door::at(&run.estate, admin).await;
     let held = door.wait_held(id).await;
@@ -843,7 +843,7 @@ async fn silent_case(run: &Run) {
     let id = "silent-runtime:hang-rpc-node";
     let mut ev = Evidence::new(Family::SilentRuntime, id);
     let nodes = run.estate.node_values().await;
-    let target = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["is_primary"] == false && n["status"] == "ready").cloned().unwrap_or_else(|| panic!("a ready non-primary rpc node: {nodes:?}"));
+    let target = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] == false && n["status"] == "ready").cloned().unwrap_or_else(|| panic!("a ready non-primary rpc node: {nodes:?}"));
     let (name, node_id, incarnation) = (location(&target), s(&target["node_id"]), s(&target["incarnation_id"]));
     let exact = format!("exact:{node_id}");
     let pid = run.estate.pid_of(&name).await;
@@ -962,7 +962,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     std::fs::create_dir_all(&dir).unwrap();
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let root = estate.root.clone();
     let run = Run { estate, root, doors: Default::default(), evidence: Default::default(), rows: Default::default(), holds: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: two admins first.
@@ -971,10 +971,10 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     run.estate.until_fabric_ready(Duration::from_secs(120)).await;
     run.estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
-    let node = &Estate::path("mesh1.rpc", "1");
+    let node = &Estate::path("mesh1.node", "1");
     // The healthy control, in the same capture: an unarmed create and removal of the same node
     // complete with every documented receipt once. Every cut below is judged against what they did.
-    let mut control_stream = run.spawn(NodeKind::RpcNode).await;
+    let mut control_stream = run.spawn("node").await;
     let control_create = Run::id_of(&control_stream);
     let control_door = run.member_door("mesh1").await;
     let b = run.complete(&mut control_stream).await;
@@ -1024,8 +1024,8 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     )
     .await;
     // Two rpc nodes, so the frozen one is not its node type's primary nor the only one; then the frozen node.
-    run.plain_create(NodeKind::RpcNode).await;
-    run.plain_create(NodeKind::RpcNode).await;
+    run.plain_create("node").await;
+    run.plain_create("node").await;
     silent_case(&run).await;
 
     // The fabric-primary admin held at the Build's one durable write: until it is made the Build is held by no admin (R-BI3: "Each
@@ -1048,7 +1048,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     // A mesh's first admin, born by the fabric primary: stalled before the step that publishes it,
     // so its mesh's Pending has not been applied. The admin is not routable until the release.
     let step = CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name();
-    let admin = &Estate::path("mesh2.admin", "1");
+    let admin = &Estate::path("mesh2.node-admin", "1");
     let before = run.names().await;
     door_case(
         &run,
@@ -1064,10 +1064,10 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     .await;
 
     // A joining admin held at its Ready gate on the provider domain.
-    join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), &rdm_core::PathName::new("mesh1.admin", "3").unwrap(), CreateStep::WaitForNodeReady).await;
+    join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), &rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), CreateStep::WaitForNodeReady).await;
     // A joining admin held at the topology read it makes while it hydrates (node-start.md step 4, op 0x1E):
     // it has joined and has not read, so the create Build waits at its Ready gate and the admin is not routable.
-    join_case(&run, Family::RuntimeMetadataHydration, "hydrate:topology-read", json!({"kind": "topology-read"}), &rdm_core::PathName::new("mesh1.admin", "4").unwrap(), CreateStep::WaitForNodeReady).await;
+    join_case(&run, Family::RuntimeMetadataHydration, "hydrate:topology-read", json!({"kind": "topology-read"}), &rdm_core::PathName::new("mesh1.node-admin", "4").unwrap(), CreateStep::WaitForNodeReady).await;
 
     finish(run, &dir).await;
 }

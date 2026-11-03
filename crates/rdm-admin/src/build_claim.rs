@@ -297,7 +297,7 @@ impl ClaimDoor {
                 t.is_fabric_primary(&self.node_id) || t.is_mesh_primary(lane, &self.node_id)
             }
         };
-        (!claims).then(|| rdm_core::reply::build_claim::not_claimant(mesh.map(str::to_string), t.fabric_primary().map(|n| n.node_id.clone()), mesh.and_then(|m| t.node_type_primary(m, crate::model::NodeKind::NodeAdmin)).map(|n| n.node_id.clone())))
+        (!claims).then(|| rdm_core::reply::build_claim::not_claimant(mesh.map(str::to_string), t.fabric_primary().map(|n| n.node_id.clone()), mesh.and_then(|m| t.node_type_primary(m, "node-admin")).map(|n| n.node_id.clone())))
     }
 
     /// Decide the claim of the fabric lane's `attempt` of `build_id` for `executor` (a node-admin's

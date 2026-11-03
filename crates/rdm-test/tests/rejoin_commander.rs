@@ -35,8 +35,8 @@ pub(crate) async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, 
     }
 }
 
-/// The cell's mesh: `primary` launched the rpc node `running` (`mesh1.rpc.1`, Ready at its
-/// primary); `commander` (`mesh1.admin.2`) never says anything on the mesh channel, so the node's
+/// The cell's mesh: `primary` launched the rpc node `running` (`mesh1.node.1`, Ready at its
+/// primary); `commander` (`mesh1.node-admin.2`) never says anything on the mesh channel, so the node's
 /// heartbeat view holds no digest of it, while the primary carries it in the member projection the
 /// node installed (`_carried`). The commander reaches the node by its exact birth (`target`).
 pub(crate) struct Rig {
@@ -68,7 +68,7 @@ async fn rig_carried(tag: &str, carry: bool) -> Rig {
 pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: Option<std::sync::Arc<rdm_test::pre_node_ready_probe::TestPreNodeReady>>) -> Rig {
     let fabric = rdm_core::FabricId::mint();
     let primary = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
-    let commander = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, &rdm_core::PathName::new("mesh1.admin", "2").unwrap()).await;
+    let commander = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await;
     let dir = std::env::temp_dir().join(format!("{tag}-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
@@ -77,8 +77,8 @@ pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: O
         fabric: "fabric1".into(),
         fabric_id: fabric,
         mesh: "mesh1".into(),
-        kind: rdm_core::NodeKind::RpcNode,
-        name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+        r#type: "node".into(),
+        name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -143,7 +143,7 @@ pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: O
 
     // The commander reaches the node by its birth, as the primary's view holds it.
     let (born, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-    commander.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), kind: born.node.kind,
+    commander.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), r#type: born.node.r#type,
         node_id: born.node.node_id.clone(),
         name: born.node.name.clone(),
         endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
@@ -172,8 +172,8 @@ fn a_stopped_node_whose_heartbeat_view_lacks_its_commander_starts_and_joins_it_t
             return;
         }
         let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, commander_key, commander_id } = rig("rejoin-commander").await;
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ptwmpv3sma8m".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ptwmpv3sma8m".into(), attempt: 2, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ptwmpv3sma8m".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ptwmpv3sma8m".into(), attempt: 2, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
 
         let left = call(&commander, &target, &stop).await;
@@ -224,8 +224,8 @@ fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_join
             return;
         }
         let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, commander_id, .. } = rig_carried("rejoin-unrecorded", false).await;
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "daycheyancwf".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "daycheyancwf".into(), attempt: 2, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "daycheyancwf".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "daycheyancwf".into(), attempt: 2, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped: {left:?}");
@@ -247,9 +247,9 @@ fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_join
 /// CONTRACT (node-start.md step 2: "A stopped node told to start joins back over the endpoint and
 /// path of the call that commanded it"; node-rpc-envelope.md "Status": a start's natural key is
 /// `(node_id, incarnation, Pending)`, so a later start of the birth joins the one under way): the rpc
-/// node is stopped, then commanded to start by an admin of its mesh (`mesh1.admin.3`) that is lost
+/// node is stopped, then commanded to start by an admin of its mesh (`mesh1.node-admin.3`) that is lost
 /// while the start joins it: its join door takes no join, then its endpoint closes, as an executor
-/// killed mid-restart. A second admin of the mesh (`mesh1.admin.2`, the successor) commands the start
+/// killed mid-restart. A second admin of the mesh (`mesh1.node-admin.2`, the successor) commands the start
 /// while the first start is still under way. The successor's start is answered `Started`: the start
 /// joined the successor over the successor's own call, and the node is the same birth,
 /// Ready again. Must NOT happen: the successor's start answering the lost commander's
@@ -267,7 +267,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
         let Rig { primary, commander: successor, _carried, running, launch, key, dir, target, node_id, incarnation, commander_key: successor_key, .. } = rig("rejoin-successor").await;
         // The lost commander: an admin of the mesh, carried in the primary's projection, whose join
         // door takes no join.
-        let lost = crate::common::admin_side_silent_deaf_as("127.0.0.1".parse().unwrap(), &primary, &rdm_core::PathName::new("mesh1.admin", "3").unwrap()).await;
+        let lost = crate::common::admin_side_silent_deaf_as("127.0.0.1".parse().unwrap(), &primary, &rdm_core::PathName::new("mesh1.node-admin", "3").unwrap()).await;
         let _lost_carried = primary.carry_in_projection(&lost);
         let lost_key = lost.seed.0.clone();
         tokio::time::timeout(NEVER, async {
@@ -278,15 +278,15 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
         .await
         .expect("the node never installed a projection of its primary carrying the lost commander");
         let (born, _) = primary.observer.topology_view.digest_view.get(node_id.as_str()).unwrap();
-        lost.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), kind: born.node.kind,
+        lost.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), r#type: born.node.r#type,
             node_id: born.node.node_id.clone(),
             name: born.node.name.clone(),
             endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
             incarnation: born.node.incarnation.clone(),
             transport_addr: born.node.transport_addr,
         });
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7f0xhg20h9hv".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
-        let start = |attempt: u32| StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7f0xhg20h9hv".into(), attempt, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7f0xhg20h9hv".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
+        let start = |attempt: u32| StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7f0xhg20h9hv".into(), attempt, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         let left = call(&lost, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the stop is answered Stopped: {left:?}");
@@ -358,8 +358,8 @@ fn a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call() {
             return;
         }
         let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, commander_id, .. } = rig("deleted-commander").await;
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "848haseghsta".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "848haseghsta".into(), attempt: 2, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "848haseghsta".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "848haseghsta".into(), attempt: 2, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped: {left:?}");
         let held = running.topology_view.projected_member_at(&commander.seed.0).expect("the projection carries the commander");
@@ -392,8 +392,8 @@ fn a_hook_blocked_on_its_primarys_word_runs_again_when_a_commander_no_record_nam
         use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
         let pre_node_ready = TestPreNodeReady::new(Mode::Local);
         let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, .. } = rig_pre_node_ready("addressed-unrecorded", false, Some(pre_node_ready.clone())).await;
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "f4te7echyh6f".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "f4te7echyh6f".into(), attempt: 2, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "f4te7echyh6f".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "f4te7echyh6f".into(), attempt: 2, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         assert!(matches!(call(&commander, &target, &stop).await, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped");
         commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
@@ -449,18 +449,18 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
         let Rig { primary, commander: successor, _carried, running: _running, launch, key, dir, target, node_id, incarnation, commander_key: successor_key, .. } = rig_pre_node_ready("topology-successor", true, Some(pre_node_ready.clone())).await;
         // The lost commander: an admin of the mesh that answers the start's join, carried in the
         // primary's projection.
-        let lost = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, &rdm_core::PathName::new("mesh1.admin", "3").unwrap()).await;
+        let lost = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, &rdm_core::PathName::new("mesh1.node-admin", "3").unwrap()).await;
         let _lost_carried = primary.carry_in_projection(&lost);
         let (born, _) = primary.observer.topology_view.digest_view.get(node_id.as_str()).unwrap();
-        lost.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), kind: born.node.kind,
+        lost.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), r#type: born.node.r#type,
             node_id: born.node.node_id.clone(),
             name: born.node.name.clone(),
             endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
             incarnation: born.node.incarnation.clone(),
             transport_addr: born.node.transport_addr,
         });
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bq0z8f2kq3e1".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
-        let start = |attempt: u32| StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bq0z8f2kq3e1".into(), attempt, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bq0z8f2kq3e1".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
+        let start = |attempt: u32| StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bq0z8f2kq3e1".into(), attempt, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         assert!(matches!(call(&lost, &target, &stop).await, StatusReply::Stopped { .. }), "the lost commander's stop is answered Stopped");
 

@@ -23,7 +23,7 @@ use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{adopt, DeploymentProvider, TerminationMode};
 use rdm_client::{await_fact, Builds, CallEnd, Fabrics, Filter, MeshNode, NodeStatus, Nodes, PathName, Peers};
 use rdm_core::build::BuildPhase;
-use rdm_core::{NodeKind, RuntimeFact};
+use rdm_core::{RuntimeFact};
 use std::path::Path;
 use std::time::Duration;
 
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage: build_mesh_self_heal [<path> <name>]")),
         _ => all
             .into_iter()
-            .find(|n| n.mesh != birth.mesh && n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .find(|n| n.mesh != birth.mesh && n.kind != "node-admin" && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no Ready role node in peer mesh"))?,
     };
     let mesh = target.mesh.clone();

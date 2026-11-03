@@ -128,7 +128,7 @@ fn local_now_ms() -> u64 {
 }
 
 fn end_of(node: &ResolvedNode) -> ConnectionEnd {
-    ConnectionEnd { mesh: node.mesh.clone(), kind: node.kind, name: node.name.clone(), node_id: node.node_id.clone(), incarnation: Some(node.incarnation.clone()) }
+    ConnectionEnd { mesh: node.mesh.clone(), r#type: node.r#type.clone(), name: node.name.clone(), node_id: node.node_id.clone(), incarnation: Some(node.incarnation.clone()) }
 }
 
 /// This node's open routes in `held`: its own latest Direct entries that are `connected`, then its
@@ -739,7 +739,7 @@ impl rdm_transport::CarrierConnections for ConnectionsWriter {
 impl rdm_transport::connections::ConnectionsSink for ConnectionsWriter {
     fn own_birth(&self) -> rdm_transport::connections::Birth {
         let own = self.own();
-        rdm_transport::connections::Birth { mesh: own.mesh.clone(), kind: own.kind,
+        rdm_transport::connections::Birth { mesh: own.mesh.clone(), r#type: own.r#type.clone(),
             name: own.name,
             node_id: own.node_id,
             incarnation: own.incarnation.unwrap_or_else(IncarnationId::mint),
@@ -776,8 +776,8 @@ mod tests {
     /// "Node-base runs one scheduler/reconciler per node process, with at most one pending direct-reconnect item per:"
     #[tokio::test]
     async fn opened_to_direct_closed_latest_direct_for_reconnect_state_and_runtime_handle_track_live_and_held_facts() {
-        let own = ConnectionEnd { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+        let own = ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: Some(IncarnationId::mint()),
         };
@@ -793,8 +793,8 @@ mod tests {
         let secret = iroh::SecretKey::from_bytes(&[7u8; 32]);
         let peer_key = secret.public();
         let peer_inc = IncarnationId::mint();
-        let peer_node = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
-            name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
+        let peer_node = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(),
+            name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
             node_id: NodeId::mint(),
             incarnation: peer_inc.clone(),
             endpoint_id: peer_key,

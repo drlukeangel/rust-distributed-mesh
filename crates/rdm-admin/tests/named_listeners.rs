@@ -3,7 +3,7 @@
 use rdm_admin::deployment::endpoint::ListenerNames;
 use rdm_admin::join::{Deployed, JoinDoor, Joins};
 use rdm_admin::model::{
-    EndpointId, FabricId, IncarnationId, NodeId, NodeKind, PathName, ProviderKind,
+    EndpointId, FabricId, IncarnationId, NodeId, PathName, ProviderKind,
 };
 use rdm_admin::node_rows::WrittenRows;
 use rdm_admin::storage::{MemoryNodesStorage, NodesStorage};
@@ -80,11 +80,11 @@ fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verifi
 
     rt.block_on(async {
         let registry = ListenerNames::read(&[DeclaredListeners {
-            kind: NodeKind::Gateway,
+            r#type: "gateway".into(),
             names: vec!["kafka".into(), "rest".into()],
         }])
         .expect("valid listener declaration");
-        let spec = registry.spec_for(NodeKind::Gateway);
+        let spec = registry.spec_for("gateway");
         assert_eq!(spec.listeners, vec!["kafka".to_string(), "rest".to_string()]);
 
         let assigned_listeners: Vec<(String, SocketAddr)> = spec
@@ -93,8 +93,8 @@ fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verifi
             .map(|n| (n.clone(), "127.0.0.1:0".parse().expect("addr")))
             .collect();
 
-        let dep = Deployed { mesh: "mesh1".into(), kind: NodeKind::Gateway,
-            name: PathName::numbered("mesh1", NodeKind::Gateway, 1),
+        let dep = Deployed { mesh: "mesh1".into(), r#type: "gateway".into(),
+            name: PathName::numbered("mesh1", "gateway", 1),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -110,7 +110,7 @@ fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verifi
         let digest = MeshDigest {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: MeshNode { mesh: dep.mesh.clone(), kind: dep.kind,
+            node: MeshNode { mesh: dep.mesh.clone(), r#type: dep.r#type.clone(),
                 node_id: dep.node_id.clone(),
                 name: dep.name.clone(),
                 endpoint_id: dep.endpoint_id.clone(),
@@ -142,7 +142,7 @@ fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verifi
         let admin_id = NodeId::mint();
         let door = JoinDoor {
             nodes: Some((nodes_storage.clone(), written_rows)),
-            me: PathName::numbered("mesh1", NodeKind::NodeAdmin, 1),
+            me: PathName::numbered("mesh1", "node-admin", 1),
             joins: joins.clone(),
             answer: { let admin_id = admin_id.clone(); Arc::new(move || {
                 let admin_id = admin_id.clone();

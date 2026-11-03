@@ -52,7 +52,7 @@ nothing matches.
 |---|---|---|---|---|
 | `fabric.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary`, `admin_api_base`, `build_id`, `meshes`, `topology_storage_provider` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | the fabric-primary |
 | `mesh.get` | — | `id`, `name`, `status`, `primary_admin`, `admin_api_base`, `nodes` | meshes, by name | the fabric-primary |
-| `node.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `kind`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path.name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from its atlas |
+| `node.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `type`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path.name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from its atlas |
 | `node.connection.get` | `node` (id, incarnation), required | `id`, `source`, `destination`, `kind`, `state`, `carrier`, `reason`, `logged_at_ms` | the exact birth's own connections from its connections log | the exact birth |
 
 Written as the pair list the wire carries:
@@ -61,8 +61,8 @@ Written as the pair list the wire carries:
 node.get  [["config.zone", ["eu-1"]]]                           a config entry, by its key
 node.get  [["tags", ["gold"]], ["tags", ["ssd"]]]               all of; one pair is any of
 node.get  [["tags", ["gold", "silver"]]]                         any of
-node.get  [["mesh", ["mesh1"]], ["kind", ["gateway"]]]           AND across pairs
-node.get  [["kind", ["admin"]], ["is_primary", ["true"]]]        every mesh-primary
+node.get  [["mesh", ["mesh1"]], ["type", ["gateway"]]]           AND across pairs
+node.get  [["type", ["node-admin"]], ["is_primary", ["true"]]]   every mesh-primary
 node.get  [["id", ["<node id>"]]]                                 "one node"
 node.get  [["path", ["mesh1.broker"]], ["name", ["1"]]]         one node by its path.name (mesh1.broker.1): `path` is
                                                                    the part before the last dot, `name` the part after it
@@ -74,8 +74,8 @@ node.connection.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
 The same pair list, side by side, from both places:
 
 ```text
-node.get                   [["kind", ["broker"]], ["status", ["ready"]]]   the fabric-primary's atlas: the rows
-topology_view.nodes_get     [["kind", ["broker"]], ["status", ["ready"]]]   my own topology: the digests I hear
+node.get                   [["type", ["broker"]], ["status", ["ready"]]]   the fabric-primary's atlas: the rows
+topology_view.nodes_get     [["type", ["broker"]], ["status", ["ready"]]]   my own topology: the digests I hear
 topology_view.nodes_get     [["config.zone", ["eu-1"]]]                                  refused: config is the row's, read it with node.get
 ```
 

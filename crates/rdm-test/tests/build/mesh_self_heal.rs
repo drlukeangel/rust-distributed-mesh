@@ -31,14 +31,14 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
     estate.settles_to(&shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
 
-    let primary = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).expect("mesh primary");
+    let primary = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
     let mesh2_primary = primary.node_id.to_string();
     let executor = rdm_core::framing::Birth { node_id: primary.node_id.clone(), incarnation: primary.incarnation_id.clone().expect("launched primary") };
     let victim = estate
         .node_views()
         .await
         .into_iter()
-        .filter(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::RpcNode && !n.is_primary)
+        .filter(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary)
         .map(|n| (n.name, n.node_id, n.incarnation_id.expect("launched victim")))
         .min_by(|a, b| a.0.cmp(&b.0))
         .expect("an rpc node of mesh2");

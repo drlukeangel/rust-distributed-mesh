@@ -11,7 +11,7 @@
 //! attempt and step while the facts around it still travel.
 
 use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_transport::chunking::MAX_MESSAGE_BYTES;
 use rdm_transport::topology::Frame;
 use rdm_transport::snapshot::{chunks_of, Full, PublisherId};
@@ -42,9 +42,9 @@ fn fabric() -> FabricId {
 fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::mint(),
-            name: PathName::new("mesh1.rpc", ordinal.to_string()).unwrap(),
+            name: PathName::new("mesh1.node", ordinal.to_string()).unwrap(),
             endpoint_id: EndpointId(format!("key{ordinal}")),
             transport_addr: format!("127.0.0.1:{}", 41_000 + ordinal).parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -56,7 +56,7 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
         admin_api_base: full.then(|| "http://127.0.0.1:7000".to_string()),
         digest_seq: 3 + ordinal as u64,
         emitted_at_rafka_ms: 1_000 + ordinal as u64,
-        data_dir: full.then(|| "/var/lib/rafka/mesh1.rpc".to_string()),
+        data_dir: full.then(|| "/var/lib/rafka/mesh1.node".to_string()),
         mesh_id: full.then(MeshId::mint),
         in_flight: full.then_some(4),
         load: None,
@@ -78,9 +78,9 @@ fn container_runtime() -> RuntimeFact {
     RuntimeFact { deployment_id: rdm_core::fixture_crockford60("dep2"), provider: RuntimeProvider::Container, control_domain: "docker-a".into(), locator: RuntimeLocator::Container { id: "f".repeat(64) } }
 }
 
-fn op(action: &str, name: PathName, mesh: &str, kind: NodeKind) -> LifecycleOp {
+fn op(action: &str, name: PathName, mesh: &str, r#type: &str) -> LifecycleOp {
     let node_id = NodeId::mint();
-    LifecycleOp { kind, mesh: mesh.into(), build_id: "3qcfk1kq47m9".into(), attempt: 2, operation: rdm_core::OperationId::node(action, &node_id), node_id, incarnation: IncarnationId::mint(), name, event_at_rafka_ms: 7, traceparent: None, tracestate: None }
+    LifecycleOp { r#type: r#type.to_string(), mesh: mesh.into(), build_id: "3qcfk1kq47m9".into(), attempt: 2, operation: rdm_core::OperationId::node(action, &node_id), node_id, incarnation: IncarnationId::mint(), name, event_at_rafka_ms: 7, traceparent: None, tracestate: None }
 }
 
 fn publisher() -> PublisherId {
@@ -110,8 +110,8 @@ fn frames() -> Vec<Frame> {
             chunk_index: 1,
             chunk_count: 3,
             digests: vec![digest(1, None, false), digest(2, Some(process_runtime()), true)],
-            in_flight: vec![op("node.delete", PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", NodeKind::RpcNode)],
-            deleted: vec![op("node.delete", PathName::new("mesh2.rpc", "3").unwrap(), "mesh2", NodeKind::RpcNode)],
+            in_flight: vec![op("node.delete", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node")],
+            deleted: vec![op("node.delete", PathName::new("mesh2.node", "3").unwrap(), "mesh2", "node")],
         },
         Frame::MeshTopology {
             mesh: "mesh2".into(),
@@ -134,17 +134,17 @@ fn frames() -> Vec<Frame> {
             published_at_rafka_ms: 12,
             changed: vec![digest(4, Some(container_runtime()), true)],
             removed: vec![NodeId::mint().to_string()],
-            in_flight: vec![op("node.stop", PathName::new("mesh2.rpc", "4").unwrap(), "mesh2", NodeKind::RpcNode)],
+            in_flight: vec![op("node.stop", PathName::new("mesh2.node", "4").unwrap(), "mesh2", "node")],
             deleted: vec![],
         },
-        Frame::NodeDeleting { op: op("node.delete", PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", NodeKind::RpcNode), forwarded_by: None, publisher: p.clone(), topology_version: 10 },
-        Frame::NodeDeleted { op: op("node.delete", PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", NodeKind::RpcNode), forwarded_by: Some(executor().node_id.to_string()) },
-        Frame::NodeRestarting { op: op("node.restart", PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", NodeKind::RpcNode), forwarded_by: None, publisher: p.clone(), topology_version: 11 },
-        Frame::NodeStopped { op: op("node.stop", PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", NodeKind::RpcNode), forwarded_by: Some(executor().node_id.to_string()), publisher: p.clone(), topology_version: 12 },
-        Frame::NodeConnectionsDeleting { op: op("node.connection.delete", PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", NodeKind::RpcNode), forwarded_by: None },
-        Frame::NodeLeaving { op: op("node.stop", PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", NodeKind::RpcNode), forwarded_by: Some(executor().node_id.to_string()) },
-        Frame::NodeLeft { op: op("node.stop", PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", NodeKind::RpcNode), forwarded_by: Some(NodeId::parse("200000000001").unwrap().to_string()) },
-        Frame::NodeConnectionsDeleted { op: op("node.connection.delete", PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", NodeKind::RpcNode), forwarded_by: None },
+        Frame::NodeDeleting { op: op("node.delete", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: None, publisher: p.clone(), topology_version: 10 },
+        Frame::NodeDeleted { op: op("node.delete", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: Some(executor().node_id.to_string()) },
+        Frame::NodeRestarting { op: op("node.restart", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: None, publisher: p.clone(), topology_version: 11 },
+        Frame::NodeStopped { op: op("node.stop", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: Some(executor().node_id.to_string()), publisher: p.clone(), topology_version: 12 },
+        Frame::NodeConnectionsDeleting { op: op("node.connection.delete", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: None },
+        Frame::NodeLeaving { op: op("node.stop", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: Some(executor().node_id.to_string()) },
+        Frame::NodeLeft { op: op("node.stop", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: Some(NodeId::parse("200000000001").unwrap().to_string()) },
+        Frame::NodeConnectionsDeleted { op: op("node.connection.delete", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: None },
         Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: NodeId::parse("200000000001").unwrap().to_string(), forwarded_by: None, changed_at_rafka_ms: 77 },
         Frame::FabricStatus { fabric: fabric(), status: "ready".into(), publisher: executor().node_id.to_string(), forwarded_by: Some(NodeId::parse("200000000001").unwrap().to_string()), changed_at_rafka_ms: 78 },
         Frame::Concern { role: rdm_core::PrimaryRole::FabricPrimary, node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), observer: NodeId::parse("200000000001").unwrap().to_string() },
@@ -158,11 +158,11 @@ fn bid(s: &str) -> BuildId {
 
 fn topology() -> FabricTopology {
     let mut t = FabricTopology::root("fabric-1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap());
-    let mut m2 = MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2), (NodeKind::Broker, 1)]));
+    let mut m2 = MeshTopology::of(&MeshDesired::of("mesh2", [("node-admin", 1), ("node", 2), ("broker", 1)]));
     let broker: PathName = rdm_core::PathName::new("mesh2.broker", "1").unwrap();
-    let rpc: PathName = rdm_core::PathName::new("mesh2.rpc", "1").unwrap();
-    m2.set_spec(NodeSpec { storage_persistence: StoragePersistence::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for(broker, "mesh2", NodeKind::Broker) }).unwrap();
-    m2.set_spec(NodeSpec { storage_persistence: StoragePersistence::Ephemeral, ..NodeSpec::default_for(rpc, "mesh2", NodeKind::RpcNode) }).unwrap();
+    let rpc: PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
+    m2.set_spec(NodeSpec { storage_persistence: StoragePersistence::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for(broker, "mesh2", "broker") }).unwrap();
+    m2.set_spec(NodeSpec { storage_persistence: StoragePersistence::Ephemeral, ..NodeSpec::default_for(rpc, "mesh2", "node") }).unwrap();
     t.meshes.insert("mesh2".into(), m2);
     // A Build message carries no topology_storage_provider (Q184: it is written in the records, like the
     // executable), so the shape that round-trips names none.
@@ -171,13 +171,13 @@ fn topology() -> FabricTopology {
 }
 
 fn changes() -> Vec<Option<TopologyChange>> {
-    let desired = MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 3)]);
+    let desired = MeshDesired::of("mesh2", [("node-admin", 1), ("broker", 3)]);
     vec![
         None,
-        Some(TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric-1".into(), meshes: vec![desired.clone(), MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])] } }),
+        Some(TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric-1".into(), meshes: vec![desired.clone(), MeshDesired::of("mesh1", [("node-admin", 1)])] } }),
         Some(TopologyChange::ReconcileMesh { desired: desired.clone() }),
-        Some(TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::Gateway }),
-        Some(TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh2.rpc", "2").unwrap() }),
+        Some(TopologyChange::AddNode { mesh: "mesh2".into(), r#type: "gateway".into() }),
+        Some(TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh2.node", "2").unwrap() }),
         Some(TopologyChange::CreateMesh { desired }),
         Some(TopologyChange::RemoveMesh { mesh: "mesh2".into() }),
         // A stored change of the removed operation, read as history: its reserved position (proposal
@@ -187,7 +187,7 @@ fn changes() -> Vec<Option<TopologyChange>> {
 }
 
 fn step(step: &str, output: Option<Value>) -> BuildFact {
-    BuildFact::Step(BuildStepReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.rpc", "1").unwrap()), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor()) })
+    BuildFact::Step(BuildStepReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node", "1").unwrap()), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor()) })
 }
 
 fn to_json<T: serde::Serialize>(v: &T) -> Value {
@@ -203,12 +203,12 @@ fn facts() -> Vec<BuildFact> {
     }
     let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Stop, action: a, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 56, context: None });
     out.push(action(None));
-    out.push(action(Some(AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() })));
+    out.push(action(Some(AttemptAction::Stop { r#type: "node".into(), mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() })));
     // Steps (build.md §1; lifecycles/node-replace.md): the steps and the births they pinned.
     {
         use rdm_core::build::Step;
-        let node: rdm_admin::model::PathName = rdm_core::PathName::new("mesh2.rpc", "1").unwrap();
-        let pin = rdm_admin::build::PinnedBirth { mesh: "mesh2".into(), kind: rdm_core::NodeKind::RpcNode, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let node: rdm_admin::model::PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
+        let pin = rdm_admin::build::PinnedBirth { mesh: "mesh2".into(), r#type: "node".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         out.push(BuildFact::Opened(AttemptOpened {
             mesh: None,
             build_id: bid("3qcfk1kq47m9"),
@@ -221,7 +221,7 @@ fn facts() -> Vec<BuildFact> {
                     Step::Update { node: node.clone(), name: node.renamed().unwrap() },
                     Step::Stop { node: node.renamed().unwrap() },
                     // The executable the Build fixes rides the positional wire with every field written.
-                    Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: node.clone(), executable: Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/opt/rpc-node".into(), sha256: "ab".repeat(32), image: None }) },
+                    Step::Create { mesh: "mesh1".into(), r#type: "node".into(), node: node.clone(), executable: Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/opt/rpc-node".into(), sha256: "ab".repeat(32), image: None }) },
                     Step::Delete { node: node.renamed().unwrap() },
                 ],
                 pinned: vec![(node, pin)],
@@ -237,7 +237,7 @@ fn facts() -> Vec<BuildFact> {
         build_id: bid("3qcfk1kq47m9"),
         attempt: 2,
         reason: AttemptReason::Recovery,
-        action: Some(AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint(), backbone: false }),
+        action: Some(AttemptAction::Recover { r#type: "node".into(), mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint(), backbone: false }),
         opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
         opened_at_ms: 56,
         context: None,
@@ -249,7 +249,7 @@ fn facts() -> Vec<BuildFact> {
         mesh: None,
         build_id: bid("3qcfk1kq47m9"),
         attempt: 2,
-        operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.rpc", "1").unwrap()),
+        operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node", "1").unwrap()),
         step: "WaitForBind".into(),
         outcome: StepOutcome::failed("runtime exited (code Some(1)) before binding"),
         output: None,
@@ -274,7 +274,7 @@ fn facts() -> Vec<BuildFact> {
         operation: rdm_core::OperationId::node("node.delete", &deleted_birth.node_id),
         step: DeleteStep::TerminateRuntime.name().into(),
         outcome: StepOutcome::Complete,
-        output: Some(to_json(&rdm_admin::deployment::pipeline::TerminalReceipt { node: rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), node_id: deleted_birth.node_id.to_string(), incarnation_id: deleted_birth.incarnation.to_string(), runtime: None, exit_code: None, verdict: Some("running".into()), data_dir: Some("/data/mesh2.rpc.1-3qcfk1kq47m9".into()) })),
+        output: Some(to_json(&rdm_admin::deployment::pipeline::TerminalReceipt { node: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: deleted_birth.node_id.to_string(), incarnation_id: deleted_birth.incarnation.to_string(), runtime: None, exit_code: None, verdict: Some("running".into()), data_dir: Some("/data/mesh2.node.1-3qcfk1kq47m9".into()) })),
         executor: Some(executor()),
     }));
     out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": null, "deployment_id": "an16er0436pg" }))));
@@ -299,11 +299,11 @@ fn facts() -> Vec<BuildFact> {
     for s in [CreateStep::RegisterExactRuntimeHandle, CreateStep::ResolveProviderControlDomain, CreateStep::MakeRuntimeFactAvailableToBirth] {
         out.push(step(s.name(), Some(evidence(None))));
     }
-    out.push(step(CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), Some(evidence(Some("/var/lib/rafka/mesh2.rpc.1")))));
+    out.push(step(CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), Some(evidence(Some("/var/lib/rafka/mesh2.node.1")))));
     out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": "Pending" }))));
     out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": null, "reason": "no Pending owed: not a new mesh's first admin" }))));
     for s in [DeleteStep::NodeDeleting, DeleteStep::NodeDeleted] {
-        out.push(step(s.name(), Some(to_json(&op("node.delete", PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", NodeKind::RpcNode)))));
+        out.push(step(s.name(), Some(to_json(&op("node.delete", PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node")))));
     }
     for (command, completion) in [(DeleteStep::StopNode, DeleteStep::AwaitNodeLeft)] {
         for d in [
@@ -383,7 +383,7 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     result.insert("build_messages".into(), json!({ "facts": many.len(), "messages": messages.len(), "largest_bytes": messages.iter().map(|m| m.len()).max(), "ceiling": MAX_MESSAGE_BYTES }));
 
     let members: Vec<MeshDigest> = (1..=150).map(|k| digest(k, (k % 2 == 0).then(process_runtime), k % 3 == 0)).collect();
-    let overlays: Vec<LifecycleOp> = (0..12).map(|_| op("node.delete", PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode)).collect();
+    let overlays: Vec<LifecycleOp> = (0..12).map(|_| op("node.delete", PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node")).collect();
     let full = Full::new(members.clone(), overlays.clone(), overlays.iter().take(5).cloned().collect());
     let p = publisher();
     let chunks = chunks_of(&full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
@@ -475,14 +475,14 @@ fn every_kind_declares_its_ruled_type_string() {
 fn twelve_node_topology() -> FabricTopology {
     let mut t = FabricTopology::root("fabric-1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap());
     t.meshes.clear();
-    for (mesh, kind) in [("mesh1", NodeKind::RpcNode), ("mesh2", NodeKind::Broker), ("mesh3", NodeKind::Gateway)] {
-        let mut m = MeshTopology::of(&MeshDesired::of(mesh, [(NodeKind::NodeAdmin, 2), (kind, 2)]));
+    for (mesh, r#type) in [("mesh1", "node"), ("mesh2", "broker"), ("mesh3", "gateway")] {
+        let mut m = MeshTopology::of(&MeshDesired::of(mesh, [("node-admin", 2), (r#type, 2)]));
         for p in m.nodes.clone() {
-            let entry_kind = m.spec(&p).unwrap().kind;
-            let id = entry_kind.name().replace('-', "_");
+            let entry_kind = m.spec(&p).unwrap().r#type.clone();
+            let id = entry_kind.replace('-', "_");
             let executable = rdm_core::binding::Binding { launch_id: id.clone(), executable: format!("/opt/rafka/candidates/0123456789abcdef/{id}").into(), sha256: "ab".repeat(32), image: Some("rafka-node-runtime:0123456789abcdef".into()) };
             let config = [("zone".to_string(), "a".to_string())].into();
-            m.set_spec(NodeSpec { storage_persistence: StoragePersistence::Ephemeral, executable: Some(executable), tags: ["zone_a".to_string()].into(), config, ..NodeSpec::default_for(p.clone(), mesh, entry_kind) }).unwrap();
+            m.set_spec(NodeSpec { storage_persistence: StoragePersistence::Ephemeral, executable: Some(executable), tags: ["zone_a".to_string()].into(), config, ..NodeSpec::default_for(p.clone(), mesh, &entry_kind) }).unwrap();
         }
         t.meshes.insert(mesh.into(), m);
     }

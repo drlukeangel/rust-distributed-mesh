@@ -15,7 +15,7 @@ fn text(v: &Value, k: &str) -> Option<String> {
 pub fn primary_label(kind: &str, is_primary: bool, is_fabric_primary: bool) -> &'static str {
     match (kind, is_primary, is_fabric_primary) {
         (_, _, true) => "fabric primary · mesh primary",
-        ("node_admin", true, false) => "mesh primary",
+        ("node-admin", true, false) => "mesh primary",
         _ => "",
     }
 }
@@ -156,8 +156,8 @@ mod tests {
     #[test]
     fn only_the_node_admins_node_type_primary_is_labelled_mesh_primary() {
         assert_eq!(primary_label("broker", true, false), "", "a broker first of its node type is not a mesh primary");
-        assert_eq!(primary_label("node_admin", true, false), "mesh primary");
-        assert_eq!(primary_label("node_admin", false, false), "");
-        assert_eq!(primary_label("node_admin", true, true), "fabric primary · mesh primary");
+        assert_eq!(primary_label("node-admin", true, false), "mesh primary");
+        assert_eq!(primary_label("node-admin", false, false), "");
+        assert_eq!(primary_label("node-admin", true, true), "fabric primary · mesh primary");
     }
 }

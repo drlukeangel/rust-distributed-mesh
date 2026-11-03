@@ -45,9 +45,9 @@ fn a_topology_digest_carries_its_product_ids_exactly() {
     let (node_id, fabric_id) = (NodeId::mint(), FabricId::mint());
     let d = MeshDigest { held_hash: Default::default(),
         fabric_id: fabric_id.clone(),
-        node: rdm_core::MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        node: rdm_core::MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: node_id.clone(),
-            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             endpoint_id: rdm_core::EndpointId("key".into()),
             transport_addr: "127.0.0.1:41000".parse().unwrap(),
             incarnation: rdm_core::IncarnationId::mint(),

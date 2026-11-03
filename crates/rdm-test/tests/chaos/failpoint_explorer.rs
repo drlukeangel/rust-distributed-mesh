@@ -14,7 +14,7 @@
 
 use rdm_test::estate::location;
 use crate::build_log;
-use rdm_client::{LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
+use rdm_client::{MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
 use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
 use rdm_admin::deployment::pipeline::{AdoptStep, CreateStep, DeleteStep};
@@ -162,8 +162,8 @@ impl Run {
     }
 
     /// `node.create` of a `kind` node in `mesh`, accepted: the stream of the Build that runs it.
-    async fn spawn(&self, mesh: &str, kind: NodeKind) -> WorkflowStream {
-        self.estate.create_node(mesh, kind).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a {kind:?} in {mesh}: {e}"))
+    async fn spawn(&self, mesh: &str, r#type: &str) -> WorkflowStream {
+        self.estate.create_node(mesh, r#type).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a {:?} in {mesh}: {e}", r#type))
     }
 
     /// `node.delete` of `node`, accepted: the stream of the Build that runs it.
@@ -227,8 +227,8 @@ impl Run {
     }
 
     /// A healthy create of `kind` in `mesh1`: the node, ready, and its Build complete.
-    async fn plain_create(&self, kind: NodeKind, node: &PathName) -> String {
-        let mut stream = self.spawn("mesh1", kind).await;
+    async fn plain_create(&self, r#type: &str, node: &PathName) -> String {
+        let mut stream = self.spawn("mesh1", r#type).await;
         let id = Self::id_of(&stream);
         self.complete(&mut stream).await;
         self.node_ready(node).await;
@@ -290,7 +290,7 @@ impl Run {
 
     /// The admin that executes the operations on `mesh`'s members: the mesh's admin primary.
     async fn member_door(&self, mesh: &str) -> Door {
-        let primary = self.primary_where(&format!("{mesh} has an admin primary"), |n| n.kind == NodeKind::NodeAdmin && n.mesh == mesh && n.is_primary).await;
+        let primary = self.primary_where(&format!("{mesh} has an admin primary"), |n| n.r#type == "node-admin" && n.mesh == mesh && n.is_primary).await;
         self.door_of(&primary).await
     }
 
@@ -366,7 +366,7 @@ async fn create_step_cut(run: &Run, order: &[String], i: usize, node: &PathName)
     let spec = json!({"kind": "receipt", "step": step, "operation": op.action, "node": op.subject});
     let door = run.member_door("mesh1").await;
     let ack = door.arm(&id, spec.clone()).await;
-    let mut stream = run.spawn("mesh1", NodeKind::RpcNode).await;
+    let mut stream = run.spawn("mesh1", "node").await;
     let build_id = Run::id_of(&stream);
     // The runtime exists once DeployRuntime's work is done.
     let runtimes = usize::from(i >= index_of(order, CreateStep::DeployRuntime.name()));
@@ -424,7 +424,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     std::fs::create_dir_all(&dir).unwrap();
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let root = estate.root.clone();
     let run = Run { estate, root, doors: Default::default(), rows: Default::default(), builds: Default::default(), span_checks: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: the mesh holds two
@@ -437,11 +437,11 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
 
     let create_order: Vec<String> = CreateStep::ORDER.iter().map(|s| s.name().to_string()).collect();
     let delete_order: Vec<String> = DeleteStep::ORDER.iter().map(|s| s.name().to_string()).collect();
-    let node = &PathName::new("mesh1.rpc", "1").unwrap();
+    let node = &PathName::new("mesh1.node", "1").unwrap();
 
     // The healthy control: an unarmed create and removal of the same node. Its receipts are the
     // documented orders, taken from the product's own lists; every released cut must reproduce them.
-    let control_create = run.plain_create(NodeKind::RpcNode, node).await;
+    let control_create = run.plain_create("node", node).await;
     let b = run.build(&control_create).await;
     assert_eq!(done_steps(&b, &Op::create(node), Some(1)), create_order, "the healthy create runs every documented step once, in order: {b}");
     let control_id = run.id_at(node).await;
@@ -463,7 +463,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
 
     // The removal's lifecycle events, each between its durable receipt and its publish.
     for event in ["deleting", "deleted"] {
-        run.plain_create(NodeKind::RpcNode, node).await;
+        run.plain_create("node", node).await;
         event_cut(&run, &delete_order, event, node).await;
     }
 
@@ -482,7 +482,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // explores.) `WaitForNodeReady` holds no receipt until it completes, so a Build waiting on a held
     // admin holds a receipt for every step before it.
     let pre_node_ready = index_of(&create_order, CreateStep::WaitForNodeReady.name());
-    joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", &rdm_core::PathName::new("mesh1.admin", "3").unwrap(), pre_node_ready, "refusing to act on its locator").await;
+    joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", &rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), pre_node_ready, "refusing to act on its locator").await;
 
     finish(run, &dir, &create_order, &delete_order).await;
 }
@@ -697,7 +697,7 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
     let ack = door.arm(id, spec.clone()).await;
     let request = {
         let nodes = Nodes::new(run.estate.carrier_at(&door.name).await);
-        let (based_on, request) = run.estate.create_node_request("mesh1", NodeKind::RpcNode).await;
+        let (based_on, request) = run.estate.create_node_request("mesh1", "node").await;
         tokio::spawn(async move { nodes.create_named(based_on, request).await })
     };
     let held = door.wait_held(id).await;
@@ -707,7 +707,7 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
     let mut held_by = Value::Null;
     for _ in 0..12 {
         assert_eq!(run.fabric_build_id().await, previous, "`{id}`: the Build is not durable, so it is not the current Build");
-        for admin in run.estate.node_views().await.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
+        for admin in run.estate.node_views().await.into_iter().filter(|n| n.r#type == "node-admin") {
             // An admin whose log holds no fact of the Build ends the read `unknown build`.
             let Ok(facts) = build_log::log_read(&run.estate, &build_id).await else { continue };
             if let Some(seen) = build_log::projection(&facts, &build_id) {
@@ -743,14 +743,14 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
 /// its mesh's Pending: stalled before the `ApplyMeshPending` step. The admin must not reach Ready
 /// until the release.
 async fn mesh_pending_cut(run: &Run, create_order: &[String]) -> String {
-    let admin = &PathName::new("mesh2.admin", "1").unwrap();
+    let admin = &PathName::new("mesh2.node-admin", "1").unwrap();
     let id = "pending:mesh-first-admin";
     let step = CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name();
     let op = Op::create(admin);
     let spec = json!({"kind": "receipt", "step": step, "operation": op.action, "node": op.subject});
     let door = run.fabric_door().await;
     let ack = door.arm(id, spec.clone()).await;
-    let stream = run.estate.submit(&BuildSpec::CreateMesh(MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1)]))).await;
+    let stream = run.estate.submit(&BuildSpec::CreateMesh(MeshDesired::of("mesh2", [("node-admin", 1)]))).await;
     let build_id = stream.build_id().to_string();
     let at = index_of(create_order, step);
     let h = run.hold(&door, id, ack, &build_id, &op, Some(create_order[..at].to_vec()), Some((admin, 1))).await;
@@ -777,7 +777,7 @@ async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: V
     spec["id"] = json!(id);
     std::fs::write(rdm_test::admin_faults::boot_cuts_file(&run.root, admin), serde_json::to_vec(&json!([spec])).unwrap()).unwrap();
     let exec = run.fabric_door().await;
-    let mut stream = run.spawn("mesh1", NodeKind::NodeAdmin).await;
+    let mut stream = run.spawn("mesh1", "node-admin").await;
     let build_id = Run::id_of(&stream);
     let door = Door::at(&run.estate, admin).await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});

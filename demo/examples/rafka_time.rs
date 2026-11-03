@@ -22,7 +22,7 @@ use anyhow::{anyhow, Context, Result};
 use rdm_admin::rafka_time::{adopt_pulled, Puller, Refusal, Served};
 use rdm_client::{Filter, MeshNode, NodeStatus, Nodes, Peers};
 use rdm_core::topology::PrimaryKind;
-use rdm_core::NodeKind;
+
 use rdm_node::topology_read::read_topology;
 use rdm_transport::clock::{Clock, Ignored, Observed, RafkaTime};
 use rdm_transport::NodeTarget;
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
 
     let member = all
         .iter()
-        .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+        .find(|n| n.kind != "node-admin" && n.status == NodeStatus::Ready)
         .ok_or_else(|| anyhow!("no Ready role member in estate"))?;
     let member_read = read_topology(
         carrier.client(),
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     let replica_refusal = adopt_pulled(
         &clock,
         Puller::MeshPrimary,
-        "mesh2.admin.1",
+        "mesh2.node-admin.1",
         Served { via: "get-topology", served_by: member.node_id.as_str(), ms: member_time.ms, kind: member_time.kind },
     )
     .unwrap_err();
@@ -95,8 +95,8 @@ async fn main() -> Result<()> {
     let mesh_primary_refusal = adopt_pulled(
         &clock,
         Puller::MeshPrimary,
-        "mesh2.admin.1",
-        Served { via: "get-topology", served_by: "mesh2.admin.2", ms: fp_time.ms, kind: Some(PrimaryKind::MeshPrimary) },
+        "mesh2.node-admin.1",
+        Served { via: "get-topology", served_by: "mesh2.node-admin.2", ms: fp_time.ms, kind: Some(PrimaryKind::MeshPrimary) },
     )
     .unwrap_err();
     assert_eq!(mesh_primary_refusal, Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary);
@@ -105,7 +105,7 @@ async fn main() -> Result<()> {
     let adopted = adopt_pulled(
         &clock,
         Puller::MeshPrimary,
-        "mesh2.admin.1",
+        "mesh2.node-admin.1",
         Served { via: "get-topology", served_by: birth.node_id.as_str(), ms: fp_time.ms, kind: fp_time.kind },
     )
     .map_err(|e| anyhow!("{e}"))?;

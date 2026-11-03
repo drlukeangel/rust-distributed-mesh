@@ -91,8 +91,8 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             fabric,
             fabric_id,
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::NodeAdmin,
-            name: rdm_core::PathName::new("mesh1.admin", "2").unwrap(),
+            r#type: "node-admin".into(),
+            name: rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -109,7 +109,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             declared: Default::default(),
         };
         let runtime = rdm_core::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
-        let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
+        let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
@@ -150,7 +150,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
 }
 
 fn app_alpn() -> Alpn {
-    Alpn { name: b"member-cert-day0/1".to_vec(), proxy: false, carriers: vec![rdm_core::NodeKind::RpcNode] }
+    Alpn { name: b"member-cert-day0/1".to_vec(), proxy: false, carriers: vec!["node".to_string()] }
 }
 
 // @feature: node-lifecycle
@@ -172,7 +172,7 @@ fn the_day_zero_roots_dial_on_an_app_alpn_presents_its_own_member_cert_and_is_ad
         // A node of mesh1 serving the app ALPN, admitting on the fabric's root.
         let key = iroh::SecretKey::generate();
         let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), std::slice::from_ref(&alpn.name)).await.unwrap();
-        let peer = Birth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let peer = Birth { mesh: "mesh1".into(), r#type: "node".into(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let sink = Arc::new(MemoryConnectionsSink::new(peer.clone()));
         let (registry, handlers) = ConnectionsRegistry::new(ep.clone(), Arc::new(StaticResolver::new()), sink, std::slice::from_ref(&alpn), Vec::new()).unwrap();
         registry.admit_on(vec![test_root_public()], rdm_transport::clock::RafkaTime::unadopted());
@@ -183,7 +183,7 @@ fn the_day_zero_roots_dial_on_an_app_alpn_presents_its_own_member_cert_and_is_ad
         let router = rb.spawn();
         let (_, mut app) = registry.connections(&alpn.name).unwrap().split();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the peer binds an IPv4 socket");
-        root.node_rpc.resolver.apply(ResolvedNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode, node_id: peer.node_id.clone(), name: peer.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: peer.incarnation.clone() }, None);
+        root.node_rpc.resolver.apply(ResolvedNode { mesh: "mesh1".to_owned(), r#type: "node".into(), node_id: peer.node_id.clone(), name: peer.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: peer.incarnation.clone() }, None);
 
         let accepted = tokio::spawn(async move { app.accept().await });
         let opened = tokio::time::timeout(WRONG, opener.open(&peer)).await.expect("the dial ends");

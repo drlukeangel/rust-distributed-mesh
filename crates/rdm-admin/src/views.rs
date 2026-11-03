@@ -72,7 +72,7 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>, config: BTreeMap<String, String>) -> NodeView {
     NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: n.name.clone(),
-        kind: n.kind,
+        r#type: n.r#type.clone(),
         mesh: n.mesh.clone(),
         node_id: n.node_id.clone(),
         endpoint_id: n.endpoint_id.as_ref().map(|e| e.0.clone()),
@@ -212,7 +212,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
                 if out.iter().any(|v| v.node_id == r.node_id || v.name == r.name) {
                     continue;
                 }
-                let mut n = Node::allocated(r.name.clone(), r.mesh.clone(), r.kind);
+                let mut n = Node::allocated(r.name.clone(), r.mesh.clone(), &r.r#type);
                 n.node_id = r.node_id.clone();
                 n.incarnation_id = Some(incarnation);
                 n.provider = Some(view.fabric.provider);
@@ -253,7 +253,7 @@ pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRo
             return record_view(&n, None, None, Some(row), predecessor, own);
         }
     }
-    let mut n = Node::allocated(row.name.clone(), row.mesh.clone(), row.kind);
+    let mut n = Node::allocated(row.name.clone(), row.mesh.clone(), &row.r#type);
     n.node_id = row.node_id.clone();
     n.status = row.status;
     n.provider = Some(view.fabric.provider);
@@ -319,7 +319,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
             // Resolve stable identity pairs first: an exact read must not touch another node's
             // property record. Property-dependent pairs still match the complete current value.
             let mut identity = filter.clone();
-            identity.pairs.retain(|(property, _)| matches!(property.trim_start_matches('!'), "id" | "incarnation" | "path" | "name" | "mesh" | "kind" | "node_type"));
+            identity.pairs.retain(|(property, _)| matches!(property.trim_start_matches('!'), "id" | "incarnation" | "path" | "name" | "mesh" | "type"));
             nodes.retain(|node| identity.matches(node));
             for node in &mut nodes {
                 let read = tracing::info_span!("rdm.node.properties.read.via-node-get", node_id = %node.node_id, "otel.kind" = "internal");
@@ -482,7 +482,7 @@ pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeId, NodeKind, NodeStatus as ModelNodeStatus, PathName, ProviderKind as ModelProviderKind, ScopeStatus as ModelScopeStatus};
+    use crate::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeId, NodeStatus as ModelNodeStatus, PathName, ProviderKind as ModelProviderKind, ScopeStatus as ModelScopeStatus};
     use crate::span_capture::Capture;
     use crate::storage::{BirthFacts, CertDates, NodeRow};
     use std::collections::{BTreeMap, BTreeSet};
@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn fabrics_get_carries_the_rotation_and_the_ca_and_names_a_rotation_past_its_bound_stalled() {
         use rdm_core::status::RootsPhase;
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let view = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".to_string(), status: ModelScopeStatus::Ready, provider: ModelProviderKind::Process }, meshes: Vec::new(), nodes: Vec::new() };
         let row = |phase: RootsPhase| crate::fabric_storage::FabricRecord {
             fabric_id: FabricId::mint(), name: "fabric1".into(), state: crate::fabric_state::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(),
@@ -532,7 +532,7 @@ mod tests {
             .expect("build current-thread runtime");
 
         rt.block_on(async {
-            let me = PathName::numbered("mesh1", NodeKind::NodeAdmin, 1);
+            let me = PathName::numbered("mesh1", "node-admin", 1);
             let admin_id = NodeId::mint();
             let admin_inc = IncarnationId::mint();
             let rpc_succ_id = NodeId::mint();
@@ -540,7 +540,7 @@ mod tests {
             let rpc_pred_id = NodeId::mint();
             let rpc_pred_inc = IncarnationId::mint();
 
-            let mut admin_node = Node::allocated(me.clone(), "mesh1", NodeKind::NodeAdmin);
+            let mut admin_node = Node::allocated(me.clone(), "mesh1", "node-admin");
             admin_node.node_id = admin_id.clone();
             admin_node.incarnation_id = Some(admin_inc.clone());
             admin_node.status = ModelNodeStatus::Ready;
@@ -548,15 +548,15 @@ mod tests {
             admin_node.is_fabric_primary = true;
             admin_node.admin_api_base = Some("http://127.0.0.1:18001".to_string());
 
-            let rpc_path = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
-            let mut rpc_succ = Node::allocated(rpc_path.clone(), "mesh1", NodeKind::RpcNode);
+            let rpc_path = PathName::numbered("mesh1", "node", 1);
+            let mut rpc_succ = Node::allocated(rpc_path.clone(), "mesh1", "node");
             rpc_succ.node_id = rpc_succ_id.clone();
             rpc_succ.incarnation_id = Some(rpc_succ_inc.clone());
             rpc_succ.status = ModelNodeStatus::Ready;
             rpc_succ.is_primary = true;
 
             let rpc_pred_path = rpc_path.renamed().unwrap();
-            let mut rpc_pred = Node::allocated(rpc_pred_path.clone(), "mesh1", NodeKind::RpcNode);
+            let mut rpc_pred = Node::allocated(rpc_pred_path.clone(), "mesh1", "node");
             rpc_pred.node_id = rpc_pred_id.clone();
             rpc_pred.renamed_from = Some(rpc_path.clone());
             rpc_pred.incarnation_id = Some(rpc_pred_inc.clone());
@@ -580,7 +580,7 @@ mod tests {
             let atlas = Atlas::default();
             // Each node's record is at its node id in the nodes store, written by mesh1's mesh-primary (query.md §1).
             let claims = crate::storage::MemoryNodesStorage::default();
-            let mut admin_row = NodeRow::new(me.clone(), "mesh1", NodeKind::NodeAdmin, admin_id.clone(), ModelNodeStatus::Ready);
+            let mut admin_row = NodeRow::new(me.clone(), "mesh1", "node-admin", admin_id.clone(), ModelNodeStatus::Ready);
             admin_row.births.push(BirthFacts::new(admin_inc.clone(), me.clone()));
 
             // Each node's config and tags are its own part of its record (node-config-update.md step 4), in
@@ -594,7 +594,7 @@ mod tests {
             properties.put_properties(&own(&admin_id, &admin_inc, BTreeMap::new(), BTreeSet::new())).await.unwrap();
             properties.put_properties(&own(&rpc_succ_id, &rpc_succ_inc, BTreeMap::from([("region".to_string(), "eu-west".to_string())]), BTreeSet::from(["tier-a".to_string()]))).await.unwrap();
             properties.put_properties(&own(&rpc_pred_id, &rpc_pred_inc, BTreeMap::new(), BTreeSet::from(["tier-a".to_string()]))).await.unwrap();
-            let mut succ_row = NodeRow::new(rpc_path.clone(), "mesh1", NodeKind::RpcNode, rpc_succ_id.clone(), ModelNodeStatus::Ready);
+            let mut succ_row = NodeRow::new(rpc_path.clone(), "mesh1", "node", rpc_succ_id.clone(), ModelNodeStatus::Ready);
             let mut succ_birth = BirthFacts::new(rpc_succ_inc.clone(), rpc_path.clone());
             succ_birth.cert = Some(CertDates {
                 issued_at: 1_000,
@@ -606,7 +606,7 @@ mod tests {
 
             // The retained predecessor's tags stay in its own record at its own id (node-replace.md:41):
             // `inherited_by` hides none of them.
-            let mut pred_row = NodeRow::new(rpc_pred_path.clone(), "mesh1", NodeKind::RpcNode, rpc_pred_id.clone(), ModelNodeStatus::Ready);
+            let mut pred_row = NodeRow::new(rpc_pred_path.clone(), "mesh1", "node", rpc_pred_id.clone(), ModelNodeStatus::Ready);
             pred_row.inherited_by = Some(rpc_succ_id.clone());
             pred_row.births.push(BirthFacts::new(rpc_pred_inc.clone(), rpc_pred_path.clone()));
             for row in [&admin_row, &succ_row, &pred_row] {

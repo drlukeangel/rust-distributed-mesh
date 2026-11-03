@@ -10,7 +10,7 @@
 //! peer mesh from the backbone alone: it marks the mesh silent in the cut and learns it again
 //! after the heal.
 
-use rdm_core::NodeKind;
+
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
@@ -71,8 +71,8 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
     estate.reconcile_shape("fabric1", &shape).await;
     let views = estate.settled_views(&shape).await;
     let nodes: Vec<Value> = views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
-    let ordinary: BTreeSet<String> = views.iter().filter(|n| n.kind == NodeKind::RpcNode).map(|n| n.node_id.to_string()).collect();
-    let admins: BTreeSet<String> = views.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| n.node_id.to_string()).collect();
+    let ordinary: BTreeSet<String> = views.iter().filter(|n| n.r#type == "node").map(|n| n.node_id.to_string()).collect();
+    let admins: BTreeSet<String> = views.iter().filter(|n| n.r#type == "node-admin").map(|n| n.node_id.to_string()).collect();
     assert_eq!((ordinary.len(), admins.len()), (4, 4), "{nodes:#?}");
     let side = |m: &str| -> Vec<rdm_core::PathName> { views.iter().filter(|n| n.mesh == m).map(|n| n.name.clone()).collect() };
     let (mesh1, mesh2) = (side("mesh1"), side("mesh2"));
@@ -108,7 +108,7 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
     // new node (node-recovery.md step 2, Q335; on the process provider its old runtime
     // is terminated). Each node-admin at the four locations learns the peer mesh again.
     wait_for("every node-admin learns the peer mesh again", Duration::from_secs(60), || async {
-        let now: BTreeSet<String> = estate.node_views().await.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| n.node_id.to_string()).collect();
+        let now: BTreeSet<String> = estate.node_views().await.iter().filter(|n| n.r#type == "node-admin").map(|n| n.node_id.to_string()).collect();
         let spans = estate.spans();
         let learned: BTreeSet<String> = named(&spans, "rdm.mesh.topology.update.via-mesh-learned").into_iter().filter(|sp| at(sp) >= healed_at).map(|sp| attr(sp, "node")).collect();
         (now.len() == admins.len() && now.iter().all(|a| learned.contains(a))).then_some(())

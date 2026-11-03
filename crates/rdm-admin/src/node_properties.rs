@@ -138,7 +138,7 @@ async fn write(_me: &PathName, me_id: &NodeId, view: &Topology, _storage: &dyn N
     span.record("subject_path", subject.name.path.as_str()).record("subject_name", subject.name.name.as_str());
     // The writer of the row is the mesh-primary of the node's mesh, and no other admin (R-OW1).
     if !view.is_mesh_primary(&subject.mesh, me_id) {
-        let held_by = view.node_type_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
+        let held_by = view.node_type_primary(&subject.mesh, "node-admin").map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
         let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me_id} does not hold it)", subject.mesh, subject.node_id);
         span.record("detail", needed.as_str());
         return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
@@ -195,13 +195,13 @@ mod tests {
     // @feature: node-tags
     #[tokio::test]
     async fn tags_use_node_owned_properties_and_refuse_unbound_records() {
-        let mut admin1 = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let mut admin1 = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
         admin1.status = NodeStatus::Ready;
         admin1.is_primary = true;
         admin1.is_fabric_primary = true;
         admin1.incarnation_id = Some(IncarnationId::mint());
 
-        let mut admin2 = Node::allocated(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let mut admin2 = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin");
         admin2.status = NodeStatus::Ready;
         admin2.incarnation_id = Some(IncarnationId::mint());
 

@@ -17,7 +17,7 @@
 
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_client::{BuildCarrier, BuildId, Change, Fabrics, LaunchKind, MeshDesired, NodeStatus, Nodes, PathName};
+use rdm_client::{BuildCarrier, BuildId, Change, Fabrics, MeshDesired, NodeStatus, Nodes, PathName};
 use rdm_test::estate::{bin_dir, Estate};
 use rdm_test::executables::{Current, Executables};
 use rdm_test::node::{app_protocol, echo_streams, APP_PROTOCOL, APP_PROTOCOL_KNOB};
@@ -103,7 +103,7 @@ async fn day0(dir: &Path) -> Day0 {
     let (dialer, acceptor) = running.connections(APP_PROTOCOL).expect("the app takes its protocol's Connections from the admin").split();
     let me = running.birth();
     let echo = echo_streams(acceptor, me.node_id.to_string());
-    let admin = ResolvedNode { mesh: me.mesh.clone(), kind: me.kind, node_id: me.node_id.clone(), name: me.name.clone(), endpoint_id: me.endpoint_id.0.parse().unwrap(), incarnation: me.incarnation.clone(), transport_addr: me.transport_addr };
+    let admin = ResolvedNode { mesh: me.mesh.clone(), r#type: me.r#type, node_id: me.node_id.clone(), name: me.name.clone(), endpoint_id: me.endpoint_id.0.parse().unwrap(), incarnation: me.incarnation.clone(), transport_addr: me.transport_addr };
     let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller's endpoint binds");
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(admin);
@@ -196,7 +196,7 @@ impl Day0 {
 
     /// The Day-0 admin dials `node` on the app protocol: admitted, its stream echoed by the node's app.
     async fn dials(&self, node: &ResolvedNode) {
-        let to = Birth { mesh: node.mesh.clone(), kind: node.kind, name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
+        let to = Birth { mesh: node.mesh.clone(), r#type: node.r#type.clone(), name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
         let conn = match tokio::time::timeout(WRONG, self.dialer.open(&to)).await {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => panic!("the Day-0 admin's dial to {:?} on an app protocol is refused: {e:?}", node.name),
@@ -256,19 +256,19 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
         Box::pin(async move {
             let d = day0(&dir).await;
             // Two rpc nodes: a restart of the type primary hands the role to the other first (node-stop.md "Primary": a sole one is refused no-secondary).
-            d.reconcile(&[MeshDesired::of("mesh1", [(LaunchKind::NodeAdmin, 2), (LaunchKind::RpcNode, 2)])]).await;
-            let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+            d.reconcile(&[MeshDesired::of("mesh1", [("node-admin", 2), ("node", 2)])]).await;
+            let rpc: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
             d.until_ready(&rpc).await;
             d.until_fabric_ready().await;
             // A launched admin restarted as the same birth (node.stop, then node.start: same node.id and
             // incarnation) is issued a fresh member cert by its start's join and installs it. A process
             // admin takes no app protocol (`entry::run_on`), so its dials are proved in process
             // (`rdm-admin`'s `app_protocol_dials`); here the install is read from its evidence.
-            let admin2: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+            let admin2: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
             d.until_ready(&admin2).await;
             let before = d.resolved(&admin2, None).await;
-            Estate::workflow("node.stop of mesh1.admin.2", d.nodes.stop(&admin2).await).await;
-            Estate::workflow("node.start of mesh1.admin.2", d.nodes.start(&admin2).await).await;
+            Estate::workflow("node.stop of mesh1.node-admin.2", d.nodes.stop(&admin2).await).await;
+            Estate::workflow("node.start of mesh1.node-admin.2", d.nodes.start(&admin2).await).await;
             d.until_ready(&admin2).await;
             let same = before.incarnation.as_str().to_string();
             let installs = tokio::time::timeout(WRONG, async {
@@ -281,14 +281,14 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
                 }
             })
             .await
-            .unwrap_or_else(|_| panic!("mesh1.admin.2 ({same}) installed no member cert at its start after its stop: {:?}", installs_of(&dir, before.node_id.as_str())));
+            .unwrap_or_else(|_| panic!("mesh1.node-admin.2 ({same}) installed no member cert at its start after its stop: {:?}", installs_of(&dir, before.node_id.as_str())));
             assert!(installs.len() >= 2, "a cert at its create and another at its start, same birth: {installs:?}");
             let first = d.resolved(&rpc, None).await;
             d.both_ways(&first).await;
 
             d.until_fabric_ready().await;
-            Estate::workflow("node.stop of mesh1.rpc.1", d.nodes.stop(&rpc).await).await;
-            Estate::workflow("node.start of mesh1.rpc.1", d.nodes.start(&rpc).await).await;
+            Estate::workflow("node.stop of mesh1.node.1", d.nodes.stop(&rpc).await).await;
+            Estate::workflow("node.start of mesh1.node.1", d.nodes.start(&rpc).await).await;
             d.until_ready(&rpc).await;
             // A stop then a start keep the birth (same node.id and incarnation; node-stop.md "Kept",
             // node-start.md): its start's join issues it a fresh member cert, and the dials are admitted
@@ -313,12 +313,12 @@ fn the_day0_admin_and_rpc_nodes_of_both_meshes_dial_each_other_on_an_app_protoco
     run("app-protocol-two-mesh", |dir| {
         Box::pin(async move {
             let d = day0(&dir).await;
-            let mesh = |m: &str| MeshDesired::of(m, [(LaunchKind::NodeAdmin, 1), (LaunchKind::RpcNode, 1)]);
+            let mesh = |m: &str| MeshDesired::of(m, [("node-admin", 1), ("node", 1)]);
             d.reconcile(&[mesh("mesh1")]).await;
-            d.until_ready(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
+            d.until_ready(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
             d.until_fabric_ready().await;
             d.reconcile(&[mesh("mesh1"), mesh("mesh2")]).await;
-            for node in [PathName::new("mesh2.rpc", "1").unwrap(), PathName::new("mesh1.rpc", "1").unwrap()] {
+            for node in [PathName::new("mesh2.node", "1").unwrap(), PathName::new("mesh1.node", "1").unwrap()] {
                 d.until_ready(&node).await;
                 let resolved = d.resolved(&node, None).await;
                 d.both_ways(&resolved).await;

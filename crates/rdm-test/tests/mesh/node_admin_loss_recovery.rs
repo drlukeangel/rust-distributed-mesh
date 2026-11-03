@@ -96,13 +96,13 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     let (fabric_primary, fabric_primary_id) = (location(&fabric_primary_row), s(&fabric_primary_row["node_id"]));
     let lost = if fabric_primary.path.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
     let lost_mesh_id = estate.mesh_view(lost).await.id.expect("the lost mesh has its id").to_string();
-    let window_victim = Estate::path(&format!("{lost}.rpc"), "3");
-    let survivors: Vec<PathName> = (1..=2).map(|i| Estate::path(&format!("{lost}.rpc"), &i.to_string())).collect();
+    let window_victim = Estate::path(&format!("{lost}.node"), "3");
+    let survivors: Vec<PathName> = (1..=2).map(|i| Estate::path(&format!("{lost}.node"), &i.to_string())).collect();
     assert_eq!(estate.accepted_build_id().await, accepted, "the accepted Build names the topology");
     let attempt_before = estate.attempt_of_build(&accepted).await;
-    let lost_births: BTreeMap<PathName, String> = births(&before).into_iter().filter(|(n, _)| n.path == format!("{lost}.admin") || *n == window_victim).collect();
+    let lost_births: BTreeMap<PathName, String> = births(&before).into_iter().filter(|(n, _)| n.path == format!("{lost}.node-admin") || *n == window_victim).collect();
     // A runtime's data dir is named by its birth's node id.
-    let lost_admin_ids: Vec<String> = before.iter().filter(|n| n["mesh"] == lost && n["kind"] == "node_admin").map(|n| s(&n["node_id"])).collect();
+    let lost_admin_ids: Vec<String> = before.iter().filter(|n| n["mesh"] == lost && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
     let victim_id = before.iter().find(|n| location(&n) == window_victim).map(|n| s(&n["node_id"])).expect("the member's node id");
 
     // Control goes through the fabric primary's advertised API, which the fault never touches.
@@ -119,7 +119,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     }
     if lost == "mesh1" {
         estate.kill_bootstrap();
-        killed.push(json!({"node": "mesh1.admin.1", "pid": "bootstrap"}));
+        killed.push(json!({"node": "mesh1.node-admin.1", "pid": "bootstrap"}));
     }
     assert_eq!(killed.len(), 2, "both admins of {lost} were lost: {killed:?}");
     // The member dies too (SIGKILL): its exact runtime exits while the mesh has no admin.
@@ -184,7 +184,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     // fabric primary executes. The node-admin joins under the mesh's EXISTING MeshId and adopts the
     // mesh's held state (step 7); no Pending is handed to it.
     // The admin it created: the create in that attempt's own trace, at a location of the lost mesh's admins.
-    let lost_admins = format!("{lost}.admin");
+    let lost_admins = format!("{lost}.node-admin");
     let creates_admin = |r: &Value| named(&spans, "rdm.node_admin.node.create.via-build").into_iter().find(|c| c["trace_id"] == r["trace_id"] && attr(c, "node_path") == lost_admins).cloned();
     let first = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
@@ -230,7 +230,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         .filter(|sp| rdm_test::estate::at_location(sp, &window_victim) && attr(sp, "node_id") == victim_id && attr(sp, "outcome").starts_with("complete"))
         .collect();
     assert_eq!(recovery.len(), 1, "the dead member is recovered once, keyed on its exited birth: {recovery:?}");
-    let lost_admins_after: Vec<String> = after.iter().filter(|n| n["mesh"] == lost && n["kind"] == "node_admin").map(|n| s(&n["node_id"])).collect();
+    let lost_admins_after: Vec<String> = after.iter().filter(|n| n["mesh"] == lost && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
     assert!(lost_admins_after.contains(&attr(recovery[0], "submitter")), "by its own mesh's new primary: {recovery:?}");
     assert_eq!(attr(recovery[0], "build_id"), accepted, "under the same Build: {recovery:?}");
     // The recovery's steps are the ones in its submit's own trace (R-BI7: the mesh-primary runs it in
@@ -326,7 +326,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     let former = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
     let primary = hand_fabric_primary_over(&mut estate, &former).await;
     let primary_mesh = primary.path.split('.').next().unwrap().to_string();
-    let primary_dir = if primary == Estate::path("mesh1.admin", "1") { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&primary).await };
+    let primary_dir = if primary == Estate::path("mesh1.node-admin", "1") { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&primary).await };
     let mesh_ids: BTreeMap<String, String> = {
         let mut m = BTreeMap::new();
         for mesh in ["mesh1", "mesh2"] {
@@ -334,13 +334,13 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
         }
         m
     };
-    let window_victim = Estate::path(&format!("{primary_mesh}.rpc"), "3");
-    let own_members: Vec<PathName> = (1..=2).map(|i| Estate::path(&format!("{primary_mesh}.rpc"), &i.to_string())).collect();
+    let window_victim = Estate::path(&format!("{primary_mesh}.node"), "3");
+    let own_members: Vec<PathName> = (1..=2).map(|i| Estate::path(&format!("{primary_mesh}.node"), &i.to_string())).collect();
     let old = births(&before);
     let old_ids: BTreeMap<PathName, String> = before.iter().map(|n| (location(&n), s(&n["node_id"]))).collect();
     let victim_id = old_ids[&window_victim].clone();
     // A runtime's data dir is named by its birth's node id.
-    let admin_ids: Vec<String> = before.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["node_id"])).collect();
+    let admin_ids: Vec<String> = before.iter().filter(|n| n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
 
     // The fault: every node-admin, at once, the stopped former primary's process with them; then, with
     // the fabric admin-less, one ordinary member.
@@ -353,7 +353,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
         }
     }
     estate.kill_bootstrap();
-    killed.push(json!({"node": "mesh1.admin.1", "pid": "bootstrap"}));
+    killed.push(json!({"node": "mesh1.node-admin.1", "pid": "bootstrap"}));
     assert_eq!(killed.len(), 4, "all four node-admins were lost: {killed:?}");
     for (path, pid) in estate.live_runtimes() {
         if path.file_name().unwrap().to_string_lossy() == victim_id.as_str() {
@@ -463,7 +463,7 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let former = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
     let primary = hand_fabric_primary_over(&mut estate, &former).await;
-    let primary_dir = if primary == Estate::path("mesh1.admin", "1") { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&primary).await };
+    let primary_dir = if primary == Estate::path("mesh1.node-admin", "1") { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&primary).await };
 
     // The fault: every runtime of the fabric, at once.
     for (_, pid) in estate.live_runtimes() {
@@ -503,8 +503,8 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
 /// CONTRACT (node-stop.md, Entry: "Live exact `(node.id, incarnation)`", Status: "stopped with a live
 /// process"; node-rpc-envelope.md, Workflow: "A later attempt resumes from the recorded receipts, never
 /// from step 1, and validates those receipts against the accepted operation and exact births before it
-/// reuses them"): a Build of steps stops `mesh1.rpc.1` (its `Complete` receipt durable: stopped, its
-/// process alive) and then creates `mesh1.rpc.3`; every runtime of the fabric is lost inside that
+/// reuses them"): a Build of steps stops `mesh1.node.1` (its `Complete` receipt durable: stopped, its
+/// process alive) and then creates `mesh1.node.3`; every runtime of the fabric is lost inside that
 /// Build, the create's first receipt held by the faulted fabric-primary's door. The fabric-primary,
 /// restarted on its own data dir as both primaries, resumes the Build and completes it. The stopped
 /// node's runtime exited with the fault: the completed stop's receipt is not taken into any view after
@@ -516,27 +516,27 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
 /// (`Running`) ...; only an attempt that ends with a named terminal failure (`Failed { step, reason }`)
 /// makes the Build failed". The door releases the lost attempt's row and writes no verdict
 /// (`via-claimant-departure` `row-released`). Must NOT happen: the attempt ended `Failed` at the door,
-/// so no pass drives the Build and `mesh1.rpc.3` is never created (rdm#262).
+/// so no pass drives the Build and `mesh1.node.3` is never created (rdm#262).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_recorded_stopped() {
     let cell = "a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_recorded_stopped";
     let sha = rdm_test::faults::candidate_sha();
-    let mut estate = Estate::bootstrap_on(owner(cell), "fabric1", "mesh1", &rdm_test::faults::binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(cell), "fabric1", "mesh1", &rdm_test::faults::binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     let before = values(&estate.settled_views(&[("mesh1", 2, 2)]).await);
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let fp = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
-    assert_eq!(fp, Estate::path("mesh1.admin", "1"), "the bootstrap admin holds the fabric-primary role: {before:#?}");
-    let stopped = before.iter().find(|n| location(n) == Estate::path("mesh1.rpc", "1")).cloned().expect("mesh1.rpc.1");
+    assert_eq!(fp, Estate::path("mesh1.node-admin", "1"), "the bootstrap admin holds the fabric-primary role: {before:#?}");
+    let stopped = before.iter().find(|n| location(n) == Estate::path("mesh1.node", "1")).cloned().expect("mesh1.node.1");
     let stopped_id = s(&stopped["node_id"]);
 
     // The fabric-primary's door holds the create's first receipt: the stop before it is complete and
     // durable, and the Build's attempt is open.
     let door = rdm_test::faults::Door::at(&estate, &fp).await;
     let cut = "steps:create";
-    door.arm(cut, json!({"kind": "receipt", "step": "PrepareStorage", "operation": "node.create", "node": rdm_core::OperationSubject::Location(Estate::path("mesh1.rpc", "3"))})).await;
-    let rpc1: rdm_client::PathName = Estate::path("mesh1.rpc", "1");
-    let stream = estate.nodes_obj().await.steps(vec![rdm_core::build::Step::Stop { node: rpc1 }, rdm_core::build::Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: Estate::path("mesh1.rpc", "3"), executable: Some(estate.executables.of(rdm_client::LaunchKind::RpcNode)) }]).await.unwrap_or_else(|e| panic!("the Build is accepted: {e}"));
+    door.arm(cut, json!({"kind": "receipt", "step": "PrepareStorage", "operation": "node.create", "node": rdm_core::OperationSubject::Location(Estate::path("mesh1.node", "3"))})).await;
+    let rpc1: rdm_client::PathName = Estate::path("mesh1.node", "1");
+    let stream = estate.nodes_obj().await.steps(vec![rdm_core::build::Step::Stop { node: rpc1 }, rdm_core::build::Step::Create { mesh: "mesh1".into(), r#type: "node".into(), node: Estate::path("mesh1.node", "3"), executable: Some(estate.executables.of("node")) }]).await.unwrap_or_else(|e| panic!("the Build is accepted: {e}"));
     let held = door.wait_held(cut).await;
 
     // The fault: every runtime of the fabric, at once, inside the Build.
@@ -564,8 +564,8 @@ async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_record
     passes.release("drift-pass").await;
     assert_eq!(s(&answered["attributes"]["outcome"]), "row-released", "the door releases the lost attempt's row and writes no verdict: the Build stays in progress (build.md §4): {answered}");
     let after = values(&estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(240)).await);
-    let back = after.iter().find(|n| location(n) == Estate::path("mesh1.rpc", "1")).cloned().unwrap_or_else(|| panic!("mesh1.rpc.1 is in the settled view: {after:#?}"));
-    assert_ne!(s(&back["node_id"]), stopped_id, "mesh1.rpc.1 is re-created by recovery under a new node id: {back}");
+    let back = after.iter().find(|n| location(n) == Estate::path("mesh1.node", "1")).cloned().unwrap_or_else(|| panic!("mesh1.node.1 is in the settled view: {after:#?}"));
+    assert_ne!(s(&back["node_id"]), stopped_id, "mesh1.node.1 is re-created by recovery under a new node id: {back}");
 
     estate.stop().await;
     let spans = estate.spans();

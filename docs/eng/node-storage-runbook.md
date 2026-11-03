@@ -18,10 +18,9 @@ The contract is in these pages; this runbook only gathers them:
 - **Persistence belongs to the path.name, not to a birth.** Persistent storage survives stop,
   start and restart, and a new node created over an inherited data dir keeps it. Ephemeral storage
   is fresh for every new node (deployment-provider.md §4).
-- **The path's config decides it, explicitly.** Every accepted Build carries each path's
-  `PathConfig { storage, placement }`. Rafka's per-kind defaults are applied by Rafka's ingress
-  adapter before acceptance: broker and node-admin Persistent, gateway and compute Ephemeral.
-  Neither the pipeline nor the provider applies a hidden default.
+- **The path's config decides it, explicitly.** Every accepted Build carries each node's
+  `storage_persistence`: the node's own, or its type's (`node-admin` persistent, `node` ephemeral, a
+  declared type its own). Neither the pipeline nor the provider applies a hidden default.
 - **RDM deletes nothing on disk, ever.** A delete releases the node.id and the name, never the data
   dir.
 - **Only the data dir is carried.** The endpoint key (`node-key`) lives in it. Anything the

@@ -273,9 +273,9 @@ mod tests {
 
     #[test]
     fn every_reply_variant_encodes_and_round_trips() {
-        let by = AnsweredBy { node_id: "n".into(), node: PathName::new("mesh1.rpc", "1").unwrap(), incarnation_id: "i".into() };
+        let by = AnsweredBy { node_id: "n".into(), node: PathName::new("mesh1.node", "1").unwrap(), incarnation_id: "i".into() };
         let all = [
-            ResolveReply::Found { by: by.clone(), node_id: "x".into(), name: PathName::new("mesh1.rpc", "2").unwrap(), incarnation_id: "j".into() },
+            ResolveReply::Found { by: by.clone(), node_id: "x".into(), name: PathName::new("mesh1.node", "2").unwrap(), incarnation_id: "j".into() },
             ResolveReply::Gone { by: by.clone() },
             ResolveReply::Unknown { by: by.clone() },
             ResolveReply::Unavailable { by: by.clone() },
@@ -291,7 +291,7 @@ mod tests {
         for r in all {
             assert_eq!(ResolveProbe::decode_reply(&ResolveProbe::encode_reply(&r).unwrap()).unwrap(), r);
         }
-        let req = ResolveRequest::Resolve { target: ProbeTarget::Path(PathName::new("mesh1.rpc", "1").unwrap()) };
+        let req = ResolveRequest::Resolve { target: ProbeTarget::Path(PathName::new("mesh1.node", "1").unwrap()) };
         assert_eq!(ResolveProbe::decode_request(&ResolveProbe::encode_request(&req).unwrap()).unwrap(), req);
     }
 }

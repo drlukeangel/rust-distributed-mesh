@@ -545,7 +545,7 @@ mod tests {
                     // The frames after `Started` are written once the caller holds only the stream.
                     g.notified().await;
                     for step in ["AllocateIdentity", "WaitForMeshJoin", "Complete"] {
-                        sink.data(BuildReply::Step { build_id: "cq2tyb03krac".into(), attempt: 3, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.admin", "1").unwrap()), step: step.into(), receipt: None }).await.map_err(gone)?;
+                        sink.data(BuildReply::Step { build_id: "cq2tyb03krac".into(), attempt: 3, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()), step: step.into(), receipt: None }).await.map_err(gone)?;
                     }
                     Ok(BuildReply::FabricPrimaryMoved { build_id: "cq2tyb03krac".into(), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) })
                 }
@@ -556,12 +556,12 @@ mod tests {
         let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _router = iroh::protocol::Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-        let fp: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let fp: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id, name: fp.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation });
+        resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id, name: fp.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation });
         let cep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let carrier = BuildCarrier::new(Arc::new(NodeRpcClient::new(cep, resolver).with_caller_system("rdm")), fp);
-        let mut stream = carrier.create(BuildChange::Stop { node: rdm_core::PathName::new("mesh1.admin", "1").unwrap() }).await.expect("the call was accepted");
+        let mut stream = carrier.create(BuildChange::Stop { node: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap() }).await.expect("the call was accepted");
         assert_eq!((stream.build_id().as_str(), stream.attempt()), ("cq2tyb03krac", 3));
         drop(carrier);
         go.notify_one();
@@ -573,7 +573,7 @@ mod tests {
             }
         })
         .await;
-        let step = |s: &str| Ok(BuildFrame::Step { attempt: 3, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.admin", "1").unwrap()), step: s.into() });
+        let step = |s: &str| Ok(BuildFrame::Step { attempt: 3, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()), step: s.into() });
         assert!(read.is_ok(), "the stream delivered no terminal within 10 s; it delivered {got:?}");
         assert_eq!(got, vec![step("AllocateIdentity"), step("WaitForMeshJoin"), step("Complete"), Ok(BuildFrame::FabricPrimaryMoved { fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) })]);
     }

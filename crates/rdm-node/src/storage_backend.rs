@@ -340,10 +340,10 @@ mod tests {
         let vars = std::collections::BTreeMap::from([
             (env::ENV_FABRIC, "fabric1".to_string()),
             (env::ENV_FABRIC_ID, fabric_id.to_string()),
-            (env::ENV_NODE_PATH, "mesh1.rpc".to_string()),
+            (env::ENV_NODE_PATH, "mesh1.node".to_string()),
             (env::ENV_NODE_NAME, "1".to_string()),
             (env::ENV_MESH, "mesh1".to_string()),
-            (env::ENV_NODE_KIND, rdm_core::NodeKind::RpcNode.name().to_string()),
+            (env::ENV_NODE_TYPE, "node".to_string()),
             (env::ENV_NODE_ID, crate::model::NodeId::mint().to_string()),
             (env::ENV_INCARNATION, crate::model::IncarnationId::mint().to_string()),
             (env::ENV_TRANSPORT_ADDR, "127.0.0.1:0".to_string()),

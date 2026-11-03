@@ -16,7 +16,7 @@
 //! hold). Must NOT happen: no report, a report to anyone but the fabric-primary, no mark, or the first
 //! investigation of the mesh-primary only once its silence passed the floor.
 use rdm_client::{NodeView, PathName};
-use rdm_core::NodeKind;
+
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::process_faults::ExactRuntime;
 use serde_json::Value;
@@ -62,8 +62,8 @@ async fn a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_prim
     estate.enter_fabric_primary().await;
     let views = estate.node_views().await;
     let fp = one(&views, "a fabric-primary", |n| n.is_fabric_primary);
-    let mp = one(&views, "mesh2's mesh-primary", |n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary);
-    let rpc = one(&views, "mesh2's rpc node", |n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode);
+    let mp = one(&views, "mesh2's mesh-primary", |n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary);
+    let rpc = one(&views, "mesh2's rpc node", |n| n.mesh == "mesh2" && n.r#type == "node");
     let (fp_id, mp_id, rpc_id) = (fp.node_id.to_string(), mp.node_id.to_string(), rpc.node_id.to_string());
 
     // The hold: mesh2's mesh-primary neither gossips nor answers from here.

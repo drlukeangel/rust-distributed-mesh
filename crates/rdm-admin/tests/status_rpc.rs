@@ -8,7 +8,7 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rdm_core::{EndpointId, IncarnationId, MeshId, NodeId, NodeKind};
+use rdm_core::{EndpointId, IncarnationId, MeshId, NodeId};
 use rdm_admin::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rdm_admin::status_rpc::{Declared, StatusDoor};
 use rdm_admin::fabric_storage::{FabricStorage, MemoryFabricStorage};
@@ -128,10 +128,10 @@ impl Birth {
     }
 }
 
-fn birth(name: rdm_core::PathName, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_primary: bool) -> Birth {
+fn birth(name: rdm_core::PathName, r#type: &str, mesh: &str, is_primary: bool, is_fabric_primary: bool) -> Birth {
     let key = SecretKey::generate();
-    let mut node = Node::allocated(name, mesh, kind);
-    node.kind = kind;
+    let mut node = Node::allocated(name, mesh, r#type);
+    node.r#type = r#type.to_string();
     node.mesh = mesh.into();
     node.node_id = NodeId::mint();
     node.endpoint_id = Some(EndpointId(key.public().to_string()));
@@ -219,7 +219,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     let ep = me.endpoint().await;
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
-    let resolved = ResolvedNode { mesh: me.node.mesh.clone(), kind: me.node.kind,
+    let resolved = ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type.clone(),
         node_id: me.node.node_id.clone(),
         name: me.node.name.clone(),
         endpoint_id: me.key.public(),
@@ -270,14 +270,14 @@ fn mesh_primary_retries_pending_by_natural_key_returns_already_applied() {
 
 async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::Path) {
 
-    let fabric_primary = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
-    let not_primary = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), NodeKind::RpcNode, "mesh1", false, false);
-    let member = birth(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), NodeKind::RpcNode, "mesh2", false, false);
-    let other = birth(rdm_core::PathName::new("mesh2.rpc", "2").unwrap(), NodeKind::RpcNode, "mesh2", false, false);
+    let fabric_primary = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
+    let not_primary = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", "mesh1", false, false);
+    let member = birth(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "node", "mesh2", false, false);
+    let other = birth(rdm_core::PathName::new("mesh2.node", "2").unwrap(), "node", "mesh2", false, false);
     let mesh2 = MeshId::mint();
     let mesh_ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh2.clone())].into_iter().collect();
     // The receiver: mesh2's bootstrap admin, not yet any role's primary.
-    let me = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false);
+    let me = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false);
     let rig = rig(me, &[&fabric_primary, &not_primary, &member, &other], mesh_ids).await;
     let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
 
@@ -305,7 +305,7 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     let forged = StatusRequest::DeclareNodeState { node_id: other.node.node_id.clone(), incarnation: other.node.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation: None };
     let forged_reply = reply(&call(&rig, &member, &forged, &CallOptions::default()).await);
     assert_eq!(forged_reply, StatusReply::Applied, "a declaration is decided for the birth it names, whoever sends it");
-    let never_born = birth(rdm_core::PathName::new("mesh2.rpc", "9").unwrap(), NodeKind::RpcNode, "mesh2", false, false);
+    let never_born = birth(rdm_core::PathName::new("mesh2.node", "9").unwrap(), "node", "mesh2", false, false);
     let unknown = StatusRequest::DeclareNodeState { node_id: never_born.node.node_id.clone(), incarnation: never_born.node.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation: None };
     assert_eq!(reply(&call(&rig, &member, &unknown, &CallOptions::default()).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a birth this admin does not hold");
     let meshes_final = rig.door.declared.lock().unwrap().meshes.clone();
@@ -348,14 +348,14 @@ fn connections_deleting_mesh_primary_serves_status_checks_exact_birth() {
 async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &std::path::Path) {
     use rdm_admin::deployment::pipeline::{command_admission, CommandAdmission, Completion};
 
-    // The subject: mesh1.admin.2, commanded by its owning mesh-admin mesh1.admin.1.
-    let executor = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
-    let subject = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), NodeKind::NodeAdmin, "mesh1", false, false);
+    // The subject: mesh1.node-admin.2, commanded by its owning mesh-admin mesh1.node-admin.1.
+    let executor = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
+    let subject = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", "mesh1", false, false);
     let (node_id, incarnation) = (subject.node.node_id.clone(), subject.node.incarnation_id.clone().unwrap());
     let rig = rig(subject, &[&executor], BTreeMap::new()).await;
     // The exact-birth Status command control is JoinMesh; StopNode is now reserved (Q47).
     // This cell still proves the admitted status door, its refusal and transport certainty arms.
-    let command = |inc: IncarnationId| StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation: inc, build_id: "8pe1w1tk1f0n".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.admin", "2").unwrap()) };
+    let command = |inc: IncarnationId| StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation: inc, build_id: "8pe1w1tk1f0n".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()) };
 
     // Healthy control before connections-deleting: a ping is served.
     let c = client_of(&rig, &executor).await;
@@ -490,12 +490,12 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         .await
         .unwrap();
     builds.claim_attempt(&rdm_admin::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
-    let node = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), NodeKind::RpcNode, "mesh1", false, false).node;
+    let node = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", "mesh1", false, false).node;
     let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
@@ -642,12 +642,12 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
-        let fabric_primary = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
+        let fabric_primary = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
         let mesh2 = MeshId::mint();
         let fabric = rdm_core::FabricId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh2.clone())].into_iter().collect();
         let store = Refusing::refusing();
-        let me = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false);
+        let me = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false);
         let rig = rig_with(me, &[&fabric_primary], ids.clone(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
 
@@ -664,7 +664,7 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
         assert_eq!(again, StatusReply::AlreadyApplied);
 
         // A Fabric event: refused, then applied, then a repeat.
-        let mesh1_primary = birth(rdm_core::PathName::new("mesh3.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh3", true, false);
+        let mesh1_primary = birth(rdm_core::PathName::new("mesh3.node-admin", "1").unwrap(), "node-admin", "mesh3", true, false);
         let rig3 = rig_with(mesh1_primary, &[&fabric_primary], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let event = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: rdm_core::status::FabricEvent::Ready };
         let ev_refused = reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await);
@@ -677,7 +677,7 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
         // The authority restarts over the same facts: what it folds is what it applied.
         let folded = folded(&rdm_admin::storage::MemoryNodesStorage::default(), &*store, &*store, "mesh2").await;
         assert_eq!(folded.meshes.get(&mesh2), Some(&MeshState::Pending));
-        let me_again = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false);
+        let me_again = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false);
         let restarted = rig_with(me_again, &[&fabric_primary], ids, store.clone(), folded, Some(fabric.clone())).await;
         let after_restart = reply(&call(&restarted, &fabric_primary, &pending, &CallOptions::default()).await);
         assert_eq!(after_restart, StatusReply::AlreadyApplied, "the folded row answers the natural key");
@@ -708,10 +708,10 @@ fn mesh_primary_refuses_every_backward_move_by_name() {
     capture.run(async {
         let nodes = [NodeState::Pending, NodeState::Ready, NodeState::ConnectionsDeleting, NodeState::Stopped];
         let meshes = [MeshState::Pending, MeshState::Ready, MeshState::Deleting, MeshState::Deleted];
-        let me = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
-        let senders: Vec<Birth> = (0..4).map(|i| birth(rdm_core::PathName::new("mesh1.rpc", (i + 1).to_string()).unwrap(), NodeKind::RpcNode, "mesh1", false, false)).collect();
-        let fabric_primary = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), NodeKind::NodeAdmin, "mesh1", false, false);
-        let receiver = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false);
+        let me = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
+        let senders: Vec<Birth> = (0..4).map(|i| birth(rdm_core::PathName::new("mesh1.node", (i + 1).to_string()).unwrap(), "node", "mesh1", false, false)).collect();
+        let fabric_primary = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", "mesh1", false, false);
+        let receiver = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false);
         let node_rig = rig(me, &senders.iter().collect::<Vec<_>>(), BTreeMap::new()).await;
         let mut fp = fabric_primary;
         fp.node.is_fabric_primary = true;
@@ -780,11 +780,11 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
     let capture = capture(cell);
     capture.run(async {
         // The receiver: a mesh1 admin that holds no role.
-        let fp = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
-        let rpc = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), NodeKind::RpcNode, "mesh1", false, false);
-        let other_admin = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false);
-        let stranger = birth(rdm_core::PathName::new("mesh9.rpc", "1").unwrap(), NodeKind::RpcNode, "mesh9", false, false);
-        let receiver = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), NodeKind::NodeAdmin, "mesh1", false, false);
+        let fp = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
+        let rpc = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", "mesh1", false, false);
+        let other_admin = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false);
+        let stranger = birth(rdm_core::PathName::new("mesh9.node", "1").unwrap(), "node", "mesh9", false, false);
+        let receiver = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", "mesh1", false, false);
         let rig = rig(receiver, &[&fp, &rpc, &other_admin], BTreeMap::new()).await;
         let not_primary = |r: &StatusReply, name: &str| match r {
             StatusReply::RejectedNotPrimary { why } => assert_eq!(why.as_str(), name, "{r:?}"),
@@ -820,7 +820,7 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
         let r = reply(&call(&rig, &stranger, &decl_node(&stranger), &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary of mesh1"), "{r:?}");
         // Stale ids: another Fabric's event at the mesh primary; another Mesh id for a held name.
-        let mp_receiver = birth(rdm_core::PathName::new("mesh1.admin", "3").unwrap(), NodeKind::NodeAdmin, "mesh1", true, false);
+        let mp_receiver = birth(rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), "node-admin", "mesh1", true, false);
         let held = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), held.clone())].into_iter().collect();
         let rig2 = rig_with(mp_receiver, &[&fp], ids, Refusing::memory(), Declared::default(), None).await;
@@ -854,9 +854,9 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
     let capture = capture(cell);
     capture.run(async {
         use rdm_core::status::FabricEvent;
-        let fp1 = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
-        let fp2 = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), NodeKind::NodeAdmin, "mesh1", false, false);
-        let receiver = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false);
+        let fp1 = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
+        let fp2 = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", "mesh1", false, false);
+        let receiver = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false);
         let fabric = rdm_core::FabricId::mint();
         let store = Refusing::memory();
         let rig = rig_with(receiver, &[&fp1, &fp2], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
@@ -881,7 +881,7 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
         assert_eq!(reply(&call(&rig, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "previously applied events survive the move");
         // The receiver restarts over the fabric's facts.
         let folded = folded(&rdm_admin::storage::MemoryNodesStorage::default(), &*store, &*store, "mesh2").await;
-        let receiver2 = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false);
+        let receiver2 = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false);
         let rig2 = rig_with(receiver2, &[&fp1, &fp2], BTreeMap::new(), store.clone(), folded, Some(fabric.clone())).await;
         {
             let mut t = rig2.door.topology.write().await;
@@ -912,8 +912,8 @@ fn status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_appli
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
-        let me = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
-        let subject = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), NodeKind::RpcNode, "mesh1", false, false);
+        let me = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
+        let subject = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", "mesh1", false, false);
         let rig = rig(me, &[&subject], BTreeMap::new()).await;
         let old_inc = subject.node.incarnation_id.clone().unwrap();
         let decl = |inc: &IncarnationId, st: NodeState| StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: inc.clone(), state: st, operation: None };
@@ -948,8 +948,8 @@ fn status_route_loss_never_synthesizes_dead() {
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
-        let me = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
-        let subject = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), NodeKind::RpcNode, "mesh1", false, false);
+        let me = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
+        let subject = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", "mesh1", false, false);
         let rig = rig(me, &[&subject], BTreeMap::new()).await;
         let decl = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
         // The healthy control, in the same capture.
@@ -989,7 +989,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
-        let fp = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
+        let fp = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
         let handoff = |rig: &Rig, mesh_id: MeshId, target: Node| {
             let (topology, me, me_id) = (rig.door.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
             let fp = &fp;
@@ -1009,7 +1009,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         // Arm 1: the target holds another MeshId under mesh2's name.
         let held = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), held.clone())].into_iter().collect();
-        let r1 = rig(birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids).await;
+        let r1 = rig(birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false), &[&fp], ids).await;
         let other = MeshId::mint();
         let e1 = handoff(&r1, other, target_of(&r1)).await.expect_err("a stale MeshId is refused");
         assert!(e1.contains("no replacement id is minted") && e1.contains(&held.to_string()), "{e1}");
@@ -1018,7 +1018,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         // Arm 2: the target is already past Pending.
         let mesh_id = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id.clone())].into_iter().collect();
-        let r2 = rig(birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids).await;
+        let r2 = rig(birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false), &[&fp], ids).await;
         let ahead = StatusRequest::ApplyMeshState { mesh_id: mesh_id.clone(), mesh_name: "mesh2".into(), state: MeshState::Ready, changed_at_rafka_ms: 0 };
         assert_eq!(reply(&call(&r2, &fp, &ahead, &CallOptions::default()).await), StatusReply::Applied);
         let e2 = handoff(&r2, mesh_id.clone(), target_of(&r2)).await.expect_err("Pending after Ready is backward");
@@ -1028,7 +1028,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         // typed (the rectifier is the retry), and the next hand-off of the same key is AlreadyApplied.
         let mesh_id3 = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id3.clone())].into_iter().collect();
-        let r3 = rig(birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids).await;
+        let r3 = rig(birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false), &[&fp], ids).await;
         r3.door.hold_next_reply.store(true, Ordering::SeqCst);
         let t3 = std::time::Instant::now();
         let e3 = handoff(&r3, mesh_id3.clone(), target_of(&r3)).await.expect_err("a lost reply is not certainty: the step fails and is not retried inside");
@@ -1040,7 +1040,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         // Arm 4: the target cannot be reached at all: the reachability wait ends at its bound and
         // no Status is sent.
         let mesh_id4 = MeshId::mint();
-        let r4 = rig(birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], BTreeMap::new()).await;
+        let r4 = rig(birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false), &[&fp], BTreeMap::new()).await;
         let mut dark = target_of(&r4);
         dark.transport_addr = Some("127.0.0.1:1".parse().unwrap());
         let t4 = std::time::Instant::now();
@@ -1080,10 +1080,10 @@ fn pending_handoff_waits_for_an_elected_mesh_primary_before_its_one_call() {
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
-        let fp = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
+        let fp = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
         let mesh_id = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id.clone())].into_iter().collect();
-        let r = rig(birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids).await;
+        let r = rig(birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false), &[&fp], ids).await;
         r.ready.store(false, Ordering::SeqCst);
         let mut target = r.me.node.clone();
         target.transport_addr = Some(r.resolved.transport_addr);
@@ -1125,9 +1125,9 @@ fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
-        let me = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, true);
-        let mesh1_primary = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), NodeKind::NodeAdmin, "mesh1", true, false);
-        let mesh1_other = birth(rdm_core::PathName::new("mesh1.admin", "3").unwrap(), NodeKind::NodeAdmin, "mesh1", false, false);
+        let me = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, true);
+        let mesh1_primary = birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", "mesh1", true, false);
+        let mesh1_other = birth(rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), "node-admin", "mesh1", false, false);
         let (id1, id2) = (MeshId::mint(), MeshId::mint());
         // Its own records hold only the Mesh it was born into.
         let records: BTreeMap<String, MeshId> = [("mesh2".to_string(), id2.clone())].into_iter().collect();
@@ -1204,7 +1204,7 @@ async fn scripted_member(b: &Birth, script: Script) -> (ResolvedNode, Router) {
     let ep = b.endpoint().await;
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    (ResolvedNode { mesh: b.node.mesh.clone(), kind: b.node.kind, node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() }, router)
+    (ResolvedNode { mesh: b.node.mesh.clone(), r#type: b.node.r#type.clone(), node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() }, router)
 }
 
 // @feature: node-lifecycle
@@ -1230,8 +1230,8 @@ async fn carried_connections_delete_ends(capture: &Capture) {
     use rdm_admin::status_rpc::CarryEnd;
     use rdm_core::node_command::NodeCommandReply as N;
     use rdm_core::status::{ConnectionScope, ConnectionsReceipt};
-    let mp = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
-    let members: Vec<Birth> = (1..=5).map(|i| birth(rdm_core::PathName::new("mesh1.rpc", i.to_string()).unwrap(), NodeKind::RpcNode, "mesh1", false, false)).collect();
+    let mp = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
+    let members: Vec<Birth> = (1..=5).map(|i| birth(rdm_core::PathName::new("mesh1.node", i.to_string()).unwrap(), "node", "mesh1", false, false)).collect();
     let established = ConnectionsReceipt::Established { in_flight: 0, closed: vec![] };
     let deadline = ConnectionsReceipt::Deadline { last_in_flight: 1, closed: vec![], held: vec![] };
     let deleted = |r: &ConnectionsReceipt| N::ConnectionsDeleted { closed: vec![], not_open: vec![], held: vec![], receipt: Some(r.clone()) };
@@ -1311,8 +1311,8 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
         use rdm_admin::status_rpc::CarryEnd;
         use rdm_core::node_command::NodeCommandReply as N;
         use rdm_core::status::{ConnectionScope, ConnectionsReceipt};
-        let mp = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
-        let member = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), NodeKind::RpcNode, "mesh1", false, false);
+        let mp = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
+        let member = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", "mesh1", false, false);
         let deadline = ConnectionsReceipt::Deadline { last_in_flight: 1, closed: vec![], held: vec![] };
         let established = ConnectionsReceipt::Established { in_flight: 0, closed: vec![] };
         let deleted = |r: &ConnectionsReceipt| N::ConnectionsDeleted { closed: vec![], not_open: vec![], held: vec![], receipt: Some(r.clone()) };
@@ -1323,7 +1323,7 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
         let rig = rig(mp, &[&member], BTreeMap::new()).await;
         let client = NodeRpcClient::new(rig.me.endpoint().await, resolver.clone()).with_caller_system("rdm");
         let _ = rig.door.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Arc::new(rdm_admin::node_rows::WrittenRows::default()))).await));
-        rig.door.nodes_storage.put_node(&rdm_admin::storage::NodeRow::new(member.node.name.clone(), member.node.mesh.clone(), member.node.kind, member.node.node_id.clone(), NodeStatus::Ready)).await.unwrap();
+        rig.door.nodes_storage.put_node(&rdm_admin::storage::NodeRow::new(member.node.name.clone(), member.node.mesh.clone(), &member.node.r#type, member.node.node_id.clone(), NodeStatus::Ready)).await.unwrap();
         let (node_id, incarnation) = (member.node.node_id.clone(), member.node.incarnation_id.clone().unwrap());
         let status = || async { rig.door.nodes_storage.node(&node_id).await.unwrap().expect("the member's row").status };
 
@@ -1336,7 +1336,7 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
         assert_eq!(status().await, NodeStatus::ConnectionsDeleted, "the new attempt's Established sets connections-deleted");
         drop(router);
     });
-    let rows: Vec<String> = capture.spans().iter().filter(|sp| sp["name"] == "rdm.node_admin.node.update.via-row-status" && sp["attributes"]["subject_path"] == "mesh1.rpc" && sp["attributes"]["subject_name"] == "1").map(|sp| format!("{}:{}", sp["attributes"]["status"].as_str().unwrap_or_default(), sp["attributes"]["outcome"].as_str().unwrap_or_default())).collect();
+    let rows: Vec<String> = capture.spans().iter().filter(|sp| sp["name"] == "rdm.node_admin.node.update.via-row-status" && sp["attributes"]["subject_path"] == "mesh1.node" && sp["attributes"]["subject_name"] == "1").map(|sp| format!("{}:{}", sp["attributes"]["status"].as_str().unwrap_or_default(), sp["attributes"]["outcome"].as_str().unwrap_or_default())).collect();
     assert_eq!(rows, ["ConnectionsDeleting:written", "ConnectionsDeleting:unchanged", "ConnectionsDeleted:written"], "the mesh-primary's row writes, in order: connections-deleted only from the Established completion");
 }
 

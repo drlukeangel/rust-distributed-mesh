@@ -23,7 +23,7 @@ pub fn elect(candidates: &[Candidate<'_>]) -> Option<usize> {
 
 /// The refusal of node.primary.update for a node type with no other node of its type in the mesh
 /// (lifecycles/node-primary-update.md "No-successor cases"): `cannot transfer: no secondary of type
-/// <node_type> in mesh <mesh>`.
-pub fn no_secondary(node_type: &str, mesh: &str) -> String {
-    format!("cannot transfer: no secondary of type {node_type} in mesh {mesh}")
+/// <type> in mesh <mesh>`.
+pub fn no_secondary(r#type: &str, mesh: &str) -> String {
+    format!("cannot transfer: no secondary of type {} in mesh {mesh}", r#type)
 }

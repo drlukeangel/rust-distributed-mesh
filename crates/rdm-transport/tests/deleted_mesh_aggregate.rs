@@ -11,11 +11,11 @@ fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
 }
 
-fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, port: u16) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> MeshDigest {
     let node_id = NodeId::mint();
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+        node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
             name,
             endpoint_id: EndpointId(format!("key-{node_id}")),
@@ -39,11 +39,11 @@ fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, port: 
 
 #[test]
 fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_delete() {
-    let m3_a1 = digest(rdm_core::PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, 29301);
-    let final_del = LifecycleOp { kind: m3_a1.node.kind, mesh: m3_a1.node.mesh.clone(),
+    let m3_a1 = digest(rdm_core::PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", 29301);
+    let final_del = LifecycleOp { r#type: m3_a1.node.r#type.clone(), mesh: m3_a1.node.mesh.clone(),
         build_id: "b-s72".into(),
         attempt: 1,
-        operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh3.admin", "1").unwrap()),
+        operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh3.node-admin", "1").unwrap()),
         node_id: m3_a1.node.node_id.clone(),
         incarnation: m3_a1.node.incarnation.clone(),
         name: m3_a1.node.name.clone(),

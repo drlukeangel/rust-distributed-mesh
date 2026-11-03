@@ -14,7 +14,7 @@ use rdm_client::{
     Builds, Filter, Frame, MeshNode, NodeStatus, Nodes, PathName, Peers, WorkflowStream,
     await_fact,
 };
-use rdm_core::NodeKind;
+
 
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH")
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
         _ => rows
             .iter()
             .find(|n| {
-                n.kind != NodeKind::NodeAdmin
+                n.kind != "node-admin"
                     && !n.is_primary
                     && n.status == NodeStatus::Ready
             })

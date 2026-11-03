@@ -5,7 +5,7 @@
 use rdm_client::binding::{sha256_file, Binding, BindingSet, Candidate};
 use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::{NodeId, NodeKind, PathName};
+use rdm_core::{NodeId, PathName};
 use rdm_test::estate::{Estate, Owner};
 use rdm_transport::{Resend, CallOptions, NodeTarget};
 use rshape_consumer::replica::{Records, RecordsReply, RecordsRequest};
@@ -29,7 +29,7 @@ fn binding_set(candidate: &str) -> BindingSet {
         Binding { launch_id: launch_id.into(), executable, sha256, image: None }
     };
     let bindings = vec![
-        bind("node_admin", env!("CARGO_BIN_EXE_rshape-node-admin")),
+        bind("node-admin", env!("CARGO_BIN_EXE_rshape-node-admin")),
         bind("gateway", env!("CARGO_BIN_EXE_rshape-gateway")),
         bind("broker", env!("CARGO_BIN_EXE_rshape-broker")),
         bind("compute", env!("CARGO_BIN_EXE_rshape-compute")),
@@ -39,7 +39,7 @@ fn binding_set(candidate: &str) -> BindingSet {
 
 /// The estate of `test`: the demo's node-admin, then one Build to mesh1 holding `shape` (each kind's
 /// count; the node-admin is counted), every node of it Ready.
-pub async fn estate(feature: &str, test: &str, shape: &[(NodeKind, u32)]) -> Estate {
+pub async fn estate(feature: &str, test: &str, shape: &[(String, u32)]) -> Estate {
     let candidate = candidate();
     let owner = Owner { product: "rshape".into(), feature: feature.into(), subfeature: "demo".into(), rung: "MN".into(), provider: "process".into(), test: test.into() };
     let estate = Estate::bootstrap_on(owner, "fabric1", "mesh1", &binding_set(&candidate), &candidate, &["gateway", "broker", "compute"])

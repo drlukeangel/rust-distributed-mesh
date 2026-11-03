@@ -144,7 +144,7 @@ fn launch_by(root: &Running, name: rdm_core::PathName, dir: &Path, store: &Path)
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
-        kind: rdm_core::NodeKind::NodeAdmin,
+        r#type: "node-admin".into(),
         name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
@@ -166,7 +166,7 @@ fn launch_by(root: &Running, name: rdm_core::PathName, dir: &Path, store: &Path)
 /// What `root` verifies the first join of `launch`'s birth against.
 fn deployed(launch: &Launch) -> Deployed {
     let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-    Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
+    Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
@@ -192,9 +192,9 @@ pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 // @feature: node-lifecycle
 /// CONTRACT (fabric-node-lifecycle-elections.md §4.1: "The mesh-primary then runs node investigation";
 /// node-recovery.md "Detection and the verdict" step 2: "Only the mesh-primary acts"; build.md §5.3):
-/// a Day-0 node-admin (mesh1.admin.1, its mesh's primary) and mesh1.admin.2, launched by it, are both
+/// a Day-0 node-admin (mesh1.node-admin.1, its mesh's primary) and mesh1.node-admin.2, launched by it, are both
 /// ready and run their offline ticks for six gossip intervals. The mesh-primary's tick read the runtime
-/// rows once, as it took the role; mesh1.admin.2's tick, no primary, read none. Must NOT happen: a read
+/// rows once, as it took the role; mesh1.node-admin.2's tick, no primary, read none. Must NOT happen: a read
 /// of every runtime row on every tick of every admin (rust-distributed-mesh#99: 12 reads in 3 s on the
 /// mesh-primary, 9 on an admin that is no primary), each a tail read of the nodes store under its one
 /// read lock racing its writer, and on an admin that is no primary the fold of the whole store its
@@ -209,24 +209,24 @@ fn the_offline_tick_reads_the_runtime_rows_once_on_the_mesh_primary_and_never_on
         std::fs::create_dir_all(&root_dir).unwrap();
         let (root_reads, admin_reads) = (RuntimeReads::default(), RuntimeReads::default());
 
-        // The Day-0 admin does not reconcile: its Build names only itself, and mesh1.admin.2 is launched here.
+        // The Day-0 admin does not reconcile: its Build names only itself, and mesh1.node-admin.2 is launched here.
         let root = start_on(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, recorded(&root_dir, &root_reads)).await.expect("the Day-0 admin comes up");
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
-        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
+        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), &admin_dir, &root_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
         let admin = start_on(admin_cfg, Wiring { node_hooks: NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, recorded(&root_dir, &admin_reads)).await.expect("the launched admin comes up");
-        until_ready("mesh1.admin.2", || admin.digest.lock().unwrap().clone()).await;
+        until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         // Six ticks of each admin's offline loop at the cell's gossip interval.
         tokio::time::sleep(6 * rdm_core::cadence::gossip_interval()).await;
 
         let (on_root, on_admin) = (root_reads.by_the_tick(), admin_reads.by_the_tick());
-        eprintln!("mesh1.admin.1's tick read the runtime rows {} times: {on_root:#?}", on_root.len());
-        eprintln!("mesh1.admin.2's tick read the runtime rows {} times: {on_admin:#?}", on_admin.len());
-        assert_eq!(on_admin.len(), 0, "mesh1.admin.2, no primary, reads no runtime row on any tick: {on_admin:#?}");
+        eprintln!("mesh1.node-admin.1's tick read the runtime rows {} times: {on_root:#?}", on_root.len());
+        eprintln!("mesh1.node-admin.2's tick read the runtime rows {} times: {on_admin:#?}", on_admin.len());
+        assert_eq!(on_admin.len(), 0, "mesh1.node-admin.2, no primary, reads no runtime row on any tick: {on_admin:#?}");
         assert_eq!(on_root.len(), 1, "the mesh-primary reads its mesh's runtime rows once, as it takes the role: {on_root:#?}");
 
         admin.leave().await;

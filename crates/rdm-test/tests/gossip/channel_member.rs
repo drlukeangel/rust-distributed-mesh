@@ -26,8 +26,8 @@ fn two_members_publish_and_receive_one_event() {
     let cap = crate::common::capture("two_members_publish_and_receive_one_event");
     cap.run(crate::common::Threads::Workers(4), async {
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let a = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[], &[TYPE]).await;
-        let b = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[a.addr()], &[TYPE]).await;
+        let a = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &[], &[TYPE]).await;
+        let b = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &[a.addr()], &[TYPE]).await;
         let (to_b, mut from_b) = a.topology_view.join_channel(TYPE).await.expect("a joins its declared channel").split();
         let (to_a, mut from_a) = b.topology_view.join_channel(TYPE).await.expect("b joins its declared channel").split();
         for (on, other) in [(&a, &b), (&b, &a)] {

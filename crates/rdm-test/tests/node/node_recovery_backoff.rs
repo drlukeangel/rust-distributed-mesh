@@ -5,14 +5,14 @@
 //! and a mesh the fabric-primary cannot reach "is recovered once the cut heals (Q118)"; lead decision
 //! D22, 2026-11-02: a mesh-primary behind a cut fails its recovery by name and recovers after the heal).
 //!
-//! CONTRACT: in a two-mesh estate (two node-admins and two rpc nodes each, the fabric-primary mesh1.admin.1)
+//! CONTRACT: in a two-mesh estate (two node-admins and two rpc nodes each, the fabric-primary mesh1.node-admin.1)
 //! every UDP path between mesh2's primary and mesh1's nodes is dropped (mesh2's other nodes still reach both
-//! sides, so no mesh is unheard), and the provider kills mesh2.rpc.1's runtime. Mesh2's primary's submits of
+//! sides, so no mesh is unheard), and the provider kills mesh2.node.1's runtime. Mesh2's primary's submits of
 //! that birth's recovery fail while the cut holds, each by name: its outcome names the report of the birth's
 //! drift to the fabric-primary that did not go through; each failed submit records its backoff (the gossip
 //! interval, doubling, at most the staleness floor) and the next submit of the birth starts no earlier than
 //! that backoff after the failed one ended. The cut is dropped: the next submit starts within the staleness
-//! floor and a tick of the last failed one, and completes: one new birth at mesh2.rpc.1 under a
+//! floor and a tick of the last failed one, and completes: one new birth at mesh2.node.1 under a
 //! new node id. What must NOT happen: a failed submit made again on every tick, a backoff past the
 //! staleness floor, a recovery that completes while the cut holds, or the heal answered later than the
 //! floor and a tick after the last failed submit.
@@ -68,7 +68,7 @@ async fn a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_wit
     let test = "a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_within_its_backoff_of_the_heal";
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"], &[]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &shape).await;
     estate.settles_to(&shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
@@ -76,10 +76,10 @@ async fn a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_wit
     let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary");
     assert_eq!(fp["mesh"], "mesh1", "the fabric-primary has explicit mesh1 metadata");
     let fp = location(fp);
-    let primary_view = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2's primary");
+    let primary_view = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2's primary");
     let mesh2_primary = location(primary_view);
     let primary_id = s(&primary_view["node_id"]);
-    let victim = PathName::new("mesh2.rpc", "1").unwrap();
+    let victim = PathName::new("mesh2.node", "1").unwrap();
     let victim_view = nodes.iter().find(|n| location(n) == victim).expect("fixture victim");
     let victim_id = s(&victim_view["node_id"]);
     let victim_incarnation = s(&victim_view["incarnation_id"]);

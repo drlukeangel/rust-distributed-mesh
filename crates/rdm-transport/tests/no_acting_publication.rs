@@ -21,11 +21,11 @@ fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
 }
 
-fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, port: u16) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> MeshDigest {
     let node_id = NodeId::mint();
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+        node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
             name,
             endpoint_id: EndpointId(format!("key-{node_id}")),
@@ -48,7 +48,7 @@ fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, port: 
 }
 
 fn op(kind: &str, d: &MeshDigest) -> LifecycleOp {
-    LifecycleOp { kind: d.node.kind, mesh: d.node.mesh.clone(),
+    LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(),
         build_id: "b-s53".into(),
         attempt: 1,
         operation: rdm_core::OperationId::new(kind, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
@@ -76,12 +76,12 @@ async fn node() -> Node {
 }
 
 /// CONTRACT (R-RX4: "Only a mesh's own mesh-primary publishes that mesh on the backbone. The
-/// fabric-primary never publishes a mesh as its acting primary"): the fabric-primary mesh1.admin.1,
+/// fabric-primary never publishes a mesh as its acting primary"): the fabric-primary mesh1.node-admin.1,
 /// its view naming mesh2 live, holds mesh2's last admin and one rpc member, and runs its publication
 /// publication as the node-admin does (publish its own mesh, then wait for the publication's wake with a 1.5 s
 /// anti-entropy deadline).
-/// While the publication waits, it executes the stop of mesh2.rpc.1 (NodeStopped) and the delete of
-/// mesh2.admin.1 (the departure its view takes). Neither is a change of mesh1's own projection, so
+/// While the publication waits, it executes the stop of mesh2.node.1 (NodeStopped) and the delete of
+/// mesh2.node-admin.1 (the departure its view takes). Neither is a change of mesh1's own projection, so
 /// the publication returns at its deadline and no earlier; the NodeStopped is stamped by the executor
 /// role with the version the fabric-primary holds, never an acting counter of mesh2; and no span
 /// names the fabric-primary an acting primary. Must NOT happen: the executed stop or delete waking
@@ -93,7 +93,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
     capture.run(4, async {
         let fp_n = node().await;
         let fab = fabric();
-        let fp_own = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 41_001);
+        let fp_own = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 41_001);
         let fp_m = TopologyView::join(&fp_n.gossip, &fp_n.ep, &fab, "mesh1", &MeshId::mint(), fp_own.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let fp_bb = Backbone::join(&fp_n.gossip, &fp_n.ep, &fp_m, "mesh1", rdm_core::PublisherId { incarnation: fp_own.node.incarnation.clone(), node_id: fp_own.node.node_id.clone() }, vec![]).await.unwrap();
         fp_bb.set_mesh_primary(true);
@@ -102,8 +102,8 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         // with no primary goes unheard (R-RX4).
             fp_bb.set_fabric_primary(true);
 
-        let admin2 = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, 42_001);
-        let rpc = digest(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, 42_101);
+        let admin2 = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 42_001);
+        let rpc = digest(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", 42_101);
         for d in [&admin2, &rpc] {
             assert!(fp_m.digest_view.record(d.clone()));
         }
@@ -120,7 +120,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         };
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        // mesh2's primary is gone. The fabric-primary, as executor, stops mesh2.rpc.1 and deletes mesh2.admin.1.
+        // mesh2's primary is gone. The fabric-primary, as executor, stops mesh2.node.1 and deletes mesh2.node-admin.1.
         let (publisher, stamped) = fp_bb.publish_status_event(StatusEvent::Stopped, &op("stop-node", &rpc)).await;
         assert!(fp_m.digest_view.depart(op("delete-node", &admin2)), "the exited verdict's departure is taken");
         let woke_after = publication.await.unwrap();
@@ -134,8 +134,8 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         assert!(woke_after >= ANTI_ENTROPY, "the publication returned after {woke_after:?}, before its {ANTI_ENTROPY:?} deadline: the executed stop or delete of mesh2 woke it to publish for mesh2");
         let event = spans
             .iter()
-            .find(|s| s["name"] == "rdm.mesh.topology.update.via-status-event" && s["attributes"]["subject_path"] == "mesh2.rpc" && s["attributes"]["subject_name"] == "1")
-            .unwrap_or_else(|| panic!("the stop mesh1.admin.1 executed is spanned: {spans:#?}"));
+            .find(|s| s["name"] == "rdm.mesh.topology.update.via-status-event" && s["attributes"]["subject_path"] == "mesh2.node" && s["attributes"]["subject_name"] == "1")
+            .unwrap_or_else(|| panic!("the stop mesh1.node-admin.1 executed is spanned: {spans:#?}"));
         println!("{CELL}: status event trace {} role {} topology_version {}", event["trace_id"], event["attributes"]["role"], event["attributes"]["topology_version"]);
         assert_eq!(event["attributes"]["role"], "executor", "a stop of a peer mesh's node is stamped by the executor, not as that mesh's publisher: {event}");
         let published = spans

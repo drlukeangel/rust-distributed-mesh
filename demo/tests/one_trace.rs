@@ -13,7 +13,7 @@ mod common;
 
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-use rdm_core::NodeKind;
+
 use rshape_consumer::replica::{RecordsReply, RecordsRequest};
 use serde_json::Value;
 use tracing::Instrument as _;
@@ -32,11 +32,11 @@ fn a_produce_through_the_gateway_is_one_trace_across_the_gateway_and_the_broker_
 
     common::run(async {
         let test = "a_produce_through_the_gateway_is_one_trace_across_the_gateway_and_the_broker_under_the_consumers_own_subscriber";
-        let mut estate = common::estate("demo-one-trace", test, &[(NodeKind::NodeAdmin, 1), (NodeKind::Gateway, 1), (NodeKind::Broker, 1)]).await;
+        let mut estate = common::estate("demo-one-trace", test, &[("node-admin", 1), ("gateway", 1), ("broker", 1)]).await;
 
         // The consumer's span, and the produce through the gateway inside it.
         let call = tracing::info_span!(target: "rshape", "rshape.demo.records.create.via-gateway");
-        let reply = common::records(&estate, &rdm_core::PathName::numbered("mesh1", NodeKind::Gateway, 1), &RecordsRequest::Produce { operation: "traced-1".into(), topic: "orders".into(), record: "order 1".into() }).instrument(call).await;
+        let reply = common::records(&estate, &rdm_core::PathName::numbered("mesh1", "gateway", 1), &RecordsRequest::Produce { operation: "traced-1".into(), topic: "orders".into(), record: "order 1".into() }).instrument(call).await;
         assert!(matches!(reply, RecordsReply::Produced { .. }), "the gateway's produce is acknowledged: {reply:?}");
         provider.force_flush().unwrap();
 

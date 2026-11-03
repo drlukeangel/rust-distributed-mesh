@@ -135,7 +135,7 @@ impl Observer {
 fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
     nodes
         .iter()
-        .filter(|n| n.kind == rdm_core::NodeKind::NodeAdmin)
+        .filter(|n| n.r#type == "node-admin")
         .filter_map(|n| {
             let key = n.endpoint_id.as_deref()?.parse::<iroh::PublicKey>().ok()?;
             Some(EndpointAddr::new(key).with_ip_addr(n.transport_addr?))
@@ -155,7 +155,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
 
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
     let nodes = estate.settled_views(&[("mesh1", 1, 1)]).await;
-    let target = nodes.iter().find(|n| n.kind == rdm_core::NodeKind::RpcNode).expect("rpc node");
+    let target = nodes.iter().find(|n| n.r#type == "node").expect("rpc node");
     let node_id = &target.node_id;
     let fabric_view = estate.fabric_view().await;
     let fabric = fabric_view.id.clone();

@@ -34,7 +34,7 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 3)]).await;
     estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
-    let (b, c, p) = (estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).await);
+    let (b, c, p) = (estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await);
     let (b_id, c_id) = (b["node_id"].as_str().unwrap().to_string(), c["node_id"].as_str().unwrap().to_string());
     let exact_b = format!("exact:{b_id}");
 
@@ -47,9 +47,9 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
     assert_eq!(direct["reply"]["result"], json!({"found": true, "value": "one"}));
 
     // 2. ViaPeer through P to the same B: P's one inner call reaches B, which served.
-    let carrier_id = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).await.node_id;
+    let carrier_id = estate.node_view(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await.node_id;
     let carrier_target = format!("exact:{carrier_id}");
-    estate.witness_holds_birth(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
+    estate.witness_holds_birth(&rdm_core::PathName::new("mesh1.node", "3").unwrap(), &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
     let carried = estate.probe(&["get", "--target", &exact_b, "--via", &carrier_target, "--key", "d1"]);
     assert_eq!((carried["outcome"].as_str(), carried["route"].as_str()), (Some("Reply"), Some("via-peer")), "{carried}");
     assert_eq!(carried["reply"]["executing_node"], b["node_id"], "the carrier reached exactly B: {carried}");

@@ -46,7 +46,7 @@
 /// A node's launch configuration read from its environment (`deployment-provider.md` §2.6).
 pub use rdm_core::launch::Launch;
 /// Core certificate, DTO, model, canonical-name and status contracts.
-pub use rdm_core::{certs, dto, model, names, status, NodeKind};
+pub use rdm_core::{certs, dto, model, names, status};
 /// The Node RPC client and server builder (`node-rpc.md`).
 pub use rdm_transport::{NodeRpcClient, ServerBuilder};
 /// The running node handle, its seams and its process signal helpers.
@@ -96,23 +96,22 @@ pub mod workflows;
 
 use anyhow::{anyhow, Result};
 
-/// The role this process is: its kind decides its path and name segment and which product families
-/// it serves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The role this process is: its type decides which product families it serves.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Role {
-    /// The node kind this process runs as.
-    pub kind: NodeKind,
+    /// The node type this process runs as.
+    pub r#type: String,
 }
 
 impl Role {
-    /// The role `launch` names: the kind of its path and name, the node_type node-admin launched it as.
+    /// The role `launch` names: the type node-admin launched it as.
     pub fn of(launch: &Launch) -> Self {
-        Self { kind: launch.kind }
+        Self { r#type: launch.r#type.clone() }
     }
 
-    /// The role's name, the kind's name.
-    pub fn name(self) -> &'static str {
-        self.kind.name()
+    /// The role's name, its type's.
+    pub fn name(&self) -> &str {
+        &self.r#type
     }
 }
 
@@ -122,10 +121,10 @@ pub fn read_launch() -> Result<Launch> {
     Launch::from_env(|k| std::env::var(k).ok()).map_err(|e| anyhow!("refusing to start: {e}"))
 }
 
-/// [`read_launch`], refused by name when the path's kind is not this role's.
+/// [`read_launch`], refused by name when the launch's type is not this role's.
 pub fn launch_for(role: Role) -> Result<Launch> {
     let launch = read_launch()?;
-    if launch.kind != role.kind {
+    if launch.r#type != role.r#type {
         return Err(anyhow!(
             "refusing to start: launched as {} but this executable is a {}",
             launch.node_id,
@@ -147,7 +146,7 @@ pub fn executable_name() -> Result<String> {
 }
 
 #[cfg(feature = "file-backend")]
-/// The one node executable's run: the role is the node_type its launch names ([`Role::of`]), and
+/// The one node executable's run: the role is the type its launch names ([`Role::of`]), and
 /// the process runs it to completion as [`run`] does.
 pub async fn run_launched() -> Result<()> {
     run(Role::of(&read_launch()?), &[]).await
@@ -220,13 +219,13 @@ pub async fn run_on(
     crate::node::listen_for_stop();
     let executable = executable_name()?;
     let _telemetry = rdm_transport::init_evidence_telemetry(&executable);
-    let launch = launch_for(role)?;
+    let launch = launch_for(role.clone())?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
         node_path = %launch.name.path, node_name = %launch.name.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
-        kind = role.name(),
+        "type" = role.name(),
         executable = %executable,
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
@@ -251,7 +250,7 @@ pub async fn run_on(
         })?
     };
     let served = running.server.catalog().entries().count();
-    boot.in_scope(|| tracing::info!(served, kind = role.name(), "role process serving on the imported substrate"));
+    boot.in_scope(|| tracing::info!(served, "type" = role.name(), "role process serving on the imported substrate"));
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
     let ended = tokio::select! {

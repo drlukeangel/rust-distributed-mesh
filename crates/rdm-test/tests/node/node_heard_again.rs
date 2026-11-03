@@ -142,8 +142,8 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
     let floor = rdm_transport::topology::staleness_floor();
 
     // An rpc node, then the node-admin that is not the mesh-primary: every node follows the path.
-    let rpc = estate.node_view(&PathName::new("mesh1.rpc", "2").unwrap()).await;
-    let admin = estate.node_views().await.into_iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && !n.is_primary && !n.is_fabric_primary).expect("an admin holding neither primary role");
+    let rpc = estate.node_view(&PathName::new("mesh1.node", "2").unwrap()).await;
+    let admin = estate.node_views().await.into_iter().find(|n| n.r#type == "node-admin" && !n.is_primary && !n.is_fabric_primary).expect("an admin holding neither primary role");
     let rpc_node_id = rpc.node_id.to_string();
     let rpc_released_at = hold_past_the_floor_then_release(&estate, &rpc, floor).await;
     let admin_released_at = hold_past_the_floor_then_release(&estate, &admin, floor).await;
@@ -244,7 +244,7 @@ async fn a_node_held_twice_is_commanded_back_and_ready_after_each_release() {
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
-    let node = estate.node_view(&PathName::new("mesh1.rpc", "2").unwrap()).await;
+    let node = estate.node_view(&PathName::new("mesh1.node", "2").unwrap()).await;
     let first = hold_past_the_floor_then_release(&estate, &node, floor).await;
     let second = hold_past_the_floor_then_release(&estate, &node, floor).await;
     estate.stop().await;
@@ -254,8 +254,8 @@ async fn a_node_held_twice_is_commanded_back_and_ready_after_each_release() {
             .into_iter()
             .any(|sp| sp["attributes"]["sender"] == node.node_id.as_str() && s(&sp["attributes"]["state"]) == "Ready" && s(&sp["attributes"]["outcome"]) == "applied" && at(sp) >= since)
     };
-    assert!(applied_after(first), "mesh1.rpc.2: its ready declaration after the first release is applied");
-    assert!(applied_after(second), "mesh1.rpc.2: its ready declaration after the second release is applied, not answered from the first join's");
+    assert!(applied_after(first), "mesh1.node.2: its ready declaration after the first release is applied");
+    assert!(applied_after(second), "mesh1.node.2: its ready declaration after the second release is applied, not answered from the first join's");
 }
 
 /// CONTRACT (node-recovery.md step 2, "never to a birth with a command of its primary open or in
@@ -272,7 +272,7 @@ async fn a_birth_stopped_and_started_by_builds_and_held_later_is_still_commanded
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
-    let node = &estate.node_view(&PathName::new("mesh1.rpc", "2").unwrap()).await;
+    let node = &estate.node_view(&PathName::new("mesh1.node", "2").unwrap()).await;
     let before = estate.node_view_by_id(&node.node_id).await;
     estate.stop_then_start(&node.name).await;
     let restarted = estate
@@ -322,7 +322,7 @@ async fn a_node_being_created_is_not_commanded_back_while_its_first_start_runs()
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let location = PathName::new("mesh1.rpc", "3").unwrap();
+    let location = PathName::new("mesh1.node", "3").unwrap();
     let root = estate.bootstrap_data_dir("mesh1").parent().expect("the estate root holds the bootstrap admin's data dir").to_path_buf();
     // The launch under test is held the instant it exists, before its JoinNode, through five ticks of
     // the mesh-primary (200 ms each): a planned birth in its view, silent; then released.

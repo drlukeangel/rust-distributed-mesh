@@ -166,8 +166,8 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         let mesh_id = view.meshes[0].id.clone().expect("mesh1 has a minted MeshId");
 
         let admin_node = view
-            .node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap())
-            .expect("mesh1.admin.1 is in the topology view");
+            .node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap())
+            .expect("mesh1.node-admin.1 is in the topology view");
         assert_eq!(admin_node.node_id, expected_node_id);
         assert_eq!(admin_node.status, NodeStatus::Ready);
         assert!(admin_node.is_primary, "first node-admin is mesh-primary");
@@ -221,12 +221,12 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         .named("rdm.node_admin.node.create.via-node-row")
         .into_iter()
         .filter(|s| {
-            s.attributes.get("subject_path").map(String::as_str) == Some("mesh1.admin")
+            s.attributes.get("subject_path").map(String::as_str) == Some("mesh1.node-admin")
                 && s.attributes.get("subject_name").map(String::as_str) == Some("1")
                 && s.attributes.get("moment").map(String::as_str) == Some("create")
         })
         .collect();
-    assert_eq!(node_claims.len(), 1, "Day 0 claims mesh1.admin.1 once");
+    assert_eq!(node_claims.len(), 1, "Day 0 claims mesh1.node-admin.1 once");
     assert_eq!(
         node_claims[0].attributes.get("outcome").map(String::as_str),
         Some("row-written")

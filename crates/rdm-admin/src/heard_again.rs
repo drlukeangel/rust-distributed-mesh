@@ -221,14 +221,14 @@ pub(crate) fn commands_join(view: &crate::topology::Topology, me: &crate::model:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{NodeKind, NodeStatus};
+    use crate::model::{NodeStatus};
     use crate::topology::Topology;
 
-    fn at(name: rdm_core::PathName, mesh: &str, fixture_kind: rdm_core::NodeKind, kind: NodeKind, primary: bool, fabric_primary: bool) -> Node {
-        let mut n = Node::allocated(name, mesh, kind);
+    fn at(name: rdm_core::PathName, mesh: &str, fixture_kind: String, r#type: &str, primary: bool, fabric_primary: bool) -> Node {
+        let mut n = Node::allocated(name, mesh, r#type);
         n.incarnation_id = Some(IncarnationId::mint());
         n.mesh = mesh.into();
-        n.kind = kind;
+        n.r#type = r#type.to_string();
         n.status = NodeStatus::Ready;
         n.is_primary = primary;
         n.is_fabric_primary = fabric_primary;
@@ -246,18 +246,18 @@ mod tests {
     /// "5. The caller acts on the result per its own page. Nothing on this page writes a row, changes a
     ///  primary or publishes a frame."
     /// CONTRACT (node-mesh-join.md, Commander: "the node's mesh-primary ...; the fabric-primary for a
-    /// mesh-primary. Commands go down"; #3211 red 2, gate 19d4afbee release: mesh2.admin.1 stopped
-    /// publishing mesh2 at 484.371, held mesh2.admin.2's role at 484.404, and commanded
-    /// `node.mesh.join:mesh2.admin.2` at 484.416): an admin commands a node of a mesh only as that
+    /// mesh-primary. Commands go down"; #3211 red 2, gate 19d4afbee release: mesh2.node-admin.1 stopped
+    /// publishing mesh2 at 484.371, held mesh2.node-admin.2's role at 484.404, and commanded
+    /// `node.mesh.join:mesh2.node-admin.2` at 484.416): an admin commands a node of a mesh only as that
     /// mesh's primary, and a mesh-primary only as the fabric-primary. Must NOT happen: a former
     /// mesh-primary commanding the mesh's primary, or the fabric-primary commanding a peer mesh's node.
     #[test]
     fn only_the_mesh_primary_commands_its_node_and_only_the_fabric_primary_commands_a_mesh_primary() {
-        let fp = at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin, true, true);
-        let rpc = at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeKind::RpcNode, false, false);
-        let former = at(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin, false, false);
-        let m2p = at(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin, true, false);
-        let broker = at(rdm_core::PathName::new("mesh2.broker", "1").unwrap(), "mesh2", rdm_core::NodeKind::Broker, NodeKind::RpcNode, false, false);
+        let fp = at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin".to_string(), "node-admin", true, true);
+        let rpc = at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node".to_string(), "node", false, false);
+        let former = at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin".to_string(), "node-admin", false, false);
+        let m2p = at(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin".to_string(), "node-admin", true, false);
+        let broker = at(rdm_core::PathName::new("mesh2.broker", "1").unwrap(), "mesh2", "broker".to_string(), "node", false, false);
         let view = Topology {
             fabric: crate::model::Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
             meshes: Vec::new(),

@@ -700,7 +700,7 @@ mod tests {
     fn an_issuer_whose_admin_holds_no_rafka_time_issues_nothing_and_says_so() {
         let root = rdm_core::certs::mint_key();
         let issuer = CertIssuer::with_root(root.clone(), ca_of(&root), None, RafkaTime::unadopted());
-        match issuer.member(&birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1")) {
+        match issuer.member(&birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1")) {
             Err(IssueFailure::NoRafkaTime(why)) => assert!(why.contains("no rafka-time"), "{why}"),
             other => panic!("{other:?}"),
         }
@@ -712,7 +712,7 @@ mod tests {
     fn the_explicit_no_certs_choice_issues_empty_bytes_and_an_unchosen_wiring_resolves_to_a_named_refusal() {
         let nowhere = std::path::Path::new("/nonexistent");
         let issuer = CertChoice::NoCerts.issuer(nowhere, false, time_at(5)).unwrap();
-        assert_eq!(issuer.member(&birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1")), Ok(Vec::new()));
+        assert_eq!(issuer.member(&birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1")), Ok(Vec::new()));
         assert_eq!(issuer.issuing_material("mesh2"), Ok(None));
         let refused = CertChoice::default().issuer(nowhere, false, time_at(5)).err().expect("no choice is refused");
         assert!(refused.contains("no cert choice") && refused.contains("NoCerts"), "{refused}");
@@ -733,7 +733,7 @@ mod tests {
         let dir = crate::test_support::tempdir("cert-cut-to-issuer");
         keep_ca(&dir, &ca_key(&material, &issuing).unwrap()).unwrap();
         let late = CertChoice::Ca { secret: root, issuing: Some(issuing) }.issuer(&dir, false, time_at(1_000 + issuing_life_ms - 3_600_000)).unwrap();
-        let signed = rdm_core::certs::cert_from_bytes(&late.member(&birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1")).unwrap()).unwrap();
+        let signed = rdm_core::certs::cert_from_bytes(&late.member(&birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1")).unwrap()).unwrap();
         assert_eq!(signed.cert.expiry_ms, signed.issuer.cert.expiry_ms, "cut to the issuer's expiry");
     }
 
@@ -874,13 +874,13 @@ mod tests {
         let early = CertIssuer::with_root(root.clone(), ca.clone(), Some(issuer.clone()), time_at(1_000));
         early.set_policy(policy);
         assert_eq!(early.policy(), policy, "the admin holds the policy it was given");
-        let first = early.issue_member(&birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1")).unwrap();
+        let first = early.issue_member(&birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1")).unwrap();
         assert_eq!((first.expires_at - first.issued_at, first.issuer_expires_at), (12_000, 16_000), "the policy's 12 s from its issue, inside the issuer's life: {first:?}");
         assert!(in_window(&first), "renewed at two thirds of its life plus at most 5 %: {first:?}");
 
         let late = CertIssuer::with_root(root, ca, Some(issuer), time_at(10_000));
         late.set_policy(policy);
-        let cut = late.issue_member(&birth(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1")).unwrap();
+        let cut = late.issue_member(&birth(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1")).unwrap();
         assert!(cut.issued_at >= 10_000 && (cut.expires_at, cut.issuer_expires_at) == (16_000, 16_000), "cut to the issuer's expiry: {cut:?}");
         assert_eq!(rdm_core::certs::cert_from_bytes(&cut.bytes).unwrap().cert.expiry_ms, 16_000, "the bytes carry the cut expiry");
         assert!(in_window(&cut) && cut.renew_at < 16_000, "the renew point is taken from the cut life: {cut:?}");

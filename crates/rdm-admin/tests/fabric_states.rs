@@ -7,7 +7,7 @@ use rdm_admin::model::ScopeStatus;
 use rdm_admin::storage_backend::{MemoryBackend, TopologyStorageProviders};
 use rdm_admin::wiring::{FabricHooks, FabricReadyCtx, MeshReadyCtx, Wiring};
 use rdm_core::meta::NodeSpec;
-use rdm_core::NodeKind;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -132,7 +132,7 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
         .await
         .expect("Day-0 Build settles to Complete");
 
-        let admin_path: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let admin_path: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let mut admin_spec = root_build
             .topology
             .mesh("mesh1")
@@ -185,8 +185,8 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
         // Quiesce background execution so the resize Build is observed at acceptance before any process spawns.
         running.gate().quiesce().await;
 
-        let mut rpc_spec = NodeSpec::default_for(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
-        rpc_spec.executable = Some(crate::test_executable(NodeKind::RpcNode));
+        let mut rpc_spec = NodeSpec::default_for(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
+        rpc_spec.executable = Some(crate::test_executable("node"));
 
         let resize_opened = running
             .control

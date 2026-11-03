@@ -8,7 +8,7 @@
 
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
-use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{CommandAdmission, CommandContext, Completion, CreateRequest, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::model::{IncarnationId, Node, NodeId, PathName, ProviderKind};
@@ -99,7 +99,7 @@ fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_
             fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/pipeline-step-io".into(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -123,7 +123,7 @@ fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_
             tokio::time::sleep(HELD).await;
             release_tx.send(()).unwrap();
         });
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "3").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "3").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "3").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let err = pipeline.create(&req).await.map(|_| ()).expect_err("the provider launches nothing: the create fails at DeployRuntime");
         release.await.unwrap();
         holder.await.unwrap();
@@ -182,7 +182,7 @@ impl TopologySink for WithRows {
 /// `outcome = "cancelled"` and records `io_calls = 1` and `io_queued_ms` for the in-flight blocking call.
 #[test]
 fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_first_await() {
-    use rdm_admin::model::{Fabric, Mesh, NodeKind, NodeStatus, ScopeStatus};
+    use rdm_admin::model::{Fabric, Mesh, NodeStatus, ScopeStatus};
     use rdm_admin::topology::Topology;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -194,8 +194,8 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
     let data_root = std::env::temp_dir().join(format!("pipeline-step-io-s83-{}", NodeId::mint()));
     let rt = tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).enable_all().build().unwrap();
     rt.block_on(async {
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-        let mut admin = Node::allocated(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
+        let mut admin = Node::allocated(me.clone(), "mesh1", "node-admin");
         admin.status = NodeStatus::Ready;
         admin.is_primary = true;
         admin.is_fabric_primary = true;
@@ -239,14 +239,14 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
             .unwrap();
         builds1.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build1.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
         let pipeline1 = DeploymentPipeline { provider: &LaunchesNothing, joins: &joins, observer: &NoBirth, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds1, template: &template, timeouts: Timeouts::default() };
-        let req1 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "3").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build1.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req1 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "3").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build1.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "3").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         // Pre-seed AllocateIdentity so `create` enters `PrepareStorage` without calling `row_allocation`.
         builds1
             .append_step_receipt(&rdm_admin::build_state::BuildStepReceipt {
                 mesh: None,
                 build_id: build1.clone(),
                 attempt: 1,
-                operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "3").unwrap()),
+                operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "3").unwrap()),
                 step: "AllocateIdentity".into(),
                 outcome: rdm_admin::build_state::StepOutcome::Complete,
                 output: Some(serde_json::json!({
@@ -280,7 +280,7 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
             let _ = release_rx.recv();
         });
         held_rx.await.unwrap();
-        let req2 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "4").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build2.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req2 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "4").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build2.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "4").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let timed_out2 = tokio::time::timeout(Duration::from_millis(120), pipeline2.create(&req2)).await;
         assert!(timed_out2.is_err(), "the create waits at transport-key while the blocking thread is held");
         release_tx.send(()).unwrap();
@@ -294,12 +294,12 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
         s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect()
     };
 
-    // Case 1 (`mesh1.rpc.3`): cancelled at `claim` -> `writer-check`.
+    // Case 1 (`mesh1.node.3`): cancelled at `claim` -> `writer-check`.
     let step1 = finished
         .iter()
         .map(attrs_of)
-        .find(|a| a.get("step").map(String::as_str) == Some("PrepareStorage") && a.get("node_path").map(String::as_str) == Some("mesh1.rpc") && a.get("node_name").map(String::as_str) == Some("3"))
-        .unwrap_or_else(|| panic!("no PrepareStorage span for mesh1.rpc.3: {finished:?}"));
+        .find(|a| a.get("step").map(String::as_str) == Some("PrepareStorage") && a.get("node_path").map(String::as_str) == Some("mesh1.node") && a.get("node_name").map(String::as_str) == Some("3"))
+        .unwrap_or_else(|| panic!("no PrepareStorage span for mesh1.node.3: {finished:?}"));
     assert_eq!(step1.get("outcome").map(String::as_str), Some("cancelled"), "cancelled PrepareStorage records outcome=cancelled: {step1:?}");
     assert_eq!(step1.get("awaiting").map(String::as_str), Some("create-row"), "PrepareStorage names the claim await it was holding: {step1:?}");
     assert!(step1.contains_key("elapsed_ms"), "cancelled PrepareStorage records elapsed_ms: {step1:?}");
@@ -308,17 +308,17 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
         .iter()
         .filter(|s| s.name == "rdm.node_admin.node.create.via-node-row")
         .map(attrs_of)
-        .find(|a| a.get("subject_path").map(String::as_str) == Some("mesh1.rpc") && a.get("subject_name").map(String::as_str) == Some("3") && a.get("moment").map(String::as_str) == Some("create"))
+        .find(|a| a.get("subject_path").map(String::as_str) == Some("mesh1.node") && a.get("subject_name").map(String::as_str) == Some("3") && a.get("moment").map(String::as_str) == Some("create"))
         .unwrap_or_else(|| panic!("the claim via-node-row span must open before writer_check: {finished:?}"));
     assert_eq!(claim1.get("outcome").map(String::as_str), Some("cancelled"), "cancelled claim span records outcome=cancelled: {claim1:?}");
     assert_eq!(claim1.get("awaiting").map(String::as_str), Some("writer-check"), "claim span names writer-check as the await that did not return: {claim1:?}");
 
-    // Case 2 (`mesh1.rpc.4`): claim completed, cancelled at `transport-key` while waiting for the blocking thread.
+    // Case 2 (`mesh1.node.4`): claim completed, cancelled at `transport-key` while waiting for the blocking thread.
     let step2 = finished
         .iter()
         .map(attrs_of)
-        .find(|a| a.get("step").map(String::as_str) == Some("PrepareStorage") && a.get("node_path").map(String::as_str) == Some("mesh1.rpc") && a.get("node_name").map(String::as_str) == Some("4"))
-        .unwrap_or_else(|| panic!("no PrepareStorage span for mesh1.rpc.4: {finished:?}"));
+        .find(|a| a.get("step").map(String::as_str) == Some("PrepareStorage") && a.get("node_path").map(String::as_str) == Some("mesh1.node") && a.get("node_name").map(String::as_str) == Some("4"))
+        .unwrap_or_else(|| panic!("no PrepareStorage span for mesh1.node.4: {finished:?}"));
     assert_eq!(step2.get("outcome").map(String::as_str), Some("cancelled"), "cancelled PrepareStorage records outcome=cancelled: {step2:?}");
     assert_eq!(step2.get("awaited").map(String::as_str), Some("entry-spec,create-row"), "PrepareStorage names the completed entry-spec read and claim awaits: {step2:?}");
     assert_eq!(step2.get("awaiting").map(String::as_str), Some("transport-key"), "PrepareStorage names transport-key as the await in flight: {step2:?}");
@@ -329,8 +329,8 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
         .iter()
         .filter(|s| s.name == "rdm.node_admin.node.create.via-node-row")
         .map(attrs_of)
-        .find(|a| a.get("subject_path").map(String::as_str) == Some("mesh1.rpc") && a.get("subject_name").map(String::as_str) == Some("4") && a.get("moment").map(String::as_str) == Some("create"))
-        .unwrap_or_else(|| panic!("no claim span for mesh1.rpc.4: {finished:?}"));
+        .find(|a| a.get("subject_path").map(String::as_str) == Some("mesh1.node") && a.get("subject_name").map(String::as_str) == Some("4") && a.get("moment").map(String::as_str) == Some("create"))
+        .unwrap_or_else(|| panic!("no claim span for mesh1.node.4: {finished:?}"));
     assert_eq!(claim2.get("outcome").map(String::as_str), Some("row-written"), "{claim2:?}");
     assert_eq!(claim2.get("awaited").map(String::as_str), Some("writer-check,read-previous-row,put-node-row"), "{claim2:?}");
     assert_eq!(claim2.get("awaiting").map(String::as_str), Some("done"), "{claim2:?}");

@@ -23,7 +23,7 @@ fn probe_with_unreadable_endpoint_refuses_naming_the_node() {
     let bad_node = NodeId::mint();
     let bad_endpoint = "not-an-iroh-key";
     let parse_error = bad_endpoint.parse::<iroh::PublicKey>().unwrap_err().to_string();
-    let (rt, admin) = serve_on_own_runtime(vec![node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &bad_node, Some(bad_endpoint.into()), Some("127.0.0.1:9".parse().unwrap()), Some(IncarnationId::mint()))]);
+    let (rt, admin) = serve_on_own_runtime(vec![node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &bad_node, Some(bad_endpoint.into()), Some("127.0.0.1:9".parse().unwrap()), Some(IncarnationId::mint()))]);
     let evidence = std::env::temp_dir().join(format!("rdm-probe-view-entry-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&evidence);
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-rpc-probe"))

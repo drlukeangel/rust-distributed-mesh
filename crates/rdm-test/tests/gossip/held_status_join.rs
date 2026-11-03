@@ -20,7 +20,7 @@ use bytes::Bytes;
 use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::Event;
-use rdm_core::{FabricId, MeshId, NodeKind};
+use rdm_core::{FabricId, MeshId};
 use rdm_client::NodeView;
 use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Frame};
 use rdm_test::estate::{named, Estate, Owner};
@@ -131,7 +131,7 @@ fn row(o: &Observer, x: &Seen) -> Value {
 fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
     nodes
         .iter()
-        .filter(|n| n.kind == NodeKind::NodeAdmin)
+        .filter(|n| n.r#type == "node-admin")
         .filter_map(|n| {
             let key = n.endpoint_id.as_deref()?.parse::<iroh::PublicKey>().ok()?;
             Some(EndpointAddr::new(key).with_ip_addr(n.transport_addr?))
@@ -168,7 +168,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
     estate.reconcile_shape("fabric1", &shape).await;
     // mesh2's primary is named by its node id on the frames it authors and on its own spans.
-    let mesh2_admin: String = estate.settled_views(&shape).await.into_iter().find(|n| n.name == rdm_core::PathName::new("mesh2.admin", "1").unwrap()).expect("mesh2.admin.1 is settled").node_id.to_string();
+    let mesh2_admin: String = estate.settled_views(&shape).await.into_iter().find(|n| n.name == rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).expect("mesh2.node-admin.1 is settled").node_id.to_string();
     let mesh2_admin = mesh2_admin.as_str();
 
     // The change's frames: mesh2's status, authored by mesh2's admin, on the backbone.

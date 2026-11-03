@@ -6,7 +6,7 @@
 //! registered cells of `i143_acceptance_2777`, each under its own `Owner`.
 
 use crate::estate::{descends_from, named, wait_for, Estate, Owner};
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, PathName};
+use rdm_client::{FabricDesired, MeshDesired, PathName};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -31,13 +31,13 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let estate = Estate::bootstrap(owner, "fabric1", "mesh1").await;
 
     // 1. MN = 2 node-admins + 3 RPC nodes, through node-admin Build only.
-    let shape = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)])] };
+    let shape = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", 3)])] };
     estate.artifact("build-request.json", &json!({"call": "build.create", "desired": shape}));
     let birth_build = estate.reconcile(&shape).await.build_id.to_string();
     estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
 
     // 2. Select the rpc node-type primary (lowest node_id) and Put{key=41, value="before-restart"} by ExactNode.
-    let (node_type_primary, before) = estate.until_view("rpc node-type primary", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.is_primary).map(|n| (n.name.clone(), serde_json::to_value(n).unwrap()))).await; let node_name = &node_type_primary;
+    let (node_type_primary, before) = estate.until_view("rpc node-type primary", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node" && n.is_primary).map(|n| (n.name.clone(), serde_json::to_value(n).unwrap()))).await; let node_name = &node_type_primary;
     let node_id = before["node_id"].as_str().expect("node_id").to_string();
     let exact = format!("exact:{node_id}");
     let put = estate.probe(&["put", "--target", &exact, "--key", "41", "--value", "before-restart"]);

@@ -174,7 +174,7 @@ impl CallerDecision {
 #[derive(Debug, Clone)]
 pub(crate) struct AtlasRow {
     pub(crate) mesh: String,
-    pub(crate) kind: crate::model::NodeKind,
+    pub(crate) r#type: String,
     /// The original pair a replacement retained on this exact node's record (`replacement_from`).
     pub(crate) renamed_from: Option<PathName>,
     /// The pair the record's last move came from (node-name-update.md "Claim and move": the
@@ -617,8 +617,7 @@ impl Atlas {
             t.nodes.push(crate::model::Node {
                 renamed_from: r.replacement_from.clone(),
                 name: r.name.clone(),
-                kind: r.kind,
-                node_type: r.node_type().to_string(),
+                r#type: r.r#type.clone(),
                 mesh: r.mesh.clone(),
                 node_id: r.node_id.clone(),
                 endpoint_id: own.and_then(|o| o.endpoint_id.clone()),
@@ -781,7 +780,7 @@ impl Atlas {
         let live = !deleted && !stopped;
         let renamed_from = row.replacement_from.clone();
         let moved_from = row.renamed_from.clone().filter(|from| *from != row.name);
-        Ok(Some(AtlasRow { mesh: row.mesh.clone(), kind: row.kind, renamed_from, moved_from, name: row.name.clone(), node_id: row.node_id.clone(), incarnation: birth, status, stopped, live, accepted, observed: observed_status, birth_source: "node-row" }))
+        Ok(Some(AtlasRow { mesh: row.mesh.clone(), r#type: row.r#type.clone(), renamed_from, moved_from, name: row.name.clone(), node_id: row.node_id.clone(), incarnation: birth, status, stopped, live, accepted, observed: observed_status, birth_source: "node-row" }))
     }
 
     /// `fabric.atlas.get`: one row for every node `paths` names (the current Build's topology), in
@@ -955,7 +954,7 @@ mod tests {
         let node_id = NodeId::mint();
         let action = AttemptAction::Stop {
             path: PathName::new("unrelated.location", "north").unwrap(),
-            mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            mesh: "mesh1".into(), r#type: "node".into(),
             node_id: node_id.clone(), from_incarnation: IncarnationId::mint(),
         };
         atlas.note_accepted(&build, 1, &action);
@@ -980,9 +979,9 @@ mod tests {
     }
 
     /// A record of a birth at `at`, in `status`.
-    fn record(at: PathName, mesh: &str, kind: rdm_core::NodeKind, status: NodeStatus) -> (NodeRow, IncarnationId) {
+    fn record(at: PathName, mesh: &str, r#type: &str, status: NodeStatus) -> (NodeRow, IncarnationId) {
         let (name, incarnation) = (at, IncarnationId::mint());
-        let mut r = NodeRow::new(name.clone(), mesh, kind, NodeId::mint(), status);
+        let mut r = NodeRow::new(name.clone(), mesh, r#type, NodeId::mint(), status);
         r.birth_mut(&incarnation, &name);
         (r, incarnation)
     }
@@ -997,7 +996,7 @@ mod tests {
 
     impl Current {
         async fn of(rows: &[&NodeRow], observed: &mut Topology) -> Self {
-            let mut fp = crate::model::Node::allocated(path("writer.admin", "1"), rows.first().map(|r| r.mesh.as_str()).unwrap_or("mesh1"), rdm_core::NodeKind::NodeAdmin);
+            let mut fp = crate::model::Node::allocated(path("writer.node-admin", "1"), rows.first().map(|r| r.mesh.as_str()).unwrap_or("mesh1"), "node-admin");
             fp.node_id = NodeId::mint();
             fp.incarnation_id = Some(IncarnationId::mint());
             fp.status = NodeStatus::Ready;
@@ -1058,16 +1057,16 @@ mod tests {
     #[tokio::test]
     async fn a_deleted_births_own_write_never_hides_the_birth_that_holds_its_path() {
         use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};
-        let at = path("mesh2.admin", "1");
-        let (old, old_inc) = record(path("mesh2.admin", "1"), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Deleted);
-        let (mut new, new_inc) = record(path("mesh2.admin", "1"), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready);
+        let at = path("mesh2.node-admin", "1");
+        let (old, old_inc) = record(path("mesh2.node-admin", "1"), "mesh2", "node-admin", NodeStatus::Deleted);
+        let (mut new, new_inc) = record(path("mesh2.node-admin", "1"), "mesh2", "node-admin", NodeStatus::Ready);
         new.birth_mut(&new_inc, &at).declared.insert(rdm_core::status::NodeState::Ready);
         // The re-creation names the deleted birth its predecessor (node-recovery.md).
         new.predecessor = Some(crate::storage::BirthRef { node_id: old.node_id.clone(), incarnation_id: old_inc.clone() });
         let atlas = TestAtlas::new();
         // mesh2's installed mesh-primary is the re-created birth: it writes mesh2's records.
         let (fabric_id, mesh_id) = (FabricId::mint(), MeshId::mint());
-        let mut primary = crate::model::Node::allocated(at.clone(), "mesh2", rdm_core::NodeKind::NodeAdmin);
+        let mut primary = crate::model::Node::allocated(at.clone(), "mesh2", "node-admin");
         primary.node_id = new.node_id.clone();
         primary.incarnation_id = Some(new_inc.clone());
         primary.status = NodeStatus::Ready;
@@ -1100,8 +1099,8 @@ mod tests {
     ///  deleted, its runtime terminated, never re-admitted; a path still needed is recovered by re-create (Q217)."
     #[tokio::test]
     async fn a_deleted_birth_whose_path_is_re_created_is_deleted() {
-        let (old, old_inc) = record(path("mesh2.compute", "2"), "mesh2", rdm_core::NodeKind::Compute, NodeStatus::Deleted);
-        let (new, new_inc) = record(path("mesh2.compute", "2"), "mesh2", rdm_core::NodeKind::Compute, NodeStatus::Ready);
+        let (old, old_inc) = record(path("mesh2.compute", "2"), "mesh2", "compute", NodeStatus::Deleted);
+        let (new, new_inc) = record(path("mesh2.compute", "2"), "mesh2", "compute", NodeStatus::Ready);
         let atlas = atlas_of(&[&old, &new], &["mesh2"]).await;
         let decided = atlas.refused_caller(Some(&old), claimant(&[&old, &new], &old.name), &old_inc, &planned(&[(path("mesh2.compute", "2"), "mesh2")]));
         assert_eq!(decided, CallerDecision::DeleteHeld { path: path("mesh2.compute", "2"), by: format!("{}@{}", new.node_id, new_inc.as_str()) });
@@ -1112,9 +1111,9 @@ mod tests {
     /// happen: a needed path's only live birth deleted.
     #[tokio::test]
     async fn nothing_at_a_needed_path_re_admits_a_caller_whose_record_is_live() {
-        let (live, live_inc) = record(path("mesh1.rpc", "1"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
+        let (live, live_inc) = record(path("mesh1.node", "1"), "mesh1", "node", NodeStatus::Ready);
         let atlas = atlas_of(&[&live], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(Some(&live), claimant(&[&live], &live.name), &live_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.rpc", "1") });
+        assert_eq!(atlas.refused_caller(Some(&live), claimant(&[&live], &live.name), &live_inc, &planned(&[(path("mesh1.node", "1"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.node", "1") });
     }
 
     /// CONTRACT (Q217, Luke: "delete a caller deletes the caller, not just from the record but
@@ -1124,30 +1123,30 @@ mod tests {
     /// deleted birth re-admitted.
     #[tokio::test]
     async fn a_caller_whose_record_is_deleted_is_deleted_needed_or_not() {
-        let (gone, gone_inc) = record(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Deleted);
+        let (gone, gone_inc) = record(path("mesh1.node", "2"), "mesh1", "node", NodeStatus::Deleted);
         let atlas = atlas_of(&[&gone], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc", "2"), needed: true });
-        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc", "2"), needed: false });
+        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.node", "2"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.node", "2"), needed: true });
+        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.node", "1"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.node", "2"), needed: false });
     }
 
     /// CONTRACT (Q207): nothing is at the caller's path and name, its record is live, and the topology does
     /// not name the path: the caller is deleted.
     #[tokio::test]
     async fn nothing_at_an_unneeded_path_deletes_the_caller() {
-        let (live, live_inc) = record(path("mesh1.rpc", "3"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
+        let (live, live_inc) = record(path("mesh1.node", "3"), "mesh1", "node", NodeStatus::Ready);
         let atlas = atlas_of(&[&live], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(Some(&live), claimant(&[&live], &live.name), &live_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteUnneeded { path: path("mesh1.rpc", "3") });
+        assert_eq!(atlas.refused_caller(Some(&live), claimant(&[&live], &live.name), &live_inc, &planned(&[(path("mesh1.node", "1"), "mesh1")])), CallerDecision::DeleteUnneeded { path: path("mesh1.node", "3") });
     }
 
     /// CONTRACT (Q207, the atlas is topology and in-flight ops): an op accepted on the caller's path that
     /// fills it (its re-create) is something at the path: the caller is deleted.
     #[tokio::test]
     async fn a_create_executing_at_the_path_deletes_the_caller() {
-        let (gone, gone_inc) = record(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Deleted);
+        let (gone, gone_inc) = record(path("mesh1.node", "2"), "mesh1", "node", NodeStatus::Deleted);
         let atlas = atlas_of(&[&gone], &["mesh1"]).await;
         let build = crate::build::BuildId::parse("66h8qrqvaajk").unwrap();
-        atlas.note_accepted(&build, 1, &AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path("mesh1.rpc", "2"), from_incarnation: gone_inc.clone(), node_id: gone.node_id.clone(), backbone: false });
-        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.rpc", "2"), by: format!("Build {} attempt 1 action node.create", build) });
+        atlas.note_accepted(&build, 1, &AttemptAction::Recover { r#type: "node".into(), mesh: "mesh1".into(), path: path("mesh1.node", "2"), from_incarnation: gone_inc.clone(), node_id: gone.node_id.clone(), backbone: false });
+        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.node", "2"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.node", "2"), by: format!("Build {} attempt 1 action node.create", build) });
     }
 
     /// CONTRACT (Q207): a create executing at the path of a caller whose record is live is that caller's
@@ -1155,30 +1154,30 @@ mod tests {
     /// else is at the path. Must NOT happen: a birth deleted by its own create.
     #[tokio::test]
     async fn a_create_of_the_caller_itself_is_not_another_birth() {
-        let (born, born_inc) = record(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Pending);
+        let (born, born_inc) = record(path("mesh1.node", "2"), "mesh1", "node", NodeStatus::Pending);
         let atlas = atlas_of(&[&born], &["mesh1"]).await;
         let build = crate::build::BuildId::parse("66h8qrqvaajk").unwrap();
-        atlas.note_accepted(&build, 1, &AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path("mesh1.rpc", "2"), from_incarnation: IncarnationId::mint(), node_id: NodeId::mint(), backbone: false });
-        assert_eq!(atlas.refused_caller(Some(&born), claimant(&[&born], &born.name), &born_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.rpc", "2") });
+        atlas.note_accepted(&build, 1, &AttemptAction::Recover { r#type: "node".into(), mesh: "mesh1".into(), path: path("mesh1.node", "2"), from_incarnation: IncarnationId::mint(), node_id: NodeId::mint(), backbone: false });
+        assert_eq!(atlas.refused_caller(Some(&born), claimant(&[&born], &born.name), &born_inc, &planned(&[(path("mesh1.node", "2"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.node", "2") });
     }
 
     /// CONTRACT (Q207): an older birth of a node whose newer birth is current at the path is deleted.
     #[tokio::test]
     async fn an_older_birth_of_the_node_at_the_path_is_deleted() {
-        let (mut r, older) = record(path("mesh1.rpc", "1"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
+        let (mut r, older) = record(path("mesh1.node", "1"), "mesh1", "node", NodeStatus::Ready);
         let newer = IncarnationId::mint();
-        r.birth_mut(&newer, &path("mesh1.rpc", "1"));
+        r.birth_mut(&newer, &path("mesh1.node", "1"));
         let atlas = atlas_of(&[&r], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(Some(&r), claimant(&[&r], &r.name), &older, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.rpc", "1"), by: format!("{}@{}", r.node_id, newer.as_str()) });
+        assert_eq!(atlas.refused_caller(Some(&r), claimant(&[&r], &r.name), &older, &planned(&[(path("mesh1.node", "1"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.node", "1"), by: format!("{}@{}", r.node_id, newer.as_str()) });
     }
 
     /// CONTRACT (Q207, one atlas for every node-admin): an admin decides only for the meshes it is
     /// primary for; a caller of another mesh, or one it holds no record of, is not its decision.
     #[tokio::test]
     async fn a_caller_outside_the_atlas_meshes_or_unrecorded_is_not_decided() {
-        let (other, other_inc) = record(path("mesh2.rpc", "1"), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Deleted);
+        let (other, other_inc) = record(path("mesh2.node", "1"), "mesh2", "node", NodeStatus::Deleted);
         let atlas = atlas_of(&[&other], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(Some(&other), None, &other_inc, &planned(&[(path("mesh2.rpc", "1"), "mesh2")])), CallerDecision::NotMine { path: path("mesh2.rpc", "1") });
+        assert_eq!(atlas.refused_caller(Some(&other), None, &other_inc, &planned(&[(path("mesh2.node", "1"), "mesh2")])), CallerDecision::NotMine { path: path("mesh2.node", "1") });
         assert_eq!(atlas.refused_caller(None, None, &IncarnationId::mint(), &planned(&[])), CallerDecision::NoRecord);
     }
 
@@ -1254,23 +1253,23 @@ mod tests {
             .expect("build current-thread runtime");
 
         rt.block_on(async {
-            let (mut row1, inc1) = record(path("mesh1.rpc", "1"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
-            row1.birth_mut(&inc1, &path("mesh1.rpc", "1"))
+            let (mut row1, inc1) = record(path("mesh1.node", "1"), "mesh1", "node", NodeStatus::Ready);
+            row1.birth_mut(&inc1, &path("mesh1.node", "1"))
                 .declared
                 .insert(rdm_core::status::NodeState::Ready);
-            let (mut row2, inc2) = record(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
-            row2.birth_mut(&inc2, &path("mesh1.rpc", "2"))
+            let (mut row2, inc2) = record(path("mesh1.node", "2"), "mesh1", "node", NodeStatus::Ready);
+            row2.birth_mut(&inc2, &path("mesh1.node", "2"))
                 .declared
                 .insert(rdm_core::status::NodeState::Ready);
 
             let builds = MemoryBuildStateAdapter::new();
 
-            let mut node1 = Node::allocated(path("mesh1.rpc", "1"), "mesh1", rdm_core::NodeKind::RpcNode);
+            let mut node1 = Node::allocated(path("mesh1.node", "1"), "mesh1", "node");
             node1.node_id = row1.node_id.clone();
             node1.incarnation_id = Some(inc1.clone());
             node1.status = NodeStatus::Ready;
 
-            let mut node2 = Node::allocated(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode);
+            let mut node2 = Node::allocated(path("mesh1.node", "2"), "mesh1", "node");
             node2.node_id = row2.node_id.clone();
             node2.incarnation_id = Some(inc2.clone());
             node2.status = NodeStatus::Ready;
@@ -1289,8 +1288,8 @@ mod tests {
 
             let atlas = atlas_of(&[&row1, &row2], &["mesh1"]).await;
             let build_stop = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b-stop")).unwrap();
-            let stop_action = AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
-                path: path("mesh1.rpc", "1"),
+            let stop_action = AttemptAction::Stop { r#type: "node".into(), mesh: "mesh1".into(),
+                path: path("mesh1.node", "1"),
                 node_id: row1.node_id.clone(),
                 from_incarnation: inc1.clone(),
             };
@@ -1299,7 +1298,7 @@ mod tests {
             // 1. In-flight stop command appears in `accepted` while the birth is still Ready.
             let view_in_flight = atlas
                 .view(
-                    [path("mesh1.rpc", "2"), path("mesh1.rpc", "1")],
+                    [path("mesh1.node", "2"), path("mesh1.node", "1")],
                     &current.reader(),
                     &builds,
                     &observed,
@@ -1307,7 +1306,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(view_in_flight.nodes.len(), 2);
-            assert_eq!(view_in_flight.nodes[0].name, path("mesh1.rpc", "1"));
+            assert_eq!(view_in_flight.nodes[0].name, path("mesh1.node", "1"));
             assert_eq!(
                 view_in_flight.nodes[0].accepted.as_ref(),
                 Some(&rdm_core::OperationId::node("node.stop", &row1.node_id))
@@ -1357,7 +1356,7 @@ mod tests {
                 lanes: Default::default(),
             };
             let mut payload = rdm_core::LifecycleOp {
-                kind: row1.kind, mesh: row1.mesh.clone(), name: row1.name.clone(),
+                r#type: row1.r#type.clone(), mesh: row1.mesh.clone(), name: row1.name.clone(),
                 build_id: stop_proj.build_id.to_string(), attempt: 1,
                 operation: rdm_core::OperationId::node("node.stop", &row1.node_id),
                 node_id: row1.node_id.clone(), incarnation: IncarnationId::mint(),
@@ -1386,7 +1385,7 @@ mod tests {
                 assert_eq!(validate_carried_lifecycle(&resumed, &receipt, &payload, (&row1.node_id, &inc1)), None, "a completed operation cannot hand its outputs to another execution");
                 let mut topology_action = stop_proj.clone();
                 topology_action.attempt_actions.clear();
-                topology_action.topology.pinned.push((row1.name.clone(), crate::build::PinnedBirth { node_id: row1.node_id.clone(), incarnation: inc1.clone(), mesh: row1.mesh.clone(), kind: row1.kind }));
+                topology_action.topology.pinned.push((row1.name.clone(), crate::build::PinnedBirth { node_id: row1.node_id.clone(), incarnation: inc1.clone(), mesh: row1.mesh.clone(), r#type: row1.r#type.clone() }));
                 assert_eq!(birth_of_step(&[], &topology_action, &topology_action.steps[0]), Some(Birth { node_id: row1.node_id.clone(), incarnation: inc1.clone() }), "topology-driven operations retain their pinned birth without an AttemptAction");
             }
             assert_eq!(
@@ -1397,7 +1396,7 @@ mod tests {
 
             let view_stopped = atlas
                 .view(
-                    [path("mesh1.rpc", "1"), path("mesh1.rpc", "2")],
+                    [path("mesh1.node", "1"), path("mesh1.node", "2")],
                     &current.reader(),
                     &builds,
                     &observed,
@@ -1416,11 +1415,11 @@ mod tests {
             );
 
             // 3. Complete receipt of a newer node.start restores stopped=false, status=Ready;
-            //    Complete receipt of node.delete on mesh1.rpc.2 omits mesh1.rpc.2 from the view.
+            //    Complete receipt of node.delete on mesh1.node.2 omits mesh1.node.2 from the view.
             let build_start =
                 crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b-start")).unwrap();
-            let start_action = AttemptAction::Start { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
-                path: path("mesh1.rpc", "1"),
+            let start_action = AttemptAction::Start { r#type: "node".into(), mesh: "mesh1".into(),
+                path: path("mesh1.node", "1"),
                 node_id: row1.node_id.clone(),
                 from_incarnation: inc1.clone(),
             };
@@ -1449,8 +1448,8 @@ mod tests {
 
             let build_del =
                 crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b-del")).unwrap();
-            let del_action = AttemptAction::Delete { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
-                path: path("mesh1.rpc", "2"),
+            let del_action = AttemptAction::Delete { r#type: "node".into(), mesh: "mesh1".into(),
+                path: path("mesh1.node", "2"),
                 node_id: row2.node_id.clone(),
                 from_incarnation: inc2.clone(),
             };
@@ -1481,7 +1480,7 @@ mod tests {
 
             let view_after = atlas
                 .view(
-                    [path("mesh1.rpc", "1"), path("mesh1.rpc", "2")],
+                    [path("mesh1.node", "1"), path("mesh1.node", "2")],
                     &current.reader(),
                     &builds,
                     &observed,
@@ -1489,7 +1488,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(view_after.nodes.len(), 1);
-            assert_eq!(view_after.nodes[0].name, path("mesh1.rpc", "1"));
+            assert_eq!(view_after.nodes[0].name, path("mesh1.node", "1"));
             assert!(!view_after.nodes[0].stopped);
             assert_eq!(
                 view_after.nodes[0].status,
@@ -1498,7 +1497,7 @@ mod tests {
 
             tracing::info_span!(
                 "rdm.node_admin.fabric.update.via-atlas-receipt",
-                operation = "node.start:mesh1.rpc.1",
+                operation = "node.start:mesh1.node.1",
                 outcome = "effect:started"
             )
             .in_scope(|| tracing::info!("a streamed receipt is the atlas's"));

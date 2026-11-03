@@ -157,7 +157,7 @@ mod tests {
         let variants = [
             update.clone(),
             OperationId::primary_update(crate::PrimaryRole::FabricPrimary, &stop),
-            OperationId::primary_update(crate::PrimaryRole::NodeTypePrimary(crate::NodeKind::RpcNode), &stop),
+            OperationId::primary_update(crate::PrimaryRole::NodePrimary("node".into()), &stop),
             OperationId::primary_update(crate::PrimaryRole::MeshPrimary, &delete),
             OperationId::primary_update(crate::PrimaryRole::MeshPrimary, &stop.clone().at_step(Some(4))),
             OperationId::primary_update(crate::PrimaryRole::MeshPrimary, &OperationId::node("node.stop", &NodeId::mint()).at_step(Some(3))),

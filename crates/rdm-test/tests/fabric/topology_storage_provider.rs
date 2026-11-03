@@ -53,15 +53,15 @@ fn two_meshes() -> FabricDesired {
     FabricDesired {
         fabric: "fabric1".into(),
         meshes: vec![
-            MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 1, broker: 0, gateway: 0, compute: 0 },
-            MeshDesired { name: "mesh2".into(), node_admin: 1, rpc_node: 1, broker: 0, gateway: 0, compute: 0 },
+            MeshDesired::of("mesh1", [("node-admin", 2), ("node", 1)]),
+            MeshDesired::of("mesh2", [("node-admin", 1), ("node", 1)]),
         ],
     }
 }
 
 /// The names [`two_meshes`] holds.
 fn two_mesh_names() -> BTreeSet<PathName> {
-    [("mesh1.admin", "1"), ("mesh1.admin", "2"), ("mesh1.rpc", "1"), ("mesh2.admin", "1"), ("mesh2.rpc", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect()
+    [("mesh1.node-admin", "1"), ("mesh1.node-admin", "2"), ("mesh1.node", "1"), ("mesh2.node-admin", "1"), ("mesh2.node", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect()
 }
 
 /// The estate grown to [`two_meshes`], every node ready and the fabric ready.
@@ -151,8 +151,8 @@ async fn a_customer_reads_each_nodes_topology_provider() {
     nodes_write(&views, FILE);
     for v in &views {
         let persistence = serde_json::to_value(&v.storage_persistence).unwrap();
-        let want = match v.kind {
-            rdm_client::LaunchKind::NodeAdmin => json!({"persistence": "persistent", "disposition": "preserve"}),
+        let want = match v.r#type.as_str() {
+            "node-admin" => json!({"persistence": "persistent", "disposition": "preserve"}),
             _ => json!({"persistence": "ephemeral"}),
         };
         assert_eq!(persistence, want, "{:?}: its row records its storage_persistence, a property apart from the provider it writes: {v:?}", v.name);
@@ -313,7 +313,7 @@ async fn an_omitted_provider_preserves_the_current_provider() {
 /// node restarts, and no node changes state"; "Copy" ... "dead births' and deleted nodes' records among
 /// them"; "The previous provider is kept as it was at the switch ... written no more"): a
 /// two-mesh fabric with history (a deleted birth, a deleted mesh) is moved to `test-target` by one Build
-/// of its complete topology, and a caller's `node.config.update` of mesh2.rpc.1 reaches mesh2's
+/// of its complete topology, and a caller's `node.config.update` of mesh2.node.1 reaches mesh2's
 /// mesh-primary once it has replied `blocked` ("A mesh-primary that has replied `blocked` issues no new
 /// command until it is unblocked"; node-config-update.md: "admitted at any time"): it is answered, and the
 /// node applies the map only once its mesh-primary's `mesh.unblock` began; the row carrying it is on
@@ -330,15 +330,15 @@ async fn an_omitted_provider_preserves_the_current_provider() {
 async fn a_customer_changes_topology_storage_without_restarting_members() {
     let test = "a_customer_changes_topology_storage_without_restarting_members";
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
-    // History: a deleted birth (mesh1.rpc.2, created and removed) and a deleted mesh (mesh3).
+    // History: a deleted birth (mesh1.node.2, created and removed) and a deleted mesh (mesh3).
     let mut grown = two_meshes();
-    grown.meshes[0].rpc_node = 2;
-    grown.meshes.push(MeshDesired { name: "mesh3".into(), node_admin: 1, rpc_node: 0, broker: 0, gateway: 0, compute: 0 });
+    grown.meshes[0].counts.insert("node".into(), 2);
+    grown.meshes.push(MeshDesired::of("mesh3", [("node-admin", 1)]));
     estate.reconcile(&grown).await;
-    let deleted = estate.node_view(&PathName::new("mesh1.rpc", "2").unwrap()).await;
+    let deleted = estate.node_view(&PathName::new("mesh1.node", "2").unwrap()).await;
     estate.reconcile(&two_meshes()).await;
     // A deleted mesh's last node-admin is a separate node.delete after mesh.deleted (mesh-delete.md step 7).
-    Estate::workflow("node.delete of mesh3.admin.1", estate.nodes_obj().await.delete(&Estate::path("mesh3.admin", "1")).await).await;
+    Estate::workflow("node.delete of mesh3.node-admin.1", estate.nodes_obj().await.delete(&Estate::path("mesh3.node-admin", "1")).await).await;
     let views = estate.settles_to_named(&two_mesh_names(), SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let before = births(&views);
@@ -351,7 +351,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     // the fabric-primary (node-config-update.md step 1), which sends it down to mesh2's mesh-primary;
     // admitted there, and issued only once it is unblocked (storage.md §2 step 1).
     let blocked = blocked_at(&estate, &change_id, "mesh2").await;
-    let subject = views.iter().find(|v| v.name == role()).cloned().expect("mesh2.rpc.1");
+    let subject = views.iter().find(|v| v.name == role()).cloned().expect("mesh2.node.1");
     let fabric_primary = views.iter().find(|v| v.is_fabric_primary).cloned().expect("the fabric-primary");
     let told: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(subject.node_id.clone()), node_id: subject.node_id.clone(), incarnation: subject.incarnation_id.clone().expect("a live birth") };
@@ -371,15 +371,15 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     nodes_write(&after, TOPOLOGY_STORAGE_TARGET);
     assert_eq!(births(&after), before, "every node is the same birth: none restarted or replaced");
     assert!(after.iter().all(|v| v.status == NodeStatus::Ready), "every node is ready: {after:?}");
-    let path: PathName = rdm_core::PathName::new("mesh2.rpc", "1").unwrap();
+    let path: PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
     // The update and the Build's own config of the node are a serial order of the two
     // (node-config-update.md): whichever was written last on its own property record is the config
     // the node carries (the node writes its own record, build.md: never a lifecycle row's copy).
-    let subject_after = after.iter().find(|v| v.name == path).cloned().expect("mesh2.rpc.1 after the change");
+    let subject_after = after.iter().find(|v| v.name == path).cloned().expect("mesh2.node.1 after the change");
     let last_record: Value = rdm_admin::store_log::read_record(&target_root.join(rdm_admin::store_root::NODES_FILE), "node-properties", Some(subject_after.node_id.as_str()))
-        .expect("mesh2.rpc.1's property record is on the new provider");
+        .expect("mesh2.node.1's property record is on the new provider");
     let record_config: BTreeMap<String, String> = serde_json::from_value(last_record["record"]["config"].clone()).expect("a property record carries its whole config map");
-    assert_eq!(subject_after.config, record_config, "mesh2.rpc.1 carries the config its last property record on {TOPOLOGY_STORAGE_TARGET} names");
+    assert_eq!(subject_after.config, record_config, "mesh2.node.1 carries the config its last property record on {TOPOLOGY_STORAGE_TARGET} names");
     let old = store_lines(&file_root);
     history_carried(&old, &store_lines(&target_root));
     // storage.md §2 step 3, "Switch": the fabric-primary appends the change's `rdm.storage.committed`
@@ -409,8 +409,8 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     // The node applies the update's map only once its mesh-primary's `mesh.unblock` began.
     let unblocked = of_change(&spans, UNBLOCK, &change_id, Some("mesh2")).into_iter().filter(|sp| sp["attributes"]["outcome"] == "unblocked").map(start_ns).min().expect("mesh2's mesh-primary unblocked");
     let applied: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-apply-node-config").into_iter().filter(|sp| [subject.node_id.as_str(), subject_after.node_id.as_str()].contains(&attr(sp, "node").as_str()) && start_ns(sp) >= start_ns(&blocked)).collect();
-    assert!(!applied.is_empty(), "mesh2.rpc.1 applied the update's map");
-    assert!(applied.iter().all(|sp| start_ns(sp) >= unblocked), "mesh2.rpc.1 applies the map only once its mesh-primary is unblocked: {applied:#?}");
+    assert!(!applied.is_empty(), "mesh2.node.1 applied the update's map");
+    assert!(applied.iter().all(|sp| start_ns(sp) >= unblocked), "mesh2.node.1 applies the map only once its mesh-primary is unblocked: {applied:#?}");
     estate.record_trace_url(traces.iter().next().unwrap());
 }
 
@@ -434,10 +434,10 @@ const MOVE_LOST: &str = "rdm.node_admin.node.update.via-storage-move-lost";
 /// A node's connection event, its span open while its write lands (`connections_writer`).
 const OBSERVED: &str = "rdm.node_admin.connection.update.via-observed";
 /// The role node each cell restarts, freezes or reads.
-fn role() -> PathName { PathName::new("mesh2.rpc", "1").unwrap() }
+fn role() -> PathName { PathName::new("mesh2.node", "1").unwrap() }
 /// The fabric-primary, where the testkit's storage-switch cut holds a change between every
 /// mesh-primary's `blocked` and the copy.
-fn bootstrap() -> PathName { PathName::new("mesh1.admin", "1").unwrap() }
+fn bootstrap() -> PathName { PathName::new("mesh1.node-admin", "1").unwrap() }
 
 /// `name`'s exact runtime, frozen (SIGSTOP: alive and silent).
 async fn freeze(estate: &Estate, name: &PathName) -> ExactRuntime {
@@ -554,7 +554,7 @@ fn foreign_line(target: &Path) {
     std::fs::write(target.join(rdm_admin::store_root::LAYOUT), format!("{}\n", rdm_admin::store_root::LAYOUT_VALUE)).unwrap();
     let op = rdm_admin::store_log::Op { node_id: "zzzzzzzzzzz1".into(), incarnation_id: "zzzzzzzzzzz2".into(), seq: 1 };
     // A whole node record (`node-record/4`), as a writer of that store writes one.
-    let record = serde_json::to_vec(&rdm_admin::storage::NodeRow::new(rdm_core::PathName::new("mesh9.rpc", "1").unwrap(), "mesh9", rdm_core::NodeKind::RpcNode, rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), rdm_core::model::NodeStatus::Ready)).unwrap();
+    let record = serde_json::to_vec(&rdm_admin::storage::NodeRow::new(rdm_core::PathName::new("mesh9.node", "1").unwrap(), "mesh9", "node", rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), rdm_core::model::NodeStatus::Ready)).unwrap();
     let line = rdm_admin::store_log::encode_line(&op, "node-record/4", "zzzzzzzzzzz1", &record);
     use std::io::Write;
     std::fs::OpenOptions::new().create(true).append(true).open(target.join(rdm_admin::store_root::NODES_FILE)).unwrap().write_all(&line).unwrap();
@@ -587,7 +587,7 @@ async fn role_node_restart(test: &str, ends: Ends) {
     assert!(!change_id.is_empty(), "the block carries its change_id: {blocked}");
     // A connection event of the node while its mesh-primary is blocked.
     let dialled_ns = now_ns();
-    let peer_id = node_id_of(&estate, &PathName::new("mesh2.admin", "1").unwrap()).await;
+    let peer_id = node_id_of(&estate, &PathName::new("mesh2.node-admin", "1").unwrap()).await;
     dial(&estate, &old_id, &peer_id);
     estate.kill_node(&role()).await;
     hold.release("switch").await;
@@ -633,7 +633,7 @@ async fn role_node_restart(test: &str, ends: Ends) {
 /// mesh-primary has replied `blocked`, the fabric-primary [copies]"; "Whoever resumes the change learns
 /// the decision only from that record"; "A step that fails before the switch fails the Build only once
 /// the fabric-primary has read that no `commit` exists ...; the fabric-primary then sends `mesh.unblock`
-/// on the old provider"): a role process (mesh2.rpc.1) is killed while its mesh-primary has replied
+/// on the old provider"): a role process (mesh2.node.1) is killed while its mesh-primary has replied
 /// `blocked` and the change is held before its copy, and comes back at its `(path, name)` over the same data
 /// dir. Run twice: a change that switches, and one whose copy is refused before the switch. Each time the
 /// restarted birth writes only the provider the `commit` record decided: its row names it, every record
@@ -662,7 +662,7 @@ async fn a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read() 
 /// One mesh: its node-admin and an rpc node, so the store names a node beside the admin's own birth
 /// and the admin's loss is a fabric recovery, not Q200's Day 0.
 fn one_mesh() -> FabricDesired {
-    FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired { name: "mesh1".into(), node_admin: 1, rpc_node: 1, broker: 0, gateway: 0, compute: 0 }] }
+    FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])] }
 }
 
 /// CONTRACT (storage.md §2 "The property": "a restart with no launcher (the adoption launch) | the node
@@ -676,7 +676,7 @@ fn one_mesh() -> FabricDesired {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restart_without_a_launcher_writes_the_provider_its_own_row_names() {
     let test = "a_restart_without_a_launcher_writes_the_provider_its_own_row_names";
-    let names: BTreeSet<PathName> = [bootstrap(), PathName::new("mesh1.rpc", "1").unwrap()].into_iter().collect();
+    let names: BTreeSet<PathName> = [bootstrap(), PathName::new("mesh1.node", "1").unwrap()].into_iter().collect();
     let mut estate = estate_with(test, &[]).await;
     estate.reconcile(&one_mesh()).await;
     estate.settles_to_named(&names, SETTLE).await;
@@ -723,9 +723,9 @@ async fn a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider
     let before = births(&views);
     let (file_root, target_root) = roots(&estate);
     foreign_line(&target_root);
-    // mesh2's mesh-primary holds the change; mesh1.rpc.1 dials mesh1.admin.2, a node it holds no
+    // mesh2's mesh-primary holds the change; mesh1.node.1 dials mesh1.node-admin.2, a node it holds no
     // connection to, while mesh1's mesh-primary is blocked.
-    let (source, peer, held) = (node_id_of(&estate, &PathName::new("mesh1.rpc", "1").unwrap()).await, node_id_of(&estate, &PathName::new("mesh1.admin", "2").unwrap()).await, PathName::new("mesh2.admin", "1").unwrap());
+    let (source, peer, held) = (node_id_of(&estate, &PathName::new("mesh1.node", "1").unwrap()).await, node_id_of(&estate, &PathName::new("mesh1.node-admin", "2").unwrap()).await, PathName::new("mesh2.node-admin", "1").unwrap());
     let hold = freeze(&estate, &held).await;
     let (run, change_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
     blocked_at(&estate, &change_id, "mesh1").await;
@@ -878,9 +878,9 @@ async fn a_build_other_than_fabric_delete_is_refused_during_a_change() {
 /// CONTRACT (storage.md §2 "Changing it": "The change has a durable `change_id`, recorded with its Build
 /// before its first command; its commands carry it, and a node refuses by name a command of an older
 /// one"; i149 R11): a first change to `test-target` runs while mesh2's mesh-primary holds its first move
-/// command to mesh2.rpc.1 on its way (the testkit's storage-step cut); the mesh-primary sends it again
-/// and the change completes. A second change, back to `file`, completes, mesh2.rpc.1 moving under it, and
-/// the held command of the first change is then released to mesh2.rpc.1. mesh2.rpc.1 refuses every
+/// command to mesh2.node.1 on its way (the testkit's storage-step cut); the mesh-primary sends it again
+/// and the change completes. A second change, back to `file`, completes, mesh2.node.1 moving under it, and
+/// the held command of the first change is then released to mesh2.node.1. mesh2.node.1 refuses every
 /// command of the first change it receives after its move under the second: its only move after that is
 /// none, and it writes `file`. Must NOT happen: a move of the node by the first change's `change_id`
 /// after its move under the second.
@@ -889,8 +889,8 @@ async fn an_old_change_cannot_unblock_writes_for_a_new_change() {
     let test = "an_old_change_cannot_unblock_writes_for_a_new_change";
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
     let role_id = node_id_of(&estate, &role()).await;
-    // mesh2's mesh-primary holds the first change's first move command of mesh2.rpc.1 on its way.
-    let carrier = rdm_test::faults::Door::at(&estate, &rdm_core::PathName::new("mesh2.admin", "1").unwrap()).await;
+    // mesh2's mesh-primary holds the first change's first move command of mesh2.node.1 on its way.
+    let carrier = rdm_test::faults::Door::at(&estate, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await;
     carrier.arm("old-command", json!({"kind": "storage-step", "node": role()})).await;
     let (first, first_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
     carrier.wait_held("old-command").await;
@@ -927,7 +927,7 @@ async fn an_old_change_cannot_unblock_writes_for_a_new_change() {
 /// issues no new command until it is unblocked"; step 2, "Once every mesh-primary has replied `blocked`,
 /// the fabric-primary appends every line of every store on the old provider to the new one in source
 /// order"; step 4, "Each mesh-primary moves its nodes to the new provider"; Q169: a connection event
-/// never blocks an open): mesh1.rpc.1, whose mesh-primary has replied `blocked`, dials mesh1.admin.2, a
+/// never blocks an open): mesh1.node.1, whose mesh-primary has replied `blocked`, dials mesh1.node-admin.2, a
 /// node it holds no connection to, while the change is held before its copy; the dial is answered at
 /// once and its connection event is written once, on `file`, the provider the node writes until its
 /// mesh-primary moves it; the copy brings that line to `test-target` once; the node then writes
@@ -937,9 +937,9 @@ async fn an_old_change_cannot_unblock_writes_for_a_new_change() {
 async fn a_connection_event_during_a_change_lands_once_after_the_unblock() {
     let test = "a_connection_event_during_a_change_lands_once_after_the_unblock";
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
-    let source_view = estate.node_view(&PathName::new("mesh1.rpc", "1").unwrap()).await;
+    let source_view = estate.node_view(&PathName::new("mesh1.node", "1").unwrap()).await;
     let source = source_view.node_id.to_string();
-    let destination = node_id_of(&estate, &PathName::new("mesh1.admin", "2").unwrap()).await;
+    let destination = node_id_of(&estate, &PathName::new("mesh1.node-admin", "2").unwrap()).await;
     let (file_root, target_root) = roots(&estate);
     let hold = hold_switch(&estate).await;
     let (run, change_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
@@ -973,7 +973,7 @@ async fn a_connection_event_during_a_change_lands_once_after_the_unblock() {
 /// `unblocked`; nothing else waits"; Q182: a node not replying to commands is silent): the role node is
 /// frozen (alive and silent) after its mesh-primary replied `blocked`, so it leaves its move unanswered.
 /// Its mesh-primary's node recovery, admitted once the mesh-primary has moved onto `test-target`,
-/// re-creates it at mesh2.rpc.1 under a new node id launched on `test-target`; the mesh-primary replies
+/// re-creates it at mesh2.node.1 under a new node id launched on `test-target`; the mesh-primary replies
 /// `unblocked` and the change ends: the new birth writes `test-target`, is ready, its records are on
 /// `test-target` and none on `file`; the old birth never moves; the Fabric row names `test-target` with
 /// `file` previous. Must NOT happen: the change waiting on the frozen birth forever (its recovery held
@@ -1045,7 +1045,7 @@ async fn an_unanswered_storage_block_uses_normal_investigation_before_copy() {
 /// mesh-primary's node recovery, never part of the change, before its mesh-primary replies
 /// `unblocked`"): the role node refuses its move by name (the testkit's knob has its birth refuse to open
 /// `test-target`) and keeps answering and gossiping. mesh2's mesh-primary hands it to its node recovery
-/// (`via-storage-move-lost` `recovery-submitted`), which re-creates it at mesh2.rpc.1 under a new node id
+/// (`via-storage-move-lost` `recovery-submitted`), which re-creates it at mesh2.node.1 under a new node id
 /// launched on `test-target`: the new birth's row is the recovery's create, seeded from the refusing
 /// birth and written by the mesh-primary, naming no storage change. The mesh-primary replies `unblocked`
 /// only once the new birth has moved: when the change ends the path holds the new birth, ready, writing
@@ -1184,7 +1184,7 @@ async fn a_lost_fabric_primarys_successor_resumes_the_change_from_its_events() {
 /// The node store's file on a provider's root.
 const NODES: &str = rdm_admin::store_root::NODES_FILE;
 /// The node created after a change, by a Build that omits the provider (Q166).
-fn grown_location() -> PathName { PathName::new("mesh1.rpc", "2").unwrap() }
+fn grown_location() -> PathName { PathName::new("mesh1.node", "2").unwrap() }
 
 /// A fabric of the faulted node-admin and the testkit rpc node on the deployment provider `provider`
 /// (`process` or `container`), grown to [`two_meshes`], every node ready.
@@ -1207,7 +1207,7 @@ async fn two_mesh_estate_on(test: &str, provider: &str) -> (Estate, Vec<NodeView
 /// [`two_meshes`] with mesh1 grown by one rpc node, [`grown_location`].
 fn grown() -> FabricDesired {
     let mut fabric = two_meshes();
-    fabric.meshes[0].rpc_node = 2;
+    fabric.meshes[0].counts.insert("node".into(), 2);
     fabric
 }
 
@@ -1328,8 +1328,8 @@ async fn every_serving_node_keeps_its_birth_and_ready_through_a_change() {
 /// line naming the new provider current" on the new provider; i149 R14): after a change to `test-target`
 /// completes, every store on `file` reads whole (every line verified), its Fabric row still names `file`
 /// with no previous provider while `test-target`'s names `test-target` with `file` previous, and every
-/// serving node's row reads there. A Build that omits the provider then creates mesh1.rpc.2 and that node
-/// dials mesh1.admin.2: its records and its connection event are on `test-target` and none on `file`, and
+/// serving node's row reads there. A Build that omits the provider then creates mesh1.node.2 and that node
+/// dials mesh1.node-admin.2: its records and its connection event are on `test-target` and none on `file`, and
 /// every line of `file` is the line it held at the cutover. Must NOT happen: a line of the previous
 /// provider changed, added or removed, or a write after the cutover landing there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1358,7 +1358,7 @@ async fn a_previous_provider_remains_unchanged_after_cutover() {
     let mut names = two_mesh_names();
     names.insert(grown_location());
     let grown_id = estate.settles_to_named(&names, SETTLE).await.into_iter().find(|v| v.name == grown_location()).expect("the grown node").node_id.to_string();
-    let peer_id = node_id_of(&estate, &PathName::new("mesh1.admin", "2").unwrap()).await;
+    let peer_id = node_id_of(&estate, &PathName::new("mesh1.node-admin", "2").unwrap()).await;
     let entry = connection_event(&estate, &grown_id, &peer_id).await;
     assert!(!lines_naming(&target_root, &grown_id).is_empty() && lines_naming(&file_root, &grown_id).is_empty(), "the grown node's records are on {TOPOLOGY_STORAGE_TARGET} and none on {FILE}");
     assert_eq!((lines_naming(&target_root, &entry).len(), lines_naming(&file_root, &entry).len()), (1, 0), "the connection event {entry} is on {TOPOLOGY_STORAGE_TARGET} once and not on {FILE}");
@@ -1378,8 +1378,8 @@ async fn returns_to_a_previous_provider(test: &str, provider: &str) {
     ended(&estate, &first).await;
     let at_switch = store_lines(&file_root);
     // A line `file` lacks: a connection event written on `test-target`.
-    let source_id = node_id_of(&estate, &PathName::new("mesh1.rpc", "1").unwrap()).await;
-    let peer_id = node_id_of(&estate, &PathName::new("mesh1.admin", "2").unwrap()).await;
+    let source_id = node_id_of(&estate, &PathName::new("mesh1.node", "1").unwrap()).await;
+    let peer_id = node_id_of(&estate, &PathName::new("mesh1.node-admin", "2").unwrap()).await;
     let entry = connection_event(&estate, &source_id, &peer_id).await;
     assert_eq!((lines_naming(&target_root, &entry).len(), lines_naming(&file_root, &entry).len()), (1, 0), "the connection event {entry} is on {TOPOLOGY_STORAGE_TARGET} alone");
     let (back, back_id) = change_to(&estate, FILE).await;
@@ -1418,11 +1418,11 @@ async fn returns_to_a_previous_provider(test: &str, provider: &str) {
 
 /// CONTRACT (storage.md §2 "Changing it": "A later Build naming it again copies into it only the lines it
 /// lacks"; "The property": the Fabric row carries `previous_topology_storage_providers`, "each provider
-/// the fabric left, in order"; i149 R14): a change to `test-target` completes and mesh1.rpc.1's connection
+/// the fabric left, in order"; i149 R14): a change to `test-target` completes and mesh1.node.1's connection
 /// event is written there alone; a later Build naming `file` completes: `file`'s lines at the first switch
 /// stand, then every line of `test-target` follows in source order, the event once; the Fabric row names
 /// `file` with `file` and `test-target` previous; every node is the same birth, ready, writing
-/// `file`; a Build that omits the provider then creates mesh1.rpc.2, written on `file` and none on
+/// `file`; a Build that omits the provider then creates mesh1.node.2, written on `file` and none on
 /// `test-target`, which is written no more. Must NOT happen: a line of `file` rewritten, reordered or
 /// copied twice, or a write after the return landing on `test-target`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

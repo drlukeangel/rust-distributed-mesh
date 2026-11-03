@@ -180,7 +180,7 @@ pub fn registry_recovery_dial(
                 let Some(inc) = destination.incarnation.clone() else {
                     return "NotSent".to_string();
                 };
-                let birth = Birth { mesh: destination.mesh.clone(), kind: destination.kind,
+                let birth = Birth { mesh: destination.mesh.clone(), r#type: destination.r#type.clone(),
                     name: destination.name,
                     node_id: destination.node_id,
                     incarnation: inc,
@@ -671,7 +671,7 @@ pub(crate) fn accepted_resolved(writer: &ConnectionsWriter, node: &ResolvedNode)
             .map(|p| p.alpn.clone())
             .collect()
     };
-    let birth = Birth { mesh: node.mesh.clone(), kind: node.kind,
+    let birth = Birth { mesh: node.mesh.clone(), r#type: node.r#type.clone(),
         name: node.name.clone(),
         node_id: node.node_id.clone(),
         incarnation: node.incarnation.clone(),
@@ -686,7 +686,7 @@ pub(crate) fn accepted_resolved(writer: &ConnectionsWriter, node: &ResolvedNode)
 mod tests {
     use super::*;
     use crate::storage::MemoryConnectionsStorage;
-    use rdm_core::NodeKind;
+    
     use std::collections::BTreeMap;
 
     #[derive(Default)]
@@ -754,19 +754,19 @@ mod tests {
             .expect("build current-thread runtime");
 
         rt.block_on(async {
-            let src = ConnectionEnd { mesh: "mesh1".into(), kind: NodeKind::Gateway,
-                name: PathName::numbered("mesh1", NodeKind::Gateway, 1),
+            let src = ConnectionEnd { mesh: "mesh1".into(), r#type: "gateway".into(),
+                name: PathName::numbered("mesh1", "gateway", 1),
                 node_id: NodeId::mint(),
                 incarnation: Some(IncarnationId::mint()),
             };
-            let carrier = ConnectionEnd { mesh: "mesh1".into(), kind: NodeKind::Gateway,
-                name: PathName::numbered("mesh1", NodeKind::Gateway, 2),
+            let carrier = ConnectionEnd { mesh: "mesh1".into(), r#type: "gateway".into(),
+                name: PathName::numbered("mesh1", "gateway", 2),
                 node_id: NodeId::mint(),
                 incarnation: Some(IncarnationId::mint()),
             };
             let dst_inc = IncarnationId::mint();
-            let dst = ConnectionEnd { mesh: "mesh1".into(), kind: NodeKind::Broker,
-                name: PathName::numbered("mesh1", NodeKind::Broker, 1),
+            let dst = ConnectionEnd { mesh: "mesh1".into(), r#type: "broker".into(),
+                name: PathName::numbered("mesh1", "broker", 1),
                 node_id: NodeId::mint(),
                 incarnation: Some(dst_inc.clone()),
             };
@@ -823,7 +823,7 @@ mod tests {
             // accept from another birth is ignored with outcome="another-birth".
             accepted_on_alpn(
                 &writer,
-                &Birth { mesh: dst.mesh.clone(), kind: dst.kind,
+                &Birth { mesh: dst.mesh.clone(), r#type: dst.r#type.clone(),
                     name: dst.name.clone(),
                     node_id: dst.node_id.clone(),
                     incarnation: dst_inc.clone(),
@@ -833,7 +833,7 @@ mod tests {
             );
             accepted_on_alpn(
                 &writer,
-                &Birth { mesh: dst.mesh.clone(), kind: dst.kind,
+                &Birth { mesh: dst.mesh.clone(), r#type: dst.r#type.clone(),
                     name: dst.name.clone(),
                     node_id: dst.node_id.clone(),
                     incarnation: IncarnationId::mint(),

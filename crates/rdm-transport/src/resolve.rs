@@ -43,7 +43,7 @@ pub struct ResolvedNode {
     /// The explicitly declared owning mesh.
     pub mesh: String,
     /// The explicitly declared runtime kind.
-    pub kind: rdm_core::NodeKind,
+    pub r#type: String,
     /// The node's minted id.
     pub node_id: NodeId,
     /// The node's separate immutable path and mutable name.
@@ -198,7 +198,7 @@ mod tests {
         let original = PathName::new("apps.east", "worker").unwrap();
         let retained = original.renamed().unwrap();
         let make = || ResolvedNode {
-            mesh: "explicit-mesh".into(), kind: rdm_core::NodeKind::RpcNode,
+            mesh: "explicit-mesh".into(), r#type: "node".into(),
             node_id: NodeId::mint(), name: original.clone(),
             endpoint_id: iroh::SecretKey::generate().public(),
             transport_addr: "127.0.0.1:1234".parse().unwrap(), incarnation: IncarnationId::mint(),

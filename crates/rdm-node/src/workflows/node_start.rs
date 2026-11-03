@@ -555,7 +555,7 @@ impl<E: From<StartFailed> + Send + 'static> StartNode for FirstStart<E> {
 mod tests {
     use super::*;
     use crate::node_hooks::{Addressed, HookOutcome, OnNodeReady, PreNodeReady};
-    use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeKind};
+    use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId};
 
     struct RecordedAfter {
         steps: Arc<Mutex<Vec<&'static str>>>,
@@ -620,7 +620,7 @@ mod tests {
             MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: FabricId::mint(),
-                node: rdm_core::MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+                node: rdm_core::MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: self.starting.node_id.clone(),
                     name: self.starting.path.clone(),
                     endpoint_id: rdm_core::EndpointId(
@@ -713,7 +713,7 @@ mod tests {
                     incarnation: IncarnationId::mint(),
                     fabric_id: FabricId::mint(),
                     mesh_id: MeshId::mint(),
-                    kind: NodeKind::RpcNode,
+                    r#type: "node".into(),
                 },
                 node_hooks: NodeHooks::new(hook.clone()).with_on_node_ready(hook),
                 events: Events::new(topology_view.digest_view.clone(), Addressed::new()),
@@ -774,7 +774,7 @@ mod tests {
 
             // 1. reached_back refuses with commander-unreachable when no active path is held.
             let missing_key = iroh::SecretKey::generate().public();
-            let err = reached_back("mesh1.rpc.1", &client, &missing_key)
+            let err = reached_back("mesh1.node.1", &client, &missing_key)
                 .await
                 .expect_err("unconnected endpoint has no active path");
             assert!(
@@ -787,12 +787,12 @@ mod tests {
             let steps = Arc::new(Mutex::new(Vec::new()));
             let observed = Arc::new(Mutex::new(Vec::new()));
             let notify1 = Arc::new(tokio::sync::Notify::new());
-            let root1 = tracing::info_span!("rdm.mesh.node.create.via-boot", node_path = "mesh1.rpc", node_name = "1");
+            let root1 = tracing::info_span!("rdm.mesh.node.create.via-boot", node_path = "mesh1.node", node_name = "1");
             let mut plug1 = TestStartPlug {
                 starting: Starting {
                     root: root1,
                     name: "1".into(),
-                    path: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+                    path: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
                     node_id: NodeId::mint(),
                     client: client.clone(),
                     rafka_time: rafka_time.clone(),
@@ -809,12 +809,12 @@ mod tests {
 
             // 3. AfterStop runs with inherited=true.
             let notify2 = Arc::new(tokio::sync::Notify::new());
-            let root2 = tracing::info_span!("rdm.mesh.node.update.via-start", node_path = "mesh1.rpc", node_name = "1");
+            let root2 = tracing::info_span!("rdm.mesh.node.update.via-start", node_path = "mesh1.node", node_name = "1");
             let mut plug2 = TestStartPlug {
                 starting: Starting {
                     root: root2,
                     name: "1".into(),
-                    path: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+                    path: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
                     node_id: NodeId::mint(),
                     client,
                     rafka_time,

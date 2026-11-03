@@ -10,7 +10,7 @@
 //! CONTRACT (connections.md §4.1, §5 and §7): a gateway's data connection to a broker carries the bytes
 //! the gateway wrote, unchanged, and answers them from that broker: as a Direct connection, and, with
 //! the gateway's Direct dials to the broker blocked, as a Proxy connection through the other gateway,
-//! the demo's carrier kind (`rshape_consumer::CARRIER_POLICY`), which carries over its own Direct
+//! the demo's carrier kind (`rshape_consumer::carrier_policy`), which carries over its own Direct
 //! connection to the broker. The carrier's Direct connection is waited for in its held facts
 //! (`node.connection.get`, what a carrier decides on), never its store row. Must NOT happen: bytes
 //! changed or answered by another node, or a Proxy through anything but the other gateway.
@@ -20,7 +20,7 @@ use rdm_client::{ExactBirth, FabricDesired, MeshDesired, NodeRpc, NodeStatus};
 use rdm_core::filter::Filter;
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::views::ConnectionView;
-use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
+use rdm_core::{IncarnationId, NodeId, PathName};
 use rdm_test::estate::{Estate, Owner};
 use rdm_test::originate::{Originate, OriginateReply, OriginateRequest};
 use rdm_transport::{Resend, CallOptions, NodeTarget};
@@ -28,13 +28,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 fn broker() -> PathName {
-    PathName::numbered("mesh1", NodeKind::Broker, 1)
+    PathName::numbered("mesh1", "broker", 1)
 }
 fn gateway() -> PathName {
-    PathName::numbered("mesh1", NodeKind::Gateway, 1)
+    PathName::numbered("mesh1", "gateway", 1)
 }
 fn carrier() -> PathName {
-    PathName::numbered("mesh1", NodeKind::Gateway, 2)
+    PathName::numbered("mesh1", "gateway", 2)
 }
 const SETTLE: Duration = Duration::from_secs(120);
 
@@ -52,7 +52,7 @@ fn binding_set(candidate: &str) -> BindingSet {
         Binding { launch_id: launch_id.into(), executable, sha256, image: None }
     };
     let bindings = vec![
-        bind("node_admin", env!("CARGO_BIN_EXE_rshape-node-admin")),
+        bind("node-admin", env!("CARGO_BIN_EXE_rshape-node-admin")),
         bind("gateway", env!("CARGO_BIN_EXE_rshape-gateway")),
         bind("broker", env!("CARGO_BIN_EXE_rshape-broker")),
     ];
@@ -70,7 +70,7 @@ async fn estate(test: &str) -> Estate {
         .await
         .unwrap_or_else(|e| panic!("the demo's binding set is refused: {e}"));
     estate
-        .reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Gateway, 2), (NodeKind::Broker, 1)])] })
+        .reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("gateway", 2), ("broker", 1)])] })
         .await;
     for node in [broker(), gateway(), carrier()] {
         estate.until_node(&node, &format!("{node:?} ready"), SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;

@@ -94,7 +94,7 @@ async fn a_started_admin_is_reached_by_the_birth_it_printed() {
     // A caller that holds nothing but the line.
     let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { mesh: birth.mesh.clone(), kind: birth.kind, node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: birth.endpoint_id.0.parse().expect("the birth's endpoint is an iroh key"), transport_addr: birth.transport_addr, incarnation: birth.incarnation.clone() });
+    resolver.insert(ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: birth.endpoint_id.0.parse().expect("the birth's endpoint is an iroh key"), transport_addr: birth.transport_addr, incarnation: birth.incarnation.clone() });
     let fabrics = Fabrics::new(BuildCarrier::at_node(Arc::new(NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm")), birth.node_id.clone()));
     let fabric = wait_for(&format!("{} answers fabric.get naming itself the fabric-primary", birth.node_id), Duration::from_secs(30), || async { rdm_test::typed::the_fabric(&fabrics).await.ok().filter(|f| f.fabric_primary.as_ref() == Some(&birth.node_id)) }).await;
     std::fs::write(artifacts.join("fabric.json"), serde_json::to_vec_pretty(&fabric).unwrap()).unwrap();

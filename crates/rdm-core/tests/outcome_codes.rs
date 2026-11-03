@@ -192,7 +192,7 @@ pub(crate) fn check_malformed<P: NodeProtocol>() {
 fn the_standard_code_view_keeps_the_protocols_exact_typed_detail() {
     use rdm_core::outcome::{PreCommit, RequestFinished};
     let committed = || PreCommit::begin(Status::OP).commit(RequestFinished::after_complete_write(1, 1).unwrap());
-    for (value, code) in [(StatusReply::Applied, Code::Ok), (StatusReply::AlreadyApplied, Code::AlreadyExists), (StatusReply::NameHeld { path: "mesh1.rpc".into(), name: "1".into(), by: rdm_core::NodeId::mint() }, Code::AlreadyExists), (StatusReply::RequestNotHandled { request: "node.get".into() }, Code::Unimplemented)] {
+    for (value, code) in [(StatusReply::Applied, Code::Ok), (StatusReply::AlreadyApplied, Code::AlreadyExists), (StatusReply::NameHeld { path: "mesh1.node".into(), name: "1".into(), by: rdm_core::NodeId::mint() }, Code::AlreadyExists), (StatusReply::RequestNotHandled { request: "node.get".into() }, Code::Unimplemented)] {
         let bytes = Status::encode_reply(&value).unwrap();
         let out = committed().reply::<Status>(&bytes);
         assert_eq!(out.code(), code);

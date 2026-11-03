@@ -69,7 +69,7 @@ async fn wait_started(own: &Own) -> Option<Arc<Started>> {
 
 /// The ready gateways of the admin's mesh, node id and incarnation, in the topology's order.
 fn ready_gateways(started: &Started) -> Vec<(rdm_core::NodeId, rdm_core::IncarnationId)> {
-    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("kind", ["gateway"]).eq("status", ["ready"]);
+    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("type", ["gateway"]).eq("status", ["ready"]);
     started.view.nodes_get(&filter).unwrap_or_default().into_iter().map(|d| (d.node.node_id, d.node.incarnation)).collect()
 }
 
@@ -109,9 +109,9 @@ async fn answer(mut acceptor: rdm_transport::connections::Acceptor, own: String)
 /// Open a data connection to each Ready broker of the admin's mesh and write one stream; each broker's
 /// answer is a log line. A broker that cannot be reached is named.
 async fn talk_to_brokers(started: &Started) {
-    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("kind", ["broker"]).eq("status", ["ready"]);
+    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("type", ["broker"]).eq("status", ["ready"]);
     for broker in started.view.nodes_get(&filter).unwrap_or_default() {
-        let to = rdm_transport::connections::Birth { mesh: broker.node.mesh.clone(), kind: broker.node.kind, name: broker.node.name.clone(), node_id: broker.node.node_id.clone(), incarnation: broker.node.incarnation.clone() };
+        let to = rdm_transport::connections::Birth { mesh: broker.node.mesh.clone(), r#type: broker.node.r#type.clone(), name: broker.node.name.clone(), node_id: broker.node.node_id.clone(), incarnation: broker.node.incarnation.clone() };
         let answered = async {
             let conn = started.dialer.open(&to).await.map_err(|e| format!("{e:?}"))?;
             let (mut send, mut recv) = conn.open_bi().await.map_err(|e| format!("{e:?}"))?;

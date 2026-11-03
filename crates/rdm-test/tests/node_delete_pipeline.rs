@@ -15,7 +15,7 @@ use crate::common;
 use common::{add_node, admin_side, publish_build, template, Published};
 use rdm_core::{FabricId, MemberStatus};
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, DeleteRequest, DeleteStep, Timeouts};
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{DeploymentProvider, DeploymentStatus};
@@ -49,8 +49,8 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
             template: &template,
             timeouts: Timeouts::default(),
         };
-        let node: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-        let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id, attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let node: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+        let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id, attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
         let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
         let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
@@ -136,7 +136,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         let mut release = common::add_node();
         let released = rdm_core::meta::NodeSpec {
             storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Release },
-            ..rdm_core::meta::NodeSpec::default_for(again.node.name.clone(), &again.node.mesh, again.node.kind)
+            ..rdm_core::meta::NodeSpec::default_for(again.node.name.clone(), &again.node.mesh, &again.node.r#type)
         };
         release.meshes.get_mut("mesh1").unwrap().set_spec(released).unwrap();
         let again_build = publish_build(&builds, release).await;

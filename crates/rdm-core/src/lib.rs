@@ -19,11 +19,11 @@
 //! use rdm_core::PathName;
 //!
 //! // A node's path and name: two separate values; neither encodes the node's mesh or kind.
-//! let name = PathName::new("mesh1.rpc", "2").expect("a path and name");
-//! assert_eq!((name.path.as_str(), name.name.as_str()), ("mesh1.rpc", "2"));
+//! let name = PathName::new("mesh1.node", "2").expect("a path and name");
+//! assert_eq!((name.path.as_str(), name.name.as_str()), ("mesh1.node", "2"));
 //!
 //! // `node.get` of mesh1's ready rpc nodes: AND across pairs, any-of within a pair.
-//! let filter = Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["rpc"]).eq("status", ["ready"]);
+//! let filter = Filter::new().eq("mesh", ["mesh1"]).eq("type", ["node"]).eq("status", ["ready"]);
 //! assert_eq!(filter.refusal(Entity::Nodes), None);
 //! ```
 //!
@@ -99,8 +99,8 @@ pub use lifecycle::{LifecycleOp, StateHook, DELETED_RETENTION};
 pub use names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use outcome::{Committed, IndeterminateReason, MalformedKind, NotSentReason, ReplyKind, RequestFinished, RpcOutcome};
 pub use outcome::PreCommit;
-pub use path::{NodeKind, PathName, PathNameError};
-pub use meta::NodeType;
+pub use path::{PathName, PathNameError};
+pub use meta::{is_node_admin, NodeType, NODE, NODE_ADMIN};
 pub use protocol::{DecodeFailure, NodeProtocol};
 pub use publisher::PublisherId;
 pub use role::{Primary, PrimaryRole};

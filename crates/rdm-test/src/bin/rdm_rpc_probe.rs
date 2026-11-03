@@ -207,7 +207,7 @@ fn target(spec: &str) -> Result<NodeTarget, String> {
 async fn enter(admin: &MeshNode) -> Result<(Arc<NodeRpcClient>, Arc<StaticResolver>), String> {
     let endpoint_id = admin.endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| format!("--admin-birth names {:?} (node {}) at the endpoint {:?}, no Iroh key: {e}", admin.name, admin.node_id, admin.endpoint_id.0))?;
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { mesh: admin.mesh.clone(), kind: admin.kind, node_id: admin.node_id.clone(), name: admin.name.clone(), endpoint_id, transport_addr: admin.transport_addr, incarnation: admin.incarnation.clone() });
+    resolver.insert(ResolvedNode { mesh: admin.mesh.clone(), r#type: admin.r#type.clone(), node_id: admin.node_id.clone(), name: admin.name.clone(), endpoint_id, transport_addr: admin.transport_addr, incarnation: admin.incarnation.clone() });
     let client = Arc::new(NodeRpcClient::new(bind_endpoint().await?, resolver.clone()).with_caller_system("rdm"));
     let read = async { resolved(&views_of(&client, &admin.node_id).await?) };
     match read.await {
@@ -252,7 +252,7 @@ fn resolved(views: &[NodeView]) -> Result<Vec<ResolvedNode>, String> {
             Some(v) => Some(v.parse::<iroh::PublicKey>().map_err(|e| format!("view node {} ({:?}): endpoint_id {v:?} does not parse: {e}", n.node_id, n.name))?),
         };
         match (endpoint_id, n.transport_addr, n.incarnation_id.clone()) {
-            (Some(endpoint_id), Some(transport_addr), Some(incarnation)) => out.push(ResolvedNode { mesh: n.mesh.clone(), kind: n.kind, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id, transport_addr, incarnation }),
+            (Some(endpoint_id), Some(transport_addr), Some(incarnation)) => out.push(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id, transport_addr, incarnation }),
             (endpoint_id, transport_addr, incarnation) => {
                 let absent: Vec<&str> = [(endpoint_id.is_none(), "endpoint_id"), (transport_addr.is_none(), "transport_addr"), (incarnation.is_none(), "incarnation_id")]
                     .into_iter()
@@ -711,9 +711,9 @@ mod tests {
 
     /// A node of `name` as an admin's view holds it: born when `endpoint`, `addr` and `incarnation`
     /// are all given.
-    fn view(name: PathName, mesh: &str, kind: rdm_core::NodeKind, endpoint: Option<&str>, addr: Option<&str>, incarnation: Option<IncarnationId>) -> NodeView {
+    fn view(name: PathName, mesh: &str, r#type: &str, endpoint: Option<&str>, addr: Option<&str>, incarnation: Option<IncarnationId>) -> NodeView {
         NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
-            kind,
+            r#type: r#type.to_string(),
             mesh: mesh.to_owned(),
             name,
             node_id: NodeId::mint(),
@@ -740,13 +740,13 @@ mod tests {
     }
 
     fn born(name: PathName) -> NodeView {
-        view(name, "mesh1", rdm_core::NodeKind::RpcNode, Some(&iroh::SecretKey::generate().public().to_string()), Some("127.0.0.1:9"), Some(IncarnationId::mint()))
+        view(name, "mesh1", "node", Some(&iroh::SecretKey::generate().public().to_string()), Some("127.0.0.1:9"), Some(IncarnationId::mint()))
     }
 
     /// CONTRACT: a view whose nodes are all born resolves every one of them, in order.
     #[test]
     fn view_with_born_nodes_resolves_each() {
-        let views = [born(PathName::new("mesh1.rpc", "1").unwrap()), born(PathName::new("mesh1.rpc", "2").unwrap())];
+        let views = [born(PathName::new("mesh1.node", "1").unwrap()), born(PathName::new("mesh1.node", "2").unwrap())];
         let ids: Vec<NodeId> = resolved(&views).unwrap().into_iter().map(|n| n.node_id).collect();
         assert_eq!(ids, views.iter().map(|v| v.node_id.clone()).collect::<Vec<_>>());
     }
@@ -756,9 +756,9 @@ mod tests {
     /// NOT happen: the node vanishing while the readable ones resolve.
     #[test]
     fn view_node_with_unparseable_endpoint_refuses_naming_node_field_value_and_error() {
-        let bad = view(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("not-an-endpoint-id"), Some("127.0.0.1:9"), Some(IncarnationId::mint()));
-        let err = resolved(&[born(PathName::new("mesh1.rpc", "1").unwrap()), bad.clone()]).unwrap_err();
-        for part in [bad.node_id.to_string(), "path: \"mesh1.rpc\"".into(), "name: \"2\"".into(), "endpoint_id".into(), "\"not-an-endpoint-id\"".into(), "does not parse: ".into()] {
+        let bad = view(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", Some("not-an-endpoint-id"), Some("127.0.0.1:9"), Some(IncarnationId::mint()));
+        let err = resolved(&[born(PathName::new("mesh1.node", "1").unwrap()), bad.clone()]).unwrap_err();
+        for part in [bad.node_id.to_string(), "path: \"mesh1.node\"".into(), "name: \"2\"".into(), "endpoint_id".into(), "\"not-an-endpoint-id\"".into(), "does not parse: ".into()] {
             assert!(err.contains(&part), "the refusal names {part:?}: {err}");
         }
     }
@@ -768,8 +768,8 @@ mod tests {
     /// beside it still resolve.
     #[test]
     fn view_with_an_unborn_node_leaves_it_out_and_resolves_the_rest() {
-        let readable = born(PathName::new("mesh1.rpc", "1").unwrap());
-        let nodes = resolved(&[view(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None, None, None), readable.clone()]).unwrap();
+        let readable = born(PathName::new("mesh1.node", "1").unwrap());
+        let nodes = resolved(&[view(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", None, None, None), readable.clone()]).unwrap();
         assert_eq!(nodes.into_iter().map(|n| n.node_id).collect::<Vec<_>>(), vec![readable.node_id]);
     }
 
@@ -777,7 +777,7 @@ mod tests {
     /// yet and an endpoint that is no Iroh key still refuses.
     #[test]
     fn view_node_with_an_absent_field_and_an_unparseable_one_refuses() {
-        let bad = view(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("not-an-endpoint-id"), Some("127.0.0.1:9"), None);
+        let bad = view(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", Some("not-an-endpoint-id"), Some("127.0.0.1:9"), None);
         let err = resolved(&[bad.clone()]).unwrap_err();
         assert!(err.contains(&bad.node_id.to_string()) && err.contains("endpoint_id"), "{err}");
     }

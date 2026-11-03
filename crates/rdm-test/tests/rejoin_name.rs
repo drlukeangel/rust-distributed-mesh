@@ -31,13 +31,13 @@ async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &Statu
 /// CONTRACT (node-replace.md steps 1-2: node[1]'s `node.connection.delete { All }`, then its
 /// `node.mesh.leave`, then `node.name.update` to `<name>.old`, then node[1].stop "leaves it stopped as
 /// `<name>.old`"; node-mesh-leave.md: once it has left, "the node publishes nothing"; Rollback step 2;
-/// R-JN1): a node born path `mesh1.rpc`, name `1` has its connections deleted, leaves its mesh (`MeshLeft`) and
-/// takes path `mesh1.rpc`, name `1-old` live: `ApplyNodeName` answers `Applied`, and the node publishes nothing off
+/// R-JN1): a node born path `mesh1.node`, name `1` has its connections deleted, leaves its mesh (`MeshLeft`) and
+/// takes path `mesh1.node`, name `1-old` live: `ApplyNodeName` answers `Applied`, and the node publishes nothing off
 /// its mesh (its apply span says `digest=off-mesh`, and its admin hears no digest of it from the leave
-/// until its start). It is then stopped: its stop span names path `mesh1.rpc`, name `1-old`. Its start presents the
-/// name it holds and is admitted under it: every digest after the join names path `mesh1.rpc`, name `1-old`, and its
+/// until its start). It is then stopped: its stop span names path `mesh1.node`, name `1-old`. Its start presents the
+/// name it holds and is admitted under it: every digest after the join names path `mesh1.node`, name `1-old`, and its
 /// start span names it. What must NOT happen: a digest under either name while the node is off its
-/// mesh, a stop span naming path `mesh1.rpc`, name `1`, or the start refused `JoinMismatch("name")`.
+/// mesh, a stop span naming path `mesh1.node`, name `1`, or the start refused `JoinMismatch("name")`.
 #[test]
 fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_holds() {
     let cap = crate::common::capture("a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_holds");
@@ -52,7 +52,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
-        let born: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let born: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let taken: PathName = born.renamed().unwrap();
         assert_eq!(taken.path, born.path, "rename preserves the immutable path");
         assert_eq!(taken.name, "1-old");
@@ -60,7 +60,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
             fabric: "fabric1".into(),
             fabric_id: fabric,
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::RpcNode,
+            r#type: "node".into(),
             name: born.clone(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
@@ -86,7 +86,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
             digests.changed().await.unwrap();
         }
         let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
         // Step 1: every connection deleted, then off its mesh.
@@ -108,7 +108,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         assert_eq!(published(), seq_at_leave, "the node published nothing from its leave to its stop");
 
         // The authority holds the birth under its row's name, and its held stopped digest names it too.
-        admin.put_row(NodeRow { mesh: launch.mesh.clone(), kind: launch.kind, replacement_from: None, initial_properties: None, topology_storage_provider: None, name: taken.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None });
+        admin.put_row(NodeRow { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), replacement_from: None, initial_properties: None, topology_storage_provider: None, name: taken.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None });
         admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
 
         assert_eq!(call(&admin, &target, &start).await, StatusReply::Started, "the start presents the name the node holds");

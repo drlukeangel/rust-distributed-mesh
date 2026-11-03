@@ -16,7 +16,7 @@
 
 use crate::build_log;
 use rdm_core::{NodeId, PathName};
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
+use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
 use rdm_test::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -101,7 +101,7 @@ async fn built(estate: &Estate, id: &str) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)]);
+    let mesh = |m: &str| MeshDesired::of(m, [("node-admin", 2), ("node", 3)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
     // mesh2's rows are written to the store at once (node-identity-and-state.md §2.7, Q171), where
     // mesh2's own primary finds the row the fabric-primary wrote. The Build is Complete only after
@@ -113,14 +113,14 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let build = built(&estate, &create).await;
     let want: std::collections::BTreeSet<PathName> = ["mesh1", "mesh2"]
         .iter()
-        .flat_map(|m| (1..=2).map(move |i| location(&format!("{m}.admin"), &i.to_string())).chain((1..=3).map(move |i| location(&format!("{m}.rpc"), &i.to_string()))))
+        .flat_map(|m| (1..=2).map(move |i| location(&format!("{m}.node-admin"), &i.to_string())).chain((1..=3).map(move |i| location(&format!("{m}.node"), &i.to_string()))))
         .collect();
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(15)).await);
     assert_eq!(nodes.iter().filter(|n| n["is_fabric_primary"] == true).count(), 1, "one fabric primary once the view settles");
-    let mesh2_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).unwrap();
+    let mesh2_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).unwrap();
     let node_at = |path: &str, name: &str| nodes.iter().find(|node| node["name"]["path"] == path && node["name"]["name"] == name).expect("settled node at explicit location");
-    let first_admin = node_at("mesh2.admin", "1");
-    let day0_admin = node_at("mesh1.admin", "1");
+    let first_admin = node_at("mesh2.node-admin", "1");
+    let day0_admin = node_at("mesh1.node-admin", "1");
     assert_eq!(last_run_executor(&build), mesh2_primary, "the Build's last run ran on mesh2's own primary: {build:#}");
 
     // mesh2's control endpoint, from the advertised topology only.
@@ -139,16 +139,16 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     // The initial fabric refuses the removal of a node until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Grow and shrink mesh2 from its own endpoint: the fabric-primary accepts the call, mesh2's primary executes the Build.
-    let mut growing = estate.create_node("mesh2", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
+    let mut growing = estate.create_node("mesh2", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
     let grow = Estate::complete(&mut growing).await.build_id.to_string();
     let b = built(&estate, &grow).await;
     assert_eq!(last_run_executor(&b), mesh2_primary, "{b:#}");
-    estate.until_node(&rdm_core::PathName::new("mesh2.rpc", "4").unwrap(), "mesh2.rpc.4 ready", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
-    let mut shrinking = estate.nodes_obj().await.delete(&rdm_core::PathName::new("mesh2.rpc", "4").unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh2.rpc.4: {e}"));
+    estate.until_node(&rdm_core::PathName::new("mesh2.node", "4").unwrap(), "mesh2.node.4 ready", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
+    let mut shrinking = estate.nodes_obj().await.delete(&rdm_core::PathName::new("mesh2.node", "4").unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh2.node.4: {e}"));
     let shrink = Estate::complete(&mut shrinking).await.build_id.to_string();
     let b = built(&estate, &shrink).await;
     assert_eq!(last_run_executor(&b), mesh2_primary, "{b:#}");
-    estate.until_node(&rdm_core::PathName::new("mesh2.rpc", "4").unwrap(), "mesh2.rpc.4 deleted", Duration::from_secs(30), |n| n.is_none().then_some(())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh2.node", "4").unwrap(), "mesh2.node.4 deleted", Duration::from_secs(30), |n| n.is_none().then_some(())).await;
 
     estate.artifact("nodes.json", &json!(estate.node_values().await));
     estate.enter(&fabric_admin).await;
@@ -159,16 +159,16 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     // to a lower NodeId in mesh2 as soon as mesh2's first admin is ready, so a name read after the
     // test is not the creator's role. The second admin is created by mesh2's own primary, which at
     // that moment is the only admin mesh2 has (node-admin-lifecycle.md 4.3).
-    let op = operation(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.admin", "1"), &create);
-    let creator = executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.admin", "1"), &create);
-    assert_eq!(fabric_primary_seen_by(&spans, &creator, op), creator, "mesh2.admin.1: created by the admin holding the fabric-primary role when it ran");
-    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.admin", "2"), &create), s(&first_admin["node_id"]), "mesh2.admin.2: created by mesh2's own primary");
+    let op = operation(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "1"), &create);
+    let creator = executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "1"), &create);
+    assert_eq!(fabric_primary_seen_by(&spans, &creator, op), creator, "mesh2.node-admin.1: created by the admin holding the fabric-primary role when it ran");
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "2"), &create), s(&first_admin["node_id"]), "mesh2.node-admin.2: created by mesh2's own primary");
     for name in ["1", "2", "3"] {
-        let r = location("mesh2.rpc", name);
+        let r = location("mesh2.node", name);
         assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &r, &create), mesh2_primary, "{r:?}: mesh2's primary creates its members");
     }
-    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.rpc", "4"), &grow), mesh2_primary);
-    assert_eq!(executed_by(&spans, "rdm.node_admin.node.delete.via-build", &location("mesh2.rpc", "4"), &shrink), mesh2_primary);
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node", "4"), &grow), mesh2_primary);
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.delete.via-build", &location("mesh2.node", "4"), &shrink), mesh2_primary);
     // The Pending hand-off (e4.s11): once mesh2's first admin is born, the fabric primary applies
     // MeshStatus::Pending at that exact birth, and only then does the shape proceed. Evidence names
     // the sender's birth, the target's birth, the exact mesh identity and the applied state.
@@ -185,7 +185,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let handed = handoff["end_unix_nano"].as_u64().unwrap();
     let shape_started = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
-        .filter(|c| c["attributes"]["build_id"] == create.as_str() && [location("mesh2.admin", "2"), location("mesh2.rpc", "1"), location("mesh2.rpc", "2"), location("mesh2.rpc", "3")].iter().any(|at| actor_is(c, at)))
+        .filter(|c| c["attributes"]["build_id"] == create.as_str() && [location("mesh2.node-admin", "2"), location("mesh2.node", "1"), location("mesh2.node", "2"), location("mesh2.node", "3")].iter().any(|at| actor_is(c, at)))
         .filter_map(|c| c["start_unix_nano"].as_u64())
         .min()
         .expect("the shape's creates");
@@ -194,7 +194,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     // not make it the elected mesh primary.
     let decided: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declaration")
         .into_iter()
-        .filter(|d| actor_is(d, &location("mesh2.admin", "1")) && d["attributes"]["op"] == "apply-mesh-state" && d["attributes"]["outcome"] == "applied")
+        .filter(|d| actor_is(d, &location("mesh2.node-admin", "1")) && d["attributes"]["op"] == "apply-mesh-state" && d["attributes"]["outcome"] == "applied")
         .collect();
     assert_eq!(decided.len(), 1, "{decided:?}");
     assert_eq!(decided[0]["attributes"]["receiver_is_primary"], "false", "accepting Pending is not an election: {}", decided[0]);
@@ -234,15 +234,15 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert_eq!(s(&m2_write["attributes"]["node"]), creator, "mesh2's row is written by the fabric-primary that creates its first admin, the acting primary of a mesh with none: {m2_write}");
     let admin_row = named(&spans, "rdm.node_admin.node.create.via-node-row")
         .into_iter()
-        .find(|c| c["attributes"]["subject_path"] == "mesh2.admin" && c["attributes"]["subject_name"] == "1" && c["attributes"]["moment"] == "create")
-        .unwrap_or_else(|| panic!("mesh2.admin.1's row is written"));
+        .find(|c| c["attributes"]["subject_path"] == "mesh2.node-admin" && c["attributes"]["subject_name"] == "1" && c["attributes"]["moment"] == "create")
+        .unwrap_or_else(|| panic!("mesh2.node-admin.1's row is written"));
     assert!(
         m2_write["end_unix_nano"].as_u64().unwrap() <= admin_row["start_unix_nano"].as_u64().unwrap(),
-        "mesh2's row is its first durable write: it ends before mesh2.admin.1's row is written: {m2_write} {admin_row}"
+        "mesh2's row is its first durable write: it ends before mesh2.node-admin.1's row is written: {m2_write} {admin_row}"
     );
-    let rewrites: Vec<&&Value> = mesh_writes.iter().filter(|c| c["attributes"]["mesh"] == "mesh2" && nodes.iter().any(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["node_id"] == c["attributes"]["node"])).collect();
+    let rewrites: Vec<&&Value> = mesh_writes.iter().filter(|c| c["attributes"]["mesh"] == "mesh2" && nodes.iter().any(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["node_id"] == c["attributes"]["node"])).collect();
     assert!(!rewrites.is_empty() && rewrites.iter().all(|c| s(&c["attributes"]["mesh_id"]) == mesh2_id && c["attributes"]["outcome"] == "row-held-by-mesh"), "mesh2's own primary writes its row again and finds the row the fabric-primary wrote: {rewrites:?}");
-    eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={mesh2_id} node={creator} outcome=row-written before node.create.via-node-row subject=mesh2.admin.1", s(&m2_write["trace_id"]));
+    eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={mesh2_id} node={creator} outcome=row-written before node.create.via-node-row subject=mesh2.node-admin.1", s(&m2_write["trace_id"]));
     assert!(mesh_writes.iter().all(|c| c["attributes"]["outcome"] == "row-written" || c["attributes"]["outcome"] == "row-held-by-mesh"), "no mesh's write is refused: {mesh_writes:?}");
     // node-identity-and-state.md §2.7: "The fabric-primary writes the fabric's row at Day 0, idempotent
     // for the same FabricId", its first write of the fabric; a later fabric-primary's write of the same

@@ -13,7 +13,7 @@
 //! an admin that is not the fabric-primary and every Build crosses a real `build.attempt.run`.
 
 use iroh::SecretKey;
-use rdm_core::{NodeKind, PathName};
+use rdm_core::{PathName};
 use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, Meshes, NodeEvent, NodeStatus, Nodes, Peers, StartDisposition, WorkflowKind, WorkflowStream};
 use rdm_admin::build_state::{BuildFact, StepOutcome};
 use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
@@ -73,12 +73,12 @@ impl Caller {
     /// Every node-admin the answering admin's view holds becomes reachable by its path.
     async fn learn(&self) {
         for n in rdm_test::typed::node_views_of(&self.peers, &self.entry, &self.fabric_id).await.expect("the entry admin's view") {
-            if n.kind != NodeKind::NodeAdmin {
+            if n.r#type != "node-admin" {
                 continue;
             }
             self.admins.lock().unwrap().insert(n.node_id.to_string(), n.clone());
             let (Some(ep), Some(addr), Some(inc)) = (n.endpoint_id.as_deref(), n.transport_addr, n.incarnation_id.clone()) else { continue };
-            self.resolver.insert(ResolvedNode { mesh: n.mesh.clone(), kind: n.kind, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
+            self.resolver.insert(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
         }
     }
 
@@ -116,7 +116,7 @@ async fn born(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> B
 /// the Day-0 Build to its end, so the shape is accepted at once.
 async fn born_framed(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> (BuildCarrier, Vec<BuildFrame>) {
     let carrier = estate.carrier().await;
-    let desired = FabricDesired { fabric: FABRIC.into(), meshes: shape.iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
+    let desired = FabricDesired { fabric: FABRIC.into(), meshes: shape.iter().map(|(m, a, r)| MeshDesired::of(*m, [("node-admin", *a), ("node", *r)])).collect() };
     let mut stream = carrier.create(estate.shape_change_at(&carrier, &desired).await).await.expect("the fabric-primary accepts the shape");
     let frames = until_complete(&mut stream).await;
     estate.settles_to(shape, Duration::from_secs(90)).await;
@@ -148,7 +148,7 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
 /// The rpc node of `mesh2` that holds no role: executed by `mesh2`'s own primary with no preceding
 /// role move, so its stop is one attempt (`accepted.attempt`).
 async fn secondary_node(estate: &Estate) -> PathName {
-    estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode && !n.is_primary).map(|n| n.name).min().expect("an rpc node of mesh2 holding no primary role")
+    estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary).map(|n| n.name).min().expect("an rpc node of mesh2 holding no primary role")
 }
 
 /// CONTRACT (acceptance 1): `node.stop` over `0x20` is one call. The stream is `Started`, a frame
@@ -164,7 +164,7 @@ async fn a_stop_over_the_build_family_is_one_call_that_pushes_every_step_frame_a
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
     let views = estate.node_views().await;
-    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).expect("mesh2 primary");
+    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 primary");
     let executor_birth = birth_of(executor);
     let fabric_primary = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
 
@@ -272,7 +272,7 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
-    let grown = FabricDesired { fabric: FABRIC.into(), meshes: [("mesh1", 2, 1), ("mesh2", 2, 3)].iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
+    let grown = FabricDesired { fabric: FABRIC.into(), meshes: [("mesh1", 2, 1), ("mesh2", 2, 3)].iter().map(|(m, a, r)| MeshDesired::of(*m, [("node-admin", *a), ("node", *r)])).collect() };
     let mut stream = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.expect("the fabric-primary accepts the change");
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
     let first = stream.next().await.expect("a frame").expect("the stream reads its first frame");
@@ -398,7 +398,7 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     let test = "a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_its_exit_is_inspected";
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
@@ -408,8 +408,8 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     // The executor, mesh2's primary, is held in the middle of the start: the start of the stopped node
     // answered, its receipt not durable.
     let views = estate.node_views().await;
-    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).expect("mesh2 primary").clone();
-    let next_executor = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.node_id != executor.node_id).expect("other mesh2 admin").clone();
+    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 primary").clone();
+    let next_executor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.node_id != executor.node_id).expect("other mesh2 admin").clone();
     let subject_id = views.iter().find(|n| n.name == node).expect("subject").node_id.clone();
     let door = Door::at(&estate, &executor.name).await;
     door.arm("lost", json!({"kind": "receipt", "step": "StartNode", "operation": "node.start", "node": rdm_core::OperationSubject::Node(subject_id.clone())})).await;
@@ -474,15 +474,15 @@ async fn suspended_executor(test: &str) -> Suspended {
 async fn suspended_executor_withholding(test: &str, withhold: bool) -> Suspended {
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
     let mut stopped = caller.nodes(&carrier).stop(&node).await.expect("the fabric-primary accepts the stop");
     assert_eq!(frames_of(&mut stopped).await.last(), Some(&Frame::Complete), "the node is stopped first");
     let views = estate.node_views().await;
-    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).expect("mesh2 primary").clone();
-    let successor = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.node_id != executor.node_id).expect("other mesh2 admin").clone();
+    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 primary").clone();
+    let successor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.node_id != executor.node_id).expect("other mesh2 admin").clone();
     let fabric_primary = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary").clone();
     let subject_id = views.iter().find(|n| n.name == node).expect("stopped subject").node_id.clone();
     let node_id = executor.node_id.to_string();
@@ -507,7 +507,7 @@ async fn suspended_executor_withholding(test: &str, withhold: bool) -> Suspended
 /// CONTRACT (node-start.md step 2, Q249): mesh2's primary carries a start of the stopped mesh2 rpc node,
 /// clears the birth's stop mark at the start's join, and is held before it publishes the clear (it
 /// withholds its mesh's topology while it carries the start), then os-stopped. The next attempt's
-/// executor, (path mesh2.admin, name 2), reissues the start; the birth answers it `AlreadyApplied` (no `NodeJoined`),
+/// executor, (path mesh2.node-admin, name 2), reissues the start; the birth answers it `AlreadyApplied` (no `NodeJoined`),
 /// and the executor, whose overlay holds the birth stopped, clears the mark at that answer and publishes
 /// it as the mesh's primary: the birth's digests are taken again, the start completes, and the Build
 /// with it. Must NOT happen: the birth held stopped by every view but the held executor's, its digests
@@ -525,7 +525,7 @@ async fn a_replayed_start_clears_the_stop_mark_its_held_executor_never_published
         .into_iter()
         .find(|sp| attr(sp, "recorder_node_id") == successor.node_id.as_str() && attr(sp, "node_id") == subject_id.as_str() && attr(sp, "outcome") == "stop-mark-cleared")
         .cloned()
-        .unwrap_or_else(|| panic!("mesh2.admin.2 clears {node:?}'s stop mark at the replayed start's answer"));
+        .unwrap_or_else(|| panic!("mesh2.node-admin.2 clears {node:?}'s stop mark at the replayed start's answer"));
     let birth = attr(&cleared, "incarnation_id");
     let at = cleared["start_unix_nano"].as_u64().unwrap_or(0);
     let late: Vec<&Value> = spans_named(&spans, "rdm.mesh.topology.reject.via-stopped-birth").into_iter().filter(|sp| attr(sp, "node_id") == subject_id.as_str() && attr(sp, "incarnation_id") == birth && sp["start_unix_nano"].as_u64().unwrap_or(0) > at + 5_000_000_000).collect();
@@ -573,7 +573,7 @@ fn now_ns() -> u64 {
 /// it is"; Q239 A narrowed): mesh2's primary is the executor of a node.start and the operating system
 /// holds it suspended in the middle of it. The fabric-primary's inner call ends executor-lost, the
 /// provider reads the exact runtime os-stopped, which proves its departure, and the next attempt is
-/// claimed for (path mesh2.admin, name 2), which takes the start to `Complete` on the caller's one stream. The
+/// claimed for (path mesh2.node-admin, name 2), which takes the start to `Complete` on the caller's one stream. The
 /// fabric-primary's one investigation of the unheard mesh-primary finds it os-stopped and its recovery
 /// is admitted once the next attempt ran (a submit while that attempt holds the mesh answers
 /// BuildInProgress, node-recovery.md step 1): the path is re-created as a new birth, and the
@@ -638,7 +638,7 @@ async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_i
 /// deleted birth whose writes every reader refuses"; node-recovery.md step 3: "A birth that comes back
 /// after it was re-created is a deleted birth"; Q239 addendum 0): the os-stopped executor of a
 /// node.start is resumed (SIGCONT) at once after the fabric-primary claimed the next attempt for
-/// (path mesh2.admin, name 2), while its mesh's recovery still runs, and its Door lets the held start go on. Every
+/// (path mesh2.node-admin, name 2), while its mesh's recovery still runs, and its Door lets the held start go on. Every
 /// receipt and frame it makes for the superseded attempt lands nowhere: its run reports them up a
 /// stream no fabric-primary reads, the Build's journal holds no `StartNode` receipt and no verdict of
 /// the superseded attempt, and the next attempt's verdict is the Build's. The re-created birth at its
@@ -794,12 +794,12 @@ async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_an
     let test = "a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_and_no_step_runs_twice";
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
     let views = estate.node_views().await;
-    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).expect("mesh2 primary");
+    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 primary");
     let executor_birth = birth_of(executor);
     let fp = estate.node_views().await.into_iter().find(|n| n.is_fabric_primary).expect("fabric primary").node_id.to_string();
 
@@ -879,7 +879,7 @@ async fn a_planned_handover_mid_build_ends_the_outer_stream_with_the_new_fabric_
     assert_eq!(old_primary.mesh, "mesh1", "mesh1 holds the fabric-primary role: {old_role}");
 
     // The Build deletes mesh1; the role leaves with it, by a planned handover inside the Build.
-    let keep = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] };
+    let keep = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh2", [("node-admin", 2), ("node", 2)])] };
     let mut stream = carrier.create(estate.shape_change_at(&carrier, &keep).await).await.expect("the fabric-primary accepts the delete of mesh1");
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
     let new_role = loop {
@@ -944,14 +944,14 @@ impl Caller {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
         loop {
             if let Some(views) = rdm_test::typed::node_views_of(&self.peers, &asked, &self.fabric_id).await {
-                let restored = views.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.is_fabric_primary && n.status == NodeStatus::Ready && n.node_id.to_string() != dead_id);
+                let restored = views.into_iter().find(|n| n.r#type == "node-admin" && n.is_fabric_primary && n.status == NodeStatus::Ready && n.node_id.to_string() != dead_id);
                 if let Some(n) = restored {
                     if let (Some(ep), Some(addr), Some(inc)) = (n.endpoint_id.as_deref(), n.transport_addr, n.incarnation_id.clone()) {
                         if let Ok(old) = rdm_core::NodeId::parse(&dead_id) {
                             self.resolver.remove_gone(&old);
                             self.admins.lock().unwrap().remove(&dead_id);
                         }
-                        self.resolver.insert(ResolvedNode { mesh: n.mesh.clone(), kind: n.kind, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
+                        self.resolver.insert(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
                         self.admins.lock().unwrap().insert(n.node_id.to_string(), n.clone());
                         // The restored node's own view names it fabric-primary once it installed the roles.
                         let node_id = n.node_id.to_string();
@@ -1012,7 +1012,7 @@ fn knob_attempts(knob: &std::path::Path, node: &rdm_core::PathName, reason: &str
 async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_the_hook_passes() {
     let test = "a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_the_hook_passes";
     const SHAPE1: [(&str, u32, u32); 1] = [("mesh1", 2, 1)];
-    let blocked = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+    let blocked = rdm_core::PathName::new("mesh1.node", "2").unwrap();
     const A: &str = "the rows of orders are not yet published";
     const B: &str = "the authority of orders is connections-deleting";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
@@ -1023,7 +1023,7 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     // The next birth's hook is blocked for A from its first attempt.
     let knob = rdm_test::pre_node_ready_knob_dir(&estate.root);
     rdm_test::write_pre_node_ready_knob(&estate.root, &blocked, A).unwrap();
-    let grown = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] };
+    let grown = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", 2)])] };
     let mut stream = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.expect("the fabric-primary accepts the grown shape");
     let (before_a, (step, reason, operation)) = next_blocked(&mut stream).await;
     assert_eq!(step, "WaitForNodeReady", "the blocked step: {reason}");
@@ -1097,7 +1097,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     door.arm("cut", cut).await;
     let grown = FabricDesired {
         fabric: FABRIC.into(),
-        meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])],
+        meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", 1)]), MeshDesired::of("mesh2", [("node-admin", 1), ("node", 1)])],
     };
     let mut stream = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.expect("the fabric-primary accepts mesh2");
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
@@ -1185,12 +1185,12 @@ async fn a_restored_fabric_primary_reads_the_create_mesh_receipt_and_does_not_cl
     let test = "a_restored_fabric_primary_reads_the_create_mesh_receipt_and_does_not_claim_the_mesh_again";
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE1).await;
     // The cut: mesh2's first admin has its identity allocated and that receipt is not durable; the
     // fabric-primary ran `create-mesh:mesh2` before it.
-    let lost = lose_the_fabric_primary_creating_mesh2(&mut estate, &caller, &carrier, json!({"kind": "receipt", "step": "AllocateIdentity", "operation": "node.create", "node": rdm_core::OperationSubject::Location(PathName::new("mesh2.admin", "1").unwrap())}), true).await;
+    let lost = lose_the_fabric_primary_creating_mesh2(&mut estate, &caller, &carrier, json!({"kind": "receipt", "step": "AllocateIdentity", "operation": "node.create", "node": rdm_core::OperationSubject::Location(PathName::new("mesh2.node-admin", "1").unwrap())}), true).await;
     let receipts = create_mesh_receipts(&lost).await;
 
     estate.stop().await;
@@ -1216,7 +1216,7 @@ async fn a_restored_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its_
     let test = "a_restored_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its_natural_key_and_receipts_it";
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE1).await;
     // The cut: the claim of mesh2's name landed and `create-mesh:mesh2`'s own receipt is not durable.
@@ -1246,7 +1246,7 @@ async fn a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_co
     let test = "a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_connection_alive";
     let sha = candidate_sha();
     let mut set = binding_set(&sha);
-    let real = set.bindings.iter().find(|b| b.launch_id == "rpc_node").expect("the rpc node is bound").executable.clone();
+    let real = set.bindings.iter().find(|b| b.launch_id == "node").expect("the rpc node is bound").executable.clone();
     let dir = std::env::temp_dir().join(format!("q30-bound-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     std::fs::create_dir_all(&dir).unwrap();
     let wrapper = dir.join("rdm-rpc-node-padded");
@@ -1254,14 +1254,14 @@ async fn a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_co
     std::fs::OpenOptions::new().write(true).open(&wrapper).unwrap().set_len(8 << 30).unwrap();
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
     let sha256 = rdm_core::binding::sha256_file(&wrapper).unwrap();
-    for b in set.bindings.iter_mut().filter(|b| b.launch_id == "rpc_node") {
+    for b in set.bindings.iter_mut().filter(|b| b.launch_id == "node") {
         b.executable = wrapper.clone();
         b.sha256 = sha256.clone();
     }
     // One worker: a hash held on it holds every task of the admin, its endpoint's included, so the
     // cell fails whenever the hash runs on a worker, never only when a woken task happens to sit in
     // the hashing worker's LIFO slot (with ~20 workers the defect needs that; R24's gate had it).
-    let mut estate = Estate::bootstrap_on_with_env(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"], &[("TOKIO_WORKER_THREADS", "1")])
+    let mut estate = Estate::bootstrap_on_with_env(owner(test), FABRIC, "mesh1", &set, &sha, &["node"], &[("TOKIO_WORKER_THREADS", "1")])
         .await
         .expect("the padded binding set is accepted");
     let caller = Caller::of(&estate).await;
@@ -1271,7 +1271,7 @@ async fn a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_co
 
     let spans = estate.spans();
     let floor_ms = rdm_core::cadence::staleness_floor().as_millis() as u64;
-    let hashes: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.resolve.via-executable-hash").into_iter().filter(|sp| s(&sp["attributes"]["launch_id"]) == "rpc_node").collect();
+    let hashes: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.resolve.via-executable-hash").into_iter().filter(|sp| s(&sp["attributes"]["launch_id"]) == "node").collect();
     assert!(!hashes.is_empty(), "the rpc node's launch re-hashed its executable");
     for h in &hashes {
         let elapsed: u64 = s(&h["attributes"]["elapsed_ms"]).parse().unwrap_or(0);
@@ -1295,13 +1295,13 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
     async fn at_cut(cut: &str) {
         let test = format!("an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_its_reissue_settles_it_{cut}");
         let sha = candidate_sha();
-        let mut estate = Estate::bootstrap_on(owner(&test), FABRIC, "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.unwrap();
+        let mut estate = Estate::bootstrap_on(owner(&test), FABRIC, "mesh1", &binding_set(&sha), &sha, &["node"]).await.unwrap();
         let caller = Caller::of(&estate).await;
         let carrier = born(&estate, &caller, &SHAPE).await;
         let node = secondary_node(&estate).await;
         let before = estate.node_value(&node).await;
         let subject_id: rdm_core::NodeId = s(&before["node_id"]).parse().expect("subject ID");
-        let executor = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).expect("mesh primary");
+        let executor = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
         let door = Door::at(&estate, &executor.name).await;
         door.arm("closure", json!({"kind": "receipt", "step": cut, "operation": "node.connection.delete", "node": rdm_core::OperationSubject::Node(subject_id.clone())})).await;
         let mut stream = caller.nodes(&carrier).delete_connections(&node).await.expect("the Build accepts the closure");
@@ -1350,15 +1350,15 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
 /// CONTRACT (docs/architecture/lifecycles/node-investigation.md: "A caller whose record is deleted is
 /// deleted, its runtime terminated, never re-admitted"; Q217; node-recovery.md: "A birth that comes back
 /// after it was re-created is a deleted birth: every view refuses its Digest by name"): a node-admin
-/// (`(path mesh2.admin, name 1)`) is os-stopped, its successor (`(path mesh2.admin, name 2)`) takes `mesh2`'s primary role and, on the
+/// (`(path mesh2.node-admin, name 1)`) is os-stopped, its successor (`(path mesh2.node-admin, name 2)`) takes `mesh2`'s primary role and, on the
 /// inspect's `os-stopped` verdict (no tickle is sent, Q273), runs its recovery's `node.delete` to
 /// `NodeDeleted` (its row written `Deleted`, before `node.create` writes a re-created birth). Resumed there,
-/// with the recovery then let on, `(path mesh2.admin, name 1)` is refused by name at a door of `(path mesh2.admin, name 2)` (its
+/// with the recovery then let on, `(path mesh2.node-admin, name 1)` is refused by name at a door of `(path mesh2.node-admin, name 2)` (its
 /// Digest, once the view holds it deleted; a declaration it still owed, refused `SubjectUnknown`; or a
 /// join, refused `JoinMismatch` on `status`) and
 /// decided as `delete-deleted-birth`, never `re-admit`, reported to the fabric-primary
 /// (`via-returned-reported` outcome `opened`), and its runtime is terminated while the re-created birth
-/// holds `(path mesh2.admin, name 1)`.
+/// holds `(path mesh2.node-admin, name 1)`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/304: the refused-caller decision races; i152 s2 (rdm#296) rewrites it and moves this cell"]
 async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_deleted() {
@@ -1423,7 +1423,7 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
 /// current Build with its action"; Q292: `build.attempt.run` names the Build and the claim and never
 /// carries a copy of it, the executor reading the Build's committed records from storage): a Build that lives through 100
 /// `node.stop` / `node.start` pairs on `mesh2` (200 attempts dispatched across `build.attempt.run` to
-/// `(path mesh2.admin, name 1)`) dispatches and completes every attempt within the Build op's 256 KiB request
+/// `(path mesh2.node-admin, name 1)`) dispatches and completes every attempt within the Build op's 256 KiB request
 /// ceiling, with zero `Malformed(TooLarge)` refusals.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_build_that_lives_through_one_hundred_stop_and_start_pairs_dispatches_every_attempt_run() {
@@ -1433,7 +1433,7 @@ async fn a_build_that_lives_through_one_hundred_stop_and_start_pairs_dispatches_
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
     let views = estate.node_views().await;
-    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).expect("mesh2 primary");
+    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 primary");
     let executor_birth = birth_of(executor);
     let nodes = caller.nodes(&carrier);
 

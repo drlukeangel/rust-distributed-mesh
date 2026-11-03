@@ -7,7 +7,7 @@
 //!
 //! The defect this cell pins (rshape `i143-rshape-authority-chaos-process`
 //! `mock_primary_handoffs_preserve_one_effective_writer` at 1ecc14207): the fabric-primary
-//! mesh1.admin.2 executed the recovery delete of mesh2.admin.1 and published `NodeDeleted` on mesh1's
+//! mesh1.node-admin.2 executed the recovery delete of mesh2.node-admin.1 and published `NodeDeleted` on mesh1's
 //! channel; its mesh1 aggregate carried only mesh1's own deletions, so no mesh2 process took the
 //! deletion, and mesh2's primary later took the deleted birth back as an arrival.
 
@@ -21,10 +21,10 @@ fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
 }
 
-fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &NodeId, incarnation: &IncarnationId, port: u16) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, node_id: &NodeId, incarnation: &IncarnationId, port: u16) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+        node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
             name,
             endpoint_id: EndpointId(format!("key-{node_id}")),
@@ -73,11 +73,11 @@ fn attr(sp: &Value, k: &str) -> String {
     }
 }
 
-/// CONTRACT (gossip.md §3.1 `NodeDeleted`; §2 rules; §6.1): the fabric-primary mesh1.admin.1, mesh1's
-/// primary, executes the delete of mesh2.admin.1, a node of a peer mesh, and publishes `NodeDeleted`
-/// on mesh1's channel. mesh2's primary mesh2.admin.2 hears mesh1's aggregate on the backbone, and
-/// mesh2.rpc.1 is on mesh2's channel through mesh2.admin.2 alone. Both mesh2 nodes take the deletion:
-/// each holds mesh2.admin.1 deleted and no longer lists it, and each emits
+/// CONTRACT (gossip.md §3.1 `NodeDeleted`; §2 rules; §6.1): the fabric-primary mesh1.node-admin.1, mesh1's
+/// primary, executes the delete of mesh2.node-admin.1, a node of a peer mesh, and publishes `NodeDeleted`
+/// on mesh1's channel. mesh2's primary mesh2.node-admin.2 hears mesh1's aggregate on the backbone, and
+/// mesh2.node.1 is on mesh2's channel through mesh2.node-admin.2 alone. Both mesh2 nodes take the deletion:
+/// each holds mesh2.node-admin.1 deleted and no longer lists it, and each emits
 /// `rdm.mesh.topology.remove.via-node-deleted` for the exact birth. Must NOT happen: the deletion
 /// reaching only the executor's mesh, so the deleted birth's own mesh keeps listing it.
 #[test]
@@ -92,9 +92,9 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         let fab = fabric();
         let (mesh1, mesh2) = (MeshId::mint(), MeshId::mint());
         let clock = rdm_transport::clock::os_clock;
-        let fp_m = TopologyView::join(&fp.gossip, &fp.ep, &fab, "mesh1", &mesh1, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
-        let m2_m = TopologyView::join(&m2.gossip, &m2.ep, &fab, "mesh2", &mesh2, "mesh2.admin.2", clock(), vec![], &[]).await.unwrap();
-        let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh2", &mesh2, "mesh2.rpc.1", clock(), vec![m2_addr.clone()], &[]).await.unwrap();
+        let fp_m = TopologyView::join(&fp.gossip, &fp.ep, &fab, "mesh1", &mesh1, "mesh1.node-admin.1", clock(), vec![], &[]).await.unwrap();
+        let m2_m = TopologyView::join(&m2.gossip, &m2.ep, &fab, "mesh2", &mesh2, "mesh2.node-admin.2", clock(), vec![], &[]).await.unwrap();
+        let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh2", &mesh2, "mesh2.node.1", clock(), vec![m2_addr.clone()], &[]).await.unwrap();
         let fp_bb = Backbone::join(&fp.gossip, &fp.ep, &fp_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() }, vec![]).await.unwrap();
         let m2_bb = Backbone::join(&m2.gossip, &m2.ep, &m2_m, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() }, vec![fp_addr.clone()]).await.unwrap();
         fp_bb.set_mesh_primary(true);
@@ -102,18 +102,18 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         m2_bb.set_mesh_primary(true);
         rpc_m.wait_for_neighbour().await;
 
-        // mesh2.admin.1, the previous mesh-primary of mesh2: every view holds it.
+        // mesh2.node-admin.1, the previous mesh-primary of mesh2: every view holds it.
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let subject = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &id, &inc, 42_001);
+        let subject = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &id, &inc, 42_001);
         for v in [&fp_m, &m2_m, &rpc_m] {
-            assert!(v.digest_view.record(subject.clone()), "the view holds mesh2.admin.1");
+            assert!(v.digest_view.record(subject.clone()), "the view holds mesh2.node-admin.1");
         }
 
         // The fabric-primary, as executor, proves the exit and publishes NodeDeleted on its own mesh channel.
-        let op = LifecycleOp { kind: subject.node.kind, mesh: subject.node.mesh.clone(),
+        let op = LifecycleOp { r#type: subject.node.r#type, mesh: subject.node.mesh.clone(),
             build_id: "b-peer-mesh-deletion".into(),
             attempt: 3,
-            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()),
+            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()),
             node_id: id.clone(),
             incarnation: inc.clone(),
             name: subject.node.name.clone(),
@@ -129,7 +129,7 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         while !(m2_m.digest_view.is_deleted(id.as_str()) && rpc_m.digest_view.is_deleted(id.as_str())) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "mesh2's nodes never took the deletion of mesh2.admin.1 the fabric-primary executed: mesh2.admin.2 deleted={} mesh2.rpc.1 deleted={}",
+                "mesh2's nodes never took the deletion of mesh2.node-admin.1 the fabric-primary executed: mesh2.node-admin.2 deleted={} mesh2.node.1 deleted={}",
                 m2_m.digest_view.is_deleted(id.as_str()),
                 rpc_m.digest_view.is_deleted(id.as_str()),
             );
@@ -138,7 +138,7 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         for v in [&m2_m, &rpc_m] {
-            assert!(v.digest_view.get(id.as_str()).is_none(), "the current topology no longer lists mesh2.admin.1");
+            assert!(v.digest_view.get(id.as_str()).is_none(), "the current topology no longer lists mesh2.node-admin.1");
         }
 
         fp_bb.set_fabric_primary(false);
@@ -147,13 +147,13 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         }
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         std::fs::write(dir.join("peer-mesh-deletion.spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
-        for observer in ["mesh2.admin.2", "mesh2.rpc.1"] {
+        for observer in ["mesh2.node-admin.2", "mesh2.node.1"] {
             let taken: Vec<&Value> = spans
                 .iter()
                 .filter(|s| s["name"] == "rdm.mesh.topology.remove.via-node-deleted" && attr(s, "observer") == observer && attr(s, "node_id") == id.as_str() && attr(s, "incarnation_id") == inc.as_str())
                 .collect();
             assert_eq!(taken.len(), 1, "{observer} takes the deletion of the exact birth once: {taken:#?}");
-            println!("peer-mesh-deletion: {observer} took node.delete:mesh2.admin.1 trace {} span {}", taken[0]["trace_id"], taken[0]["span_id"]);
+            println!("peer-mesh-deletion: {observer} took node.delete:mesh2.node-admin.1 trace {} span {}", taken[0]["trace_id"], taken[0]["span_id"]);
         }
     });
 }

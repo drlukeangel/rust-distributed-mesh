@@ -18,7 +18,7 @@ mod tests {
     use crate::certs::CertIssuer;
     use crate::control_plane::{ControlPlane, Refusal};
     use crate::model::{
-        EndpointId, Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeId, NodeKind,
+        EndpointId, Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeId,
         NodeStatus, PathName, ProviderKind, ScopeStatus,
     };
     use crate::node_rows::{RowFor, NodeRows};
@@ -43,8 +43,8 @@ mod tests {
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Duration;
 
-    fn ready_node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, is_primary: bool, is_fabric_primary: bool) -> Node {
-        let mut n = Node::allocated(name, mesh, kind);
+    fn ready_node(name: rdm_core::PathName, mesh: &str, r#type: &str, is_primary: bool, is_fabric_primary: bool) -> Node {
+        let mut n = Node::allocated(name, mesh, r#type);
         n.node_id = NodeId::mint();
         n.incarnation_id = Some(IncarnationId::mint());
         n.status = NodeStatus::Ready;
@@ -66,7 +66,7 @@ mod tests {
                 name: "mesh1".into(),
                 status: ScopeStatus::Ready,
             }],
-            nodes: vec![ready_node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true)],
+            nodes: vec![ready_node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, true)],
         }
     }
 
@@ -121,13 +121,13 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        let accepted_store = Arc::new(AcceptedStore::new(storage, "mesh1.admin.1"));
+        let accepted_store = Arc::new(AcceptedStore::new(storage, "mesh1.node-admin.1"));
         let time = RafkaTime::unadopted();
         time.adopt(1_700_000_000_000);
         let mut cp_pending = ControlPlane::new(
             builds.clone(),
             accepted_store,
-            rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
+            rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
             day0_view.clone(),
             time.clone(),
         );
@@ -135,7 +135,7 @@ mod tests {
         // Boot sets the admin's own node id once it is minted; the fabric-primary role is checked by it.
         let _ = cp_pending.node_id.set(cp_pending.topology.read().await.fabric_primary().expect("the view holds the fabric-primary").node_id.clone());
         let add_mesh2 = TopologyChange::CreateMesh {
-            desired: MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]),
+            desired: MeshDesired::of("mesh2", [("node-admin", 1), ("node", 1)]),
         };
         match cp_pending.submit("create-mesh2-early", add_mesh2.clone()).await {
             Err(Refusal::BuildInProgress(running)) => {
@@ -149,13 +149,13 @@ mod tests {
         // mesh2's MeshId once (`{mesh1} -> {mesh1, mesh2}`).
         let settled_builds = Arc::new(MemoryBuildStateAdapter::new());
         let settled_view = base_view(&fabric_id, &mesh1_id);
-        let seeded = AcceptedStore::seeded(&*settled_builds, fabric_id.clone(), root_top, &settled_view.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().birth().unwrap(), "mesh1")
+        let seeded = AcceptedStore::seeded(&*settled_builds, fabric_id.clone(), root_top, &settled_view.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap(), "mesh1")
         .await
         .unwrap();
         let mut cp = ControlPlane::new(
             settled_builds.clone(),
             seeded,
-            rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
+            rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
             settled_view.clone(),
             time,
         );
@@ -171,18 +171,18 @@ mod tests {
             .unwrap();
         let _ = cp.node_rows.set(Arc::new(MemoryNodesStorage::default()));
         let exe_dir = crate::test_support::tempdir("mesh-create-exe");
-        let spec_with_exe = |path: PathName, mesh: &str, kind: rdm_core::NodeKind| {
+        let spec_with_exe = |path: PathName, mesh: &str, r#type: &str| {
             use std::os::unix::fs::PermissionsExt;
             let p = path;
-            let bin = exe_dir.join(kind.name());
-            std::fs::write(&bin, format!("#!/bin/sh\n# {}\n", kind.name())).unwrap();
+            let bin = exe_dir.join(r#type);
+            std::fs::write(&bin, format!("#!/bin/sh\n# {}\n", r#type)).unwrap();
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
             rdm_core::meta::NodeSpec {
-                mesh: mesh.to_owned(), kind,
+                mesh: mesh.to_owned(), r#type: r#type.to_string(),
                 path: p.clone(),
                 storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral,
                 executable: Some(rdm_core::binding::Binding {
-                    launch_id: kind.name().into(),
+                    launch_id: r#type.into(),
                     sha256: rdm_core::binding::sha256_file(&bin).unwrap(),
                     executable: bin,
                     image: None,
@@ -194,9 +194,9 @@ mod tests {
         let add_mesh2_reconcile = TopologyChange::Reconcile {
             based_on: current_build_id,
             nodes: vec![
-                spec_with_exe(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin),
-                spec_with_exe(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin),
-                spec_with_exe(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode),
+                spec_with_exe(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"),
+                spec_with_exe(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin"),
+                spec_with_exe(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node"),
             ]
         };
 
@@ -232,7 +232,7 @@ mod tests {
             &TopologyChange::ReconcileMesh {
                 desired: MeshDesired::of(
                     "mesh2",
-                    [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2)],
+                    [("node-admin", 1), ("node", 2)],
                 ),
             },
             &settled_view,
@@ -245,10 +245,10 @@ mod tests {
                 desired: FabricDesired {
                     fabric: "fabric1".into(),
                     meshes: vec![
-                        MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)]),
+                        MeshDesired::of("mesh1", [("node-admin", 1)]),
                         MeshDesired::of(
                             "mesh2",
-                            [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2)],
+                            [("node-admin", 1), ("node", 2)],
                         ),
                     ],
                 },
@@ -259,32 +259,32 @@ mod tests {
         assert_eq!(whole.mesh("mesh2").unwrap().mesh_id, mesh2_id);
 
         // Executor / maker & Members (lines 20, 22): while mesh2 has no primary, the fabric-primary
-        // (`mesh1.admin.1`) executes `CreateMesh` and `CreateNode` of `mesh2.admin.1` on its own
-        // (`first_admin_of` is true only for `mesh2.admin.1`); once `mesh2.admin.1` is Ready,
-        // `mesh2.rpc.1` is never created by the fabric-primary (`executor_for` is `None` until the
-        // election names `mesh2.admin.1`, and `Some("mesh2.admin.1")` once it is mesh-primary).
+        // (`mesh1.node-admin.1`) executes `CreateMesh` and `CreateNode` of `mesh2.node-admin.1` on its own
+        // (`first_admin_of` is true only for `mesh2.node-admin.1`); once `mesh2.node-admin.1` is Ready,
+        // `mesh2.node.1` is never created by the fabric-primary (`executor_for` is `None` until the
+        // election names `mesh2.node-admin.1`, and `Some("mesh2.node-admin.1")` once it is mesh-primary).
         let initial_plan = plan(&build_proj.topology, &settled_view, None);
         assert!(initial_plan.operations.contains(&BuildOperation::CreateMesh {
             mesh: "mesh2".into(),
             mesh_id: mesh2_id.clone(),
         }));
-        let m2_admin_path: crate::model::PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
-        let m2_rpc_path: crate::model::PathName = rdm_core::PathName::new("mesh2.rpc", "1").unwrap();
+        let m2_admin_path: crate::model::PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
+        let m2_rpc_path: crate::model::PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
         assert!(
-            settled_view.first_admin_of(&m2_admin_path, "mesh2", NodeKind::NodeAdmin),
-            "mesh2.admin.1 is the first node-admin of mesh2 and runs on its own"
+            settled_view.first_admin_of(&m2_admin_path, "mesh2", "node-admin"),
+            "mesh2.node-admin.1 is the first node-admin of mesh2 and runs on its own"
         );
         assert!(
-            !settled_view.first_admin_of(&m2_rpc_path, "mesh2", NodeKind::RpcNode),
-            "mesh2.rpc.1 is not the first node-admin of mesh2"
+            !settled_view.first_admin_of(&m2_rpc_path, "mesh2", "node"),
+            "mesh2.node.1 is not the first node-admin of mesh2"
         );
-        let create_m2_admin = BuildOperation::CreateNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".into(),
+        let create_m2_admin = BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh2".into(),
             node: m2_admin_path,
             over: None,
             executable: None,
             entry: None,
         };
-        let create_m2_rpc = BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".into(),
+        let create_m2_rpc = BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh2".into(),
             node: m2_rpc_path,
             over: None,
             executable: None,
@@ -304,11 +304,11 @@ mod tests {
         });
         view_without_m2_primary
             .nodes
-            .push(ready_node(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false));
+            .push(ready_node(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", false, false));
         assert_eq!(
             crate::executor::executor_for(&create_m2_rpc, &view_without_m2_primary),
             None,
-            "once mesh2.admin.1 is born, the fabric-primary does not create mesh2's other nodes while waiting for mesh2's own primary role"
+            "once mesh2.node-admin.1 is born, the fabric-primary does not create mesh2's other nodes while waiting for mesh2's own primary role"
         );
 
         let mut view_with_m2_primary = settled_view.clone();
@@ -319,16 +319,16 @@ mod tests {
         });
         view_with_m2_primary
             .nodes
-            .push(ready_node(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, false));
+            .push(ready_node(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true, false));
         assert_eq!(
             crate::executor::executor_for(&create_m2_rpc, &view_with_m2_primary)
                 .map(|n| n.to_string()),
-            view_with_m2_primary.node(&rdm_core::PathName::new("mesh2.admin", "1").unwrap()).map(|n| n.node_id.to_string()),
-            "once mesh2.admin.1 is mesh-primary, it creates mesh2's other nodes under the same Build"
+            view_with_m2_primary.node(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).map(|n| n.node_id.to_string()),
+            "once mesh2.node-admin.1 is mesh-primary, it creates mesh2's other nodes under the same Build"
         );
 
         // Not this (lines 26, 65-66, 177-179): when mesh2 already exists in the topology and lost its
-        // node-admins (mesh2 is in observed.meshes, mesh2.admin.1 is PendingReconnect/unheard), the plan
+        // node-admins (mesh2 is in observed.meshes, mesh2.node-admin.1 is PendingReconnect/unheard), the plan
         // keeps the same MeshId and plans NO CreateMesh.
         let mut view_lost_m2_admin = view_with_m2_primary.clone();
         view_lost_m2_admin.nodes.retain(|n| n.mesh != "mesh2");
@@ -355,8 +355,8 @@ mod tests {
 
         // Name & Failure and receipts (lines 19, 24, 175-177): a name held by a different MeshId answers
         // NameHeld, receipts ClaimMeshName as Failed, and writes nothing of the mesh; when free, the
-        // mesh row is written and the fabric-primary writes mesh2.admin.1's node row until mesh2 has a
-        // primary, after which mesh2.admin.1 writes mesh2's node rows.
+        // mesh row is written and the fabric-primary writes mesh2.node-admin.1's node row until mesh2 has a
+        // primary, after which mesh2.node-admin.1 writes mesh2's node rows.
         let meshes_held = MemoryMeshStorage::default();
         let other_id = MeshId::mint();
         crate::storage::write_mesh(
@@ -403,17 +403,17 @@ mod tests {
         crate::admin::create_mesh(
             &records,
             &meshes_free,
-            "mesh1.admin.1",
+            "mesh1.node-admin.1",
             "mesh2",
             &mesh2_id,
         )
         .await
         .expect("free mesh name is claimed");
-        // Mesh-primary (`mesh2.admin.1`) re-claiming the same MeshId at role take is idempotent (`Held`).
+        // Mesh-primary (`mesh2.node-admin.1`) re-claiming the same MeshId at role take is idempotent (`Held`).
         let primary_claim = crate::admin::write_mesh_row(
             &meshes_free,
             &records.caches,
-            "mesh2.admin.1",
+            "mesh2.node-admin.1",
             "mesh2",
             &mesh2_id,
         )
@@ -422,11 +422,11 @@ mod tests {
         .unwrap();
         assert_eq!(primary_claim, crate::storage::MeshWritten::Held);
 
-        // Node rows (line 24): written by the fabric-primary for mesh2.admin.1 while mesh2 has no
-        // primary, then by mesh2.admin.1 for mesh2.rpc.1.
+        // Node rows (line 24): written by the fabric-primary for mesh2.node-admin.1 while mesh2 has no
+        // primary, then by mesh2.node-admin.1 for mesh2.node.1.
         let nodes_store = Arc::new(MemoryNodesStorage::default());
         let fp_rows = NodeRows::new(
-            rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
+            rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
             settled_view.nodes[0].node_id.clone(),
             Arc::new(tokio::sync::RwLock::new(settled_view.clone())),
             nodes_store.clone(),
@@ -434,13 +434,13 @@ mod tests {
         let m2_admin_id = view_with_m2_primary.nodes.last().unwrap().node_id.clone();
         let m2_admin_alloc = Allocation { predecessor: None,
             build_id: opened.build_id.clone(),
-            operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()),
+            operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()),
             incarnation: IncarnationId::mint(),
             deployment_id: crate::model::DeploymentId::mint(),
         };
         fp_rows
             .create_row(
-                &rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin,
+                &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin",
                 &m2_admin_id,
                 &m2_admin_alloc.operation,
                 Some(&m2_admin_alloc),
@@ -448,9 +448,9 @@ mod tests {
                 RowFor::Create,
             )
             .await
-            .expect("fabric-primary writes mesh2.admin.1's node row");
+            .expect("fabric-primary writes mesh2.node-admin.1's node row");
         let m2_primary_rows = NodeRows::new(
-            rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
+            rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
             m2_admin_id,
             Arc::new(tokio::sync::RwLock::new(view_with_m2_primary)),
             nodes_store.clone(),
@@ -458,13 +458,13 @@ mod tests {
         let m2_rpc_id = NodeId::mint();
         let m2_rpc_alloc = Allocation { predecessor: None,
             build_id: opened.build_id.clone(),
-            operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.rpc", "1").unwrap()),
+            operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node", "1").unwrap()),
             incarnation: IncarnationId::mint(),
             deployment_id: crate::model::DeploymentId::mint(),
         };
         m2_primary_rows
             .create_row(
-                &rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode,
+                &rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node",
                 &m2_rpc_id,
                 &m2_rpc_alloc.operation,
                 Some(&m2_rpc_alloc),
@@ -472,7 +472,7 @@ mod tests {
                 RowFor::Create,
             )
             .await
-            .expect("mesh2.admin.1 as mesh-primary writes mesh2.rpc.1's node row");
+            .expect("mesh2.node-admin.1 as mesh-primary writes mesh2.node.1's node row");
         assert_eq!(nodes_store.nodes("mesh2").await.unwrap().len(), 2);
     }
 
@@ -527,8 +527,8 @@ mod tests {
                 fabric: "fabric1".into(),
                 fabric_id: fabric_id.clone(),
                 mesh: "mesh2".into(),
-                kind: rdm_core::NodeKind::NodeAdmin,
-                name: rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
+                r#type: "node-admin".into(),
+                name: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
                 node_id: NodeId::mint(),
                 incarnation: IncarnationId::mint(),
                 supersedes: None,
@@ -550,7 +550,7 @@ mod tests {
             assert!(env.contains_key(ENV_ISSUING_CERT), "RDM_ISSUING_CERT in launch env");
 
             // Step 5 (lines 44-46, 100-102, 189): fabric-primary sends bounded Ping to launched birth
-            // `mesh2.admin.1` and applies `ApplyMeshState(Pending)`.
+            // `mesh2.node-admin.1` and applies `ApplyMeshState(Pending)`.
             let fp_key = SecretKey::generate();
             let m2_key = SecretKey::generate();
             let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap())
@@ -565,9 +565,9 @@ mod tests {
                 .find(|a| a.is_ipv4())
                 .unwrap();
 
-            let mut fp_node = ready_node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true);
+            let mut fp_node = ready_node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, true);
             fp_node.endpoint_id = Some(EndpointId(fp_key.public().to_string()));
-            let mut m2_node = ready_node(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, false);
+            let mut m2_node = ready_node(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true, false);
             m2_node.mesh = "mesh2".into();
             m2_node.endpoint_id = Some(EndpointId(m2_key.public().to_string()));
             m2_node.transport_addr = Some(m2_addr);
@@ -673,7 +673,7 @@ mod tests {
             assert_eq!(
                 m2_status.declared.lock().unwrap().meshes.get(&mesh2_id),
                 Some(&MeshState::Pending),
-                "mesh2.admin.1 holds MeshState::Pending after ApplyMeshState(Pending)"
+                "mesh2.node-admin.1 holds MeshState::Pending after ApplyMeshState(Pending)"
             );
 
             // Repeat, StaleMesh, and InvalidMeshTransition replies (lines 100-102).
@@ -732,7 +732,7 @@ mod tests {
                 }
             );
 
-            // Step 7 (lines 52-56, 190): election names mesh2.admin.1 mesh2's mesh-primary
+            // Step 7 (lines 52-56, 190): election names mesh2.node-admin.1 mesh2's mesh-primary
             // (`rdm.mesh.election.resolve.via-recompute`) and it claims mesh2's name / writes the mesh row
             // (`rdm.node_admin.mesh.create.via-mesh-row`).
             let mut m2_candidates = vec![{
@@ -743,7 +743,7 @@ mod tests {
             crate::election::resolve(&mut m2_candidates);
             assert!(
                 m2_candidates[0].is_primary,
-                "election names mesh2.admin.1 as mesh2's mesh-primary"
+                "election names mesh2.node-admin.1 as mesh2's mesh-primary"
             );
             crate::election::ElectionLog::new(m2_node.node_id.clone()).observe(&*top.read().await);
             let meshes_store = MemoryMeshStorage::default();
@@ -751,7 +751,7 @@ mod tests {
             let claim_res = crate::admin::write_mesh_row(
                 &meshes_store,
                 &records.caches,
-                "mesh2.admin.1",
+                "mesh2.node-admin.1",
                 "mesh2",
                 &mesh2_id,
             )
@@ -778,7 +778,7 @@ mod tests {
         assert!(
             reach_spans.iter().any(|s| {
                 s.attributes.get("mesh").map(String::as_str) == Some("mesh2")
-                    && s.attributes.get("target_path").map(String::as_str) == Some("mesh2.admin")
+                    && s.attributes.get("target_path").map(String::as_str) == Some("mesh2.node-admin")
                     && s.attributes.get("target_name").map(String::as_str) == Some("1")
                     && s.attributes.get("reachable").map(String::as_str) == Some("true")
             }),
@@ -799,7 +799,7 @@ mod tests {
         assert!(
             election_spans.iter().any(|s| {
                 s.attributes.get("mesh").map(String::as_str) == Some("mesh2")
-                    && s.attributes.get("winner_path").map(String::as_str) == Some("mesh2.admin")
+                    && s.attributes.get("winner_path").map(String::as_str) == Some("mesh2.node-admin")
                     && s.attributes.get("winner_name").map(String::as_str) == Some("1")
             }),
             "election emits rdm.mesh.election.resolve.via-recompute for mesh2: {election_spans:?}"
@@ -809,7 +809,7 @@ mod tests {
         assert!(
             row_spans.iter().any(|s| {
                 s.attributes.get("mesh").map(String::as_str) == Some("mesh2")
-                    && s.attributes.get("node").map(String::as_str) == Some("mesh2.admin.1")
+                    && s.attributes.get("node").map(String::as_str) == Some("mesh2.node-admin.1")
                     && s.attributes.get("outcome").map(String::as_str) == Some("row-written")
             }),
             "role and name claim emits rdm.node_admin.mesh.create.via-mesh-row: {row_spans:?}"

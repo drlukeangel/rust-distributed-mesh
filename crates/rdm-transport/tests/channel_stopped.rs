@@ -11,11 +11,11 @@ use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, Me
 use rdm_transport::topology::TopologyView;
 use std::time::{Duration, Instant};
 
-fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, ep: &iroh::Endpoint) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, ep: &iroh::Endpoint) -> MeshDigest {
     let port = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
     MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::parse("fab000000001").unwrap(),
-        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+        node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: NodeId::mint(),
             name,
             endpoint_id: EndpointId(ep.id().to_string()),
@@ -72,9 +72,9 @@ async fn a_stopped_topology_view_is_no_neighbour_and_sends_nothing_until_it_star
     let (a, b) = (node().await, node().await);
     let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
     let clock = rdm_transport::clock::os_clock;
-    let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![], &[]).await.unwrap();
-    let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![addr_of(&a)], &[]).await.unwrap();
-    let db = digest(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &b.ep);
+    let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.node.1", clock(), vec![], &[]).await.unwrap();
+    let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.node.2", clock(), vec![addr_of(&a)], &[]).await.unwrap();
+    let db = digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep);
 
     // Joined: each holds the other as a neighbour and A hears B's digest.
     until("A and B are neighbours", || ma.neighbours() == 1 && mb.neighbours() == 1).await;

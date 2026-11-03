@@ -87,10 +87,10 @@ mod tests {
             let ep_id = EndpointId(endpoint.secret_key().public().to_string());
             let node_id = NodeId::mint();
             let incarnation = IncarnationId::mint();
-            let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+            let name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
             let conn_store = Arc::new(MemoryConnectionsStorage::default());
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
-            let own_end = ConnectionEnd { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, name: name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) };
+            let own_end = ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), name: name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) };
             let writer = Arc::new(ConnectionsWriter::new(own_end, conn_store, held));
             let resolver = Arc::new(LiveNodeResolver::default());
 
@@ -108,25 +108,25 @@ mod tests {
             registry.roots().replace(vec![old_pub]);
 
             // Invalid counts (0 or 3 roots) and non-key hex are refused `RejectedCert`.
-            assert!(matches!(install_roots(&registry, "mesh1.rpc.1", &node_id, &incarnation, &[], RootsPhase::Distributed, false), StatusReply::RejectedCert { .. }));
-            assert!(matches!(install_roots(&registry, "mesh1.rpc.1", &node_id, &incarnation, &[old_hex.clone(), new_hex.clone(), extra_hex], RootsPhase::Distributed, false), StatusReply::RejectedCert { .. }));
-            assert!(matches!(install_roots(&registry, "mesh1.rpc.1", &node_id, &incarnation, &["not-a-hex-key".into()], RootsPhase::Distributed, false), StatusReply::RejectedCert { .. }));
+            assert!(matches!(install_roots(&registry, "mesh1.node.1", &node_id, &incarnation, &[], RootsPhase::Distributed, false), StatusReply::RejectedCert { .. }));
+            assert!(matches!(install_roots(&registry, "mesh1.node.1", &node_id, &incarnation, &[old_hex.clone(), new_hex.clone(), extra_hex], RootsPhase::Distributed, false), StatusReply::RejectedCert { .. }));
+            assert!(matches!(install_roots(&registry, "mesh1.node.1", &node_id, &incarnation, &["not-a-hex-key".into()], RootsPhase::Distributed, false), StatusReply::RejectedCert { .. }));
 
             // Phase 2 (`Distributed`): installing `[old, new]` succeeds and records `secret` (`public-only` or `carried`).
             let both = vec![old_hex.clone(), new_hex.clone()];
             assert_eq!(
-                install_roots(&registry, "mesh1.rpc.1", &node_id, &incarnation, &both, RootsPhase::Distributed, false),
+                install_roots(&registry, "mesh1.node.1", &node_id, &incarnation, &both, RootsPhase::Distributed, false),
                 StatusReply::RootsUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), roots: both.clone() }
             );
             assert_eq!(registry.roots().current(), vec![old_pub, new_pub]);
             assert_eq!(
-                install_roots(&registry, "mesh1.admin.1", &node_id, &incarnation, &both, RootsPhase::Distributed, true),
+                install_roots(&registry, "mesh1.node-admin.1", &node_id, &incarnation, &both, RootsPhase::Distributed, true),
                 StatusReply::RootsUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), roots: both.clone() }
             );
 
             // Dropping `old` while the birth's member cert still chains under `old` is refused `root-still-chained`.
             assert_eq!(
-                install_roots(&registry, "mesh1.rpc.1", &node_id, &incarnation, std::slice::from_ref(&new_hex), RootsPhase::Updated, false),
+                install_roots(&registry, "mesh1.node.1", &node_id, &incarnation, std::slice::from_ref(&new_hex), RootsPhase::Updated, false),
                 StatusReply::RejectedRootStillChained { root: old_hex.clone() }
             );
             assert_eq!(registry.roots().current(), vec![old_pub, new_pub], "both roots stay installed on root-still-chained refusal");
@@ -137,7 +137,7 @@ mod tests {
             let new_cert = cert_to_bytes(&issue(&new_issuer, &birth, 2_000, 900_000).unwrap());
             registry.set_member_cert(new_cert);
             assert_eq!(
-                install_roots(&registry, "mesh1.rpc.1", &node_id, &incarnation, std::slice::from_ref(&new_hex), RootsPhase::Updated, false),
+                install_roots(&registry, "mesh1.node.1", &node_id, &incarnation, std::slice::from_ref(&new_hex), RootsPhase::Updated, false),
                 StatusReply::RootsUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), roots: vec![new_hex.clone()] }
             );
             assert_eq!(registry.roots().current(), vec![new_pub]);

@@ -92,7 +92,7 @@ async fn fixture(cell: &str) -> Fixture {
     // The fault falls on a mesh whose status is published: the fabric is ready at the
     // fabric-primary's apply of the mesh's ready, the moment the mesh's primary sends it (states.md), so
     // the fixture waits for that send and its first repeat in the primary's own spans.
-    let primary = before.iter().find(|n| n["mesh"] == lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("the lost mesh has a primary node-admin");
+    let primary = before.iter().find(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("the lost mesh has a primary node-admin");
     wait_for("the lost mesh's primary has sent its ready status and repeated it", Duration::from_secs(60), || {
         let spans = estate.spans();
         let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "scope") == format!("mesh:{lost}") && attr(sp, "node") == primary && attr(sp, "status") == "ready").count();
@@ -109,9 +109,9 @@ impl Fixture {
         let at: BTreeMap<String, PathName> = self.before.iter().map(|n| (s(&n["node_id"]), location(n))).filter(|(_, l)| l.path == path).collect();
         let mut out: Vec<(PathName, u32)> = self.estate.live_runtimes().into_iter().filter_map(|(p, pid)| at.get(p.file_name().unwrap().to_string_lossy().as_ref()).map(|l| (l.clone(), pid))).collect();
         // The bootstrap admin is the mesh1 admin.1 and has no provider deployment.json.
-        if path == "mesh1.admin" {
+        if path == "mesh1.node-admin" {
             if let Some(pid) = self.estate.bootstrap_pid() {
-                out.push((Estate::path("mesh1.admin", "1"), pid));
+                out.push((Estate::path("mesh1.node-admin", "1"), pid));
             }
         }
         out
@@ -125,7 +125,7 @@ impl Fixture {
     /// The node ids of `mesh`'s node-admins, settled and as the view holds them now.
     async fn admin_ids(&self, mesh: &str) -> std::collections::BTreeSet<String> {
         let now = self.estate.node_values().await;
-        self.before.iter().chain(now.iter()).filter(|n| n["mesh"] == mesh && n["kind"] == "node_admin").map(|n| s(&n["node_id"])).collect()
+        self.before.iter().chain(now.iter()).filter(|n| n["mesh"] == mesh && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect()
     }
 }
 
@@ -202,7 +202,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     let fp_row = before.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("one fabric-primary");
     let (fp, fp_id) = (location(&fp_row), s(&fp_row["node_id"]));
     assert_eq!(fp_row["mesh"], "mesh1", "the fabric-primary is mesh1's: {fp_row}");
-    let lost = Estate::path("mesh2.admin", "1");
+    let lost = Estate::path("mesh2.node-admin", "1");
     let lost_row = before.iter().find(|n| location(n) == lost).cloned().expect("mesh2's node-admin");
     let (lost_id, lost_inc) = (s(&lost_row["node_id"]), s(&lost_row["incarnation_id"]));
     assert_eq!(lost_row["is_primary"], true, "mesh2's one node-admin is its primary: {lost_row}");
@@ -279,7 +279,7 @@ async fn a_mesh_primary_heard_again_before_the_floor_is_never_investigated_and_n
     let mut f = fixture(cell).await;
     let (fp, fp_id, lost) = (f.fabric_primary.clone(), f.fabric_primary_id.clone(), f.lost.clone());
     let fp_mesh = if lost == "mesh1" { "mesh2" } else { "mesh1" };
-    let first_row = f.before.iter().find(|n| n["mesh"] == lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().expect("the peer mesh's primary");
+    let first_row = f.before.iter().find(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("the peer mesh's primary");
     let (first, first_id, first_inc) = (location(&first_row), s(&first_row["node_id"]), s(&first_row["incarnation_id"]));
     let mine: Vec<PathName> = f.before.iter().filter(|n| n["mesh"] == fp_mesh).map(location).collect();
     let theirs: Vec<PathName> = f.before.iter().filter(|n| n["mesh"] == lost.as_str()).map(location).collect();
@@ -351,12 +351,12 @@ async fn elected_primary_holds_its_checklist_for_the_killed_primary_then_republi
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
-    let primary = f.before.iter().find(|n| n["mesh"] == f.lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).expect("the peer mesh has a primary node-admin");
-    let survivor = f.before.iter().filter(|n| n["mesh"] == f.lost.as_str() && n["kind"] == "node_admin").map(|n| location(&n)).find(|n| *n != primary).expect("the peer mesh has a second node-admin");
+    let primary = f.before.iter().find(|n| n["mesh"] == f.lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| location(&n)).expect("the peer mesh has a primary node-admin");
+    let survivor = f.before.iter().filter(|n| n["mesh"] == f.lost.as_str() && n["type"] == "node-admin").map(|n| location(&n)).find(|n| *n != primary).expect("the peer mesh has a second node-admin");
     let fault_ms = now_ms();
-    let (_, pid) = f.runtimes(&format!("{}.admin", f.lost)).into_iter().find(|(n, _)| *n == primary).unwrap_or_else(|| panic!("{primary:?} is running"));
+    let (_, pid) = f.runtimes(&format!("{}.node-admin", f.lost)).into_iter().find(|(n, _)| *n == primary).unwrap_or_else(|| panic!("{primary:?} is running"));
     f.estate.kill_pid(pid);
-    if primary == Estate::path("mesh1.admin", "1") {
+    if primary == Estate::path("mesh1.node-admin", "1") {
         f.estate.kill_bootstrap();
     }
     let (lost, sv, killed, killed_id) = (f.lost.clone(), survivor.clone(), primary.clone(), f.id_of(&primary));

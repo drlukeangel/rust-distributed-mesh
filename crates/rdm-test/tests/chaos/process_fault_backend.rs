@@ -157,7 +157,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let floor = rdm_transport::topology::staleness_floor();
     let build_id = estate.accepted_build_id().await;
     let nodes0 = estate.node_values().await;
-    let rpcs: Vec<Value> = nodes0.iter().filter(|n| n["kind"] == "rpc_node").cloned().collect();
+    let rpcs: Vec<Value> = nodes0.iter().filter(|n| n["type"] == "node").cloned().collect();
     assert_eq!(rpcs.len(), 3);
     let (hold_n, kill_n) = (&rpcs[0], &rpcs[1]);
     let (hold, kill) = (location(&hold_n), location(&kill_n));
@@ -277,7 +277,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
 
     // ---- A node-admin that is neither mesh primary nor fabric primary: killed by exact runtime.
     let nodes = estate.node_values().await;
-    let admin_n = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false && location(n) != Estate::path("mesh1.admin", "1")).cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
+    let admin_n = nodes.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == false && n["is_fabric_primary"] == false && location(n) != Estate::path("mesh1.node-admin", "1")).cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
     let admin = location(&admin_n);
     let admin_rt = published(&estate, &admin).await;
     let admin_dir = estate.data_dir(&admin).await;
@@ -337,7 +337,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
             named(&spans, "rdm.node_admin.build.update.via-reconcile").iter().all(|r| !(attr(r, "reason") == "proven-drift" && (rdm_test::estate::plans_operation(r, "node.create", &rdm_core::OperationSubject::Location((*path).clone())) || attr(r, "operations").contains(&format!("{:?}", path))))),
             "the Fabric's drift never repairs {path:?}: its mesh-primary recovers it"
         );
-        let mesh_primary = s(&nodes0.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh1's primary")["node_id"]);
+        let mesh_primary = s(&nodes0.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh1's primary")["node_id"]);
         let submits: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| rdm_test::estate::at_location(sp, path)).collect();
         assert!(submits.iter().any(|sp| attr(sp, "submitter") == mesh_primary && attr(sp, "outcome").starts_with("complete: attempt")), "{path:?}: its mesh-primary {mesh_primary} submitted the recovery and followed it to its end: {submits:?}");
     }

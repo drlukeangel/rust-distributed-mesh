@@ -20,16 +20,16 @@ pub fn predecessor_steps(node: &PathName) -> Result<Vec<Step>, rdm_core::path::P
 /// (node-replace.md steps 1-3): [`predecessor_steps`], then node.create of the successor at `<name>`,
 /// the name the rename released. The Build that creates the successor is what makes the renamed node
 /// its predecessor (a name ending `-old` does not), so its later delete or start is a predecessor's.
-pub fn replace_keeping_predecessor(node: &PathName, mesh: &str, kind: rdm_core::NodeKind) -> Result<Vec<Step>, rdm_core::path::PathNameError> {
+pub fn replace_keeping_predecessor(node: &PathName, mesh: &str, r#type: &str) -> Result<Vec<Step>, rdm_core::path::PathNameError> {
     let mut steps = predecessor_steps(node)?;
-    steps.push(Step::Create { mesh: mesh.into(), kind, node: node.clone(), executable: None });
+    steps.push(Step::Create { mesh: mesh.into(), r#type: r#type.to_string(), node: node.clone(), executable: None });
     Ok(steps)
 }
 
 /// The replace of `node` (node-replace.md steps 1-3) and the predecessor's delete at `<name>-old`:
 /// [`replace_keeping_predecessor`], then `node[1].delete` at `<name>-old`.
-pub fn replace(node: &PathName, mesh: &str, kind: rdm_core::NodeKind) -> Result<Vec<Step>, rdm_core::path::PathNameError> {
-    let mut steps = replace_keeping_predecessor(node, mesh, kind)?;
+pub fn replace(node: &PathName, mesh: &str, r#type: &str) -> Result<Vec<Step>, rdm_core::path::PathNameError> {
+    let mut steps = replace_keeping_predecessor(node, mesh, r#type)?;
     steps.push(Step::Delete { node: node.renamed()? });
     Ok(steps)
 }

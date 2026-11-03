@@ -44,9 +44,9 @@ fn fabric() -> FabricId {
 fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq: u64) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: mesh.to_string(), kind: rdm_core::NodeKind::RpcNode,
+        node: MeshNode { mesh: mesh.to_string(), r#type: "node".into(),
             node_id: node_id.clone(),
-            name: rdm_core::PathName::new(format!("{mesh}.rpc"), ordinal.to_string()).unwrap(),
+            name: rdm_core::PathName::new(format!("{mesh}.node"), ordinal.to_string()).unwrap(),
             endpoint_id: EndpointId(format!("key{ordinal}")),
             transport_addr: format!("127.0.0.1:{}", 41_000 + ordinal).parse().unwrap(),
             incarnation: birth.clone(),
@@ -81,7 +81,7 @@ impl Mesh {
 }
 
 fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
-    LifecycleOp { kind: d.node.kind, mesh: d.node.mesh.clone(),
+    LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(),
         build_id: "b1".into(),
         attempt: 1,
         operation: rdm_core::OperationId::new(operation, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
@@ -213,7 +213,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         re_born[0].node.supersedes = Some(re_born[0].node.incarnation.clone());
         re_born[0].node.incarnation = next_birth;
         bumps.push(("a birth's incarnation changed", v.observe(&Full::new(re_born.clone(), vec![], vec![]))));
-        let deleting = op(&re_born[1], "node.delete:mesh2.rpc.2");
+        let deleting = op(&re_born[1], "node.delete:mesh2.node.2");
         bumps.push(("an in_flight overlay added", v.observe(&Full::new(re_born.clone(), vec![deleting.clone()], vec![]))));
         bumps.push(("an in_flight overlay cleared with the departure", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone()], vec![], vec![deleting.clone()]))));
         bumps.push(("a deleted identity expired", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone()], vec![], vec![]))));
@@ -225,10 +225,10 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         // ---- 2. a snapshot is chunked under one snapshot_id, every chunk fits one message ------
         // Sixty members with overlays: the number of chunks postcard needs is recorded as evidence.
         let sixty = Mesh::new("mesh2", 60);
-        let overlays_of = |m: &Mesh| -> Vec<LifecycleOp> { m.digests(3).iter().take(12).map(|d| op(d, "node.delete:mesh2.rpc.1")).collect() };
+        let overlays_of = |m: &Mesh| -> Vec<LifecycleOp> { m.digests(3).iter().take(12).map(|d| op(d, "node.delete:mesh2.node.1")).collect() };
         let sixty_overlays = overlays_of(&sixty);
         let sixty_full = Full::new(sixty.digests(3), sixty_overlays.clone(), sixty_overlays.iter().take(5).cloned().collect());
-        let p = publisher("mesh2.admin.1");
+        let p = publisher("mesh2.node-admin.1");
         let sixty_chunks = mesh_topology_chunks(&sixty_full, &p, 5, 9, None);
         assert!(sixty_chunks.len() > 1, "sixty members with overlays do not fit one message: {} chunks", sixty_chunks.len());
         for c in &sixty_chunks {
@@ -330,7 +330,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert!(matches!(rx.take_delta("mesh2", &p, 8, 9, &d78), Moved::Desynced { gap: Gap::AlreadyDesynced, .. }), "a desynchronized source applies no delta");
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 8)), "the held projection stands");
         // Another source is untouched.
-        let p3 = publisher("mesh3.admin.1");
+        let p3 = publisher("mesh3.node-admin.1");
         assert!(matches!(rx.take_delta("mesh3", &p3, 1, 2, &d78), Moved::Desynced { gap: Gap::NoBaseline, .. }));
         // The top-up: the primary's baseline is what it last PUBLISHED, which may lag what it holds.
         let published_baseline = SourceSnapshot { mesh: "mesh2".into(), publisher: p.clone(), topology_version: 9, digests: f8.digests(), in_flight: vec![], deleted: vec![] };
@@ -342,7 +342,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let d9_11 = Full::new(f8.digests(), vec![], vec![]).delta_to(&Full::new(f10, vec![], vec![]));
         assert!(matches!(rx.take_delta("mesh2", &p, 9, 11, &d9_11), Moved::Applied { topology_version: 11, .. }), "the primary's next delta continues from the baseline");
         // A new source primary is a new revision: its delta before its full is a gap, its full resumes.
-        let successor = publisher("mesh2.admin.2");
+        let successor = publisher("mesh2.node-admin.2");
         assert!(matches!(rx.take_delta("mesh2", &successor, 1, 2, &d78), Moved::Desynced { gap: Gap::OtherRevision { .. }, .. }));
         let first_of_successor = mesh_topology_chunks(&f8, &successor, 1, 1, None);
         let mut revision = None;
@@ -388,7 +388,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 10)));
 
         // ---- 5. the forwarding primary: stored fulls determine the delta ------------------------
-        let src = publisher("mesh2.admin.1");
+        let src = publisher("mesh2.node-admin.1");
         let f41 = Full::new(mesh2.digests(10), vec![], vec![]);
         let mut d43 = mesh2.digests(900);
         d43[1].status = MemberStatus::ConnectionsDeleting;
@@ -396,12 +396,12 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let f43 = Full::new(d43, vec![], vec![]);
         let mut fwd = Forwarder::default();
         fwd.set_author(crate::gossip_wire::author());
-        let first = fwd.source("mesh1.admin.1", "mesh2", &src, 41, &f41, 1);
+        let first = fwd.source("mesh1.node-admin.1", "mesh2", &src, 41, &f41, 1);
         let Forward::Full(first_frames) = first else { panic!("the first publication of a source is a full") };
         let carried_loads = first_frames.iter().any(|f| matches!(f, Frame::MeshTopology { digests, .. } if digests.iter().any(|d| d.in_flight.is_some())));
         assert!(!carried_loads, "a forwarded full omits loads");
         // The forwarder never held 42; it holds 43. One delta from what it last published.
-        let Forward::Delta(delta) = fwd.source("mesh1.admin.1", "mesh2", &src, 43, &f43, 2) else { panic!("a moved source is a delta") };
+        let Forward::Delta(delta) = fwd.source("mesh1.node-admin.1", "mesh2", &src, 43, &f43, 2) else { panic!("a moved source is a delta") };
         let (mesh, source, base, to, parts) = delta_of(&delta);
         assert_eq!((mesh.as_str(), base, to), ("mesh2", 41, 43), "base_version is what the forwarder last published, not the version before");
         assert_eq!(source, src);
@@ -414,25 +414,25 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let mut beating = mesh2.digests(5_000);
         beating[1].status = MemberStatus::ConnectionsDeleting;
         beating.iter_mut().for_each(|d| d.in_flight = Some(99));
-        assert!(matches!(fwd.source("mesh1.admin.1", "mesh2", &src, 43, &Full::new(beating, vec![], vec![]), 3), Forward::Nothing(_)));
-        assert!(matches!(fwd.source("mesh1.admin.1", "mesh2", &src, 40, &f41, 3), Forward::Nothing(_)));
+        assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &src, 43, &Full::new(beating, vec![], vec![]), 3), Forward::Nothing(_)));
+        assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &src, 40, &f41, 3), Forward::Nothing(_)));
         // A version bump that changes nothing a Mesh member holds sends nothing and keeps the base.
-        assert!(matches!(fwd.source("mesh1.admin.1", "mesh2", &src, 44, &f43, 3), Forward::Nothing(_)));
+        assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &src, 44, &f43, 3), Forward::Nothing(_)));
         let mut d45 = f43.digests();
         d45[0].status = MemberStatus::Pending;
-        let Forward::Delta(next) = fwd.source("mesh1.admin.1", "mesh2", &src, 45, &Full::new(d45, vec![], vec![]), 4) else { panic!("a further move is a delta") };
+        let Forward::Delta(next) = fwd.source("mesh1.node-admin.1", "mesh2", &src, 45, &Full::new(d45, vec![], vec![]), 4) else { panic!("a further move is a delta") };
         let (_, _, base, to, _) = delta_of(&next);
         assert_eq!((base, to), (43, 45), "the base stays the last version published into the Mesh");
         // A role change publishes a full before any delta; a new source revision does too.
         fwd.reset();
-        assert!(matches!(fwd.source("mesh1.admin.2", "mesh2", &src, 45, &f43, 5), Forward::Full(_)), "taking the role: a full first");
-        assert!(matches!(fwd.source("mesh1.admin.2", "mesh2", &publisher("mesh2.admin.2"), 1, &f41, 6), Forward::Full(_)), "a new source primary is a new revision: a full first");
+        assert!(matches!(fwd.source("mesh1.node-admin.2", "mesh2", &src, 45, &f43, 5), Forward::Full(_)), "taking the role: a full first");
+        assert!(matches!(fwd.source("mesh1.node-admin.2", "mesh2", &publisher("mesh2.node-admin.2"), 1, &f41, 6), Forward::Full(_)), "a new source primary is a new revision: a full first");
         // A delta too large for one message is the full.
         let huge = Mesh::new("mesh2", 80);
-        let Forward::Full(_) = fwd.source("mesh1.admin.2", "mesh2", &src, 46, &Full::new(huge.digests(1), vec![], vec![]), 7) else { panic!("a different publisher: full") };
+        let Forward::Full(_) = fwd.source("mesh1.node-admin.2", "mesh2", &src, 46, &Full::new(huge.digests(1), vec![], vec![]), 7) else { panic!("a different publisher: full") };
         let mut churned = huge.digests(2);
         churned.iter_mut().for_each(|d| d.status = MemberStatus::ConnectionsDeleting);
-        assert!(matches!(fwd.source("mesh1.admin.2", "mesh2", &src, 47, &Full::new(churned, vec![], vec![]), 8), Forward::Full(_)), "a delta that does not fit one message is the full");
+        assert!(matches!(fwd.source("mesh1.node-admin.2", "mesh2", &src, 47, &Full::new(churned, vec![], vec![]), 8), Forward::Full(_)), "a delta that does not fit one message is the full");
         result.insert(
             "forwarder".into(),
             json!({ "delta_base": base, "delta_to": to, "delta_changed": parts.changed.len(), "first_publication": "full", "missed_intermediate_versions": "one delta 41 -> 43" }),
@@ -447,9 +447,9 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         learn_addresses(&member_node.ep, &[fwd_addr.clone()]).unwrap();
         let fab = fabric();
         let (mesh1_id, mesh2_id) = (MeshId::mint(), MeshId::mint());
-        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let mem_m = TopologyView::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()], &[]).await.unwrap();
+        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.node-admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let mem_m = TopologyView::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()], &[]).await.unwrap();
         let src_birth = IncarnationId::mint();
         let src_bb = Backbone::join(&src_node.gossip, &src_node.ep, &src_m, "mesh2", rdm_core::PublisherId { incarnation: src_birth.clone(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let fwd_bb = Backbone::join(&fwd_node.gossip, &fwd_node.ep, &fwd_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
@@ -524,16 +524,16 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         }
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
-        let bumps_seen = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|s| attr(s, "node") == "mesh2.admin.1").count();
+        let bumps_seen = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|s| attr(s, "node") == "mesh2.node-admin.1").count();
         assert_eq!(bumps_seen, 2, "the real publisher bumped twice: the first projection and the one change (12 heartbeats bumped nothing)");
         // The source primary forwards its own Mesh as a source too; the remote change is the forwarding primary's delta.
-        let deltas_sent: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.admin.1").collect();
+        let deltas_sent: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.node-admin.1").collect();
         assert_eq!(deltas_sent.len(), 1, "one remote change produced one delta: {deltas_sent:?}");
         assert_eq!((attr(deltas_sent[0], "base_version"), attr(deltas_sent[0], "topology_version"), attr(deltas_sent[0], "changed")), (v1.to_string(), v2.to_string(), "1".to_string()));
-        let applied = named(&spans, "rdm.mesh.topology.update.via-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.rpc.1").collect::<Vec<_>>();
+        let applied = named(&spans, "rdm.mesh.topology.update.via-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.node.1").collect::<Vec<_>>();
         assert_eq!(applied.len(), 1, "the ordinary member applied it once");
         let installs = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed");
-        let backbone_installs = installs.iter().filter(|s| attr(s, "channel") == "backbone" && attr(s, "node") == "mesh1.admin.1").count();
+        let backbone_installs = installs.iter().filter(|s| attr(s, "channel") == "backbone" && attr(s, "node") == "mesh1.node-admin.1").count();
         assert!(backbone_installs >= 1, "the forwarding primary installed complete backbone snapshots");
         let chunked_install = installs.iter().find(|s| attr(s, "channel") == "backbone" && attr(s, "members") == "40").map(|s| (attr(s, "snapshot_id"), attr(s, "topology_version")));
         assert!(chunked_install.is_some(), "a 40-member snapshot installed whole");

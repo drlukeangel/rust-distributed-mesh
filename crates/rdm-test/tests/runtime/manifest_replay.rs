@@ -4,7 +4,7 @@
 //! `I143_ACCEPTANCE_DIR` (each cell's `result.json` goes there) and whose estate commands set
 //! `RDM_ARTIFACTS_DIR` (feature `i143-2776`, test the cell's name).
 
-use rdm_core::{NodeKind, PathName};
+use rdm_core::{PathName};
 use rdm_client::binding::{sha256_file, BindingError, BindingSet};
 use rdm_client::{FabricDesired, MeshDesired};
 use rdm_test::estate::{binding_set_from_build_manifest, descends_from, named, Estate, Owner, ENV_CONSUMER_BIN_DIR, RUNTIME_IMAGE};
@@ -213,19 +213,19 @@ async fn observe_launch(estate: &Estate, node: &PathName) -> Value {
         let rest = Path::new(&path).strip_prefix(mount["Destination"].as_str().unwrap()).unwrap();
         let source = if rest.as_os_str().is_empty() { mount["Source"].as_str().unwrap().to_string() } else { Path::new(mount["Source"].as_str().unwrap()).join(rest).display().to_string() };
         json!({
-            "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "kind": n["kind"],
+            "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "type": n["type"],
             "container": id, "image": inspect["Config"]["Image"], "entry_point": path, "mount_source": source, "mount_read_only": mount["RW"] == false,
             "observed_sha256": sha256_file(Path::new(&source)).unwrap(),
         })
     } else {
         // The Day-0 admin is the estate's own child: adopted, so it has no provider deployment record.
-        let pid = match (node == &PathName::new("mesh1.admin", "1").unwrap(), estate.bootstrap_pid()) {
+        let pid = match (node == &PathName::new("mesh1.node-admin", "1").unwrap(), estate.bootstrap_pid()) {
             (true, Some(p)) => p as u64,
             _ => estate.pid_of(node).await,
         };
         let exe = std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|e| panic!("{node:?}: /proc/{pid}/exe: {e}"));
         json!({
-            "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "kind": n["kind"],
+            "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "type": n["type"],
             "pid": pid, "exe": exe, "observed_sha256": sha256_file(Path::new(&format!("/proc/{pid}/exe"))).unwrap(),
         })
     }
@@ -276,8 +276,8 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
 
     // 2. The healthy set: the presence control. It starts, serves and restarts through the binding.
     let mut estate = Estate::bootstrap_on(owner(cell, "external-binding"), "fabric1", "mesh1", &set, &sha, &REQUIRED).await.unwrap_or_else(|e| panic!("the healthy set is accepted: {e}"));
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 2), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
-    let names: BTreeSet<PathName> = [("mesh1.admin", "1"), ("mesh1.admin", "2"), ("mesh1.broker", "1"), ("mesh1.broker", "2"), ("mesh1.gateway", "1"), ("mesh1.compute", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect();
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("broker", 2), ("gateway", 1), ("compute", 1)])] }).await;
+    let names: BTreeSet<PathName> = [("mesh1.node-admin", "1"), ("mesh1.node-admin", "2"), ("mesh1.broker", "1"), ("mesh1.broker", "2"), ("mesh1.gateway", "1"), ("mesh1.compute", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect();
     estate.settled_named(&names).await;
     // The presence control of the refusals' observation: scoped to this cell, it sees every runtime of
     // the healthy estate, one per node, so the empty observation after each refusal is evidence.
@@ -285,9 +285,9 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     let seen = running["processes"].as_array().unwrap().len() + running["containers"].as_array().unwrap().len();
     assert_eq!(seen, names.len(), "the cell's own observation sees one runtime per node of its estate: {running}");
 
-    let by_kind = |kind: &str| set.bindings.iter().find(|b| b.launch_id == kind).unwrap().clone();
+    let by_type = |kind: &str| set.bindings.iter().find(|b| b.launch_id == kind).unwrap().clone();
     let views = estate.node_views().await;
-    let expect_for = |node: &PathName| by_kind(views.iter().find(|n| &n.name == node).expect("fixture node").kind.name());
+    let expect_for = |node: &PathName| by_type(&(views.iter().find(|n| &n.name == node).expect("fixture node").r#type));
     let broker_id = views.iter().find(|n| n.name == PathName::new("mesh1.broker", "1").unwrap()).expect("fixture broker").node_id.clone();
     let broker_target = format!("exact:{broker_id}");
     let mut launches = Vec::new();
@@ -313,7 +313,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Restarts through the same binding: a role node, and the admin that launched the nodes.
     let mut restarts = Vec::new();
-    for node in [PathName::new("mesh1.broker", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap()].iter() {
+    for node in [PathName::new("mesh1.broker", "1").unwrap(), PathName::new("mesh1.node-admin", "2").unwrap()].iter() {
         let before = estate.node_value(node).await;
         let (stopped, _) = estate.stop_then_start(node).await;
         let after = estate.node_value(node).await;
@@ -422,11 +422,11 @@ fn synthetic_manifest() -> ReplayManifest {
         shapes: scenario.meshes.clone(),
         fault_schedule: schedule_from_seed(SEED, &scenario),
         outcomes: vec![
-            outcome("operation[0]", "put", PathName::new("mesh1.rpc", "1").unwrap(), Some(10), json!({})),
-            outcome("operation[2]", "cas", PathName::new("mesh1.rpc", "1").unwrap(), Some(10), json!({"swapped": true})),
-            outcome("assert[0]", "get", PathName::new("mesh1.rpc", "1").unwrap(), Some(10), json!({"found": true, "value": "a2"})),
+            outcome("operation[0]", "put", PathName::new("mesh1.node", "1").unwrap(), Some(10), json!({})),
+            outcome("operation[2]", "cas", PathName::new("mesh1.node", "1").unwrap(), Some(10), json!({"swapped": true})),
+            outcome("assert[0]", "get", PathName::new("mesh1.node", "1").unwrap(), Some(10), json!({"found": true, "value": "a2"})),
         ],
-        final_state: [((PathName::new("mesh1.rpc", "1").unwrap(), 10), json!({"outcome": "Reply", "found": true, "value": "a2"}))].into(),
+        final_state: [((PathName::new("mesh1.node", "1").unwrap(), 10), json!({"outcome": "Reply", "found": true, "value": "a2"}))].into(),
         scenario,
     }
 }
@@ -473,7 +473,7 @@ fn scenario_manifest_round_trips_owner_seed_and_fault_schedule() {
     expect("provider_disagrees", mutate(&|x| { x["owner"]["provider"] = json!("container"); }), |e| matches!(e, ManifestError::ProviderDisagrees { .. }));
     expect("empty_owner_test", mutate(&|x| { x["owner"]["test"] = json!(""); }), |e| matches!(e, ManifestError::EmptyOwnerField("test")));
     expect("empty_source_sha", mutate(&|x| { x["source"]["sha"] = json!(""); }), |e| matches!(e, ManifestError::EmptySourceField("sha")));
-    expect("shapes_disagree", mutate(&|x| { x["shapes"][0]["rpc_node"] = json!(9); }), |e| matches!(e, ManifestError::ShapesDisagree));
+    expect("shapes_disagree", mutate(&|x| { x["shapes"][0]["node"] = json!(9); }), |e| matches!(e, ManifestError::ShapesDisagree));
     expect("fault_step", mutate(&|x| { x["fault_schedule"][0]["before_operation"] = json!(99); }), |e| matches!(e, ManifestError::FaultStepOutOfRange { before_operation: 99, .. }));
     expect("fault_target", mutate(&|x| { x["fault_schedule"][0]["fault"]["restart_node"]["node"] = json!(PathName::new("mesh1.broker", "1").unwrap()); }), |e| matches!(e, ManifestError::FaultTargetUnknown(n) if n == &PathName::new("mesh1.broker", "1").unwrap()));
 
@@ -488,8 +488,8 @@ fn scenario_manifest_round_trips_owner_seed_and_fault_schedule() {
     );
     // A unit cell runs no process, so there is no exported span to preserve.
     std::fs::write(dir.join("spans.json"), "[]").unwrap();
-    let _ = Fault::RestartNode { node: PathName::new("mesh1.rpc", "1").unwrap() };
-    let _ = ScheduledFault { before_operation: 0, fault: Fault::RestartNode { node: PathName::new("mesh1.rpc", "1").unwrap() } };
+    let _ = Fault::RestartNode { node: PathName::new("mesh1.node", "1").unwrap() };
+    let _ = ScheduledFault { before_operation: 0, fault: Fault::RestartNode { node: PathName::new("mesh1.node", "1").unwrap() } };
 }
 
 /// CONTRACT: running one declarative scenario twice - the second time from the first run's
@@ -530,8 +530,8 @@ async fn scenario_runner_replays_manifest_preserves_semantic_outcomes() {
     let restarts: Vec<&StepOutcome> = a.outcomes.iter().filter(|o| o.action == "restart_node").collect();
     assert_eq!(restarts.len(), 1, "the seeded fault ran: {:?}", a.outcomes);
     assert_eq!(restarts[0].result, json!({"same_node_id": true, "same_incarnation": true}), "a restart keeps the NodeId and the incarnation (node-restart.md \"Kept\")");
-    assert_eq!(a.final_state[&(PathName::new("mesh1.rpc", "1").unwrap(), 10)]["value"], "a2");
-    assert_eq!(a.final_state[&(PathName::new("mesh1.rpc", "2").unwrap(), 11)]["found"], false);
+    assert_eq!(a.final_state[&(PathName::new("mesh1.node", "1").unwrap(), 10)]["value"], "a2");
+    assert_eq!(a.final_state[&(PathName::new("mesh1.node", "2").unwrap(), 11)]["found"], false);
 
     let root = rdm_test::estate::artifacts_root().join("i143-2776");
     let mut hosts = Vec::new();

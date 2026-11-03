@@ -264,7 +264,7 @@ struct Completed {
 /// The surface a node kind gives the commands.
 pub struct NodeSelf {
     /// This birth's immutable runtime kind.
-    pub kind: rdm_core::NodeKind,
+    pub r#type: String,
     /// This birth's logical node.
     pub node_id: NodeId,
     /// This birth's incarnation.
@@ -330,7 +330,7 @@ impl NodeSelf {
         node_id: NodeId,
         incarnation: IncarnationId,
         name: PathName,
-        kind: rdm_core::NodeKind,
+        r#type: String,
         server: NodeRpcServer,
         client: Arc<NodeRpcClient>,
         resolver: Arc<rdm_transport::LiveNodeResolver>,
@@ -341,7 +341,7 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         topology_view.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, None);
-        Self { kind, node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
+        Self { r#type, node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -846,7 +846,7 @@ impl NodeSelf {
             return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing executed", self.node_id));
         }
         let progress = Arc::new(tokio::sync::Mutex::new(frames));
-        let op = LifecycleOp { kind: self.kind, mesh: self.topology_view.mesh_name().to_string(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.held_name(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone(), event_at_rafka_ms: self.topology_view.clock().now_rafka_ms(), traceparent: None, tracestate: None };
+        let op = LifecycleOp { r#type: self.r#type.clone(), mesh: self.topology_view.mesh_name().to_string(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.held_name(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone(), event_at_rafka_ms: self.topology_view.clock().now_rafka_ms(), traceparent: None, tracestate: None };
         let result = if stopping {
             self.stop(commander.cloned(), spare, op, tracing::Span::current(), Some(progress)).await
         } else {
@@ -1727,7 +1727,7 @@ mod tests {
             let ep_id = EndpointId(endpoint.secret_key().public().to_string());
             let node_id = NodeId::mint();
             let incarnation = IncarnationId::mint();
-            let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+            let name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
             let fabric_id = FabricId::mint();
             let mesh_id = MeshId::mint();
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
@@ -1758,7 +1758,7 @@ mod tests {
             let digest = MeshDigest {
                 held_hash: [0u8; 32],
                 fabric_id,
-                node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+                node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),
                     name: name.clone(),
                     endpoint_id: ep_id.clone(),
@@ -1784,7 +1784,7 @@ mod tests {
                 node_id.clone(),
                 incarnation.clone(),
                 name.clone(),
-                digest.node.kind,
+                digest.node.r#type.clone(),
                 server,
                 client,
                 resolver.clone(),
@@ -1832,7 +1832,7 @@ mod tests {
             let conn_store = Arc::new(MemoryConnectionsStorage::default());
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
             let own_end = ConnectionEnd {
-                mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+                mesh: "mesh1".into(), r#type: "node".into(),
                 name: name.clone(),
                 node_id: node_id.clone(),
                 incarnation: Some(incarnation.clone()),
@@ -1909,7 +1909,7 @@ mod tests {
             // 2. `request_not_handled` emits `rdm.node.status.reject.via-request-not-handled` and
             //    returns `StatusReply::RequestNotHandled`.
             let req = StatusRequest::GetFabric;
-            let unhandled = request_not_handled("mesh1.rpc.1", &req);
+            let unhandled = request_not_handled("mesh1.node.1", &req);
             assert!(matches!(unhandled, StatusReply::RequestNotHandled { ref request } if request == req.op()));
 
             // 3. `wait_for_own_record` reads the RuntimeFact written to `data_dir` or errors on timeout.
@@ -1935,7 +1935,7 @@ mod tests {
             let ep_id = EndpointId(endpoint.secret_key().public().to_string());
             let node_id = NodeId::mint();
             let incarnation = IncarnationId::mint();
-            let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+            let name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
             let fabric_id = FabricId::mint();
             let mesh_id = MeshId::mint();
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
@@ -1979,7 +1979,7 @@ mod tests {
             let digest = MeshDigest {
                 held_hash: [0u8; 32],
                 fabric_id,
-                node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+                node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),
                     name: name.clone(),
                     endpoint_id: ep_id,
@@ -2009,7 +2009,7 @@ mod tests {
                 node_id.clone(),
                 incarnation.clone(),
                 name.clone(),
-                digest.node.kind,
+                digest.node.r#type.clone(),
                 server,
                 client,
                 resolver,
@@ -2029,7 +2029,7 @@ mod tests {
             let conn_store = Arc::new(MemoryConnectionsStorage::default());
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
             let own_end = ConnectionEnd {
-                mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+                mesh: "mesh1".into(), r#type: "node".into(),
                 name: name.clone(),
                 node_id: node_id.clone(),
                 incarnation: Some(incarnation.clone()),

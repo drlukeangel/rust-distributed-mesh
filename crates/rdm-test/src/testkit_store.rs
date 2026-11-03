@@ -596,7 +596,7 @@ mod tests {
     fn at(op: TestkitStoreOp) -> Provenance {
         Provenance {
             node_id: "n1".into(),
-            node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
+            node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             mesh: "mesh1".into(),
             incarnation_id: "i1".into(),
             op,

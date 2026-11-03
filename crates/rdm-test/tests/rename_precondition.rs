@@ -3,14 +3,14 @@
 //! `node.connection.delete { scope: All }` closes every one of them, writing each drop under the
 //! node's current name, before the name can move.
 //!
-//! CONTRACT: `(path mesh1.rpc, name 7)` originates a data-plane connection to its admin and one to its peer
-//! `(path mesh1.rpc, name 2)`, so its own connections log holds a `connected` entry to each. Told
-//! `ApplyNodeName { (path mesh1.rpc, name 1) }`, it answers `Busy` naming both routes, holding nothing. Its admin's
+//! CONTRACT: `(path mesh1.node, name 7)` originates a data-plane connection to its admin and one to its peer
+//! `(path mesh1.node, name 2)`, so its own connections log holds a `connected` entry to each. Told
+//! `ApplyNodeName { (path mesh1.node, name 1) }`, it answers `Busy` naming both routes, holding nothing. Its admin's
 //! `DeleteConnections { All }` answers `ConnectionsDeleted` closing both routes' open entries and
-//! holding none, each drop written under `(path mesh1.rpc, name 7)`; the same `ApplyNodeName` then answers
-//! `Applied`. No `connected` entry under `(path mesh1.rpc, name 7)` is the latest of its pair after the
+//! holding none, each drop written under `(path mesh1.node, name 7)`; the same `ApplyNodeName` then answers
+//! `Applied`. No `connected` entry under `(path mesh1.node, name 7)` is the latest of its pair after the
 //! rename, and once the node joins its mesh again the next entry it writes (it dials its peer again)
-//! names `(path mesh1.rpc, name 1)`. What must
+//! names `(path mesh1.node, name 1)`. What must
 //! NOT happen: a node that still holds connections takes another name, a route left open
 //! under the name it gave up, or a drop written under another name.
 
@@ -45,9 +45,9 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/i150").join(format!("rename-precondition-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
-        let born: PathName = rdm_core::PathName::new("mesh1.rpc", "7").unwrap();
-        let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-        let peer_name: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        let born: PathName = rdm_core::PathName::new("mesh1.node", "7").unwrap();
+        let taken: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+        let peer_name: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         let launch_of = |name: &PathName| {
             let node_id = NodeId::mint();
             let dir = root.join(node_id.as_str());
@@ -58,7 +58,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
                 fabric: "fabric1".into(),
                 fabric_id: fabric.clone(),
                 mesh: "mesh1".into(),
-                kind: rdm_core::NodeKind::RpcNode,
+                r#type: "node".into(),
                 name: name.clone(),
                 node_id,
                 incarnation: IncarnationId::mint(),
@@ -127,7 +127,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         }
 
         let (d, _) = digest_view.get(renamed.node_id.as_str()).unwrap();
-        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let target = NodeTarget::ExactNode(renamed.node_id.clone());
         let call = |req: StatusRequest| {
@@ -202,9 +202,9 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
 
 /// CONTRACT (R-CR1, node-rpc-envelope.md Node properties `name`: "the node admits no connection";
 /// node-mesh-leave.md step 2; Q169): a node decides its rename and its leave from the connections
-/// open now, never from the rows that have landed. `(path mesh1.rpc, name 7)`'s connections store refuses every
+/// open now, never from the rows that have landed. `(path mesh1.node, name 7)`'s connections store refuses every
 /// write, then the node opens a data-plane connection to its admin: the connection is open, its
-/// Connected row owed and not landed. `ApplyNodeName { (path mesh1.rpc, name 1) }` answers
+/// Connected row owed and not landed. `ApplyNodeName { (path mesh1.node, name 1) }` answers
 /// `BusyHoldingConnections` naming that connection, and `LeaveMesh` answers the same and leaves
 /// nothing; the name does not move. Once the store takes writes the row lands under the id the
 /// refusals named. What must NOT happen: a rename or a leave let through while a connection is
@@ -218,8 +218,8 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/i150").join(format!("rename-precondition-owed-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
-        let born: PathName = rdm_core::PathName::new("mesh1.rpc", "7").unwrap();
-        let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let born: PathName = rdm_core::PathName::new("mesh1.node", "7").unwrap();
+        let taken: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let node_id = NodeId::mint();
         let dir = root.join(node_id.as_str());
         std::fs::create_dir_all(&dir).unwrap();
@@ -229,7 +229,7 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
             fabric: "fabric1".into(),
             fabric_id: fabric.clone(),
             mesh: "mesh1".into(),
-            kind: rdm_core::NodeKind::RpcNode,
+            r#type: "node".into(),
             name: born.clone(),
             node_id,
             incarnation: IncarnationId::mint(),
@@ -275,7 +275,7 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
         assert!(seams.connections.in_flight() > 0, "the Connected row is owed");
 
         let (d, _) = digest_view.get(renamed.node_id.as_str()).unwrap();
-        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let target = NodeTarget::ExactNode(renamed.node_id.clone());
         let call = |req: StatusRequest| {

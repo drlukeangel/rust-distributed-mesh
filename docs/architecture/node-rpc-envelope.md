@@ -388,7 +388,7 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 |---|---|---|---|---|
 | `node.id`, `incarnation`, `endpoint`, `transport_addr`, the runtime handle | RDM at birth | nothing | — | — |
 | `status` | RDM | [node status](lifecycles/node-status.md) only | — | that status's own completion |
-| `path`, `mesh`, `node_type` | the create spec | path, mesh and node_type are immutable; node.name.update changes only name and refuses a supplied path different from the registered path | — | — |
+| `path`, `mesh`, `type` | the create spec | path, mesh and type are immutable; node.name.update changes only name and refuses a supplied path different from the registered path | — | — |
 | `name` | the create spec | **`node.name.update { node_id, incarnation, path, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1) | `node.name.updated` |
 | `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the create); on replace the successor applies its Build entry through its own property writer | `node.tag.create { label \| [labels] }` adds; `node.tag.delete { All \| [labels] }` removes. The node's property writer applies the label change to its own current tag set and persists it with its other owned fields | none | `node.tag.created` / `node.tag.deleted` |
 | `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own is a local durable property write; a Build applies config and tags together through ApplyNodeProperties; the same Build preserves later updates, and a later Build can supersede them (build.md §1, Q236) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
@@ -1103,6 +1103,7 @@ its path and runtime fact. Its complete fields are the shared topology types bel
 pub struct MeshNode {
     pub node_id: NodeId,
     pub name: PathName,
+    pub r#type: String,
     pub endpoint_id: EndpointId,
     pub transport_addr: std::net::SocketAddr,
     pub incarnation: IncarnationId,
@@ -1593,7 +1594,7 @@ CallContext; replies use the canonical unary reply frame. Field order and enum p
 shown. Births are exact identities, never names.
 
 ```text
-primary → successor   PrimaryUpdate { primaries: [(node_type, primary: { node_id, incarnation }, successor: { node_id, incarnation }, revision)], build_id, run, operation }
+primary → successor   PrimaryUpdate { primaries: [(type, primary: { node_id, incarnation }, successor: { node_id, incarnation }, revision)], build_id, run, operation }
 successor             becomes primary: installs the election's result in its topology view and announces it in its digest; the mesh-primary records it afterwards
 successor → primary   PrimaryUpdated { revisions }   (on that call's reply stream)
 ```
@@ -1615,7 +1616,7 @@ submission opened: a resume continues it and replays that run's row; a resubmit 
 so a new transfer.
 
 The commanded arm rides the same op: the fabric-primary commands a mesh-primary's update with
-`UpdatePrimary { node_type, build_id, run, operation, successor }` on the primary, `successor` none: a node-admin
+`UpdatePrimary { type, build_id, run, operation, successor }` on the primary, `successor` none: a node-admin
 computes the election itself. The mesh-primary commands another type's primary the same way, `successor` the exact
 birth its pre-check named (step 2), and that primary calls it without an election of its own; commanded with
 none, it is refused by name. The primary runs the sequence and answers `PrimaryUpdated { revisions }` when it completes,

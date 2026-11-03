@@ -49,14 +49,14 @@ mod tests {
 
     #[test]
     fn a_birth_holds_its_launch_name_until_its_topology_view_is_followed_then_the_topology_view_s() {
-        let name = HeldName::of_birth(rdm_core::PathName::new("mesh1.rpc", "7").unwrap());
-        assert_eq!(name.now(), rdm_core::PathName::new("mesh1.rpc", "7").unwrap());
-        let held = Arc::new(std::sync::Mutex::new(rdm_core::PathName::new("mesh1.rpc", "1").unwrap()));
+        let name = HeldName::of_birth(rdm_core::PathName::new("mesh1.node", "7").unwrap());
+        assert_eq!(name.now(), rdm_core::PathName::new("mesh1.node", "7").unwrap());
+        let held = Arc::new(std::sync::Mutex::new(rdm_core::PathName::new("mesh1.node", "1").unwrap()));
         let h = held.clone();
         name.follow(move || h.lock().unwrap().clone()).unwrap();
-        assert_eq!(name.clone().now(), rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "a clone reads the same binding");
-        *held.lock().unwrap() = rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap();
-        assert_eq!(name.now(), rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap(), "read per call, never cached");
-        assert!(name.follow(|| rdm_core::PathName::new("mesh1.rpc", "9").unwrap()).is_err(), "a second binding is refused by name");
+        assert_eq!(name.clone().now(), rdm_core::PathName::new("mesh1.node", "1").unwrap(), "a clone reads the same binding");
+        *held.lock().unwrap() = rdm_core::PathName::new("mesh1.node", "1-old").unwrap();
+        assert_eq!(name.now(), rdm_core::PathName::new("mesh1.node", "1-old").unwrap(), "read per call, never cached");
+        assert!(name.follow(|| rdm_core::PathName::new("mesh1.node", "9").unwrap()).is_err(), "a second binding is refused by name");
     }
 }

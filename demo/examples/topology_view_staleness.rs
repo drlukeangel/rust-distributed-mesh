@@ -19,7 +19,7 @@
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{await_fact, Filter, MeshNode, NodeStatus, NodeView, Nodes, PathName, Peers};
 use rdm_core::cadence::{backbone_gossip_interval, gossip_interval, staleness_floor};
-use rdm_core::{NodeKind, RuntimeFact, RuntimeLocator};
+use rdm_core::{RuntimeFact, RuntimeLocator};
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{adopt, DeploymentProvider, TerminationMode};
 use std::path::Path;
@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage topology_view_staleness [<path> <name>]")),
         _ => all
             .iter()
-            .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .find(|n| n.kind != "node-admin" && n.status == NodeStatus::Ready)
             .map(|n| n.name.clone())
             .ok_or_else(|| anyhow!("no Ready role node found in estate"))?,
     };

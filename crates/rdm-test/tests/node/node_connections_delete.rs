@@ -56,7 +56,7 @@ async fn a_standalone_connections_delete_completes_on_connections_deleted_and_le
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
-    let node = PathName::new("mesh1.rpc", "1").unwrap();
+    let node = PathName::new("mesh1.node", "1").unwrap();
     let before = estate.node_value(&node).await;
     let pid = estate.pid_of(&node).await;
     let mut deleting = estate.nodes_obj().await.delete_connections(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.connection.delete of {node:?}: {e}"));
@@ -122,7 +122,7 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
-    let node = PathName::new("mesh1.rpc", "1").unwrap();
+    let node = PathName::new("mesh1.node", "1").unwrap();
     let before = estate.node_value(&node).await;
     let mut deleting = estate.nodes_obj().await.delete_connections(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.connection.delete of {node:?}: {e}"));
     let accepted = deleting.accepted().clone();
@@ -188,7 +188,7 @@ async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command
 
     let nodes = estate.nodes_obj().await;
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
-    let primary = mesh.iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).cloned().expect("node.get names mesh1's primary");
+    let primary = mesh.iter().find(|n| n.r#type == "node-admin" && n.is_primary).cloned().expect("node.get names mesh1's primary");
     let me = primary.node_id.to_string();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), node_id: primary.node_id.clone(), incarnation: primary.incarnation_id.clone().expect("the primary's birth") };
     let route = rdm_transport::RouteChoice::Direct;

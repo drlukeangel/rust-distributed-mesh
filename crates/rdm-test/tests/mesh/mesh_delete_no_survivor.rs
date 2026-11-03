@@ -23,7 +23,7 @@ async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_
     let run = primary_lost_mid_leave("a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_fabric_primary_creates", 1, Rpc1::Stopped).await;
     let created: Vec<&Value> = named(&run.spans, "rdm.node_admin.node.create.via-leaving-mesh").into_iter().filter(|sp| sp["attributes"]["outcome"] == "created").collect();
     assert_eq!(created.len(), 1, "the fabric-primary created one admin for mesh2: {created:?}");
-    let created_at = Estate::path("mesh2.admin", "2");
+    let created_at = Estate::path("mesh2.node-admin", "2");
     assert!(rdm_test::estate::at_location(created[0], &created_at), "{}", created[0]);
     // mesh2's primary committed its own mesh row Leaving when it admitted delete-mesh and declared
     // it up to the fabric-primary (DeclareMeshState, "report committed state upward"), which

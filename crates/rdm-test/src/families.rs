@@ -6,7 +6,7 @@ use rdm_transport::{HandlerFault, NodeRpcClient, PeerContext, ServerBuilder};
 use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::NodeProtocol;
-use rdm_core::NodeKind;
+
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -136,10 +136,10 @@ pub(crate) fn product_ledger() -> Vec<LedgerEntry> {
 
 /// The families `kind` serves, composed into `b`; `served_by` is this node's id, named in every reply. Every kind carries the forwardable families
 /// for others (a gateway is the carrier of `broker_data`); only a broker serves it.
-pub(crate) fn for_kind(kind: NodeKind, served_by: &str, b: ServerBuilder, _client: Arc<NodeRpcClient>) -> ServerBuilder {
+pub(crate) fn for_type(r#type: &str, served_by: &str, b: ServerBuilder, _client: Arc<NodeRpcClient>) -> ServerBuilder {
     let b = b.ledger(product_ledger()).carry::<BrokerData>();
-    match kind {
-        NodeKind::Broker => {
+    match r#type {
+        "broker" => {
             let store: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<Vec<u8>>>>> = Default::default();
             let me = served_by.to_string();
             b.serve::<BrokerData, _, _>(OpOwner::Product(crate::PRODUCT.into()), move |_peer: PeerContext, req: BrokerDataRequest| {
@@ -240,7 +240,7 @@ mod tests {
         );
     }
 
-    /// CONTRACT: `BrokerData`, served as a broker serves it (`for_kind`), passes every unary check of
+    /// CONTRACT: `BrokerData`, served as a broker serves it (`for_type`), passes every unary check of
     /// the conformance harness: each named refusal answered, the request over its ceiling refused
     /// `Malformed(TooLarge)`, a duplicate delivery suppressed, a reply lost after acceptance delivered
     /// once. Its evidence: one trace per check, under `rdm.test.conformance.serve.via-check`.
@@ -253,7 +253,7 @@ mod tests {
             let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
             let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
             let fixture = crate::conformance::Unary::<BrokerData> {
-                serve: Arc::new(move |b| for_kind(NodeKind::Broker, "conformance-broker", b, client.clone())),
+                serve: Arc::new(move |b| for_type("broker", "conformance-broker", b, client.clone())),
                 answered: BrokerDataRequest::Append { key: "k".into(), value: vec![7] },
                 refusals: Vec::new(),
             };

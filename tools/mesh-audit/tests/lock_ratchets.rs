@@ -111,7 +111,7 @@ fn accepted_build_has_explicit_node_spec_fails_when_the_build_loses_its_create_s
 #[test]
 fn legacy_defaults_are_ingress_only_fails_a_default_applied_in_the_pipeline() {
     let t = Planted::of_tree();
-    t.write("crates/rdm-admin/src/deployment/planted.rs", "fn storage(kind: NodeKind) -> StorageMeta { NodeSpec::default_for(kind).storage }\n");
+    t.write("crates/rdm-admin/src/deployment/planted.rs", "fn storage(r#type: &str) -> StorageMeta { NodeSpec::default_for(kind).storage }\n");
     only(check(t.root()), Ratchet::LegacyDefaultsAreIngressOnly);
 }
 

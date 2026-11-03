@@ -184,19 +184,19 @@ const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 3), ("mesh2", 2, 3)];
 /// An rpc node of `mesh` that holds no role in the view (the lowest name among them).
 async fn secondary_rpc(e: &Estate, mesh: &str) -> PathName {
     let t = e.view.read().await;
-    t.nodes.iter().filter(|n| n.mesh == mesh && n.kind == NodeKind::RpcNode && !n.is_primary).map(|n| n.name.clone()).min().expect("an rpc node holding no primary role")
+    t.nodes.iter().filter(|n| n.mesh == mesh && n.r#type == "node" && !n.is_primary).map(|n| n.name.clone()).min().expect("an rpc node holding no primary role")
 }
 
 /// Every path of the accepted shape born, live, held in the view and the topology view; roles elected.
 async fn estate() -> Estate {
     let world = Arc::new(World::default());
     let fabric_id = FabricId::mint();
-    let topology = FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() };
+    let topology = FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [("node-admin", *a), ("node", *r)])))).collect() };
     let mut nodes = Vec::new();
     let digest_view = DigestView::default();
     for m in topology.meshes.values() {
         for p in &m.nodes {
-            nodes.push(birth(&world, &digest_view, &fabric_id, &p.clone(), &m.name, m.spec(p).unwrap().kind, None));
+            nodes.push(birth(&world, &digest_view, &fabric_id, &p.clone(), &m.name, &(m.spec(p).unwrap().r#type), None));
         }
     }
     rdm_admin::election::resolve(&mut nodes);
@@ -215,8 +215,8 @@ async fn estate() -> Estate {
 }
 
 /// A new birth at `path`: a runtime in the world, a digest in the topology view, a live node.
-fn birth(world: &World, digest_view: &DigestView, fabric_id: &FabricId, path: &PathName, mesh: &str, kind: NodeKind, supersedes: Option<IncarnationId>) -> Node {
-    let mut n = Node::allocated(path.clone(), mesh, kind);
+fn birth(world: &World, digest_view: &DigestView, fabric_id: &FabricId, path: &PathName, mesh: &str, r#type: &str, supersedes: Option<IncarnationId>) -> Node {
+    let mut n = Node::allocated(path.clone(), mesh, r#type);
     n.node_id = NodeId::mint();
     n.incarnation_id = Some(IncarnationId::mint());
     n.endpoint_id = Some(EndpointId(iroh::SecretKey::generate().public().to_string()));
@@ -224,7 +224,7 @@ fn birth(world: &World, digest_view: &DigestView, fabric_id: &FabricId, path: &P
     let pid = world.add(path, n.node_id.as_str());
     digest_view.record(MeshDigest { held_hash: Default::default(),
         fabric_id: fabric_id.clone(),
-        node: MeshNode { mesh: n.mesh.clone(), kind: n.kind,
+        node: MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(),
             node_id: n.node_id.clone(),
             name: n.name.clone(),
             endpoint_id: n.endpoint_id.clone().unwrap(),
@@ -289,8 +289,8 @@ impl OperationRunner for Runner {
         let admitted_operation = op.key();
         let created;
         let op = match op {
-            BuildOperation::Step { mesh, kind, step: rdm_core::build::Step::Create { node, .. }, .. } => {
-                created = BuildOperation::CreateNode { mesh: mesh.clone(), kind: *kind, node: node.clone(), over: None, executable: None, entry: None };
+            BuildOperation::Step { mesh, r#type, step: rdm_core::build::Step::Create { node, .. }, .. } => {
+                created = BuildOperation::CreateNode { mesh: mesh.clone(), r#type: r#type.clone(), node: node.clone(), over: None, executable: None, entry: None };
                 &created
             }
             other => other,
@@ -306,7 +306,7 @@ impl OperationRunner for Runner {
                         return Err(format!("{path:?}'s birth {} at {} still runs: not proven exited", from.node_id, from.incarnation.as_str()).into());
                     }
                 }
-                self.builds.append_step_receipt(&receipt(admitted_operation.clone(), "NodeDeleted", Some(serde_json::to_value(rdm_core::LifecycleOp { mesh: op.mesh().unwrap().to_owned(), kind: op.kind().unwrap(), build_id: build_id.to_string(), attempt, operation: admitted_operation.clone(), node_id: from.node_id.clone(), incarnation: from.incarnation.clone(), name: path.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None }).unwrap()))).await.map_err(|e| e.to_string())?;
+                self.builds.append_step_receipt(&receipt(admitted_operation.clone(), "NodeDeleted", Some(serde_json::to_value(rdm_core::LifecycleOp { mesh: op.mesh().unwrap().to_owned(), r#type: op.r#type().unwrap(), build_id: build_id.to_string(), attempt, operation: admitted_operation.clone(), node_id: from.node_id.clone(), incarnation: from.incarnation.clone(), name: path.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None }).unwrap()))).await.map_err(|e| e.to_string())?;
                 self.view.write().await.nodes.retain(|x| !(x.node_id == from.node_id && x.incarnation_id.as_ref() == Some(&from.incarnation)));
                 self.builds.append_step_receipt(&receipt(admitted_operation.clone(), "Complete", None)).await.map_err(|e| e.to_string())?;
                 return Ok(());
@@ -317,7 +317,7 @@ impl OperationRunner for Runner {
                 if self.fail_recovery_create.swap(false, std::sync::atomic::Ordering::SeqCst) {
                     return Err(format!("{path:?}: the recovered node's launch never came up").into());
                 }
-                let n = birth(&self.world, &self.digest_view, &self.fabric_id, &path.clone(), op.mesh().unwrap(), op.kind().unwrap(), None);
+                let n = birth(&self.world, &self.digest_view, &self.fabric_id, &path.clone(), op.mesh().unwrap(), &(op.r#type().unwrap()), None);
                 let mut v = self.view.write().await;
                 v.nodes.retain(|x| x.name != *path);
                 v.nodes.push(n);
@@ -336,7 +336,7 @@ impl OperationRunner for Runner {
         let out = investigate_path(path, prev.clone(), &Probe(self.world.clone())).await;
         self.ran.lock().unwrap().push((path.clone(), op.clone(), out.clone()));
         if matches!(out, TargetOutcome::Clear { .. }) {
-            let n = birth(&self.world, &self.digest_view, &self.fabric_id, &path.clone(), op.mesh().unwrap(), op.kind().unwrap(), prev.and_then(|p| p.incarnation_id));
+            let n = birth(&self.world, &self.digest_view, &self.fabric_id, &path.clone(), op.mesh().unwrap(), &(op.r#type().unwrap()), prev.and_then(|p| p.incarnation_id));
             let mut v = self.view.write().await;
             v.nodes.retain(|x| x.name != *path);
             v.nodes.push(n);
@@ -355,7 +355,7 @@ impl OperationRunner for Runner {
 /// to forward it, is heard again.
 async fn hear(world: &World, view: &RwLock<Topology>) {
     let mut v = view.write().await;
-    let forwarded: BTreeSet<String> = v.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).map(|n| n.mesh.clone()).collect();
+    let forwarded: BTreeSet<String> = v.nodes.iter().filter(|n| n.r#type == "node-admin" && n.status.is_live()).map(|n| n.mesh.clone()).collect();
     let mut changed = false;
     for n in v.nodes.iter_mut().filter(|n| n.status == NodeStatus::PendingReconnect && forwarded.contains(&n.mesh)) {
         if world.of(n.node_id.as_str()).is_some_and(|r| matches!(r.status, DeploymentStatus::Running) && r.answers) {
@@ -387,7 +387,7 @@ impl Estate {
     async fn to_rows_only(&self, path: &PathName) {
         let id = self.node_id(path).await;
         let (d, _) = self.digest_view.get(&id).expect("the birth's digest is held");
-        self.rows_only.lock().unwrap().push(rdm_admin::storage::RuntimeRow { kind: d.node.kind, mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None });
+        self.rows_only.lock().unwrap().push(rdm_admin::storage::RuntimeRow { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None });
         let mut v = self.view.write().await;
         v.nodes.retain(|n| n.name != *path);
         rdm_admin::election::resolve(&mut v.nodes);
@@ -500,7 +500,7 @@ impl Estate {
     /// drive stalls naming the mesh and `survivor`, nothing is dispatched and nothing is born; then
     /// `survivor` is primary by its own mesh and is the executor from there.
     async fn stalls_until_elected(&self, lost_mesh: &str, lost: &PathName) -> PathName {
-        let survivor = self.view.read().await.nodes_of_type(lost_mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).find(|n| n != lost).expect("a second admin in the lost mesh");
+        let survivor = self.view.read().await.nodes_of_type(lost_mesh, "node-admin").map(|n| n.name.clone()).find(|n| n != lost).expect("a second admin in the lost mesh");
         match self.drive_once().await {
             DriveEnd::Stalled(why) => assert!(why.contains(lost_mesh) && why.contains(self.node_id(&survivor).await.as_str()), "the stall names the mesh and its held admin: {why}"),
             other => panic!("the fabric-primary never acts on {lost_mesh} while {survivor:?} is held: {other:?}"),
@@ -526,7 +526,7 @@ impl Estate {
         for n in v.nodes.iter().filter(|n| n.status.is_live()) {
             *per_path.entry(n.name.clone()).or_default() += 1;
         }
-        let want: BTreeSet<PathName> = SHAPE.iter().flat_map(|(m, a, r)| MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])).nodes.into_iter().map(|p| p.clone())).collect();
+        let want: BTreeSet<PathName> = SHAPE.iter().flat_map(|(m, a, r)| MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [("node-admin", *a), ("node", *r)])).nodes.into_iter().map(|p| p.clone())).collect();
         assert_eq!(per_path.keys().cloned().collect::<BTreeSet<_>>(), want, "every accepted path is live");
         assert!(per_path.values().all(|c| *c == 1), "one live birth per path: {per_path:?}");
         // And the world: one running runtime per path.
@@ -542,7 +542,7 @@ impl Estate {
         // Each birth the view holds has its lifecycle record claimed, as its create or join claims it.
         for n in self.view.read().await.births() {
             if rdm_admin::storage::NodesStorage::node(&*self.rows, &n.node_id).await.unwrap().is_none() {
-                let row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), n.status);
+                let row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
                 let _ = rdm_admin::node_rows::write_record(&*self.rows, &row).await;
             }
         }
@@ -558,7 +558,7 @@ impl Estate {
     async fn recoverer_of(&self, path: &PathName) -> PathName {
         let p = path.clone();
         let v = self.view.read().await;
-        let recoverer = if v.node(&p).unwrap().kind == NodeKind::NodeAdmin { rdm_admin::executor::node_admin_recoverer(&p, &v.node(&p).unwrap().mesh, &v).and_then(|id| v.nodes.iter().find(|n| n.node_id == id).map(|n| n.name.clone())) } else { v.node_type_primary(&v.node(&p).unwrap().mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()) };
+        let recoverer = if v.node(&p).unwrap().r#type == "node-admin" { rdm_admin::executor::node_admin_recoverer(&p, &v.node(&p).unwrap().mesh, &v).and_then(|id| v.nodes.iter().find(|n| n.node_id == id).map(|n| n.name.clone())) } else { v.node_type_primary(&v.node(&p).unwrap().mesh, "node-admin").map(|n| n.name.clone()) };
         recoverer.expect("a live admin recovers the path")
     }
 
@@ -610,7 +610,7 @@ impl Estate {
     /// The mesh-primary of `path`'s mesh.
     async fn mesh_primary_of(&self, path: &PathName) -> PathName {
         let mesh = self.view.read().await.node(path).expect("fixture node").mesh.clone();
-        self.view.read().await.node_type_primary(&mesh, NodeKind::NodeAdmin).unwrap().name.clone()
+        self.view.read().await.node_type_primary(&mesh, "node-admin").unwrap().name.clone()
     }
 
     /// The node-admin of the fabric-primary's own mesh that is not the fabric-primary: a birth the
@@ -618,7 +618,7 @@ impl Estate {
     async fn sibling_admin(&self) -> PathName {
         let fp = self.fabric_primary().await.expect("a fabric-primary");
         let mesh = self.view.read().await.node(&fp).expect("fixture primary").mesh.clone();
-        self.view.read().await.nodes_of_type(&mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).find(|n| *n != fp).expect("a second admin in the fabric-primary's mesh")
+        self.view.read().await.nodes_of_type(&mesh, "node-admin").map(|n| n.name.clone()).find(|n| *n != fp).expect("a second admin in the fabric-primary's mesh")
     }
 
     fn born(&self) -> Vec<PathName> {
@@ -645,23 +645,23 @@ impl Estate {
 async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_else_is_created() {
     let e = estate().await;
     let before = e.builds.current().await.unwrap().unwrap();
-    let old = e.node_id(&PathName::new("mesh1.rpc", "2").unwrap()).await;
-    let exited = e.view.read().await.node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).cloned().unwrap();
+    let old = e.node_id(&PathName::new("mesh1.node", "2").unwrap()).await;
+    let exited = e.view.read().await.node(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).cloned().unwrap();
     e.world.kill(&old);
-    e.unheard(&[&PathName::new("mesh1.rpc", "2").unwrap()]).await;
+    e.unheard(&[&PathName::new("mesh1.node", "2").unwrap()]).await;
     assert_eq!(e.drift().await, None, "the fabric-primary repairs no ordinary member");
-    let mp = e.mesh_primary_of(&PathName::new("mesh1.rpc", "2").unwrap()).await;
-    let opened = e.recover(&PathName::new("mesh1.rpc", "2").unwrap()).await;
+    let mp = e.mesh_primary_of(&PathName::new("mesh1.node", "2").unwrap()).await;
+    let opened = e.recover(&PathName::new("mesh1.node", "2").unwrap()).await;
     // node-recovery.md sequence step 1: a repeat submit for the same exited birth answers
     // AlreadyApplied from the recovery's receipts, naming its attempt, and opens nothing.
     let repeat = e.door_at(&mp).await.open_recovery("node-recovery", exited.name.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await;
     assert!(matches!(&repeat, Ok(rdm_admin::control_plane::Recovery::AlreadyApplied(o)) if o.attempt == opened.attempt && o.mesh == opened.mesh), "{repeat:?}");
     assert_eq!((opened.build_id.clone(), opened.mesh.as_deref(), opened.attempt), (before.build_id.clone(), Some("mesh1"), 1), "the same Build, attempt 1 of mesh1's lane");
-    e.recovered_by(&PathName::new("mesh1.rpc", "2").unwrap(), &mp).await;
+    e.recovered_by(&PathName::new("mesh1.node", "2").unwrap(), &mp).await;
     assert_eq!(e.runner.recovering.lock().unwrap().clone(), vec![rdm_core::OperationId::node("node.delete", &exited.node_id), rdm_core::OperationId::location("node.create", &exited.name)], "node.delete, then node.create, once each, and nothing after");
-    assert_eq!(e.born(), vec![PathName::new("mesh1.rpc", "2").unwrap()], "exactly the lost path is recovered");
-    assert_eq!(e.investigations_of(&PathName::new("mesh1.rpc", "2").unwrap()), vec![], "the exited verdict targets the old birth: no probe");
-    assert_ne!(e.node_id(&PathName::new("mesh1.rpc", "2").unwrap()).await, old, "a new node, not the old one");
+    assert_eq!(e.born(), vec![PathName::new("mesh1.node", "2").unwrap()], "exactly the lost path is recovered");
+    assert_eq!(e.investigations_of(&PathName::new("mesh1.node", "2").unwrap()), vec![], "the exited verdict targets the old birth: no probe");
+    assert_ne!(e.node_id(&PathName::new("mesh1.node", "2").unwrap()).await, old, "a new node, not the old one");
     e.holds_the_shape().await;
     let after = e.builds.current().await.unwrap().unwrap();
     assert_eq!((after.build_id, after.attempt, after.state), (before.build_id, before.attempt, BuildState::Complete), "the fabric lane is untouched");
@@ -687,7 +687,7 @@ async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_el
 async fn a_recovery_whose_create_failed_resumes_at_its_create_and_never_deletes_again() {
     let e = estate().await;
     let before = e.builds.current().await.unwrap().unwrap();
-    let path = &PathName::new("mesh1.rpc", "2").unwrap();
+    let path = &PathName::new("mesh1.node", "2").unwrap();
     let exited = e.view.read().await.node(path).cloned().unwrap();
     e.world.kill(exited.node_id.as_str());
     e.unheard(&[path]).await;
@@ -748,7 +748,7 @@ async fn a_lost_mesh_primary_admin_is_recovered_by_the_admin_its_mesh_elects_and
     let fp_mesh = e.view.read().await.node(&fp).unwrap().mesh.clone();
     let other = if fp_mesh == "mesh1" { "mesh2" } else { "mesh1" };
     // The other mesh's primary admin is lost.
-    let primary = e.view.read().await.node_type_primary(other, NodeKind::NodeAdmin).unwrap().name.clone();
+    let primary = e.view.read().await.node_type_primary(other, "node-admin").unwrap().name.clone();
     let old = e.node_id(&primary).await;
     e.world.kill(&old);
     e.unheard(&[&primary]).await;
@@ -780,8 +780,8 @@ async fn a_view_held_lost_mesh_primary_is_recovered_once_by_the_primary_watch_an
     let fp = e.fabric_primary().await.expect("a fabric-primary");
     let fp_mesh = e.view.read().await.node(&fp).unwrap().mesh.clone();
     let other = if fp_mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let admins = [PathName::new(&format!("{other}.admin"), "1").unwrap(), PathName::new(&format!("{other}.admin"), "2").unwrap()];
-    let primary = e.view.read().await.node_type_primary(other, NodeKind::NodeAdmin).unwrap().name.clone();
+    let admins = [PathName::new(&format!("{other}.node-admin"), "1").unwrap(), PathName::new(&format!("{other}.node-admin"), "2").unwrap()];
+    let primary = e.view.read().await.node_type_primary(other, "node-admin").unwrap().name.clone();
     let old = e.node_id(&primary).await;
     for p in &admins {
         let id = e.node_id(p).await;
@@ -814,7 +814,7 @@ async fn a_lost_fabric_primary_is_recovered_by_its_own_meshs_new_primary() {
     let e = estate().await;
     let fp = e.fabric_primary().await.expect("a fabric-primary");
     let fp_mesh = e.view.read().await.node(&fp).unwrap().mesh.clone();
-    let second = e.view.read().await.nodes_of_type(&fp_mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).find(|n| *n != fp).expect("a second admin in the fabric-primary's mesh");
+    let second = e.view.read().await.nodes_of_type(&fp_mesh, "node-admin").map(|n| n.name.clone()).find(|n| *n != fp).expect("a second admin in the fabric-primary's mesh");
     {
         let mut v = e.view.write().await;
         for n in v.nodes.iter_mut() {
@@ -857,7 +857,7 @@ async fn members_unheard_through_a_lost_forwarder_are_held_never_duplicated() {
     let lost = if fp_mesh == "mesh1" { "mesh2" } else { "mesh1" };
     // The other mesh's primary admin dies; in the fabric primary's view every member of that mesh
     // goes silent at once (its forwarder is gone), though all but the dead admin run and answer.
-    let primary = e.view.read().await.node_type_primary(lost, NodeKind::NodeAdmin).unwrap().name.clone();
+    let primary = e.view.read().await.node_type_primary(lost, "node-admin").unwrap().name.clone();
     e.world.kill(&e.node_id(&primary).await);
     let members: Vec<PathName> = e.view.read().await.nodes.iter().filter(|n| n.mesh == lost).map(|n| n.name.clone()).collect();
     let refs: Vec<&PathName> = members.iter().collect();
@@ -895,7 +895,7 @@ async fn a_fabric_primarys_drift_repair_of_a_completed_build_sends_one_started_t
     let fp = e.fabric_primary().await.expect("a fabric-primary");
     let fp_mesh = e.view.read().await.node(&fp).unwrap().mesh.clone();
     let lost = if fp_mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let primary = e.view.read().await.node_type_primary(lost, NodeKind::NodeAdmin).unwrap().name.clone();
+    let primary = e.view.read().await.node_type_primary(lost, "node-admin").unwrap().name.clone();
     e.world.kill(&e.node_id(&primary).await);
     let members: Vec<PathName> = e.view.read().await.nodes.iter().filter(|n| n.mesh == lost).map(|n| n.name.clone()).collect();
     let refs: Vec<&PathName> = members.iter().collect();
@@ -930,16 +930,16 @@ async fn a_fabric_primarys_drift_repair_of_a_completed_build_sends_one_started_t
 async fn a_path_the_view_does_not_hold_but_where_a_runtime_runs_is_held() {
     let e = estate().await;
     // rpc.3 is not in this view at all (never heard here), but its runtime runs, frozen.
-    let hidden = e.node_id(&PathName::new("mesh1.rpc", "3").unwrap()).await;
+    let hidden = e.node_id(&PathName::new("mesh1.node", "3").unwrap()).await;
     e.world.freeze(&hidden);
-    e.view.write().await.nodes.retain(|n| n.name != PathName::new("mesh1.rpc", "3").unwrap());
+    e.view.write().await.nodes.retain(|n| n.name != PathName::new("mesh1.node", "3").unwrap());
     // A real loss elsewhere opens a recovery whose plan is exactly that birth: the path the view
     // lacks is its own attempt's, so this one neither creates over it nor targets it.
-    e.world.kill(&e.node_id(&PathName::new("mesh1.rpc", "2").unwrap()).await);
-    e.unheard(&[&PathName::new("mesh1.rpc", "2").unwrap()]).await;
-    e.recover(&PathName::new("mesh1.rpc", "2").unwrap()).await;
-    assert_eq!(e.born(), vec![PathName::new("mesh1.rpc", "2").unwrap()], "the absent-but-running path is not created over");
-    assert_eq!(e.investigations_of(&PathName::new("mesh1.rpc", "3").unwrap()), vec![], "an attempt that carries an action plans only its birth");
+    e.world.kill(&e.node_id(&PathName::new("mesh1.node", "2").unwrap()).await);
+    e.unheard(&[&PathName::new("mesh1.node", "2").unwrap()]).await;
+    e.recover(&PathName::new("mesh1.node", "2").unwrap()).await;
+    assert_eq!(e.born(), vec![PathName::new("mesh1.node", "2").unwrap()], "the absent-but-running path is not created over");
+    assert_eq!(e.investigations_of(&PathName::new("mesh1.node", "3").unwrap()), vec![], "an attempt that carries an action plans only its birth");
 }
 
 /// The seeded soak's finding (seed 7, round 3, trace in the spans of
@@ -955,7 +955,7 @@ async fn members_heard_again_mid_attempt_through_the_recovered_forwarder_are_nev
     let fp = e.fabric_primary().await.expect("a fabric-primary");
     let fp_mesh = e.view.read().await.node(&fp).unwrap().mesh.clone();
     let lost = if fp_mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let primary = e.view.read().await.node_type_primary(lost, NodeKind::NodeAdmin).unwrap().name.clone();
+    let primary = e.view.read().await.node_type_primary(lost, "node-admin").unwrap().name.clone();
     e.world.kill(&e.node_id(&primary).await);
     let members: Vec<PathName> = e.view.read().await.nodes.iter().filter(|n| n.mesh == lost).map(|n| n.name.clone()).collect();
     let refs: Vec<&PathName> = members.iter().collect();
@@ -981,16 +981,16 @@ async fn members_heard_again_mid_attempt_through_the_recovered_forwarder_are_nev
 async fn a_transport_stopped_exit_is_recovered_as_a_new_node_never_restarted() {
     let e = estate().await;
     let before = e.builds.current().await.unwrap().unwrap();
-    let id = e.node_id(&PathName::new("mesh1.rpc", "2").unwrap()).await;
+    let id = e.node_id(&PathName::new("mesh1.node", "2").unwrap()).await;
     e.world.exit_with(&id, Some(rdm_core::runtime::TRANSPORT_STOPPED_EXIT_CODE));
-    e.unheard(&[&PathName::new("mesh1.rpc", "2").unwrap()]).await;
+    e.unheard(&[&PathName::new("mesh1.node", "2").unwrap()]).await;
     assert_eq!(e.drift().await, None, "the fabric-primary restarts no ordinary member");
-    e.recover(&PathName::new("mesh1.rpc", "2").unwrap()).await;
+    e.recover(&PathName::new("mesh1.node", "2").unwrap()).await;
     let opened = e.lane("mesh1").await;
     assert_eq!(opened.reason, rdm_admin::build_state::AttemptReason::Recovery);
-    assert!(matches!(&opened.action, Some(rdm_admin::accepted::AttemptAction::Recover { path, node_id, .. }) if path == &PathName::new("mesh1.rpc", "2").unwrap() && node_id.as_str() == id), "{:?}", opened.action);
-    assert_eq!(e.born(), vec![PathName::new("mesh1.rpc", "2").unwrap()]);
-    assert_ne!(e.node_id(&PathName::new("mesh1.rpc", "2").unwrap()).await, id, "a new node.id");
+    assert!(matches!(&opened.action, Some(rdm_admin::accepted::AttemptAction::Recover { path, node_id, .. }) if path == &PathName::new("mesh1.node", "2").unwrap() && node_id.as_str() == id), "{:?}", opened.action);
+    assert_eq!(e.born(), vec![PathName::new("mesh1.node", "2").unwrap()]);
+    assert_ne!(e.node_id(&PathName::new("mesh1.node", "2").unwrap()).await, id, "a new node.id");
     e.holds_the_shape().await;
     let after = e.builds.current().await.unwrap().unwrap();
     assert_eq!((after.build_id, after.attempt, after.state), (before.build_id, before.attempt, BuildState::Complete), "the fabric lane is untouched");
@@ -1012,8 +1012,8 @@ async fn a_secondary_node_admins_exit_is_recovered_by_its_mesh_primary_whatever_
         let before = e.builds.current().await.unwrap().unwrap();
         let fp = e.fabric_primary().await.expect("a fabric-primary");
         let peer = if e.view.read().await.node(&fp).unwrap().mesh == "mesh1" { "mesh2" } else { "mesh1" };
-        let mp = e.view.read().await.node_type_primary(peer, NodeKind::NodeAdmin).unwrap().name.clone();
-        let admin = e.view.read().await.nodes_of_type(peer, NodeKind::NodeAdmin).map(|n| n.name.clone()).find(|n| *n != mp).unwrap();
+        let mp = e.view.read().await.node_type_primary(peer, "node-admin").unwrap().name.clone();
+        let admin = e.view.read().await.nodes_of_type(peer, "node-admin").map(|n| n.name.clone()).find(|n| *n != mp).unwrap();
         let id = e.node_id(&admin).await;
         let incarnation = e.view.read().await.node(&admin).and_then(|n| n.incarnation_id.clone()).unwrap();
         e.world.exit_with(&id, code);
@@ -1045,14 +1045,14 @@ async fn a_secondary_node_admins_exit_is_recovered_by_its_mesh_primary_whatever_
 async fn every_exit_is_recovered_one_birth_per_attempt_and_a_submit_waits_for_the_running_one() {
     let e = estate().await;
     let before = e.builds.current().await.unwrap().unwrap();
-    let (a, b, c) = (e.node_id(&PathName::new("mesh1.rpc", "1").unwrap()).await, e.node_id(&PathName::new("mesh1.rpc", "2").unwrap()).await, e.node_id(&PathName::new("mesh1.rpc", "3").unwrap()).await);
+    let (a, b, c) = (e.node_id(&PathName::new("mesh1.node", "1").unwrap()).await, e.node_id(&PathName::new("mesh1.node", "2").unwrap()).await, e.node_id(&PathName::new("mesh1.node", "3").unwrap()).await);
     e.world.exit_with(&c, Some(1));
     e.world.exit_with(&a, None);
     e.world.exit_with(&b, Some(137));
-    e.unheard(&[&PathName::new("mesh1.rpc", "1").unwrap(), &PathName::new("mesh1.rpc", "2").unwrap(), &PathName::new("mesh1.rpc", "3").unwrap()]).await;
+    e.unheard(&[&PathName::new("mesh1.node", "1").unwrap(), &PathName::new("mesh1.node", "2").unwrap(), &PathName::new("mesh1.node", "3").unwrap()]).await;
     assert_eq!(e.drift().await, None, "the fabric-primary repairs no ordinary member");
-    let paths = [PathName::new("mesh1.rpc", "1").unwrap(), PathName::new("mesh1.rpc", "2").unwrap(), PathName::new("mesh1.rpc", "3").unwrap()];
-    let mp = e.mesh_primary_of(&PathName::new("mesh1.rpc", "1").unwrap()).await;
+    let paths = [PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh1.node", "2").unwrap(), PathName::new("mesh1.node", "3").unwrap()];
+    let mp = e.mesh_primary_of(&PathName::new("mesh1.node", "1").unwrap()).await;
     for (pass, path) in paths.iter().enumerate() {
         let Ok(rdm_admin::control_plane::Recovery::Opened(o)) = e.submit_recovery(path).await else { panic!("pass {pass}: {path:?}'s recovery was not opened") };
         assert_eq!((o.build_id.clone(), o.mesh.as_deref(), o.attempt), (before.build_id.clone(), Some("mesh1"), 1 + pass as u32));
@@ -1084,15 +1084,15 @@ async fn a_successor_recovers_a_sibling_admin_known_only_by_its_durable_runtime_
     // mesh-primary is left to recover anything: mesh recovery); its second admin is one the
     // successor never heard.
     let peer = if e.view.read().await.fabric_primary().unwrap().mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let lost = PathName::new(&format!("{peer}.admin"), "2").unwrap();
+    let lost = PathName::new(&format!("{peer}.node-admin"), "2").unwrap();
     let lost = &lost;
-    let hung = PathName::new(&format!("{peer}.admin"), "1").unwrap();
+    let hung = PathName::new(&format!("{peer}.node-admin"), "1").unwrap();
     e.world.freeze(&e.node_id(&hung).await);
     e.unheard(&[&hung]).await;
     let old = e.node_id(lost).await;
     let row = {
         let (d, _) = e.digest_view.get(&old).unwrap();
-        rdm_admin::storage::RuntimeRow { kind: d.node.kind, mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }
+        rdm_admin::storage::RuntimeRow { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }
     };
     e.world.kill(&old);
     // The successor's topology view and view: everything but the lost admin.
@@ -1131,12 +1131,12 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
     let before = e.builds.current().await.unwrap().unwrap();
     let fp = e.fabric_primary().await.expect("a fabric-primary");
     let peer = if e.view.read().await.node(&fp).unwrap().mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let mp: PathName = e.view.read().await.node_type_primary(peer, NodeKind::NodeAdmin).unwrap().name.clone();
-    let lost = e.view.read().await.nodes_of_type(peer, NodeKind::NodeAdmin).map(|n| n.name.clone()).find(|n| *n != mp.clone()).unwrap();
+    let mp: PathName = e.view.read().await.node_type_primary(peer, "node-admin").unwrap().name.clone();
+    let lost = e.view.read().await.nodes_of_type(peer, "node-admin").map(|n| n.name.clone()).find(|n| *n != mp.clone()).unwrap();
     let old = e.node_id(&lost).await;
     let row = {
         let (d, _) = e.digest_view.get(&old).unwrap();
-        rdm_admin::storage::RuntimeRow { kind: d.node.kind, mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }
+        rdm_admin::storage::RuntimeRow { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }
     };
     e.world.kill(&old);
     // Nobody heard the lost admin: it is in no view and no topology view, only in the row.
@@ -1150,7 +1150,7 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
         rdm_admin::election::resolve(&mut v.nodes);
     }
     let t = e.view.read().await.clone();
-    assert_eq!(t.node_type_primary(peer, NodeKind::NodeAdmin).map(|n| n.name.clone()), Some(mp.clone()), "the mesh keeps its live primary");
+    assert_eq!(t.node_type_primary(peer, "node-admin").map(|n| n.name.clone()), Some(mp.clone()), "the mesh keeps its live primary");
 
     // The fabric-primary's drift folds the row and leaves the birth to that mesh-primary.
     let me = fp.clone();
@@ -1173,7 +1173,7 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
     assert!(matches!(verdict, Inspected::Exited(_)), "the row's exact runtime reads exited: {verdict:?}");
 
     // Its lifecycle record stands on the store root beside its runtime row (claimed at its birth).
-    rdm_admin::node_rows::write_record(&*e.rows, &rdm_admin::storage::NodeRow::new(row.name.clone(), row.mesh.clone(), row.kind, row.node_id.clone(), NodeStatus::Ready)).await.unwrap().unwrap();
+    rdm_admin::node_rows::write_record(&*e.rows, &rdm_admin::storage::NodeRow::new(row.name.clone(), row.mesh.clone(), &row.r#type, row.node_id.clone(), NodeStatus::Ready)).await.unwrap().unwrap();
     // The mesh-primary opens and claims the recovery at its own door and runs it (R-BI7).
     let submitted = e.door_at(&mp.clone()).await.open_recovery("node-recovery", row.name.clone(), row.node_id.clone(), row.incarnation_id.clone()).await;
     let Ok(rdm_admin::control_plane::Recovery::Opened(o)) = submitted else { panic!("{lost:?}'s recovery was not opened: {:?}", submitted.map(|_| ()).map_err(|r| format!("{r:?}"))) };
@@ -1214,13 +1214,13 @@ fn evidence_dir(cell: &str) -> std::path::PathBuf {
 #[tokio::test]
 async fn a_topology_build_claims_nothing_in_a_mesh_its_recovery_holds_and_runs_once_the_recovery_releases_it() {
     let e = estate().await;
-    let path = &PathName::new("mesh1.rpc", "2").unwrap();
+    let path = &PathName::new("mesh1.node", "2").unwrap();
     e.world.kill(&e.node_id(path).await);
     e.unheard(&[path]).await;
     let mp = e.mesh_primary_of(path).await;
     let fp = e.fabric_primary().await.expect("a fabric-primary");
     let door = e.door_at(&fp).await;
-    let create = door.submit("build.create", crate::named_request(&door, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await).await.expect("the node.create is accepted: no attempt holds a mesh yet");
+    let create = door.submit("build.create", crate::named_request(&door, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh2".into(), r#type: "node".into() }).await).await.expect("the node.create is accepted: no attempt holds a mesh yet");
     let Ok(rdm_admin::control_plane::Recovery::Opened(recovery)) = e.submit_recovery(path).await else { panic!("mesh1's primary opens its member's recovery: the node.create's attempt is not claimed") };
     assert_eq!((recovery.build_id.clone(), recovery.mesh.as_deref()), (create.build_id.clone(), Some("mesh1")), "the recovery is an attempt of the current Build, in mesh1's lane");
     match e.drive_once().await {
@@ -1350,7 +1350,7 @@ mod one_attempt_number {
     async fn lose_a_node(e: &Estate) -> u32 {
         let before = e.builds.current().await.unwrap().unwrap();
         let peer = if e.view.read().await.fabric_primary().unwrap().mesh == "mesh1" { "mesh2" } else { "mesh1" };
-        let lost = [PathName::new(&format!("{peer}.admin"), "1").unwrap(), PathName::new(&format!("{peer}.admin"), "2").unwrap()];
+        let lost = [PathName::new(&format!("{peer}.node-admin"), "1").unwrap(), PathName::new(&format!("{peer}.node-admin"), "2").unwrap()];
         for l in &lost {
             e.world.kill(&e.node_id(l).await);
         }
@@ -1400,7 +1400,7 @@ mod one_attempt_number {
             _ = g.arrived.notified() => {}
             ended = &mut drift => panic!("the drift pass ended without reaching the Build log's door to open attempt {}: it proved no loss ({ended:?})", k + 1),
         }
-        let rest = cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), rdm_admin::control_plane::ActionKind::Stop).await;
+        let rest = cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, rdm_core::PathName::new("mesh2.node", "1").unwrap(), rdm_admin::control_plane::ActionKind::Stop).await;
         g.release.notify_one();
         let drift = drift.await;
         let rest = rest.expect("the stop took the free number");
@@ -1421,7 +1421,7 @@ mod one_attempt_number {
         let k = lose_a_node(&e).await;
         let g = gate(&e, Holds::Attempt(AttemptReason::Stop));
         let cp = door(&e, g.clone()).await;
-        let rest = cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), rdm_admin::control_plane::ActionKind::Stop);
+        let rest = cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, rdm_core::PathName::new("mesh2.node", "1").unwrap(), rdm_admin::control_plane::ActionKind::Stop);
         tokio::pin!(rest);
         // The stop either stops at the log's door with its number computed, or it ended without
         // opening anything: that is the cell's failure, named, never a wait.
@@ -1469,7 +1469,7 @@ mod one_attempt_number {
         let cp = door(&e, g.clone()).await;
         let submit = tokio::spawn({
             let cp = cp.clone();
-            async move { cp.submit("POST /api/topology", crate::named_request(&cp, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }).await).await }.instrument(root.clone())
+            async move { cp.submit("POST /api/topology", crate::named_request(&cp, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }).await).await }.instrument(root.clone())
         });
         g.arrived.notified().await;
         // The drift pass of the same fabric-primary: the admission its door holds.
@@ -1516,18 +1516,18 @@ mod one_attempt_number {
 #[tokio::test]
 async fn a_durable_runtime_row_of_a_deleted_birth_opens_no_attempt() {
     let e = estate().await;
-    let lost = e.view.read().await.nodes.iter().find(|n| n.kind == NodeKind::NodeAdmin && !n.is_primary && !n.is_fabric_primary).expect("a non-primary admin").name.clone();
+    let lost = e.view.read().await.nodes.iter().find(|n| n.r#type == "node-admin" && !n.is_primary && !n.is_fabric_primary).expect("a non-primary admin").name.clone();
     let old = e.node_id(&lost).await;
     let (row, digest) = {
         let (d, _) = e.digest_view.get(&old).unwrap();
-        (rdm_admin::storage::RuntimeRow { kind: d.node.kind, mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }, d)
+        (rdm_admin::storage::RuntimeRow { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }, d)
     };
     e.world.kill(&old);
     let heard = DigestView::default();
     for d in e.digest_view.all().into_iter().filter(|d| d.node.name != lost) {
         heard.record(d);
     }
-    heard.depart(rdm_core::LifecycleOp { kind: digest.node.kind, mesh: digest.node.mesh.clone(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::node("node.delete", &digest.node.node_id), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None });
+    heard.depart(rdm_core::LifecycleOp { r#type: digest.node.r#type.clone(), mesh: digest.node.mesh.clone(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::node("node.delete", &digest.node.node_id), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None });
     let mut t = e.view.read().await.clone();
     t.nodes.retain(|n| n.name != lost);
     rdm_admin::election::resolve(&mut t.nodes);
@@ -1569,7 +1569,7 @@ mod unheard_mesh_hold {
     async fn an_exited_birth_of_an_unheard_peer_mesh_opens_no_attempt_and_is_kept_as_evidence_once() {
         let e = estate().await;
         let (_, peer_mesh) = meshes(&e).await;
-        let path = PathName::new(&format!("{peer_mesh}.rpc"), "1").unwrap();
+        let path = PathName::new(&format!("{peer_mesh}.node"), "1").unwrap();
         let id = e.node_id(&path).await;
         e.world.exit_with(&id, Some(137));
         e.unheard(&[&path]).await;
@@ -1592,7 +1592,7 @@ mod unheard_mesh_hold {
     async fn the_hold_ends_when_the_mesh_is_heard_again_and_the_exited_birth_is_left_to_its_mesh_primary() {
         let e = estate().await;
         let (_, peer_mesh) = meshes(&e).await;
-        let path = PathName::new(&format!("{peer_mesh}.rpc"), "1").unwrap();
+        let path = PathName::new(&format!("{peer_mesh}.node"), "1").unwrap();
         let id = e.node_id(&path).await;
         e.world.exit_with(&id, Some(137));
         e.unheard(&[&path]).await;
@@ -1638,10 +1638,10 @@ async fn a_birth_whose_delete_the_build_receipted_is_not_surplus() {
     for receipted in [false, true] {
         let e = estate().await;
         let current = e.builds.current().await.unwrap().unwrap();
-        let extra = birth(&e.world, &e.digest_view, &e.view.read().await.fabric.id.clone(), &PathName::new("mesh1.rpc", "9").unwrap(), "mesh1", NodeKind::RpcNode, None);
+        let extra = birth(&e.world, &e.digest_view, &e.view.read().await.fabric.id.clone(), &PathName::new("mesh1.node", "9").unwrap(), "mesh1", "node", None);
         e.view.write().await.nodes.push(extra.clone());
         if receipted {
-            let op = rdm_core::LifecycleOp { kind: extra.kind, mesh: extra.mesh.clone(),
+            let op = rdm_core::LifecycleOp { r#type: extra.r#type.clone(), mesh: extra.mesh.clone(),
                 build_id: current.build_id.to_string(),
                 attempt: current.attempt,
                 operation: rdm_core::OperationId::node("node.delete", &extra.node_id),
@@ -1680,7 +1680,7 @@ fn one_step_create_of(action: &Option<rdm_admin::accepted::AttemptAction>) -> Op
 
 fn exit_records() -> rdm_admin::admin::Records {
     let r = rdm_admin::admin::Records::default();
-    r.set_status(std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), std::sync::Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), std::sync::Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()), "mesh1".into(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), rdm_core::NodeId::mint());
+    r.set_status(std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), std::sync::Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), std::sync::Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()), "mesh1".into(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), rdm_core::NodeId::mint());
     r
 }
 
@@ -1712,7 +1712,7 @@ mod refused_caller_terminate {
         let live = cp.open_terminate(tracing::Span::none(), "returned-birth", path.clone(), n.node_id.clone(), incarnation.clone()).await;
         assert!(matches!(live, Err(Refusal::Reject(rdm_admin::build::BuildReject::UnknownNode { .. }))), "a live birth no workflow deleted is refused unknown-node: {live:?}");
         // Its recovery's node.delete wrote its record deleted; the re-create has not completed.
-        let mut row = rdm_admin::storage::NodeRow::new(path.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Deleted);
+        let mut row = rdm_admin::storage::NodeRow::new(path.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Deleted);
         row.birth_mut(&incarnation, &path);
         {
             use rdm_admin::storage::NodesStorage as _;
@@ -1750,7 +1750,7 @@ mod refused_caller_terminate {
         // The recovery's node.delete of this exact birth receipted NodeDeleted in the current Build; this
         // fabric-primary's atlas holds no deleted row of it.
         let operation = rdm_core::OperationId::node("node.delete", &n.node_id);
-        let op = rdm_core::LifecycleOp { mesh: n.mesh.clone(), kind: n.kind, build_id: before.build_id.to_string(), attempt: before.attempt, operation: operation.clone(), node_id: n.node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+        let op = rdm_core::LifecycleOp { mesh: n.mesh.clone(), r#type: n.r#type.clone(), build_id: before.build_id.to_string(), attempt: before.attempt, operation: operation.clone(), node_id: n.node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
         e.builds
             .append_step_receipt(&rdm_admin::build_state::BuildStepReceipt { mesh: None, build_id: before.build_id.clone(), attempt: before.attempt, operation, step: "NodeDeleted".into(), outcome: rdm_admin::build_state::StepOutcome::Complete, output: serde_json::to_value(&op).ok(), executor: None })
             .await

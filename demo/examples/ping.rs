@@ -17,7 +17,7 @@ use anyhow::{anyhow, Context, Result};
 use rdm_client::{Filter, MeshNode, NodeStatus, Nodes, PathName, Peers};
 use rdm_core::outcome::{NotSentReason, RpcOutcome};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
-use rdm_core::{NodeKind, NodeProtocol};
+use rdm_core::{NodeProtocol};
 use rdm_transport::{CallOptions, NodeTarget};
 
 #[tokio::main]
@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage ping [<path> <name>]")),
         _ => all
             .iter()
-            .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .find(|n| n.kind != "node-admin" && n.status == NodeStatus::Ready)
             .map(|n| n.name.clone())
             .ok_or_else(|| anyhow!("no Ready role node found in estate"))?,
     };

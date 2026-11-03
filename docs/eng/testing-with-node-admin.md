@@ -86,7 +86,7 @@ names:
 
 | call | operation |
 |---|---|
-| `nodes.create_named(based_on, specs)`, `estate.create_node(mesh, kind)` | [node.create](../architecture/lifecycles/node-create.md), itself a `build.create` of the complete topology (`Change::Reconcile`) |
+| `nodes.create_named(based_on, specs)`, `estate.create_node(mesh, type)` | [node.create](../architecture/lifecycles/node-create.md), itself a `build.create` of the complete topology (`Change::Reconcile`) |
 | `nodes.stop(path)` / `nodes.start(path)` | [node.stop](../architecture/lifecycles/node-stop.md) / [node.start](../architecture/lifecycles/node-start.md): same node id and incarnation |
 | `nodes.delete(path)` | [node.delete](../architecture/lifecycles/node-delete.md) |
 | `nodes.delete_connections(path)`, `connections_delete(…)` | [node.connection.delete](../architecture/lifecycles/node-connections-delete.md) |

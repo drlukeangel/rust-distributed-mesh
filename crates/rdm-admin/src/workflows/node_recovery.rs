@@ -43,21 +43,21 @@ mod tests {
         );
 
         let me_id = NodeId::mint();
-        let mut me_node = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let mut me_node = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
         me_node.node_id = me_id.clone();
         me_node.incarnation_id = Some(IncarnationId::mint());
         me_node.status = NodeStatus::PendingReconnect;
 
-        let mut silent_member = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut silent_member = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         let silent_inc = IncarnationId::mint();
         silent_member.incarnation_id = Some(silent_inc.clone());
         silent_member.status = NodeStatus::PendingReconnect;
 
-        let mut ready_member = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut ready_member = Node::allocated(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node");
         ready_member.incarnation_id = Some(IncarnationId::mint());
         ready_member.status = NodeStatus::Ready;
 
-        let mut peer_mesh_silent = Node::allocated(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode);
+        let mut peer_mesh_silent = Node::allocated(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node");
         peer_mesh_silent.incarnation_id = Some(IncarnationId::mint());
         peer_mesh_silent.status = NodeStatus::PendingReconnect;
 
@@ -88,15 +88,15 @@ mod tests {
         let durable_deleted_id = NodeId::mint();
         let durable_rows = vec![
             // Path not in view, planned, not deleted -> included as PendingReconnect
-            RuntimeRow { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+            RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(),
                 node_id: durable_unheard_id.clone(),
-                name: rdm_core::PathName::new("mesh1.rpc", "3").unwrap(),
+                name: rdm_core::PathName::new("mesh1.node", "3").unwrap(),
                 incarnation_id: durable_unheard_inc.clone(),
                 runtime: rt_fact(4100, 10),
                 data_dir: None,
             },
-            // Path already in view (`mesh1.rpc.2`) -> skipped
-            RuntimeRow { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(),
+            // Path already in view (`mesh1.node.2`) -> skipped
+            RuntimeRow { r#type: "node".into(), mesh: "mesh1".to_owned(),
                 node_id: ready_member.node_id.clone(),
                 name: ready_member.name.clone(),
                 incarnation_id: ready_member.incarnation_id.clone().unwrap(),
@@ -104,24 +104,24 @@ mod tests {
                 data_dir: None,
             },
             // Deleted birth -> skipped
-            RuntimeRow { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+            RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(),
                 node_id: durable_deleted_id.clone(),
-                name: rdm_core::PathName::new("mesh1.rpc", "4").unwrap(),
+                name: rdm_core::PathName::new("mesh1.node", "4").unwrap(),
                 incarnation_id: IncarnationId::mint(),
                 runtime: rt_fact(4102, 12),
                 data_dir: None,
             },
             // Unplanned path -> skipped
-            RuntimeRow { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+            RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(),
                 node_id: NodeId::mint(),
-                name: rdm_core::PathName::new("mesh1.rpc", "99").unwrap(),
+                name: rdm_core::PathName::new("mesh1.node", "99").unwrap(),
                 incarnation_id: IncarnationId::mint(),
                 runtime: rt_fact(4103, 13),
                 data_dir: None,
             },
         ];
 
-        let planned = |p: &PathName| *p != rdm_core::PathName::new("mesh1.rpc", "99").unwrap();
+        let planned = |p: &PathName| *p != rdm_core::PathName::new("mesh1.node", "99").unwrap();
         let deleted = |id: &str| id == durable_deleted_id.as_str();
         let durable = durable_births(&view, &durable_rows, &planned, &deleted);
         assert_eq!(durable.len(), 1);
