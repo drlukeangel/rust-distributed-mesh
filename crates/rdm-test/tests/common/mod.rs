@@ -300,7 +300,7 @@ pub struct Published {
     /// The exact births removed from their path, in order.
     pub removed_births: Mutex<Vec<(PathName, NodeId, IncarnationId)>>,
     /// The node rows the executor writes a create's rows through, where the cell keeps a nodes store
-    /// (`AdminSide::node_rows`): a rerun reads its completed steps' values from them (D67).
+    /// (`AdminSide::node_rows_on`): a rerun reads its completed steps' values from them (D67).
     pub rows: Option<std::sync::Arc<rdm_admin::node_rows::NodeRows>>,
 }
 impl Published {
@@ -356,6 +356,44 @@ pub fn template(admin: &AdminSide) -> LaunchTemplate {
 /// birth of `fabric`, of `mesh`, as a run's step log writes them: what a pipeline's `builds` is.
 pub fn stepping(fabric: &FabricId, mesh: &str) -> rdm_admin::build_run::FramedBuilds {
     rdm_admin::build_run::FramedBuilds::stepping(Arc::new(MemoryBuildStateAdapter::new()), fabric, &NodeId::mint(), mesh)
+}
+
+/// `nodes.storage` on the fabric's store root `template` names, as `admin` opens it: where a birth
+/// launched from `template` writes its own part of its record (`NodeProperties`) at its join.
+pub async fn store_root_nodes(admin: &AdminSide, template: &LaunchTemplate) -> Arc<dyn rdm_admin::storage::NodesStorage> {
+    let scope = rdm_admin::storage_backend::StorageScope {
+        data_dir: template.data_root.join("admin"),
+        fabric_id: admin.fabric.clone(),
+        own_mesh: admin.launcher.mesh.clone(),
+        writer: admin.launcher.incarnation.clone(),
+        node_id: admin.launcher.node_id.clone(),
+    };
+    std::fs::create_dir_all(&scope.data_dir).expect("the admin's data dir");
+    rdm_admin::storage_backend::file_backend(template.store_dir.clone()).open(&scope).await.unwrap_or_else(|e| panic!("the store root {} opens: {e}", template.store_dir.display())).nodes
+}
+
+/// Await the birth `node_id`'s own part of its record on `nodes`, written as it bound at its join
+/// (`NodeProperties` with its transport address): the durable source a rerun reads WaitForBind's value
+/// from (D67). Panics past 10 s.
+pub async fn until_bound(nodes: &Arc<dyn rdm_admin::storage::NodesStorage>, node_id: &NodeId) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if nodes.properties(node_id).await.ok().flatten().is_some_and(|p| p.transport_addr.is_some()) {
+            return;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{node_id} wrote no bound properties to the store root within 10 s of its join");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// [`stepping`] whose step events name `executor`, the admin that launches from the cell's template, as
+/// their source: a rerun by the same executor reads the steps as its own (an event of another birth
+/// is a lost executor's launch).
+pub fn stepping_as(fabric: &FabricId, mesh: &str, executor: &rdm_core::launch::Launcher) -> rdm_admin::build_run::FramedBuilds {
+    let inner: Arc<dyn rdm_admin::build_state::BuildStateAdapter> = Arc::new(MemoryBuildStateAdapter::new());
+    let mut events = rdm_admin::events_storage::EventsWriter::on(inner.events(), fabric, &executor.node_id);
+    events.source.incarnation = executor.incarnation.clone();
+    rdm_admin::build_run::FramedBuilds::new(inner, Arc::new(rdm_admin::build_run::SectionRuns::default())).writing_steps(events, mesh)
 }
 
 /// The exact runtime a create launched for `node_id` under `data_root`, as its birth published it in its

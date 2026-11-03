@@ -130,9 +130,10 @@ async fn killed_then_rerun(kill_at: KillAt) {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&admin);
-    let builds = crate::common::stepping(&fabric, "mesh1");
+    let builds = crate::common::stepping_as(&fabric, "mesh1", &admin.launcher);
     let build_id = publish_build(&builds, add_node()).await;
-    let sink = Published::with_rows(admin.node_rows());
+    let nodes = crate::common::store_root_nodes(&admin, &template).await;
+    let sink = Published::with_rows(admin.node_rows_on(nodes.clone()));
     let reached = Arc::new(Notify::new());
     let process = Arc::new(ProcessDeploymentProvider::new());
     // The node.id the Build minted for the node, one per cell: a cell beside it never runs a runtime of it.
@@ -163,6 +164,11 @@ async fn killed_then_rerun(kill_at: KillAt) {
         _ = reached.notified() => {}
     }
     let first_pid = *first.spawned.lock().unwrap().first().expect("the first run spawned the runtime");
+    // A run past WaitForBind: the birth writes its own part of its record as it bound at its join, the
+    // value the rerun reads for that step (D67).
+    if kill_at == KillAt::InWaitForMeshJoin {
+        crate::common::until_bound(&nodes, &node_id).await;
+    }
     // Where the first run's birth reported it bound, when it got as far as publishing it.
     let reported_before_kill = sink.nodes.lock().unwrap().first().and_then(|n| n.transport_addr);
 
@@ -238,9 +244,10 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
         let template = template(&admin);
-        let builds = crate::common::stepping(&fabric, "mesh1");
+        let builds = crate::common::stepping_as(&fabric, "mesh1", &admin.launcher);
         let build_id = publish_build(&builds, add_node()).await;
-        let sink = Published::with_rows(admin.node_rows());
+        let nodes = crate::common::store_root_nodes(&admin, &template).await;
+        let sink = Published::with_rows(admin.node_rows_on(nodes.clone()));
         let reached = Arc::new(Notify::new());
         let process = Arc::new(ProcessDeploymentProvider::new());
         // The node.id the Build minted for the node, one per cell: a cell beside it never runs a runtime of it.
@@ -267,6 +274,9 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
             _ = reached.notified() => {}
         }
         let first_pid = *first.spawned.lock().unwrap().first().expect("the first run spawned the runtime");
+        // The birth writes its own part of its record as it bound at its join: the value the rerun reads
+        // for WaitForBind (D67).
+        crate::common::until_bound(&nodes, &node_id).await;
 
         // The admin process restarts: nothing of the admitted birth is in memory; its durable rows stand.
         let restarted = Joins::over(admin.nodes_storage.clone());
