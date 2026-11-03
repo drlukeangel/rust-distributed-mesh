@@ -26,7 +26,8 @@ no gossip frame is published. A renewal is invisible to every other node.
 
 1. The issuer's tick reads its cert rows; a row whose `renew_at` has passed names a birth to renew.
 2. It signs a fresh member cert for that exact birth with the mesh's current issuing key, on rafka-time.
-3. It sends `RenewCert` to the birth's held address on `Send` ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes)). A call that ends `NotSent` or `Indeterminate` is spanned; the spent call marks the birth ([node recovery](node-recovery.md) step 1), and the tick sends it nothing while the mark holds.
+3. It sends `RenewCert` to the birth's held address on `Send` ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes)). A call that ends
+   `NotSent` or `Indeterminate` is spanned; the spent call marks the birth ([node recovery](node-recovery.md) step 1), and the tick sends it nothing while the mark holds.
 4. The node checks the cert names its own `(node.id, incarnation)`, installs it, and answers
    `CertRenewed`. Every connection it opens from now presents the new cert.
 5. The node's mesh-primary writes the expiry the node answered on the node's record. The old cert expires on its own.
@@ -60,7 +61,8 @@ sequenceDiagram
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that
-does not reach the node ends on its `Send`; its spent call marks the birth for [node recovery](node-recovery.md), and the tick renews it once the mark ends. A successor primary folds the cert
+does not reach the node ends on its `Send`; its spent call marks the birth for
+[node recovery](node-recovery.md), and the tick renews it once the mark ends. A successor primary folds the cert
 rows and continues the schedule from them.
 
 ## Observability contract

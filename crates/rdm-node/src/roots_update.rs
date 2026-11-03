@@ -71,7 +71,7 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:59
     /// "2. `node.roots.update { [old, new] }` to every node of the fabric, node-admins first. From its install a node admits a chain to either anchor. The row goes `distributed` on the last receipt."
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:64
-    /// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits rather than replacing an anchor something still chains to."
+    /// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, marked by its spent call; the rotation waits rather than replacing an anchor something still chains to."
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:67
     /// "5. `node.roots.update { [new] }` to every node. The row goes `updated` on the last receipt, and the old secret is destroyed on every admin."
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:103

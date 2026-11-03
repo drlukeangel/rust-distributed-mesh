@@ -341,7 +341,7 @@ fn a_join_writes_the_births_cert_row_and_node_get_shows_it() {
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:28
 /// "2. It signs a fresh member cert for that exact birth with the mesh's current issuing key, on rafka-time."
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:29
-/// "3. It sends `RenewCert` to the birth's held address. `NotSent` or `Indeterminate` is spanned and retried on the next tick, until the old cert expires; nothing else happens."
+/// "3. It sends `RenewCert` to the birth's held address on `Send` ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes)). A call that ends `NotSent` or `Indeterminate` is spanned; the spent call marks the birth ([node recovery](node-recovery.md) step 1), and the tick sends it nothing while the mark holds."
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:31
 /// "4. The node checks the cert names its own `(node.id, incarnation)`, installs it, and answers `CertRenewed`. Every connection it opens from now presents the new cert."
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:33
@@ -395,7 +395,7 @@ fn a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admi
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:21
 /// "| Overlap | The old cert stays valid until its own expiry; a dial in flight during the install is admitted on either |"
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:22
-/// "| Never | A connection closed, a status set, a frame published, a node marked. A node past its TTL whose renewal has not reached it is refused on its next new dial by name ([node.connections.admit](node-connections-admit.md)) and its existing connections stay |"
+/// "| Never | A connection closed, a status set, a frame published by the renewal. A spent renewal call marks the birth as any spent call does (step 3). A node past its TTL whose renewal has not reached it is refused on its next new dial by name ([node.connection.create](node-connections-admit.md)) and its existing connections stay |"
 /// CONTRACT, the control (node-cert-renew.md: "nothing is terminated, nothing reconnects, no status
 /// changes and no gossip frame is published. A renewal is invisible to every other node"): a member
 /// holding an open Direct connection is renewed. The connection is the same one after the install
@@ -504,22 +504,24 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:20
 /// "| Row | On `CertRenewed` the node's mesh-primary writes the birth's cert dates (`issued_at`, `expires_at`, `renew_at`) on the node's record and writes the record whole: the written expiry is the receipt. A mesh-primary's own cert, issued by the fabric-primary, it writes on its own record when it installs it. A renewal not answered writes nothing, and the row's `renew_at`, already passed, renews it on the next tick |"
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:22
-/// "| Never | A connection closed, a status set, a frame published, a node marked. A node past its TTL whose renewal has not reached it is refused on its next new dial by name ([node.connections.admit](node-connections-admit.md)) and its existing connections stay |"
+/// "| Never | A connection closed, a status set, a frame published by the renewal. A spent renewal call marks the birth as any spent call does (step 3). A node past its TTL whose renewal has not reached it is refused on its next new dial by name ([node.connection.create](node-connections-admit.md)) and its existing connections stay |"
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:23
 /// "| Spans | `rdm.node_admin.cert.update.via-renewal` (node, node_id, incarnation_id, issued_at, expires_at, previous_expires_at, outcome: `installed` / `not-sent` / `refused`) on the issuer; `rdm.node.cert.update.via-installed` on the node |"
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:29
 /// "3. It sends `RenewCert` to the birth's held address on `Send` ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes)). A call that ends `NotSent` or `Indeterminate` is spanned; the spent call marks the birth ([node recovery](node-recovery.md) step 1), and the tick sends it nothing while the mark holds."
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:62
 /// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that does not reach the node ends on its `Send`; its spent call marks the birth for [node recovery](node-recovery.md), and the tick renews it once the mark ends. A successor primary folds the cert rows and continues the schedule from them."
-/// CONTRACT (node-cert-renew.md step 3 and Failure; Q344): while the mesh-primary's calls to a member
-/// end NotSent, each renewal ends on its `Send` spanned `not-sent` and its spent call marks the birth
-/// (`via-call-failed`); the member, alive and heard, ends its mark, and the tick renews it again: at
-/// least two `not-sent` renewals. The member stays ready in the view at the same incarnation, no
-/// data-dir-lost is recorded of it, and its cert row is still the join's (Q141: a renewal not answered
-/// writes nothing). Once the calls reach it, the next tick installs the renewal.
+/// CONTRACT (node-cert-renew.md step 3 and Failure; Q344, Q332): the mesh-primary's own connections
+/// blocked, each renewal is refused by its own client before any attempt (`NotSent`,
+/// `AdmissionBlocked`): no attempt is spent and no reply missed, so nothing marks the birth (no
+/// `via-call-failed` of it) and a later tick sends it again: at least two `not-sent` renewals. The
+/// member stays ready in the view at the same incarnation, no data-dir-lost is recorded of it, and its
+/// cert row is still the join's (Q141: a renewal not answered writes nothing). Once the block lifts,
+/// the next tick installs the renewal. (A spent call's mark, which holds the tick back, is
+/// `cert_renewal::tests::a_marked_birth_is_sent_no_renewal_until_its_mark_ends` in rdm-admin.)
 #[test]
-fn a_renewal_not_sent_marks_the_birth_and_is_sent_again_once_the_mark_ends() {
-    let cell = "a_renewal_not_sent_marks_the_birth_and_is_sent_again_once_the_mark_ends";
+fn a_renewal_its_own_admin_blocks_is_spent_nowhere_marks_nothing_and_is_sent_again() {
+    let cell = "a_renewal_its_own_admin_blocks_is_spent_nowhere_marks_nothing_and_is_sent_again";
     if crate::own_process::delegated(module_path!(), cell) {
         return;
     }
@@ -527,7 +529,7 @@ fn a_renewal_not_sent_marks_the_birth_and_is_sent_again_once_the_mark_ends() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = cell_dir("not-sent");
-        // A 24 s TTL: the renewal is retried from its point to the held cert's expiry, which leaves
+        // A 24 s TTL: the renewal is sent by each tick from its point to the held cert's expiry, which leaves
         // seconds to send it again once the calls reach the member.
         let root = boot_root(&dir, &policy(&[(certs::ENV_MEMBER_CERT_TTL_SECS, 24)])).await;
         let b = member(&root, &dir, "1").await;
@@ -540,11 +542,12 @@ fn a_renewal_not_sent_marks_the_birth_and_is_sent_again_once_the_mark_ends() {
         assert!(renewals_of(&spans, "mesh1.node.1").iter().all(|f| f["outcome"] == "not-sent"), "nothing reached it, nothing was installed");
         let view = node_get(&root, &b.digest.node.node_id).await.expect("mesh1.node.1 in the view");
         let id = b.digest.node.node_id.to_string();
+        assert!(tries.iter().all(|f| f.get("reason").is_some_and(|r| r.contains("AdmissionBlocked"))), "each renewal was refused by its own client's block: {tries:?}");
         assert!(
-            named(&spans, "rdm.node_admin.node.update.via-call-failed").iter().any(|f| f.get("node_id") == Some(&id)),
-            "the renewal's spent call marked the birth"
+            !named(&spans, "rdm.node_admin.node.update.via-call-failed").iter().any(|f| f.get("node_id") == Some(&id)),
+            "a call refused before any attempt is spent nowhere: nothing marks the birth"
         );
-        assert_eq!((view.status, view.incarnation_id.as_ref()), (NodeStatus::Ready, Some(&b.digest.node.incarnation)), "the member, heard, is ready at its birth: {view:?}");
+        assert_eq!((view.status, view.incarnation_id.as_ref()), (NodeStatus::Ready, Some(&b.digest.node.incarnation)), "the member is marked nothing: {view:?}");
         assert!(view.data_dir_lost.is_none(), "no fact is recorded of it: {view:?}");
         let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|r| r.birth(&b.digest.node.incarnation).and_then(|f| f.cert.clone())).expect("the member's cert dates");
         assert_eq!(row.issued_at, num(&join_issue(&spans, "mesh1.node.1"), "issued_at_rafka_ms"), "a renewal not answered writes nothing: the row is still the join's after {tries:?}");
@@ -623,7 +626,7 @@ fn attr_num(sp: &serde_json::Value, k: &str) -> u64 {
 
 // @feature: node-lifecycle
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:62
-/// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that does not reach the node is retried every tick and marks the node nothing: reachability is [node recovery](node-recovery.md)'s business, not this primitive's. A successor primary folds the cert rows and continues the schedule from them."
+/// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that does not reach the node ends on its `Send`; its spent call marks the birth for [node recovery](node-recovery.md), and the tick renews it once the mark ends. A successor primary folds the cert rows and continues the schedule from them."
 /// CONTRACT (node-cert-renew.md Failure: "A successor authority folds the cert rows and continues the
 /// schedule from them"; fabric-certs.md §Tracking: "nothing about renewal lives only in memory";
 /// node-stop.md PrimaryRole primary: "A target holding a role has it moved first by node.primary.update ...
@@ -957,7 +960,7 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_throu
 /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:21
 /// "| Spans | `rdm.node_admin.issuer.create.via-renewal` (mesh, issuer_expires_at, previous_issuer_expires_at, admins, outcome) on the fabric-primary, and each `node.issuer.update`'s spans |"
 /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:28
-/// "2. [node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other node-admin of the mesh as a command forwarded through the mesh-primary ([Forward 0x1A](../node-rpc-envelope.md#forward-op-0x1a-core), the mesh-primary the carrier). An admin not reached is retried on the next tick until the old issuer expires."
+/// "2. [node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other node-admin of the mesh as a command forwarded through the mesh-primary ([Forward 0x1A](../node-rpc-envelope.md#forward-op-0x1a-core), the mesh-primary the carrier). An admin not reached is marked by its spent call and sent again once the mark ends."
 /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:33
 /// "4. Each admin's record holds the dates it answered, written by its mesh-primary. The old issuer expires on its own."
 /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:61
@@ -977,7 +980,7 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_throu
 /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:26
 /// "1. The fabric-primary holds the mesh's new issuing material ([mesh.issuer.renew](mesh-issuer-renew.md) step 1)."
 /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:27
-/// "2. It sends `UpdateIssuer` to the mesh-primary's held address, and to each other admin as a Forward 0x1A through the mesh-primary, once the mesh-primary's node row holds the new dates; the carrier makes the one inner call and returns its reply. `NotSent` or `Indeterminate` is spanned and retried on the next tick, until the old issuer expires."
+/// "2. It sends `UpdateIssuer` to the mesh-primary's held address, and to each other admin as a Forward 0x1A through the mesh-primary, once the mesh-primary's node row holds the new dates; the carrier makes the one inner call and returns its reply. `NotSent` or `Indeterminate` is spanned; the spent call marks the admin, and it is sent nothing while the mark holds."
 /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:31
 /// "3. The admin checks the material names its own mesh and its own `(node.id, incarnation)` and verifies the issuing cert to a root it holds (the issuing cert against the CA, the CA against the root), installs it, and answers `IssuerUpdated`."
 /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:34
@@ -1105,11 +1108,11 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:61
 /// "3. `fabric.ca.renew` under the new anchor: a new CA signed by the new root, every mesh's issuer re-minted under it ([mesh.issuer.renew](mesh-issuer-renew.md)). The row goes `ca-rotated`. Members renew under the new issuers at their own points ([node.cert.renew](node-cert-renew.md))."
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:64
-/// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits rather than replacing an anchor something still chains to."
+/// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, marked by its spent call; the rotation waits rather than replacing an anchor something still chains to."
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:67
 /// "5. `node.roots.update { [new] }` to every node. The row goes `updated` on the last receipt, and the old secret is destroyed on every admin."
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:96
-/// "A node not reached in a phase is retried every tick; the phase does not advance without it, and nothing expires meanwhile that the overlap does not cover. A successor fabric-primary continues from the roots row and the CA row, and from its own copy of the root secret, which every node-admin holds ([custody](../fabric-certs.md#custody)). A successor that does not hold the CA the CA row names (a renewal whose step 2 had not reached it) never mints under a CA it does not hold: it runs `fabric.ca.renew` again from the root secret, and step 2 reaches every admin under the new CA."
+/// "A node not reached in a phase is marked by its spent call and sent again once the mark ends or its re-created birth is held; the phase does not advance without it, and nothing expires meanwhile that the overlap does not cover. A successor fabric-primary continues from the roots row and the CA row, and from its own copy of the root secret, which every node-admin holds ([custody](../fabric-certs.md#custody)). A successor that does not hold the CA the CA row names (a renewal whose step 2 had not reached it) never mints under a CA it does not hold: it runs `fabric.ca.renew` again from the root secret, and step 2 reaches every admin under the new CA."
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:103
 /// "Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans). The cells, with the TTLs set to seconds in the test kit: an internal `fabric.ca.renew` with a dial admitted before, during and after and no `node.roots.update` span; a `fabric.root.update` through all five phases with a dial admitted at every phase, the spans and the roots row beside it, and an `updated` set attempted before step 4 refused by name."
 #[test]

@@ -1588,10 +1588,14 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
         if answered {
             break Ok(seen);
         }
-        if std::time::Instant::now() >= until {
+        // A Ping whose `Send` is spent is not sent again (Q344): only an answer that is not yet
+        // `Pong` (the typed NotReady of a router not yet serving) takes the next turn, on the one
+        // schedule (node-rpc.md §43), within the page's 20 s.
+        let spent = matches!(&out, rdm_core::outcome::RpcOutcome::NotSent(_) | rdm_core::outcome::RpcOutcome::Indeterminate(_));
+        if spent || std::time::Instant::now() >= until {
             break Err(seen);
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(rdm_transport::Pacing::from_cadences().after(pings)).await;
     };
     tracing::info_span!(
         "rdm.node_admin.mesh.update.via-pending-reachability",
@@ -1606,7 +1610,7 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
     )
     .in_scope(|| tracing::info!("the launched birth was waited for before the mesh-state hand-off"));
     if let Err(last) = reach {
-        return Err(format!("{}: unreachable for 20 s before the {state:?} hand-off ({pings} pings, last: {last}); nothing was sent, and Build(shape) does not start under an assumed state", target.node_id));
+        return Err(format!("{}: unreachable before the {state:?} hand-off ({pings} pings, last: {last}); nothing was sent, and Build(shape) does not start under an assumed state", target.node_id));
     }
     // The one call. Applied and AlreadyApplied succeed; every other outcome fails the step typed,
     // and the rectifier is the retry.

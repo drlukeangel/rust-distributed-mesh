@@ -29,11 +29,6 @@ pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str, rea
     adopted
 }
 
-/// How many reads one `fabric-primary` move owes before the pull ends unanswered, and the pause
-/// between them (grows by this much per attempt). Read-only spacing: nothing else retries.
-const ROLE_MOVE_ATTEMPTS: u32 = 12;
-const ROLE_MOVE_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
-
 /// A `mesh-primary` pulls rafka-time once from the new `fabric-primary` each time the `fabric-primary`
 /// moves to another node (a record of a later revision naming another node;
 /// `docs/architecture/fabric-node-hooks.md` "rafka-time"). The `fabric-primary` itself keeps the
@@ -41,10 +36,10 @@ const ROLE_MOVE_PAUSE: std::time::Duration = std::time::Duration::from_millis(25
 /// lineage. A replica is not a `mesh-primary` and adopted its time at its join.
 ///
 /// The pull is `GetTopology` of the `fabric-primary`, adopted through [`adopt_pulled`] under the rule
-/// of a `mesh-primary`. Each read targets the `fabric-primary` this admin's primary records name at
-/// that moment: a primary superseded while the pull runs (a hand-over whose new primary was itself
-/// replaced) answers `served-by-a-replica` and is refused by name, and the next read goes to the
-/// primary that superseded it. A primary that never answers ends the pull with the time held.
+/// of a `mesh-primary`: one read on the default `Send` (Q344) of the `fabric-primary` this admin's
+/// primary records name then. A primary superseded meanwhile answers `served-by-a-replica` and is
+/// refused by name; the record that names its successor is the next move, and its own pull. A
+/// primary that never answers ends the pull with the time held.
 pub async fn run_role_move_pull(
     time: RafkaTime,
     me: crate::model::PathName,
@@ -96,11 +91,17 @@ async fn pull_from_fabric_primary(
 ) -> (String, u32, Option<rdm_core::Primary>) {
     let mut last = String::from("no attempt");
     let mut primary = moved_to;
-    for attempt in 1..=ROLE_MOVE_ATTEMPTS {
+    // The read is one call on the default `Send` (Q344); the pull reads again only on a domain answer,
+    // the primary's not-ready, within `Send`'s attempts and on its schedule (node-rpc.md §43).
+    let allowed = u32::from(rdm_transport::Send::default().attempts.max(1));
+    let pacing = rdm_transport::Pacing::from_cadences();
+    let mut turn = 0u32;
+    while turn < allowed {
+        turn += 1;
         // The primary this admin's records name now: a role that moved again is pulled from where it is.
         if let Some(current) = topology_view.primaries().fabric() {
             if current.node_id == *me_id {
-                return ("kept: this admin took the fabric-primary role itself".into(), attempt - 1, None);
+                return ("kept: this admin took the fabric-primary role itself".into(), turn - 1, None);
             }
             primary = current;
         }
@@ -109,17 +110,24 @@ async fn pull_from_fabric_primary(
             Ok(read) => {
                 let served_by = primary.node_id.to_string();
                 match read.adopt_rafka_time(time, topology_view, &me_id.to_string(), topology_view.mesh_name(), me_id, &served_by) {
-                    Ok(_) => return ("adopted".into(), attempt, Some(primary)),
-                    Err(e) => last = e.to_string(),
+                    Ok(_) => return ("adopted".into(), turn, Some(primary)),
+                    Err(e) => {
+                        last = e.to_string();
+                        break;
+                    }
                 }
             }
-            Err(e) => last = e.to_string(),
+            Err(rdm_node::topology_read::TopologyFailure::NotReady(why)) => last = why,
+            Err(e) => {
+                last = e.to_string();
+                break;
+            }
         }
-        tokio::time::sleep(ROLE_MOVE_PAUSE * attempt).await;
+        tokio::time::sleep(pacing.after(turn)).await;
     }
-    tracing::info_span!("rdm.mesh.entry.reject.via-rafka-time-pull-unanswered", node_path = %me.path, node_name = %me.name, to = %primary.node_id, attempts = ROLE_MOVE_ATTEMPTS, reason = %last)
+    tracing::info_span!("rdm.mesh.entry.reject.via-rafka-time-pull-unanswered", node_path = %me.path, node_name = %me.name, to = %primary.node_id, attempts = turn, reason = %last)
         .in_scope(|| tracing::warn!("the fabric-primary did not serve rafka-time: this mesh primary keeps the rafka-time it holds"));
-    (format!("kept: {last}"), ROLE_MOVE_ATTEMPTS, None)
+    (format!("kept: {last}"), turn, None)
 }
 
 /// A node-admin with no launcher and no `JoinNode` to make whose store names other nodes takes

@@ -864,7 +864,7 @@ mod tests {
 
     // @feature: node-lifecycle
     /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:62
-    /// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that does not reach the node is retried every tick and marks the node nothing: reachability is [node recovery](node-recovery.md)'s business, not this primitive's. A successor primary folds the cert rows and continues the schedule from them."
+    /// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that does not reach the node ends on its `Send`; its spent call marks the birth for [node recovery](node-recovery.md), and the tick renews it once the mark ends. A successor primary folds the cert rows and continues the schedule from them."
     /// CONTRACT (fabric-certs.md §Tracking: "A successor mesh-primary reads its nodes' records and
     /// continues the schedule from them"; Q241: renew_at is derived from the cert's dates and the
     /// fabric's policy alone, so the issuer, the installer and any successor compute one value): the
@@ -886,8 +886,8 @@ mod tests {
 
     // @feature: node-lifecycle
     /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:29
-    /// "3. It sends `RenewCert` to the birth's held address. `NotSent` or `Indeterminate` is spanned and retried on the next tick, until the old cert expires; nothing else happens."
-    /// CONTRACT (node-cert-renew.md step 3: an unanswered renewal is retried on the next tick; Q241:
+    /// "3. It sends `RenewCert` to the birth's held address on `Send` ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes)). A call that ends `NotSent` or `Indeterminate` is spanned; the spent call marks the birth ([node recovery](node-recovery.md) step 1), and the tick sends it nothing while the mark holds."
+    /// CONTRACT (node-cert-renew.md step 3: a renewal not answered is sent again by a later tick; Q241:
     /// the dates are the cert's own): one issue reaches mesh2's primary twice, the second delivery
     /// later on its clock. Both installs write the issue's dates; the second moves nothing.
     #[test]
@@ -1030,6 +1030,64 @@ mod tests {
         assert!(renewed.issued_at > joined.issued_at && renewed.renew_at > 1_000_000, "the record names the renewed cert, written once installed: {renewed:?}");
     }
 
+    // @feature: node-lifecycle
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:29
+    /// "3. It sends `RenewCert` to the birth's held address on `Send` ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes)). A call that ends `NotSent` or `Indeterminate` is spanned; the spent call marks the birth ([node recovery](node-recovery.md) step 1), and the tick sends it nothing while the mark holds."
+    /// CONTRACT (node-cert-renew.md step 3 and Failure; Q344, Q332): a birth past its renew point that
+    /// this admin holds a spent-call mark of is renewed by no tick while the mark holds; once the mark
+    /// ends, the next tick renews it. The birth is the fabric-primary's own, renewed in process, so the
+    /// renewal is counted by its install. What must NOT happen: a renewal sent to a marked birth.
+    #[tokio::test]
+    async fn a_marked_birth_is_sent_no_renewal_until_its_mark_ends() {
+        use crate::model::{Fabric, Mesh, ProviderKind, ScopeStatus};
+        let root = rdm_core::certs::mint_key();
+        let ca = rdm_core::certs::CaKey::mint(&root, rdm_core::certs::CA_CERT_TTL_SECS, 1);
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(1_000_000);
+        let issuer = Arc::new(CertIssuer::with_root(root, ca, None, time.clone()));
+        let mut me = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
+        me.incarnation_id = Some(IncarnationId::mint());
+        me.is_primary = true;
+        me.is_fabric_primary = true;
+        let view = Topology {
+            fabric: Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(crate::model::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
+            nodes: vec![me.clone()],
+        };
+        let incarnation = me.incarnation_id.clone().unwrap();
+        let store = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let mut held = crate::storage::NodeRow::new(me.location(), "mesh1".to_owned(), "node-admin", me.node_id.clone(), me.status);
+        held.birth_mut(&incarnation, &me.location()).cert = Some(CertDates { issued_at: 1, expires_at: 9_000_000, issuer_expires_at: 9_000_000, renew_at: 500_000 });
+        store.put_node(&held).await.unwrap();
+        let installs = Arc::new(Mutex::new(0usize));
+        let counted = installs.clone();
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
+        let r = Renewals::new(me.location(), me.node_id.clone(), issuer, store, Default::default(), client, Arc::new(move |_| *counted.lock().unwrap() += 1));
+        let marks: crate::offline::UnreachableMarks = Arc::default();
+        r.set_marks(marks.clone());
+        marks.lock().unwrap().insert(me.node_id.clone(), crate::offline::UnreachableMark { incarnation: incarnation.clone(), at: std::time::Instant::now(), at_ms: 0, reason: crate::offline::ATTEMPTS_SPENT });
+        let tick = |r: Arc<Renewals>| {
+            let view = view.clone();
+            async move {
+                renew_members(&r, &view).await;
+                for _ in 0..200 {
+                    if r.in_flight.lock().unwrap().is_empty() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            }
+        };
+
+        tick(r.clone()).await;
+        tick(r.clone()).await;
+        assert_eq!(*installs.lock().unwrap(), 0, "a marked birth is renewed by no tick");
+        marks.lock().unwrap().remove(&me.node_id);
+        tick(r.clone()).await;
+        assert_eq!(*installs.lock().unwrap(), 1, "the mark ended: the next tick renews it");
+    }
+
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:10
     /// "- `fabric.ca.renew` rotates the CA internally, on policy, with nothing pushed to any node but the ordinary issuer and member renewals: the new CA chains to the same anchor, so every verifier's trust set is unchanged."
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:24
@@ -1043,11 +1101,11 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:40
     /// "| Steps | 1 write the new root secret beside the old one on the fabric-primary; row `minted`; 2 `node.roots.update { roots: [old, new] }` to every node, admins first (the secret to admins, the public set to every other node); row `distributed`; 3 `fabric.ca.renew` under the new anchor, which re-mints every issuer; row `ca-rotated`; 4 wait until every cert row chains to the new anchor (at most one member TTL after step 3); 5 `node.roots.update { roots: [new] }` to every node; row `updated`; the old secret is destroyed everywhere |"
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:64
-    /// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits rather than replacing an anchor something still chains to."
+    /// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, marked by its spent call; the rotation waits rather than replacing an anchor something still chains to."
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:92
     /// "An internal `fabric.ca.renew` is step 3 alone, with no caller and no `node.roots.update`."
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:96
-    /// "A node not reached in a phase is retried every tick; the phase does not advance without it, and nothing expires meanwhile that the overlap does not cover. A successor fabric-primary continues from the roots row and the CA row, and from its own copy of the root secret, which every node-admin holds ([custody](../fabric-certs.md#custody)). A successor that does not hold the CA the CA row names (a renewal whose step 2 had not reached it) never mints under a CA it does not hold: it runs `fabric.ca.renew` again from the root secret, and step 2 reaches every admin under the new CA."
+    /// "A node not reached in a phase is marked by its spent call and sent again once the mark ends or its re-created birth is held; the phase does not advance without it, and nothing expires meanwhile that the overlap does not cover. A successor fabric-primary continues from the roots row and the CA row, and from its own copy of the root secret, which every node-admin holds ([custody](../fabric-certs.md#custody)). A successor that does not hold the CA the CA row names (a renewal whose step 2 had not reached it) never mints under a CA it does not hold: it runs `fabric.ca.renew` again from the root secret, and step 2 reaches every admin under the new CA."
     #[tokio::test]
     async fn renew_ca_mints_at_renew_point_or_when_behind_ca_row_and_records_ca_row_and_span() {
         use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};

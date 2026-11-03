@@ -327,9 +327,9 @@ async fn current_committed(store: &dyn BuildStateAdapter) -> Result<(BuildId, Ve
 mod tests {
     use super::*;
 
-    /// CONTRACT: docs/architecture/node-rpc-envelope.md "Build floor read (op `0x1F` reserved)": "The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer, unreadable-build, behind-floor. Every blocker reads the Build storage: no-pointer, which names no Build, reads the storage's current Build, selected once for the read; every other blocker reads the Build it names. [...] A read that fails is made again with bounded backoff, 250 ms doubling to 4 s."
+    /// CONTRACT: docs/architecture/node-rpc-envelope.md "Build floor read (op `0x1F` reserved)": "The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer, unreadable-build, behind-floor. Every blocker reads the Build storage: no-pointer, which names no Build, reads the storage's current Build, selected once for the read; every other blocker reads the Build it names. [...] A read that fails is made again after the [§43 schedule](node-rpc.md#43-send-delivery-is-the-runtimes)'s delay."
     #[test]
-    fn ready_blockers_select_typed_fetch_need_and_double_backoff_from_250ms_to_4s_cap() {
+    fn ready_blockers_select_typed_fetch_need_and_space_reads_on_the_one_schedule() {
         let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         let bid = BuildId::parse("cq2tyb03krac").unwrap();
 

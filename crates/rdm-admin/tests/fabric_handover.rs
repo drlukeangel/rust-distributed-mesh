@@ -859,7 +859,7 @@ fn the_fabric_primary_moved_outside_its_mesh_leaves_its_old_primary_mesh_primary
 /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:36
 /// "1. The caller holds the node's id and incarnation and a reason to ask: ... a successor that has not answered."
 /// CONTRACT (node-primary-update.md failure contract: "The call fails by name, and node investigation on
-/// the successor's exact birth decides (Q111): reached, the call is retried against it"): N holds no view
+/// the successor's exact birth decides (Q111): a `reached` verdict makes the identical call again"): N holds no view
 /// at P's first call (its door answers `NotReady`); node investigation reaches N's exact birth, and the
 /// call made again is answered node.primary.updated. One investigation span, verdict `reached`, retry
 /// `primary-updated`.
@@ -992,7 +992,7 @@ fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() 
 /// "3. For the `node-admin` type, NA1 finishes the writes it has issued before it calls NA2 ...
 /// 4. The primary calls `node.primary.update` on the successor's exact birth ...
 /// The call fails by name, and node investigation on the successor's exact birth decides (Q111):
-/// reached, the call is retried against it ...
+/// a `reached` verdict makes the identical call again ...
 /// The successor is unheard after the update. When node investigation's verdict is anything but
 /// reached, the step fails by name, `the successor is unheard after the update: <verdict>` ...
 /// The commanded arm. When a node.primary.update the fabric-primary commanded ends, the old primary

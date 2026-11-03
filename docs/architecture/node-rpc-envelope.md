@@ -1297,7 +1297,10 @@ The [node start workflow](lifecycles/node-start.md) drives the read.
 The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer,
 unreadable-build, behind-floor. Every blocker reads the Build storage: no-pointer, which names no
 Build, reads the storage's current Build, selected once for the read; every other blocker reads
-the Build it names. No blocker is read by a second JoinNode. A read that fails is made again after the [§43 schedule](node-rpc.md#43-send-delivery-is-the-runtimes)'s delay. Source: `crates/rdm-admin/src/fetch_build.rs::NodeAdminNotReady` and `crates/rdm-admin/src/fetch_build.rs::backoff_for`; the read is
+the Build it names. No blocker is read by a second JoinNode. A read that fails is made again after the
+[§43 schedule](node-rpc.md#43-send-delivery-is-the-runtimes)'s delay.
+Source: `crates/rdm-admin/src/fetch_build.rs::NodeAdminNotReady`
+and `crates/rdm-admin/src/fetch_build.rs::backoff_for`; the read is
 `crates/rdm-admin/src/build_state.rs::BuildStateAdapter::committed_facts`.
 Spans: `rdm.node_admin.build.update.via-read-committed`,
 `rdm.node_admin.build.reject.via-read-committed-failed`.
@@ -1615,7 +1618,8 @@ There is no take-over op. A fabric-primary unheard past the staleness floor is [
 
 Lost replies: the successor keeps serving PrimaryUpdate and Status after the row. An identical retry
 answers the same PrimaryUpdated before any revision check. A different payload for the same operation is
-RejectedConflictingPayload. The primary never treats NotSent or Indeterminate as an answer: the call ends on its `Send`, node investigation of the successor's exact birth decides, and a `reached` verdict makes the identical call again.
+RejectedConflictingPayload. The primary never treats NotSent or Indeterminate as an answer: the call ends on its `Send`,
+node investigation of the successor's exact birth decides, and a `reached` verdict makes the identical call again.
 
 The primary's full digest
 carries `admin_api_base`, the application contact URL including its bound port. Consumers

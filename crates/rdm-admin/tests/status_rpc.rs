@@ -1038,7 +1038,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         assert_eq!(r3.door.declared.lock().unwrap().meshes.get(&mesh_id3), Some(&MeshState::Pending), "applied once");
         handoff(&r3, mesh_id3.clone(), target_of(&r3)).await.expect("the rectifier's next hand-off of the same key is AlreadyApplied");
 
-        // Arm 4: the target cannot be reached at all: the reachability wait ends at its bound and
+        // Arm 4: the target cannot be reached at all: the reachability wait ends when its Ping's Send is spent and
         // no Status is sent.
         let mesh_id4 = MeshId::mint();
         let r4 = rig(birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false), &[&fp], BTreeMap::new()).await;
@@ -1047,7 +1047,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         let t4 = std::time::Instant::now();
         let e4 = handoff(&r4, mesh_id4.clone(), dark).await.expect_err("an unreachable target is never certain");
         let dark_wall = t4.elapsed();
-        assert!(e4.contains("unreachable for 20 s") && e4.contains("nothing was sent"), "{e4}");
+        assert!(e4.contains("unreachable before the") && e4.contains("nothing was sent"), "{e4}");
         assert!(r4.door.declared.lock().unwrap().meshes.is_empty(), "nothing applied at an unreached target");
 
         let spans = finish(
