@@ -900,9 +900,17 @@ impl AdminRunner {
         }
         let pipeline = self.pipeline_with(&template, builds);
         let data_dir = pipeline.birth_dir(&exited);
-        // The exited birth's record, as its endpoint names it; the new node's endpoint is new, so
-        // nothing is read from the predecessor's data dir (Q358).
-        let targeted = exited;
+        // The exited birth, its endpoint as its record names it: a record resolved from the durable
+        // runtime rows names none, so it is read from the node's own part of its record, the endpoint
+        // its birth wrote at its join. The new node's endpoint is new, so nothing is read from the
+        // predecessor's data dir (Q358).
+        let mut targeted = exited;
+        if targeted.endpoint_id.is_none() {
+            if let Some(incarnation) = targeted.incarnation_id.clone() {
+                let own = self.nodes_storage.properties(&targeted.node_id).await.ok().flatten();
+                targeted.endpoint_id = crate::current_record::of_birth(own.as_ref(), &targeted.node_id, &incarnation).and_then(|p| p.endpoint_id.clone());
+            }
+        }
         // A node-admin's recovery is a node-admin birth whose maker is this mesh-primary (the
         // template's seed): it is handed the durable runtime rows before it runs, as every admin
         // birth is.

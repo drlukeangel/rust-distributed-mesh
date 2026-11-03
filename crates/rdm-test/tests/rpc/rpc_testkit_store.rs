@@ -28,7 +28,7 @@ fn owner() -> Owner {
         subfeature: "testkit-store".into(),
         rung: "MN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_new_node".into(),
+        test: "the_testkit_store_survives_a_restart_and_never_a_recovery_or_a_new_node".into(),
     }
 }
 
@@ -44,7 +44,7 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_new_node() {
+async fn the_testkit_store_survives_a_restart_and_never_a_recovery_or_a_new_node() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;

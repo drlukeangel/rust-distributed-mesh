@@ -281,9 +281,24 @@ impl RecoverySubmitter {
     }
 
     /// The recovery of a birth whose last recovery failed ([`Self::failed_recoveries`]), run again on the
-    /// tick: the same workflow, keyed on the birth; nothing is inspected again.
+    /// tick: the same workflow, keyed on the birth; nothing is inspected again. A birth already recovered
+    /// is not recovered again (node-recovery.md sequence step 1: never a second recovery): once the node
+    /// its recovery created stands at its path and name, that recovery is owed no more, however its step
+    /// ended. A start that ended `Failed` at its hook leaves that node `Pending`, and nothing retries until
+    /// someone acts (fabric-node-hooks.md "Outcomes and the gate", Q350).
     pub(crate) async fn recover_again(&self, node: &Node) -> Result<(), String> {
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no birth to recover", node.node_id))?;
+        let created = self.topology.read().await.births().find(|b| b.location() == node.location() && b.node_id != node.node_id).map(|b| b.node_id.clone());
+        if let Some(created) = created {
+            let birth = (node.node_id.clone(), incarnation.clone());
+            self.failed.lock().unwrap().remove(&birth);
+            self.resubmits.lock().unwrap().remove(&birth);
+            let span = submit_span(&self.me_id, node, &incarnation, "");
+            span.record("again", true);
+            span.record("outcome", "already-recovered");
+            span.in_scope(|| tracing::info!(created_node_id = %created, "a birth already recovered is not recovered again: the node its recovery created stands at its path and name"));
+            return Ok(());
+        }
         self.submit_on_tick(node, &incarnation, "", true).await
     }
 

@@ -1093,8 +1093,10 @@ async fn a_re_created_node_is_launched_on_its_predecessors_data_dir_only_when_it
 /// with the node `Pending`"): a member whose re-created node's `pre_node_ready` answers `Failed` for
 /// its data is killed. Its mesh-primary's recovery deletes the exited birth and creates the new node,
 /// whose start ends `Failed` with the hook's reason: the recovery's step ends failed naming it, and the
-/// new node stays at the path, `Pending`, never Ready. Must NOT happen: the node Ready over data its
-/// application refused, the node stopped or deleted for it.
+/// new node stays at the path, `Pending`, never Ready. Nothing retries until someone acts: the recovery
+/// is not run again (node-recovery.md sequence step 1: never a second recovery; its run after the
+/// backoff ends `already-recovered`), so the path holds that one new node. Must NOT happen: the node
+/// Ready over data its application refused, the node stopped or deleted for it, a second create.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_re_created_node_whose_pre_node_ready_answers_failed_stays_pending_and_its_recovery_ends_failed() {
     let (estate, _) = estate("a_re_created_node_whose_pre_node_ready_answers_failed_stays_pending_and_its_recovery_ends_failed").await;
@@ -1111,10 +1113,18 @@ async fn a_re_created_node_whose_pre_node_ready_answers_failed_stays_pending_and
     assert!(outcome.contains("the data is not usable"), "the recovery's step names the hook's reason: {failed}");
     let after = until_node_where(&estate, node, &format!("{node:?} a new node, pending"), Duration::from_secs(60), |n| n["node_id"] != before["node_id"] && n["status"] == "pending").await;
     assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
-    // It stays Pending: nothing makes it Ready over the data its application refused.
+    // The recovery owed after its failed step is not run again: the node it created stands there.
+    let settled = wait_for("the recovery's run after its backoff ends already-recovered", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]) == "already-recovered") }).await;
+    assert_eq!(s(&settled["attributes"]["again"]), "true", "{settled}");
+    // It stays Pending, and no second create: nothing makes it Ready over the data its application refused.
     tokio::time::sleep(Duration::from_secs(10)).await;
     let still = estate.node_value(node).await;
     assert_eq!((still["node_id"].clone(), s(&still["status"])), (after["node_id"].clone(), "pending".to_string()), "the new node stays Pending: {still}");
+    let spans = estate.spans();
+    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
+    assert_eq!(creates.len(), 1, "one create of the exited birth, never a second recovery: {creates:?}");
+    let failed_submits: Vec<Value> = submits(&spans).into_iter().filter(|sp| s(&sp["attributes"]["outcome"]).starts_with("failed")).collect();
+    assert_eq!(failed_submits.len(), 1, "the recovery's step failed once: {failed_submits:?}");
     estate.record_trace_url(failed["trace_id"].as_str().unwrap_or(""));
     eprintln!("pre_node_ready Failed: {node:?} {} -> {} pending; recovery trace {} outcome {outcome}", s(&before["node_id"]), s(&after["node_id"]), s(&failed["trace_id"]));
     estate.shutdown().await;
