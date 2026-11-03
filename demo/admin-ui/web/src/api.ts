@@ -50,7 +50,8 @@ export interface Overview {
 }
 
 export interface TopologyNode {
-  name: PathName;
+  path: string;
+  name: string;
   type: string;
   mesh: string;
   status: string;

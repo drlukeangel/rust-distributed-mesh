@@ -97,8 +97,8 @@ async fn chaos_state(State(s): State<AppState>) -> Response {
         Ok(n) => n,
         Err(e) => return unreachable(e),
     };
-    // The fabric-primary's `{path, name}`.
-    let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| n["name"].clone());
+    // The fabric-primary's path and name.
+    let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| json!({"path": n["path"], "name": n["name"]}));
     Json(json!({"fabric_primary": fp, "faults": s.chaos.faults(), "cuts": s.chaos.cuts()})).into_response()
 }
 

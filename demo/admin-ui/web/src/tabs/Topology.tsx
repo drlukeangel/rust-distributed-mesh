@@ -14,7 +14,7 @@ function layout(nodes: TopologyNode[]): FlowNode[] {
   const out: FlowNode[] = [];
   const W = 560, H = 460, GAP = 620;
   meshes.forEach((m, i) => {
-    const members = nodes.filter((n) => n.mesh === m).sort((a, b) => comparePathName(a.name, b.name));
+    const members = nodes.filter((n) => n.mesh === m).sort((a, b) => comparePathName(a, b));
     out.push({
       id: `group-${m}`,
       type: "group",
@@ -43,10 +43,10 @@ function layout(nodes: TopologyNode[]): FlowNode[] {
         position: { x: W / 2 + r * Math.cos(ang) - 85, y: H / 2 + r * Math.sin(ang) - 46 },
         data: {
           label: (
-            <div style={{ textAlign: "center", lineHeight: 1.2 }} data-testid={`node-${n.name.path}-${n.name.name}`}>
-              <div className="mono" style={{ fontSize: 11, color: "#c9d1d9" }}><NodeName node={n.name} /></div>
+            <div style={{ textAlign: "center", lineHeight: 1.2 }} data-testid={`node-${n.path}-${n.name}`}>
+              <div className="mono" style={{ fontSize: 11, color: "#c9d1d9" }}><NodeName node={n} /></div>
               <div style={{ fontSize: 10, color: "#8b949e" }}>{n.type} · {n.status}</div>
-              {n.role && <div style={{ fontSize: 10, color: "#e3b341" }} data-testid={`role-${n.name.path}-${n.name.name}`}>{n.role}</div>}
+              {n.role && <div style={{ fontSize: 10, color: "#e3b341" }} data-testid={`role-${n.path}-${n.name}`}>{n.role}</div>}
             </div>
           ),
         },
@@ -61,7 +61,7 @@ function flowEdges(connections: Connection[], nodes: TopologyNode[]): FlowEdge[]
   // A proxy's carrier is named by its node id; the label shows its path and name.
   const carrier = (id: string | null) => {
     const n = id ? nodes.find((x) => x.node_id === id) : undefined;
-    return n ? pathNameText(n.name) : (id ?? "?");
+    return n ? pathNameText(n) : (id ?? "?");
   };
   return connections.map((e, i) => {
     const colour = bad(e) ? "#f85149" : e.kind === "direct" ? "#3fb950" : "#58a6ff";

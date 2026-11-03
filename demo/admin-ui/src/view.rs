@@ -68,7 +68,7 @@ pub async fn overview(admin: &Admin) -> Value {
         None => None,
     };
     // `fabric.get` names the fabric-primary by its node id; the header shows its path and name.
-    let fabric_primary = nodes.iter().find(|n| !fabric["fabric_primary"].is_null() && n["node_id"] == fabric["fabric_primary"]).map_or(Value::Null, |n| n["name"].clone());
+    let fabric_primary = nodes.iter().find(|n| !fabric["fabric_primary"].is_null() && n["node_id"] == fabric["fabric_primary"]).map_or(Value::Null, |n| json!({"path": n["path"], "name": n["name"]}));
     json!({
         "fabric": {"name": fabric["name"], "status": fabric["status"], "provider": fabric["provider"], "build_id": fabric["build_id"], "fabric_primary": fabric_primary, "fabric_primary_id": fabric["fabric_primary"]},
         "meshes": meshes,
@@ -99,7 +99,7 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
             let r#type = text(&n, "type").unwrap_or_default();
             let (p, fp) = (n["is_primary"].as_bool().unwrap_or(false), n["is_fabric_primary"].as_bool().unwrap_or(false));
             json!({
-                "name": n["name"], "type": r#type, "mesh": n["mesh"], "status": n["status"], "role": primary_label(&r#type, p, fp),
+                "path": n["path"], "name": n["name"], "type": r#type, "mesh": n["mesh"], "status": n["status"], "role": primary_label(&r#type, p, fp),
                 "is_primary": p, "is_fabric_primary": fp, "declared": n["declared"], "incarnation_id": n["incarnation_id"], "node_id": n["node_id"],
                 "has_runtime": n["data_dir"].is_string(),
             })

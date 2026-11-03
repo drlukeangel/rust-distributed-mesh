@@ -10,7 +10,7 @@ export function BootWaterfall() {
 
   useEffect(() => {
     api.topology().then((r) => {
-      const sorted = [...r.nodes].sort((a, b) => comparePathName(a.name, b.name));
+      const sorted = [...r.nodes].sort((a, b) => comparePathName(a, b));
       setNodes(sorted);
       if (!pick && sorted[0]) setPick(sorted[0].node_id);
     }).catch(() => {});
@@ -19,7 +19,7 @@ export function BootWaterfall() {
   useEffect(() => {
     if (!pick) return;
     const node = nodes.find((n) => n.node_id === pick);
-    const label = node ? pathNameText(node.name) : `node ${pick}`;
+    const label = node ? pathNameText(node) : `node ${pick}`;
     api.bootWaterfall(pick, node?.kind ?? "").then((r) => {
       const raw = r.data?.[0]?.spans ?? [];
       const parsed = raw.map((s) => ({ name: s.operationName, start_us: s.startTime, duration_ms: s.duration / 1000 })).sort((a, b) => a.start_us - b.start_us);
@@ -36,7 +36,7 @@ export function BootWaterfall() {
       <div className="row" style={{ marginBottom: 12 }}>
         <label className="muted">node:</label>
         <select value={pick} onChange={(e) => setPick(e.target.value)}>
-          {nodes.map((n) => <option key={n.node_id} value={n.node_id}>{pathNameText(n.name)}</option>)}
+          {nodes.map((n) => <option key={n.node_id} value={n.node_id}>{pathNameText(n)}</option>)}
         </select>
         {note && <span className="muted mono">{note}</span>}
       </div>

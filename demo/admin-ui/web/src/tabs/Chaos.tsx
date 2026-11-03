@@ -44,7 +44,7 @@ export function Chaos() {
   };
 
   const meshes = Array.from(new Set(nodes.map((n) => n.mesh))).sort();
-  const sorted = [...nodes].sort((a, b) => comparePathName(a.name, b.name));
+  const sorted = [...nodes].sort((a, b) => comparePathName(a, b));
   return (
     <div>
       <div className="card" style={{ marginBottom: 12 }}>
@@ -59,16 +59,16 @@ export function Chaos() {
       <div className="grid grid-cards" style={{ marginBottom: 16 }}>
         {sorted.map((n) => (
           <div key={n.node_id} className="card">
-            <div className="mono" style={{ fontWeight: 600 }}><NodeName node={n.name} /></div>
+            <div className="mono" style={{ fontWeight: 600 }}><NodeName node={n} /></div>
             <div className="muted mono" style={{ fontSize: 11 }}>{n.type} · {n.status} {n.role && `· ${n.role}`}</div>
             {n.is_fabric_primary ? (
               <div className="muted" style={{ marginTop: 8 }}>fabric primary: never a fault target</div>
             ) : (
               <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
-                <button className="warn" data-testid={`stop-${n.name.path}-${n.name.name}`} onClick={() => run(() => api.fault(n.name, "stop"))}>stop</button>
-                <button onClick={() => run(() => api.fault(n.name, "continue"))}>continue</button>
-                <button className="danger" onClick={() => run(() => api.fault(n.name, "kill"))}>kill</button>
-                <button onClick={() => run(() => api.cut({ scope: "node", ...n.name }))}>cut network</button>
+                <button className="warn" data-testid={`stop-${n.path}-${n.name}`} onClick={() => run(() => api.fault(n, "stop"))}>stop</button>
+                <button onClick={() => run(() => api.fault(n, "continue"))}>continue</button>
+                <button className="danger" onClick={() => run(() => api.fault(n, "kill"))}>kill</button>
+                <button onClick={() => run(() => api.cut({ scope: "node", path: n.path, name: n.name }))}>cut network</button>
               </div>
             )}
           </div>

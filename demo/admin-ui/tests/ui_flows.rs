@@ -137,7 +137,7 @@ async fn topology_labels_mesh_primary_on_node_admins_only_and_serves_node_admins
     let d = dir("topology");
     let (_running, admin) = node_admin(&d).await;
     let t = rdm_admin_ui::view::topology(&admin).await.unwrap();
-    let role = |path: &str, name: &str| t["nodes"].as_array().unwrap().iter().find(|x| x["name"] == json!({"path": path, "name": name})).unwrap_or_else(|| panic!("path {path:?}, name {name:?} is in the topology: {t}"))["role"].as_str().unwrap().to_string();
+    let role = |path: &str, name: &str| t["nodes"].as_array().unwrap().iter().find(|x| x["path"] == path && x["name"] == name).unwrap_or_else(|| panic!("path {path:?}, name {name:?} is in the topology: {t}"))["role"].as_str().unwrap().to_string();
     assert_eq!(role("mesh1.node-admin", "1"), "fabric primary · mesh primary");
     assert_eq!(t["connection_errors"], json!([]), "the node-admin answers its connection facts, an empty list here: {t}");
     let _ = std::fs::remove_dir_all(&d);
