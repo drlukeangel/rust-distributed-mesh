@@ -77,8 +77,8 @@ fn primary_record(which: &str, record: Option<&Primary>, me: &Birth, lost: &Hash
 /// `was_mesh_primary`: whether this admin's primary view holds a silent node-admin as its mesh's primary
 /// replaced by another birth (the election named a new mesh-primary past the floor), and `marked`:
 /// whether this admin holds a standing mark of the exact birth for a call whose attempts are spent, and
-/// `aggregate_unheard`: whether a peer mesh's aggregate has stayed unheard on the backbone past the
-/// staleness floor (no successor took its primary role).
+/// `aggregate_unheard`: whether a peer mesh's aggregate has stayed unheard on the backbone for twice the
+/// staleness floor (no successor took its primary role, Q349).
 pub fn plan(view: &Topology, mesh: &str, me_birth: &Birth, said: &mut Said, was_mesh_primary: &dyn Fn(&Node) -> bool, marked: &dyn Fn(&Node) -> bool, aggregate_unheard: &dyn Fn(&str) -> bool) -> Plan {
     // Silent by its gossip, or marked at once for a call whose attempts are spent (node-investigation.md:
     // "A node that does not answer a call is silent, whatever it gossips"; Q332, Q338).
@@ -91,10 +91,9 @@ pub fn plan(view: &Topology, mesh: &str, me_birth: &Birth, said: &mut Said, was_
     // of the mesh that holds the fabric-primary role (a standby, or a candidate looking from outside),
     // and, when this admin holds the fabric-primary role, a silent primary node-admin of a peer mesh, the one
     // the election has replaced as mesh-primary included, only when that mesh's aggregate stays unheard
-    // on the backbone past the staleness floor: no successor took the role (node-recovery.md step 2: "For
-    // a lost mesh-primary the successor its election names runs it as for any member; the fabric-primary
-    // runs it, without the half-floor wait, only when the mesh's aggregate stays unheard past the
-    // staleness floor", Q335). In its own mesh a replaced mesh-primary always has a successor, Ready (the
+    // on the backbone for twice the staleness floor: no successor took the role (node-recovery.md step 2,
+    // Q335, Q349: the election names the successor at the floor, and the window after it is the mesh's own
+    // node-admin's to act in). In its own mesh a replaced mesh-primary always has a successor, Ready (the
     // fabric-primary itself at least), whose tick investigates it as any member.
     // The fabric-primary looks at no other silent node-admin of its own mesh: step 2's "Only the
     // mesh-primary acts" makes a secondary node-admin its mesh-primary's tick's.
@@ -278,9 +277,10 @@ pub async fn run(w: Watch) {
         }
         let me = w.topology_view.digest_view.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me(), Some(&w.me_id)));
         // The fabric-primary unheard past the floor (fabric-recovery.md step 2; Q122, Q335): its mesh's
-        // lowest Ready node-admin, or with none the lowest Ready mesh-primary on the backbone, starts fabric
-        // recovery at the first tick after the mark, once the record has named the unheard birth for a floor
-        // in its own view (a record learned after a heal names a birth whose silence here began before it).
+        // lowest Ready node-admin starts fabric recovery at the first tick after the mark, once the record has
+        // named the unheard birth for a floor in its own view (a record learned after a heal names a birth
+        // whose silence here began before it); with none, the lowest Ready mesh-primary on the backbone, once
+        // the fabric-primary has been unheard for twice the floor (Q349).
         // It takes no primary role; this watch's node investigation of the lost birth, below, decides (Q337).
         let held_a_floor = w.topology_view.primaries().fabric_held_for() >= w.topology_view.digest_view.staleness_floor();
         w.fabric_recovery.start_if_mine(held_a_floor).await;
@@ -298,9 +298,10 @@ pub async fn run(w: Watch) {
         // call whose attempts are spent, its own or one reported to it (Q338), is silent from the mark.
         let marks = crate::offline::held_marks(&w.records.unreachable, &view, &w.topology_view.digest_view, now);
         let marked = |n: &Node| marks.get(&n.node_id).is_some_and(|m| n.incarnation_id.as_ref() == Some(&m.incarnation));
-        // A peer mesh's aggregate unheard on the backbone past the floor: no successor took its role.
+        // A peer mesh's aggregate unheard on the backbone for twice the floor: no successor took its role
+        // (Q349: the election names one at the floor; the floor after it is the mesh's own to act in).
         let floor = w.topology_view.digest_view.staleness_floor();
-        let aggregate_unheard = |m: &str| w.topology_view.digest_view.mesh_unheard(m, now).is_none_or(|unheard| unheard >= floor);
+        let aggregate_unheard = |m: &str| w.topology_view.digest_view.mesh_unheard(m, now).is_none_or(|unheard| unheard >= floor * 2);
         let mut plan = plan(&view, &w.mesh, &me_birth, &mut said, &was_mesh_primary, &marked, &aggregate_unheard);
         // The lost birth fabric recovery runs for here, when the workflow asks for a verdict on it: it is
         // unheard past the floor in the fabric record's eyes (fabric-recovery.md step 2), whatever status

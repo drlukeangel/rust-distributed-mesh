@@ -348,15 +348,25 @@ impl FabricRecoveryDoor {
         of(&t, &crate::admin::incumbency_of(&self.digest_view, &self.records), &self.digest_view)
     }
 
-    /// Start the workflow when this admin runs it, from its own mesh or from the backbone alike: at the
-    /// first tick after the mark, once the fabric record has named the unheard birth for a floor
-    /// (`held_a_floor`). The primary watch's node investigation of the lost birth is the verdict that
+    /// Start the workflow when this admin runs it: from its own mesh at the first tick after the mark, once
+    /// the fabric record has named the unheard birth for a floor (`held_a_floor`); from the backbone, once
+    /// the fabric-primary has also been unheard here for twice the floor (Q349). The primary watch's node investigation of the lost birth is the verdict that
     /// decides (fabric-recovery.md step 3, Q335, Q337). Once per lost birth while it runs here.
     pub async fn start_if_mine(self: &Arc<Self>, held_a_floor: bool) {
         let Some(fr) = self.read().await else { return };
         let launched = fr.executor.is_none() && self.runs(&fr);
         if !self.runs(&fr) || !(launched || held_a_floor) {
             return;
+        }
+        // From the backbone the arm starts only once the fabric-primary has been unheard here for twice the
+        // floor (fabric-recovery.md step 2, Q349): the floor after the election is its own mesh's node-admin's
+        // to act in as the workflow's executor.
+        if !fr.own_mesh && fr.executor.is_some() {
+            let floor = self.digest_view.staleness_floor();
+            let unheard = self.digest_view.get(fr.target.node_id.as_str()).filter(|(d, _)| d.node.incarnation == fr.target.incarnation).map(|(_, unheard)| unheard);
+            if unheard.is_some_and(|unheard| unheard < floor * 2) {
+                return;
+            }
         }
         let target_birth = rdm_core::framing::Birth { node_id: fr.target.node_id.clone(), incarnation: fr.target.incarnation.clone() };
         {

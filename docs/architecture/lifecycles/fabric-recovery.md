@@ -50,7 +50,9 @@ the same order starts the workflow again, resuming from the progress recorded on
      the mark, once the record has named the unheard primary for one staleness floor in its own view: a
      record learned after a heal names a primary whose silence in this admin's view began before the
      record did. It takes no primary role. It needs no probe to know it is alive.
-   - *Outside its mesh*: a mesh-primary hears nothing of that mesh once its mesh topology stops, so it runs
+   - *Outside its mesh*: a mesh-primary hears nothing of that mesh once its mesh topology stops, so, once the
+     fabric-primary has been unheard for twice the staleness floor (the floor after the election is the
+     own mesh's node-admin's to act in, Q349), it runs
      [node investigation](node-investigation.md) on the fabric-primary's birth. An answer from that
      birth ends the investigation and the fabric-primary stays in that
      mesh. Any other verdict starts fabric recovery at the lowest
@@ -88,7 +90,7 @@ the same order starts the workflow again, resuming from the progress recorded on
 | mark `PendingReconnect`, every admin | 30 s | 3 s |
 | its own mesh: fabric recovery starts, at the first tick after the mark | 30 to 32 s | 3 to 3.5 s |
 | its own mesh: the mesh's topology published again | by 34 s | by 4 s |
-| outside its mesh: [node investigation](node-investigation.md) of the fabric-primary's birth | the ladder's own bounds ([node.tickle](node-tickle.md)) | the same |
+| outside its mesh: [node investigation](node-investigation.md) of the fabric-primary's birth, at twice the floor (Q349) | from 60 s, then the ladder's own bounds ([node.tickle](node-tickle.md)) | from 6 s, the same |
 | outside its mesh: the row, on the verdict | at the verdict | at the verdict |
 | the workflow completes, when the node at the fabric-primary's path and name is Ready | — | — |
 

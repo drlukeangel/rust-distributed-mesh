@@ -50,7 +50,7 @@ backoff doubling from the gossip interval to the staleness floor.
    probes still running; one failed peer probe does not cancel the other; every probe names the same
    exact `(node.id, incarnation)`. For a lost mesh-primary the successor its election names runs it as for
    any member ([elections §4.1](../fabric-node-lifecycle-elections.md#41-the-nodes-of-one-type-in-one-mesh));
-   the fabric-primary runs it, without the half-floor wait, only when the mesh's aggregate stays unheard past the staleness floor: no successor took the role (Q335).
+   the fabric-primary runs it, without the half-floor wait, only when the mesh's aggregate stays unheard for twice the staleness floor (60 s at the default floor): no successor took the role in the floor after the election, which is the mesh's own node-admin's to act in (Q335, Q349).
 3. **The verdict is the one decision (Q111).** `reached`: a held birth that answered, or that is heard
    again by its digest, is commanded back through [node.mesh.join](node-mesh-join.md) by the primary
    above it (its mesh-primary; the fabric-primary for a mesh-primary: every admin looks, one commands)

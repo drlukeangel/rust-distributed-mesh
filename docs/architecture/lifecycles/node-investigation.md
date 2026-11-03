@@ -14,9 +14,9 @@ one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its ste
 Only an answer from the exact birth counts as `reached`.
 
 A lost mesh-primary is investigated by the successor its election names, as any member of its
-mesh ([node recovery](node-recovery.md) step 2; Q335). When the mesh's aggregate stays unheard past the staleness floor (no successor took the role), the
+mesh ([node recovery](node-recovery.md) step 2; Q335). When the mesh's aggregate stays unheard for twice the staleness floor (60 s at the default floor; no successor took the role, Q349), the
 fabric-primary investigates it the same way, and the re-created node-admin is that mesh's primary by
-the same election.
+the same election. A lost fabric-primary is investigated from outside its mesh, by a mesh-primary, only once it has been unheard for twice the staleness floor ([fabric recovery](fabric-recovery.md) step 2, Q349).
 
 A node that does not answer a call is silent, whatever it gossips (Q182): a call whose attempts end
 unanswered marks its birth at the primary above it (the caller itself when it is that primary; any
