@@ -231,7 +231,7 @@ impl Topology {
     /// itself (and a primary is told apart from another birth). Never by path and name, its shape
     /// included: a replace or a recovery keeps the path and name and mints a new node id, the one row
     /// this view holds at a path ([`crate::admin::project_at`] keys it by `PathName`) can be the
-    /// deleted birth's, and a node whose row its mesh-primary renamed the predecessor name `<name>-old` at the same path is still that
+    /// deleted birth's, and a node whose row its mesh-primary renamed a name node.name.update gave it is still that
     /// exact birth, which reports its own status (states.md "Who sets each state").
     pub fn own(&self, node_id: &NodeId) -> Option<&Node> {
         self.births().find(|n| n.node_id == *node_id)

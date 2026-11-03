@@ -1996,10 +1996,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     }
                 }
                 StatusRequest::ApplyNodeName { name, .. } => {
-                    // R12: the node owns its name and takes the row's name only with no traffic, off its
-                    // mesh (node-name-update.md Precondition). It is held first, so every later publish
-                    // carries it; off its mesh it publishes nothing (node-mesh-leave.md), and its stop
-                    // or its next join carries the name.
+                    // R12: the node owns its name and takes the row's name only while it holds no
+                    // connection (node-name-update.md Precondition). It is held first, so every later
+                    // publish carries it, and published at once; a node leaving its mesh inside a stop
+                    // publishes nothing (node-mesh-leave.md), and its next join carries the name. A live
+                    // node's mesh-primary then commands its rejoin (node-name-update.md step 6).
                     let held = me.topology_view.reported(&me.digest).node.location();
                     let asked = match rdm_core::PathName::new(name.path.clone(), name.name.clone()) {
                         Ok(n) => n,

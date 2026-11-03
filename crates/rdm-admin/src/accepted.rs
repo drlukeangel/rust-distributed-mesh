@@ -364,7 +364,7 @@ pub fn created_paths(change: &BuildChange) -> Option<BTreeSet<PathName>> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AttemptAction {
-    /// Delete the stopped exact birth a rename left at the predecessor name `<name>-old` at the same path (node-delete.md): its stop steps
+    /// Delete the stopped exact birth a rename left at a name node.name.update gave it (node-delete.md): its stop steps
     /// are done; the provider's exact Exited is the proof, then `NodeDeleted` and its Deleted row. The
     /// topology never names a retained predecessor location: this action is its only door outside a Build's steps.
     Delete {
@@ -664,7 +664,7 @@ fn plan_with(
     // say it began (a stop's view drops the Leaving birth), and not once its `Complete` receipt names
     // the birth.
     if let Some(AttemptAction::Delete { r#type, mesh, path, node_id, from_incarnation }) = action {
-        // A delete of a stopped retained predecessor (its name `<name>-old` at the same path) is admitted
+        // A delete of a stopped retained predecessor (at the name node.name.update gave it) is admitted
         // from the record the fabric-primary holds of that exact birth, never from a view (a view that did
         // not run the replace may never name it): it is planned until its `Complete` names the birth. The
         // accepted topology never names a retained predecessor's name, while its mesh is still named; the
@@ -789,8 +789,8 @@ fn plan_with(
     // (every member, dead or live, by the delete pipeline), never member by member.
     // A surplus birth's deletion is its own attempt (no action): an attempt that carries an action
     // repairs exactly its birth.
-    // A Build that failed stops at its step, and resuming it or running its compensation steps is the
-    // caller's (lifecycles/node-replace.md "Rollback").
+    // A Build that failed stops at its step; nothing is ever reverted, and going back is a Build of the
+    // former topology (Q345).
     // A birth the fabric-primary's atlas holds a create of this Build at is not surplus: a recipe's
     // `Create` step adds no path to the accepted topology, which only a forward Build or the gossiped
     // topology finalizes (Luke 2026-10-30: drift is decided from the atlas, not the topology).
@@ -1148,7 +1148,7 @@ mod tests {
     /// targeted `Delete` action on a birth of a deleted mesh (no retained predecessor location: the topology names no
     /// such mesh) is the ordinary node.delete of that exact birth, `DeleteLiveNode`, planned while the
     /// view holds it, and nothing once it left or its `Complete` is receipted; a `Delete` of a stopped
-    /// `.old` stays `DeleteNode`. Must NOT happen: the last admin of a deleted mesh deleted through a
+    /// a renamed stopped node stays `DeleteNode`. Must NOT happen: the last admin of a deleted mesh deleted through a
     /// copy that skips its stop (`DeleteNode` sends no command to a live process).
     #[test]
     fn a_delete_of_a_deleted_meshs_last_admin_is_the_ordinary_node_delete() {
@@ -1227,7 +1227,7 @@ mod tests {
         assert!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[failed], None, &BTreeSet::new()).operations.iter().any(|op| op.key() == rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "1").unwrap()))), "a create that did not complete is planned again");
     }
 
-    /// CONTRACT: a replaced predecessor (the predecessor name `<name>-old` at the same path) is neither the live birth at `<path>` nor a missing
+    /// CONTRACT: a replaced predecessor (a name node.name.update gave it) is neither the live birth at `<path>` nor a missing
     /// node nor a surplus one: the plan of the settled topology is empty with it in the view, and a
     /// successor at the path is the one birth the plan counts.
     #[test]
@@ -1276,7 +1276,7 @@ mod tests {
         assert_eq!(bad.validate(), Err(BuildReject::MeshWithoutAdmin { mesh: "mesh1".into() }));
     }
 
-    /// CONTRACT (lifecycles/node-delete.md): the delete of the stopped predecessor at the predecessor name `<name>-old` at the same path plans its
+    /// CONTRACT (lifecycles/node-delete.md): the delete of the stopped predecessor at a name node.name.update gave it plans its
     /// one typed `node.delete` operation naming its node ID until its `Complete` names the birth, whatever the view
     /// holds: the fabric-primary admitted it from the record it holds of that exact birth, and no view
     /// names a retained predecessor location but its replace's executor's. It never plans a create or repair of the

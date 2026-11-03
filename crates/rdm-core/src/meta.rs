@@ -34,8 +34,8 @@ pub struct NodeSpec {
     /// the field decodes with none: valid history, its births' rows the record of what they run.
     #[serde(default)]
     pub executable: Option<crate::binding::Binding>,
-    /// The tag labels the node carries from its name claim; a node recovered or replaced at the path
-    /// takes its predecessor's row's (node-replace.md "Inherited"). A Build accepted before the field
+    /// The tag labels the node carries from its name claim; a node recovered at the path
+    /// takes its predecessor's row's (node-recovery.md "Retained"). A Build accepted before the field
     /// decodes with none.
     #[serde(default)]
     pub tags: BTreeSet<String>,

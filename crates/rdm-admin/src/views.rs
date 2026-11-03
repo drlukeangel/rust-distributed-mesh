@@ -603,7 +603,7 @@ mod tests {
             });
             succ_row.births.push(succ_birth);
 
-            // The predecessor's tags stay in its own record at its own id (node-replace.md "Properties").
+            // The earlier node's tags stay in its own record at its own id (node-records: a record is keyed by its node id).
             let mut pred_row = NodeRow::new(rpc_pred_path.clone(), "mesh1", "node", rpc_pred_id.clone(), ModelNodeStatus::Ready);
             pred_row.births.push(BirthFacts::new(rpc_pred_inc.clone(), rpc_pred_path.clone()));
             for row in [&admin_row, &succ_row, &pred_row] {

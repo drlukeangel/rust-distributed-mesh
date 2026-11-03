@@ -647,7 +647,7 @@ fn a_config_update_at_the_mesh_primary_ends_updated_and_the_node_carries_it() {
 }
 
 /// CONTRACT (topology.rs `own`: a node is found by its exact birth, "never by path.name, its shape
-/// included"; node-replace.md: the predecessor stays the same exact birth at `<path>.old`): a config
+/// included"; node-name-update.md: a renamed node stays the same exact birth): a config
 /// update naming a node its mesh-primary's view holds at the predecessor name `1-old` is decided for
 /// that exact birth: it ends `node.config.updated`, the node's own record holds the config, the birth
 /// was told it once, and the via-config span names the `1-old` subject. What must NOT happen: the
@@ -1901,8 +1901,8 @@ fn labels(l: &[&str]) -> std::collections::BTreeSet<String> {
 
 /// CONTRACT (Q171: no workflow waits for the initial fabric's first ready; proposal
 /// node-properties-own-commands.md §1): while the initial fabric is pending and has never been
-/// ready, a caller's `node.name.update` of the left `mesh1.node.2` (its connections deleted,
-/// its mesh left) at its mesh-primary ends `NameUpdated`: the row moves to `mesh1.node.old.2`. What must
+/// ready, a caller's `node.name.update` of `mesh1.node.2` with no connection (its connections
+/// deleted) at its mesh-primary ends `NameUpdated`: the row moves to `mesh1.node.renamed`. What must
 /// NOT happen: a refusal for a fabric not yet ready.
 #[test]
 fn a_node_name_update_before_the_fabric_first_reaches_ready_is_admitted() {
@@ -1912,7 +1912,7 @@ fn a_node_name_update_before_the_fabric_first_reaches_ready_is_admitted() {
         let rpc2 = &b["rpc2"];
         let _node = deleted_with_row(&rig, rpc2, &[]).await;
         rig.topology.write().await.fabric.status = ScopeStatus::Pending;
-        let to: PathName = rdm_core::PathName::new("mesh1.node", "2-old").unwrap();
+        let to: PathName = rdm_core::PathName::new("mesh1.node", "renamed").unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "renamed")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() }, "admitted before the first ready");
         assert_eq!(rig.nodes.record_at(&to).await.unwrap().map(|r| r.node_id), Some(rpc2.node.node_id.clone()));

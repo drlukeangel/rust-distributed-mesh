@@ -1006,11 +1006,11 @@ mod tests {
 
     /// CONTRACT (states.md "Who sets each state": node Ready is set by "the node's
     /// mesh-primary" from "the node's node.started report, after every start gate"; lifecycles/node-name-update.md:
-    /// "a stopped predecessor to or from `<name>-old`", the stopped node reads that name at its next
+    /// a stopped node renamed by node.name.update: the stopped node reads that name at its next
     /// start): a node-admin renamed to `mesh1.node-admin.old.2` while stopped and started again under the
     /// row's name is the same birth, so once it is ready it owes its node.started to mesh1's primary,
     /// found by the node id it was born with. Must NOT happen: the admin missing from its own view
-    /// because its row's name ends `.old`, so it owes nothing and its mesh-primary holds it Pending.
+    /// because it was renamed, so it owes nothing and its mesh-primary holds it Pending.
     #[test]
     fn a_node_admin_started_under_a_retained_name_owes_its_node_started_to_its_mesh_primary() {
         let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
@@ -1115,8 +1115,8 @@ mod tests {
         assert_eq!(d.owed(), 0, "an admin that is not its mesh's primary owes no Mesh declaration");
     }
 
-    /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): the view holds one row per
-    /// path and name (`admin::project_at` keys it by `PathName`), so after a replace of the fabric-primary
+    /// CONTRACT (R-RC1, node-recovery.md: a new node.id at the same path and name): the view holds one row per
+    /// path and name (`admin::project_at` keys it by `PathName`), so after a re-birth of the fabric-primary
     /// the row at mesh1.node-admin.1 can be the deleted birth's, live and holding both roles, while the
     /// re-born admin's own row is absent. The re-born admin decides its roles by the node id it was born
     /// with: it owes no fabric event and no Mesh report, and withdraws the Mesh key it held, because

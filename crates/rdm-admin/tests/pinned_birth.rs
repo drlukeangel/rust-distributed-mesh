@@ -111,7 +111,7 @@ async fn a_birth_replaced_under_the_same_incarnation_is_refused_birth_replaced()
 /// CONTRACT (build.md §4.4): the check against the executing mesh-primary's view. A birth with
 /// another node id and incarnation at the path is refused `birth-replaced`; the pinned birth is the
 /// one handed to the operation, found by its node id wherever the view lists it (a birth renamed to
-/// `<name>-old` at the unchanged path included); a view holding nothing of it answers `None` for the caller's own records.
+/// a renamed birth at its unchanged path included); a view holding nothing of it answers `None` for the caller's own records.
 #[tokio::test]
 async fn the_check_hands_the_operation_only_the_pinned_birth() {
     let t = view();
@@ -122,7 +122,7 @@ async fn the_check_hands_the_operation_only_the_pinned_birth() {
     assert_eq!((refused.reason(), refused.observed.clone()), ("birth-replaced", Some(birth(&now, &PathName::new("mesh1.node", "1").unwrap()))));
     let held = pinned.held_in(&t, &rdm_core::OperationId::node("node.delete", &pinned.node_id), &path).expect("the pinned birth passes").expect("the view holds it");
     assert_eq!(PinnedBirth::of(&held), Some(pinned.clone()));
-    // Renamed to `<name>-old` at the unchanged path and a successor at the path: the pinned birth is the renamed one.
+    // Renamed at its unchanged path and a successor at the path: the pinned birth is the renamed one.
     let mut renamed = replaced(&t, &PathName::new("mesh1.node", "1").unwrap(), false);
     let mut old = t.node(&path).unwrap().clone();
     { let at = rdm_core::PathName::new("mesh1.node", "1-old").unwrap(); old.path = at.path; old.name = at.name; }

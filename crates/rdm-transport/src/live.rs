@@ -430,9 +430,9 @@ mod tests {
         assert_eq!(r.resolve(&path).unwrap().node_id, new.node_id);
     }
 
-    /// CONTRACT (ops-naming "A stopped node stays reachable", node-replace.md): a stopped birth gives
-    /// up its path at once, so a replace's successor heard at the path holds it before the stopped
-    /// predecessor departs; the stopped birth stays reachable by its exact id, and its rejoin as itself
+    /// CONTRACT (ops-naming "A stopped node stays reachable", node-name-update.md): a stopped birth gives
+    /// up its path at once, so a new node heard at the path holds it before the stopped
+    /// earlier node departs; the stopped birth stays reachable by its exact id, and its rejoin as itself
     /// takes the path back when no other node holds it.
     #[test]
     fn a_stopped_birth_gives_up_its_path_and_stays_reachable_by_id() {
@@ -475,8 +475,8 @@ mod tests {
         assert_eq!(r.resolve_at(&NodeTarget::ExactNode(a.node_id.clone()), after), Err(ResolveFailure::Unknown), "Gone is what this process holds now, not an archive");
     }
 
-    /// CONTRACT (R12; node-rpc-envelope.md "Meta and config"; node-replace.md: `(path, name)` resolves to
-    /// the successor the moment its Applied lands): a held birth that took another name
+    /// CONTRACT (R12; node-rpc-envelope.md "Meta and config"; node-name-update.md: `(path, name)` resolves to
+    /// the renamed birth the moment its Applied lands): a held birth that took another name
     /// (`ApplyNodeName`) is the same birth at its new `(path, name)`: it resolves there by path and by
     /// its exact id, nobody holds the name it gave up, and the change ticks. The same fact again is
     /// unchanged. What must NOT happen: the birth kept under the name it gave up, or its new name

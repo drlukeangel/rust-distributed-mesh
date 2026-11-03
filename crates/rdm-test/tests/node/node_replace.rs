@@ -270,7 +270,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
 /// pipeline and node operation span; no node.update follows (proposal node-properties-own-commands.md
 /// §5 item 8).
 /// The path comes back with the SAME transport key and data dir and a NEW node.id and incarnation;
-/// no `<name>-old` at the unchanged path rename and no storage hand-over.
+/// no rename and no storage hand-over.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_dir() {
     let (estate, birth_build) = estate("any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_dir").await;

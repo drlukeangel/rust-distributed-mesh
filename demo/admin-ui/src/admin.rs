@@ -207,9 +207,10 @@ impl Admin {
         self.carrier().build(id).await
     }
 
-    /// node.create of a `type` node in `mesh`, at the lowest free ordinal of its type: a Create of that
-    /// node alone (build.md §1).
-    pub async fn spawn(&self, mesh: &str, r#type: &str) -> Result<Accepted, CallEnd> {
+    /// node.create of a `type` node in `mesh`, at the lowest free ordinal of its type, on the executable
+    /// at `executable` (hashed here) or its type's: a Create of that node alone (build.md §1). A new
+    /// executable is a new node (Q345).
+    pub async fn spawn(&self, mesh: &str, r#type: &str, executable: Option<PathBuf>) -> Result<Accepted, CallEnd> {
         let current = self.current().await?;
         if !current.paths.values().any(|s| s.mesh == mesh) {
             return Err(CallEnd::Rejected { reason: "unknown-mesh".into(), detail: format!("the fabric holds no mesh {mesh}") });
@@ -221,7 +222,13 @@ impl Admin {
             _ => return Err(CallEnd::Rejected { reason: "unknown-type".into(), detail: "the demo runs node-admins, gateways, brokers and computes only".into() }),
         }
         let next = self.resized(&current, &[grown], false)?;
-        let created: Vec<Nodes> = next.into_iter().filter(|s| !current.paths.contains_key(&s.location())).map(nodes_of).collect();
+        let mut created: Vec<Nodes> = next.into_iter().filter(|s| !current.paths.contains_key(&s.location())).map(nodes_of).collect();
+        if let Some(executable) = executable {
+            let sha256 = sha256_file(&executable).map_err(|e| missing(format!("{} could not be hashed: {e}", executable.display())))?;
+            for node in &mut created {
+                node.executable = Some(Binding { launch_id: r#type.to_string(), executable: executable.clone(), sha256: sha256.clone(), image: current.image.clone() });
+            }
+        }
         let stream = rdm_client::Nodes::new(self.carrier()).create(created).await?;
         opened(stream.accepted())
     }

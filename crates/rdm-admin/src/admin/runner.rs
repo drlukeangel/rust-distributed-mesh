@@ -287,7 +287,7 @@ impl AdminRunner {
     }
 
     /// The template a node.create of `node` launches from (node-rpc-envelope.md "Build schema";
-    /// node-replace.md step 3; node-recovery.md "Retained"; build-deployment.md §2): the binding
+    /// node-recovery.md "Retained"; build-deployment.md §2): the binding
     /// `requested` names (the Build's: a step's, or the path's entry), else the binding recorded by the explicit
     /// predecessor's node ID and incarnation. A create nothing names an executable for is refused by name and nothing is launched:
     /// no executable is taken from a directory with no sha. A binding the step or a row names is
@@ -957,8 +957,8 @@ impl AdminRunner {
     /// `(path, name)`, its storage following the path's entry in the accepted topology: a `Persistent`
     /// path's over the predecessor's kept data dir (`inherited`, `RDM_INHERITED_DATA_DIR=1`, the endpoint
     /// key loaded from it), an `Ephemeral` path's over a newly allocated data dir with a newly minted key
-    /// (`RDM_INHERITED_DATA_DIR=0`); config and tags seeded from the Deleted row (node-replace.md
-    /// "Inherited"), launching `executable`, the path's entry's. The Build fixes the binding, as a Build's Create
+    /// (`RDM_INHERITED_DATA_DIR=0`); config and tags seeded from the Deleted row (node-recovery.md
+    /// "Retained"), launching `executable`, the path's entry's. The Build fixes the binding, as a Build's Create
     /// step does, so the launch never takes the one the Deleted row still records; the claim records it
     /// on the node's row, so a later node recovery runs it (node-recovery.md "Retained"). A kept data dir
     /// is the one the delete's `TerminateRuntime` receipt names: the delete stopped the exact runtime
@@ -1086,7 +1086,7 @@ impl AdminRunner {
         let op = if stop { "node.stop" } else { "node.connection.delete" };
         // The pinned birth is found by its node id: a birth that left its mesh and took a name live
         // publishes nothing more, so the view lists it at the name it last published until it is
-        // stopped and its row is read (node-replace.md steps 1-2). Its row's name is the operation's path.
+        // stopped and its row is read (node-name-update.md). Its row's name is the operation's path.
         let held = pin.held_in(&*self.topology.read().await, &rdm_core::OperationId::node(op, &pin.node_id), node).map_err(|r| crate::executor::RunEnd::failed(r.to_string()))?;
         let (record, handle) = match held {
             Some(n) => self.handle_for(&n).await?,
@@ -1125,8 +1125,8 @@ impl AdminRunner {
         if record.node_id != pin.node_id {
             return Err(crate::executor::RunEnd::failed(crate::build::BirthReplaced { operation: operation.clone(), path: node.path.clone(), name: node.name.clone(), expected: pin.clone(), observed: crate::build::PinnedBirth::of(&record) }.to_string()));
         }
-        // Its row's name is the operation's path, as `standalone` takes it: a predecessor this Build
-        // renamed `<name>-old` is deleted there, never at the name it was launched at (node-replace.md).
+        // Its row's name is the operation's path, as `standalone` takes it: a node renamed by
+        // node.name.update is deleted at its row's name, never at the name it was launched at.
         let record = at_operation_pair(record, node);
         let template = self.template_for(&record.r#type, &record.mesh).await?;
         let req = DeleteRequest { operation: operation.clone(), build_id: Some(build_id.clone()), attempt, node: record.clone(), handle, unreached: false };
@@ -1309,8 +1309,8 @@ impl AdminRunner {
         // The record handed back with the runtime is the one this admin deployed; whether the birth
         // is stopped is the view's, as `stopped_birth` takes it: a stopped birth's delete
         // goes straight to its exact runtime's exited verdict. Its row's name is the operation's path,
-        // as `standalone` takes it: a predecessor renamed `<name>-old` by this Build is deleted there,
-        // never at the name it was deployed at (node-replace.md).
+        // as `standalone` takes it: a node renamed by node.name.update is deleted at its row's name,
+        // never at the name it was deployed at.
         let record = match &seen {
             Some(n) => Node { stopped: n.stopped, ..at_operation_pair(record, node) },
             None => at_operation_pair(record, node),
@@ -1567,7 +1567,7 @@ impl AdminRunner {
 /// `record`, the exact birth an operation was pinned to, named by the operation's `(path, name)`: a
 /// birth renamed live publishes nothing more, so this admin's view lists it at the name it last
 /// published and its launch handle at the name it was launched under, while the operation's pair is
-/// the one its record holds now (node-replace.md steps 1-2; node-delete.md step 3 writes the row there;
+/// the one its record holds now (node-name-update.md; node-delete.md step 3 writes the row there;
 /// node-start.md "Identity": the start keeps that path/name).
 fn at_operation_pair(record: Node, node: &PathName) -> Node {
     Node { path: node.path.clone(), name: node.name.clone(), ..record }
@@ -1916,7 +1916,7 @@ mod tests {
     use rdm_core::binding::Binding;
 
     /// A data root under the system temp dir, with the stopped birth `node` (its node id, its birth) and
-    /// its node record renamed to `<name>-old` at the unchanged path in a nodes store, its record's allocation minting `deployment`.
+    /// its node record renamed at its unchanged path in a nodes store, its record's allocation minting `deployment`.
     async fn absent_birth(cell: &str, deployment: &crate::model::DeploymentId) -> (std::path::PathBuf, crate::storage::MemoryNodesStorage, PathName, NodeId, IncarnationId) {
         use crate::storage::NodesStorage;
         let root = std::env::temp_dir().join(format!("rdm-{cell}-{}-{}", std::process::id(), rand::random::<u32>()));
@@ -1934,7 +1934,7 @@ mod tests {
     /// CONTRACT (node-admin-lifecycle.md §6.1: "A replace of a birth absent from the view runs node.delete
     /// against its exact runtime, rebuilt from the Build action and the data-root runtime record"): the
     /// stopped predecessor is rebuilt by admitted node ID and incarnation even when the caller
-    /// carries its original name. Its lifecycle record now carries `<name>-old` at the same path;
+    /// carries its original name. Its lifecycle record now carries its new name at the same path;
     /// the runtime record lives under `<data root>/<node id>` and names the exact deployment.
     #[tokio::test]
     async fn a_birth_absent_from_the_view_is_rebuilt_from_its_record_and_its_data_root_runtime_record() {

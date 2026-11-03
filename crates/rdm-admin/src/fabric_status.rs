@@ -239,7 +239,7 @@ impl FabricStates {
         self.change_wake.notified().await
     }
 
-    /// A resize or an executable replacement puts the fabric back to pending: the accepted Build's topology is no longer
+    /// A resize, a Create or a Delete, puts the fabric back to pending: the accepted Build's topology is no longer
     /// the one the fabric changes under, so the fabric is ready again only when every mesh of the new
     /// topology is. A new attempt of the same Build changes no topology and moves nothing here.
     /// Returns whether the fabric was put back; the move waits until the state it leaves went out.

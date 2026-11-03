@@ -245,7 +245,7 @@ impl Node {
         self.path.clone()
     }
 
-    /// The node's name within its path (an ordinary name, or `<name>-old` for an explicitly replaced predecessor).
+    /// The node's name within its path (it changes only by node.name.update).
     pub fn node_name(&self) -> String {
         self.name.clone()
     }

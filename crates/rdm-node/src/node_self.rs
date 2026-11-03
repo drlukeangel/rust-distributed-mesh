@@ -624,8 +624,7 @@ impl NodeSelf {
     }
 
     /// The admission block (node-name-update.md Precondition: "No new connection is admitted from the
-    /// row write through `ApplyNodeName`"; node-replace.md: a node is renamed only once "nothing is
-    /// connected to it and nothing routes to it"): the client this birth originates its logged
+    /// row write until the node rejoins its mesh"): the client this birth originates its logged
     /// connections on opens none from here until it starts or joins its mesh again. The Node RPC pool
     /// and gossip are not connections and are untouched.
     fn block_new_connections(&self, cause: &str) {

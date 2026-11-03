@@ -11,6 +11,8 @@ completion `node.mesh.joined`. It is run by:
 - [node.start](node-start.md) step 2, and so the first start inside [node.create](node-create.md);
 - the mesh-primary, standalone, when a [tickle](node-tickle.md) reaches a node that is off its
   mesh: the node is commanded back on;
+- the mesh-primary, standalone, after a live node took a new name by
+  [node.name.update](node-name-update.md): the node rejoins its mesh under the new name;
 - a node-admin entering an existing mesh ([node create](node-create.md#a-node-admin-created-into-a-live-mesh), [mesh.create](mesh-create.md)).
 
 Those pages link here and restate nothing.
@@ -19,7 +21,7 @@ Those pages link here and restate nothing.
 
 | Field | Contract |
 |---|---|
-| Commander | Inside a start: the workflow itself. Standalone: the node's mesh-primary, after a tickle that reached the exact birth; the fabric-primary for a mesh-primary. Commands go down |
+| Commander | Inside a start: the workflow itself. Standalone: the node's mesh-primary, after a tickle that reached the exact birth or a node.name.update the live node applied; the fabric-primary for a mesh-primary. Commands go down |
 | Executor | The node itself: it makes the report and joins the mesh |
 | Entry | The exact `(node.id, incarnation)` with its endpoint bound; its full `MeshDigest` for the report |
 | Report | `JoinNode { digest }` to the accepting primary: an ordinary node's mesh-primary; a node-admin birth's maker; the fabric-primary while the mesh has no primary. Not forwardable. The primary verifies exact birth, deployment, path, mesh and name, installs the reported address, completes the deployment's waits, and answers `Joined` with its control snapshot, or refuses by field name |

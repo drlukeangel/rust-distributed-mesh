@@ -509,8 +509,9 @@ impl NodeProtocol for NodeCommand {
     fn classify_reply(reply: &NodeCommandReply) -> ReplyKind {
         match reply {
             NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeJoined | NodeCommandReply::NodeStarted | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } => ReplyKind::Success,
-            NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } => ReplyKind::Success,
-            NodeCommandReply::Reserved21 { .. } | NodeCommandReply::Reserved22 { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            // The reserved positions keep the codes their frozen positions carry.
+            NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } | NodeCommandReply::Reserved21 { .. } => ReplyKind::Success,
+            NodeCommandReply::Reserved22 { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
             NodeCommandReply::RejectedStaleChange { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             NodeCommandReply::Failed { code, .. } => ReplyKind::new(*code),
             NodeCommandReply::RejectedInvalidNodeTransition { .. } | NodeCommandReply::Rejected { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
@@ -555,7 +556,7 @@ impl StreamingProtocol for NodeCommand {
         match frame {
             NodeCommandReply::CommandAccepted { .. } => FrameKind::Started,
             NodeCommandReply::ConnectionsDeleting { .. } | NodeCommandReply::StopConnectionsDeleted { .. } | NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } | NodeCommandReply::NodeJoined => FrameKind::Data,
-            NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } => FrameKind::Terminal,
+            NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::Reserved21 { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(NodeCommand::classify_reply(other)),
         }
     }

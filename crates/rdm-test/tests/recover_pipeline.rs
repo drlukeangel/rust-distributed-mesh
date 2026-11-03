@@ -143,7 +143,7 @@ const CREATE_ORDER: [&str; 13] = [
 /// node.create at the same path.name (`node.create:<path>`): the same data dir (its storage still
 /// there) and the same endpoint key, a new node.id and incarnation, no supersedes, ready. No operation
 /// writes a receipt of another, and every receipt has a wire shape on the Build topic.
-/// Must NOT happen: one fused `recover-node:<path>` operation, a rename to `<path>.old`, a stop, a
+/// Must NOT happen: one fused `recover-node:<path>` operation, a rename, a stop, a
 /// storage handoff or release, a path-keyed removal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over_its_data_dir() {

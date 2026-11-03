@@ -3970,7 +3970,7 @@ mod tests {
         assert!(matches!(reply, R::Applied) && effect.is_some(), "an admin of the mesh whose view names no primary of it applies it: {reply:?}");
     }
 
-    /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): a replace or a recovery keeps the
+    /// CONTRACT (R-RC1, node-recovery.md: a new node.id at the same path and name): a recovery keeps the
     /// path and name and mints a new node id. The view holds one row per path and name (`admin::project_at`
     /// keys it by `PathName`), so until the deleted birth's digest goes non-live or departs, the row
     /// at this admin's path can be the deleted birth's, live and in its role, and this admin's own row is

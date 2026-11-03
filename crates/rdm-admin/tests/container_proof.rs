@@ -117,8 +117,8 @@ async fn find_tells_a_running_container_launch_a_terminated_one_and_one_never_la
     assert_eq!(fresh.find(&never, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap(), Found::NeverLaunched);
 }
 
-/// CONTRACT (Q79, node-replace.md: a replace re-births at the same path.name while its predecessor,
-/// renamed and stopped, still runs; container.rs: "each node owns one address on the fabric network
+/// CONTRACT (Q79, Q345: a new node is created at a path.name an earlier node released while that node,
+/// stopped and renamed, still runs; container.rs: "each node owns one address on the fabric network
 /// (`--ip`)"): the address the container provider binds belongs to the birth that holds it. A new birth
 /// at a name whose earlier birth's container still runs is given an address no container on the network
 /// holds, and its container starts beside the earlier one. Must NOT happen: the new birth handed the

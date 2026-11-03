@@ -550,7 +550,7 @@ impl NodeRows {
     /// once the `AllocateIdentity` receipt names `node_id` and before anything is prepared or
     /// launched for the birth, the writer of the mesh's rows puts the birth's row at `name`, status
     /// `Pending`, with no tags and no config: a recovery's row (`of`, [`RowFor`]) inherits the
-    /// config and tags of the `Deleted` row at the `(path, name)`, a successor's those of the `<name>-old`
+    /// config and tags of the `Deleted` row at the `(path, name)`, a successor's those of the renamed
     /// row ([`Self::create_row_with_spec`] writes a plain create's from its create spec). The write
     /// refuses a name another node's live row holds, `NameHeld { by }`, and nothing is written. A row
     /// the node holds already is left as it is. `allocated`: what the create allocated for the birth,
@@ -562,8 +562,8 @@ impl NodeRows {
 
     /// [`Self::create_row`] of a create whose create spec names `tags` and `config` (Q166, build.md §1; proposal
     /// executable-bindings-at-create.md rule 1): a plain create's row carries them, written at its first write,
-    /// so its first join hands it the config (node-config-update.md); a replace's successor's row carries
-    /// them too (node-replace.md "Properties", Q305); a recovery's carries its seed's (node-recovery.md
+    /// so its first join hands it the config (node-config-update.md); a new node's row at a path an
+    /// earlier node held carries them too (build-deployment.md §3: "its Build entry's", Q305); a recovery's carries its seed's (node-recovery.md
     /// "Retained"). `storage_persistence`: the spec's, written onto the row whatever the create
     /// (build.md §1); `None` takes the seed's.
     #[allow(clippy::too_many_arguments)]

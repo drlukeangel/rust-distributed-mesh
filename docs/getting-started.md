@@ -103,10 +103,11 @@ mesh-wcy2e6-1.gateway.1 -> mesh-wcy2e6-1.broker.2: {'outcome': 'Reply', 'streame
 - `ExampleRecords` (`0x51`, `"example-records"`): a server-streaming op that copies the serving
   `broker` node's operation record entries (`Started`, `Entry`, `Through`).
 
-Run `scripts/demo-estate.sh example` to replace `<mesh-2>.broker.3` and `<mesh-2>.compute.1` with
-nodes on the `rshape-example` executable. Each [replace](architecture/lifecycles/node-replace.md) is
-node commands that free the node's name (it is renamed `<name>-old` and stopped, keeping its data),
-then one [Build](architecture/build.md) that creates its successor:
+Run `scripts/demo-estate.sh example` to put nodes on the `rshape-example` executable at
+`<mesh-2>.broker.3` and `<mesh-2>.compute.1`. A new executable is a new node
+([build-deployment.md §3](architecture/build-deployment.md)): each node is deleted by one
+[Build](architecture/build.md), then one Build creates a node of its type on the new executable at the
+path and name the delete released:
 
 ```bash
 RDM_DEMO_BIN=$PWD/demo/target/debug scripts/demo-estate.sh example
@@ -115,13 +116,15 @@ RDM_DEMO_BIN=$PWD/demo/target/debug scripts/demo-estate.sh example
 Output:
 
 ```text
-replace path mesh-njqkix-2.broker, name 3 onto rshape-example: {"attempt":1,"build_id":"c2tv79rbvh82"}
-replace path mesh-njqkix-2.compute, name 1 onto rshape-example: {"attempt":1,"build_id":"zrrs8ttny3w3"}
+delete path mesh-njqkix-2.broker, name 3: {"attempt":1,"build_id":"<build id>"}
+create a broker in mesh-njqkix-2 onto rshape-example: {"attempt":1,"build_id":"c2tv79rbvh82"}
+delete path mesh-njqkix-2.compute, name 1: {"attempt":1,"build_id":"<build id>"}
+create a compute in mesh-njqkix-2 onto rshape-example: {"attempt":1,"build_id":"zrrs8ttny3w3"}
 the example's lines (target rshape) are in each node's stderr.log under /dev/shm/rdm-lane-2-demo/<path.name>-<node id>/
 ```
 
-Read the broker's Build whole with `build.get`, through the `build_get` example. Its steps are the
-successor's [node.create](architecture/lifecycles/node-create.md), keyed `node.create:<node_id>` by the
+Read the broker's Create whole with `build.get`, through the `build_get` example. Its steps are the
+new node's [node.create](architecture/lifecycles/node-create.md), keyed `node.create:<node_id>` by the
 node.id the fabric-primary minted for it when it accepted the Build:
 
 ```bash

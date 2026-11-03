@@ -337,7 +337,7 @@ impl PinnedBirth {
     /// `Ok(None)`: the view holds neither this birth nor any birth at `node`.
     pub fn held_in(&self, view: &Topology, operation: &rdm_core::OperationId, node: &PathName) -> Result<Option<crate::model::Node>, BirthReplaced> {
         // The birth by its node id, wherever the view lists it: a birth renamed live is listed at the
-        // name it last published (node-replace.md steps 1-2). The same node id under another
+        // name it last published (node-name-update.md). The same node id under another
         // incarnation, or another node id at the path, is another birth.
         let refused = |n: &crate::model::Node| {
             let refusal = BirthReplaced { operation: operation.clone(), path: node.path.clone(), name: node.name.clone(), expected: self.clone(), observed: Self::of(n) };

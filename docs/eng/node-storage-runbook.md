@@ -9,7 +9,7 @@ The contract is in these pages; this runbook only gathers them:
 - [deployment-provider.md §4](../architecture/deployment-provider.md#4-storage-policy-and-the-data-dir), storage policy and the data dir;
 - [node-stop.md](../architecture/lifecycles/node-stop.md) and [node-start.md](../architecture/lifecycles/node-start.md);
 - [node-recovery.md](../architecture/lifecycles/node-recovery.md), with its data-dir rules (`R-FM2`);
-- [node-replace.md](../architecture/lifecycles/node-replace.md) and [build-deployment.md](../architecture/build-deployment.md);
+- [node-name-update.md](../architecture/lifecycles/node-name-update.md) and [build-deployment.md](../architecture/build-deployment.md);
 - [node-delete.md](../architecture/lifecycles/node-delete.md);
 - [fabric-node-hooks.md](../architecture/fabric-node-hooks.md#what-the-context-carries), what `pre_node_ready` is given.
 
@@ -36,12 +36,11 @@ The contract is in these pages; this runbook only gathers them:
 | node recovery, any other verdict but `os-stopped` | new; same path and name | newly allocated | newly minted | `FirstStart`, `inherited = false` |
 | node recovery, the old data dir absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors | new; same path and name | newly allocated beside the old path; `data-dir-lost { path, since }` recorded | newly minted (the old one is never re-minted) | `FirstStart`, `inherited = false` |
 | node recovery, the old data dir present but `node-key` unreadable | none yet | none: `data-dir-unreadable { path, cause }` recorded and the recovery held until the key reads | none | runs only once the key reads, `inherited = true` |
-| executable replacement (node.replace), `Persistent` path | new; same path and name | the predecessor's, inherited | the predecessor's | `FirstStart`, `inherited = true` |
-| executable replacement, `Ephemeral` path | new; same path and name | newly allocated | newly minted | `FirstStart`, `inherited = false` |
 | `node.delete` | released | kept on disk, with its key; a later spec at the path may inherit it | kept | none |
 
-A move of the data itself to another layout or place during a replacement is Rafka's own step,
-with its own commit boundary (node-replace.md, "Data transfer").
+A new executable is a new node, a Build that adds it (build-deployment.md §3). To keep the old node's
+data, the old node is stopped and renamed with node.name.update first; it keeps its data dir and key
+until a Delete removes it, and moving its data is Rafka's own step, with its own commit boundary.
 
 ## What the application reads
 

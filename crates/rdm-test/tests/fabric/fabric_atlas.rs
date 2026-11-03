@@ -253,7 +253,7 @@ async fn a_delayed_observation_of_another_meshs_node_never_moves_the_atlas_back(
 /// fabric-primary ... The fabric-primary sends the command to the node's mesh-primary ... and, on its
 /// answer that the row moved, writes the new name to the node in its atlas"; Q197, Q203, Q204:
 /// node reads answer from the atlas and each op writes it): a live node of mesh2, its connections
-/// deleted and off its mesh, is renamed `.old` by a caller's `node.name.update` sent directly to mesh2's
+/// deleted, is renamed by a caller's `node.name.update` sent directly to mesh2's
 /// primary, answered `NameUpdated`; the fabric-primary's node read, at once and with no wait, lists the
 /// birth at the new name and none at the old. mesh2's primary carried the call up
 /// (`rdm.node_admin.node.update.via-forward`, op node.name.update), the fabric-primary sent it down and

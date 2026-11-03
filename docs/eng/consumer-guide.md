@@ -29,7 +29,7 @@ the linked page before asking: every answer here was already on one.
 | name the executable each node runs, and replace it | [build-deployment.md](../architecture/build-deployment.md) |
 | move RDM's records to my own backend, read where they go, return to a previous one | [topology storage provider how-to](../features/topology-storage-provider/how-to.md); the contract on [storage.md §2](../architecture/storage.md#2-topology_storage_provider-where-rdms-records-go) |
 | know when the fabric is usable | [states.md](../architecture/lifecycles/states.md): pending → ready; a Build that changes the fabric is Complete only after its own ready (Q154) |
-| stop, start, replace or delete one node | the lifecycle pages under [lifecycles/](../architecture/fabric-mesh-node-lifecycles.md) (`node-stop.md`, `node-start.md`, `node-replace.md`, `node-delete.md`) |
+| stop, start, rename or delete one node | the lifecycle pages under [lifecycles/](../architecture/fabric-mesh-node-lifecycles.md) (`node-stop.md`, `node-start.md`, `node-name-update.md`, `node-delete.md`); a new executable is a new node, a Build that adds it ([build-deployment.md §3](../architecture/build-deployment.md)) |
 | delete the whole fabric | [fabric-delete.md](../architecture/lifecycles/fabric-delete.md): wait for the fabric.delete stream's `Complete` (fabric.deleted), then `node.delete` of the fabric-primary to its `node.deleted`; the process then exits by itself. Kill nothing before that |
 
 ## Reading by property

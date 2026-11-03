@@ -4,8 +4,8 @@
 
 `node.connection.delete` closes a node's connections and keeps the process running. It is a node
 primitive: [node.stop](node-stop.md) calls it and streams its acknowledgement and completion on the
-stop's stream, so does [node.delete](node-delete.md) through the stop, a [rename](node-name-update.md) is permitted only once its `All` has completed (connections-deleted)
-or the node is stopped, and a caller can call it on its own. A connection is an open Direct or Proxy
+stop's stream, so does [node.delete](node-delete.md) through the stop, a [rename](node-name-update.md) needs no connections: it is permitted once its `All` has completed with
+nothing held (connections-deleted) or the node is stopped, and a caller can call it on its own. A connection is an open Direct or Proxy
 connection of the node, read from the connections open now, a connection whose row is still owed
 included (Q169). Gossip neighbours and the Node RPC pool are not connections, and
 neither scope touches them: a node that has had its connections deleted is still heard on gossip.

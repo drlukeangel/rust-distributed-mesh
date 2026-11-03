@@ -15,8 +15,8 @@
 #   scripts/demo-estate.sh stream [<root dir>]   the data-plane proof: five `demo/echo` streams, four across
 #                                                the meshes, through the originate door (rdm-rpc-probe stream)
 #   scripts/demo-estate.sh example [<root dir>]  the consumer guide's compiled example (demo/src/consumer_example.rs):
-#                                                <mesh 2>.broker.3 and <mesh 2>.compute.1 replaced by a Build onto
-#                                                $BIN/rshape-example; the compute submits an operation to a broker
+#                                                <mesh 2>.broker.3 and <mesh 2>.compute.1 deleted, then a node of
+#                                                each type created on $BIN/rshape-example; the compute submits an operation to a broker
 #                                                it selects from the topology every 10 s and copies its record
 #   scripts/demo-estate.sh example-crash [<root dir>]  the example broker's process ended by SIGKILL while it holds
 #                                                pending work: node recovery starts it again over its data dir,
@@ -149,26 +149,32 @@ d=json.load(sys.stdin); print({k: d.get(k) for k in ("outcome","streamed","kind"
   one "$M1.gateway.1" "$M1.broker.2"  "same mesh, gateway to broker"
 }
 
-# Replace each named node by a Build onto $BIN/rshape-example, one Build at a time.
+# One Build through the UI, sent again while another Build runs, then followed to its end.
+build_through_ui() {
+  local ui=$1 what=$2 acc id; shift 2
+  for _ in $(seq 1 120); do
+    acc=$(curl -s "$@")
+    echo "$acc" | grep -q '"build-in-progress"' || break; sleep 1
+  done
+  echo "$what: $acc"
+  id=$(echo "$acc" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("build_id",""))' 2>/dev/null || true)
+  [ -n "$id" ] && for _ in $(seq 1 240); do
+    curl -s "http://$ui/api/builds?id=$id" | python3 -c 'import json,sys; b=[x for x in json.load(sys.stdin)["builds"] if x["build_id"]==sys.argv[1]]; sys.exit(0 if b and b[0]["phase"] in ("Complete","Failed") else 1)' "$id" 2>/dev/null && break; sleep 1
+  done
+}
+
+# A new executable is a new node (Q345): each named node deleted by a Build, then a node of its type
+# created by a Build onto $BIN/rshape-example at the path and name the delete released, one Build at a time.
 example() {
   ROOT=${ROOT:-$(cat "$CURRENT")}
   # shellcheck disable=SC1091
   . "$ROOT/names"
-  local ui acc node path name; ui=$(cat "$ROOT/ui_bind")
-  # Each node by its path and name: the UI's route is /api/nodes/{path}/{name}/replace.
-  for node in "$M2.broker 3" "$M2.compute 1"; do
-    read -r path name <<< "$node"
-    for _ in $(seq 1 120); do
-      acc=$(curl -s -X POST "http://$ui/api/nodes/$path/$name/replace" -H 'content-type: application/json' -d "{\"executable\":\"$BIN/rshape-example\"}")
-      echo "$acc" | grep -q '"build-in-progress"' || break; sleep 1
-    done
-    echo "replace path $path, name $name onto rshape-example: $acc"
-    # One Build at a time: a replace's node commands free the name, then its Create is a Build, so the
-    # next replace is sent only once this Create has ended.
-    local id; id=$(echo "$acc" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("build_id",""))' 2>/dev/null || true)
-    [ -n "$id" ] && for _ in $(seq 1 240); do
-      curl -s "http://$ui/api/builds?id=$id" | python3 -c 'import json,sys; b=[x for x in json.load(sys.stdin)["builds"] if x["build_id"]==sys.argv[1]]; sys.exit(0 if b and b[0]["phase"] in ("Complete","Failed") else 1)' "$id" 2>/dev/null && break; sleep 1
-    done
+  local ui node path name type; ui=$(cat "$ROOT/ui_bind")
+  for node in "$M2.broker 3 broker" "$M2.compute 1 compute"; do
+    read -r path name type <<< "$node"
+    build_through_ui "$ui" "delete path $path, name $name" -X DELETE "http://$ui/api/nodes/$path/$name"
+    build_through_ui "$ui" "create a $type in $M2 onto rshape-example" -X POST "http://$ui/api/nodes/spawn" -H 'content-type: application/json' \
+      -d "{\"mesh\":\"$M2\",\"type\":\"$type\",\"executable\":\"$BIN/rshape-example\"}"
   done
   echo "the example's lines (target rshape) are in each node's stderr.log under $ROOT/<path.name>-<node id>/"
 }

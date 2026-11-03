@@ -2358,7 +2358,8 @@ impl NodeProtocol for Status {
             StatusReply::RejectedName { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
             StatusReply::BusyHoldingConnections { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
             StatusReply::MeshJoined { .. } => ReplyKind::Success,
-            StatusReply::Reserved50 { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            // The reserved position keeps the code its frozen position carries.
+            StatusReply::Reserved50 { .. } => ReplyKind::Success,
             StatusReply::RequestNotHandled { .. } => ReplyKind::new(crate::outcome::Code::Unimplemented),
             StatusReply::CertRenewed { .. } => ReplyKind::Success,
             StatusReply::IssuerUpdated { .. } => ReplyKind::Success,
@@ -2500,7 +2501,7 @@ mod tests {
             (StatusReply::RejectedName { reason: "r".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] }, ReplyKind::new(crate::outcome::Code::Unavailable)),
             (StatusReply::MeshJoined { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), joined: vec![WhichMesh::Own, WhichMesh::Backbone] }, ReplyKind::Success),
-            (StatusReply::Reserved50 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), left: vec![WhichMesh::Own] }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::Reserved50 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), left: vec![WhichMesh::Own] }, ReplyKind::Success),
             (StatusReply::RequestNotHandled { request: "declare-node-state".into() }, ReplyKind::new(crate::outcome::Code::Unimplemented)),
             (StatusReply::CertRenewed { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), expires_at: 7 }, ReplyKind::Success),
             (StatusReply::IssuerUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), issuer_expires_at: 7 }, ReplyKind::Success),

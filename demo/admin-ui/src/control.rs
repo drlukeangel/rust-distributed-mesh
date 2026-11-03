@@ -5,7 +5,8 @@
 //! refusal answers with node-admin's named reason. The UI never starts or stops a runtime itself.
 //!
 //! ```text
-//! POST   /api/nodes/spawn          {mesh, type}  -> Create: one node at the next path of that type
+//! POST   /api/nodes/spawn          {mesh, type, executable?} -> Create: one node at the next path of that
+//!                                                   type, on the executable at that file or its type's
 //! POST   /api/nodes/{path}/{name}/stop           -> node.stop, a node command (a restart is a stop, then a start: Q183)
 //! POST   /api/nodes/{path}/{name}/start          -> node.start, a node command
 //! DELETE /api/nodes/{path}/{name}                -> Delete: the node by its node.id
@@ -72,6 +73,10 @@ struct BootstrapRequest {
 struct SpawnRequest {
     mesh: String,
     r#type: String,
+    /// The file the new node runs, hashed by the UI: a new executable is a new node (Q345). None: its
+    /// type's.
+    #[serde(default)]
+    executable: Option<std::path::PathBuf>,
 }
 
 /// The routes, driving the node-admin at `admin` (`None`: every route
@@ -137,7 +142,7 @@ async fn spawn(State(c): State<Control>, Json(body): Json<SpawnRequest>) -> Resp
         Ok(a) => a,
         Err(r) => return r,
     };
-    let r = admin.spawn(&body.mesh, &body.r#type).await;
+    let r = admin.spawn(&body.mesh, &body.r#type, body.executable).await;
     answer(&c, "add node", r, None, Some(&body.mesh))
 }
 

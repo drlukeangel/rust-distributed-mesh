@@ -1463,7 +1463,7 @@ pub struct Nodes {                       // the settable fields; the record adds
     pub mesh: String,
     pub r#type: String,                  // the node's type, by its name
     pub storage_persistence: Option<StoragePersistence>, // none: the type's
-    pub executable: Option<Binding>,     // none: the type's; a node with neither is refused by name
+    pub executable: Option<Binding>,     // the executable used to launch the node; none: the type's; a node with neither is refused by name
     pub tags: BTreeSet<String>,
     pub config: BTreeMap<String, String>, // the application's map; RDM never reads it
 }

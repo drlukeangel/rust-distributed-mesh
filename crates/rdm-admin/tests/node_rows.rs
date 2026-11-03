@@ -1,6 +1,6 @@
 //! The node rows of a mesh, written by its primary node-admin (R13; ops-naming "Node data: meta,
 //! config and exe"; lifecycles/node-create.md step 1; lifecycles/node-delete.md step 3): the executor's
-//! create's row, rename to `<name>-old` at the same path and `Deleted` row, the rows of births no create wrote a row for, and the
+//! create's row, rename at the same path and `Deleted` row, the rows of births no create wrote a row for, and the
 //! fabric-primary's record of a stopped predecessor, which the drive of a Build feeds.
 //!
 //! The fixture view: `mesh1` has the fabric-primary `mesh1.node-admin.1`, its mesh primary
@@ -239,8 +239,8 @@ fn a_plain_create_carries_its_create_specs_config_not_the_deleted_rows() {
 }
 
 /// CONTRACT (Q305; build-deployment.md §3: a replacement's "config and tags are its Build entry's,
-/// written at its claim, never the predecessor's"; node-replace.md "Properties": "an entry naming no
-/// ports names none until the node's own update"): a Build's replacement of a member at its own path
+/// written at its claim, never the predecessor's"): an entry naming no ports names none until the
+/// node's own update: a Build's replacement of a member at its own path
 /// writes over the `Deleted` row at the key naming its birth by admitted provenance, as a recovery does,
 /// but its row takes the entry's config and tags: an empty entry over a row holding the dead birth's two
 /// ports writes none of them, and an entry naming {tier: gold} and `blue` writes those. Its predecessor
@@ -460,7 +460,7 @@ fn a_take_over_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
 /// `path mesh1.node, name 1-old`. An admin that takes mesh1's primary role over a view that still lists that
 /// stopped birth at the name it published (`mesh1.node.1`) writes no row for it: the node holds a
 /// row, found through its id index, and that row stays the node's only one. No second row at the
-/// bare name holds the name for a stopped birth, and the node's id index still names `-old` name, where
+/// bare name holds the name for a stopped birth, and the node's id index still names the new name, where
 /// the fabric-primary's view lists it for its delete. One `via-node-row` span, `row-held-by-node`.
 #[test]
 fn a_take_over_on_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_only_one() {
@@ -477,7 +477,7 @@ fn a_take_over_on_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_on
         let rpc1 = rpc1.clone();
         let topology = Arc::new(RwLock::new(before.clone()));
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
-        // The rename its mesh's former primary wrote while the node was stopped: the row moved to its `-old` name.
+        // The rename its mesh's former primary wrote while the node was stopped: the row moved to its new name.
         let renamed = NodeRow { r#type: rpc1.r#type.clone(), mesh: rpc1.mesh.clone().to_owned(), initial_properties: None, topology_storage_provider: None, path: rpc1.location().with_name("renamed").unwrap().path, name: rpc1.location().with_name("renamed").unwrap().name, node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         storage.write_record(&renamed).await.unwrap();
         install(&records, &topology, |t| {
@@ -563,7 +563,7 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
 }
 
 /// CONTRACT (R14 item 7 and acceptance "a mesh role change: the successor rebuilds and holds the
-/// predecessor's rows (Node rows, `-old` name, Deleted)"): the predecessor P and the successor N are two
+/// predecessor's rows (Node rows, renamed, Deleted)"): the predecessor P and the successor N are two
 /// admins with their own data dirs and their own store instances over one shared root. P held the role
 /// and wrote the rows: a live member's row (status ConnectionsDeleting), a renamed predecessor's row
 /// moved to `path mesh1.node, name 2-old` (Deleted), a deleted node's row at `mesh1.node.3` (Deleted), and
@@ -1843,7 +1843,7 @@ fn a_node_created_with_a_free_text_name_keeps_name_path_and_type_through_create_
         })
         .await;
 
-        // 5. Replace (node-replace.md steps 2-3): the predecessor moves to `path mesh1.broker, name
+        // 5. A rename, then a create at the released name (node-name-update.md, node-create.md): the predecessor moves to `path mesh1.broker, name
         //    north-old`, and the successor is created at `mesh1.broker.north`, the name it released, its
         //    row a successor's naming the predecessor's exact birth; its `type` is its own create
         //    spec's.

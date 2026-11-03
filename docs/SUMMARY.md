@@ -45,7 +45,6 @@
 - [Node start](architecture/lifecycles/node-start.md)
 - [Node stop](architecture/lifecycles/node-stop.md)
 - [Node delete](architecture/lifecycles/node-delete.md)
-- [Node replace](architecture/lifecycles/node-replace.md)
 - [Node recovery](architecture/lifecycles/node-recovery.md)
 - [node investigation](architecture/lifecycles/node-investigation.md)
 - [node.tickle](architecture/lifecycles/node-tickle.md)

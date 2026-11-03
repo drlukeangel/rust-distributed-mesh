@@ -311,8 +311,8 @@ fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handl
 
 /// CONTRACT: once `node.connection.delete { All }` has closed a live node's connections, the node opens
 /// no new connection until it starts or joins its mesh again (node-name-update.md Precondition: "No new
-/// connection is admitted from the row write through `ApplyNodeName`"; node-replace.md: a node is
-/// renamed once "nothing is connected to it", and a rename is followed by its stop or its rejoin). After
+/// connection is admitted from the row write until the node rejoins its mesh"; a rename is followed by
+/// its rejoin, or by its start when it is stopped). After
 /// `All` answers holding nothing, the node's data-plane call to its admin ends `NotSent`
 /// `AdmissionBlocked` naming the node, before any dial: one
 /// `rdm.node_rpc.connection.reject.via-admission-block` span, `at = dial`, names the destination. The log
@@ -354,7 +354,7 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         assert_eq!(running.topology_view.held_name(&launch.location()), taken, "the node holds the applied name");
 
         // The block stays after the apply: a renamed node opens nothing until it starts or joins its mesh
-        // again (node-replace.md: it is renamed once nothing is connected to it).
+        // again (node-name-update.md: the block holds until the node rejoins its mesh).
         let still = admission_blocked(&ping_admin(&seams, &admin, &CallOptions::default()).await);
         assert!(still.contains("joins its mesh again"), "the refusal says what lifts it: {still}");
         // It joins its mesh again under the name it took: the block lifts, and the next connection is

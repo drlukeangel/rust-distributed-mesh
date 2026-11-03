@@ -393,7 +393,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         let Some((_, age)) = digest_view.get_at(d.node.node_id.as_str(), now) else { continue };
         heard.insert(d.node.incarnation.clone());
         // A birth that publishes names itself (R12); one that does not is listed at the name its row
-        // holds (a stopped predecessor a node.update renamed the predecessor name `<name>-old` at the same path), one whose row could not be read not at all.
+        // holds (a stopped predecessor a node.update renamed a name node.name.update gave it), one whose row could not be read not at all.
         let name = if publishes(digest_view, records, &d.node.node_id, &d.node.incarnation, age) {
             d.node.location()
         } else {

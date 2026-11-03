@@ -76,8 +76,8 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   dial resolves `path` and `name` → `endpoint_id` at DIAL time (§2.2), never from a stored copy. A stored
   64-hex `endpoint_id` is refused by name.
 - **The id names one node INSTANCE and is never reissued.** A stop or a start keeps the id,
-  incarnation, endpoint and port; a new bin is a new node with a fresh id (the replace steps), and so
-  is a node that replaces another or is added (§2.3).
+  incarnation, endpoint and port; a new bin is a new node with a fresh id, a Build that adds it
+  (Q345), and so is any node that is added (§2.3).
 - **A node PROCESS has an incarnation.** The `Node` row carries `incarnation_id`, an opaque id minted by the
   one minter at node.create, naming the exact runtime that serves the node's id and `path` and `name`. It stays the
   same through stop and start (the process never exits) and ends at delete; recover and replace create
@@ -98,12 +98,11 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   id; the last two change, the `path` and `name` do not. An application that stores a node reference
   stores the `path` and `name`, so a new `endpoint_id` or minted id has no effect on it.
   A re-attach or a growth changes nothing: the nodes are created at the same paths and names, and the
-  routes to the new nodes materialize with no update to any topic. There are two renames, both
-  node.name.update under its [rename precondition](lifecycles/node-name-update.md), always of a live node whose
-  connections are deleted and which has left its mesh: a replace's predecessor to `<name>-old`, and a rollback's
-  back to `<name>` ([node replace](lifecycles/node-replace.md)). A stopped node is never renamed. Nodes are system
+  routes to the new nodes materialize with no update to any topic. A rename is node.name.update under
+  its [rename precondition](lifecycles/node-name-update.md): the node holds no connection, stopped or its
+  connections deleted, and a live node rejoins its mesh under the new name. Nodes are system
   entities, never renamed by hand.
-- **A path is a path.** A path has dotted free-text segments with no mesh or type encoded in their meaning. The path is minted at registration and immutable for this node. Replacement renames the predecessor to `<name>-old` at the same path; rollback restores its original name. The segments in use are a convention (`mesh1.broker`, `fabric1.meshes`). The link from a node to its mesh is the `MeshId` on the node row, and where a row is stored says nothing about the entity's path.
+- **A path is a path.** A path has dotted free-text segments with no mesh or type encoded in their meaning. The path is minted at registration and immutable for this node; only its name changes, by node.name.update. The segments in use are a convention (`mesh1.broker`, `fabric1.meshes`). The link from a node to its mesh is the `MeshId` on the node row, and where a row is stored says nothing about the entity's path.
 - **The external form appears only on public interfaces** (an API answer, a log line, a span) and
   is stripped once, at ingress; the application's own boundaries (Rafka: REST and its audit log) are
   the application's.
@@ -125,28 +124,29 @@ An application names nodes in its own configuration, so a logical stored referen
   node writes its own properties; its mesh-primary writes lifecycle facts (§2.5).
 - **A 64-hex `endpoint_id` or a minted node id in a stored reference is a defect** and is refused
   by name at the reader.
-- **The stored `path` and `name` do not change on a RESTART, a RE-ATTACH, a GROWTH or a REPLACE** (§2.3): a re-attached or grown node is created at its `path` and `name`; a replaced predecessor, live and
-  out of its mesh, is renamed `<name>-old` at its unchanged path and stopped, and its successor is created at the `path` and `name`: a re-birth. No stored
+- **The stored `path` and `name` do not change on a RESTART, a RE-ATTACH or a GROWTH** (§2.3): a re-attached or grown node is created at its `path` and `name`. A new node at an old node's `path` and `name`
+  is created there once the old node released it, stopped and renamed by node.name.update or deleted (Q345): a re-birth. No stored
   reference to it is ever rewritten.
 
-### 2.3 A new node is a new id — a REPLACE takes the old node's `path` and `name`, an ADD takes its own
+### 2.3 A new node is a new id — at an old node's released `path` and `name`, or an ADD at its own
 
-A node's id follows the INSTANCE, so every replacement is traceable, and every stored reference
-follows the `path` and `name` (§2.2), so nothing stored changes when a node is replaced.
+A node's id follows the INSTANCE, so every new node is traceable, and every stored reference
+follows the `path` and `name` (§2.2), so nothing stored changes when a new node takes a released
+`path` and `name`.
 
 | path | node ids |
 |---|---|
 | first create | fresh |
-| golden attach, restage | fresh for a node that is replaced; the same for a node that is not |
+| golden attach, restage | fresh for a node that is new; the same for a node that is not |
 | golden attach or restage + expansion | as above, plus a fresh id for each new node |
 
 | a new node that… | its id | its `path` and `name` | the node it relieves | placement |
 |---|---|---|---|---|
-| REPLACES a node in the topology | fresh | created at `mesh1.broker.1` once the predecessor released it | out of its mesh, renamed `name = 1-old` at `path = mesh1.broker` then stopped, or deleted | stays as it is |
+| takes an old node's `path` and `name` | fresh | created at `mesh1.broker.1` once the old node released it | stopped, then renamed at `path = mesh1.broker` by node.name.update; or deleted | stays as it is |
 | is ADDED | fresh | its own next one (`mesh1.broker.4`) | none | an application refers to it only by an explicit change of its own configuration |
 
-- **A replace is [node replace](lifecycles/node-replace.md).** Insert-and-fail on each of its
-  renames means two nodes never hold one `path` and `name`.
+- **Two nodes never hold one `path` and `name`.** node.create and node.name.update each refuse a pair
+  another node holds, by name ([node-name-update.md](lifecycles/node-name-update.md) "Check and move").
 - **Node certs:** [fabric-certs.md](fabric-certs.md).
 - **node.delete releases the node's identity and name; its row stays.** The node's mesh-primary
   writes Deleted lifecycle state, which frees the pair. The predecessor's own properties
@@ -552,7 +552,7 @@ selects candidates and submits ordinary Builds.
 | Who | The fabric-primary, the sole Build driver. On a fabric-primary handover the successor sweeps from the same durable receipts |
 | Cadence | A sweep every ttl. A node is eligible after one ttl and is normally collected between one and two ttl, plus Build contention |
 | Age | The current stopped period's own stop, recorded on the node record, never an earlier stop before a later start. A birth whose receipt cannot be read is skipped by name, never treated as expired |
-| Selection | Every node stopped longer than the ttl, except a birth an open Build still references (a replace mid-transfer keeps its rollback point) |
+| Selection | Every node stopped longer than the ttl, except a birth an open Build still references |
 | Action | One ordinary node.delete Build per selected node, one at a time: one topology Build runs at a time, so the other candidates wait for the next sweep; a `BuildInProgress` refusal loses nothing, the candidate is seen again. The sweep itself deletes nothing |
 | Recheck | The stopped and open-Build checks run again at the delete Build's admission, serialized with it: a node started or referenced by a new Build after the scan is refused there, never deleted from a stale decision |
 | Effect | The delete's own: row deleted, name released, NodeDeleted in the mesh topology, deleted retention, Gone |
@@ -586,9 +586,9 @@ would in its own container. A test suite tears a mesh down by the tag it created
 <a id="72-node-admins-own-lifecycle-birth-scale-replace-reap"></a>
 ### 7.2 node-admin's own lifecycle: create, scale, replace, delete
 
-A node-admin is created, stopped, started, replaced and deleted like any node
+A node-admin is created, stopped, started, renamed and deleted like any node
 ([node create](lifecycles/node-create.md), [node stop](lifecycles/node-stop.md), [node start](lifecycles/node-start.md),
-[node replace](lifecycles/node-replace.md), [node delete](lifecycles/node-delete.md)); its launch,
+[node name update](lifecycles/node-name-update.md), [node delete](lifecycles/node-delete.md)); its launch,
 start modes and replacement rules are [node-admin-lifecycle.md](node-admin-lifecycle.md), and its
 the fabric-primary moves as [elections §4.4](fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover)
 defines.

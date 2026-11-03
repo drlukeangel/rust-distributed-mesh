@@ -2390,27 +2390,25 @@ fn check_one_executor_per_attempt(claims: &[Value], inv: &mut Invariants) -> Val
 /// non-writer naming the fabric-primary the checkpoint held.
 ///
 /// Which door a Build call's span comes from (build_op.rs `BuildDoor::admit_change`): a create, a delete
-/// of a node the topology names and a reconcile open `build.create.via-node-rpc`; a restart, a replace and
-/// the delete of a replace's predecessor at `<node>.old` open the next attempt under
-/// `build.update.via-node-rpc` naming the node. An admin that does not hold the fabric-primary role refuses
+/// of a node the topology names and a reconcile open `build.create.via-node-rpc`; a restart opens the
+/// next attempt under `build.update.via-node-rpc` naming the node. An admin that does not hold the fabric-primary role refuses
 /// the call before either door (`BuildDoor::serve`), under its own `build.reject.via-not-fabric-primary` (its `route` set; the drive's refusal of the same name carries none) naming
 /// the fabric-primary it sees.
 fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mut Invariants) -> Value {
     let creates = named(spans, "rdm.node_admin.build.create.via-node-rpc");
     let updates = named(spans, "rdm.node_admin.build.update.via-node-rpc");
-    let opens_attempt = |w: &Value| matches!(w["op"].as_str(), Some("node.stop") | Some("node.start")) || (w["op"] == "node.delete" && w["subject"]["name"].as_str().is_some_and(|n| n.ends_with("-old")));
+    let opens_attempt = |w: &Value| matches!(w["op"].as_str(), Some("node.stop") | Some("node.start"));
     let accepted_creates: Vec<String> = creates.iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     let want_creates: BTreeSet<String> = std::iter::once(f.build_id.clone()).chain(a.writes.iter().filter(|w| !opens_attempt(w)).map(|w| s(&w["build_id"]))).collect();
     let got_creates: BTreeSet<String> = accepted_creates.iter().cloned().collect();
     assert_eq!(accepted_creates.len(), got_creates.len(), "a Build was accepted twice: {accepted_creates:?}");
     assert_eq!(got_creates, want_creates, "the accepted topology Builds are the formation and the ones the cell sent, nothing else");
     let mut got_updates: Vec<(String, String, String)> = updates.iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| (s(&sp["attributes"]["build_id"]), s(&sp["attributes"]["node_path"]), s(&sp["attributes"]["node_name"]))).collect();
-    // The delete of a replace's predecessor at `<node>.old` opens an attempt naming that path, as a restart
-    // names its.
+    // A restart opens an attempt naming its node's path.
     let mut want_updates: Vec<(String, String, String)> = a.writes.iter().filter(|w| opens_attempt(w)).map(|w| (s(&w["build_id"]), s(&w["subject"]["path"]), s(&w["subject"]["name"]))).collect();
     got_updates.sort();
     want_updates.sort();
-    assert_eq!(got_updates, want_updates, "the accepted attempt-opening writes are the restarts and the deletes of a replace's predecessor the cell sent");
+    assert_eq!(got_updates, want_updates, "the accepted attempt-opening writes are the restarts the cell sent");
     // The formation's `build.create` may be refused while the Day-0 Build still reconciles: the estate's submit
     // waits that out (`Estate::try_submit`); those are recorded, not counted against the probes. They are the
     // refused create spans of a complete-topology request that began before the formation was accepted.
@@ -4226,20 +4224,18 @@ async fn replacement_run(cell: &str, shape: Shape) {
     );
 }
 
-/// CONTRACT: a logical replacement deletes the old identity and creates a distinct one. In the formed
-/// estate the replace steps of the broker (lifecycles/node-replace.md), submitted over the node objects to
-/// the fabric-primary (a Build sent to an admin that is not the fabric-primary is refused naming it and
-/// executes nothing), opens the next attempt of the accepted Build, under seeded traffic aimed at the
-/// broker, and mints no Build: the attempt runs the Build's steps, the old birth's exact runtime is
+/// CONTRACT (Q345: "A new executable is by definition a new node: a Build that adds it"): a new node at a
+/// path is a distinct identity. In the formed estate the broker is deleted by a Build submitted to the
+/// fabric-primary (the same Delete sent to an admin that is not the fabric-primary is refused naming it
+/// and executes nothing), under seeded traffic aimed at the broker: the old birth's exact runtime is
 /// terminal as the provider reports it, its NodeId stays out of every admin's view for a full staleness
-/// window, and a call to it sends nothing. The same attempt creates a broker at the path.name: a new NodeId, a new
-/// EndpointId, a fresh data dir and a new runtime; its testkit store holds nothing of the old node's, the
-/// path resolves only to it, the mesh's gateway drops its connection to the deleted node and holds one to
-/// the successor. Then the exact runtime of a gateway is killed (acknowledged by the provider) and the
-/// rectifier proves the birth gone and re-births the path under the next attempt of the same Build,
-/// accepting no new Build. What must NOT happen: a reused NodeId, a successor holding the deleted
-/// node's data, a deleted NodeId Ready again, a delete executed for a non-writer, a Build for a
-/// death's recovery.
+/// window, and a call to it sends nothing. Then a Create Build adds a broker at the released path.name:
+/// a new NodeId, a new EndpointId, a fresh data dir and a new runtime; its testkit store holds nothing
+/// of the old node's, the path resolves only to it, the mesh's gateway drops its connection to the
+/// deleted node and holds one to the new one. Then the exact runtime of a gateway is killed
+/// (acknowledged by the provider) and its mesh-primary's recovery re-births the path, accepting no new
+/// Build. What must NOT happen: a reused NodeId, a new node holding the deleted node's data, a deleted
+/// NodeId Ready again, a delete executed for a non-writer, a Build for a death's recovery.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_node_replacement_creates_distinct_logical_identity() {
     replacement_run("mock_node_replacement_creates_distinct_logical_identity", any_tier()).await;

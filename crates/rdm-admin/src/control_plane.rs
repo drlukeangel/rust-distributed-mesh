@@ -68,8 +68,8 @@ pub struct ControlPlane {
     /// Woken on every accepted Build, every attempt opened and every mesh drift attempt's end on this
     /// admin: the reconcile loop runs its next pass on it (`ReconcileWake`).
     pub build_submitted: Arc<Notify>,
-    /// The fabric's change told of a Build this admin accepted, before the door answers it: a resize or
-    /// an executable replacement puts the fabric back to pending inside the acceptance (states.md,
+    /// The fabric's change told of a Build this admin accepted, before the door answers it: a resize, a
+    /// Create or a Delete, puts the fabric back to pending inside the acceptance (states.md,
     /// Resize and executable replacement), and the
     /// view this admin answers from holds it. Set once by the admin that owns the change.
     pub resize: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
@@ -481,7 +481,7 @@ impl ControlPlane {
             let me = self.held_name().await;
             crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), self.node_id.get().ok_or_else(|| Refusal::Unavailable("accepting admin ID is not bound".into()))?.as_str(), "accepted").await.map_err(Refusal::State)?;
             tracing::info!(build_id = %build_id.log(), "build accepted");
-            // A resize or an executable replacement puts the fabric back to pending (states.md): the change takes
+            // A resize, a Create or a Delete, puts the fabric back to pending (states.md): the change takes
             // the accepted Build before the door answers it and before the executor is woken.
             if let Some(resize) = self.resize.get() {
                 resize().await;

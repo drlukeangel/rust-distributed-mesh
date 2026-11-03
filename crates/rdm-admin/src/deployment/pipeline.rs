@@ -18,8 +18,7 @@
 //! ```
 //!
 //! Node recovery (node-recovery.md "Steps") is two operations of these, never a sequence of its
-//! own: the delete of the crashed target, then the create over its data dir. A Build's steps
-//! (lifecycles/node-replace.md) are likewise their own operations, in order.
+//! own: the delete of the crashed target, then the create over its data dir.
 //!
 //! A removal releases identity, never storage: the data dir and its endpoint key stay
 //! (node-delete.md "Storage"), and no step here deletes a node's storage.
@@ -2761,8 +2760,7 @@ impl DeploymentPipeline<'_> {
         node.data_dir.as_deref().map(PathBuf::from).unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &node.node_id))
     }
 
-    /// node.name.update of the name of `node` as a Build's step (node-name-update.md;
-    /// lifecycles/node-replace.md step 2), as ONE operation `node.update:<path>`: `UpdateNode`, the
+    /// node.name.update of the name of `node` as a Build's step (node-name-update.md), as ONE operation `node.update:<path>`: `UpdateNode`, the
     /// update `put` (node.name.update's own core at the node's mesh-primary, answered `NameUpdated`
     /// or refused by name), then `Complete`.
     pub fn update_name<'a, F>(&'a self, build_id: &'a BuildId, attempt: u32, node: &'a PathName, operation: &'a rdm_core::OperationId, put: F) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>>

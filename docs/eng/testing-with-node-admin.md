@@ -93,7 +93,6 @@ names:
 | `nodes.name_update(…)` | [node.name.update](../architecture/lifecycles/node-name-update.md) |
 | `nodes.tags_create(…)`, `tags_delete(…)` | the node's tag rows |
 | `nodes.primary_update(…)`, `fabric_primary_update(…)` | [node.primary.update, node.fabric-primary.update](../architecture/lifecycles/node-primary-update.md) |
-| `nodes.steps(steps)` | Rafka's replace steps ([node-replace.md](../architecture/lifecycles/node-replace.md); `rdm_test::steps`) |
 | `nodes.get(&filter)`, `Connections::get(birth, &filter)` | node.get, node.connection.get { node } |
 
 Each answers a `WorkflowStream` (or a typed reply); the cell awaits it to its terminal and asserts

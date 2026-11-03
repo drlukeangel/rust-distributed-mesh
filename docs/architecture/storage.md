@@ -30,11 +30,11 @@ the three that mean something ([deployment-provider.md §4](deployment-provider.
 
 Rules:
 
-- **Persistence belongs to the logical `path` and `name`, not its incarnation.** A node recovered or
-  replaced at the same `path` and `name` with `persistent` storage inherits the predecessor's data dir and
-  endpoint key; with `ephemeral` it is given a fresh one. `RDM_INHERITED_DATA_DIR` tells the birth
-  which, surfaced to `before_ready` as `inherited` ([deployment-provider.md §4](deployment-provider.md),
-  [node-recovery.md](lifecycles/node-recovery.md), [node-replace.md](lifecycles/node-replace.md)).
+- **Persistence belongs to the logical `path` and `name`, not its incarnation.** A node recovered at
+  the same `path` and `name` with `persistent` storage inherits the lost birth's data dir and endpoint
+  key; with `ephemeral` it is given a fresh one. `RDM_INHERITED_DATA_DIR` tells the birth which,
+  surfaced to `before_ready` as `inherited` ([deployment-provider.md §4](deployment-provider.md),
+  [node-recovery.md](lifecycles/node-recovery.md)).
 - **RDM deletes nothing on disk, ever.** `node.delete` releases no storage; `preserve` issues no
   release action; `release` is a statement to the application, which removes the storage by its own
   work or leaves it.
@@ -46,7 +46,7 @@ Rules:
 - **Defaults are the application's.** Rafka's per-kind defaults (broker and node-admin persistent,
   gateway and compute ephemeral) belong to its ingress adapter; normalization happens before Build
   acceptance, and an accepted Build carries the explicit value for every path.
-- **`storage_persistence` changes only with a new node** ([node replace](lifecycles/node-replace.md)): a
+- **`storage_persistence` changes only with a new node** ([node create](lifecycles/node-create.md)): a
   Build states it only for a node it creates.
 
 A caller reads it as a field of the node's row, `node.get [storage_persistence: persistent]`.

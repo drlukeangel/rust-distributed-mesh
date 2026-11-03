@@ -54,9 +54,9 @@ Every term below links to the architecture pages that define it.
 - **birth** ([Node identity and state](architecture/node-identity-and-state.md)): One exact runtime
   instance of a node, identified by `(mesh, node.id, incarnation)`.
 - **re-birth** ([Build deployment](architecture/build-deployment.md),
-  [Node replace](architecture/lifecycles/node-replace.md)): Creating a new node birth to replace
-  an existing node (such as during [`node.replace`](architecture/lifecycles/node-replace.md) when
-  changing a node's executable), rather than mutating a running process in place.
+  [Node recovery](architecture/lifecycles/node-recovery.md)): A new node, with a new node.id, at the
+  same `path` and `name` an earlier node held (a recovery's create, or a Build that adds a node on a
+  new executable), never a running process changed in place.
 - **lifecycle status (`MemberStatus`)** ([States](architecture/lifecycles/states.md)): The durable
   readiness state recorded on a node, mesh, or fabric row (`starting`, `pending`, `ready`,
   `connections-deleting`, `connections-deleted`, `stopping`, `stopped`, `deleting`, `deleted`). A
@@ -163,8 +163,9 @@ Every term below links to the architecture pages that define it.
   [Node connections delete](architecture/lifecycles/node-connections-delete.md)): The lifecycle
   state a node enters while [`node.connections.delete`](architecture/lifecycles/node-connections-delete.md)
   deletes its connections before [`node.stop`](architecture/lifecycles/node-stop.md),
-  [`node.delete`](architecture/lifecycles/node-delete.md), or [`node.replace`](architecture/lifecycles/node-replace.md)
-  cutover, refusing new mutating work with `ConnectionsDeleting`.
+  [`node.delete`](architecture/lifecycles/node-delete.md) or a
+  [`node.name.update`](architecture/lifecycles/node-name-update.md), refusing new mutating work with
+  `ConnectionsDeleting`.
 
 ## Hooks, certificates, storage, and recovery
 

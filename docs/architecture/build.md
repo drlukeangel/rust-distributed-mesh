@@ -118,7 +118,7 @@ The request is a batch (Q280; [batch call](node-rpc-envelope.md#caller-execution
 | Change | Names | Refused by name |
 |---|---|---|
 | `Create { meshes, nodes }` | each mesh by its Meshes schema, each node by its Nodes schema ([schemas](node-rpc-envelope.md#build-schema)), whole; a node whose mesh is not yet live creates that mesh with its first node-admin | a new mesh with no node-admin among its nodes; a node naming a mesh neither in the request nor live; a path and name already held; an undeclared type; a node with no executable, its own or its type's |
-| `Delete { meshes, node_ids }` | each mesh by name, each node by its node.id, never by its path and name | a node.id already deleted or replaced, in its own result |
+| `Delete { meshes, node_ids }` | each mesh by name, each node by its node.id, never by its path and name | a node.id already deleted, in its own result |
 | `DeleteFabric` | the fabric | (§1, the one exception below) |
 
 The caller states only what it adds or removes, never a node it does not touch: an existing node's `config` and `tags` change through `node.config.update` and `node.tag.*` at any time, the last write winning, and no Build writes them back. A Build states each node it creates whole (Q236, amended by Q342).
@@ -550,7 +550,7 @@ RDM carries no system-org bootstrap logic and no state for it (Q171). Rafka's Da
 
 ---
 
-## 12. Mesh creation, a node-admin joining a live mesh, and replacement are different Build semantics
+## 12. Mesh creation, a node-admin joining a live mesh, and a new node are different Build semantics
 
 All three must be shown.
 
@@ -574,7 +574,7 @@ mesh1's node-admins are all lost, its members live (mesh1 holds a node, so it is
 
 [Node recovery](lifecycles/node-recovery.md) owns the sequence (Q335): the fabric-primary's node investigation of the lost mesh-primary ends in a verdict, and the recovery re-creates one node-admin under the mesh's MeshId, the fabric-primary's own workflow, never a Build ([a node-admin created into a live mesh](lifecycles/node-create.md#a-node-admin-created-into-a-live-mesh)). The fabric-primary is not the local Build executor: the joining node-admin is the local executor for its own mesh, and while it is `Pending` it executes only work the fabric-primary dispatches for that mesh, never another mesh's or fabric-wide work ([Role-neutral execution](#role-neutral-execution-and-policy)). A surviving runtime in another provider control domain is handled by [deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain).
 
-### 12.3 Replace a mesh intentionally
+### 12.3 Delete a mesh and create another
 
 ```text
 fabric-primary accepts Build B20:
@@ -598,18 +598,22 @@ publishes its events. A delete of mesh2's mesh-primary: it first runs
 [node.primary.update](lifecycles/node-primary-update.md), commanded by the fabric-primary; its successor,
 now mesh2's primary, executes the delete.
 
-### 12.5 Replace a node's executable
+### 12.5 A node on a new executable
 
 ~~~text
 fabric-primary accepts Build B22:
-    mesh2.node.north: executable A -> executable B
+    Create { nodes: [mesh2.node.north on executable B] }
     B22 is the current Build
 ~~~
 
-The topology names the same paths. mesh2.node.north's entry names executable B while its row records A,
-so the reconciler replaces it: [node.delete](lifecycles/node-delete.md) then [node.create](lifecycles/node-create.md)
-at the path, a new node.id, under mesh2's primary and the guards of [build-deployment.md §3](build-deployment.md).
-A primary of any type moves first. Nothing else in the fabric changes.
+A node's `executable` is the executable used to launch the node; nothing changes it after. A new
+executable is a new node: a Build that adds it ([node.create](lifecycles/node-create.md), a new
+node.id), at a path and name no live node holds ([build-deployment.md §3](build-deployment.md)). To keep
+the old node's data, the old node is stopped ([node.stop](lifecycles/node-stop.md)) and its name changed
+with [node.name.update](lifecycles/node-name-update.md) first; without it, a Delete of the old node
+releases its path and name. These are primitives, each its own call. Going back is a Build of the
+former topology and configuration; nothing is ever reverted (Q345). Nothing else in the fabric
+changes.
 
 ---
 
@@ -689,7 +693,7 @@ The RDM-generic tests of this page's mechanisms:
 - an all-node-admin restart kills every node-admin at once and restarts them from durable storage: Fabric/Mesh/Node/Connection state is recovered, the Builds read newest first still name the active Build current, its evidence is recovered, exactly one fabric-primary continues it without repeating completed work, and no new Build or competing topology appears (§5.3);
 - a fabric-primary death mid-Build: the successor recovers and continues the same Build (§4.1);
 - process/container evidence demonstrates same-domain successor control and refusal of cross-domain PID/container-ID misuse ([deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain)); a multi-host test demonstrates remotely controllable locators or domain-local exact-runtime execution without changing the election ([deployment-provider.md §1](deployment-provider.md#1-deployment-provider-is-environment-policy));
-- elastic shape/grow/shrink tests assert accepted per-kind counts or settled shape rather than requiring surviving names to be contiguous; identity/leadership/restart/replacement tests retain exact path/NodeId/IncarnationId assertions when identity is the behavior under test;
+- elastic shape/grow/shrink tests assert accepted per-kind counts or settled shape rather than requiring surviving names to be contiguous; identity/leadership/restart tests retain exact path/NodeId/IncarnationId assertions when identity is the behavior under test;
 - leadership test uses [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md) as its only expected-result specification;
 - private maps are not E2E truth.
 

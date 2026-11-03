@@ -627,7 +627,7 @@ impl NodeConfigs {
     #[allow(clippy::too_many_arguments)]
     async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, onto_row: Option<rdm_core::meta::StoragePersistence>, span: &tracing::Span) -> StatusReply {
         // The subject is the exact birth the call names, wherever its row stands: a node whose row its
-        // mesh-primary moved to the predecessor name `<name>-old` at the same path is still that birth (never found by path and name, its shape
+        // mesh-primary moved to a name node.name.update gave it is still that birth (never found by path and name, its shape
         // included: `Topology::own`). A subject this receiver does not hold is the receiver's own fact
         // (node-rpc-envelope.md: "`SubjectUnknown` when the receiver does not hold the subject at all"),
         // never a peer that did not resolve.

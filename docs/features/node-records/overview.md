@@ -14,8 +14,8 @@ and no revision. A node that has not written yet has no properties yet.
 type. A `(path, name)` resolves through its name claim to a node id, and the reader reads that node's
 record. A read by node id reads that node's record directly, whether or not the view still holds the
 node, so a deleted node answers Deleted. The path is fixed for a node's life, and only its name
-changes. A replacement renames the predecessor to `<name>-old` at the same path and creates the
-successor under the original name ([node-replace.md](../../architecture/lifecycles/node-replace.md)).
+changes, by [node.name.update](../../architecture/lifecycles/node-name-update.md); a new executable is a
+new node, a Build that adds it ([build-deployment.md §3](../../architecture/build-deployment.md)).
 
 **Builds.** A Build applies its entry's config and tags to new and existing nodes. A later attempt of the same Build repeats
 nothing, so an update the node or a caller makes afterwards stands until the next Build. A node with

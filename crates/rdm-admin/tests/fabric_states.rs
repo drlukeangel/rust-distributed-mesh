@@ -58,7 +58,7 @@ impl Capture {
 
 /// CONTRACT: docs/architecture/lifecycles/states.md:52 "When every mesh the accepted Build names is ready and the Build's attempt is claimed, the fabric-primary sets the fabric ready, publishes FabricStatus ready under the frame catalog, and the application receives one `on_fabric_ready` notice"
 /// docs/architecture/lifecycles/states.md:56 "The fabric-primary's change span (`rdm.node_admin.fabric.update.via-change`) holds, in order, `rdm.node_admin.fabric.update.via-every-mesh-ready`, `rdm.node_admin.fabric.update.via-state-entered` (to ready) and `rdm.node_admin.fabric.update.via-on-fabric-ready`."
-/// docs/architecture/lifecycles/states.md:169 "A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build stays in progress, never Complete."
+/// docs/architecture/lifecycles/states.md:169 "A resize, a Create or a Delete, puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build stays in progress, never Complete."
 #[test]
 fn fabric_ready_trace_resets_to_pending_on_a_create() {
     let capture = Capture::new(

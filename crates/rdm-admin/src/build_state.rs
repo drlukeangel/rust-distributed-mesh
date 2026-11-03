@@ -73,8 +73,8 @@ pub enum AttemptReason {
     /// The delete of a stopped birth at its retained predecessor location, or of a deleted mesh's last admin, was
     /// requested (`node.delete:<path>`, node.delete's one key).
     Delete,
-    /// Reserved position: the removed steps' reason (Q342: a replace is node commands, then a Build
-    /// that adds; node-replace.md). Never opened.
+    /// Reserved position: the removed steps' reason (Q342, Q345: a new executable is a new node, a
+    /// Build that adds it). Never opened.
     Reserved9,
     /// Reserved position: the removed adoption launch's reason; it is fabric recovery, the primary's own
     /// workflow (Q342). Never opened.

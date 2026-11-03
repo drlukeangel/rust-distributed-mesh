@@ -3431,7 +3431,7 @@ mod tests {
         // The view's held stopped digest keeps the name the node last published (R-JN1's last accepted
         // name): only the view names the birth by its row.
         assert_eq!(digest_view.stopped_digests().iter().map(|d| d.node.location()).collect::<Vec<_>>(), vec![held.node.location()]);
-        // The row moved back (node-replace.md Rollback): the next projection reads it there.
+        // The row moved back by a second rename (node-name-update.md): the next projection reads it there.
         crate::node_rows::move_row(&primary, &Default::default(), &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), &record, &to, &held.node.location()).await.unwrap();
         view_projector(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, digest_view.clone(), records.clone())().await;
         let t = topology.read().await.clone();
