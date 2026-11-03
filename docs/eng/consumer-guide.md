@@ -4,11 +4,6 @@ One index for an application built on RDM. Each line answers one "how do I…"
 and links the page that owns it. The pages are the contract; this guide only points at them. Read
 the linked page before asking: every answer here was already on one.
 
-> **Node-record migration:** i150 changes node-property ownership and external reads. Its
-> [integration guide](../features/node-records/overview.md) distinguishes the approved target
-> from remaining runtime acceptance. Atlas-based descriptions below are the preceding contract
-> until the exact architecture changes and their implementation land together.
-
 ## Starting and wiring
 
 | How do I… | Where |
@@ -25,20 +20,24 @@ the linked page before asking: every answer here was already on one.
 
 | How do I… | Where |
 |---|---|
-| create, resize or reshape meshes and nodes | the Build: [build.md §1–2](../architecture/build.md#1-build-is-the-only-topology-mutation-engine), the wire on [node-rpc-envelope.md, Build op 0x20](../architecture/node-rpc-envelope.md#build-op-0x20-rdm) |
+| add or remove meshes and nodes | a Build, `build.create` of one change: `Create { meshes, nodes }`, `Delete { meshes, node_ids }` or `DeleteFabric`. A Build states only what it adds or removes, whole; every add or remove is its own Build, and only one runs at a time ([build.md §1–2](../architecture/build.md#1-build-is-the-only-topology-mutation-engine); the wire on [node-rpc-envelope.md, Build op 0x20](../architecture/node-rpc-envelope.md#build-op-0x20-rdm)) |
+| know how a Build ended | `complete` (every mesh's section finished), `incomplete` (it ran, and the named sections did not finish; what ran stands and nothing is reverted) or `failed` (it could not start). An incomplete Build is resubmitted by its `build_id`, and the resubmit runs only the steps whose events did not end `complete`; going back is a Build of the former topology ([build.md §4.1](../architecture/build.md#41-build-identity-is-active-reconciliation-state)) |
 | name the executable each node runs, and run a new one (a new node, a Build that adds it) | [build-deployment.md](../architecture/build-deployment.md) |
 | move RDM's records to my own backend, read where they go, return to a previous one | [topology storage provider how-to](../features/topology-storage-provider/how-to.md); the contract on [storage.md §2](../architecture/storage.md#2-topology_storage_provider-where-rdms-records-go) |
 | know when the fabric is usable | [states.md](../architecture/lifecycles/states.md): pending → ready; a Build that changes the fabric is Complete only after its own ready (Q154) |
-| stop, start, rename or delete one node | the lifecycle pages under [lifecycles/](../architecture/fabric-mesh-node-lifecycles.md) (`node-stop.md`, `node-start.md`, `node-name-update.md`, `node-delete.md`); a new executable is a new node, a Build that adds it ([build-deployment.md §3](../architecture/build-deployment.md)) |
+| stop, start or rename one node | node commands to the node's mesh-primary, never a Build: [node-stop.md](../architecture/lifecycles/node-stop.md), [node-start.md](../architecture/lifecycles/node-start.md), [node-name-update.md](../architecture/lifecycles/node-name-update.md) (no connections is its one condition, and a live node rejoins its mesh under the new name) |
+| delete one node | a Build, `Delete { node_ids }`: read its node.id with `node.get` first ([node-delete.md](../architecture/lifecycles/node-delete.md)) |
+| run a new executable | a new node, a Build that adds it. To keep the old node's data, stop it and change its name with `node.name.update` first; there is no replace and no rollback ([build-deployment.md §3](../architecture/build-deployment.md)) |
 | delete the whole fabric | [fabric-delete.md](../architecture/lifecycles/fabric-delete.md): wait for the fabric.delete stream's `Complete` (fabric.deleted), then `node.delete` of the fabric-primary to its `node.deleted`; the process then exits by itself. Kill nothing before that |
 
 ## Reading by property
 
 Every read is a query by property, answered in one of two places ([query.md](../architecture/query.md)):
 
-- **The fabric-primary** answers `fabric.get`, `mesh.get` and `node.get` from its atlas, with no
-  store read: any property of the row, `config.<key>` and `tags` included; `node.connection.get` is the
-  exact birth's own ([query.md §1](../architecture/query.md#1-external-a-query-to-the-fabric-primary)).
+- **The fabric-primary** answers `fabric.get`, `mesh.get` and `node.get` from the node records: any
+  property of the row, `config.<key>` and `tags` included, a named path and name resolved to its node.id
+  from the records; `node.connection.get` is the exact node's own
+  ([query.md §1](../architecture/query.md#1-external-a-query-to-the-fabric-primary)).
 - **The node itself** answers `topology_view.nodes_get(filter)` from the topology it holds, locally,
   with no call: what gossip carries for every node it hears; a row-only property is refused naming
   `node.get` ([query.md §2](../architecture/query.md#2-internal-the-node-itself)).
@@ -52,8 +51,8 @@ nothing matches.
 |---|---|---|---|---|
 | `fabric.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary`, `admin_api_base`, `build_id`, `meshes`, `topology_storage_provider` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | the fabric-primary |
 | `mesh.get` | — | `id`, `name`, `status`, `primary_admin`, `admin_api_base`, `nodes` | meshes, by name | the fabric-primary |
-| `node.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `type`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path` and `name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from its atlas |
-| `node.connection.get` | `node` (id, incarnation), required | `id`, `source`, `destination`, `kind`, `state`, `carrier`, `reason`, `logged_at_ms` | the exact birth's own connections from its connections log | the exact birth |
+| `node.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `type`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path` and `name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from the node records |
+| `node.connection.get` | `node` (id, incarnation), required | `id`, `source`, `destination`, `kind`, `state`, `carrier`, `reason`, `logged_at_ms` | the exact node's own connections from its connections log | the exact node |
 
 Written as the pair list the wire carries:
 
@@ -74,7 +73,7 @@ node.connection.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
 The same pair list, side by side, from both places:
 
 ```text
-node.get                   [["type", ["broker"]], ["status", ["ready"]]]   the fabric-primary's atlas: the rows
+node.get                   [["type", ["broker"]], ["status", ["ready"]]]   the fabric-primary's records: the rows
 topology_view.nodes_get     [["type", ["broker"]], ["status", ["ready"]]]   my own topology: the digests I hear
 topology_view.nodes_get     [["config.zone", ["eu-1"]]]                                  refused: config is the row's, read it with node.get
 ```
@@ -94,7 +93,7 @@ The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/n
 
 | What | Where |
 |---|---|
-| small per-node settings | the node's `config` map: mine, RDM never reads it; replaced whole by `node.config.update`, a node's own (`config_update`) going up through its mesh-primary and a caller's down from the fabric-primary; a Build's `config` supersedes the node's current map, whoever set it, so read the node's current config (`node.get`) before composing a Build: every write is a PUT (Q236); at most 32 keys and 2048 bytes ([node-config-update.md](../architecture/lifecycles/node-config-update.md), [gossip.md §3.1](../architecture/gossip.md#31-frame-catalog)) |
+| small per-node settings | the node's `config` map: mine, RDM never reads it; replaced whole by `node.config.update`, a node's own (`config_update`) going up through its mesh-primary and a caller's down from the fabric-primary; a Build sets `config` and `tags` only on a node it creates and never writes a node it does not create (Q236, amended by Q342); every write is a PUT; at most 32 keys and 2048 bytes ([node-config-update.md](../architecture/lifecycles/node-config-update.md), [gossip.md §3.1](../architecture/gossip.md#31-frame-catalog)) |
 | labels to select nodes by | `tags`: see [Tags](#tags) below |
 | a node's durable data | under its `RDM_DATA_DIR`; carried across stop and start and recovery by its path's storage policy ([node-storage-runbook.md](node-storage-runbook.md)) |
 | my rows and events | my own storage, and my events on gossip ([gossip.md §8](../architecture/gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); RDM orders nothing of mine |
@@ -112,12 +111,12 @@ and the `tags` row of [Node properties](../architecture/node-rpc-envelope.md#nod
 
 | How do I… | What happens |
 |---|---|
-| tag a node when it is created | put the labels on its path in the Build; a change of a path's tags alone is no resize, and the fabric stays ready |
+| tag a node when it is created | put the labels on the node in its `Create`; after that, tags change only by the tag commands, never a Build, and the fabric stays ready |
 | add labels | `node.tag.create { label \| [labels] }`: one label or a list; a blind put per label, so a label the node already carries is reported `ALREADY_EXISTS` for that label and nothing is duplicated |
 | remove labels | `node.tag.delete { All \| [labels] }`: every label or the named ones; a label the node does not carry is reported `NOT_FOUND` for that label |
 | read a node's labels | the `tags` field of its node row (`node.get`) |
 | select nodes by label | `node.get [tags: a, b]` for any of the labels, `[tags: a][tags: b]` for all of them, with `[mesh: m]` for one mesh's |
-| keep labels across a re-birth | nothing to do: tags are inherited with the config at the same path and name on recovery; a new node takes its Build entry's |
+| keep labels across a recovery | nothing to do: tags are inherited with the config at the same path and name on recovery; a new node takes its Create entry's |
 
 A label is 1–64 characters of `a-z 0-9 - _ . ~`, with no leading `.`, and a node carries at most 32.
 A label outside that grammar, or one past the 32, is refused by name (`INVALID_ARGUMENT`) and
@@ -128,9 +127,12 @@ count against the config cap.
 
 | Hook | Where |
 |---|---|
-| before a node is ready (`pre_node_ready`; `inherited` says whether the data dir was carried) | [fabric-node-hooks.md, pre_node_ready](../architecture/fabric-node-hooks.md#pre_node_ready) |
+| before a node is ready (`pre_node_ready`; `inherited` says whether the data dir was carried). It answers `Ok`, `Pending { reason }` or `Failed { reason }`, under the `Send` my hook's `send()` gives (default 3 attempts, 10 s); spent attempts fail the start back to whoever started the node | [fabric-node-hooks.md, pre_node_ready](../architecture/fabric-node-hooks.md#pre_node_ready) |
 | after it is ready | [on_node_ready](../architecture/fabric-node-hooks.md#on_node_ready) |
 | traffic opening (and my Day-0 work, which is my own) | [on_fabric_ready](../architecture/fabric-node-hooks.md#on_fabric_ready) |
+| a Build starting and ending (`complete`, `incomplete`, `failed`) | [on_build_started, on_build_ended](../architecture/fabric-node-hooks.md#on_build_started) |
+| a call of mine that spent its attempts | [on_call_failed](../architecture/fabric-node-hooks.md#on_call_failed) |
+| a node investigation's verdict | [on_node_investigated](../architecture/fabric-node-hooks.md#on_node_investigated) |
 | the clock | [rafka-time](../architecture/fabric-node-hooks.md#rafka-time) |
 
 ## Talking between nodes
@@ -138,15 +140,16 @@ count against the config cap.
 | How do I… | Where |
 |---|---|
 | call a node | Node RPC: [node-rpc-envelope.md](../architecture/node-rpc-envelope.md); outcomes and codes on [node-rpc.md](../architecture/node-rpc.md) |
+| set how many tries a call makes and how long each may take | every call and every dial carries one `Send { attempts, TimeLimit }`, mine to set, default 3 attempts and 10 s; it is the only retry. A call whose attempts are spent ends to me by name (`NotSent` or `Indeterminate`) and calls `on_call_failed` ([node-rpc.md §43](../architecture/node-rpc.md#43-send-delivery-is-the-runtimes)) |
 | add my own Node RPC ops (declare, reserve in the op ledger, serve, call) | [consumer-guide-ops.md](consumer-guide-ops.md) |
-| open a stream on my own app protocol | the node's connections handle for my ALPN; routes, reconnect and proxies on [connections.md](../architecture/connections.md); a node's member cert admits it ([fabric-certs.md](../architecture/fabric-certs.md)) |
+| open a stream on my own app protocol | the node's connections handle for my ALPN; routes, proxies and the return to Direct on [connections.md](../architecture/connections.md) (a lost Direct is dialled on `Send`; nothing re-dials on its own); a node's member cert admits it ([fabric-certs.md](../architecture/fabric-certs.md)) |
 | publish and receive my events | gossip's envelope ([gossip.md §3.4](../architecture/gossip.md#34-the-envelope)) |
 
 ## When something breaks
 
 | What | Where |
 |---|---|
-| following a call, a Build or a birth across processes | [telemetry.md](../architecture/telemetry.md) |
+| following a call, a Build or a node across processes | [telemetry.md](../architecture/telemetry.md) |
 | no node-admin is alive: bring the fabric-primary back | [fabric-recovery-runbook.md](fabric-recovery-runbook.md) |
 | a node's data dir is gone or broken | [provider-runbook.md](provider-runbook.md) |
 | a stateful node's data across stop and start, recovery, a rename and delete | [node-storage-runbook.md](node-storage-runbook.md) |
