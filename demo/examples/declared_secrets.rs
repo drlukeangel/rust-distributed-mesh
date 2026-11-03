@@ -7,8 +7,8 @@
 //! RDM launches is written the values beside the fabric's root, so whichever admin creates a broker can
 //! set it; each admin keeps them beside its data dir and reads them back on a start, so a value never
 //! changes while the fabric runs. The value is set only in the environment of the types its declaration
-//! names and withheld from every other process; it is never written to a row, a Build record, a
-//! receipt, the launch record or a span, and a spawn error is scrubbed of it. A name RDM sets or passes
+//! names and withheld from every other process; it is never written to a row, a Build record,
+//! an event, the launch record or a span, and a spawn error is scrubbed of it. A name RDM sets or passes
 //! through (`RDM_*`, `TRACEPARENT`, ...) or a name declared twice refuses the admin's start by name.
 //!
 //! This one executable is both halves, by the launch it is given: a launched broker reads its secret

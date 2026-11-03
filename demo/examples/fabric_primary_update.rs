@@ -7,8 +7,8 @@
 //! revisions it installed. A Build stream open across the move ends `FabricPrimaryMoved` naming the new
 //! fabric-primary, and the caller re-submits its Build id there (`examples/build_reattach.rs`).
 //!
-//! As with `node.primary.update`, the command names the Build and attempt it runs under, which key the
-//! operation: here the fabric's current Build.
+//! As with `node.primary.update`, the command names the Build it runs under, which keys the operation:
+//! here the fabric's current Build.
 //!
 //! Build: `cargo build --example fabric_primary_update` in `demo/`. Run against a live estate:
 //!
@@ -37,9 +37,8 @@ async fn main() -> Result<()> {
     let fabric = fabrics.get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabric.get answered no fabric"))?;
     let fabric_primary = fabric.fabric_primary.clone().ok_or_else(|| anyhow!("fabric.get names no fabric-primary"))?;
     let build_id = BuildId::parse(fabric.build_id.as_deref().ok_or_else(|| anyhow!("fabric.get names no current Build"))?).map_err(|e| anyhow!("the current Build id: {e}"))?;
-    let attempt = carrier.build(&build_id).await?.attempt;
 
-    match nodes.fabric_primary_update(&fabric.name, &fabric_primary, &build_id, attempt).await? {
+    match nodes.fabric_primary_update(&fabric.name, &fabric_primary, &build_id).await? {
         NodePrimaryUpdateReply::PrimaryUpdated { revisions } => {
             println!("node.fabric-primary.update at {fabric_primary}: updated");
             for (r#type, from, to, revision) in revisions {

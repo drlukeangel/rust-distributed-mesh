@@ -4,8 +4,7 @@
 //! A node-admin executable registers `on_fabric_ready` in its [`Wiring`]'s [`FabricHooks`]. The
 //! fabric-primary calls it once the fabric's `Ready` state is recorded on the Fabric record:
 //! fire and forget, gating nothing. The context ([`FabricReadyCtx`]) carries `fabric_id`, the
-//! accepted `build_id` and `attempt` whose change made the fabric ready, and that attempt's
-//! observability `context`.
+//! accepted `build_id` whose change made the fabric ready, and that Build's observability `context`.
 //!
 //! Build: `cargo build --example on_fabric_ready` in `demo/`.
 //! Run as an executable node-admin (in place of `rshape-node-admin`), or against a live demo
@@ -19,7 +18,7 @@ use std::sync::Arc;
 
 const SERVICE: &str = "example-on-fabric-ready";
 
-/// The notice: counts how many times the fabric-primary reported `Ready` and logs the Build and attempt.
+/// The notice: counts how many times the fabric-primary reported `Ready` and logs the Build.
 fn on_fabric_ready(told: Arc<AtomicU64>) -> FabricReadyNotice {
     Arc::new(move |ready: FabricReadyCtx| {
         let told = told.clone();
@@ -29,13 +28,12 @@ fn on_fabric_ready(told: Arc<AtomicU64>) -> FabricReadyNotice {
                 target: "example",
                 fabric_id = %ready.fabric_id,
                 build_id = %ready.build_id,
-                attempt = ready.attempt,
                 fabrics_ready = n,
                 "on_fabric_ready: the fabric is ready"
             );
             println!(
-                "on_fabric_ready notice #{n}: fabric_id={} build_id={} attempt={}",
-                ready.fabric_id, ready.build_id, ready.attempt
+                "on_fabric_ready notice #{n}: fabric_id={} build_id={}",
+                ready.fabric_id, ready.build_id
             );
         })
     })
@@ -77,7 +75,6 @@ async fn verify_against_live_estate(raw_birth: &str) -> Result<(), String> {
     notice(FabricReadyCtx {
         fabric_id: fabric.id.clone(),
         build_id: current.build_id.to_string(),
-        attempt: current.attempt,
         context: CallContext::default(),
     })
     .await;

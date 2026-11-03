@@ -53,7 +53,6 @@ async fn main() -> Result<()> {
             .ok_or_else(|| anyhow!("fabric.get names no current Build"))?,
     )
     .map_err(|e| anyhow!("current Build id: {e}"))?;
-    let attempt = carrier.build(&build_id).await?.attempt;
     let expected: BTreeSet<String> = before.meshes.iter().map(|m| m.name.clone()).collect();
     println!(
         "before takeover: fabric {} ({}) {:?}, primary {}, Build {}, expected meshes {expected:?}",
@@ -65,7 +64,7 @@ async fn main() -> Result<()> {
     );
 
     let fp_carrier = peers.carrier_for(before_fp.clone());
-    let to_id = match Nodes::new(fp_carrier).fabric_primary_update(&before.name, &before_fp, &build_id, attempt).await? {
+    let to_id = match Nodes::new(fp_carrier).fabric_primary_update(&before.name, &before_fp, &build_id).await? {
         NodePrimaryUpdateReply::PrimaryUpdated { revisions } | NodePrimaryUpdateReply::AlreadyApplied { revisions } => {
             revisions.iter().find(|(t, _, _, _)| t == rdm_core::handover::FABRIC).map(|(_, _, to, _)| to.node_id.clone()).ok_or_else(|| anyhow!("no fabric entry in revisions"))?
         }
@@ -109,7 +108,7 @@ async fn main() -> Result<()> {
 
     // Move the fabric-primary back to the initial node-admin so the estate returns to its starting primary.
     let _ = Nodes::new(succ_carrier)
-        .fabric_primary_update(&before.name, &after_fp, &build_id, attempt)
+        .fabric_primary_update(&before.name, &after_fp, &build_id)
         .await?;
     let restored = Fabrics::new(peers.carrier_for(before_fp.clone()))
         .fact("fabric-primary returned to initial node-admin", Duration::from_secs(30), |f| {

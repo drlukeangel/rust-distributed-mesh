@@ -185,24 +185,28 @@ fn notices(own: Own) -> FabricHooks {
     let on_fabric_ready: FabricReadyNotice = Arc::new(move |ready: FabricReadyCtx| {
         let own = own.clone();
         Box::pin(async move {
-            tracing::info!(target: "rshape", fabric_id = %ready.fabric_id, build_id = %ready.build_id, attempt = ready.attempt, "on_fabric_ready: the fabric is ready");
+            tracing::info!(target: "rshape", fabric_id = %ready.fabric_id, build_id = %ready.build_id, "on_fabric_ready: the fabric is ready");
             // The work runs on its own: a notice gates nothing.
             tokio::spawn(day_zero(own, ready.fabric_id.to_string(), ready.build_id.clone()));
         })
     });
     let on_build_started: BuildStartedNotice = Arc::new(|started: BuildStartedCtx| {
         Box::pin(async move {
-            tracing::info!(target: "rshape", fabric_id = %started.fabric_id, build_id = %started.build_id, attempt = started.attempt, reason = started.reason.as_str(), "on_build_started: a Build started")
+            tracing::info!(target: "rshape", fabric_id = %started.fabric_id, build_id = %started.build_id, "on_build_started: a Build started")
         })
     });
     let on_build_ended: BuildEndedNotice = Arc::new(|ended: BuildEndedCtx| {
         Box::pin(async move {
             match &ended.state {
                 rdm_admin::wiring::BuildEndedState::Complete => {
-                    tracing::info!(target: "rshape", fabric_id = %ended.fabric_id, build_id = %ended.build_id, attempt = ended.attempt, reason = ended.reason.as_str(), state = ended.state.as_str(), "on_build_ended: a Build ended")
+                    tracing::info!(target: "rshape", fabric_id = %ended.fabric_id, build_id = %ended.build_id, state = ended.state.as_str(), "on_build_ended: a Build ended")
                 }
-                rdm_admin::wiring::BuildEndedState::Failed { step, reason, code } => {
-                    tracing::warn!(target: "rshape", fabric_id = %ended.fabric_id, build_id = %ended.build_id, attempt = ended.attempt, reason = ended.reason.as_str(), state = ended.state.as_str(), step = %step, failure = %reason, code = ?code, "on_build_ended: a Build ended")
+                rdm_admin::wiring::BuildEndedState::Incomplete { sections } => {
+                    let unfinished: Vec<String> = sections.iter().map(|s| format!("{} {} {}: {}", s.mesh, s.operation, s.step, s.reason)).collect();
+                    tracing::warn!(target: "rshape", fabric_id = %ended.fabric_id, build_id = %ended.build_id, state = ended.state.as_str(), sections = ?unfinished, "on_build_ended: a Build ended")
+                }
+                rdm_admin::wiring::BuildEndedState::Failed { reason, code } => {
+                    tracing::warn!(target: "rshape", fabric_id = %ended.fabric_id, build_id = %ended.build_id, state = ended.state.as_str(), failure = %reason, code = ?code, "on_build_ended: a Build ended")
                 }
             }
         })

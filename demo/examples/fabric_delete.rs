@@ -48,30 +48,29 @@ async fn main() -> Result<()> {
     let mut stream = carrier.create(Change::DeleteFabric).await?;
     let build_id = stream.build_id().clone();
     println!(
-        "fabric.delete Build started: build_id={build_id} attempt={} disposition={:?}",
-        stream.attempt(),
+        "fabric.delete Build started: build_id={build_id} disposition={:?}",
         stream.disposition()
     );
     let mut step_count = 0usize;
     let mut completed = false;
     while let Some(frame) = stream.next().await {
         match frame? {
-            BuildFrame::Step { attempt, operation, step } => {
+            BuildFrame::Step { mesh, operation, step, result } => {
                 step_count += 1;
-                if step == "mesh.deleted" || step == "fabric.deleted" || operation.action == "mesh.delete" {
-                    println!("  step #{step_count} (attempt {attempt}): {operation:?} -> {step}");
+                if step == "mesh.deleted" || step == "fabric.deleted" || operation.starts_with("mesh.delete") {
+                    println!("  step #{step_count} (mesh {mesh}): {operation} -> {step} {result:?}");
                 }
             }
-            BuildFrame::Blocked { attempt, operation, step, reason } => {
-                println!("  blocked (attempt {attempt}): {operation:?}/{step} ({reason})");
+            BuildFrame::Blocked { mesh, operation, step, reason } => {
+                println!("  blocked (mesh {mesh}): {operation}/{step} ({reason})");
             }
-            BuildFrame::Complete { attempt } => {
-                println!(
-                    "fabric.delete Build {build_id} Complete on attempt {attempt} ({step_count} step frames)"
-                );
+            BuildFrame::Complete => {
+                println!("fabric.delete Build {build_id} Complete ({step_count} step frames)");
                 completed = true;
                 break;
             }
+            // A section that ended short ends the Build incomplete, naming it (Q346): the finding.
+            BuildFrame::Incomplete { sections } => return Err(anyhow!("fabric.delete Build {build_id} ended incomplete: {sections:?}")),
             other => return Err(anyhow!("unexpected BuildFrame in fabric.delete: {other:?}")),
         }
     }

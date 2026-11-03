@@ -6,7 +6,7 @@
 //! and current Build, and each mesh's status and mesh-primary. The atlas is the fabric-primary's own
 //! record: for every node the current Build names, the birth its node row names current, the status the
 //! operations left it in, whether it is a stopped birth waiting for a start or a delete, and the
-//! operation accepted on it whose attempt has not completed (`accepted`). `observed` is the status the
+//! operation accepted on it that has not completed (`accepted`). `observed` is the status the
 //! fabric-primary's gossip view holds for the same birth: context only, never what an acceptance reads.
 //! An application reads the atlas for a fabric-wide picture of its nodes, for example to show which
 //! node an operation is still running on.

@@ -5,10 +5,10 @@
 //! node-admin of its mesh (or, when its mesh has none, the lowest ready mesh-primary on the backbone)
 //! runs one workflow without taking a primary role itself. Node investigation decides what becomes of
 //! the lost birth; on `exited`, node recovery re-creates the node-admin at its `path.name` over its
-//! inherited data directory as an attempt of the current Build (`node.delete:<path.name>`, then
-//! `node.create:<path.name>`). Once the new birth at that `path.name` is ready, the executor restores it
-//! as both mesh-primary and fabric-primary (`node.primary.update` carrying both records at their next
-//! revisions).
+//! inherited data directory under a new node.id (a delete then a create), its own workflow and never a
+//! Build (Q342). Once the new birth at that `path.name` is ready, the executor restores it as both
+//! mesh-primary and fabric-primary (`node.primary.update` carrying both records at their next
+//! revisions). The fabric's current Build is the one it named before the loss.
 //!
 //! Build: `cargo build --example fabric_recovery` in `demo/`. Run against a live estate:
 //!
@@ -22,7 +22,7 @@ use rdm_client::{
     await_fact, Builds, Fabrics, Filter, MeshNode, NodeStatus, NodeView, Nodes, PathName, Peers,
     ScopeStatus,
 };
-use rdm_core::{OperationSubject, RuntimeFact};
+use rdm_core::RuntimeFact;
 use std::path::Path;
 use std::time::Duration;
 
@@ -57,6 +57,7 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no surviving ready node-admin to run fabric recovery"))?
         .clone();
 
+    let before = Fabrics::new(peers.carrier_at(executor.location())).get(&Filter::new()).await?.into_iter().next().and_then(|f| f.build_id);
     let (provider, handle) = adopt_birth(&fp)?;
     println!("before: fabric-primary path {:?}, name {:?} (node_id {}, incarnation {:?}, pid {:?}); executor path {:?}, name {:?}", fp.path, fp.name, fp.node_id, fp.incarnation_id, handle.pid, executor.path, executor.name);
     provider.terminate(&handle, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.map_err(|e| anyhow!("{e}"))?;
@@ -86,13 +87,10 @@ async fn main() -> Result<()> {
 
     let current = Builds::new(peers.carrier_at(restored.location())).get(&Filter::new().eq("current", ["true"])).await?;
     if let Some(b) = current.first() {
-        // A receipt on the fabric-primary's path: the lost or the re-created node, by its node.id (D58).
-        let on_fp = |subject: &Option<OperationSubject>| match subject {
-            Some(OperationSubject::Node(id)) | Some(OperationSubject::Birth { node_id: id, .. }) => *id == old_id || *id == restored.node_id,
-            _ => false,
-        };
-        let ops: Vec<String> = b.steps.iter().filter(|s| on_fp(&s.operation.subject) && s.step == "Complete").map(|s| format!("attempt {} {:?}", s.attempt, s.operation)).collect();
-        println!("current Build {} ({:?}): recovery receipts {ops:?}", b.build_id.log(), b.phase);
+        // Recovery is no Build (Q342): the current Build is the one named before the loss, and none of
+        // its step events is of the re-created node's node.id.
+        let on_restored = b.events.iter().filter(|e| e["type"] == "rdm.build.step" && e["subject"] == restored.node_id.as_str()).count();
+        println!("current Build {} ({:?}), before the loss {before:?}: {on_restored} step events of the re-created node", b.build_id.log(), b.phase);
     }
     Ok(())
 }

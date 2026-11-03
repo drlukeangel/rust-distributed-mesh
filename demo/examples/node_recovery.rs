@@ -4,10 +4,12 @@
 //! A silent member is never restarted or deleted for being silent: its mesh-primary marks it
 //! `PendingReconnect` at the staleness floor, runs the reach ladder `node.tickle` half a floor later
 //! (`tickle_ladder_at_default_budget()`, direct then `VIA_PEER_TICKLE_FANOUT` live peers at once), and
-//! on `unreached` inspects the birth's runtime (`node.runtime.inspect`). On `exited`, the mesh-primary
-//! opens a recovery attempt of the current Build on its mesh's rows and runs `node.delete` of the exited
-//! node id followed by `node.create` at the same `(path, name)` over the inherited `data_dir`, minting a new `node_id` and
-//! `incarnation_id` while the current Build stays `Complete`.
+//! on `unreached` inspects the birth's runtime (`node.runtime.inspect`). On `exited`, the verdict is
+//! written as one `rdm.node.investigated` event naming `recreate`, and the mesh-primary runs the
+//! recovery itself, its own workflow and never a Build (Q342): `node.delete` of the exited birth, then
+//! `node.create` at the same `(path, name)` over the inherited `data_dir`, minting a new `node_id` and
+//! `incarnation_id`. The member may be of any mesh: its own mesh-primary recovers it. The fabric's
+//! current Build is the one it named before the exit, and none of its step events is of the new node.
 //!
 //! Build: `cargo build --example node_recovery` in `demo/`. Run against a live estate:
 //!
@@ -18,8 +20,8 @@ use anyhow::{anyhow, Context, Result};
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{adopt, inspect_runtime, DeploymentProvider, TerminationMode};
 use rdm_admin::workflows::node_recovery::{tickle_ladder_at_default_budget, VIA_PEER_TICKLE_FANOUT};
-use rdm_client::{await_fact, Builds, Filter, MeshNode, NodeStatus, Nodes, PathName, Peers};
-use rdm_core::{OperationSubject, RuntimeFact};
+use rdm_client::{await_fact, Builds, Fabrics, Filter, MeshNode, NodeStatus, Nodes, PathName, Peers};
+use rdm_core::RuntimeFact;
 use std::path::Path;
 use std::time::Duration;
 
@@ -75,6 +77,7 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow!(e))?;
     let provider = ProcessDeploymentProvider::new();
     let handle = adopt(&provider, &fact).map_err(|e| anyhow!(e))?;
+    let build_before = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().and_then(|f| f.build_id);
     let before_inspect = inspect_runtime(&provider, &fact, Some(dir), incarnation.as_str()).await;
     println!(
         "before: path {:?}, name {:?} {:?}, node_id {}, incarnation {}, data_dir {dir}, inspect {before_inspect:?}",
@@ -126,17 +129,11 @@ async fn main() -> Result<()> {
 
     let current = Builds::new(carrier).get(&Filter::new().eq("current", ["true"])).await?;
     if let Some(b) = current.first() {
-        let ops: Vec<String> = b
-            .steps
-            .iter()
-            .filter(|s| s.step == "Complete")
-            .filter(|s| match &s.operation.subject {
-                Some(OperationSubject::Node(id)) | Some(OperationSubject::Birth { node_id: id, .. }) => id == &old_id || id == &row.node_id,
-                _ => false,
-            })
-            .map(|s| format!("attempt {} {:?}", s.attempt, s.operation))
-            .collect();
-        println!("current Build {} ({:?}): receipts for path {:?}, name {:?}: {ops:?}", b.build_id.log(), b.phase, target.path, target.name);
+        // Recovery is no Build (Q342): the current Build is the one named before the exit, and none of
+        // its step events is of the re-created node.
+        let on_new = b.events.iter().filter(|e| e["type"] == "rdm.build.step" && e["subject"] == row.node_id.as_str()).count();
+        let same = build_before.as_deref() == Some(b.build_id.to_string().as_str());
+        println!("current Build {} ({:?}), the one named before the exit: {same}; {on_new} step events of the new node {}", b.build_id.log(), b.phase, row.node_id);
     }
     Ok(())
 }

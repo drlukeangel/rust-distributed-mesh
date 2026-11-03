@@ -9,8 +9,8 @@
 //! and the successor is in its mesh, both primaries move together. The successor's row records the
 //! change after it happened; a read made at once may still name the old primary.
 //!
-//! The command names the Build and attempt it runs under: they key the operation, so an identical
-//! repeat is answered as the first was. A stop, delete or replace of a primary runs this move itself
+//! The command names the Build it runs under, which keys the operation, so an identical repeat is
+//! answered as the first was. A stop or delete of a primary runs this move itself
 //! as its first step; the call here is the move alone, made under the fabric's current Build.
 //!
 //! Build: `cargo build --example node_primary_update` in `demo/`. Run against a live estate:
@@ -39,11 +39,10 @@ async fn main() -> Result<()> {
 
     let fabric = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabric.get answered no fabric"))?;
     let primary = fabric.meshes.iter().find(|m| m.name == mesh).ok_or_else(|| anyhow!("{} holds no mesh {mesh}", fabric.name))?.primary_admin.clone().ok_or_else(|| anyhow!("{mesh} names no mesh-primary"))?;
-    // The Build and attempt the move runs under: the fabric's current Build.
+    // The Build the move runs under: the fabric's current Build.
     let build_id = BuildId::parse(fabric.build_id.as_deref().ok_or_else(|| anyhow!("fabric.get names no current Build"))?).map_err(|e| anyhow!("the current Build id: {e}"))?;
-    let attempt = carrier.build(&build_id).await?.attempt;
 
-    match nodes.primary_update(&fabric.name, &primary, &build_id, attempt).await? {
+    match nodes.primary_update(&fabric.name, &primary, &build_id).await? {
         NodePrimaryUpdateReply::PrimaryUpdated { revisions } => {
             println!("node.primary.update of {mesh} at {primary}: updated");
             for (r#type, from, to, revision) in revisions {

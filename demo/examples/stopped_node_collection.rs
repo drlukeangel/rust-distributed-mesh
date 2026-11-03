@@ -3,8 +3,8 @@
 //!
 //! Stops a secondary role member via `nodes.stop`, shows the node's `Stopped`
 //! row (`stopped == true`), and waits for the fabric-primary's stopped-node
-//! collector (`RDM_STOPPED_NODE_TTL`) to age the stop receipt and collect the
-//! stopped birth through an ordinary `node.delete` Build.
+//! collector (`RDM_STOPPED_NODE_TTL`) to age the stop recorded on the node record
+//! and collect the stopped birth through an ordinary `node.delete` Build.
 
 use std::time::Duration;
 

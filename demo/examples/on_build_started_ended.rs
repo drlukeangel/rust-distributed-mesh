@@ -1,15 +1,16 @@
 //! `on_build_started` and `on_build_ended`: an application's notices of each Build the fabric runs
 //! (fabric-node-hooks.md).
 //!
-//! The fabric-primary calls `on_build_started` once the claim of a Build's first attempt, or of the
-//! attempt that reopens an ended Build, is recorded, and `on_build_ended` once the Build's `Complete` or
-//! `Failed` is recorded. Both are fire and forget: they gate nothing. The context names the Build, the
-//! attempt and why that attempt exists (`requested` at acceptance, a drift repair, a takeover), and the
-//! ended notice carries the terminal state: `Complete`, or `Failed` naming the step that failed, its
-//! reason and its code.
+//! The fabric-primary calls `on_build_started` from the write of a Build's `rdm.build.started` event,
+//! at acceptance or when a caller's resubmission runs a failed or incomplete Build again, and
+//! `on_build_ended` from the write of its `rdm.build.ended`. Both are fire and forget: they gate
+//! nothing. `BuildStartedCtx` names the fabric, the Build and its observability context;
+//! `BuildEndedCtx` adds how it ended (Q346): `Complete`, every section finished; `Incomplete`, naming
+//! each section that did not finish (its mesh, operation, step, reason and code); or `Failed`, it could
+//! not start, with its reason and code.
 //!
 //! Here the application keeps the set of Builds it was told started and not yet ended, and writes one
-//! log line per notice; a failed Build's line is a warning naming its step. A product hangs its own work
+//! log line per notice; an incomplete or failed Build's line is a warning naming why. A product hangs its own work
 //! here: holding its maintenance while a Build runs, paging on a failed one.
 //!
 //! Build: `cargo build --example on_build_started_ended` in `demo/`. Run: as a node-admin executable, in
@@ -33,7 +34,7 @@ fn on_build_started(running: Running) -> BuildStartedNotice {
                 r.insert(started.build_id.clone());
                 r.len()
             };
-            tracing::info!(target: "example", build_id = %started.build_id, attempt = started.attempt, reason = started.reason.as_str(), in_flight, "on_build_started");
+            tracing::info!(target: "example", build_id = %started.build_id, in_flight, "on_build_started");
         })
     })
 }
@@ -49,10 +50,14 @@ fn on_build_ended(running: Running) -> BuildEndedNotice {
             };
             match &ended.state {
                 BuildEndedState::Complete => {
-                    tracing::info!(target: "example", build_id = %ended.build_id, attempt = ended.attempt, reason = ended.reason.as_str(), in_flight, "on_build_ended: complete")
+                    tracing::info!(target: "example", build_id = %ended.build_id, in_flight, "on_build_ended: complete")
                 }
-                BuildEndedState::Failed { step, reason, code } => {
-                    tracing::warn!(target: "example", build_id = %ended.build_id, attempt = ended.attempt, step = %step, failure = %reason, code = ?code, in_flight, "on_build_ended: failed")
+                BuildEndedState::Incomplete { sections } => {
+                    let unfinished: Vec<String> = sections.iter().map(|s| format!("{} {} {}: {}", s.mesh, s.operation, s.step, s.reason)).collect();
+                    tracing::warn!(target: "example", build_id = %ended.build_id, sections = ?unfinished, in_flight, "on_build_ended: incomplete")
+                }
+                BuildEndedState::Failed { reason, code } => {
+                    tracing::warn!(target: "example", build_id = %ended.build_id, failure = %reason, code = ?code, in_flight, "on_build_ended: failed")
                 }
             }
         })
