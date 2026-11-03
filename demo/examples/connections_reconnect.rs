@@ -1,13 +1,11 @@
-//! `connections-reconnect`: the source-owned Direct reconnect schedule, exponential backoff with
-//! deterministic jitter, and ordered Proxy deletion (`docs/architecture/connections.md:1`,
-//! `crates/rdm-node/src/connection_reconnect.rs:51`, `crates/rdm-core/src/reconnect.rs:1`).
+//! `connections-reconnect`: a lost Direct's Failed row and the ordered Proxy deletion when a Direct
+//! comes back (`docs/architecture/connections.md` §9, §10; `crates/rdm-core/src/reconnect.rs`).
 //!
-//! When a source's latest `Direct` connection entry to a destination is `Failed` for the
-//! destination's current incarnation, `reconnect_plan` reconstructs the pending [`ReconnectItem`]
-//! from that indexed row (`logged_at_ms + reconnect_backoff(ordinal) + deterministic_jitter`).
-//! Each failed attempt appends `next_failure` at `attempt_ordinal + 1` in the same recovery round.
-//! Once a scheduled `Direct` dial succeeds (`Connected`), `owed_direct_restored` produces the
-//! ordered `Proxy Disconnected(reason=direct-restored)` entry before deleting the Proxy route.
+//! A lost Direct is dialled on `Send` and nothing else (Q348): its Failed row (`first_failure_for`)
+//! records the incident, and no dial is scheduled from it. A source holding a Proxy returns to Direct
+//! when the destination dials it (R-CN1) or the Proxy is invalidated (§8); once its own Direct is
+//! `Connected`, `owed_direct_restored` produces the ordered `Proxy Disconnected(reason=direct-restored)`
+//! entry before the Proxy route is deleted.
 //!
 //! Build: `cargo build --example connections_reconnect` in `demo/`.
 //! Run against a live estate (`scripts/demo-estate.sh up`):
@@ -20,11 +18,8 @@ use rdm_client::{Filter, MeshNode, NodeStatus, NodeView, Nodes, Peers};
 use rdm_core::connections::{
     ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection,
 };
-use rdm_core::reconnect::{
-    deterministic_jitter, due, first_failure_for, next_due, next_failure, owed_direct_restored,
-    reconnect_backoff, reconnect_plan, DIRECT_RESTORED,
-};
-use rdm_core::{ConnectionId, IncarnationId};
+use rdm_core::reconnect::{first_failure_for, owed_direct_restored, DIRECT_RESTORED};
+use rdm_core::ConnectionId;
 
 fn to_end(n: &NodeView) -> Result<ConnectionEnd> {
     Ok(ConnectionEnd {
@@ -64,7 +59,6 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no Ready gateway node in estate"))?;
 
     let (src_end, dst_end, gw_end) = (to_end(src)?, to_end(dst)?, to_end(gw)?);
-    let dst_inc = dst_end.incarnation.clone().unwrap();
     let alpn = rshape_consumer::data_alpn().name;
 
     let mut held = ConnectionsHeld::new();
@@ -94,42 +88,14 @@ async fn main() -> Result<()> {
     held.apply(failed_1.clone()).map_err(|e| anyhow!("{e:?}"))?;
     held.apply(proxy_up).map_err(|e| anyhow!("{e:?}"))?;
 
-    let plan_1 = reconnect_plan(&held, |_| Some(dst_inc.clone()));
-    assert_eq!(plan_1.len(), 1);
-    let item_1 = &plan_1[0];
-    assert_eq!(item_1.due_ms, next_due(&failed_1).unwrap());
-    assert!(due(&plan_1, item_1.due_ms - 1).is_empty());
-    assert_eq!(due(&plan_1, item_1.due_ms).len(), 1);
     println!(
-        "ordinal 1 (path {:?}, name {:?} -> path {:?}, name {:?}): round={} backoff={}ms jitter={}ms due_ms={}",
+        "Direct Failed (path {:?}, name {:?} -> path {:?}, name {:?}): round={:?}; nothing dials from it (Q348)",
         src.path,
         src.name,
         dst.path,
         dst.name,
-        item_1.recovery.recovery_round,
-        reconnect_backoff(1),
-        deterministic_jitter(&src.node_id, &dst.node_id, 1),
-        item_1.due_ms
+        failed_1.recovery.map(|r| r.recovery_round),
     );
-
-    let failed_2 = next_failure(item_1, "not-sent:quic-connect", item_1.due_ms);
-    held.apply(failed_2).map_err(|e| anyhow!("{e:?}"))?;
-    let plan_2 = reconnect_plan(&held, |_| Some(dst_inc.clone()));
-    let item_2 = &plan_2[0];
-    println!(
-        "ordinal 2 (path {:?}, name {:?} -> path {:?}, name {:?}): round={} backoff={}ms jitter={}ms due_ms={}",
-        src.path,
-        src.name,
-        dst.path,
-        dst.name,
-        item_2.recovery.recovery_round,
-        reconnect_backoff(2),
-        deterministic_jitter(&src.node_id, &dst.node_id, 2),
-        item_2.due_ms
-    );
-
-    let superseded = reconnect_plan(&held, |_| Some(IncarnationId::mint()));
-    assert!(superseded.is_empty(), "superseded destination incarnation drops the reconnect series");
 
     let direct_up = NodeConnection {
         id: ConnectionId::mint(),
@@ -141,17 +107,17 @@ async fn main() -> Result<()> {
         carrier: None,
         recovery: None,
         reason: None,
-        logged_at_ms: item_2.due_ms,
+        logged_at_ms: 20_000,
     };
     held.apply(direct_up).map_err(|e| anyhow!("{e:?}"))?;
-    let owed = owed_direct_restored(&held, item_2.due_ms + 1);
+    let owed = owed_direct_restored(&held, 20_001);
     assert_eq!(owed.len(), 1);
     assert_eq!(owed[0].reason.as_deref(), Some(DIRECT_RESTORED));
     println!(
-        "Direct Connected at {}ms: owed Proxy delete state={:?} reason={:?}",
-        item_2.due_ms, owed[0].state, owed[0].reason
+        "Direct Connected at 20000ms: owed Proxy delete state={:?} reason={:?}",
+        owed[0].state, owed[0].reason
     );
     held.apply(owed[0].clone()).map_err(|e| anyhow!("{e:?}"))?;
-    assert!(reconnect_plan(&held, |_| Some(dst_inc.clone())).is_empty());
+    assert!(owed_direct_restored(&held, 20_002).is_empty(), "the delete landed: nothing more is owed");
     Ok(())
 }

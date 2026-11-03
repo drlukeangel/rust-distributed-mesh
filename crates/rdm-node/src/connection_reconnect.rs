@@ -1,32 +1,24 @@
-//! Per-node Direct reconnect scheduler and Proxy delete reconciler
-//! (`docs/architecture/connections.md` §9, §10; i148 e3).
+//! The node's connections reconciler: the owed Proxy delete and the dial an accept wakes
+//! (`docs/architecture/connections.md` §9, §10; Q348).
 //!
-//! Every node runs the same reconnect mechanism internally in `rdm-node`. Node-admin does not
-//! monitor Proxy routes and does not send reconnect commands.
+//! Every node runs it internally in `rdm-node`. Node-admin does not monitor Proxy routes and does not
+//! send reconnect commands.
 //!
-//! # Reconnect obligation (§9.1)
+//! A lost Direct is dialled on `Send` and nothing else (Q344, Q348): the open that lost it dials
+//! within its attempts, and when they are spent the dial ends to the application by name and its
+//! `on_call_failed` is told. No schedule is derived from a `Direct Failed` row, and nothing here dials
+//! again because of one.
 //!
-//! A reconnect series exists when the latest Direct record for `(source, destination, alpn)` is
-//! `Failed` for the current destination incarnation and no newer `Direct Connected` on that ALPN
-//! supersedes it.
+//! What this module does:
 //!
-//! # Durable backoff (§9.3)
-//!
-//! Every failed reconnect attempt appends a new `Direct Failed` event in the same recovery round at
-//! `attempt_ordinal + 1`. The next due time is reconstructed deterministically from the latest
-//! indexed `Failed` record (`rdm_core::reconnect::next_due`):
-//! `logged_at_ms + reconnect_backoff(attempt_ordinal) + deterministic_jitter(source, destination, attempt_ordinal)`.
-//! A process restart reads its latest Direct-per-destination index rows and reconstructs the
-//! schedule without replaying the raw log and without resetting exponential backoff or attempting
-//! before `next_due`.
-//!
-//! # One scheduler, one attempt at a time (§9.4, §9.5)
-//!
-//! Each node runs one scheduler/reconciler with at most one pending item per
-//! `(destination, destination_incarnation, alpn)` and executes at most one reconnect dial attempt at
-//! a time on the node. Two paths arm that one pending item: a latest `Direct Failed` row in `held`,
-//! and an inbound connection accepted from the exact destination birth this node reaches through an
-//! active Proxy (§10, §13 G).
+//! - **The owed Proxy delete** (§10): a Direct `Connected` beside this source's own active Proxy on
+//!   the same ALPN owes `Proxy Disconnected(direct-restored)`; a write that was refused is attempted
+//!   again each tick while owed.
+//! - **The accept trigger** (§9, §13 G, R-CN1): a connection accepted from the exact destination birth
+//!   this node reaches through an active Proxy wakes one dial of this node's own toward that birth, on
+//!   `Send`. One pending dial per `(destination, destination_incarnation, alpn)`; an accept arriving
+//!   while it is pending coalesces into it, and at most one such dial runs at a time on the node. A
+//!   dial whose attempts are spent ends the item: the next accept wakes another.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -35,74 +27,37 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rdm_core::connections::{
-    ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery, NodeConnection,
-};
-use rdm_core::reconnect::next_due;
-use rdm_core::{ConnectionId, IncarnationId, NodeId};
+use rdm_core::connections::ConnectionEnd;
+use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::ResolvedNode;
 use rdm_transport::connections::{Birth, ConnectError, ConnectionsRegistry};
 
 use crate::connections_writer::ConnectionsWriter;
 
-/// How often the reconciler checks what is owed without an explicit wake: an owed Proxy delete
-/// whose write was refused is retried, and a pending recovery attempt whose backoff has ended is
-/// dialled.
+/// How often the reconciler attempts an owed Proxy delete whose write was refused, without an
+/// explicit wake.
 pub const RECONCILER_TICK: Duration = Duration::from_millis(500);
 
-/// One direct dial of this node's default data plane toward an exact destination birth
-/// (`connections.md` §9.5 step 3), answering the call outcome's name for the attempt's span.
+/// One direct dial of this node's default data plane toward an exact destination birth, on `Send`
+/// (`connections.md` §9), answering the call outcome's name for the attempt's span.
 pub type RecoveryDial =
     Arc<dyn Fn(ConnectionEnd) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
 /// One direct dial of this node's data plane toward an exact destination birth on a specific
-/// `alpn` (`connections.md` §9.4, §9.5 step 3), answering the outcome's name for the attempt's span.
+/// `alpn`, on `Send` (`connections.md` §9), answering the outcome's name for the attempt's span.
 pub type AlpnRecoveryDial = Arc<
     dyn Fn(ConnectionEnd, Vec<u8>) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync,
 >;
 
-/// One pending direct-recovery attempt (`connections.md` §9.4): toward an exact destination birth,
-/// due at `due_ms` on the local clock.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecoveryAttempt {
-    /// The destination birth the attempt dials.
-    pub destination: ConnectionEnd,
-    /// When the attempt is due.
-    pub due_ms: u64,
-}
-
-/// One pending reconnect obligation reconstructed from this node's latest `Direct Failed` index row
-/// for `(source, destination, alpn)` (`connections.md` §9.1, §9.3, §9.4).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReconnectObligation {
-    /// The destination birth the obligation dials.
-    pub destination: ConnectionEnd,
-    /// The exact destination process incarnation.
-    pub destination_incarnation: IncarnationId,
-    /// The protocol ALPN of the failing series.
-    pub alpn: Vec<u8>,
-    /// The recovery round and attempt ordinal of the latest `Direct Failed` row.
-    pub recovery: DirectRecovery,
-    /// When the next direct attempt is due on the local clock (ms).
-    pub due_ms: u64,
-    /// The `ConnectionId` of the latest `Direct Failed` row this obligation was derived from.
-    pub row_id: ConnectionId,
-}
-
-/// One pending recovery item in the node's schedule.
+/// One dial an accept woke.
 #[derive(Clone)]
 pub(crate) struct Pending {
     pub(crate) destination: ConnectionEnd,
     pub(crate) alpn: Vec<u8>,
     pub(crate) traceparent: Option<String>,
-    /// The latest Direct row the item's last dial was scheduled from, once it has dialled and
-    /// failed: the item is next scheduled from the Failed row that dial owes, once it lands (§9.5
-    /// step 4), and is never dialled again from this one (Q169: the dial's result is read in
-    /// memory, never by waiting for its row).
-    pub(crate) attempted: Option<Option<ConnectionId>>,
 }
 
-/// Per-node reconnect scheduler state owned by [`ConnectionsWriter`].
+/// The reconciler's state owned by [`ConnectionsWriter`].
 pub(crate) struct ReconnectState {
     pub(crate) recovery: Mutex<HashMap<(NodeId, IncarnationId, Vec<u8>), Pending>>,
     pub(crate) wake: tokio::sync::Notify,
@@ -120,43 +75,6 @@ impl Default for ReconnectState {
             in_flight: AtomicUsize::new(0),
             max_concurrent: AtomicUsize::new(0),
         }
-    }
-}
-
-enum Step {
-    Wait,
-    Spent(&'static str),
-    Dial(u64, Option<ConnectionId>),
-}
-
-fn local_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-/// When an attempt toward `destination` on `alpn` is due, and the latest Direct row it is scheduled
-/// from: the series' backoff from this node's latest `Direct Failed` row toward that birth
-/// (`connections.md` §9.3), else at once.
-pub(crate) fn recovery_due(
-    held: &ConnectionsHeld,
-    destination: &ConnectionEnd,
-    alpn: &[u8],
-) -> (u64, Option<ConnectionId>) {
-    match held
-        .own_latest_directs()
-        .into_iter()
-        .find(|d| d.destination.node_id == destination.node_id && d.alpn.as_slice() == alpn)
-    {
-        Some(row)
-            if (&row.destination.node_id, &row.destination.incarnation)
-                == (&destination.node_id, &destination.incarnation) =>
-        {
-            (next_due(row).unwrap_or(0), Some(row.id.clone()))
-        }
-        Some(row) => (0, Some(row.id.clone())),
-        None => (0, None),
     }
 }
 
@@ -203,160 +121,14 @@ pub fn registry_recovery_dial(
     })
 }
 
-/// Read the pending reconnect obligations currently held by `writer`, sorted deterministically by
-/// `(destination.node_id, alpn)`.
-pub fn obligations(writer: &ConnectionsWriter) -> Vec<ReconnectObligation> {
-    let pending: Vec<(ConnectionEnd, Vec<u8>)> = writer
-        .reconnect_state()
-        .recovery
-        .lock()
-        .unwrap()
-        .values()
-        .map(|p| (p.destination.clone(), p.alpn.clone()))
-        .collect();
-    let held_arc = writer.held();
-    let held = held_arc.lock().unwrap();
-    let mut out = Vec::new();
-    for (destination, alpn) in pending {
-        let Some(inc) = destination.incarnation.clone() else {
-            continue;
-        };
-        let latest = held
-            .own_latest_directs()
-            .into_iter()
-            .find(|d| d.destination.node_id == destination.node_id && d.alpn == alpn);
-        let (due_ms, recovery, row_id) = match latest {
-            Some(row)
-                if (&row.destination.node_id, &row.destination.incarnation)
-                    == (&destination.node_id, &destination.incarnation) =>
-            {
-                (
-                    next_due(row).unwrap_or(0),
-                    row.recovery.unwrap_or(DirectRecovery {
-                        recovery_round: 1,
-                        attempt_ordinal: 1,
-                    }),
-                    row.id.clone(),
-                )
-            }
-            Some(row) => (
-                0,
-                DirectRecovery {
-                    recovery_round: 1,
-                    attempt_ordinal: 1,
-                },
-                row.id.clone(),
-            ),
-            None => (
-                0,
-                DirectRecovery {
-                    recovery_round: 1,
-                    attempt_ordinal: 1,
-                },
-                ConnectionId::mint(),
-            ),
-        };
-        out.push(ReconnectObligation {
-            destination,
-            destination_incarnation: inc,
-            alpn,
-            recovery,
-            due_ms,
-            row_id,
-        });
-    }
-    out.sort_by_key(|o| (o.destination.node_id.to_string(), o.alpn.clone()));
+/// The destinations of the dials an accept woke and that have not ended.
+pub(crate) fn recovery_pending(writer: &ConnectionsWriter) -> Vec<ConnectionEnd> {
+    let mut out: Vec<ConnectionEnd> = writer.reconnect_state().recovery.lock().unwrap().values().map(|p| p.destination.clone()).collect();
+    out.sort_by_key(|d| (d.node_id.to_string(), d.incarnation.as_ref().map(ToString::to_string)));
     out
 }
 
-/// The pending recovery attempts as [`RecoveryAttempt`]s.
-pub(crate) fn recovery_pending(writer: &ConnectionsWriter) -> Vec<RecoveryAttempt> {
-    let pending: Vec<(ConnectionEnd, Vec<u8>)> = writer
-        .reconnect_state()
-        .recovery
-        .lock()
-        .unwrap()
-        .values()
-        .map(|p| (p.destination.clone(), p.alpn.clone()))
-        .collect();
-    let held_arc = writer.held();
-    let held = held_arc.lock().unwrap();
-    pending
-        .into_iter()
-        .map(|(destination, alpn)| RecoveryAttempt {
-            due_ms: recovery_due(&held, &destination, &alpn).0,
-            destination,
-        })
-        .collect()
-}
-
-/// Arm the one pending recovery attempt per `(destination, destination_incarnation, alpn)` from this
-/// node's own latest `Direct Failed` row toward `destination` on `alpn` in `held`, the pair of the
-/// row just applied (`connections.md` §9.4, §9.5, Q7). A series for a superseded birth at the same
-/// path and ALPN is replaced by the current birth's series; a series whose latest Direct row is
-/// `Connected` is satisfied. Another pair's attempt is never touched: a row landing for one
-/// destination never arms again an attempt another destination's dial spent on its Reply while
-/// that destination's own Direct Connected row is still owed (§9.4: a reconnect on one pair never
-/// touches another's; Q169: the dial's own result decides, in memory).
-pub(crate) fn sync_recovery(writer: &ConnectionsWriter, destination: &NodeId, alpn: &[u8]) {
-    let (directs, own_source): (Vec<NodeConnection>, Option<NodeId>) = {
-        let held_arc = writer.held();
-        let held = held_arc.lock().unwrap();
-        (
-            held.own_latest_directs()
-                .into_iter()
-                .filter(|r| &r.destination.node_id == destination && r.alpn.as_slice() == alpn)
-                .filter(|r| held.end_superseded(&r.destination) != Some(true))
-                .cloned()
-                .collect(),
-            held.own_source().cloned(),
-        )
-    };
-    let mut recovery = writer.reconnect_state().recovery.lock().unwrap();
-    for row in directs {
-        if row.state == ConnectionState::Connected {
-            if let Some(inc) = row.destination.incarnation.as_ref() {
-                if recovery.remove(&(row.destination.node_id.clone(), inc.clone(), row.alpn.clone())).is_some() {
-                    if let Some(source) = own_source.as_ref() {
-                        spent_span(source, &row.destination, "direct-connected");
-                    }
-                }
-            }
-        } else if row.state == ConnectionState::Failed && row.recovery.is_some() {
-            let superseded_by_active = own_source.as_ref().is_some_and(|src| {
-                let held_arc = writer.held();
-                let held = held_arc.lock().unwrap();
-                matches!(
-                    held.active_direct_for(src, &row.destination.node_id, &row.alpn),
-                    Some(Some(connection)) if connection.destination.incarnation == row.destination.incarnation
-                )
-            });
-            if !superseded_by_active {
-                if let Some(inc) = row.destination.incarnation.clone() {
-                    let superseded: Vec<(NodeId, IncarnationId, Vec<u8>)> = recovery
-                        .iter()
-                        .filter(|((id, i, a), p)| p.destination.node_id == row.destination.node_id && a == &row.alpn && !(id == &row.destination.node_id && i == &inc))
-                        .map(|(k, _)| k.clone())
-                        .collect();
-                    for key in superseded {
-                        if let (Some(p), Some(source)) = (recovery.remove(&key), own_source.as_ref()) {
-                            spent_span(source, &p.destination, "destination-superseded");
-                        }
-                    }
-                    recovery
-                        .entry((row.destination.node_id.clone(), inc, row.alpn.clone()))
-                        .or_insert_with(|| Pending {
-                            destination: row.destination.clone(),
-                            alpn: row.alpn.clone(),
-                            traceparent: None,
-                            attempted: None,
-                        });
-                }
-            }
-        }
-    }
-}
-
+/// End the dial `key` names, naming why: once per dial.
 fn spend(
     writer: &ConnectionsWriter,
     key: &(NodeId, IncarnationId, Vec<u8>),
@@ -364,16 +136,12 @@ fn spend(
     destination: &ConnectionEnd,
     reason: &'static str,
 ) {
-    // One span per pending attempt: an attempt a landed Direct Connected already ended
-    // (`sync_recovery`) is not ended again.
     if writer.reconnect_state().recovery.lock().unwrap().remove(key).is_some() {
         spent_span(source, destination, reason);
     }
 }
 
-/// A pending attempt ended without a dial of its own, or after it (`connections.md` §12: the
-/// reconnect attempt span records whether it was superseded before dial or already satisfied by
-/// Direct Connected).
+/// A woken dial ended, without a dial of its own or after it (`connections.md` §12).
 fn spent_span(source: &NodeId, destination: &ConnectionEnd, reason: &'static str) {
     tracing::info_span!(
         "rdm.node_admin.connection.remove.via-recovery-attempt",
@@ -383,10 +151,10 @@ fn spent_span(source: &NodeId, destination: &ConnectionEnd, reason: &'static str
         destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
         reason,
     )
-    .in_scope(|| tracing::info!("the pending recovery attempt is spent"));
+    .in_scope(|| tracing::info!("the dial the accept woke has ended"));
 }
 
-/// The node's one reconnect scheduler and reconciler (`connections.md` §9.4, §9.5).
+/// The node's one connections reconciler (`connections.md` §9, §10).
 #[derive(Clone)]
 pub struct Reconciler {
     writer: Arc<ConnectionsWriter>,
@@ -404,141 +172,82 @@ impl Reconciler {
         Self { writer }
     }
 
-    /// Reconnect attempts currently executing on this node.
+    /// Dials an accept woke that are executing on this node.
     pub fn in_flight_attempts(&self) -> usize {
-        self.writer
-            .reconnect_state()
-            .in_flight
-            .load(Ordering::SeqCst)
+        self.writer.reconnect_state().in_flight.load(Ordering::SeqCst)
     }
 
-    /// Peak concurrent reconnect attempts observed on this node.
+    /// Peak concurrent woken dials observed on this node.
     pub fn max_concurrent_attempts(&self) -> usize {
-        self.writer
-            .reconnect_state()
-            .max_concurrent
-            .load(Ordering::SeqCst)
+        self.writer.reconnect_state().max_concurrent.load(Ordering::SeqCst)
     }
 
-    /// Run all due reconnect obligations at the current clock, one attempt at a time on this node.
-    pub async fn run_due(&self, dial: &AlpnRecoveryDial) {
-        run_due_at(&self.writer, dial, local_now_ms()).await;
+    /// Make every dial an accept woke, one at a time on this node.
+    pub async fn run_pending(&self, dial: &AlpnRecoveryDial) {
+        run_pending(&self.writer, dial).await;
     }
 }
 
-/// Run all pending reconnect obligations on `writer` whose `due_ms <= now_ms`, executing at most
-/// one reconnect attempt at a time on the node (`connections.md` §9.4, §9.5).
-pub async fn run_due_at(
-    writer: &ConnectionsWriter,
-    dial: &AlpnRecoveryDial,
-    now_ms: u64,
-) {
+/// Make every dial an accept woke on `writer`, at most one at a time on the node, each once on `Send`
+/// (`connections.md` §9; Q348). Its Direct `Connected` row is the data plane's own, and the owed Proxy
+/// delete follows it (§10); a dial whose attempts are spent ends here, and nothing dials again until the
+/// next accept wakes it.
+pub async fn run_pending(writer: &ConnectionsWriter, dial: &AlpnRecoveryDial) {
     let state = writer.reconnect_state();
-    let keys: Vec<(NodeId, IncarnationId, Vec<u8>)> =
-        state.recovery.lock().unwrap().keys().cloned().collect();
+    let keys: Vec<(NodeId, IncarnationId, Vec<u8>)> = state.recovery.lock().unwrap().keys().cloned().collect();
     for key in keys {
-        // Acquire the node-wide single-attempt gate so at most one reconnect dial runs at a time on
-        // this node, even if multiple obligations are due or multiple passes overlap.
+        // The node-wide single-attempt gate: at most one woken dial at a time on this node.
         let _attempt_guard = state.attempt_gate.lock().await;
-        let Some(Pending {
-            destination,
-            alpn,
-            traceparent,
-            attempted,
-        }) = state.recovery.lock().unwrap().get(&key).cloned()
-        else {
+        let Some(Pending { destination, alpn, traceparent }) = state.recovery.lock().unwrap().get(&key).cloned() else {
             continue;
         };
         let source = writer.own().node_id;
-        let (step, series) = {
+        let ended = {
             let held_arc = writer.held();
             let held = held_arc.lock().unwrap();
-            // The position this attempt takes in its series: the latest Failed row's round, one
-            // ordinal above it (connections.md §9.3, §12).
-            let series = held
-                .own_latest_directs()
-                .into_iter()
-                .find(|d| d.destination.node_id == destination.node_id && d.alpn == alpn && d.state == ConnectionState::Failed && (&d.destination.node_id, &d.destination.incarnation) == (&destination.node_id, &destination.incarnation))
-                .and_then(|d| d.recovery);
-            let step = if held.end_superseded(&destination) == Some(true) {
-                Step::Spent("destination-superseded")
+            if held.end_superseded(&destination) == Some(true) {
+                Some("destination-superseded")
             } else if matches!(
                 held.active_direct_for(&source, &destination.node_id, &alpn),
                 Some(Some(connection)) if connection.destination.incarnation == destination.incarnation
             ) {
-                Step::Spent("direct-connected")
+                Some("direct-connected")
             } else {
-                let (due_ms, basis) = recovery_due(&held, &destination, &alpn);
-                let current_now = local_now_ms().max(now_ms);
-                if attempted.as_ref() == Some(&basis) {
-                    // The last dial failed and no newer row is held: its Failed row is still owed,
-                    // and the item is scheduled from it once it lands; with nothing owed, the dial
-                    // owed no fact and the item is spent.
-                    if writer.in_flight() == 0 { Step::Spent("no-fact") } else { Step::Wait }
-                } else if current_now < due_ms {
-                    Step::Wait
-                } else {
-                    Step::Dial(due_ms, basis)
-                }
-            };
-            (step, series)
-        };
-        match step {
-            Step::Wait => {}
-            Step::Spent(reason) => spend(writer, &key, &source, &destination, reason),
-            Step::Dial(due_ms, basis) => {
-                let cur = state.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-                state.max_concurrent.fetch_max(cur, Ordering::SeqCst);
-
-                let span = tracing::info_span!(
-                    "rdm.node_admin.connection.create.via-recovery-dial",
-                    source_node_id = %source,
-                    destination_id = %destination.node_id, destination_path = %destination.path, destination_name = %destination.name,
-                    destination_node_id = %destination.node_id,
-                    destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
-                    due_ms,
-                    recovery_round = tracing::field::Empty,
-                    attempt_ordinal = tracing::field::Empty,
-                    outcome = tracing::field::Empty,
-                    fact = tracing::field::Empty,
-                    entry = tracing::field::Empty,
-                );
-                if let Some(r) = series {
-                    span.record("recovery_round", r.recovery_round).record("attempt_ordinal", r.attempt_ordinal.saturating_add(1));
-                }
-                if let Some(tp) = &traceparent {
-                    rdm_transport::set_parent(&span, tp);
-                }
-                let outcome = tracing::Instrument::instrument(
-                    dial(destination.clone(), alpn.clone()),
-                    span.clone(),
-                )
-                .await;
-                state.in_flight.fetch_sub(1, Ordering::SeqCst);
-
-                // The dial's own result decides, in memory (Q169): its row is owed and lands
-                // behind it, and nothing here waits for it. The entry is named by the dial.
-                let connected = outcome == "Reply";
-                span.record("outcome", outcome.as_str());
-                span.record("fact", if connected { "connected" } else { "failed" });
-                span.in_scope(|| {
-                    tracing::info!(
-                        "this node dialled its own connection toward the destination birth"
-                    )
-                });
-                drop(span);
-                if connected {
-                    spend(writer, &key, &source, &destination, "direct-connected");
-                } else if let Some(p) = state.recovery.lock().unwrap().get_mut(&key) {
-                    p.traceparent = None;
-                    p.attempted = Some(basis);
-                }
+                None
             }
+        };
+        if let Some(reason) = ended {
+            spend(writer, &key, &source, &destination, reason);
+            continue;
         }
+        let cur = state.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        state.max_concurrent.fetch_max(cur, Ordering::SeqCst);
+        let span = tracing::info_span!(
+            "rdm.node_admin.connection.create.via-recovery-dial",
+            source_node_id = %source,
+            destination_id = %destination.node_id, destination_path = %destination.path, destination_name = %destination.name,
+            destination_node_id = %destination.node_id,
+            destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
+            outcome = tracing::field::Empty,
+            fact = tracing::field::Empty,
+            entry = tracing::field::Empty,
+        );
+        if let Some(tp) = &traceparent {
+            rdm_transport::set_parent(&span, tp);
+        }
+        let outcome = tracing::Instrument::instrument(dial(destination.clone(), alpn.clone()), span.clone()).await;
+        state.in_flight.fetch_sub(1, Ordering::SeqCst);
+        // The dial's own result decides, in memory (Q169): its row is owed and lands behind it.
+        let connected = outcome == "Reply";
+        span.record("outcome", outcome.as_str());
+        span.record("fact", if connected { "connected" } else { "failed" });
+        span.in_scope(|| tracing::info!("this node dialled its own connection toward the destination birth an accept woke it for"));
+        drop(span);
+        spend(writer, &key, &source, &destination, if connected { "direct-connected" } else { "dial-spent" });
     }
 }
 
-/// Spawn the node's one connections reconciler (`connections.md` §9.4, §10) with an
+/// Spawn the node's one connections reconciler (`connections.md` §9, §10) with an
 /// [`AlpnRecoveryDial`].
 pub fn spawn_alpn_reconciler(
     writer: &ConnectionsWriter,
@@ -548,7 +257,7 @@ pub fn spawn_alpn_reconciler(
     spawn_reconciler_inner(writer, every, Some(dial))
 }
 
-/// Spawn the node's one connections reconciler (`connections.md` §9.4, §10) with an optional
+/// Spawn the node's one connections reconciler (`connections.md` §9, §10) with an optional
 /// single-ALPN [`RecoveryDial`].
 pub fn spawn_reconciler(
     writer: &ConnectionsWriter,
@@ -574,7 +283,7 @@ fn spawn_reconciler_inner(
                 let _ = w.settle_owed().await;
             }
             if let Some(dial) = &dial {
-                run_due_at(&w, dial, local_now_ms()).await;
+                run_pending(&w, dial).await;
             }
         }
     })
@@ -643,7 +352,6 @@ pub(crate) fn accepted_on_alpn(
                     destination: destination.clone(),
                     alpn: proxy_alpn,
                     traceparent: rdm_transport::traceparent_of(&span),
-                    attempted: None,
                 });
                 "pending"
             }
@@ -686,7 +394,8 @@ pub(crate) fn accepted_resolved(writer: &ConnectionsWriter, node: &ResolvedNode)
 mod tests {
     use super::*;
     use crate::storage::MemoryConnectionsStorage;
-    
+    use rdm_core::connections::{ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery, NodeConnection};
+    use rdm_core::ConnectionId;
     use std::collections::BTreeMap;
 
     #[derive(Default)]
@@ -736,170 +445,75 @@ mod tests {
     }
 
     // @feature: connections-reconnect
+    /// CONTRACT (connections.md §9, §13 G, R-CN1; Q348): a source holding a `Direct Failed` row and an
+    /// active Proxy to a destination has nothing pending from the row: no dial is scheduled from it.
+    /// An accept from the exact destination birth wakes one dial (`pending`), a second accept coalesces
+    /// into it, and an accept from another birth is ignored (`another-birth`). The reconciler makes the
+    /// woken dial once; a dial whose attempts are spent ends the item (`dial-spent`) and the next pass
+    /// dials nothing. A second accept wakes a dial again, whose `Reply` ends it `direct-connected`.
     #[test]
-    fn reconciler_reconstructs_due_obligation_coalesces_accept_triggers_and_spends_on_connected_dial() {
-        // docs/architecture/connections.md:332,358 — "A reconnect series exists when the latest
-        // Direct record for `(source, destination, alpn)` is `Failed` for the current destination
-        // incarnation and no newer `Direct Connected` on that ALPN supersedes it... Each node runs
-        // one scheduler/reconciler with at most one pending item per
-        // `(destination, destination_incarnation, alpn)` and executes at most one reconnect dial
-        // attempt at a time on the node."
+    fn an_accept_wakes_one_dial_and_a_spent_dial_is_not_made_again() {
         let recorder = SpanRecorder::default();
         let dispatch = tracing::Dispatch::new(recorder.clone());
         let _guard = tracing::dispatcher::set_default(&dispatch);
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build current-thread runtime");
-
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build current-thread runtime");
         rt.block_on(async {
-            let src = ConnectionEnd { mesh: "mesh1".into(), r#type: "gateway".into(),
-                path: format!("{}.{}", "mesh1", "gateway"), name: (1).to_string(),
-                node_id: NodeId::mint(),
-                incarnation: Some(IncarnationId::mint()),
+            let end = |r#type: &str, name: u32, incarnation: IncarnationId| ConnectionEnd {
+                mesh: "mesh1".into(), r#type: r#type.into(), path: format!("mesh1.{type}", type = r#type), name: name.to_string(), node_id: NodeId::mint(), incarnation: Some(incarnation),
             };
-            let carrier = ConnectionEnd { mesh: "mesh1".into(), r#type: "gateway".into(),
-                path: format!("{}.{}", "mesh1", "gateway"), name: (2).to_string(),
-                node_id: NodeId::mint(),
-                incarnation: Some(IncarnationId::mint()),
-            };
+            let src = end("gateway", 1, IncarnationId::mint());
+            let carrier = end("gateway", 2, IncarnationId::mint());
             let dst_inc = IncarnationId::mint();
-            let dst = ConnectionEnd { mesh: "mesh1".into(), r#type: "broker".into(),
-                path: format!("{}.{}", "mesh1", "broker"), name: (1).to_string(),
-                node_id: NodeId::mint(),
-                incarnation: Some(dst_inc.clone()),
-            };
+            let dst = end("broker", 1, dst_inc.clone());
             let alpn = b"app-reconnect/1".to_vec();
-
-            let storage = Arc::new(MemoryConnectionsStorage::default());
-            let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
-            let writer = Arc::new(ConnectionsWriter::new(src.clone(), storage, held));
-
-            let base_ms = local_now_ms() + 60_000;
-            let failed_id = ConnectionId::mint();
-            let failed_row = NodeConnection {
-                id: failed_id.clone(),
-                source: src.clone(),
-                destination: dst.clone(),
-                kind: ConnectionKind::Direct,
-                alpn: alpn.clone(),
-                state: ConnectionState::Failed,
-                carrier: None,
-                recovery: Some(DirectRecovery {
-                    recovery_round: 1,
-                    attempt_ordinal: 1,
-                }),
-                reason: Some("NotSent".into()),
-                logged_at_ms: base_ms,
+            let writer = Arc::new(ConnectionsWriter::new(src.clone(), Arc::new(MemoryConnectionsStorage::default()), Arc::new(Mutex::new(ConnectionsHeld::new()))));
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            let row = |kind: ConnectionKind, state: ConnectionState, carrier: Option<ConnectionEnd>, recovery: Option<DirectRecovery>, at: u64| NodeConnection {
+                id: ConnectionId::mint(), source: src.clone(), destination: dst.clone(), kind, alpn: alpn.clone(), state, carrier, recovery, reason: None, logged_at_ms: at,
             };
-            writer.record(failed_row.clone()).await.expect("record failed");
-            writer
-                .record(NodeConnection {
-                    id: ConnectionId::mint(),
-                    source: src.clone(),
-                    destination: dst.clone(),
-                    kind: ConnectionKind::Proxy,
-                    alpn: alpn.clone(),
-                    state: ConnectionState::Connected,
-                    carrier: Some(carrier),
-                    recovery: None,
-                    reason: None,
-                    logged_at_ms: base_ms + 1,
-                })
-                .await
-                .expect("record proxy");
+            writer.record(row(ConnectionKind::Direct, ConnectionState::Failed, None, Some(DirectRecovery { recovery_round: 1, attempt_ordinal: 1 }), now)).await.expect("record failed");
+            writer.record(row(ConnectionKind::Proxy, ConnectionState::Connected, Some(carrier), None, now + 1)).await.expect("record proxy");
+            assert!(recovery_pending(&writer).is_empty(), "a Direct Failed row schedules no dial (Q348)");
 
-            let obs = obligations(&writer);
-            assert_eq!(obs.len(), 1);
-            let due_ms = next_due(&failed_row).expect("due_ms");
-            assert_eq!(obs[0].destination, dst);
-            assert_eq!(obs[0].destination_incarnation, dst_inc);
-            assert_eq!(obs[0].alpn, alpn);
-            assert_eq!(obs[0].due_ms, due_ms);
-            assert_eq!(obs[0].row_id, failed_id);
+            let birth = |incarnation: IncarnationId| Birth { mesh: dst.mesh.clone(), r#type: dst.r#type.clone(), path: dst.path.clone(), name: dst.name.clone(), node_id: dst.node_id.clone(), incarnation };
+            accepted_on_alpn(&writer, &birth(dst_inc.clone()), &alpn, "peer-cur");
+            accepted_on_alpn(&writer, &birth(dst_inc.clone()), &alpn, "peer-cur");
+            accepted_on_alpn(&writer, &birth(IncarnationId::mint()), &alpn, "peer-stale");
+            assert_eq!(recovery_pending(&writer), vec![dst.clone()], "one dial woken per destination birth and ALPN");
 
-            // Accept from the exact destination birth coalesces into the existing pending item;
-            // accept from another birth is ignored with outcome="another-birth".
-            accepted_on_alpn(
-                &writer,
-                &Birth { mesh: dst.mesh.clone(), r#type: dst.r#type.clone(),
-                    path: dst.path.clone(), name: dst.name.clone(),
-                    node_id: dst.node_id.clone(),
-                    incarnation: dst_inc.clone(),
-                },
-                &alpn,
-                "peer-cur",
-            );
-            accepted_on_alpn(
-                &writer,
-                &Birth { mesh: dst.mesh.clone(), r#type: dst.r#type.clone(),
-                    path: dst.path.clone(), name: dst.name.clone(),
-                    node_id: dst.node_id.clone(),
-                    incarnation: IncarnationId::mint(),
-                },
-                &alpn,
-                "peer-stale",
-            );
-            assert_eq!(obligations(&writer).len(), 1);
-
-            let dial_calls = Arc::new(AtomicUsize::new(0));
-            let dial_calls_cl = dial_calls.clone();
+            let outcomes = Arc::new(Mutex::new(vec!["NotSent".to_string(), "Reply".to_string()]));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let (o, c) = (outcomes.clone(), calls.clone());
             let dial: AlpnRecoveryDial = Arc::new(move |_dest, _alpn| {
-                let calls = dial_calls_cl.clone();
+                let (o, c) = (o.clone(), c.clone());
                 Box::pin(async move {
-                    calls.fetch_add(1, Ordering::SeqCst);
-                    "Reply".to_string()
+                    c.fetch_add(1, Ordering::SeqCst);
+                    o.lock().unwrap().remove(0)
                 })
             });
-
-            // Before due_ms, run_due_at waits and performs no dial.
-            run_due_at(&writer, &dial, due_ms - 1).await;
-            assert_eq!(dial_calls.load(Ordering::SeqCst), 0);
-            assert_eq!(obligations(&writer).len(), 1);
-
-            // At due_ms, run_due_at dials once, records max_concurrent_attempts == 1, and spends the obligation.
             let reconciler = Reconciler::new(writer.clone());
-            run_due_at(&writer, &dial, due_ms).await;
-            assert_eq!(dial_calls.load(Ordering::SeqCst), 1);
-            assert_eq!(reconciler.in_flight_attempts(), 0);
-            assert_eq!(reconciler.max_concurrent_attempts(), 1);
-            assert!(obligations(&writer).is_empty());
-        });
+            reconciler.run_pending(&dial).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "the woken dial is made once");
+            assert!(recovery_pending(&writer).is_empty(), "a spent dial ends the item");
+            reconciler.run_pending(&dial).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "nothing dials again after a spent dial");
 
+            accepted_on_alpn(&writer, &birth(dst_inc.clone()), &alpn, "peer-cur");
+            reconciler.run_pending(&dial).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 2, "the next accept wakes another dial");
+            assert_eq!((reconciler.in_flight_attempts(), reconciler.max_concurrent_attempts()), (0, 1));
+            assert!(recovery_pending(&writer).is_empty());
+        });
         drop(rt);
 
-        let recorded: Vec<(String, BTreeMap<String, String>)> =
-            recorder.spans.lock().unwrap().values().cloned().collect();
-        assert!(
-            recorded.iter().any(|(name, attrs)| {
-                name == "rdm.node_admin.connection.update.via-accept-trigger"
-                    && attrs.get("outcome").map(String::as_str) == Some("coalesced")
-            }),
-            "expected via-accept-trigger span with outcome=coalesced"
-        );
-        assert!(
-            recorded.iter().any(|(name, attrs)| {
-                name == "rdm.node_admin.connection.update.via-accept-trigger"
-                    && attrs.get("outcome").map(String::as_str) == Some("another-birth")
-            }),
-            "expected via-accept-trigger span with outcome=another-birth"
-        );
-        assert!(
-            recorded.iter().any(|(name, attrs)| {
-                name == "rdm.node_admin.connection.create.via-recovery-dial"
-                    && attrs.get("outcome").map(String::as_str) == Some("Reply")
-                    && attrs.get("fact").map(String::as_str) == Some("connected")
-            }),
-            "expected via-recovery-dial span with outcome=Reply and fact=connected"
-        );
-        assert!(
-            recorded.iter().any(|(name, attrs)| {
-                name == "rdm.node_admin.connection.remove.via-recovery-attempt"
-                    && attrs.get("reason").map(String::as_str) == Some("direct-connected")
-            }),
-            "expected via-recovery-attempt span with reason=direct-connected"
-        );
+        let recorded: Vec<(String, BTreeMap<String, String>)> = recorder.spans.lock().unwrap().values().cloned().collect();
+        let has = |name: &str, key: &str, value: &str| recorded.iter().any(|(n, a)| n == name && a.get(key).map(String::as_str) == Some(value));
+        for outcome in ["pending", "coalesced", "another-birth"] {
+            assert!(has("rdm.node_admin.connection.update.via-accept-trigger", "outcome", outcome), "via-accept-trigger outcome={outcome}");
+        }
+        assert!(has("rdm.node_admin.connection.remove.via-recovery-attempt", "reason", "dial-spent"), "the spent dial is named");
+        assert!(has("rdm.node_admin.connection.remove.via-recovery-attempt", "reason", "direct-connected"), "the answered dial is named");
     }
+
 }
 

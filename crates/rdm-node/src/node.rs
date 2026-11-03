@@ -551,6 +551,11 @@ async fn start_booted(
         Some(o) => c.with_call_failed_observer(o.clone()),
         None => c,
     };
+    // An open of the app's protocols whose Direct dial's attempts are spent, with no carrier serving
+    // it, is told to the same `on_call_failed` (connections.md §9; Q348).
+    if let Some(o) = &call_failed {
+        data_connections.set_call_failed_observer(o.clone());
+    }
     // A call of either client whose attempts are spent is marked or reported at the primary above its
     // receiver (node-rpc.md §43; Q311): one slot for the process's clients.
     let call_ends = rdm_transport::CallEndsSlot::default();
@@ -560,9 +565,9 @@ async fn start_booted(
     let data_plane = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()).with_delivery(delivery.clone()).with_call_ends(call_ends.clone())));
     let _ = call_ends.set(Arc::new(crate::spent_calls::ReportToPrimary::new(resolver.clone(), &client, launch.node_id.clone(), launch.incarnation.clone(), launch.location())));
     // The node's one connections reconciler (connections.md §9.4, §10): an owed Proxy delete
-    // whose write was refused is attempted again while owed, and a recovery attempt an accept armed
-    // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own
-    // observation. The task ends at the node's stop, with `declare_loop`.
+    // whose write was refused is attempted again while owed, and a dial an accept woke (R-CN1) is made
+    // once through the data plane on `Send`, its fact the data plane's own observation (Q348: nothing
+    // dials again from a Failed row). The task ends at the node's stop, with `declare_loop`.
     let recovery_dial: crate::connection_reconnect::RecoveryDial = {
         let (data_plane, connections) = (data_plane.clone(), connections.clone());
         Arc::new(move |destination: rdm_core::connections::ConnectionEnd| {

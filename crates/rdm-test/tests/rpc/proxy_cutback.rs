@@ -123,10 +123,10 @@ fn route_span<'a>(spans: &'a [Value], own: &NodeId, from: u64, to: u64) -> Optio
 ///
 /// CONTRACT: an inbound accept is a recovery trigger for the source's own direct dial, never
 /// Direct evidence (R-CN1); cutback follows durable deletion (connections.md section 10). The
-/// spans show the accept, the reconciler's wake under it, the source's dial no earlier than the
-/// series' `next_due`, that dial's entry, the refused and landed deletions, then the first Direct
-/// route. What must NOT happen: a Direct entry observed on the accept, a dial before the backoff
-/// ends, or a Direct route chosen before the deletion landed.
+/// spans show the accept, the reconciler's wake under it, the source's one dial on `Send` (Q348: no
+/// backoff from the Failed row, and nothing dials from that row on its own), that dial's entry, the
+/// refused and landed deletions, then the first Direct route. What must NOT happen: a Direct entry
+/// observed on the accept, a dial before the accept, or a Direct route chosen before the deletion landed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback() {
     let cell = "source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback";
@@ -139,17 +139,10 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     let destination_id: NodeId = serde_json::from_value(dest["node_id"].clone()).unwrap();
     let carrier_id = estate.node_view(&carrier_location()).await.node_id;
 
-    // 1. The Proxy (Direct Failed E1/1-3, then Proxy Connected), and a healthy call over it. The
-    // Failed row's backoff is when the source's own dial may run (connections.md section 9.3): its third
-    // ordinal's 16 s (RECONNECT_BACKOFF_BASE_MS doubled twice) outlasts the steps before the destination's
-    // dial, so the source's own dial is the accept's wake's, never one its own schedule ran first.
+    // 1. The Proxy (Direct Failed E1/1-3, then Proxy Connected), and a healthy call over it. The Failed
+    // rows schedule no dial (Q348): the source's own dial is the accept's wake's.
     let seeded = seed_proxy(&estate, &source_id, &destination_id, &carrier_id, 3);
     let seeded_rows = history(&estate, &source_id).await;
-    let failed: rdm_core::connections::NodeConnection = serde_json::from_value(
-        seeded_rows.iter().rev().find(|r| r["kind"] == "Direct" && r["state"] == "Failed" && r["destination"]["node_id"] == destination_id.as_str()).cloned().expect("the seeded Direct Failed row"),
-    )
-    .expect("a connections row decodes");
-    let due_ms = rdm_core::reconnect::next_due(&failed).expect("a Failed row with its recovery is due once its backoff ends");
     let (healthy, ..) = originate(&estate, &source_id, &destination_id, "before-inbound");
     assert_eq!((healthy["call_outcome"].as_str(), healthy["route"].as_str(), healthy["carrier"].as_str()), (Some("reply"), Some("via-peer"), Some(carrier_id.as_str())), "{healthy}");
 
@@ -230,7 +223,6 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     let dial = dials[0];
     assert!(start(dial) >= start(wake), "the dial follows the wake");
     assert_eq!((&dial["trace_id"], &dial["parent_span_id"]), (&wake["trace_id"], &wake["span_id"]), "the dial is the wake's, in the accept's trace: {dial}");
-    assert!(start(dial) >= due_ms * 1_000_000, "the dial waited for the series' backoff: started {} ns, due {} ms", start(dial), due_ms);
     let entries: Vec<&&Value> = observed.iter().filter(|sp| sp["attributes"]["state"] == "connected" && sp["attributes"]["origin"] == "dial").collect();
     assert_eq!(entries.len(), 1, "the source's dial is the one Direct Connected entry: {observed:?}");
     let entry = entries[0];
@@ -258,7 +250,6 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
         "cell": cell,
         "seeded": seeded,
         "seeded_failed_row": failed,
-        "due_ms": due_ms,
         "healthy_call_over_proxy": healthy,
         "fault_armed": armed,
         "inbound_call_from_destination": inbound,

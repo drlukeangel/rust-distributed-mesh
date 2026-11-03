@@ -221,16 +221,15 @@ fn a_blocked_direct_node_rpc_dial_ends_not_sent_and_a_carrier_of_the_sources_mes
 /// CONTRACT (states.md "Stopped nodes": "Stopped: in the system with its identity kept, receiving no
 /// traffic, silent on gossip and not advancing"; connections.md §9.4: the node's one reconciler):
 /// node mesh1.node.1's Direct dials toward mesh1.node.2 on the app protocol are blocked, so its one
-/// dial lands a `Direct Failed` whose next attempt is due one backoff later. mesh1.node.1 stops before
-/// that due time (its stop's span `rdm.mesh.node.update.via-leave-shutdown`). Past the due time and two
-/// reconciler ticks past it, the stopped node has dialled nothing: no
-/// `rdm.node_admin.connection.create.via-recovery-dial` of its own begins after its stop's span.
+/// dial lands a `Direct Failed`, from which nothing is scheduled (Q348). mesh1.node.1 stops (its stop's
+/// span `rdm.mesh.node.update.via-leave-shutdown`). Four reconciler ticks later the node has dialled
+/// nothing: no `rdm.node_admin.connection.create.via-recovery-dial` of its own begins, before its stop
+/// or after it.
 /// Must NOT happen: the stopped birth's reconciler running on past its stop and dialling its recovery
 /// series (the release red demo-rshape-consumer-connections row 6: a `via-recovery-dial` at ordinal 4,
 /// 20 s after the stop, `NotSent`).
 #[test]
 fn a_stopped_node_dials_no_recovery_attempt_after_its_stop() {
-    use rdm_core::reconnect::{deterministic_jitter, reconnect_backoff};
     use rdm_node::connection_reconnect::RECONCILER_TICK;
     use rdm_test::node::{app_protocol, APP_PROTOCOL};
     use rdm_transport::connections::{Birth, ConnectError};
@@ -243,7 +242,7 @@ fn a_stopped_node_dials_no_recovery_attempt_after_its_stop() {
         let (src_s, dst_s) = (source.launch.node_id.to_string(), dest.launch.node_id.to_string());
         let to = Birth { mesh: dest.launch.mesh.clone(), r#type: dest.launch.r#type, path: dst.path.clone(), name: dst.name.clone(), node_id: dest.launch.node_id.clone(), incarnation: dest.launch.incarnation.clone() };
 
-        // One blocked Direct dial: its Direct Failed lands and arms the series (connections.md §9.4).
+        // One blocked Direct dial: its Direct Failed lands, and wakes no dial (connections.md §9, Q348).
         rdm_test::connection_faults::block_direct(&source.running, &dest.launch.node_id, APP_PROTOCOL);
         let dialled = source.running.data_connections_for_testkit().probe_direct(&to, APP_PROTOCOL).await;
         assert!(matches!(dialled, Err(ConnectError::NotSent { .. })), "a blocked Direct dial ends NotSent: {dialled:?}");
@@ -251,21 +250,15 @@ fn a_stopped_node_dials_no_recovery_attempt_after_its_stop() {
             f.get("source_id") == Some(&src_s) && f.get("destination_id") == Some(&dst_s) && f.get("kind").map(String::as_str) == Some("direct") && f.get("state").map(String::as_str) == Some("failed") && f.get("outcome").map(String::as_str) == Some("landed")
         };
         tokio::time::timeout(Duration::from_secs(30), seen.recorded("rdm.node_admin.connection.update.via-observed", failed)).await.expect("the blocked dial's Direct Failed lands");
-        let (logged_at, ordinal) = seen.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.node_admin.connection.update.via-observed" && failed(f)).map(|(_, _, f)| (f["logged_at_ms"].parse::<u64>().unwrap(), f["attempt_ordinal"].parse::<u32>().unwrap())).next().unwrap();
-        let due_ms = logged_at + reconnect_backoff(ordinal) + deterministic_jitter(&source.launch.node_id, &dest.launch.node_id, ordinal);
 
-        // The node stops while its series owes that next attempt.
+        // The node stops, then four reconciler ticks pass.
         source.running.stop().await;
-        let now_ms = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-        let stopped_ms = now_ms();
-        assert!(stopped_ms < due_ms, "the node stopped before its series' next attempt was due (stopped {stopped_ms}, due {due_ms}, ordinal {ordinal})");
-
-        // Past the due time and two reconciler ticks past it.
-        tokio::time::sleep(Duration::from_millis(due_ms - stopped_ms) + 2 * RECONCILER_TICK).await;
+        tokio::time::sleep(4 * RECONCILER_TICK).await;
         let spans = seen.0.lock().unwrap().clone();
         let stop = spans.iter().filter(|(_, (n, _, f))| n == "rdm.mesh.node.update.via-leave-shutdown" && f.get("node") == Some(&src_s)).map(|(k, _)| *k).min().expect("the node's stop is spanned");
-        let after: Vec<_> = spans.iter().filter(|(k, (n, _, f))| **k > stop && n == "rdm.node_admin.connection.create.via-recovery-dial" && f.get("source_node_id") == Some(&src_s)).map(|(_, (_, _, f))| f.clone()).collect();
-        assert!(after.is_empty(), "a stopped node dials nothing: {} recovery dial(s) of {src_s} began after its stop: {after:?}", after.len());
+        let _ = stop;
+        let dials: Vec<_> = spans.iter().filter(|(_, (n, _, f))| n == "rdm.node_admin.connection.create.via-recovery-dial" && f.get("source_node_id") == Some(&src_s)).map(|(_, (_, _, f))| f.clone()).collect();
+        assert!(dials.is_empty(), "the Failed row wakes no dial and a stopped node dials nothing: {} recovery dial(s) of {src_s}: {dials:?}", dials.len());
 
         dest.running.stop().await;
     });

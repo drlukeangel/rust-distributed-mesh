@@ -22,19 +22,16 @@
 //! ordered writer queue, retried with backoff until it lands; no open, dial, accept or read waits
 //! for it; the held projection takes a fact once its write lands.
 //!
-//! Two paths arm the one pending direct-recovery attempt per destination birth (connections.md
-//! §9.4, Q7): a latest Direct Failed row in `held`, and a connection accepted from the exact
-//! destination birth this node reaches through its own Proxy (R-CN1,
-//! [`rdm_transport::AcceptTrigger`], never a row). An accept arriving while an item is pending
-//! coalesces into it and wakes the reconciler, which dials this node's own data-plane connection
-//! once the series' reconnect backoff from its latest Failed row has ended (§9.3), never earlier.
-//! Only that dial's Direct Connected owes the Proxy's delete; a failed dial is the series'
-//! next Failed row and the attempt waits for its backoff; an attempt toward a birth the topology view no
-//! longer holds is dropped undialled (§9.5 step 1).
+//! No dial is scheduled from a Direct Failed row (Q348): a lost Direct is dialled on `Send` by the open
+//! that lost it. One path wakes a dial of this node's own (connections.md §9, R-CN1): a connection
+//! accepted from the exact destination birth this node reaches through its own Proxy
+//! ([`rdm_transport::AcceptTrigger`], never a row). An accept arriving while that dial is pending
+//! coalesces into it and wakes the reconciler, which makes it once on `Send`; only its Direct
+//! Connected owes the Proxy's delete, and a dial whose attempts are spent ends there.
 
 use crate::storage::ConnectionsStorage;
 /// The direct-recovery reconciler tick and attempt types (`connections.md` §9.4).
-pub use crate::connection_reconnect::{RECONCILER_TICK, RecoveryAttempt, RecoveryDial};
+pub use crate::connection_reconnect::{RECONCILER_TICK, RecoveryDial};
 use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
 use rdm_core::reconnect::{first_failure, owed_direct_restored};
 use rdm_core::{IncarnationId, PathName};
@@ -276,9 +273,7 @@ impl ConnectionsWriter {
             let mut last = self.inner.last_stamp.lock().unwrap();
             *last = (*last).max(row.logged_at_ms);
         }
-        let pair = (row.destination.node_id.clone(), row.alpn.clone());
         let _ = self.inner.held.lock().unwrap().apply(row);
-        self.sync_recovery(&pair.0, &pair.1);
         Ok(())
     }
 
@@ -525,25 +520,17 @@ impl ConnectionsWriter {
         &self.inner.runtime
     }
 
-    /// The node's one connections reconciler (connections.md §9.4, §10): each `every`, or at once
-    /// when an accept armed an attempt, it attempts every owed delete again and dials every
-    /// pending recovery attempt whose backoff has ended through `dial`, this node's own data plane
-    /// (none on a node with no data plane). Derived from the rows each time; the task ends with
-    /// the runtime.
+    /// The node's one connections reconciler (connections.md §9, §10): each `every`, or at once when
+    /// an accept woke a dial, it attempts every owed delete again and makes every woken dial once through
+    /// `dial`, this node's own data plane on `Send` (none on a node with no data plane). The task ends
+    /// with the runtime.
     pub fn spawn_reconciler(&self, every: Duration, dial: Option<RecoveryDial>) -> tokio::task::JoinHandle<()> {
         crate::connection_reconnect::spawn_reconciler(self, every, dial)
     }
 
-    /// The pending recovery attempts, each with when it is due.
-    pub fn recovery_pending(&self) -> Vec<RecoveryAttempt> {
+    /// The destinations of the dials an accept woke that have not ended (connections.md §9, R-CN1).
+    pub fn recovery_pending(&self) -> Vec<ConnectionEnd> {
         crate::connection_reconnect::recovery_pending(self)
-    }
-
-    /// Arm (or spend) the one pending recovery attempt of the pair `(destination, alpn)` of a row
-    /// just applied, from this node's own latest Direct row of that pair in `held` (connections.md
-    /// §9.4, §9.5, Q7): another pair's attempt is never touched.
-    fn sync_recovery(&self, destination: &rdm_core::NodeId, alpn: &[u8]) {
-        crate::connection_reconnect::sync_recovery(self, destination, alpn);
     }
 
     /// An accept on `alpn` from `peer` (connections.md §9.4, §10, §13 G): writes nothing (R-CN1),
@@ -628,7 +615,6 @@ impl ConnectionsWriter {
                 Some((attempts, gate)) => {
                     span.record("attempts", attempts);
                     let _ = w.inner.held.lock().unwrap().apply(row.clone());
-                    w.sync_recovery(&row.destination.node_id, &row.alpn);
                     span.record("outcome", "landed");
                     drop(gate);
                     true
@@ -828,7 +814,7 @@ mod tests {
         writer.direct_closed(&peer_key, &peer_inc);
         assert_eq!(writer.opened_to(&dest_end), None);
 
-        // Observing `direct_failed` lands a Failed row and arms `reconnect_state`.
+        // Observing `direct_failed` lands a Failed row, and schedules no dial from it (Q348).
         let _ = EndpointId(peer_key.to_string());
         writer.direct_failed(&peer_node, "dial refused");
         writer.observations_landed().await;
@@ -836,7 +822,7 @@ mod tests {
             .latest_direct_for(&dest_end, rdm_core::connections::ALPN)
             .expect("latest_direct_for returns the Failed row");
         assert_eq!(failed.state, ConnectionState::Failed);
-        assert_eq!(writer.recovery_pending().len(), 1);
+        assert!(writer.recovery_pending().is_empty(), "a Failed row wakes no dial (Q348)");
     }
 }
 

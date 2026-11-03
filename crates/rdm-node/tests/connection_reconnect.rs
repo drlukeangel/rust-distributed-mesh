@@ -1,9 +1,8 @@
-//! i148 e3 acceptance cells (`connections.md` §9, §10, §13 A–D):
+//! i148 e3 acceptance cells (`connections.md` §9, §10, §13 A, B, D):
 //! - `one_discovered_proxy_serves_every_consumer_of_the_same_destination` (§13 A)
 //! - `a_restarted_source_holds_no_proxy_and_proves_its_carrier_again` (§13 B, Q227)
-//! - `a_restarted_source_holds_no_reconnect_obligation_and_reads_no_failed_row_back` (§13 C, Q227)
 //! - `the_connections_index_stays_bounded_while_the_raw_log_keeps_history` (§13 D)
-//! - `one_reconnect_attempt_at_a_time_per_node` (§9.4, §9.5)
+//! - `one_reconnect_attempt_at_a_time_per_node` (§9, R-CN1: one woken dial at a time)
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -16,14 +15,11 @@ use rdm_core::connections::{
     DirectRecovery, NodeConnection,
 };
 use rdm_core::{ConnectionId, IncarnationId, NodeId};
-use rdm_node::connection_reconnect::{
-    AlpnRecoveryDial, Reconciler, ReconnectObligation, obligations, registry_recovery_dial,
-    run_due_at, spawn_alpn_reconciler,
-};
+use rdm_node::connection_reconnect::{AlpnRecoveryDial, Reconciler};
 use rdm_node::connections_writer::ConnectionsWriter;
 use rdm_node::storage::{ConnectionsStorage, FileConnectionsStorage};
 use rdm_node::store_root::StoreRoot;
-use rdm_transport::connections::{Admitter, Alpn, Birth, ConnectError, ConnectionKind, ConnectionsRegistry};
+use rdm_transport::connections::{Alpn, Birth, ConnectionKind, ConnectionsRegistry};
 use rdm_transport::{ResolvedNode, StaticResolver};
 
 const ALPN_A: &[u8] = b"test-reconnect-a/1";
@@ -327,51 +323,7 @@ async fn a_restarted_source_holds_no_proxy_and_proves_its_carrier_again() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// §13 C (Q227): a restarted source's reconnect backoff starts fresh. The first birth's Direct Failed
-/// row (round 1, ordinal 3) stays in the store as written, and the restarted birth holds no reconnect
-/// obligation from it: it reads nothing back. Must NOT happen: a restarted birth arming an attempt from
-/// a row it read from the store.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restarted_source_holds_no_reconnect_obligation_and_reads_no_failed_row_back() {
-    let dir = temp_data_dir("13c");
-    let alpns = [proxy_alpn(ALPN_A)];
-    let gw1_birth_1 = Birth { mesh: "mesh1".into(), r#type: "gateway".into(),
-        path: "mesh1.gateway".into(), name: "1".into(),
-        node_id: NodeId::mint(),
-        incarnation: IncarnationId::mint(),
-    };
-    let brk2 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.broker", "2").unwrap(), "mesh1", "broker", &alpns).await;
-    let failed_row = NodeConnection {
-        id: ConnectionId::mint(),
-        source: gw1_birth_1.to_end(),
-        destination: brk2.birth.to_end(),
-        kind: CoreConnectionKind::Direct,
-        alpn: ALPN_A.to_vec(),
-        state: ConnectionState::Failed,
-        carrier: None,
-        recovery: Some(DirectRecovery { recovery_round: 1, attempt_ordinal: 3 }),
-        reason: Some("unreachable before restart".into()),
-        logged_at_ms: now_ms(),
-    };
-    {
-        let gw1 = DurableNode::boot(&dir, gw1_birth_1.clone(), &alpns).await;
-        gw1.writer.record(failed_row.clone()).await.unwrap();
-        assert_eq!(obligations(&gw1.writer).len(), 1, "the first birth holds the obligation its own row armed");
-        gw1.shutdown().await;
-    }
-
-    let gw1_birth_2 = Birth { incarnation: IncarnationId::mint(), ..gw1_birth_1.clone() };
-    let gw1 = DurableNode::boot(&dir, gw1_birth_2, &alpns).await;
-    assert!(obligations(&gw1.writer).is_empty(), "the restarted birth holds no obligation: {:?}", obligations(&gw1.writer));
-    assert!(gw1.writer.recovery_pending().is_empty(), "and no pending attempt");
-    assert!(gw1.storage.history().await.unwrap().iter().any(|r| r.id == failed_row.id), "the store keeps the first birth's row as written");
-
-    gw1.shutdown().await;
-    brk2.shutdown().await;
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// §13 D: many failed reconnect attempts for one pair grow the raw history log while keeping the
+/// §13 D: many failed Direct dials for one pair grow the raw history log while keeping the
 /// current index bounded at one Direct and one Proxy member for the `(source, destination, alpn)` pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
@@ -397,13 +349,10 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
     // The open's rows are owed (Q169): the cell reads them once they land.
     gw1.writer.observations_landed().await;
 
-    // Drive 5 more reconnect attempts as each attempt's due_ms is reached (total 6 Direct Failed attempts):
-    let dial = registry_recovery_dial(&gw1.registry, None);
+    // Five more Direct dials, each on `Send` and each failing (total 6 Direct Failed rows): the cell makes
+    // them, as nothing schedules a dial from a Failed row (Q348).
     for expected_ordinal in 2..=6u32 {
-        let obs = obligations(&gw1.writer);
-        assert_eq!(obs.len(), 1);
-        assert_eq!(obs[0].recovery.attempt_ordinal, expected_ordinal - 1);
-        run_due_at(&gw1.writer, &dial, obs[0].due_ms).await;
+        assert!(gw1.registry.probe_direct(&brk2.birth, ALPN_A).await.is_err(), "gw1 has no Direct path to brk2");
         until("next Direct Failed ordinal is held", || {
             gw1.held
                 .lock()
@@ -478,9 +427,8 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// §9.4 and §9.5: one scheduler per node, at most one pending obligation per
-/// `(destination, destination_incarnation, alpn)`, and at most one reconnect attempt executing at a
-/// time on the node.
+/// §9 and R-CN1: Direct Failed rows wake no dial (Q348); an accept wakes at most one dial per
+/// `(destination, destination_incarnation, alpn)`, and at most one woken dial runs at a time on the node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_reconnect_attempt_at_a_time_per_node() {
     let dir = temp_data_dir("one-at-a-time");
@@ -492,7 +440,7 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
 
     let past = now_ms().saturating_sub(60_000);
 
-    // Seed two due obligations on gw1 (toward brk2 and brk3 on ALPN_A), plus repeated failures and accepts:
+    // Failed rows and active Proxies toward brk2 and brk3 on ALPN_A, then accepts from both:
     for (dest, ord) in [(&brk2.birth, 1u32), (&brk2.birth, 2u32), (&brk3.birth, 1u32)] {
         gw1.writer
             .record(NodeConnection {
@@ -529,18 +477,16 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
             .unwrap();
     }
 
-    // Repeated inbound accepts from brk2 on ALPN_A coalesce into the single pending obligation:
+    assert!(gw1.writer.recovery_pending().is_empty(), "the Failed rows wake no dial (Q348)");
+    // Repeated inbound accepts from brk2 on ALPN_A coalesce into its one woken dial; brk3's accept wakes its own:
     for _ in 0..4 {
         gw1.writer.accepted_on_alpn(&brk2.birth, ALPN_A);
     }
-    let obs: Vec<ReconnectObligation> = obligations(&gw1.writer);
-    assert_eq!(
-        obs.len(),
-        2,
-        "one obligation per (destination, incarnation, alpn): {obs:?}"
-    );
+    gw1.writer.accepted_on_alpn(&brk3.birth, ALPN_A);
+    let pending = gw1.writer.recovery_pending();
+    assert_eq!(pending.len(), 2, "one woken dial per (destination, incarnation, alpn): {pending:?}");
 
-    // Gate the reconnect dial so we can observe concurrency when both obligations are due:
+    // Gate the woken dial so we can observe concurrency with both pending:
     let started: Arc<Mutex<Vec<ConnectionEnd>>> = Arc::new(Mutex::new(Vec::new()));
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     let started_c = started.clone();
@@ -571,14 +517,14 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
         })
     });
 
-    // Spawn two concurrent run_due passes on the same node's reconciler to prove the node-wide
-    // single-attempt gate serializes every reconnect attempt:
+    // Spawn two concurrent passes on the same node's reconciler to prove the node-wide single-attempt
+    // gate serializes every woken dial:
     let r1 = reconciler.clone();
     let d1 = gated_dial.clone();
-    let pass1 = tokio::spawn(async move { r1.run_due(&d1).await });
+    let pass1 = tokio::spawn(async move { r1.run_pending(&d1).await });
     let r2 = reconciler.clone();
     let d2 = gated_dial.clone();
-    let pass2 = tokio::spawn(async move { r2.run_due(&d2).await });
+    let pass2 = tokio::spawn(async move { r2.run_pending(&d2).await });
 
     until("first reconnect attempt starts", || {
         started.lock().unwrap().len() == 1
@@ -610,10 +556,7 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
         1,
         "at most one reconnect attempt ever ran at a time on the node"
     );
-    assert!(
-        obligations(&gw1.writer).is_empty(),
-        "both obligations are spent once their Direct Connected rows land"
-    );
+    assert!(gw1.writer.recovery_pending().is_empty(), "both woken dials ended with their Reply");
 
     gw1.shutdown().await;
     gw2.shutdown().await;
@@ -741,53 +684,4 @@ async fn alpn_interference_restores_a_while_b_keeps_its_proxy() {
     carrier.shutdown().await;
     dst.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// Admits while its gate is open; otherwise refuses `expired` by name.
-struct GateAdmitter(Arc<std::sync::atomic::AtomicBool>);
-
-impl Admitter for GateAdmitter {
-    fn verify(&self, _caller: &Birth, _alpn: &[u8], _cert: &[u8]) -> Result<(u64, &'static str), String> {
-        if self.0.load(std::sync::atomic::Ordering::SeqCst) { Ok((0, "no-certs")) } else { Err("expired".into()) }
-    }
-}
-
-/// CONTRACT (node-connections-admit.md step 5, connections.md §9.1, §9.5; decided 2026-10-19): a
-/// refused dial is a Direct `Failed` row, so the source's reconnect series exists; a refused attempt
-/// of the series continues it at the next ordinal (never spent as `no-fact`), and the attempt the
-/// acceptor admits ends it, with no command from anyone.
-#[tokio::test]
-async fn a_refused_dial_starts_a_series_a_refused_attempt_continues_and_an_admitted_one_ends() {
-    let dir = temp_data_dir("refused-series");
-    let alpns = [proxy_alpn(ALPN_A)];
-    let gw = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", "gateway", &alpns).await;
-    let brk = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker", &alpns).await;
-    gw.know(&brk);
-    brk.know(&gw);
-    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    brk.registry.set_admitter(Arc::new(GateAdmitter(open.clone())));
-    let (opener, _) = gw.registry.connections(ALPN_A).unwrap().split();
-    let (_, mut accepts) = brk.registry.connections(ALPN_A).unwrap().split();
-
-    assert_eq!(opener.open(&brk.birth).await.unwrap_err(), ConnectError::Refused { reason: "expired".into() });
-    gw.writer.observations_landed().await;
-    let obs = obligations(&gw.writer);
-    assert_eq!(obs.len(), 1, "the refused dial starts the source's series: {obs:?}");
-    assert_eq!((obs[0].destination.location(), obs[0].alpn.as_slice(), obs[0].recovery.attempt_ordinal), (brk.birth.location(), ALPN_A, 1));
-
-    let dial = registry_recovery_dial(&gw.registry, None);
-    run_due_at(&gw.writer, &dial, obs[0].due_ms).await;
-    // The attempt's Failed row is owed and lands behind it (Q169).
-    gw.writer.observations_landed().await;
-    let obs = obligations(&gw.writer);
-    assert_eq!(obs.len(), 1, "a refused attempt continues the series, never spent as no-fact: {obs:?}");
-    assert_eq!(obs[0].recovery.attempt_ordinal, 2);
-
-    open.store(true, std::sync::atomic::Ordering::SeqCst);
-    let accepted = tokio::spawn(async move { accepts.accept().await.unwrap() });
-    run_due_at(&gw.writer, &dial, obs[0].due_ms).await;
-    accepted.await.unwrap();
-    assert!(obligations(&gw.writer).is_empty(), "the admitted attempt is Direct Connected and ends the series");
-    gw.shutdown().await;
-    brk.shutdown().await;
 }

@@ -4,7 +4,6 @@
 //! threads emitted, captured by its `EvidenceCapture`) there.
 
 use rdm_core::connections::{resolve, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute, NodeConnection};
-use rdm_core::reconnect::reconnect_plan;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_admin::connections_writer::ConnectionsWriter;
 use rdm_admin::storage::{ConnectionsStorage, FileConnectionsStorage};
@@ -42,7 +41,7 @@ fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind
 /// CONN-D (connections.md §13 D, §3, §9): many completed NotSent dial attempts from this source
 /// to one exact destination birth advance the Direct Failed round/ordinal durably, grow the raw
 /// log by one row each, and leave the current index holding one Direct and one Proxy for the
-/// pair; superseded evidence never revives.
+/// pair; superseded evidence never revives. Nothing schedules a dial from the rows (Q348).
 #[test]
 fn source_reconnect_failures_grow_log_keep_two_current_members() {
     let cell = "source_reconnect_failures_grow_log_keep_two_current_members";
@@ -112,20 +111,17 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
         assert_eq!(direct.recovery.unwrap().attempt_ordinal, ATTEMPTS);
         let history = storage.history().await.unwrap();
         assert_eq!(history.len(), seeded + ATTEMPTS as usize);
-        let (latest_directs, active_proxies, route, plan) = {
+        let (latest_directs, active_proxies, route) = {
             let h = held.lock().unwrap();
             (
                 h.own_latest_directs().into_iter().cloned().collect::<Vec<_>>(),
                 h.own_active_proxies().into_iter().cloned().collect::<Vec<_>>(),
                 resolve(&h, &me.node_id, &dest.node_id, policy()).route,
-                reconnect_plan(&h, |_| None),
             )
         };
         assert_eq!(latest_directs.len(), 1);
         assert_eq!(active_proxies.len(), 1, "the Proxy is the pair's other current member");
         assert!(matches!(route, EffectiveRoute::ViaPeer { .. }), "new calls ride the Proxy while Direct fails: {route:?}");
-        assert_eq!(plan.len(), 1);
-        assert_eq!(plan[0].recovery.attempt_ordinal, ATTEMPTS, "the reconnect schedule continues from the latest failure");
 
         // The evidence: direct observations, then every span the cell's own threads emitted. Every
         // observation write has landed (and closed its span) before the capture is read.
@@ -145,7 +141,6 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
             "history_len": history.len(),
             "index_for_pair": pair,
             "held": { "own_latest_directs": latest_directs, "own_active_proxies": active_proxies, "route": format!("{route:?}") },
-            "reconnect_plan_ordinal": plan[0].recovery.attempt_ordinal,
             "spans_emitted": spans.len(),
             "observed_spans": observed.len(),
         });

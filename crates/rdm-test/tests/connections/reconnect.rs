@@ -1,4 +1,4 @@
-//! End-to-end cell for `connections-reconnect` (`docs/architecture/connections.md:332,358`).
+//! End-to-end cell for `connections-reconnect` (`docs/architecture/connections.md` §9, §10; R-CN1; Q348).
 
 use crate::common::admin_side_serving;
 use rdm_core::connections::{
@@ -7,10 +7,9 @@ use rdm_core::connections::{
 use rdm_core::launch::Launch;
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingRequest};
-use rdm_core::reconnect::next_due;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{ConnectionId, FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
-use rdm_node::connection_reconnect::{adapt_recovery_dial, obligations, run_due_at, RecoveryDial};
+use rdm_node::connection_reconnect::{adapt_recovery_dial, run_pending, RecoveryDial};
 use rdm_test::node;
 use rdm_test::originate::Seams;
 use rdm_transport::{CallOptions, NodeResolver, NodeTarget};
@@ -23,14 +22,12 @@ fn kept_log(store: &std::path::Path, fabric: &FabricId, node_id: &NodeId) -> Vec
 }
 
 // @feature: connections-reconnect
-/// CONTRACT: docs/architecture/connections.md:332,358
-/// "A reconnect series exists when the latest Direct record for `(source, destination, alpn)` is
-///  `Failed` for the current destination incarnation and no newer `Direct Connected` on that ALPN
-///  supersedes it... Each node runs one scheduler/reconciler with at most one pending item per
-///  `(destination, destination_incarnation, alpn)` and executes at most one reconnect dial attempt at
-///  a time on the node."
+/// CONTRACT (connections.md §9, §10, R-CN1; Q348): a source holding a `Direct Failed` row and an active
+/// Proxy to a peer has nothing scheduled from the row; an accept from the peer's exact birth wakes the
+/// source's one dial, made on `Send` over the real Node RPC client: its Direct Connected and the owed
+/// `Proxy Disconnected(direct-restored)` land in the store root, and the woken dial ends.
 #[test]
-fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_active_proxy() {
+fn source_node_reconciler_dials_the_destination_an_accept_woke_and_deletes_active_proxy() {
     let cap = crate::common::capture(
         "source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_active_proxy",
     );
@@ -177,10 +174,10 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
             .await
             .expect("record proxy");
 
-        let obs = obligations(&src_seams.connections);
-        assert_eq!(obs.len(), 1);
-        let due_ms = next_due(&failed_row).expect("due_ms");
-        assert_eq!(obs[0].due_ms, due_ms);
+        assert!(src_seams.connections.recovery_pending().is_empty(), "the Failed row schedules no dial (Q348)");
+        let peer_birth = rdm_transport::connections::Birth { mesh: peer_end.mesh.clone(), r#type: peer_end.r#type.clone(), path: peer_end.path.clone(), name: peer_end.name.clone(), node_id: peer_end.node_id.clone(), incarnation: peer_end.incarnation.clone().expect("the peer's birth") };
+        src_seams.connections.accepted_on_alpn(&peer_birth, rdm_core::connections::ALPN);
+        assert_eq!(src_seams.connections.recovery_pending(), vec![peer_end.clone()], "the accept woke one dial");
 
         let client = src_seams.client.clone();
         let dial: RecoveryDial = Arc::new(move |dest: ConnectionEnd| {
@@ -203,12 +200,12 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
         });
         let alpn_dial = adapt_recovery_dial(dial);
 
-        // At due_ms, run_due_at dials the peer over the real NodeRpcClient, writes Direct Connected
-        // and Proxy Disconnected(direct-restored) to the store root, and clears the obligation.
-        run_due_at(&src_seams.connections, &alpn_dial, due_ms).await;
+        // The woken dial reaches the peer over the real NodeRpcClient; Direct Connected and Proxy
+        // Disconnected(direct-restored) land in the store root, and the dial has ended.
+        run_pending(&src_seams.connections, &alpn_dial).await;
         src_seams.connections.observations_landed().await;
 
-        assert!(obligations(&src_seams.connections).is_empty());
+        assert!(src_seams.connections.recovery_pending().is_empty());
         let log = kept_log(&store, &fabric, &src_launch.node_id);
         assert!(
             log.iter().any(|r| {

@@ -22,16 +22,17 @@
 //! |---|---|---|---|
 //! | A one discovered proxy serves every consumer | `n:connection_reconnect::one_discovered_proxy_serves_every_consumer_of_the_same_destination`; `t:connections::a_held_proxy_is_taken_without_a_direct_dial`; `t:connections_integration::an_active_proxy_is_reused_without_a_fresh_direct_dial_ladder` | none | `one_discovered_proxy_carries_every_later_open_with_no_direct_dial` |
 //! | B a restarted source holds no Proxy (Q227) | `n:connection_reconnect::a_restarted_source_holds_no_proxy_and_proves_its_carrier_again`; `a:connections_writer::a_restart_holds_none_of_the_previous_births_rows_and_the_first_resolution_dials` | none | `connections/restart.rs::a_recovered_source_holds_no_connection_and_reads_none_back` |
-//! | C a restart starts reconnect backoff fresh (Q227) | `n:connection_reconnect::a_restarted_source_holds_no_reconnect_obligation_and_reads_no_failed_row_back`; `c:reconnect::the_backoff_is_computed_from_the_latest_failed_row_held_not_reset`; `a:connections_writer::a_restarted_birth_starts_its_own_series_naming_its_own_birth` | none | `connections/restart.rs::a_recovered_source_holds_no_connection_and_reads_none_back` (release) |
+//! | C a restarted birth starts its own series (Q227; no reconnect schedule, Q348) | `a:connections_writer::a_restarted_birth_starts_its_own_series_naming_its_own_birth` | none | `connections/restart.rs::a_recovered_source_holds_no_connection_and_reads_none_back` (release) |
 //! | D index stays bounded | `n:connection_reconnect::the_connections_index_stays_bounded_while_the_raw_log_keeps_history`; `a:connections_writer::many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pair`; `a:connections_reconnect::source_reconnect_failures_grow_log_keep_two_current_members` | none | `many_failed_attempts_grow_the_raw_log_and_hold_one_direct_and_one_proxy` |
 //! | E Failed/Dead stay with their source | `c:connections::a_disconnected_or_failed_direct_never_stays_resident_and_an_older_connect_never_revives_it`; `c:connections::another_nodes_proxy_is_never_held` | none | `a_peer_holds_none_of_a_sources_failed_history_or_its_proxy` |
-//! | F reconnect success returns to Direct in order | `a:connections_writer::a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_cuts_back`; `t:connections::a_direct_connected_disconnects_the_proxy`; `t:connections_integration::a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_back_only_after_it_is_durable`; `c:reconnect::cutback_to_direct_happens_only_after_the_proxy_disconnected_write_is_applied_and_a_failed_write_is_owed_again` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` (its dial is woken by an accept, not by the series' due time) | `a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direct` |
-//! | G an inbound accept is a recovery trigger | `a:connections_writer::an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_source_dial_whose_connected_disconnects_the_proxy`; `a:connections_writer::repeated_accepts_coalesce_into_one_attempt_that_waits_for_the_series_backoff`; `t:connection_observer::an_accepted_connection_is_handed_to_the_accept_trigger_once` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
+//! | F reconnect success returns to Direct in order | `a:connections_writer::a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_cuts_back`; `t:connections::a_direct_connected_disconnects_the_proxy`; `t:connections_integration::a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_back_only_after_it_is_durable`; `c:reconnect::cutback_to_direct_happens_only_after_the_proxy_disconnected_write_is_applied_and_a_failed_write_is_owed_again` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | `a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direct` (its dial woken by the destination's accept, R-CN1) |
+//! | G an inbound accept is a recovery trigger | `a:connections_writer::an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_source_dial_whose_connected_disconnects_the_proxy`; `a:connections_writer::repeated_accepts_coalesce_into_one_dial`; `t:connection_observer::an_accepted_connection_is_handed_to_the_accept_trigger_once` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
 //! | H Proxy deletion write failure is safe and retried | `a:connections_writer::a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands`; `n:connection_writes::a_refused_connection_write_is_retried_with_backoff_until_it_lands` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
 //! | I destination/carrier incarnation | `c:connections::a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call_dials` (added with its fix); `c:connections::a_stale_destination_incarnation_is_superseded`; `c:connections::a_stale_carrier_incarnation_is_superseded`; `c:connections::a_direct_fact_naming_a_superseded_destination_is_not_current`; `t:connections_integration::a_fact_naming_a_superseded_birth_still_dials_the_current_one`; `t:connections::an_open_against_another_incarnation_is_wrong_incarnation_and_never_served`; `a:connections_writer::a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming_that_birth` | none | `a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and_never_carries`; `a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_never_carries` |
 //! | J carrier connection loss invalidates Proxy | `t:forward::a_carrier_whose_own_direct_to_the_target_is_not_active_refuses_connection_lost`; `t:forward::a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_disconnected`; `a:connections_writer::a_carrier_names_its_own_connection_only_when_its_latest_direct_is_not_connected` | none | `a_carrier_that_lost_its_connection_refuses_by_name_and_the_source_disconnects_the_proxy` |
 //! | K sent request is never rerouted | `t:connections_integration::an_indeterminate_alone_never_invalidates_a_proxy`; `t:routing::certainty_stays_downstream_an_indeterminate_is_never_replayed_through_another_route`; `t:certainty::reply_loss_after_a_complete_send_is_indeterminate` | none | not writable here: no process door forces a post-commit answer timeout on a carried call (Decisions) |
 //! | L #2640 independence | `t:routing::semantic_selection_is_not_connection_selection`; `t:routing::connection_changes_do_not_touch_the_selection_and_selection_changes_fabricate_no_connection_state` | none | n/a in RDM: no `orgs.topics`, route barrier or watermark exists here; the transport cells prove the selection is untouched |
+//! | §9 a spent Direct dial ends to the application (Q348) | `n:connection_reconnect::tests::an_accept_wakes_one_dial_and_a_spent_dial_is_not_made_again` | none | `a_lost_direct_whose_send_is_spent_ends_to_the_application_with_on_call_failed_and_is_not_dialled_again` |
 //!
 //! # connections.md §15, invariants
 //!
@@ -355,16 +356,15 @@ async fn a_peer_holds_none_of_a_sources_failed_history_or_its_proxy() {
 
 /// CONTRACT (connections.md §13 F: "Start with active Proxy and failed Direct. Restore direct
 /// connectivity. Assert: Direct Connected written, Proxy remains effective, Proxy
-/// Disconnected(reason=direct-restored) written, Direct becomes effective"; §9.3, §9.5 steps 3-5; §10):
-/// the source's open proved a Proxy after its blocked Direct dial (Failed round 1, ordinal 1); the
-/// series' first due attempt fails under the block (ordinal 2). The block is released and nothing
-/// else happens: no accept, no traffic. At the Failed row's due time the
-/// source's own reconciler dials (`via-recovery-dial`, never earlier than `next_due`), and that dial's
+/// Disconnected(reason=direct-restored) written, Direct becomes effective"; §9, §10, R-CN1; Q348): the
+/// source's open proved a Proxy after its blocked Direct dial (Failed round 1, ordinal 1), and nothing
+/// dials from that row. The block is released and the destination dials the source: the accept wakes
+/// the source's own dial (`via-accept-trigger`, then `via-recovery-dial` on `Send`), and that dial's
 /// Direct Connected is written. Its write passes; the Proxy's deletion write is refused, and an open
 /// meanwhile still goes through the carrier. Released, `Proxy Disconnected(direct-restored)` lands, and
 /// only then does an open go Direct. The dial is the source process's own (§15.11-12): no node-admin
-/// emits a recovery dial. Must NOT happen: a Direct open before the deletion landed, a recovery
-/// dial before the due time, or a Proxy Disconnected with another reason.
+/// emits a recovery dial. Must NOT happen: a Direct open before the deletion landed, a recovery dial
+/// before the accept, or a Proxy Disconnected with another reason.
 // @feature: connections-reconnect
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direct() {
@@ -377,14 +377,11 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
     let first = stream(&estate, &*SOURCE, &*DEST, "over-the-proxy");
     assert_eq!(first["kind"].as_str(), Some(format!("proxy via {}", id_at(&estate, &CARRIER).await).as_str()), "{first}");
     wait_for("the Proxy is held", Duration::from_secs(15), || async { (snapshot(&estate, &*SOURCE)["own_active_proxies"].as_array().map(Vec::len) == Some(1)).then_some(()) }).await;
-    // The series' own first attempt, still blocked, fails at its due time: ordinal 2, same round. Its
-    // backoff (8 s) is the window the fault is armed and the block released in.
-    let failed_row = wait_for("the series' second attempt failed under the block", Duration::from_secs(20), || async {
-        rows(&history(&estate, &SOURCE).await, &*DEST, "Direct").into_iter().rev().find(|r| r["state"] == "Failed" && r["recovery"]["attempt_ordinal"] == 2).cloned()
+    // The blocked dial's Failed row: nothing dials from it (Q348).
+    let failed_row = wait_for("the blocked dial's Direct Failed is written", Duration::from_secs(20), || async {
+        rows(&history(&estate, &SOURCE).await, &*DEST, "Direct").into_iter().rev().find(|r| r["state"] == "Failed").cloned()
     })
     .await;
-    let failed: rdm_core::connections::NodeConnection = serde_json::from_value(failed_row.clone()).expect("a connections row decodes");
-    let due_ms = rdm_core::reconnect::next_due(&failed).expect("a Failed row carries its due time");
 
     // 1. The deletion will be refused: the dial's Direct Connected append passes, every later one
     // is refused until released. Then the block is released.
@@ -392,8 +389,11 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
     assert_eq!(armed["fault"], "armed", "{armed}");
     block_direct(&estate, &*SOURCE, &*DEST, false);
 
-    // 2. The series' own dial connects at its due time; the deletion is owed and refused.
-    let owed = wait_for("the source's due dial connected and its deletion is owed", Duration::from_secs(30), || async {
+    // 2. The destination dials the source: the accept wakes the source's own dial, which connects; the
+    // deletion is owed and refused.
+    let inbound = estate.probe(&["dial", "--target", &rdm_test::estate::path_target(&DEST), "--destination", &rdm_test::estate::path_target(&SOURCE), "--key", "x"]);
+    assert_eq!(inbound["dialed"].as_str(), Some("Reply"), "the destination reached the source: {inbound}");
+    let owed = wait_for("the source's woken dial connected and its deletion is owed", Duration::from_secs(30), || async {
         let snap = snapshot(&estate, &*SOURCE);
         let connected = snap["own_latest_directs"].as_array().into_iter().flatten().any(|d| rdm_test::estate::is_location(&d["destination"], &*DEST) && d["state"] == "Connected" && d["alpn"] == failed_row["alpn"]);
         (connected && snap["owed"].as_array().map(Vec::len) == Some(1) && snap["fault_refused"].as_u64().unwrap_or(0) >= 1).then_some(snap)
@@ -424,17 +424,15 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
     assert_eq!(app[disconnected]["reason"], "direct-restored", "{app:?}");
     estate.stop().await;
 
-    // 5. Spans: the source's one recovery dial, at or after its due time, connected; no accept
-    // woke it; the open while owed chose the Proxy before the landing.
+    // 5. Spans: the accept woke the source's one recovery dial, which connected; the open while owed
+    // chose the Proxy before the landing.
     let spans = estate.spans();
     let dials: Vec<&Value> = named(&spans, "rdm.node_admin.connection.create.via-recovery-dial").into_iter().filter(|sp| sp["attributes"]["source_node_id"] == source_id.as_str() && rdm_test::estate::names_location(sp, "destination", &DEST) && sp["attributes"]["outcome"] == "Reply").collect();
     assert_eq!(dials.len(), 1, "one connected recovery dial: {dials:#?}");
-    let failed_dials = named(&spans, "rdm.node_admin.connection.create.via-recovery-dial").into_iter().filter(|sp| sp["attributes"]["source_node_id"] == source_id.as_str() && rdm_test::estate::names_location(sp, "destination", &DEST) && sp["attributes"]["outcome"] != "Reply").count();
-    assert!(failed_dials >= 1, "the blocked attempt is the series' own dial too");
-    assert!(start(dials[0]) >= due_ms * 1_000_000, "the dial waited for the series' backoff: {} ns, due {due_ms} ms", start(dials[0]));
     assert!(s(&dials[0]["resource"]["service.name"]).is_empty() || s(&dials[0]["resource"]["service.name"]) == "testkit-node", "the dial is the source process's own: {}", dials[0]);
     let woken: Vec<&Value> = named(&spans, "rdm.node_admin.connection.update.via-accept-trigger").into_iter().filter(|sp| sp["attributes"]["source_node_id"] == source_id.as_str() && rdm_test::estate::names_location(sp, "destination", &DEST)).collect();
-    assert!(woken.is_empty(), "no accept woke the dial: {woken:#?}");
+    assert!(woken.iter().any(|sp| sp["attributes"]["outcome"] == "pending"), "the destination's accept woke the dial: {woken:#?}");
+    assert!(woken.iter().all(|sp| start(sp) <= start(dials[0])), "no dial before the accept: {woken:#?}");
     let landed: Vec<&Value> = named(&spans, "rdm.node_admin.connection.delete.via-direct-restored").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "source", &SOURCE) && sp["attributes"]["outcome"] == "landed").collect();
     assert_eq!(landed.len(), 1, "{landed:#?}");
     estate.record_trace_url(&s(&dials[0]["trace_id"]));
@@ -492,6 +490,46 @@ async fn a_carrier_that_lost_its_connection_refuses_by_name_and_the_source_disco
     let tunnels: Vec<&Value> = named(&spans, "rdm.node.connection.create.via-tunnel").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "source", &SOURCE) && rdm_test::estate::names_location(sp, "carrier", &CARRIER) && rdm_test::estate::names_location(sp, "destination", &DEST)).collect();
     assert!(!tunnels.is_empty(), "{tunnels:#?}");
     estate.record_trace_url(&s(&tunnels.last().unwrap()["trace_id"]));
+}
+
+/// CONTRACT (connections.md §9; Q348: "A lost Direct is dialled on `Send` ... When the attempts are spent the
+/// dial ends to the application by name and `on_call_failed` is called; the application opens it again if it
+/// wants"; i151 item 4): the source's Direct dials toward the destination are blocked and no carrier holds a
+/// connection to it. The source's open on the app protocol dials Direct on `Send` until its attempts are spent
+/// (`rdm.node.connection.open.via-attempts-spent`), finds no carrier, and ends to the application by name
+/// (`NoActiveRoute`); its `on_call_failed` is told once, naming the destination's birth
+/// (`rdm.mesh.node.update.via-on-call-failed`). Then nothing dials again: across eight reconciler ticks the
+/// source writes no second Direct Failed toward the destination and makes no recovery dial. Must NOT happen:
+/// no `on_call_failed`, a second one, or a dial the source makes on its own after the spent one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_direct_whose_send_is_spent_ends_to_the_application_with_on_call_failed_and_is_not_dialled_again() {
+    let cell = "a_lost_direct_whose_send_is_spent_ends_to_the_application_with_on_call_failed_and_is_not_dialled_again";
+    let mut estate = born(cell).await;
+    let (source_id, dest_id) = (id_at(&estate, &SOURCE).await, id_at(&estate, &DEST).await);
+    block_direct(&estate, &*SOURCE, &*DEST, true);
+    let opened_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    let lost = stream(&estate, &*SOURCE, &*DEST, "lost-direct");
+    assert_eq!(lost["streamed"].as_bool(), Some(false), "nothing is streamed: {lost}");
+    assert!(s(&lost["reason"]).contains("NoActiveRoute"), "the open ends to the application by name: {lost}");
+    let failed_rows = || async { rows(&history(&estate, &SOURCE).await, &*DEST, "Direct").into_iter().filter(|r| r["state"] == "Failed").count() };
+    wait_for("the spent dial's Direct Failed landed", Duration::from_secs(15), || async { (failed_rows().await == 1).then_some(()) }).await;
+    // Eight reconciler ticks: nothing dials again on its own (Q348).
+    tokio::time::sleep(rdm_node::connection_reconnect::RECONCILER_TICK * 8).await;
+    assert_eq!(failed_rows().await, 1, "no second Direct Failed toward the destination: nothing dialled again");
+    estate.stop().await;
+
+    let spans = estate.spans();
+    let after = |sp: &&Value| start(sp) >= opened_ns;
+    let told: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-on-call-failed").into_iter().filter(after).filter(|sp| sp["attributes"]["node_id"] == source_id.as_str() && sp["attributes"]["receiver_node_id"] == dest_id.as_str()).collect();
+    assert_eq!(told.len(), 1, "the spent open is told to on_call_failed once: {told:#?}");
+    assert_eq!((s(&told[0]["attributes"]["outcome"]), rdm_test::estate::names_location(told[0], "receiver", &DEST)), ("NotSent".to_string(), true), "{}", told[0]);
+    let app: Vec<&Value> = named(&spans, "rdm.testkit.app.update.via-on-call-failed").into_iter().filter(after).filter(|sp| sp["attributes"]["receiver_node_id"] == dest_id.as_str()).collect();
+    assert_eq!(app.len(), 1, "the application's hook ran once: {app:#?}");
+    let spent: Vec<&Value> = named(&spans, "rdm.node.connection.open.via-attempts-spent").into_iter().filter(after).filter(|sp| sp["attributes"]["destination"] == dest_id.as_str()).collect();
+    assert_eq!(spent.len(), 1, "one Direct dial on Send, its attempts spent: {spent:#?}");
+    let redials: Vec<&Value> = named(&spans, "rdm.node_admin.connection.create.via-recovery-dial").into_iter().filter(|sp| sp["attributes"]["source_node_id"] == source_id.as_str()).collect();
+    assert!(redials.is_empty(), "the source makes no dial of its own after the spent one: {redials:#?}");
+    estate.record_trace_url(&s(&told[0]["trace_id"]));
 }
 
 /// CONTRACT (connections.md §13 D: "Generate many failed reconnect attempts for one pair. Assert the

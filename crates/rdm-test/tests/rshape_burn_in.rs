@@ -4811,34 +4811,11 @@ async fn supersession_run(cell: &str, shape: Shape) {
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
     events.push(json!({"event": "dial-lost", "source": lost_src, "ack": ack2, "failed_fact": failed, "call": failed_call.out, "t_cut_ns": t_cut2, "t_release_ns": t_release}));
 
-    // Recovery is the source's own dial (connections.md §9.5): the dial still running when the cut lifts, if its
-    // handshake completes inside its own bound, reports the pair Connected with no caller waiting; otherwise the
-    // reconnect series dials when its latest Failed row falls due (§9.3: the backoff doubles per attempt, so a series
-    // a few attempts in is due well past 30 s). The wait is bounded by that due time, one bounded attempt (the QUIC
-    // idle timeout, the staleness floor: rdm-transport endpoint.rs) and the time to observe the fact. A Failed row
-    // can only come from an attempt that began under the cut; one written later failed on an open path.
-    let (attempt, observe) = (rdm_core::cadence::staleness_floor(), Duration::from_secs(10));
-    let window = (attempt + observe).as_millis() as u64;
-    let release_ms = t_release / 1_000_000;
-    let t_wait = Instant::now();
-    let mut series: Vec<Value> = Vec::new();
-    let connection1 = loop {
-        let latest = latest_direct(&snapshot(&f.estate, &lost_src), &dst).unwrap_or_else(|| panic!("{lost_src:?} holds no Direct fact toward {dst:?}"));
-        assert_eq!(latest["destination"]["incarnation"], d_inc1.as_str(), "{lost_src:?}'s latest Direct toward {dst:?} names the new birth: {latest}");
-        if latest["state"] == "Connected" {
-            break json!({"holder": lost_src, "destination": dst, "waited_ms": t_wait.elapsed().as_millis() as u64, "direct": latest});
-        }
-        assert_eq!(latest["state"], "Failed", "{lost_src:?}'s latest Direct toward {dst:?} is Failed until it is Connected: {latest}");
-        let row: rdm_core::NodeConnection = serde_json::from_value(latest.clone()).unwrap_or_else(|e| panic!("{latest} is a connection fact: {e}"));
-        let due = rdm_core::reconnect::next_due(&row).unwrap_or_else(|| panic!("a Failed Direct carries its recovery: {latest}"));
-        if series.last().map(|a| &a["id"]) != Some(&latest["id"]) {
-            assert!(row.logged_at_ms <= release_ms + window, "{lost_src:?}'s attempt toward {dst:?} failed {} ms after the release, on an open path: {latest}", row.logged_at_ms.saturating_sub(release_ms));
-            series.push(json!({"id": latest["id"], "recovery": latest["recovery"], "reason": latest["reason"], "logged_at_ms": row.logged_at_ms, "next_due_ms": due}));
-        }
-        assert!(now_ms() < due + window, "{lost_src:?}'s Direct fact toward {dst:?} never became `Connected on the new birth` by its series' next attempt (due at {due}, {} ms after the release) plus one {attempt:?} attempt and {observe:?} to observe it: {latest}", due.saturating_sub(release_ms));
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    };
+    // Recovery is the source's own next call (connections.md §9; Q348): nothing dials again from the Failed row, and
+    // the call after the release dials Direct on `Send` and is answered by the new birth, its fact Connected. The dial
+    // still running when the cut lifts may have connected first.
     let recovered_op = originate_op(&f, &mut a, &lost_src, &d1, "after-recovery");
+    let connection1 = await_direct(&f.estate, &lost_src, &dst, "Connected on the new birth", rdm_core::cadence::staleness_floor() + Duration::from_secs(10), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == d_inc1.as_str()).await;
 
     // The source whose connection was lost earlier: its pool holds nothing of the superseded birth.
     let d = dial(&f, &src, &dst);
@@ -4849,7 +4826,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     assert!(pooled.iter().any(|k| k.contains(&d_inc1)), "the source's pool holds a connection to the current birth {d_inc1}: {pooled:?}");
     let connection2 = await_connection(&f.estate, &src, &d_id1, &d_inc1, None).await;
     let superseded_gone = await_no_connection(&f.estate, &src, &d_id).await;
-    events.push(json!({"event": "recovered", "series_rows": series, "connection": connection1, "recovered_op": recovered_op, "old_node_id": d_id, "old_incarnation": d_inc0, "new_node_id": d_id1, "new_incarnation": d_inc1, "recovery": recovery, "pooled_after": pooled, "current_connection": connection2, "superseded_connection_gone": superseded_gone, "ledger_after": after}));
+    events.push(json!({"event": "recovered", "connection": connection1, "recovered_op": recovered_op, "old_node_id": d_id, "old_incarnation": d_inc0, "new_node_id": d_id1, "new_incarnation": d_inc1, "recovery": recovery, "pooled_after": pooled, "current_connection": connection2, "superseded_connection_gone": superseded_gone, "ledger_after": after}));
     a.events.extend(events.iter().cloned());
     let (s0, dname, inc1, comp, lsrc) = (src.clone(), dst.clone(), d_inc1.clone(), inbound_from.clone(), lost_src.clone());
     let s0_id = s(&st.nodes.iter().find(|n| location(n) == s0).expect("the source gateway is in the view")["node_id"]);
@@ -4890,9 +4867,9 @@ async fn supersession_run(cell: &str, shape: Shape) {
 /// fact at the gateway (R-CN1). The broker's exact runtime is then killed (acknowledged by the provider) and
 /// its mesh-primary recovers it (node-recovery.md): a new node.id and incarnation at the same path.name, the
 /// endpoint key and data dir retained, on a new socket in a new runtime. Another mesh's compute dials the new
-/// birth under a cut and its dial is a Failed fact that sent nothing; once released, the source's own dial is
-/// Connected on the new birth: the dial still running at the release, or the reconnect series' next attempt
-/// when its latest Failed row falls due (connections.md §9.3, §9.5). The gateway's pool names nothing of the
+/// birth under a cut and its dial is a Failed fact that sent nothing; once released, the source's next call dials
+/// Direct on `Send` and its fact is Connected on the new birth (connections.md §9; Q348: nothing dials again from
+/// the Failed row). The gateway's pool names nothing of the
 /// superseded birth and holds a connection to the new one, it holds a Connected connection to the new node.id and
 /// none to the exited one, and its call is answered by the new birth. What must NOT happen: a reply under the
 /// cut, a call answered by a superseded birth, a pooled connection to the old birth after the supersession, a

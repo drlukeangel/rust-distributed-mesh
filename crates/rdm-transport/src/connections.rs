@@ -501,6 +501,9 @@ struct RegistryInner {
     active: Mutex<HashMap<ConnectionId, ActiveEntry>>,
     carrier_legs: Mutex<Vec<(iroh::endpoint::Connection, iroh::endpoint::Connection)>>,
     deleted: AtomicBool,
+    /// The application's `on_call_failed`, told of an open whose Direct dial's attempts are spent and
+    /// that ends with no connection (connections.md §9; Q348): set once, by the node that holds it.
+    call_failed: std::sync::OnceLock<Arc<dyn crate::client::CallEndObserver>>,
     #[cfg(feature = "testkit-gossip")]
     blocked_direct_dials: Mutex<std::collections::HashSet<(NodeId, Vec<u8>)>>,
     #[cfg(feature = "testkit-gossip")]
@@ -544,6 +547,7 @@ impl ConnectionsRegistry {
                 active: Mutex::new(HashMap::new()),
                 carrier_legs: Mutex::new(Vec::new()),
                 deleted: AtomicBool::new(false),
+                call_failed: std::sync::OnceLock::new(),
                 #[cfg(feature = "testkit-gossip")]
                 blocked_direct_dials: Mutex::new(std::collections::HashSet::new()),
                 #[cfg(feature = "testkit-gossip")]
@@ -594,6 +598,26 @@ impl ConnectionsRegistry {
             .lock()
             .unwrap()
             .insert(alpn.to_vec(), fault);
+    }
+
+    /// Tell `observer` of every open on this registry whose Direct dial's attempts are spent and that ends
+    /// with no connection (connections.md §9; Q348): the application's `on_call_failed`. The first set
+    /// stands.
+    pub fn set_call_failed_observer(&self, observer: Arc<dyn crate::client::CallEndObserver>) {
+        let _ = self.inner.call_failed.set(observer);
+    }
+
+    /// An open toward `destination` ended `ended`: when its Direct dial sent nothing within its attempts and
+    /// no carrier carried it, the open is spent, and the observer is told once with the dial's last reason.
+    /// A refusal, a wrong incarnation or this birth's connections deleted is no spent dial.
+    fn tell_spent(&self, destination: &Birth, ended: &ConnectError) {
+        let reason = match ended {
+            ConnectError::NotSent { reason } | ConnectError::NoActiveRoute { direct: Some(reason) } => reason.clone(),
+            _ => return,
+        };
+        let Some(observer) = self.inner.call_failed.get() else { return };
+        let receiver = self.inner.resolver.resolve(&NodeTarget::ExactNode(destination.node_id.clone())).ok().filter(|r| r.incarnation == destination.incarnation);
+        observer.call_ended(receiver.as_ref(), crate::client::CallEnd::Spent(crate::client::CallFailedReason::NotSent(rdm_core::outcome::NotSentReason::Connection(reason))));
     }
 
     /// Install a custom [`Admitter`] for inbound connections on registered ALPNs.
@@ -1477,7 +1501,13 @@ impl Dialer {
     pub async fn open(&self, destination: &Birth) -> Result<Connection, ConnectError> {
         let caller_span = tracing::Span::current();
         let trace = Trace::of(&caller_span, Trace::default());
-        self.open_on_route(destination, &caller_span, trace).await
+        let ended = self.open_on_route(destination, &caller_span, trace).await;
+        // A Direct dial spent with no carrier serving the open ends to the application by name and is
+        // told to its `on_call_failed` (Q348): nothing dials again on its own.
+        if let Err(e) = &ended {
+            self.registry.tell_spent(destination, e);
+        }
+        ended
     }
 
     /// One Direct dial on `Send::default()` (Q344, node-rpc.md §43's schedule): `dial` is made, and
