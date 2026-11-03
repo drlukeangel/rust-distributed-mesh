@@ -167,45 +167,35 @@ async fn fabrics_atlas_get_answers_every_node_the_fabric_primary_holds() {
     estate.stop().await;
 }
 
-/// CONTRACT (fabric-atlas.md R-FA2: "Command admission writes it at acceptance; execution progress
-/// writes it from each attempt's receipts as they stream up `build.attempt.run`, before the caller is
-/// answered `Complete`"): with the other mesh's topology withheld from the backbone (so no gossip
-/// observation can be the source) and the fabric-primary held after it claimed the `node.stop`
-/// attempt and before it dispatched it, the atlas already names the accepted stop on the node; once
-/// released, the moment the stop streams `Complete`, the atlas holds the node stopped with nothing
-/// accepted on it. Must NOT happen: the atlas silent on an accepted command until its attempt runs, or
-/// the stop absent from it at `Complete` until the other mesh's gossip echoes it.
+/// CONTRACT (fabric-atlas.md R-FA2: "execution progress writes it ... before the caller is answered
+/// `Complete`"; Q197: no action decision waits for gossip; node-stop.md: the fabric-primary runs the stop
+/// of a mesh-primary, a node command, never a Build, Q342): with mesh2's topology withheld from the
+/// backbone (so no gossip observation can be the source), the fabric-primary runs `node.stop` of mesh2's
+/// primary; the moment the stop streams `Complete`, the atlas holds that node stopped with nothing
+/// accepted on it (a node command is never a Build's accepted operation). Must NOT happen: the stop
+/// absent from the atlas at `Complete` until mesh2's gossip echoes it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_atlas_names_a_stop_at_its_admission_and_its_receipts_before_complete() {
+async fn the_atlas_holds_a_stop_the_fabric_primary_ran_at_its_complete() {
     use rdm_test::faults::{binding_set, candidate_sha, Door};
-    let test = "the_atlas_names_a_stop_at_its_admission_and_its_receipts_before_complete";
+    let test = "the_atlas_holds_a_stop_the_fabric_primary_ran_at_its_complete";
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let targets = two_meshes(&mut estate).await;
-    let (node, node_id) = (path_of(&targets[0]), id_of(&targets[0]));
-    let fp = estate.fabric_view().await.fabric_primary.expect("fabric.get names the fabric-primary");
-    let fp_at = estate.node_values().await.iter().find(|n| id_of(n) == fp).map(path_of).expect("the fabric-primary is listed");
-    let fp_door = Door::at(&estate, &fp_at).await;
+    let (node, node_id) = (path_of(&targets[3]), id_of(&targets[3]));
     let mut mesh2_doors = Vec::new();
     for v in estate.node_values().await.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin") {
-        mesh2_doors.push(Door::at(&estate, &path_of(v)).await);
+        mesh2_doors.push((path_of(v), Door::at(&estate, &path_of(v)).await));
     }
-    for d in &mesh2_doors {
+    for (_, d) in &mesh2_doors {
         d.arm("atlas:no-gossip", json!({"kind": "announcement", "announcement": "aggregate-in-flight", "channel": "backbone"})).await;
     }
-    fp_door.arm("atlas:claimed", json!({"kind": "claimed-attempt"})).await;
     let mut stop = estate.nodes_obj().await.stop(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {node:?}: {e}"));
-    fp_door.wait_held("atlas:claimed").await;
-    let at_acceptance = atlas(&estate, "R-FA2: fabric.atlas.get while the accepted stop's attempt is held before its dispatch").await;
-    let row = at_acceptance.node(&node_id).unwrap_or_else(|| panic!("R-FA2: the atlas holds no row of {node:?}: {at_acceptance:#?}"));
-    assert!(row.accepted.as_ref().is_some_and(|o| o.action == "node.stop" && o.subject == Some(rdm_core::OperationSubject::Node(node_id.clone()))), "R-FA2: the atlas names the accepted stop on {node:?} before its attempt runs: {row:#?}");
-    assert!(!row.stopped, "R-FA2: an accepted stop whose attempt has not run does not stop the node in the atlas: {row:#?}");
-    fp_door.release("atlas:claimed").await;
     Estate::complete(&mut stop).await;
     let at_complete = atlas(&estate, "R-FA2: fabric.atlas.get on the stop's Complete").await;
     let row = at_complete.node(&node_id).unwrap_or_else(|| panic!("R-FA2: the atlas holds no row of {node:?}: {at_complete:#?}"));
-    assert!(row.stopped && row.accepted.is_none(), "R-FA2: on the stop's Complete the atlas holds {node:?} stopped from its receipts, nothing accepted on it: {row:#?}");
-    for d in &mesh2_doors {
+    assert!(row.stopped && row.accepted.is_none(), "R-FA2: on the stop's Complete the atlas holds {node:?} stopped from its own command's frames, nothing accepted on it: {row:#?}");
+    // The stopped node's door answers no release: it is stopped.
+    for (_, d) in mesh2_doors.iter().filter(|(at, _)| *at != node) {
         d.release("atlas:no-gossip").await;
     }
     estate.stop().await;

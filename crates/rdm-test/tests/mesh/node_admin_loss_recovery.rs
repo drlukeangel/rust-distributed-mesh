@@ -375,7 +375,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     let new = births(&after);
     let new_ids: BTreeMap<PathName, String> = after.iter().map(|n| (location(&n), s(&n["node_id"]))).collect();
     for (name, inc) in &old {
-        if name.path.ends_with(".admin") || *name == window_victim {
+        if name.path.ends_with(".node-admin") || *name == window_victim {
             assert_ne!(&new[name], inc, "{name:?}: a new birth");
             if *name == primary {
                 assert_ne!(new_ids[name], old_ids[name], "{name:?}: the admin started on the fabric-primary's data dir is a new node over it (R-SB1; fabric-recovery.md)");

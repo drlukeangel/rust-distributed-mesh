@@ -982,7 +982,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     for n in &lost_names {
         containers_before.insert(n.clone(), estate.container_of(n).await.unwrap_or_else(|| panic!("{n:?}: no running container")));
     }
-    let lost_admins: Vec<PathName> = lost_names.iter().filter(|n| n.path.ends_with(".admin")).cloned().collect();
+    let lost_admins: Vec<PathName> = lost_names.iter().filter(|n| n.path.ends_with(".node-admin")).cloned().collect();
     let lost_births: BTreeMap<PathName, String> = births(&before).into_iter().filter(|(n, _)| lost_admins.contains(n)).collect();
     let lost_mesh_rpc_births: BTreeSet<(PathName, String)> = births(&before).into_iter().filter(|(n, _)| lost_names.contains(n) && !lost_admins.contains(n)).collect();
     let kept_births: BTreeSet<(PathName, String)> = births(&before).into_iter().filter(|(n, _)| n.path.starts_with(&format!("{kept_mesh}."))).collect();

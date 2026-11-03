@@ -13,7 +13,6 @@
 //!    replacement.
 //! 5. A key or value over its limit is refused by name, and writes nothing.
 
-use crate::build_log;
 use rdm_client::NodeStatus;
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -96,10 +95,8 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     // 3. A killed node is recovered by its mesh-primary over its inherited data dir: a new logical
     //    node at the same separate path and name, with the same endpoint key, that keeps the store.
     let data_dir = estate.data_dir(&location()).await;
-    let accepted = estate.accepted_build_id().await;
-    // The recovery is an attempt of mesh1's drift lane (R-BI7: the mesh-primary runs it in its own
-    // mesh's lane, numbered there; the Build's own attempt is the fabric lane's, the restart's above).
-    let lane_before = build_log::projection(&build_log::log_read(&estate, &accepted).await.unwrap_or_else(|end| panic!("{end}")), &accepted).and_then(|b| b.lanes.get("mesh1").map(|l| u64::from(l.attempt))).unwrap_or(0);
+    // The recovery is the mesh-primary's own workflow, never a Build or part of one (node-recovery.md
+    // "Execution"; Q342).
     // The kill is a fault and the killed process flushes nothing (`Estate::kill_node`): what its evidence
     // file holds is what its exporter wrote before the kill. The served calls read below of this process
     // (the first birth's, and the same birth's after its stop and start, which ran in it) are in the
@@ -127,9 +124,8 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     landed_on(&inherited, &recovered, "get");
     assert_eq!(inherited["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the recovered node serves the store it inherited: {inherited}");
 
-    // The recovery is an attempt of the accepted Build; the node holding the path is that attempt's work, not its end.
-    // One Build at a time: the replace below is submitted once the recovery attempt has completed.
-    build_log::lane_attempt_complete(&estate, &accepted, "mesh1", lane_before + 1, Duration::from_secs(60)).await;
+    // The recovery ends with its create of the node now holding the path: work on one node is serialized
+    // at its mesh-primary, so the replace below waits for no Build attempt.
 
     // 4. The replace steps do not inherit it: the successor's data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
@@ -188,14 +184,14 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     assert!(on(&first, "put", "too-large"));
     assert!(on(&restarted, "get", "value"), "the restarted birth served the kept value");
     assert!(on(&recovered, "get", "value"), "the recovered birth served the inherited value");
-    // 3: the mesh-primary proved the killed birth's exit and submitted its recovery, keyed on that
-    // exact birth, and followed it to its terminal.
+    // 3: the mesh-primary proved the killed birth's exit and ran its recovery, keyed on that exact
+    // birth, to its end, as its own workflow.
     let recovery = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
         .find(|sp| sp["attributes"]["node_id"] == first["node_id"] && sp["attributes"]["incarnation_id"] == first["incarnation_id"])
-        .expect("the mesh-primary's recovery submit for the killed birth");
+        .expect("the mesh-primary's recovery of the killed birth");
     assert_eq!(recovery["attributes"]["incarnation_id"], first["incarnation_id"], "keyed on the exact exited birth: {recovery}");
-    assert_eq!(recovery["attributes"]["outcome"], format!("complete: attempt {}", recovery["attributes"]["attempt"].as_str().unwrap_or_default()), "{recovery}");
+    assert_eq!(recovery["attributes"]["outcome"], "complete", "{recovery}");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
     assert!(on(&replacement, "get", "absent"), "the replacement served an empty store");
 }
