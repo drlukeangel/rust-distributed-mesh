@@ -1028,8 +1028,8 @@ impl LocalBuildLog for FileJournal {
 
     /// A fresh read of `builds.jsonl` whole (Q292), on the blocking pool: neither the shared cursor
     /// nor the writer's turn is touched, so what is answered is exactly what this read obtained. Its
-    /// records are folded as a take folds them: each key once, in the order they were committed
-    /// (`seq`); an object another writer is still writing is left out by the read.
+    /// records are folded as a take folds them: each write (`id`) once, in the order they were
+    /// committed (`seq`); an object another writer is still writing is left out by the read.
     async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
         let path = self.file.path().to_path_buf();
         let build = build.cloned();

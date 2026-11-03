@@ -125,10 +125,10 @@ async fn log(root: &Path, file: &str) -> StoreLog {
 }
 
 /// The old provider's history: every store written by writers that change over the fabric's life.
-/// The fabric-primary's first birth (`fp1`) dies and its successor (`fp2`) writes the same keys; a
+/// The fabric-primary's first birth (`fp1`) dies and its successor (`fp2`) writes the same subjects; a
 /// mesh-primary's first birth (`mp1`) dies and `mp2` re-creates a node at the same path.name with a new
 /// node id, then deletes the first; a node `gone` whose connection facts stay after it is deleted;
-/// Build facts of both fabric-primaries, one of them repeated by the successor at the same key.
+/// Build facts of both fabric-primaries, one of them repeated by the successor at the same subject.
 struct History {
     store_dir: PathBuf,
     root: PathBuf,
@@ -265,9 +265,9 @@ fn a_copy_preserves_current_values_across_writer_changes() {
 /// CONTRACT (storage.md §2 Copy: "a new provider holding lines the old one does not is refused by
 /// name, and nothing switches"; i149 R6 "reject a destination hole instead of replaying stale
 /// state"; proposal: "A destination with operations 1 and 3 but missing 2 is refused without making
-/// 2 current"): a new provider holding a key's first and third lines but not its second is refused,
-/// the refusal naming the store, the key and the two ops that differ, and nothing is appended to any
-/// of its stores, so its current value at that key stays as it was and the second line is never
+/// 2 current"): a new provider holding a subject's first and third lines but not its second is refused,
+/// the refusal naming the store, the subject and the two ids that differ, and nothing is appended to any
+/// of its stores, so its current value at that subject stays as it was and the second line is never
 /// replayed after the third. A new provider holding a line after the old one's last is refused the
 /// same way. Neither the refusal nor the span carries a record's application setting. Must NOT
 /// happen: the missing line appended after the later one (a stale current value), a partial copy
@@ -289,7 +289,7 @@ fn a_copy_refuses_a_destination_hole_without_replaying_stale_state() {
         let src = store_log::read_file(&root.join(NODES_FILE)).unwrap();
         let source = FileProviderLines::open(SOURCE, &store_dir, &fabric).await.unwrap();
 
-        // A new provider holding the key's lines 1 and 3, not 2.
+        // A new provider holding the subject's lines 1 and 3, not 2.
         let dest_dir = dir("hole-destination");
         let dest_root = StoreRoot::open(&dest_dir, &fabric).unwrap().dir().to_path_buf();
         std::fs::write(dest_root.join(NODES_FILE), [raw(&src[0]), raw(&src[2])].concat()).unwrap();

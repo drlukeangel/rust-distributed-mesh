@@ -203,7 +203,7 @@ async fn two_mesh_change(mut estate: Estate, shape: &[(String, u32)], members: &
 }
 
 /// Every row under the fabric's store root, sorted: each record of a store file as
-/// `<file>#<kind>/<key>` (its latest line), and every other file as a path relative to the root. The
+/// `<file>#<type>/<subject>` (its latest line), and every other file as a path relative to the root. The
 /// directories the stores open, an empty store file and the layout marker are not rows.
 fn rows_on(root: &std::path::Path) -> Vec<String> {
     fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<String>) {

@@ -565,7 +565,7 @@ struct Inner {
     /// One append at a time, holding this store's pending append.
     append: Arc<tokio::sync::Mutex<Option<Pending>>>,
     /// Shown every line the fold reads, once each, in file order: an index the store folds beside
-    /// the latest line per key.
+    /// the latest line per (type, subject).
     observer: Option<Observer>,
     /// Opened to append ([`StoreLog::open_append`]): its open read nothing, and an append's
     /// reconciliation reads from the file's end as it stood before the append, never from a fold.
@@ -578,7 +578,7 @@ struct Inner {
     provider: Option<String>,
 }
 
-/// What a store folds from each line it reads beside the latest line per key ([`StoreLog::open_observed_on_first_read`]).
+/// What a store folds from each line it reads beside the latest line per (type, subject) ([`StoreLog::open_observed_on_first_read`]).
 pub type Observer = Arc<dyn Fn(&Line) + Send + Sync>;
 
 impl std::fmt::Debug for StoreLog {
@@ -740,24 +740,24 @@ impl StoreLog {
         Ok(())
     }
 
-    /// The latest line of (`kind`, `key`) after reading the tail.
-    pub async fn latest(&self, kind: &str, key: &str) -> Result<Option<Line>, StorageError> {
+    /// The latest line of (`type`, `subject`) after reading the tail.
+    pub async fn latest(&self, kind: &str, subject: &str) -> Result<Option<Line>, StorageError> {
         self.advance().await?;
-        Ok(self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).latest.get(&(kind.to_string(), key.to_string())).cloned())
+        Ok(self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).latest.get(&(kind.to_string(), subject.to_string())).cloned())
     }
 
-    /// The latest line of every key of `kind`, in key order, after reading the tail.
+    /// The latest line of every subject of the `type` `kind`, in subject order, after reading the tail.
     pub async fn latest_of(&self, kind: &str) -> Result<Vec<Line>, StorageError> {
         self.latest_under(kind, "").await
     }
 
-    /// The latest lines whose keys begin with `prefix`, in key order, after reading the tail.
+    /// The latest lines whose subjects begin with `prefix`, in subject order, after reading the tail.
     /// Uses the existing ordered fold; no additional index or persisted copy is maintained.
     pub async fn latest_under(&self, kind: &str, prefix: &str) -> Result<Vec<Line>, StorageError> {
         self.advance().await?;
         Ok(self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).latest
             .range((kind.to_string(), prefix.to_string())..)
-            .take_while(|((held_kind, key), _)| held_kind == kind && key.starts_with(prefix))
+            .take_while(|((held_kind, subject), _)| held_kind == kind && subject.starts_with(prefix))
             .map(|(_, line)| line.clone()).collect())
     }
 
@@ -1219,7 +1219,7 @@ pub mod write_door {
 
     struct Held {
         file: PathBuf,
-        key: String,
+        subject: String,
         /// Held after the durable append, not before it.
         after: bool,
         released: Mutex<bool>,
@@ -1235,31 +1235,31 @@ pub mod write_door {
         ARMED.get_or_init(Default::default)
     }
 
-    /// Hold the first append to this exact file and key before it is written. Other files and keys
+    /// Hold the first append to this exact file and subject before it is written. Other files and subjects
     /// are unaffected.
-    pub fn arm(file: &Path, key: &str) -> Door {
-        armed_at(file, key, false)
+    pub fn arm(file: &Path, subject: &str) -> Door {
+        armed_at(file, subject, false)
     }
 
-    /// Hold the first append to this exact file and key once it is written and fsynced, before its
+    /// Hold the first append to this exact file and subject once it is written and fsynced, before its
     /// caller is answered: a process terminated while it is held has persisted the line and answered
     /// nothing.
-    pub fn arm_after(file: &Path, key: &str) -> Door {
-        armed_at(file, key, true)
+    pub fn arm_after(file: &Path, subject: &str) -> Door {
+        armed_at(file, subject, true)
     }
 
-    fn armed_at(file: &Path, key: &str, after: bool) -> Door {
+    fn armed_at(file: &Path, subject: &str, after: bool) -> Door {
         let held = Arc::new(Held {
-            file: file.to_path_buf(), key: key.into(), after, released: Mutex::new(false),
+            file: file.to_path_buf(), subject: subject.into(), after, released: Mutex::new(false),
             changed: Condvar::new(), entered: tokio::sync::watch::Sender::new(false),
         });
         armed().lock().unwrap().push(held.clone());
         Door(held)
     }
 
-    pub(super) fn take(file: &Path, key: &str) -> Option<Door> {
+    pub(super) fn take(file: &Path, subject: &str) -> Option<Door> {
         let mut all = armed().lock().unwrap();
-        let at = all.iter().position(|d| d.file == file && d.key == key)?;
+        let at = all.iter().position(|d| d.file == file && d.subject == subject)?;
         Some(Door(all.remove(at)))
     }
 
@@ -1270,7 +1270,7 @@ pub mod write_door {
 
         pub(super) fn hold(&self) {
             let cut = if self.0.after { "store-appended" } else { "store-append" };
-            tracing::info_span!("rdm.testkit.fault.update.via-hold", cut, file = %self.0.file.display(), key = %self.0.key)
+            tracing::info_span!("rdm.testkit.fault.update.via-hold", cut, file = %self.0.file.display(), subject = %self.0.subject)
                 .in_scope(|| tracing::info!("the append owns its ordering lock before the caller can be cancelled"));
             self.0.entered.send_replace(true);
             let mut released = self.0.released.lock().unwrap();

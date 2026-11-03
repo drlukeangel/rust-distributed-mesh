@@ -135,7 +135,8 @@ fn a_nodes_start_opens_no_nodes_store_and_its_first_read_does() {
         let admin = admin_side("127.0.0.1".parse().unwrap(), &fabric).await;
         let root = rdm_node::store_root::StoreRoot::open(&dir, &fabric).unwrap();
         let file = root.dir().join(rdm_node::store_root::NODES_FILE);
-        let line = format!("{{\"op\":{{\"node_id\":\"{}\",\"incarnation_id\":\"{}\",\"seq\":1}},\"format\":\"node-record/9\",\"key\":\"x\",\"record\":{{}}}}\n", NodeId::mint(), IncarnationId::mint());
+        // A line in a `dataschema` this build does not read: whole, and refused by any fold of the file.
+        let line = String::from_utf8(rdm_node::store_log::encode_line(&rdm_node::store_log::Attributes::of(&rdm_node::store_log::LogWriter::mint(), "node-record", "node-record/9", "x"), b"{}")).unwrap();
         std::fs::write(&file, &line).unwrap();
 
         let launch = launch(&dir, &fabric, PathName::new("mesh1.gateway", "1").unwrap(), &admin);

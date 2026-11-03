@@ -82,7 +82,7 @@ async fn a_nodes_connections_store_opens_over_a_file_it_cannot_fold_and_appends_
     let launch = launch(&store);
     let root = rdm_node::store_root::StoreRoot::open(&store, &launch.fabric_id).unwrap();
     let file = root.dir().join(rdm_node::store_root::CONNECTIONS_FILE);
-    let unended = b"{\"op\":{\"node_id\":\"another\",\"incarnation_id\":\"in-flight\",\"seq\":1},\"format\":\"node-connection/2\",\"key\":\"half";
+    let unended = b"{\"len\":300,\"specversion\":\"1.0\",\"id\":\"0190a8f0-1234-7abc-8def-0123456789ab\",\"source\":\"rdm://another/in-flight\",\"type\":\"node-connection\",\"subject\":\"half";
     std::fs::write(&file, unended).unwrap();
 
     let providers = NodeStorageProviders::new().register("file", Arc::new(FileNodeBackend::at(&store)));
@@ -215,22 +215,22 @@ async fn the_connections_store_line_is_frozen_byte_for_byte() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-/// A location-keyed connection format cannot be folded as the ID-keyed format.
+/// A line in a location-keyed connection `dataschema` (`node-connection/1`, `/2`) is refused when read.
 #[tokio::test]
-async fn location_keyed_connection_formats_are_refused_when_read() {
+async fn location_keyed_connection_dataschemas_are_refused_when_read() {
     use rdm_node::{storage::FileConnectionsStorage, store_log::{encode_line, Attributes, LogWriter}, store_root::StoreRoot};
-    for format in ["node-connection/1", "node-connection/2"] {
-        let directory = store_dir("old-format");
+    for dataschema in ["node-connection/1", "node-connection/2"] {
+        let directory = store_dir("old-dataschema");
         let root = StoreRoot::open(&directory, &FabricId::mint()).unwrap();
         let writer = LogWriter::mint();
         let source = ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(),
             path: "mesh1.node".into(), name: "1".into(), node_id: writer.node_id.clone(), incarnation: Some(writer.incarnation_id.clone()) };
         let row = fact(source, 2);
-        let bytes = encode_line(&Attributes::of(&writer, "node-connection", format, "obsolete-location-index"), &serde_json::to_vec(&row).unwrap());
+        let bytes = encode_line(&Attributes::of(&writer, "node-connection", dataschema, "obsolete-location-index"), &serde_json::to_vec(&row).unwrap());
         std::fs::write(root.dir().join(rdm_node::store_root::CONNECTIONS_FILE), bytes).unwrap();
         let store = FileConnectionsStorage::open(&root, &writer).await.expect("append-only open does not fold history");
         for result in [store.connections().await, store.history().await, store.connections_to(&row.destination.node_id).await] {
-            assert!(matches!(result, Err(StorageError::Unrecognised { reason, .. }) if reason.contains(format)), "{format} must be refused by name");
+            assert!(matches!(result, Err(StorageError::Unrecognised { reason, .. }) if reason.contains(dataschema)), "{dataschema} must be refused by name");
         }
         drop((store, root));
         std::fs::remove_dir_all(directory).unwrap();

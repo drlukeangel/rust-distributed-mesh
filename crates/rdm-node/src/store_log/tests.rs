@@ -24,19 +24,19 @@ fn writer(tag: &str) -> LogWriter {
     WRITERS.lock().unwrap().entry(tag.to_string()).or_insert_with(LogWriter::mint).clone()
 }
 
-/// The attributes of a write of a `rec` at `key` by `w`, its `id` minted.
-fn attrs_of(w: &LogWriter, key: &str) -> Attributes {
-    Attributes::of(w, "rec", "rec/1", key)
+/// The attributes of a write of a `rec` at `subject` by `w`, its `id` minted.
+fn attrs_of(w: &LogWriter, subject: &str) -> Attributes {
+    Attributes::of(w, "rec", "rec/1", subject)
 }
 
 fn file(tag: &str) -> PathBuf {
     crate::record_store::tempdir(tag).join("nodes.jsonl")
 }
 
-/// Another process's append of `record` at `key` as `w`: one write on its own `O_APPEND` descriptor.
-fn other_appends(path: &Path, w: &LogWriter, key: &str, record: &Rec) {
+/// Another process's append of `record` at `subject` as `w`: one write on its own `O_APPEND` descriptor.
+fn other_appends(path: &Path, w: &LogWriter, subject: &str, record: &Rec) {
     use std::io::Write as _;
-    let line = line_of(&encode_object(&attrs_of(w, key), &serde_json::to_vec(record).unwrap()));
+    let line = line_of(&encode_object(&attrs_of(w, subject), &serde_json::to_vec(record).unwrap()));
     std::fs::OpenOptions::new().append(true).open(path).unwrap().write_all(&line).unwrap();
 }
 
@@ -91,8 +91,8 @@ async fn reopen(path: &Path) -> Result<StoreLog, StorageError> {
     StoreLog::open(path, formats()).await
 }
 
-async fn current(log: &StoreLog, key: &str) -> Option<Rec> {
-    log.latest("rec", key).await.unwrap().map(|l| l.decode(log.path()).unwrap())
+async fn current(log: &StoreLog, subject: &str) -> Option<Rec> {
+    log.latest("rec", subject).await.unwrap().map(|l| l.decode(log.path()).unwrap())
 }
 
 /// CONTRACT (R-SR3, Q365, the line's bytes): an object is a CloudEvents 1.0 event in its JSON form:
@@ -349,10 +349,10 @@ async fn a_blank_line_is_skipped() {
 }
 
 /// CONTRACT (R-SR2: every write appends the whole record; nothing is ever removed; the latest complete
-/// line for a key is the current state): several writes of one key all stand as lines after a reopen,
+/// line for a subject is the current state): several writes of one subject all stand as lines after a reopen,
 /// and the latest is read as current. Must NOT happen: an earlier write replaced or removed.
 #[tokio::test]
-async fn several_writes_of_one_key_all_stand_and_the_latest_is_current() {
+async fn several_writes_of_one_subject_all_stand_and_the_latest_is_current() {
     let path = file("store-log-one-key");
     let log = reopen(&path).await.unwrap();
     for n in 1..=5 {
@@ -419,8 +419,9 @@ async fn a_damaged_acknowledged_record_refuses_the_reopen_and_leaves_the_bytes()
     }
 }
 
-/// CONTRACT (R-SR3: "a complete object with valid length, format and checksum but no final newline is
-/// retained: append one newline alone and fsync before completing the open"): such a last object is
+/// CONTRACT (R-SR3: a complete object with a valid `len`, a `dataschema` the store reads and a valid
+/// `crc32` but no final newline is retained, one newline alone appended and fsynced before the open
+/// completes): such a last object is
 /// kept, ended with one newline, fsynced, and folded once; a later write lands after it. Must NOT
 /// happen: the object discarded, folded twice, or the open answering before the fsync.
 #[tokio::test]
@@ -485,7 +486,7 @@ async fn a_malformed_short_write_refuses_without_retrying_its_payload() {
 }
 
 /// CONTRACT (R-SR3: "a separate write gets a new id even when its payload is identical. Equal
-/// payloads never identify the pending operation"): two writes of one identical record at one key are
+/// payloads never identify the pending operation"): two writes of one identical record at one subject are
 /// two lines with two `id`s; a second write that reported zero bytes is found absent by its own `id`,
 /// never mistaken for the first, and written again. Must NOT happen: the first write accepted as the
 /// second's.

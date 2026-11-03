@@ -284,11 +284,11 @@ mod tests {
     }
 
     /// CONTRACT (R-SR2, R-SR3): every write of the Fabric record is a line of `fabric.jsonl`, the latest
-    /// the record a reopen reads; a line in a format this build does not read, or a line that is not
+    /// the record a reopen reads; a line in a `dataschema` this build does not read, or a line that is not
     /// one, refuses the read by name. Must NOT happen: an earlier write removed, or an unrecognised line
     /// read as a value.
     #[tokio::test]
-    async fn the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_format_by_name() {
+    async fn the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_dataschema_by_name() {
         let d = tempdir();
         let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::store_log::LogWriter::mint()).await.unwrap();
         let fabric = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };

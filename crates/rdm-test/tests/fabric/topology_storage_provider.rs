@@ -1234,7 +1234,7 @@ fn serving(got: &BTreeMap<PathName, (String, Option<String>, NodeStatus)>, befor
     }
 }
 
-/// The node store's lines on `root` from line `from` on, each as JSON (`{"key", "record", ...}`).
+/// The node store's lines on `root` from line `from` on, each as JSON (`{"subject", "data", ...}`).
 fn node_lines_from(root_lines: &BTreeMap<&'static str, Vec<String>>, from: usize) -> Vec<Value> {
     root_lines[NODES].iter().skip(from).filter_map(|l| serde_json::from_str(l).ok()).collect()
 }

@@ -49,7 +49,7 @@ async fn latest_line_contract(store: &dyn NodesStorage) {
     let first = record(node.clone(), "mesh1");
     let mut later = first.clone();
     later.status = rdm_node::model::NodeStatus::Stopped;
-    // Two writes append the node's record: its id is the key, the latest line is current.
+    // Two writes append the node's record: its id is each line's subject, the latest line is current.
     store.put_node(&first).await.unwrap();
     store.put_node(&later).await.unwrap();
     let unrelated = record(NodeId::mint(), "mesh2");
@@ -62,7 +62,7 @@ async fn latest_line_contract(store: &dyn NodesStorage) {
 
 // @feature: node-records
 /// CONTRACT (i150 R4, Q323, Q331): one node record keyed by node id in the nodes store, append-only,
-/// the latest line current; no writer is in its key. Must NOT happen: a read selecting a record by its
+/// the latest line current; no writer is in its subject. Must NOT happen: a read selecting a record by its
 /// writer, or two records of one node.
 #[tokio::test]
 async fn a_nodes_record_is_its_latest_line_at_its_node_id() {
