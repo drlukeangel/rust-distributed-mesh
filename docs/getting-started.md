@@ -103,9 +103,10 @@ mesh-wcy2e6-1.gateway.1 -> mesh-wcy2e6-1.broker.2: {'outcome': 'Reply', 'streame
 - `ExampleRecords` (`0x51`, `"example-records"`): a server-streaming op that copies the serving
   `broker` node's operation record entries (`Started`, `Entry`, `Through`).
 
-Run `scripts/demo-estate.sh example` to submit two [`node.replace`](architecture/lifecycles/node-replace.md)
-[Builds](architecture/build.md) that switch `<mesh-2>.broker.3` and `<mesh-2>.compute.1` onto the
-`rshape-example` executable:
+Run `scripts/demo-estate.sh example` to replace `<mesh-2>.broker.3` and `<mesh-2>.compute.1` with
+nodes on the `rshape-example` executable. Each [replace](architecture/lifecycles/node-replace.md) is
+node commands that free the node's name (it is renamed `<name>-old` and stopped, keeping its data),
+then one [Build](architecture/build.md) that creates its successor:
 
 ```bash
 RDM_DEMO_BIN=$PWD/demo/target/debug scripts/demo-estate.sh example
@@ -114,40 +115,54 @@ RDM_DEMO_BIN=$PWD/demo/target/debug scripts/demo-estate.sh example
 Output:
 
 ```text
-replace mesh-wcy2e6-2.broker.3 onto rshape-example: {"attempt":1,"build_id":"npb95jwte51k"}
-replace mesh-wcy2e6-2.compute.1 onto rshape-example: {"attempt":1,"build_id":"g5e04pz1wbzt"}
-the example's lines (target rshape) are in each node's stderr.log under target/demo-estate-20261029T103315/<node id>/
+replace path mesh-njqkix-2.broker, name 3 onto rshape-example: {"attempt":1,"build_id":"c2tv79rbvh82"}
+replace path mesh-njqkix-2.compute, name 1 onto rshape-example: {"attempt":1,"build_id":"zrrs8ttny3w3"}
+the example's lines (target rshape) are in each node's stderr.log under /dev/shm/rdm-lane-2-demo/<path.name>-<node id>/
 ```
 
-Inspect the [Build](architecture/build.md) that replaced `mesh-wcy2e6-2.broker.3` (`npb95jwte51k`),
-showing its [attempt](architecture/build.md), [steps](architecture/build.md), and terminal state:
+Read the broker's Build whole with `build.get`, through the `build_get` example. Its steps are the
+successor's [node.create](architecture/lifecycles/node-create.md), keyed `node.create:<node_id>` by the
+node.id the fabric-primary minted for it when it accepted the Build:
 
 ```bash
-UI_URL=$(tr -d '\n' < target/demo-estate-current/ui.url)
-curl -fsS "$UI_URL/api/builds?id=npb95jwte51k" | python3 -m json.tool
+RDM_NODE_ADMIN_BIRTH="$(cat target/demo-estate-current/birth.json)" demo/target/debug/examples/build_get c2tv79rbvh82
 ```
 
-Output (abbreviated to the Build summary and steps):
+Output (abbreviated to the first and last steps):
 
 ```json
-[
-  {
-    "build_id": "npb95jwte51k",
-    "operation": "node.replace",
-    "state": "Complete",
-    "attempt": 1,
-    "steps": [
-      {
-        "step_id": "node.replace:mesh-wcy2e6-2.broker.3:prepare",
-        "state": "Complete"
+{
+  "build_id": "c2tv79rbvh82",
+  "current": false,
+  "nodes": 20,
+  "phase": "Complete",
+  "steps": [
+    {
+      "operation": {
+        "action": "node.create",
+        "occurrence": null,
+        "recipe_step": null,
+        "subject": {
+          "Node": "y5x68fhg404e"
+        }
       },
-      {
-        "step_id": "node.replace:mesh-wcy2e6-2.broker.3:cutover",
-        "state": "Complete"
-      }
-    ]
-  }
-]
+      "result": "Complete",
+      "step": "AllocateIdentity"
+    },
+    {
+      "operation": {
+        "action": "node.create",
+        "occurrence": null,
+        "recipe_step": null,
+        "subject": {
+          "Node": "y5x68fhg404e"
+        }
+      },
+      "result": "Complete",
+      "step": "Complete"
+    }
+  ]
+}
 ```
 
 Now read the `rshape` log lines emitted by the serving broker (`mesh-wcy2e6-2.broker.3`) and the

@@ -45,19 +45,21 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localho
 JAEGER=${JAEGER_QUERY_URL:-http://localhost:16686}
 CURRENT=$HERE/target/demo-estate.current
 
-# The port the UI put on `$1`'s row config (admin_ui_port): the row's latest line in the store root's nodes.jsonl.
+# The port the UI put on the row config of the node whose node.id is `$1` (admin_ui_port): its properties
+# record's latest line in the store root's nodes.jsonl, keyed by that node.id.
 ui_port() {
   python3 - "$ROOT/store" "$1" <<'PY'
 import glob, json, sys
-store, name = sys.argv[1], sys.argv[2]
+store, node_id = sys.argv[1], sys.argv[2]
 port = ""
 for f in glob.glob(f"{store}/*/nodes.jsonl"):
     for line in open(f):
         try:
-            r = json.loads(line)["record"]
+            l = json.loads(line)
+            r = l["record"]
         except Exception:
             continue
-        if r.get("name") == name:
+        if l.get("key") == node_id:
             port = (r.get("config") or {}).get("admin_ui_port", port)
 print(port)
 PY
@@ -99,7 +101,7 @@ up() {
   # The UI's port is the one it bound, as its admin's row config holds it (admin_ui_port).
   local port=""
   for _ in $(seq 1 120); do
-    port=$(ui_port "$M1.node-admin.1")
+    port=$(ui_port "${base#rdm://}")
     [ -n "$port" ] && curl -sf "http://${UI_BIND%:*}:$port/api/health" >/dev/null 2>&1 && break; sleep 0.5
   done
   [ -n "$port" ] || { echo "the UI's port is not on $M1.node-admin.1's row config; see $ROOT/ui.log"; exit 1; }
@@ -161,6 +163,12 @@ example() {
       echo "$acc" | grep -q '"build-in-progress"' || break; sleep 1
     done
     echo "replace path $path, name $name onto rshape-example: $acc"
+    # One Build at a time: a replace's node commands free the name, then its Create is a Build, so the
+    # next replace is sent only once this Create has ended.
+    local id; id=$(echo "$acc" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("build_id",""))' 2>/dev/null || true)
+    [ -n "$id" ] && for _ in $(seq 1 240); do
+      curl -s "http://$ui/api/builds?id=$id" | python3 -c 'import json,sys; b=[x for x in json.load(sys.stdin)["builds"] if x["build_id"]==sys.argv[1]]; sys.exit(0 if b and b[0]["phase"] in ("Complete","Failed") else 1)' "$id" 2>/dev/null && break; sleep 1
+    done
   done
   echo "the example's lines (target rshape) are in each node's stderr.log under $ROOT/<path.name>-<node id>/"
 }
@@ -187,13 +195,14 @@ down() {
   # Day-0 admin is the fabric-primary the probe enters at.
   if [ -f "$ROOT/birth.json" ]; then
     local birth fp fp_pid out; birth=$(cat "$ROOT/birth.json")
-    fp=$(echo "$birth" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')
+    fp=$(echo "$birth" | python3 -c 'import json,sys; print(json.load(sys.stdin)["node_id"])')
+    local fp_at; fp_at=$(echo "$birth" | python3 -c 'import json,sys; b=json.load(sys.stdin); print(json.dumps({"path": b["path"], "name": b["name"]}))')
     fp_pid=$(cat "$ROOT/admin1.pid" 2>/dev/null || true)
-    out=$("$PROBE" --admin-birth "$birth" fabric-delete --target "path:$fp" 2>/dev/null || true)
+    out=$("$PROBE" --admin-birth "$birth" fabric-delete --target "exact:$fp" 2>/dev/null || true)
     echo "fabric.delete: $(echo "$out" | python3 -c 'import sys,json
 try: d=json.loads(sys.stdin.read()); print({k: d.get(k) for k in ("outcome","terminal","build_id","elapsed_ms","reason")})
 except Exception as e: print("no answer", e)')"
-    out=$("$PROBE" --admin-birth "$birth" node-delete --target "path:$fp" 2>/dev/null || true)
+    out=$("$PROBE" --admin-birth "$birth" node-delete --target "path:$fp_at" 2>/dev/null || true)
     echo "node.delete $fp: $(echo "$out" | python3 -c 'import sys,json
 try: d=json.loads(sys.stdin.read()); print({k: d.get(k) for k in ("outcome","deleted","elapsed_ms","reason")})
 except Exception as e: print("no answer", e)')"
