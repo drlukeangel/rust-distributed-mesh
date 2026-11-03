@@ -28,7 +28,7 @@ understand it, its name uses a word from that description (`TimeLimit`, not `Bud
 
 The primaries are the fabric-primary, each mesh's mesh-primary and each node type's node-type primary in its mesh; a primary changes by `node.primary.update` or, unheard past the staleness floor, by the leadership election. `id` / `index` / `name` are three things; `key` is none of them. `target`, never fence. `revision`,
 never epoch. Connections are deleted (`node.connections.delete`), never drained. `forward` is the
-control plane's word (Forward 0x1A, `build.attempt.run`); `proxy` is the data plane's (a `Proxy`
+control plane's word (Forward 0x1A, `build.section.run`); `proxy` is the data plane's (a `Proxy`
 connection). Banned everywhere: `relay`, `cluster`, `tailer`, `sidecar`, `child mesh`, `viewer`,
 `operator`, `sysadmin`, `book` / `books` (it is a view: the topology view, `DigestView`), `tree`, `partition`, `reborn`, `drain` / `draining` / `drained` (the state is
 `connections-deleting`, the bound `RDM_CONNECTIONS_DELETE_DEADLINE_MS`: [node-connections-delete](docs/architecture/lifecycles/node-connections-delete.md)),
