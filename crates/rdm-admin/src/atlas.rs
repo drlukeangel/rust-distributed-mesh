@@ -776,7 +776,7 @@ impl crate::control_plane::ControlPlane {
     /// executed it; a create's record read once at its path. One
     /// `rdm.node_admin.fabric.update.via-atlas-receipt` span.
     pub(crate) async fn take_streamed_receipt(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, operation: &rdm_core::OperationId) {
-        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), attempt, operation = %operation.action, operation_subject = ?operation.subject, step = ?operation.step, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), attempt, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
         let p = match builds.read_build(build_id).await {
             Ok(p) => p,
             Err(e) => {

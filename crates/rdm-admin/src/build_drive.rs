@@ -1092,11 +1092,12 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
 /// own change, as fabric.create's is"; Q154): the Day-0 Build, fabric.create's, which carries no submitted
 /// change and whose fabric is pending from its mint (fabric-create.md, Completion: "`fabric.created` when
 /// the fabric is ready"), and every Build a change was submitted for, a resize and an
-/// executable replacement alike, except fabric.delete, after which the fabric is never ready
+/// executable replacement alike, except a Build that leaves no fabric (fabric.delete, and the
+/// fabric-primary's own delete after it), after which the fabric is never ready
 /// again. A Build whose topology the change left as it was puts nothing back, and the fabric it finds
 /// ready holds it.
 fn changes_the_fabric(p: &BuildProjection) -> bool {
-    !p.change.as_ref().is_some_and(|c| matches!(c, rdm_core::build::BuildChange::DeleteFabric))
+    !p.leaves_no_fabric()
 }
 
 /// Whether `p`'s attempt waits for the fabric's ready before its Build is Complete: the

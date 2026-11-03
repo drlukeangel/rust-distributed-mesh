@@ -442,6 +442,12 @@ impl BuildProjection {
         matches!(self.change, Some(BuildChange::DeleteFabric))
     }
 
+    /// Whether this Build leaves the fabric no mesh: a fabric.delete, or the fabric-primary's own delete
+    /// after fabric.deleted (fabric-delete.md step 4). The fabric is never made ready again from it.
+    pub fn leaves_no_fabric(&self) -> bool {
+        self.deletes_fabric() || self.topology.meshes.is_empty()
+    }
+
     /// Whether any mesh's drift lane holds an attempt open.
     pub fn lane_open(&self) -> bool {
         self.lanes.values().any(Lane::is_open)

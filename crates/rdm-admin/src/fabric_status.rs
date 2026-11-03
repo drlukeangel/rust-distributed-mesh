@@ -345,10 +345,11 @@ impl FabricStates {
         }
     }
 
-    /// Whether the current Build `build` is a fabric.delete: the fabric changes no more and is never made
+    /// Whether the current Build `build` leaves no fabric (a fabric.delete, or the fabric-primary's own
+    /// delete after it): the fabric changes no more and is never made
     /// ready for the delete (build.md §1). The blocker names the delete.
     fn deleting(&self, change: &mut Change, build: &crate::build_state::BuildProjection, me: &PathName) -> bool {
-        if !build.deletes_fabric() {
+        if !build.leaves_no_fabric() {
             return false;
         }
         self.block(change, &[Missing { who: "build".into(), why: "fabric-delete" }], &format!("fabric.delete Build {} is the current Build: the fabric is not made ready", build.build_id), me);
