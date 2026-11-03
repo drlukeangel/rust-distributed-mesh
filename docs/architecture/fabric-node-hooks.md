@@ -12,7 +12,7 @@ never decides an RDM transition.
 
 | Hook | Called by | When | Gates |
 |---|---|---|---|
-| [`pre_node_ready`](#pre_node_ready) | every node start | after accepted join and mesh-channel join; before topology installation | the node's Ready |
+| [`pre_node_ready`](#pre_node_ready) | every node | before the node reaches Ready: after the join and the mesh-channel join, before topology installation | the node's Ready |
 | [`on_node_ready`](#on_node_ready) | every node | after its Ready | nothing; it is a notice |
 | [`on_mesh_ready`](#on_mesh_ready) | each mesh-primary | after its mesh's ready is on its Mesh record | nothing; it is a notice |
 | [`on_fabric_ready`](#on_fabric_ready) | fabric-primary | after the ready state is set | nothing; it is a notice |
@@ -30,42 +30,50 @@ a hook.
 
 ## pre_node_ready
 
-The app registers one async function before RDM starts:
+The app registers one hook before RDM starts:
 
 ```rust
-async fn pre_node_ready(ctx: NodeReadyCtx) -> HookOutcome;
+pub trait PreNodeReady: Send + Sync {
+    /// The Send RDM runs this hook under: how many tries, and how long each may take.
+    /// The application gives its own; with none, Send::default() (3 attempts, 10 s).
+    fn send(&self) -> rdm_transport::Send { rdm_transport::Send::default() }
 
-enum HookOutcome {
-    Ok,
-    Blocked { reason: String, retry_on: RetryOn },
-    Failed { reason: String },
+    /// Called before the node reaches Ready. ctx.cancel fires if the node is stopped or deleted meanwhile.
+    async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome;
+}
+
+pub enum HookOutcome {
+    Ok,                          // proceed: the node becomes Ready
+    Pending { reason: String },  // not yet: this attempt ends, and RDM calls again on the hook's Send
+    Failed { reason: String },   // stop now: the node's start ends Failed
 }
 ```
 
-There is one integration point, not a callback list.
+There is one integration point, not a callback list. The hook's timing is its own code's `send()`,
+next to the hook it governs; nothing for it goes on node.create or the type declaration (Q350).
 
 ### Where it runs
 
-[Node start](lifecycles/node-start.md#end-to-end-sequence) step 3 calls the hook after the
-accepted join supplies the cert and rafka-time and the mesh channel is joined; topology is
-installed only after the hook returns Ok. The hook subscribes the app's kind topics through that
-channel and needs no topology snapshot. FirstStart and AfterStop run the same hook, and so does a birth its mesh-primary held
-`PendingReconnect` when it is heard again: commanded back through node.mesh.join, it answers the
-tickle `Current { pending }` while its start runs (`Blocked` only while its hook reports a blocker),
-with the cert its accepting primary issues at the join and rafka-time refreshed last, and is
-published ready only once the hook passes. Every entry to ready, from any other state, runs the hook;
-the process's data-dir inheritance is an independent fact supplied by its spec.
+[Node start](lifecycles/node-start.md#end-to-end-sequence) step 3 calls the hook before the node
+reaches Ready: after the join supplies the cert and rafka-time and the mesh channel is joined;
+topology is installed only after the hook returns `Ok`. The hook subscribes the app's kind topics
+through that channel and needs no topology snapshot. FirstStart and AfterStop run the same hook, and so
+does a node its mesh-primary held `PendingReconnect` when it is heard again: commanded back through
+node.mesh.join, it answers the tickle `Current { pending }` while its start runs (`Pending` while its
+hook answers `Pending`), and is published ready only once the hook answers `Ok`. Every entry to
+ready, from any other state, runs the hook; the process's data-dir inheritance is an independent fact
+supplied by its spec.
 
 ### What the context carries
 
-- the exact birth: node id, incarnation and path and name;
+- the node: node id, incarnation, path and name;
 - `start_kind`: FirstStart for create, AfterStop for a process rejoining, after a stop or when it
   is heard again after its mesh-primary held it `PendingReconnect`;
 - whether the spec supplies an inherited data dir; start_kind alone does not decide it;
-- the accepting primary, i.e. the admin that accepted the JoinNode. It is `None`, with the
-  reason, for the Day-0 root and for a fabric-primary recovered from its durable map. Those
-  births have no primary to pull from and complete the hook from local state
-  ([gossip.md §9](gossip.md#9-joinnode-op-0x1d--bootstrap-hydration)).
+- the node-admin that answered the node's JoinNode, which it reads its kind topics from. It is
+  `None`, with the reason, for the Day-0 root and for a fabric-primary recovered from its durable
+  map. Those nodes have no node-admin to pull from and complete the hook from local state
+  ([gossip.md §9](gossip.md#9-joinnode-op-0x1d--bootstrap-hydration));
 - the Node RPC client the app uses for its own calls;
 - the topology view handle, so the app subscribes its gossip kind topics before it takes a
   snapshot;
@@ -77,7 +85,7 @@ the process's data-dir inheritance is an independent fact supplied by its spec.
 
 1. Read the member cert from the context. RDM issued it at JoinNode with the `CertSigner` Rafka instantiated it with ([fabric certs](fabric-certs.md)).
 2. Subscribe the entity-framework kind topics the node projects.
-3. Read them from the accepting primary with [node.topology.get](lifecycles/node-topology-get.md)
+3. Read them from the node-admin that answered its JoinNode with [node.topology.get](lifecycles/node-topology-get.md)
    ([the pull at entry](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)).
 4. Apply the answer through the same receive path as live gossip, with each kind's snapshot
    completeness boundary as the floor. A row that arrives both by gossip and in the
@@ -85,35 +93,42 @@ the process's data-dir inheritance is an independent fact supplied by its spec.
 
 ### Outcomes and the gate
 
-| Outcome | RDM does |
+RDM runs the hook under its `Send` ([Node RPC §43](node-rpc.md#43-send-delivery-is-the-runtimes)):
+each call must answer within the `TimeLimit`, and between calls RDM waits the one Send schedule
+(cadence × 2^(n-1), ±25 % jitter, capped at the staleness floor).
+
+| Answer | RDM does |
 |---|---|
 | `Ok` | start continues at [node start](lifecycles/node-start.md#end-to-end-sequence) step 4 and ends with node.started |
-| `Blocked { reason, retry_on }` | readiness remains blocked; the reason is named in the blocker evidence and answered to the executor's ProbeNodeState as Status [`Blocked { node_id, incarnation, reason, retry_on }`](node-rpc-envelope.md#status-op-0x1b-rdm); the hook runs again only when retry_on occurs |
-| `Failed { reason }` | the start stream ends Failed with the hook step and reason; no downstream readiness event is emitted |
+| `Pending { reason }` | that attempt ends; the node stays `Pending`, the reason is named in its blocker evidence and answered to the executor's ProbeNodeState as Status [`Pending { node_id, incarnation, reason }`](node-rpc-envelope.md#status-op-0x1b-rdm), and RDM calls the hook again after the backoff |
+| no answer within the `TimeLimit` | the same as `Pending { reason: "time limit" }` |
+| `Failed { reason }`, or the attempts spent | the start ends `Failed` with the hook step and the last reason, back to whoever started the node; no downstream readiness event is emitted |
 
-`retry_on` is the typed `RetryOn` the [envelope](node-rpc-envelope.md#status-op-0x1b-rdm) defines.
-A retry is level-triggered: RDM arms the
-wait, then checks the condition again, so an event that fired before arming cannot leave the
-node waiting. RDM never retries on a timer.
+A node never reaches Ready while its hook has not returned `Ok`. A start that ends `Failed` leaves the
+node `Pending`, and nothing retries until someone acts:
 
-A node never reaches Ready while its hook has not returned `Ok`.
+| What started the node | Where the failure lands |
+|---|---|
+| a Build (Create) | the step's `rdm.build.step` event, `failed { reason }`; its mesh's section ends, and the Build ends `incomplete` (Q346) |
+| a `node.start` command | the command ends `Failed { reason }` to its caller, recorded on the node record |
+| [node recovery](lifecycles/node-recovery.md) | the recovery's step, `failed { reason }`, on the node record |
+| Day 0's first node-admin | its start ends `Failed`, and the Day 0 Build is `incomplete` |
 
-For Build-backed work the executor frames the blocker on the workflow stream from the
-subject's Status `Blocked` reply, as the [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm)
-defines.
+For Build-backed work the executor frames the subject's `Pending` on the workflow stream from its
+Status `Pending` reply, as the [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) defines.
 
 ### The server side gates too
 
-An admin answers that node.topology.get only once its own `pre_node_ready` has returned
-`Ok`. Until then it answers a typed `NotReady`, which the caller maps to
-`Blocked { retry_on: PrimaryReady }`. A mesh's first node therefore never pulls from an
-admin that holds nothing yet.
+An admin answers that node.topology.get only once its own `pre_node_ready` has returned `Ok`.
+Until then it answers a typed `NotReady`, and the caller's hook answers `Pending` with that reason.
+RDM calls it again on its `Send`, so a mesh's first node never pulls from an admin that holds nothing
+yet.
 
 ### Cancellation and lifecycle commands
 
-Ending the in-flight start cancels the token. That covers node.connection.delete, node.stop and a provider
-terminate. The hook and any pull it has in flight end, and no call is left behind. While a
-start is Blocked, node.connection.delete, node.stop and Status stay admissible, so a birth that never
+Ending the in-flight start cancels the token. That covers node.connection.delete, node.stop and a
+provider terminate. The hook and any pull it has in flight end, and no call is left behind. While a
+start is `Pending`, node.connection.delete, node.stop and Status stay admissible, so a node that never
 becomes ready can still be removed.
 
 ## on_node_ready
