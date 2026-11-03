@@ -113,7 +113,7 @@ Failed       -> state=failed
 Refused      -> state=refused
 ```
 
-`Failed` is valid for Direct recovery attempts. It means only that this source failed to establish the
+`Failed` is valid for a Direct dial whose `Send` attempts are spent (§9.3). It means only that this source failed to establish the
 named direct connection. It is never global evidence that the destination node is dead.
 
 `Refused` is written by an acceptor for an inbound connection it dropped at admission
