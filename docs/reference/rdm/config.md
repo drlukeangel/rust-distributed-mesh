@@ -139,7 +139,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (67 names)
 | `RDM_INCARNATION_ID` | `crates/rdm-core/src/launch.rs` | 498 | fn `Launch::from_env` | `ENV_INCARNATION`, argument to `req` |
 | `RDM_INCARNATION_ID` | `crates/rdm-transport/src/transport_diag.rs` | 96 | fn `header` | argument to `env` |
 | `RDM_INHERITED_DATA_DIR` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1933 | fn `DeploymentPipeline<'_>::create_to_ready_written_body` | argument to `.insert` |
-| `RDM_INHERITED_DATA_DIR` | `crates/rdm-node/src/workflows/node_start.rs` | 336 | fn `node_start` | argument to `std::env::var` |
+| `RDM_INHERITED_DATA_DIR` | `crates/rdm-node/src/workflows/node_start.rs` | 347 | fn `node_start` | argument to `std::env::var` |
 | `RDM_ISSUING_CERT` | `crates/rdm-admin/src/certs.rs` | 87 | fn `CertChoice::from_material` | `ENV_ISSUING_CERT`, argument to `get` |
 | `RDM_ISSUING_CERT` | `crates/rdm-core/src/launch.rs` | 68 | const `ENV_ISSUING_CERT` | literal |
 | `RDM_ISSUING_CERT` | `crates/rdm-core/src/launch.rs` | 359 | fn `decode_issuing` | `ENV_ISSUING_CERT`, argument to `decode_hex` |
