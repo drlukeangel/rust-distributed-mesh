@@ -383,7 +383,7 @@ fn complete_steps(view: &rdm_admin::build_state::BuildProjection, step: CreateSt
 /// another endpoint) does not hand on a birth that was launched by the lost executor and never
 /// joined: that runtime's only seed is the lost admin's endpoint, where a dial can reach another
 /// process (UnknownIssuer) and the birth never joins. The successor refuses it by name, stops it,
-/// and decides the birth afresh: a new identity, launched under its own endpoint. The same birth
+/// and decides the birth afresh: a new birth of the Build's node.id (D58), launched under its own endpoint. The same birth
 /// handed on after it joined (the seed did its work) is kept; an executor re-running its own work
 /// reuses it.
 #[test]
@@ -434,7 +434,8 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         assert_eq!(spawns.len(), spawns_before + 1, "the successor launches the birth afresh");
         let fresh = spawns.last().unwrap();
         assert!(!fresh.seeds.contains("lostadminkey") && fresh.seeds.contains("successoradminkey"), "the new birth is seeded with the successor only: {}", fresh.seeds);
-        assert_ne!(fresh.node_id, dead.node_id, "a fresh identity: the stranded birth is not this node");
+        // The node.id is the Build's own for the create (D58): a birth decided afresh is a new deployment of it.
+        assert_ne!(fresh.handle.deployment_id, dead.handle.deployment_id, "a fresh birth: the stranded runtime is not this birth's");
         assert_eq!(redone.node.node_id, fresh.node_id);
         assert!(!fleet.running(dead.pid), "the stranded runtime that names the lost admin is stopped");
         assert!(fleet.running(fresh.pid));
