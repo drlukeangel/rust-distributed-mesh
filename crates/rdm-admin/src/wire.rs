@@ -44,8 +44,7 @@ pub(crate) enum WireFact {
 }
 
 /// A section of an accepted Build (Q284): the Build's id, fabric, `topology_storage_provider` and
-/// acceptance time, whether it deletes the fabric (the one use of its change outside the
-/// fabric-primary), every mesh it names by name and id, and the meshes the section holds (one, or none
+/// acceptance time, its change as it came in, every mesh it names by name and id, and the meshes the section holds (one, or none
 /// for a Build with no mesh or none touched), with their pinned births.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct WireSection {
@@ -53,7 +52,7 @@ pub(crate) struct WireSection {
     fabric: String,
     topology_storage_provider: Option<String>,
     time: u64,
-    deletes_fabric: bool,
+    change: BuildChange,
     named: BTreeMap<String, MeshId>,
     meshes: Vec<WireMesh>,
     pinned: Vec<(PathName, crate::build::PinnedBirth)>,
@@ -63,7 +62,7 @@ pub(crate) struct WireSection {
 pub(crate) struct WireAccepted {
     build_id: BuildId,
     topology: WireTopology,
-    change: Option<BuildChange>,
+    change: BuildChange,
     time: u64,
     /// The record's writer (appended).
     source: Option<String>,
@@ -168,7 +167,7 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
             fabric: a.topology.fabric.clone(),
             topology_storage_provider: a.topology.topology_storage_provider.clone(),
             time: a.time,
-            deletes_fabric: matches!(a.change, Some(BuildChange::DeleteFabric)),
+            change: a.change.clone(),
             named: a.topology.section_of.clone().unwrap_or_default(),
             meshes: a.topology.meshes.values().map(WireMesh::from).collect(),
             pinned: a.topology.pinned.clone(),
@@ -203,7 +202,7 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
                 pinned: c.pinned,
                 created: Vec::new(), section_of: Some(c.named),
             },
-            change: c.deletes_fabric.then_some(BuildChange::DeleteFabric),
+            change: c.change,
             source: None, time: c.time,
         }),
     })

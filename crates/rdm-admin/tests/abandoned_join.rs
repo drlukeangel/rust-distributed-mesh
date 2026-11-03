@@ -116,7 +116,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
         let builds = rdm_admin::build_run::FramedBuilds::stepping(Arc::new(MemoryBuildStateAdapter::new()), &FabricId::mint(), &executor.node_id, "mesh1");
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
             .await
             .unwrap();
         let data_root = std::env::temp_dir().join(format!("i143-rb2-{}", NodeId::mint()));

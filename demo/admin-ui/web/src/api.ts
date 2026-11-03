@@ -40,10 +40,15 @@ export interface MeshInfo {
 /// How a Build ended, its last `rdm.build.ended`'s state: `complete`, `incomplete { sections }` or
 /// `failed { reason, code }` (it could not start).
 export type BuildEnded = "complete" | { incomplete: { sections: { mesh: string; op: string; step: string; reason: string; code: string }[] } } | { failed: { reason: string; code: string } } | null;
+/// The change a Build record carries as it came in (build.md §1): `{ Create: {...} }`, `{ Delete: {...} }`
+/// or `"DeleteFabric"`.
+export type BuildChange = Record<string, unknown> | string;
 export interface BuildBrief {
   build_id: string;
   state: string;
-  time: string | null;
+  change: BuildChange;
+  /// When the Build was accepted, ms since the Unix epoch.
+  time: number;
   ended: BuildEnded;
 }
 export interface Overview {
@@ -100,7 +105,9 @@ export interface BuildView {
   state: string;
   current: boolean;
   nodes: number;
-  time: string | null;
+  change: BuildChange;
+  /// When the Build was accepted, ms since the Unix epoch.
+  time: number;
   runs: number;
   sections: string[];
   steps: StepView[];

@@ -139,7 +139,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     let builds = crate::stepping(&rdm_core::NodeId::mint(), "mesh1");
     let build_id = BuildId::mint();
     builds
-        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
         .await
         .unwrap();
     let name: PathName = PathName::new("mesh1.node", "1").unwrap();

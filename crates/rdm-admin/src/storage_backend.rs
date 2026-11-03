@@ -917,7 +917,7 @@ mod tests {
         let build = crate::build_state::BuildAccepted {
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("after")).unwrap(),
             topology: crate::accepted::FabricTopology::root("fabric1", "meshafter", mesh.mesh_id.clone()),
-            change: None,
+            change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
             source: None, time: 1,
         };
         builds.publish_accepted(&build).await.unwrap();

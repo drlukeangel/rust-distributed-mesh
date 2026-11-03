@@ -791,7 +791,7 @@ mod tests {
         let builds = Arc::new(CountedReads { inner: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()), reads: Default::default() });
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
         let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: None, source: None, time: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         claim(&builds.inner, &id, &fp.birth().unwrap()).await;
         // The fabric-primary alone in its one-mesh fabric, its mesh ready; pending went out.
@@ -834,7 +834,7 @@ mod tests {
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
         let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: None, source: None, time: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         claim(&builds, &id, &fp.birth().unwrap()).await;
         let view = projected(vec![fp.clone()]);
@@ -966,7 +966,7 @@ mod tests {
             FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
         };
         let a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
-        builds.publish_accepted(&BuildAccepted { build_id: a.clone(), topology: topology(Some("aa")), change: None, source: None, time: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: a.clone(), topology: topology(Some("aa")), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         claim(&builds, &a, &fp.birth().unwrap()).await;
         let view = projected(vec![fp.clone()]);
@@ -983,7 +983,7 @@ mod tests {
         }
         assert_eq!(records.fabric_state(), FabricState::Ready, "the same Build read from the store root is no resize: the fabric stays ready");
         let b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
-        builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology(Some("bb")), change: None, source: None, time: 2_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology(Some("bb")), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 2_000 }).await.unwrap();
         claim(&builds, &b, &fp.birth().unwrap()).await;
         {
             let mut change = states.change.lock().await;
@@ -1377,7 +1377,7 @@ mod tests {
                         fabric: "fabric1".into(),
                         meshes: [mesh1_a].into(),
                     },
-                    change: None,
+                    change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
                     source: None, time: 1_000,
                 })
                 .await
@@ -1491,7 +1491,7 @@ mod tests {
                         fabric: "fabric1".into(),
                         meshes: [mesh1_b].into(),
                     },
-                    change: None,
+                    change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
                     source: None, time: 2_000,
                 })
                 .await

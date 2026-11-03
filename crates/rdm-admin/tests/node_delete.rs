@@ -389,7 +389,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
                     "mesh1",
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
-                change: None,
+                change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
                 source: None, time: 1000,
             })
             .await
@@ -468,7 +468,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
                     "mesh1",
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
-                change: None,
+                change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
                 source: None, time: 2000,
             })
             .await
@@ -825,7 +825,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                     "mesh1",
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
-                change: None,
+                change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
                 source: None, time: 1000,
             })
             .await
@@ -938,7 +938,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                     "mesh1",
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
-                change: None,
+                change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
                 source: None, time: 2000,
             })
             .await

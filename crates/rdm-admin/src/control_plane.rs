@@ -420,7 +420,7 @@ impl ControlPlane {
             let accepted = BuildAccepted {
                 build_id: build_id.clone(),
                 topology,
-                change: Some(change),
+                change: change,
                 // The record names its writer, this fabric-primary's exact birth (build.md §1).
                 source: self.node_id.get().zip(self.incarnation.get()).map(|(node_id, incarnation)| crate::events_storage::EventSource { fabric_id: observed.fabric.id.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }.uri()),
                 time: self.time.now_ms().max(newest.max(current.time) + 1),

@@ -38,7 +38,7 @@ fn topology(rpcs: u32) -> FabricTopology {
 /// `rdm.build.step` event, and the run ended `ended`.
 async fn build(log: &rdm_admin::build_run::FramedBuilds, id: &BuildId, at: u64, t: FabricTopology, steps: &[(rdm_core::OperationId, StepOutcome)], ended: rdm_admin::events_storage::EndedState) {
     let fp = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: t, change: None, source: None, time: at }).await.unwrap();
+    log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: t, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: at }).await.unwrap();
     crate::start_build(log, id, &fp).await;
     for (operation, outcome) in steps {
         log.write_step(&rdm_admin::build_state::StepWrite { build_id: id.clone(), mesh: None, operation: operation.clone(), step: "Complete".into(), outcome: outcome.clone() }).await.unwrap();
@@ -86,7 +86,7 @@ fn ids(builds: &[rdm_client::Build]) -> Vec<String> {
 /// whose Build log holds three Builds, b1 (complete), b2 (complete, accepted after b1, so the
 /// current Build) and b3 (accepted last, ended incomplete part-way: one step complete, the next
 /// failed), answers `build.get []` with all three, newest first (b3, b2, b1), each whole: its header
-/// (phase) as its events fold it, its topology (every node's create spec, a topology of 301 nodes
+/// (phase) as its events fold it, with its record's change and acceptance time, its topology (every node's create spec, a topology of 301 nodes
 /// taking several Topology chunks), and its events; only b2 is marked current. `[current: true]`
 /// streams b2 alone, `[phase: incomplete]` b3 alone, `[id: b1]` b1 alone, an id the log does not hold
 /// the empty list. A pair naming no property of the Build header (`zone`) is refused INVALID_ARGUMENT
@@ -129,6 +129,7 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
                 rdm_admin::build_state::BuildState::Incomplete => BuildPhase::Incomplete,
             };
             assert_eq!(got.phase, phase, "{}'s header is its events' fold", got.build_id);
+            assert_eq!((&got.change, got.time), (&held.change, held.time), "{}'s header carries its record's change and time", got.build_id);
             let specs: Vec<rdm_core::meta::NodeSpec> = held.topology.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
             assert_eq!(got.nodes, specs, "{}'s topology is every node's create spec, whole", got.build_id);
             let steps: Vec<(String, bool)> = got.events.iter().filter(|e| e["type"] == "rdm.build.step").map(|e| (e["data"]["op"].as_str().unwrap_or_default().to_string(), e["data"]["state"] == "complete")).collect();

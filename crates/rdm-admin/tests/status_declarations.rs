@@ -2242,7 +2242,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
     assert_eq!(answer(builds.clone()).await.build_id, Some(held.to_string()), "fabric.get answers the current Build the admin's builds store returns");
     // A newer Build that failed is skipped: the older completed one is still the current Build.
     let newer = rdm_admin::build::BuildId::mint();
-    builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), change: None, source: None, time: u64::MAX - 1 }).await.unwrap();
+    builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: u64::MAX - 1 }).await.unwrap();
     crate::start_build(&*builds, &newer, &admin.node.birth().unwrap()).await;
     assert_eq!(answer(builds.clone()).await.build_id, Some(newer.to_string()), "the newer Build in progress is the current Build");
     let source = rdm_admin::events_storage::EventSource { fabric_id: crate::cell_fabric(), node_id: admin.node.node_id.clone(), incarnation: admin.node.birth().unwrap().incarnation };

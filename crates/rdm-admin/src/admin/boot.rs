@@ -1290,7 +1290,21 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             build_id: crate::build::BuildId::mint(),
                                             // Day 0's shape is the bootstrap admin alone; its row records what it runs.
                                             topology: crate::accepted::FabricTopology::root_on(&cfg.fabric, &cfg.mesh, mesh_id.clone(), &cfg.topology_storage_provider),
-                                            change: None,
+                                            // Every Build is a Create, a Delete or a DeleteFabric (Q342): Day 0's is the
+                                            // Create of its mesh and its one node-admin, this admin, on its type's executable.
+                                            change: rdm_core::build::BuildChange::Create {
+                                                meshes: vec![rdm_core::build::Meshes { name: cfg.mesh.clone() }],
+                                                nodes: vec![rdm_core::build::Nodes {
+                                                    path: name.path.clone(),
+                                                    name: name.name.clone(),
+                                                    mesh: cfg.mesh.clone(),
+                                                    r#type: "node-admin".into(),
+                                                    storage_persistence: None,
+                                                    executable: None,
+                                                    tags: Default::default(),
+                                                    config: Default::default(),
+                                                }],
+                                            },
                                             source: None, time: rafka_time.now_ms(),
                                         };
                                         // The fabric-primary claims the Fabric's identity at Day 0 (node-identity-and-state.md

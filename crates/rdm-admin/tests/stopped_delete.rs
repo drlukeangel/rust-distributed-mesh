@@ -102,7 +102,7 @@ impl TopologySink for Rows {
 async fn accepted_case(builds: &dyn BuildStateAdapter) -> BuildId {
     let build_id = BuildId::mint();
     builds
-        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
         .await
         .unwrap();
     build_id
@@ -126,7 +126,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
     let builds = crate::stepping(&rdm_core::NodeId::mint(), "mesh1");
     let build_id = BuildId::mint();
     builds
-        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
         .await
         .unwrap();
     let mut node = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
@@ -317,7 +317,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
                     "mesh1",
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
-                change: None,
+                change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
                 source: None, time: 0,
             })
             .await

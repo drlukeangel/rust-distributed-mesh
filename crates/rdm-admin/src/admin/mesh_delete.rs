@@ -1242,7 +1242,7 @@ mod tests {
             .publish_accepted(&BuildAccepted {
                 build_id: build_id.clone(),
                 topology: fab_top,
-                change: None,
+                change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
                 source: None, time: 1000,
             })
             .await
@@ -1375,7 +1375,7 @@ mod tests {
         runner.topology.write().await.nodes.push(admin);
 
         let build_id = crate::build::BuildId::mint();
-        steps.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fab", "mesh1", MeshId::mint()), change: None, source: None, time: 1000 }).await.unwrap();
+        steps.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fab", "mesh1", MeshId::mint()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1000 }).await.unwrap();
         let key = MeshDeleteKey { mesh_id: mesh2_id.clone(), build_id: build_id.clone(), operation: crate::mesh_delete::operation(&mesh2_id) };
         let b = RosterBirth { mesh: "mesh2".into(), r#type: "node-admin".into(), node: at.clone(), node_id: admin_id.to_string(), incarnation_id: admin_inc.to_string() };
         let before = steps.read_build(&build_id).await.unwrap().steps;

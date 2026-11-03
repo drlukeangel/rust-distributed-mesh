@@ -554,6 +554,10 @@ pub enum BuildReply {
         events: u32,
         /// The number of `Events` chunks sent for it.
         chunks: u32,
+        /// The change as it came in, the Build record's (build.md §1): history only.
+        change: BuildChange,
+        /// When the Build was accepted, the Build record's: milliseconds since the Unix epoch.
+        time: u64,
     },
     /// Terminal of `GetBuilds`: the read is complete. A stream that ends before it is an incomplete
     /// read, never a list.

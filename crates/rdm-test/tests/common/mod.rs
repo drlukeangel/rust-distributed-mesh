@@ -416,7 +416,7 @@ pub fn launched_handle(data_root: &std::path::Path, node_id: &NodeId) -> rdm_adm
 pub async fn publish_build(builds: &(impl BuildStateAdapter + ?Sized), topology: FabricTopology) -> BuildId {
     let build_id = BuildId::mint();
     builds
-        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology, change: None, source: None, time: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
         .await
         .unwrap();
     build_id

@@ -1497,7 +1497,7 @@ pub enum BuildReply {
     FabricPrimaryMoved { build_id: String, fabric_primary: Option<NodeId> },
     Topology { build_id: String, chunk_index: u32, chunk_count: u32, nodes: Vec<NodeSpec> },
     Events { build_id: String, chunk_index: u32, chunk_count: u32, events: Vec<String> }, // each event the events store's envelope in its JSON form
-    Build { build_id: String, phase: BuildPhase, current: bool, events: u32, chunks: u32 },
+    Build { build_id: String, phase: BuildPhase, current: bool, events: u32, chunks: u32, change: BuildChange, time: u64 }, // change and time: the Build record's, as accepted
     End { builds: u32 },
     RejectedFilter { reason: String },
     Incomplete { build_id: String, sections: Vec<UnfinishedSection> },

@@ -519,7 +519,7 @@ mod tests {
         log.publish_accepted(&BuildAccepted {
             build_id: build_id.clone(),
             topology: FabricTopology::root("fab", "mesh1", mesh_id),
-            change: None,
+            change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
             source: None, time: 1_000,
         })
         .await

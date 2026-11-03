@@ -1014,7 +1014,7 @@ mod tests {
         let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
         let op = crate::accepted::plan(&accepted, &observed).operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. })).expect("the plan creates mesh2");
         let build_id = crate::build::BuildId::parse("jrr142w4840j").unwrap();
-        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: accepted, change: Some(change), source: None, time: 0 }).await.expect("the Build is accepted");
+        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: accepted, change: change, source: None, time: 0 }).await.expect("the Build is accepted");
         (build_id, op)
     }
 
@@ -2911,7 +2911,7 @@ mod tests {
         let blocked = node_admin_not_ready(&me, &builds, Some(id.clone())).await.expect("blocked while the entry's Build is not held");
         assert_eq!(blocked.need(), crate::fetch_build::Need::BuildFacts(id.clone()), "{blocked}");
         assert!(blocked.to_string().contains(&format!("holds no facts of Build {id}")), "{blocked}");
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 }).await.unwrap();
         assert_eq!(node_admin_not_ready(&me, &builds, None).await, None, "an admin served no entry owes no floor");
         assert_eq!(node_admin_not_ready(&me, &builds, Some(id.clone())).await, None, "it holds the entry's Build");
         let other = crate::build::BuildId::parse("qsmy968wj1zt").unwrap();

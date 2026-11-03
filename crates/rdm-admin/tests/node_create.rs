@@ -322,7 +322,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
                     "mesh1",
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
-                change: None,
+                change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
                 source: None, time: 0,
             })
             .await
@@ -831,7 +831,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
                     "mesh1",
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
-                change: None,
+                change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
                 source: None, time: 0,
             })
             .await
@@ -1063,7 +1063,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
 async fn accepted_case(builds: &dyn BuildStateAdapter) -> BuildId {
     let build_id = BuildId::mint();
     builds
-        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
         .await
         .unwrap();
     build_id

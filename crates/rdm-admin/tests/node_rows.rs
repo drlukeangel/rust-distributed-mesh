@@ -815,7 +815,7 @@ mod writer {
         let (joins, builds) = (Joins::default(), crate::stepping(&NodeId::mint(), "mesh1"));
         // The Build the create runs for: a run over a Build its node holds no fact of is refused at its start.
         let build_id = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows")).unwrap();
-        let accepted = rdm_admin::build_state::BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 };
+        let accepted = rdm_admin::build_state::BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 };
         rdm_admin::build_state::BuildStateAdapter::publish_accepted(&builds, &accepted).await.unwrap();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(name.clone()))), node_id: (rdm_core::fixture_node_id(&(name.clone()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id), path: name.path.clone(), name: name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
@@ -965,7 +965,7 @@ mod writer {
             let builds = rdm_admin::build_run::FramedBuilds::stepping(Arc::new(MemoryBuildStateAdapter::new()), &FabricId::mint(), &NodeId::mint(), "mesh1");
             let (build, other) = (BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-5")).unwrap(), BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-6")).unwrap());
             for id in [&build, &other] {
-                let accepted = rdm_admin::build_state::BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 };
+                let accepted = rdm_admin::build_state::BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 };
                 rdm_admin::build_state::BuildStateAdapter::publish_accepted(&builds, &accepted).await.unwrap();
             }
             let lost = LostAt { inner: &builds, step: "AllocateIdentity" };
@@ -1117,7 +1117,7 @@ mod writer {
             let build = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-7")).unwrap();
             let (a_builds, b_builds) = (Arc::new(stepping()), stepping());
             for builds in [&*a_builds, &b_builds] {
-                let accepted = BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 };
+                let accepted = BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 };
                 builds.publish_accepted(&accepted).await.unwrap();
             }
             // Executor A: a run through its row write, lost before it launches anything.
@@ -1227,7 +1227,7 @@ mod writer {
             let build = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-8")).unwrap();
             let (a_builds, b_builds) = (Arc::new(stepping()), stepping());
             for builds in [&*a_builds, &b_builds] {
-                let accepted = BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 };
+                let accepted = BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 };
                 builds.publish_accepted(&accepted).await.unwrap();
             }
             let (a_records, _a_view) = writer_of(&PathName::new("mesh1.node-admin", "2").unwrap(), &view(), &storage);
@@ -1298,7 +1298,7 @@ mod writer {
     async fn lost_after_first_row(storage: &Arc<MemoryNodesStorage>, build: &BuildId, name: &PathName, data_root: &std::path::Path) -> Value {
         use rdm_admin::build_state::BuildStateAdapter;
         let a_builds = Arc::new(stepping());
-        let accepted = rdm_admin::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 };
+        let accepted = rdm_admin::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 };
         a_builds.publish_accepted(&accepted).await.unwrap();
         let (a_records, _a_view) = writer_of(&PathName::new("mesh1.node-admin", "2").unwrap(), &view(), storage);
         let entered = Arc::new(tokio::sync::Notify::new());
@@ -1330,7 +1330,7 @@ mod writer {
             let build = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-9")).unwrap();
             let a_identity = lost_after_first_row(&storage, &build, &PathName::new("mesh1.node", "9").unwrap(), &data_root).await;
             let b_builds = stepping();
-            let accepted = rdm_admin::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 };
+            let accepted = rdm_admin::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 };
             rdm_admin::build_state::BuildStateAdapter::publish_accepted(&b_builds, &accepted).await.unwrap();
             let (b_records, _b_view) = writer_of(&PathName::new("mesh1.node-admin", "2").unwrap(), &view(), &storage);
             // A launched the birth and it exited: the provider proves it.
@@ -1413,7 +1413,7 @@ mod writer {
             gone.wait().unwrap();
             std::fs::write(dir.join("deployment.json"), json!({ "deployment_id": a_identity["deployment_id"], "pid": pid }).to_string()).unwrap();
             let b_builds = stepping();
-            let accepted = rdm_admin::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 };
+            let accepted = rdm_admin::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 };
             rdm_admin::build_state::BuildStateAdapter::publish_accepted(&b_builds, &accepted).await.unwrap();
             let (b_records, _b_view) = writer_of(&PathName::new("mesh1.node-admin", "2").unwrap(), &view(), &storage);
             let on_disk = OnDisk { inner: rdm_admin::deployment::process::ProcessDeploymentProvider::new(), spawned: Mutex::default() };
@@ -1469,7 +1469,7 @@ mod writer {
             let handle = launcher.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect("A launches its birth");
             let record: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("deployment.json")).expect("the launch record")).unwrap();
             let b_builds = stepping();
-            let accepted = rdm_admin::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 };
+            let accepted = rdm_admin::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 };
             rdm_admin::build_state::BuildStateAdapter::publish_accepted(&b_builds, &accepted).await.unwrap();
             let (b_records, _b_view) = writer_of(&PathName::new("mesh1.node-admin", "2").unwrap(), &view(), &storage);
             let on_disk = OnDisk { inner: rdm_admin::deployment::process::ProcessDeploymentProvider::new(), spawned: Mutex::default() };
@@ -1512,7 +1512,7 @@ mod writer {
             let build = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-10")).unwrap();
             let a_identity = lost_after_first_row(&storage, &build, &PathName::new("mesh1.node", "10").unwrap(), &data_root).await;
             let b_builds = stepping();
-            let accepted = rdm_admin::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 };
+            let accepted = rdm_admin::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 };
             rdm_admin::build_state::BuildStateAdapter::publish_accepted(&b_builds, &accepted).await.unwrap();
             let (b_records, _b_view) = writer_of(&PathName::new("mesh1.node-admin", "2").unwrap(), &view(), &storage);
             let provider = LaunchedByTheLost::default();

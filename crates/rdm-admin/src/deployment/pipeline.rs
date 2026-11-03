@@ -2933,7 +2933,7 @@ mod tests {
 
     /// The Build `3qcfk1kq47m9` whose events are `steps`.
     fn holding(steps: Vec<crate::build_state::BuildStep>) -> crate::build_state::BuildProjection {
-        let accepted = crate::build_state::BuildAccepted { build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 };
+        let accepted = crate::build_state::BuildAccepted { build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 };
         crate::build_state::BuildProjection { steps, ..crate::build_state::BuildProjection::of(&accepted, &[]) }
     }
 
@@ -3043,7 +3043,7 @@ mod tests {
     /// A Build accepted in `builds` for a cell: mesh1 rooted, nothing else.
     async fn accepted_build(builds: &dyn crate::build_state::BuildStateAdapter) -> BuildId {
         let build_id = BuildId::mint();
-        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 }).await.unwrap();
+        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 }).await.unwrap();
         build_id
     }
 

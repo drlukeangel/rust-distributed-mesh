@@ -818,7 +818,7 @@ impl AcceptedStore {
         let store = Arc::new(Self::new(storage, me.node_id.as_str()));
         let source = crate::events_storage::EventSource { fabric_id: fabric_id.clone(), node_id: me.node_id.clone(), incarnation: me.incarnation.clone() };
         let build_id = BuildId::mint();
-        crate::build_state::accept(builds, &crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, change: None, source: None, time: 0 }, None, me.node_id.as_str(), "seeded").await?;
+        crate::build_state::accept(builds, &crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 }, None, me.node_id.as_str(), "seeded").await?;
         let events = builds.events();
         events.append(&crate::events_storage::Event::build_started(&source, 1, &build_id)).await?;
         events.append(&crate::events_storage::Event::build_ended(&source, 2, &build_id, &crate::events_storage::EndedState::Complete)).await?;

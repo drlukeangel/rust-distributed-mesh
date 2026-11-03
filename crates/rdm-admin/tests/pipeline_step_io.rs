@@ -91,7 +91,7 @@ fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_
         let builds = crate::stepping(&executor.node_id, "mesh1");
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
             .await
             .unwrap();
         let template = LaunchTemplate { fabric: "fabric1".into(),
@@ -233,7 +233,7 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
         let builds1 = crate::stepping(&executor.node_id, "mesh1");
         let build1 = BuildId::mint();
         builds1
-            .publish_accepted(&BuildAccepted { build_id: build1.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build1.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
             .await
             .unwrap();
         let pipeline1 = DeploymentPipeline { provider: &LaunchesNothing, joins: &joins, observer: &NoBirth, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds1, template: &template, timeouts: Timeouts::default() };
@@ -248,7 +248,7 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
         let builds2 = crate::stepping(&executor.node_id, "mesh1");
         let build2 = BuildId::mint();
         builds2
-            .publish_accepted(&BuildAccepted { build_id: build2.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build2.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
             .await
             .unwrap();
         let pipeline2 = DeploymentPipeline { provider: &LaunchesNothing, joins: &joins, observer: &NoBirth, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds2, template: &template, timeouts: Timeouts::default() };

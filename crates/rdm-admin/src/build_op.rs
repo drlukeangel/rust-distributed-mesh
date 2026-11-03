@@ -459,7 +459,7 @@ pub async fn serve_builds(me: &PathName, builds: &dyn crate::build_state::BuildS
                 sink.data(BuildReply::Events { build_id: header.build_id.clone(), chunk_index: i as u32, chunk_count, events }).await.map_err(gone)?;
             }
             let rdm_core::build::BuildHeader { build_id, phase, current, .. } = header;
-            sink.data(BuildReply::Build { build_id, phase, current, events, chunks: chunk_count }).await.map_err(gone)?;
+            sink.data(BuildReply::Build { build_id, phase, current, events, chunks: chunk_count, change: p.change.clone(), time: p.time }).await.map_err(gone)?;
             streamed += 1;
         }
         tracing::Span::current().record("builds", streamed);

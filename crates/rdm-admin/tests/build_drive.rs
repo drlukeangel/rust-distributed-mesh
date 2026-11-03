@@ -1450,7 +1450,7 @@ async fn the_day0_build_writes_its_complete_only_after_its_own_ready() {
     let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     let birth = t.node(&me).unwrap().birth().unwrap();
     let day0 = BuildId::mint();
-    let accepted = rdm_admin::build_state::BuildAccepted { build_id: day0.clone(), topology: FabricTopology::root("fabric1", "mesh1", mesh_id), change: None, source: None, time: 1 };
+    let accepted = rdm_admin::build_state::BuildAccepted { build_id: day0.clone(), topology: FabricTopology::root("fabric1", "mesh1", mesh_id), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1 };
     rdm_admin::build_state::accept(&*builds, &accepted, None, birth.node_id.as_str(), "day-0").await.unwrap();
     let topology = Arc::new(RwLock::new(t.clone()));
     let ran = Arc::new(Creates(Mutex::new(Vec::new()), inner.clone()));
@@ -1499,7 +1499,7 @@ async fn a_build_a_fabric_delete_interrupts_before_it_started_sends_one_failed_e
     let r = rig().await;
     let grow = r.builds.read_build(&r.build).await.unwrap();
     let at = r.builds.newest_accepted_at_ms().await.unwrap().unwrap_or(0) + 1;
-    let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), change: Some(BuildChange::DeleteFabric), source: None, time: at };
+    let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), change: BuildChange::DeleteFabric, source: None, time: at };
     rdm_admin::build_state::accept(&*r.builds, &delete, Some(&r.build), r.switch.node_id.as_str(), "accepted").await.unwrap();
     let drive = Drive::detached(r.build.clone());
     let end = tokio::time::timeout(Duration::from_secs(10), r.env.run(&drive)).await;
@@ -1839,7 +1839,7 @@ impl OperationRunner for DeleteDuring {
         let builds = &self.0.1;
         let grow = builds.read_build(build).await.unwrap();
         let at = builds.newest_accepted_at_ms().await.unwrap().unwrap_or(0) + 1;
-        let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), change: Some(BuildChange::DeleteFabric), source: None, time: at };
+        let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), change: BuildChange::DeleteFabric, source: None, time: at };
         rdm_admin::build_state::accept(&**builds, &delete, Some(build), "mesh1.node-admin.1", "accepted").await.unwrap();
         *self.1.lock().unwrap() = Some(delete.build_id);
         self.0.0.lock().unwrap().push(op.key());

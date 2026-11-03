@@ -81,8 +81,8 @@ fn replies_match_the_frozen_twenty_seven_variant_wire_schema() {
         // build.get's frames (Q167 R-RD5)
         (Topology { build_id: b(), chunk_index: 0, chunk_count: 1, nodes: vec![] }, "15 01 62 00 01 00"),
         (Events { build_id: b(), chunk_index: 0, chunk_count: 1, events: vec![s("{}")] }, "16 01 62 00 01 01 02 7b7d"),
-        (BuildReply::Build { build_id: b(), phase: BuildPhase::Failed, current: true, events: 1, chunks: 1 }, "17 01 62 03 01 01 01"),
-        (BuildReply::Build { build_id: b(), phase: BuildPhase::Incomplete, current: false, events: 1, chunks: 1 }, "17 01 62 04 00 01 01"),
+        (BuildReply::Build { build_id: b(), phase: BuildPhase::Failed, current: true, events: 1, chunks: 1, change: BuildChange::DeleteFabric, time: 5 }, "17 01 62 03 01 01 01 02 05"),
+        (BuildReply::Build { build_id: b(), phase: BuildPhase::Incomplete, current: false, events: 1, chunks: 1, change: BuildChange::Delete { meshes: vec![s("m")], node_ids: vec![] }, time: 300 }, "17 01 62 04 00 01 01 01 01 01 6d 00 ac02"),
         (End { builds: 3 }, "18 03"),
         (RejectedFilter { reason: s("r") }, "19 01 72"),
         // appended (Q346): build_id | sections (len 1: mesh | operation | step | reason | code)
@@ -113,7 +113,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
         Events { build_id: "b".into(), chunk_index: 0, chunk_count: 1, events: vec![] },
         Topology { build_id: "b".into(), chunk_index: 0, chunk_count: 1, nodes: vec![] },
         // build.get's Build header closes one Build of several: data, never the read's terminal.
-        BuildReply::Build { build_id: "b".into(), phase: BuildPhase::Complete, current: true, events: 0, chunks: 1 },
+        BuildReply::Build { build_id: "b".into(), phase: BuildPhase::Complete, current: true, events: 0, chunks: 1, change: BuildChange::DeleteFabric, time: 0 },
     ] {
         assert_eq!(Build::frame_kind(&data), FrameKind::Data, "{data:?}");
     }

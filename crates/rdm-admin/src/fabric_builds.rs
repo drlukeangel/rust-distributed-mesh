@@ -63,7 +63,7 @@ pub fn sectioned(facts: Vec<BuildFact>, meshes: Option<&std::collections::BTreeS
     facts
         .into_iter()
         .flat_map(|f| match f {
-            BuildFact::Accepted(a) => a.topology.sections(meshes).into_iter().map(|topology| BuildFact::Accepted(BuildAccepted { topology, change: a.change.clone().filter(|c| matches!(c, rdm_core::build::BuildChange::DeleteFabric)), ..a.clone() })).collect(),
+            BuildFact::Accepted(a) => a.topology.sections(meshes).into_iter().map(|topology| BuildFact::Accepted(BuildAccepted { topology, ..a.clone() })).collect(),
             other => vec![other],
         })
         .collect()
@@ -285,7 +285,7 @@ mod tests {
             fabric: "fabric1".into(),
             meshes,
         };
-        BuildAccepted { build_id: BuildId::mint(), topology, change: None, source: None, time: 7 }
+        BuildAccepted { build_id: BuildId::mint(), topology, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 7 }
     }
 
     /// CONTRACT (INDEX Q284: "The fabric-primary records the accepted Build whole in the journal, and
@@ -332,7 +332,7 @@ mod tests {
         assert!(a.topology.names_mesh("mesh7") && !a.topology.meshes.contains_key("mesh7"), "mesh7 is the Build's, its section not here");
         let delete = BuildAccepted {
             topology: crate::accepted::FabricTopology { meshes: Default::default(), pinned: Vec::new(), ..whole.topology.clone() },
-            change: Some(rdm_core::build::BuildChange::DeleteFabric),
+            change: rdm_core::build::BuildChange::DeleteFabric,
             ..whole
         };
         for wanted in [None, Some(&touched)] {
@@ -342,7 +342,7 @@ mod tests {
             let heard = BuildMessage::from_bytes(&messages[0]).unwrap().facts;
             let [BuildFact::Accepted(a)] = heard.as_slice() else { panic!("the Build's one section: {heard:?}") };
             assert!(a.topology.meshes.is_empty() && a.topology.mesh_names().is_empty());
-            assert_eq!(a.change, Some(rdm_core::build::BuildChange::DeleteFabric), "it says it deletes the fabric");
+            assert_eq!(a.change, rdm_core::build::BuildChange::DeleteFabric, "it says it deletes the fabric");
         }
     }
 

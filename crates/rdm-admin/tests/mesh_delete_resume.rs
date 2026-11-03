@@ -347,7 +347,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
         let builds = crate::stepping(&NodeId::mint(), "mesh2");
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -497,7 +497,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
         let builds = crate::stepping(&NodeId::mint(), "mesh2");
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -587,7 +587,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
         let (build_id, delete_build) = (BuildId::mint(), BuildId::mint());
         for b in [&build_id, &delete_build] {
             builds
-                .publish_accepted(&BuildAccepted { build_id: b.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+                .publish_accepted(&BuildAccepted { build_id: b.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
                 .await
                 .unwrap();
         }
@@ -803,7 +803,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
         let builds = crate::stepping(&NodeId::mint(), "mesh2");
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -953,7 +953,7 @@ fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_topology_
         let builds = crate::stepping(&NodeId::mint(), "mesh2");
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -1011,7 +1011,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         let builds = crate::stepping(&NodeId::mint(), "mesh2");
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -1206,7 +1206,7 @@ fn a_delete_cut_after_its_terminate_runtime_receipt_is_finished_by_the_resumed_r
         let builds = crate::stepping(&NodeId::mint(), "mesh2");
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();

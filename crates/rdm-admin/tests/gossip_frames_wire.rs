@@ -170,15 +170,14 @@ fn topology() -> FabricTopology {
     t
 }
 
-fn changes() -> Vec<Option<BuildChange>> {
+fn changes() -> Vec<BuildChange> {
     let node = |path: &str, name: &str, mesh: &str, r#type: &str| rdm_core::build::Nodes { path: path.into(), name: name.into(), mesh: mesh.into(), r#type: r#type.into(), storage_persistence: None, executable: None, tags: Default::default(), config: Default::default() };
     vec![
-        None,
-        Some(BuildChange::Create { meshes: vec![rdm_core::build::Meshes { name: "mesh2".into() }], nodes: vec![node("mesh2.node-admin", "1", "mesh2", "node-admin"), node("mesh2.broker", "1", "mesh2", "broker")] }),
-        Some(BuildChange::Create { meshes: Vec::new(), nodes: vec![node("mesh2.gateway", "1", "mesh2", "gateway")] }),
-        Some(BuildChange::Delete { meshes: Vec::new(), node_ids: vec![rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "2").unwrap())] }),
-        Some(BuildChange::Delete { meshes: vec!["mesh2".into()], node_ids: Vec::new() }),
-        Some(BuildChange::DeleteFabric),
+        BuildChange::Create { meshes: vec![rdm_core::build::Meshes { name: "mesh2".into() }], nodes: vec![node("mesh2.node-admin", "1", "mesh2", "node-admin"), node("mesh2.broker", "1", "mesh2", "broker")] },
+        BuildChange::Create { meshes: Vec::new(), nodes: vec![node("mesh2.gateway", "1", "mesh2", "gateway")] },
+        BuildChange::Delete { meshes: Vec::new(), node_ids: vec![rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "2").unwrap())] },
+        BuildChange::Delete { meshes: vec!["mesh2".into()], node_ids: Vec::new() },
+        BuildChange::DeleteFabric,
     ]
 }
 
@@ -365,7 +364,7 @@ fn without_executables(t: &FabricTopology) -> FabricTopology {
 fn the_accepted_fact_on_the_build_topic_carries_no_executable_and_a_twelve_node_fabric_fits_one_message() {
     let named = twelve_node_topology();
     assert_eq!(named.meshes.values().map(|m| m.nodes.len()).sum::<usize>(), 12);
-    let fact = |t: FabricTopology| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, change: None, source: None, time: 1_700_000_000_000 });
+    let fact = |t: FabricTopology| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1_700_000_000_000 });
     let with = fact(named.clone());
     let without = fact(without_executables(&named));
 

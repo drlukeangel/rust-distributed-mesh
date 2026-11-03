@@ -437,13 +437,13 @@ impl BuildCarrier {
                     o.3 += 1;
                     o.4.extend(events);
                 }
-                BuildReply::Build { build_id, phase, current, events, chunks } => {
+                BuildReply::Build { build_id, phase, current, events, chunks, change, time } => {
                     let (id, _topology_chunks, nodes, event_chunks, held) = open.take().unwrap_or_else(|| (build_id.clone(), 0, Vec::new(), 0, Vec::new()));
                     if id != build_id || event_chunks != chunks || held.len() != events as usize {
                         return Err(incomplete(format!("Build {build_id}'s header counts {events} events in {chunks} chunks, and {} in {event_chunks} chunks of Build {id} arrived", held.len())));
                     }
                     let build_id = BuildId::parse(&build_id).map_err(|e| CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("build.get answered a Build id that is not a Crockford id: {e}") })?;
-                    out.push(Build { build_id, phase, current, nodes, events: held });
+                    out.push(Build { build_id, phase, current, change, time, nodes, events: held });
                 }
                 BuildReply::End { builds } => {
                     if let Some((id, ..)) = open {
@@ -487,6 +487,10 @@ pub struct Build {
     pub phase: BuildPhase,
     /// Whether this is the current Build, selected once for the read.
     pub current: bool,
+    /// The change as it came in, the Build record's (build.md §1): history only.
+    pub change: BuildChange,
+    /// When the Build was accepted, the Build record's: milliseconds since the Unix epoch.
+    pub time: u64,
     /// Its topology: every node's create spec, in `(path, name)` order.
     pub nodes: Vec<NodeSpec>,
     /// Its events, in event.id order: each the events store's CloudEvents envelope (build.md §5).

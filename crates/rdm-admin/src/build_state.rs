@@ -35,9 +35,9 @@ pub struct BuildAccepted {
     pub build_id: BuildId,
     /// The complete topology the Build realizes.
     pub topology: FabricTopology,
-    /// The change as it came in (build.md §1): history only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub change: Option<BuildChange>,
+    /// The change as it came in (build.md §1): history only. Every Build is a Create, a Delete or a
+    /// DeleteFabric (Q342); Day 0's is the Create of its mesh and its one node-admin.
+    pub change: BuildChange,
     /// Who wrote the record: the accepting fabric-primary's exact birth,
     /// `rdm://<fabric_id>/<node_id>/<incarnation>` (gossip.md §3.4's `source`). A record written before
     /// the field names none.
@@ -242,8 +242,7 @@ pub struct BuildProjection {
     /// The complete topology the Build realizes.
     pub topology: FabricTopology,
     /// The change as it came in (build.md §1): history only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub change: Option<BuildChange>,
+    pub change: BuildChange,
     /// When the Build was accepted, in milliseconds since the Unix epoch.
     pub time: u64,
     /// Where the Build is in its life.
@@ -310,7 +309,7 @@ impl BuildProjection {
 
     /// Whether the change that produced this Build is fabric.delete.
     pub fn deletes_fabric(&self) -> bool {
-        matches!(self.change, Some(BuildChange::DeleteFabric))
+        matches!(self.change, BuildChange::DeleteFabric)
     }
 
     /// Whether this Build leaves the fabric no mesh: a fabric.delete, or the fabric-primary's own delete
@@ -1575,7 +1574,7 @@ mod ended_fold_cells {
     use crate::events_storage::{EndedSection, EndedState, Event, EventSource};
 
     fn accepted() -> BuildAccepted {
-        BuildAccepted { build_id: BuildId::mint(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::mint()), change: None, source: None, time: 1 }
+        BuildAccepted { build_id: BuildId::mint(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::mint()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1 }
     }
 
     fn by() -> EventSource {

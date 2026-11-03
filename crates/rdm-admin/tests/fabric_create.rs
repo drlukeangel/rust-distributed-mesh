@@ -192,7 +192,14 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         };
         assert_eq!(day0_proj.build_id, build_id);
         assert_eq!(day0_proj.state, rdm_admin::build_state::BuildState::Complete);
-        assert!(day0_proj.change.is_none());
+        // Day 0's Build is the Create of its mesh and its one node-admin (Q342).
+        match &day0_proj.change {
+            rdm_core::build::BuildChange::Create { meshes, nodes } => {
+                assert_eq!(meshes.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), vec!["mesh1"], "Day 0 creates its own mesh");
+                assert_eq!(nodes.iter().map(|n| (n.path.as_str(), n.name.as_str(), n.r#type.as_str())).collect::<Vec<_>>(), vec![("mesh1.node-admin", "1", "node-admin")], "Day 0 creates its one node-admin");
+            }
+            other => panic!("Day 0's Build is a Create, not {other:?}"),
+        }
         assert_eq!(day0_proj.topology.meshes.get("mesh1").map(|m| &m.mesh_id), Some(&mesh_id));
 
         running.leave().await;

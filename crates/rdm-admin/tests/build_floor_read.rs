@@ -28,7 +28,7 @@ fn admin(name: PathName, storage: Arc<dyn LocalBuildLog>) -> Admin {
 /// The Build storage holds Build `id`, complete: the store's current Build.
 async fn stored(store: &MemoryBuildStateAdapter, id: &BuildId) {
     let fp = rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
-    store.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 }).await.unwrap();
+    store.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 }).await.unwrap();
     crate::end_build(store, id, &fp, rdm_admin::events_storage::EndedState::Complete).await;
 }
 

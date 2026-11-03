@@ -84,7 +84,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
         log.publish_accepted(&BuildAccepted {
             build_id: build_id.clone(),
             topology,
-            change: None,
+            change: rdm_core::build::BuildChange::DeleteFabric,
             source: None, time: 1000,
         })
         .await

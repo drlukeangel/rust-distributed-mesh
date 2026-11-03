@@ -649,6 +649,8 @@ mod tests {
             build_id: BuildId::mint(),
             phase: BuildPhase::Failed,
             current: false,
+            change: crate::Change::Delete { meshes: Vec::new(), node_ids: Vec::new() },
+            time: 0,
             nodes: Vec::new(),
             events: vec![
                 serde_json::json!({"type": "rdm.build.started", "data": {"build_id": "b"}}),

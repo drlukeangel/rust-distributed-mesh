@@ -150,7 +150,7 @@ async fn a_node_stopped_past_the_ttl_is_collected_by_one_ordinary_delete_build()
     assert_eq!(*node, old.0);
     assert_ne!(build_id, b0, "a new topology Build, never an attempt of the settled one");
     let p = builds.read_build(&build_id).await.unwrap();
-    assert_eq!(p.change, Some(BuildChange::Delete { meshes: Vec::new(), node_ids: vec![old.1.clone()] }), "the ordinary node.delete Build");
+    assert_eq!(p.change, BuildChange::Delete { meshes: Vec::new(), node_ids: vec![old.1.clone()] }, "the ordinary node.delete Build");
     assert!(!p.topology.contains(&old.0) && p.topology.contains(&young.0), "only the expired node leaves the topology: {:?}", p.topology);
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(build_id.clone()), "the current build_id names the delete");
 

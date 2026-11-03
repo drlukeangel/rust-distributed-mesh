@@ -117,7 +117,7 @@ async fn mesh1_section(admin: Node, memory: &MemoryBuildStateAdapter) -> (Arc<to
     let after = rdm_admin::topology::Topology { fabric: fabric.clone(), meshes: meshes.clone(), nodes: vec![admin.clone()] };
     let mut topology = FabricTopology::of_observed(&after);
     topology.pinned = deleted.iter().map(|n| (n.location(), rdm_admin::build::PinnedBirth::of(n).unwrap())).collect();
-    memory.publish_accepted(&BuildAccepted { build_id: build_id(), topology, change: None, source: None, time: 0 }).await.unwrap();
+    memory.publish_accepted(&BuildAccepted { build_id: build_id(), topology, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 }).await.unwrap();
     let view = rdm_admin::topology::Topology { fabric, meshes, nodes: [vec![admin], deleted.to_vec()].concat() };
     let section = rdm_admin::build_run::section_of(&memory.read_build(&build_id()).await.unwrap(), "mesh1", &view, &me);
     assert_eq!(section.len(), 2, "mesh1's section is the two deletes: {section:?}");

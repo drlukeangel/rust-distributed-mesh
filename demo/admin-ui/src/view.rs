@@ -78,11 +78,11 @@ pub async fn overview(admin: &Admin) -> Value {
     })
 }
 
-/// A Build as the tabs draw it, from what `build.get` carries (build.md §5): its state, its topology's
-/// node count, its events in event.id order and its end. Its time is its first event's (the
-/// `rdm.build.started` of its first run); `sections` are the meshes the fabric-primary dispatched a
-/// section to; `steps` are its `rdm.build.step` events; `ended` is the `state` of its last
-/// `rdm.build.ended` (`complete`, `incomplete { sections }` or `failed { reason, code }`, Q346).
+/// A Build as the tabs draw it, from what `build.get` carries (build.md §5): its state, its record's
+/// change and acceptance time (ms since the Unix epoch), its topology's node count, its events in
+/// event.id order and its end. `sections` are the meshes the fabric-primary dispatched a section to;
+/// `steps` are its `rdm.build.step` events; `ended` is the `state` of its last `rdm.build.ended`
+/// (`complete`, `incomplete { sections }` or `failed { reason, code }`, Q346).
 fn build_view(b: &rdm_client::Build) -> Value {
     let of = |t: &'static str| events_of(b, t);
     let steps: Vec<Value> = of("rdm.build.step").map(|e| json!({ "mesh": e["data"]["mesh"], "op": e["data"]["op"], "step": e["data"]["step"], "state": e["data"]["state"], "subject": e["subject"], "time": e["time"] })).collect();
@@ -92,7 +92,8 @@ fn build_view(b: &rdm_client::Build) -> Value {
         "state": format!("{:?}", b.phase).to_lowercase(),
         "current": b.current,
         "nodes": b.nodes.len(),
-        "time": b.events.first().map_or(Value::Null, |e| e["time"].clone()),
+        "change": serde_json::to_value(&b.change).unwrap_or(Value::Null),
+        "time": b.time,
         "runs": of("rdm.build.started").count(),
         "sections": sections,
         "steps": steps,
@@ -107,7 +108,7 @@ fn events_of<'a>(b: &'a rdm_client::Build, t: &'static str) -> impl Iterator<Ite
 
 /// The header's line of the current Build: its id, state and end.
 fn brief(v: &Value) -> Value {
-    json!({ "build_id": v["build_id"], "state": v["state"], "time": v["time"], "ended": v["ended"] })
+    json!({ "build_id": v["build_id"], "state": v["state"], "change": v["change"], "time": v["time"], "ended": v["ended"] })
 }
 
 /// The nodes with their role labels, and every connection fact each node answers for its own exact

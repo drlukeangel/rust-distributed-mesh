@@ -149,7 +149,7 @@ async fn executor(calls: &Arc<Calls>, hold: Hold) -> (RunDoor, StopGate, Vec<Bui
     let after = rdm_admin::topology::Topology { fabric: fabric.clone(), meshes: meshes.clone(), nodes: vec![admin.clone()] };
     let mut accepted = FabricTopology::of_observed(&after);
     accepted.pinned = [(deleted.location(), rdm_admin::build::PinnedBirth::of(&deleted).unwrap())].into_iter().collect();
-    memory.publish_accepted(&BuildAccepted { build_id: build_id(), topology: accepted, change: None, source: None, time: 0 }).await.unwrap();
+    memory.publish_accepted(&BuildAccepted { build_id: build_id(), topology: accepted, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 }).await.unwrap();
     let view = rdm_admin::topology::Topology { fabric, meshes, nodes: vec![admin, deleted] };
     let section = rdm_admin::build_run::section_of(&memory.read_build(&build_id()).await.unwrap(), "mesh1", &view, &me);
     assert_eq!(section.len(), 1, "mesh1's section is the one delete: {section:?}");

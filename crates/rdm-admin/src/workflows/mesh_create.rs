@@ -104,7 +104,7 @@ mod tests {
             .publish_accepted(&BuildAccepted {
                 build_id: day0_id.clone(),
                 topology: root_top.clone(),
-                change: None,
+                change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() },
                 source: None, time: 1,
             })
             .await
