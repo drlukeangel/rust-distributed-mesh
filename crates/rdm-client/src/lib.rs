@@ -50,8 +50,8 @@ pub use objects::{
 pub use peers::{birth_of_line, birth_of_view, client_bind_for, Peers, BIRTH_LINE};
 /// A node's birth, as a node-admin prints it at start ([`BIRTH_LINE`]).
 pub use rdm_core::MeshNode;
-/// A node workflow's reply stream and receipt fold ([`WorkflowStream`], [`WorkflowKind`], [`fold`]).
-pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, WorkflowKind, WorkflowStream};
+/// A node workflow's reply stream and step event fold ([`WorkflowStream`], [`WorkflowKind`], [`fold`]).
+pub use workflow::{fold, fold_step_events, fold_steps, Folded, Frame, Resume, WorkflowKind, WorkflowStream};
 
 /// What the reads answer: the views travel on op `0x1B` and the control API answers the same shapes.
 /// A read's filter (Q167): `(property, values)` pairs, AND across pairs, any-of within.

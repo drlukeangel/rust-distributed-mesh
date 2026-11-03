@@ -1,5 +1,5 @@
 //! The typed `node` objects, end to end: a workflow call returns a reply stream read from the
-//! fabric-primary's Build family (op `0x20`), and the receipts are written by the real create
+//! fabric-primary's Build family (op `0x20`), and the step events are written by the real create
 //! pipeline running in the same process.
 //!
 //! The two acceptance contracts of ops-naming ("A failure names its step", "A broken stream is
@@ -676,7 +676,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_pending_frame() {
 #[test]
 fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     let cap = capture();
-    let (frames, end, receipts_after_cut, resume, receipts_after, final_frames, disposition, key) = cap.run(async {
+    let (frames, end, build_after_cut, resume, build_after, final_frames, disposition, key) = cap.run(async {
         let rig = Arc::new(Rig::new());
         let door = door(&rig, Duration::from_secs(60)).await;
         let served = serve(door.clone()).await;
@@ -686,7 +686,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         let accepted = stream.accepted().cloned().expect("the call opened a Build");
         let mut frames = Vec::new();
         // The cut: the caller's wire is severed while the create waits for the birth's report, which
-        // is not heard yet. The wait is where it is cut once the step before it has its receipt.
+        // is not heard yet. The wait is where it is cut once the step before it has its step event.
         loop {
             let view = rig.builds.read_build(&build).await.unwrap();
             if view.steps.iter().any(|s| s.step == "MakeRuntimeFactAvailableToBirth") {
@@ -705,8 +705,8 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         // Re-attach over a new transport to the same fabric-primary.
         let again = serve(door).await;
         let builds = Builds::new(again.carrier.clone());
-        let receipts_after_cut = builds.get(&rdm_client::Filter::new().eq("id", [accepted.build_id.to_string()])).await.unwrap().remove(0);
-        let resume = Resume::from_receipts(&WorkflowKind::Create, &receipts_after_cut).unwrap();
+        let build_after_cut = builds.get(&rdm_client::Filter::new().eq("id", [accepted.build_id.to_string()])).await.unwrap().remove(0);
+        let resume = Resume::from_step_events(&WorkflowKind::Create, &build_after_cut).unwrap();
         // The birth is heard this time: the Build the cut did not cancel goes on to its end, and the
         // re-submit streams it.
         let mut resumed = nodes_over(&again.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
@@ -717,9 +717,9 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         });
         let (final_frames, resumed_end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(resumed_end.is_none(), "the resumed stream ends with its terminal frame: {resumed_end:?}");
-        let receipts_after = builds.get(&rdm_client::Filter::new().eq("id", [accepted.build_id.to_string()])).await.unwrap().remove(0);
+        let build_after = builds.get(&rdm_client::Filter::new().eq("id", [accepted.build_id.to_string()])).await.unwrap().remove(0);
         let key = rig.create_key(&build, &PathName::new("mesh1.node", "3").unwrap()).await;
-        (frames, end, receipts_after_cut, resume, receipts_after, final_frames, disposition, key)
+        (frames, end, build_after_cut, resume, build_after, final_frames, disposition, key)
     });
     assert!(matches!(end, CallEnd::Indeterminate { .. }), "a cut stream is Indeterminate, not {end:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Failed { .. } | Frame::Complete)), "no step is inferred failed or complete from a broken stream: {frames:?}");
@@ -727,16 +727,16 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
 
     let completed_steps = |r: &rdm_client::Build| -> Vec<String> { r.completed_steps().into_iter().map(|(_, _, step)| step).collect() };
     let step_events = |r: &rdm_client::Build| -> Vec<String> { r.events.iter().filter(|e| e["type"] == "rdm.build.step").filter_map(|e| e["data"]["step"].as_str().map(str::to_string)).collect() };
-    assert_eq!(step_events(&receipts_after_cut).len(), STEPS_BEFORE_THE_BIND.len(), "build.get returns exactly the step events of the steps that completed: {:?}", receipts_after_cut.events);
-    assert_eq!(completed_steps(&receipts_after_cut), STEPS_BEFORE_THE_BIND);
-    assert_eq!(resume.from, Some((key.to_string(), "WaitForBind".to_string())), "the resume starts at the first step without a Complete receipt");
+    assert_eq!(step_events(&build_after_cut).len(), STEPS_BEFORE_THE_BIND.len(), "build.get returns exactly the step events of the steps that completed: {:?}", build_after_cut.events);
+    assert_eq!(completed_steps(&build_after_cut), STEPS_BEFORE_THE_BIND);
+    assert_eq!(resume.from, Some((key.to_string(), "WaitForBind".to_string())), "the resume starts at the first step without a complete step event");
     assert_eq!(resume.completed.len(), STEPS_BEFORE_THE_BIND.len());
     assert_eq!(disposition, Some(rdm_core::build::Disposition::Attached), "the re-submit attached to the Build the cut left running");
 
     for step in STEPS_BEFORE_THE_BIND {
-        assert_eq!(step_events(&receipts_after).iter().filter(|s| *s == step).count(), 1, "{step} was not run again: one step event");
+        assert_eq!(step_events(&build_after).iter().filter(|s| *s == step).count(), 1, "{step} was not run again: one step event");
     }
-    assert_eq!(completed_steps(&receipts_after).len(), STEPS_BEFORE_THE_BIND.len() + 6, "the same run went on through the bind wait and the join to its end");
+    assert_eq!(completed_steps(&build_after).len(), STEPS_BEFORE_THE_BIND.len() + 6, "the same run went on through the bind wait and the join to its end");
     assert!(matches!(&final_frames[0], Frame::Started { .. }));
     assert_eq!(final_frames[1..], [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
 
@@ -1118,7 +1118,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     );
     // A node-admin's workflow is any node's: its roles move by node.primary.update before the operation
     // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
-    // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
+    // node-type.md, Part D: the SeatTransfer step goes), so its step events fold to the same events.
     let admin: rdm_core::PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
     let f = rdm_client::fold(&WorkflowKind::Delete(vec![admin_id.clone()]), &view(&rdm_core::OperationId::node("node.delete", &admin_id), delete.clone())).unwrap();
     assert_eq!(
@@ -1136,18 +1136,18 @@ fn every_pipeline_step_is_named_by_the_client() {
     // A node-admin's delete with only NodeDeleting held resumes at StopNode, as any node's does.
     let r = rdm_client::Resume::from_view(&WorkflowKind::Delete(vec![admin_id.clone()]), &view(&rdm_core::OperationId::node("node.delete", &admin_id), vec!["NodeDeleting"])).unwrap();
     assert_eq!(r.from, Some((rdm_core::OperationId::node("node.delete", &admin_id).to_string(), "StopNode".to_string())));
-    // A SeatTransfer receipt is a deleted step: refused by name under any target, never folded.
+    // A SeatTransfer step event is a deleted step: refused by name under any target, never folded.
     for (kind, op, steps) in [
         (WorkflowKind::Delete(vec![rpc_id.clone()]), rdm_core::OperationId::node("node.delete", &rpc_id), vec!["NodeDeleting", "SeatTransfer"]),
         (WorkflowKind::Stop(name.clone()), rdm_core::OperationId::node("node.stop", &rpc_id), vec!["SeatTransfer"]),
         (WorkflowKind::Stop(admin.clone()), rdm_core::OperationId::node("node.stop", &admin_id), vec!["SeatTransfer"]),
     ] {
-        assert_eq!(rdm_client::fold(&kind, &view(&op, steps)).unwrap_err(), CallEnd::UnrecognisedReceipt { operation: op.to_string(), step: "SeatTransfer".into() }, "{kind:?}");
+        assert_eq!(rdm_client::fold(&kind, &view(&op, steps)).unwrap_err(), CallEnd::UnrecognisedStepEvent { operation: op.to_string(), step: "SeatTransfer".into() }, "{kind:?}");
     }
     let unknown = view(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap())), vec!["AllocateIdentity", "InventedStep"]);
     assert_eq!(
         rdm_client::fold(&WorkflowKind::Create, &unknown).unwrap_err(),
-        CallEnd::UnrecognisedReceipt { operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap())).to_string(), step: "InventedStep".into() }
+        CallEnd::UnrecognisedStepEvent { operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap())).to_string(), step: "InventedStep".into() }
     );
 }
 

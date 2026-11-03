@@ -16,7 +16,7 @@ over one [iroh](https://iroh.computer) QUIC network:
 - **A [Build](docs/architecture/build.md)** is the unit of topology change and self-healing execution.
   Creating a mesh, adding or removing a node, replacing a node's executable, or recovering an exited
   node runs as an ordered sequence of [Build](docs/architecture/build.md) steps with durable step
-  receipts.
+  events.
 - **[Gossip](docs/architecture/gossip.md) and [Node RPC](docs/architecture/node-rpc-envelope.md)**
   connect the fleet: nodes publish [topology](docs/architecture/gossip.md) digests and
   discover peers over `iroh-gossip`, and call one another over authenticated, framed

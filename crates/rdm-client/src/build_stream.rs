@@ -245,9 +245,9 @@ pub struct Followed {
 /// reattachment": "`build.get [id: build_id]` for the events, then the outer stream again, resuming from
 /// the events").
 pub struct Reattached {
-    /// The receipts `build.get` read, every attempt's, in order.
+    /// The step events `build.get` read, every attempt's, in order.
     pub events: Vec<serde_json::Value>,
-    /// The outer stream, opened again from the current attempt the receipts name.
+    /// The outer stream, opened again from the current attempt the step events name.
     pub stream: BuildStream,
 }
 
@@ -255,7 +255,7 @@ pub struct Reattached {
 /// the reattach after a stream op's connection closes is the owner's). A stream that breaks
 /// before its terminal (its connection closed: `Indeterminate`), ends without one, or ends
 /// `FabricPrimaryMoved` is reattached through `reattach` by its `build_id` from the attempt it carried: the
-/// receipts it reads are kept as step frames, each completed step once, then the stream it opens again
+/// step events it reads are kept as step frames, each completed step once, then the stream it opens again
 /// is read on, a step it replays kept once. The terminal is `Complete`, `Incomplete`, `Failed`, `Got` or `Deleted`.
 /// `Err` is a reattachment refused or not made, named: nothing here waits or tries again on its own.
 pub async fn follow_with<F, Fut>(mut stream: BuildStream, mut reattach: F) -> Result<Followed, CallEnd>
@@ -353,7 +353,7 @@ impl BuildCarrier {
             let opts = CallOptions::default();
             // The first reply of the call: an early refusal of the receiving node, or the first frame
             // of the stream (`Started`, or the handler's own refusal).
-            // The frames are the executor's receipts, recorded before they are sent; this client records
+            // The frames are the executor's step events, recorded before they are sent; this client records
             // nothing of them: reading a frame is its recovery (node-rpc.md §43).
             let (first, stream) = match self.client.call_stream::<BuildFamily>(&target, &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
                 Err((RpcOutcome::Reply(r), _)) => (r.into_value(), None),

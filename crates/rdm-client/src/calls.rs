@@ -81,10 +81,10 @@ pub enum CallEnd {
     },
     /// A Build step event names an operation or step this client does not recognise. A reader
     /// that does not recognise a value refuses it by name.
-    UnrecognisedReceipt {
+    UnrecognisedStepEvent {
         /// The step's operation, `noun.verb:<node_id>`.
         operation: String,
-        /// The receipt's step.
+        /// The step event's step.
         step: String,
     },
     /// A read of one entity the answering node does not hold (`node.get { id }`: `NOT_FOUND`, Q165).
@@ -107,7 +107,7 @@ impl std::fmt::Display for CallEnd {
             Self::Rejected { reason, detail } => write!(f, "rejected ({reason}): {detail}"),
             Self::BuildInProgress { current } => write!(f, "Build {current} is still reconciling; one Build at a time"),
             Self::NotBackedToday { op, why } => write!(f, "{} is not backed by an op today: {why}", op.name()),
-            Self::UnrecognisedReceipt { operation, step } => write!(f, "a step event names operation {operation} step {step}, which this client does not recognise"),
+            Self::UnrecognisedStepEvent { operation, step } => write!(f, "a step event names operation {operation} step {step}, which this client does not recognise"),
             Self::NotFound { read, detail } => write!(f, "{read}: not found: {detail}"),
         }
     }
@@ -124,7 +124,7 @@ impl CallEnd {
             Self::Indeterminate { code, .. } => *code,
             Self::Unserved { .. } | Self::NotBackedToday { .. } => Code::Unimplemented,
             Self::RejectedStale { .. } => Code::Aborted,
-            Self::UnrecognisedReceipt { .. } => Code::DataLoss,
+            Self::UnrecognisedStepEvent { .. } => Code::DataLoss,
             Self::NotFound { .. } => Code::NotFound,
             Self::Refused { .. } | Self::Rejected { .. } | Self::BuildInProgress { .. } => Code::FailedPrecondition,
         }
@@ -140,7 +140,7 @@ impl CallEnd {
             Self::Rejected { .. } => "rejected",
             Self::BuildInProgress { .. } => "build-in-progress",
             Self::NotBackedToday { .. } => "not-backed-today",
-            Self::UnrecognisedReceipt { .. } => "unrecognised-receipt",
+            Self::UnrecognisedStepEvent { .. } => "unrecognised-step-event",
             Self::NotFound { .. } => "not-found",
         }
     }

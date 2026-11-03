@@ -601,7 +601,7 @@ impl Builds {
 
     /// `build.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
     /// of `filter` (`id`, `current`, `phase`, `attempt`, `executor`), newest first, each whole: header,
-    /// topology (`nodes`) and receipts (`steps`), the current one marked. `[id: x]` is one Build, the
+    /// topology (`nodes`) and step events (`steps`), the current one marked. `[id: x]` is one Build, the
     /// empty list when the fabric-primary holds none of that id; `[current: true]` the current Build.
     pub async fn get(&self, filter: &Filter) -> Result<Vec<Build>, CallEnd> {
         let span = BuildOp::Get.span();
