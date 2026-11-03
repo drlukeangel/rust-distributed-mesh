@@ -841,10 +841,14 @@ impl DriveEnv {
                 return Some(DriveEnd::RoleLost(why));
             }
         };
-        // The role is this admin's when the view's holder is the birth it was born as (its node id).
+        // The role is this admin's when the view's holder is the birth it was born as (its node id). A
+        // fabric-primary whose own node.delete removed it from its own view, the one Build left after
+        // fabric.deleted, still holds it while its primary record names it: nobody is left in the fabric
+        // to take it, and the delete's node.deleted is its last reply (fabric-delete.md step 4).
         let (held, role) = {
             let t = self.topology.read().await;
-            (t.is_fabric_primary(&self.birth.node_id), t.fabric_primary().map(|n| (n.location(), n.node_id.clone())))
+            let deleted_itself = t.own(&self.birth.node_id).is_none() && t.fabric_primary().is_none() && recorded_primary.as_ref() == Some(&self.birth.node_id);
+            (t.is_fabric_primary(&self.birth.node_id) || deleted_itself, t.fabric_primary().map(|n| (n.location(), n.node_id.clone())))
         };
         if !held {
             let shows = role.as_ref().map(|(name, id)| format!("path={} name={} node_id={id}", name.path, name.name)).unwrap_or_else(|| "none".into());
