@@ -1104,9 +1104,9 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
     assert_eq!(named("rdm.node_admin.mesh.reject.via-incomplete-handoff").iter().filter(|s| s["attributes"]["roster"] == "3" && s["attributes"]["exited"] == "0").count(), 1, "one incomplete handoff is refused, for the unknown Build only");
 }
 
-/// A Build log whose executor is cut once: the `step` receipt of `operation` is refused, as the fault
-/// door's `Receipt` cut leaves it (`FaultedBuilds::append_step_receipt` holds BEFORE the receipt is
-/// durable, so the step's work is done and its receipt is not). Everything else reads and writes the
+/// A Build log whose executor is cut once: the `step` step event of `operation` is refused, as the fault
+/// door's `StepEvent` cut leaves it (`FaultedBuilds::write_step` holds BEFORE the step event is
+/// durable, so the step's work is done and its step event is not). Everything else reads and writes the
 /// log it wraps.
 struct CutBuilds<'a> {
     inner: &'a rdm_admin::build_run::FramedBuilds,

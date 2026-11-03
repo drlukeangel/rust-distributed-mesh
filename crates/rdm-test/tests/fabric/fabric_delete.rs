@@ -320,7 +320,7 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
     let mut estate = estate_with("a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after").await;
     let ids = ids_of(&estate).await;
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "at": Estate::path("mesh1.node", "1")})).await;
+    door.arm("launch", json!({"kind": "step-event", "step": "DeployRuntime", "operation": "node.create", "at": Estate::path("mesh1.node", "1")})).await;
     let grown = [MeshDesired::of("mesh1", [("node-admin", 1), ("node", 2)])];
     let mut grow = estate.submit_named("mesh1 grown to two nodes", |current, executables| current.resized(&grown, false, executables)).await;
     let grow_id = grow.build_id().to_string();
@@ -377,7 +377,7 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
     let mut estate = ready_fabric("the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outstanding_is_continued_by_its_successor", &shape).await;
     let ids = ids_of(&estate).await;
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "at": Estate::path("mesh1.node", "2")})).await;
+    door.arm("launch", json!({"kind": "step-event", "step": "DeployRuntime", "operation": "node.create", "at": Estate::path("mesh1.node", "2")})).await;
     let grow = estate.submit_named("one more node in mesh1", |current, executables| current.with_one_more("mesh1", "node", executables)).await;
     let grow_id = grow.build_id().to_string();
     let held = door.wait_held("launch").await;
@@ -432,7 +432,7 @@ async fn the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next
     let mut estate = ready_fabric("the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next_attempt", &shape).await;
     let ids = ids_of(&estate).await;
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("first-mesh", json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete", "node": delete_subject(&id_in(&ids, "mesh2.node-admin", "1"))})).await;
+    door.arm("first-mesh", json!({"kind": "step-event", "step": "NodeDeleted", "operation": "node.delete", "node": delete_subject(&id_in(&ids, "mesh2.node-admin", "1"))})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
@@ -475,7 +475,7 @@ async fn the_sole_admin_lost_mid_delete_is_adopted_by_a_launch_at_a_new_path_nam
     let ids = ids_of(&estate).await;
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
+    door.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
@@ -534,7 +534,7 @@ async fn the_backbone_executor_takes_both_roles_and_deletes_the_admin_less_mesh_
     let ids = ids_of(&estate).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).expect("mesh2's id");
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh2_id}})).await;
+    door.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh2_id}})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
@@ -671,7 +671,7 @@ async fn the_fabric_primary_lost_with_no_mesh_left_leaves_only_its_own_node_dele
     let ids = ids_of(&estate).await;
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("deleted", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_MESH_DELETED, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
+    door.arm("deleted", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_MESH_DELETED, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
@@ -679,7 +679,7 @@ async fn the_fabric_primary_lost_with_no_mesh_left_leaves_only_its_own_node_dele
     assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh1's MeshDeleted: {held}");
     // mesh1's MeshDeleted made durable; the fabric-primary is held at fabric.delete's Complete, before
     // fabric.deleted is written.
-    door.arm("next", json!({"kind": "receipt", "step": "Complete", "operation": "fabric.delete"})).await;
+    door.arm("next", json!({"kind": "step-event", "step": "Complete", "operation": "fabric.delete"})).await;
     door.release("deleted").await;
     let next = door.wait_held("next").await;
     assert_eq!(next["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at fabric.delete's Complete: {next}");
@@ -744,9 +744,9 @@ async fn the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_t
     let mesh1_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).expect("mesh2's id");
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh2_id}})).await;
+    door.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh2_id}})).await;
     let executor = Door::at(&estate, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).await;
-    executor.arm("midway", json!({"kind": "receipt", "step": "Complete", "node": delete_subject(&id_in(&ids, "mesh1.node", "1"))})).await;
+    executor.arm("midway", json!({"kind": "step-event", "step": "Complete", "node": delete_subject(&id_in(&ids, "mesh1.node", "1"))})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
@@ -798,7 +798,7 @@ async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_
     let ids = ids_of(&estate).await;
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
+    door.arm("roster", json!({"kind": "step-event", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": "mesh.delete", "node": {"Mesh": mesh_id}})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
@@ -810,7 +810,7 @@ async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_
     // The first launch is held, from its first line, once its teardown has terminated mesh1.node.2's runtime.
     let faults = estate.root.join("faults");
     std::fs::create_dir_all(&faults).unwrap();
-    let midway = json!([{"id": "midway", "kind": "receipt", "step": "NodeDeleted", "node": delete_subject(&id_in(&ids, "mesh1.node", "2"))}]);
+    let midway = json!([{"id": "midway", "kind": "step-event", "step": "NodeDeleted", "node": delete_subject(&id_in(&ids, "mesh1.node", "2"))}]);
     std::fs::write(rdm_test::admin_faults::boot_cuts_file(&estate.root, &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()), serde_json::to_vec(&midway).unwrap()).unwrap();
     estate.kill_bootstrap();
 

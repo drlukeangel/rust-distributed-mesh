@@ -163,7 +163,7 @@ async fn a_failed_step_ends_its_section_and_the_build_ends_incomplete() {
     binding.executable = doomed.clone();
     let (good_at, bad_at) = (rdm_core::PathName::new(&good.path, &good.name).unwrap(), rdm_core::PathName::new(&bad.path, &bad.name).unwrap());
     let door = rdm_test::faults::Door::at(&estate, &mesh2_primary(&estate).await.location()).await;
-    door.arm("held", serde_json::json!({"kind": "receipt", "step": "PrepareStorage", "operation": "node.create", "at": bad_at})).await;
+    door.arm("held", serde_json::json!({"kind": "step-event", "step": "PrepareStorage", "operation": "node.create", "at": bad_at})).await;
 
     let stream = estate.submit_change(Change::Create { meshes: Vec::new(), nodes: vec![good, bad] }).await;
     let build_id = stream.build_id().clone();

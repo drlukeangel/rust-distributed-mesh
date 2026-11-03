@@ -1449,7 +1449,7 @@ impl DeploymentPipeline<'_> {
             let unwritten = format!("{}: the {step} event of operation {} (Build {}) was not written: {e}", self.template.executor(), run.operation, run_build);
             span.record("outcome", "receipt-refused");
             tracing::info_span!(
-                "rdm.node_admin.deployment.reject.via-receipt-refused",
+                "rdm.node_admin.deployment.reject.via-step-event-refused",
                 step,
                 build_id = %run_build.log(),
                 operation = %run.operation.action, operation_subject = ?run.operation.subject,
@@ -1457,7 +1457,7 @@ impl DeploymentPipeline<'_> {
                 work = if r.is_ok() { "complete" } else { "failed" },
                 detail = %unwritten,
             )
-            .in_scope(|| tracing::info!("the step's receipt was refused: the step is not committed"));
+            .in_scope(|| tracing::info!("the step's step event was refused: the step is not committed"));
             let reason = match r {
                 Ok(_) => unwritten,
                 // The step failed; its Failed receipt not written is said with it.

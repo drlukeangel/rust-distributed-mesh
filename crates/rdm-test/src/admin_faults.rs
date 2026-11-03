@@ -37,24 +37,24 @@ use tracing::Instrument;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CutSpec {
-    /// A deployment-pipeline or Build step: the step's work is done and its receipt is not yet
+    /// A deployment-pipeline or Build step: the step's work is done and its step event is not yet
     /// durable. `operation` matches an action prefix; `node` matches the structured subject; `at`
     /// matches a create of the node at a path and name, the node.id its Build record names there (D58).
-    Receipt {
+    StepEvent {
         /// The step name.
         step: String,
-        /// A prefix of the receipt's operation key.
+        /// A prefix of the step event's operation key.
         #[serde(default)] operation: Option<String>,
         /// The operation's explicit subject.
         #[serde(default)] node: Option<rdm_core::OperationSubject>,
-        /// The path and name of the node a create's receipt creates.
+        /// The path and name of the node a create's step event creates.
         #[serde(default)] at: Option<rdm_core::PathName>,
-        /// The receipt is a Failed one (the step's work ended Failed and its receipt is not yet
+        /// The step event is a Failed one (the step's work ended Failed and its step event is not yet
         /// durable); a Complete one when false.
         #[serde(default)] failed: bool,
     },
     /// A lifecycle event a deletion publishes (`deleting`, `restarting`, `deleted`): the step's
-    /// receipt is durable and the event is not yet published. `stopped`: the stop stream's `stopped`
+    /// step event is durable and the lifecycle event is not yet published. `stopped`: the stop stream's `stopped`
     /// reached the executor and is not yet recorded in the birth's declared-state row (i146 Q36).
     Event {
         /// The event name: `deleting`, `restarting`, `deleted` or `stopped`.
@@ -165,17 +165,17 @@ pub enum CutSpec {
 /// What a decorator offers the cuts at the moment it is called.
 #[derive(Debug, Clone)]
 pub enum Probe {
-    /// A Build step receipt about to become durable.
-    Receipt {
+    /// A Build step event about to become durable.
+    StepEvent {
         /// The step name.
         step: String,
-        /// The receipt's operation key.
+        /// The step event's operation key.
         operation: rdm_core::OperationId,
         /// The Build.
         build_id: String,
-        /// Whether the receipt is a Failed one.
+        /// Whether the step event is a Failed one.
         failed: bool,
-        /// The path and name the Build record names the receipt's node.id created at, for a create.
+        /// The path and name the Build record names the step event's node.id created at, for a create.
         at: Option<rdm_core::PathName>,
     },
     /// A lifecycle event about to be published.
@@ -272,7 +272,7 @@ impl CutSpec {
     fn matches(&self, p: &Probe) -> bool {
         let node_is = |want: &Option<String>, got: &str| want.as_deref().is_none_or(|w| got == w);
         match (self, p) {
-            (CutSpec::Receipt { step, operation, node, at, failed }, Probe::Receipt { step: s, operation: o, failed: f, at: a, .. }) => {
+            (CutSpec::StepEvent { step, operation, node, at, failed }, Probe::StepEvent { step: s, operation: o, failed: f, at: a, .. }) => {
                 failed == f && step == s && operation.as_deref().is_none_or(|prefix| o.action.starts_with(prefix)) && node.as_ref().is_none_or(|wanted| o.subject.as_ref() == Some(wanted)) && at.as_ref().is_none_or(|wanted| a.as_ref() == Some(wanted))
             }
             (CutSpec::Event { event, node }, Probe::Event { event: e, op }) => event == e && node.as_ref().is_none_or(|wanted| wanted == &op.node_id),
@@ -300,7 +300,7 @@ impl Probe {
     /// What a cut that holds this call records of it.
     fn hit(&self) -> Hit {
         match self {
-            Probe::Receipt { step, operation, build_id, .. } => Hit::Receipt { step: step.clone(), operation: operation.clone(), build_id: build_id.clone() },
+            Probe::StepEvent { step, operation, build_id, .. } => Hit::StepEvent { step: step.clone(), operation: operation.clone(), build_id: build_id.clone() },
             Probe::Event { event, op } => Hit::Event { event: event.to_string(), operation: op.operation.clone(), build_id: op.build_id.clone(), node: op.node_id.clone(), incarnation_id: op.incarnation.as_str().to_string() },
             Probe::Accepted { build_id } => Hit::Accepted { build_id: build_id.clone() },
             Probe::ProviderDomain => Hit::ProviderDomain,
@@ -343,14 +343,14 @@ pub struct AdminFaults {
     /// The admin's globally unique ID.
     pub node_id: rdm_core::NodeId,
     cuts: Mutex<BTreeMap<String, Armed>>,
-    /// Every Build step receipt the Build decorator saw, by call (a consequence counter).
-    receipts_seen: AtomicU64,
+    /// Every Build step event the Build decorator saw, by call (a consequence counter).
+    step_events_seen: AtomicU64,
 }
 
 impl AdminFaults {
     /// The cuts of the admin named `name`; none armed.
     pub fn new(node_id: rdm_core::NodeId) -> Arc<Self> {
-        Arc::new(Self { node_id, cuts: Mutex::new(BTreeMap::new()), receipts_seen: AtomicU64::new(0) })
+        Arc::new(Self { node_id, cuts: Mutex::new(BTreeMap::new()), step_events_seen: AtomicU64::new(0) })
     }
 
     /// Arm `spec` under `id`. Refused by name when `id` is already armed and not spent.
@@ -429,7 +429,7 @@ impl AdminFaults {
                 (id.clone(), row)
             })
             .collect();
-        FaultState { node: self.node_id.to_string(), cuts: rows, receipts_seen: self.receipts_seen.load(Ordering::SeqCst) }
+        FaultState { node: self.node_id.to_string(), cuts: rows, step_events_seen: self.step_events_seen.load(Ordering::SeqCst) }
     }
 
     /// Hold the caller if an armed cut matches `probe`; returns when the cut is released. Every
@@ -499,7 +499,7 @@ impl AdminFaults {
 
 // ---- the decorators ------------------------------------------------------------------------------
 
-/// The Build state, with the step-receipt and accepted-Build cuts.
+/// The Build state, with the step-event and accepted-Build cuts.
 pub(crate) struct FaultedBuilds {
     inner: Arc<dyn BuildStateAdapter>,
     faults: Arc<AdminFaults>,
@@ -527,7 +527,7 @@ impl BuildStateAdapter for FaultedBuilds {
         self.inner.events()
     }
     async fn write_step(&self, w: &StepWrite) -> Result<(), BuildStateError> {
-        self.faults.receipts_seen.fetch_add(1, Ordering::SeqCst);
+        self.faults.step_events_seen.fetch_add(1, Ordering::SeqCst);
         let failed = w.outcome != StepOutcome::Complete;
         // A create's step names the node by the node.id the Build record minted for it (D58).
         let at = match &w.operation.subject {
@@ -536,7 +536,7 @@ impl BuildStateAdapter for FaultedBuilds {
             }
             _ => None,
         };
-        self.faults.hold(Probe::Receipt { step: w.step.clone(), operation: w.operation.clone(), build_id: w.build_id.to_string(), failed, at }).await;
+        self.faults.hold(Probe::StepEvent { step: w.step.clone(), operation: w.operation.clone(), build_id: w.build_id.to_string(), failed, at }).await;
         self.inner.write_step(w).await
     }
     async fn note_pending(&self, build_id: &BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {

@@ -30,7 +30,7 @@ pub const OP: u8 = <FaultDoor as NodeProtocol>::OP;
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "CutSpec")]
 enum CutWire {
-    Receipt { step: String, operation: Option<String>, node: Option<rdm_core::OperationSubject>, at: Option<rdm_core::PathName>, failed: bool },
+    StepEvent { step: String, operation: Option<String>, node: Option<rdm_core::OperationSubject>, at: Option<rdm_core::PathName>, failed: bool },
     Event { event: String, node: Option<rdm_core::NodeId> },
     AcceptedBuild,
     ProviderDomain,
@@ -91,13 +91,13 @@ impl FaultRequest {
 /// The call a cut held first, as the decorator offered it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Hit {
-    /// A Build step receipt about to become durable.
+    /// A Build step event about to become durable.
     ///
     /// Position 0 on the wire.
-    Receipt {
+    StepEvent {
         /// The step name.
         step: String,
-        /// The receipt's operation key.
+        /// The step event's operation key.
         operation: rdm_core::OperationId,
         /// The Build.
         build_id: String,
@@ -244,7 +244,7 @@ impl Hit {
     pub fn detail(&self) -> serde_json::Value {
         use serde_json::json;
         match self {
-            Hit::Receipt { step, operation, build_id } => json!({"step": step, "operation": operation, "build_id": build_id}),
+            Hit::StepEvent { step, operation, build_id } => json!({"step": step, "operation": operation, "build_id": build_id}),
             Hit::Event { event, operation, build_id, node, incarnation_id } => json!({"event": event, "operation": operation, "build_id": build_id, "node": node, "incarnation_id": incarnation_id}),
             Hit::Accepted { build_id } => json!({"build_id": build_id}),
             Hit::Reserved3 => json!({}),
@@ -291,8 +291,8 @@ pub struct FaultState {
     pub node: String,
     /// Every cut, by id.
     pub cuts: BTreeMap<String, CutRow>,
-    /// Every Build step receipt the Build decorator saw.
-    pub receipts_seen: u64,
+    /// Every Build step event the Build decorator saw.
+    pub step_events_seen: u64,
 }
 
 /// A fault door answer.
@@ -478,8 +478,8 @@ mod tests {
     /// One cut of every kind the door arms.
     fn every_cut() -> Vec<CutSpec> {
         vec![
-            CutSpec::Receipt { step: "StopNode".into(), operation: Some("node.delete".into()), node: None, at: None, failed: false },
-            CutSpec::Receipt { step: "TerminateRuntime".into(), operation: Some("node.delete".into()), node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("200000000000").unwrap())), at: None, failed: true },
+            CutSpec::StepEvent { step: "StopNode".into(), operation: Some("node.delete".into()), node: None, at: None, failed: false },
+            CutSpec::StepEvent { step: "TerminateRuntime".into(), operation: Some("node.delete".into()), node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("200000000000").unwrap())), at: None, failed: true },
             CutSpec::Event { event: "deleting".into(), node: Some(rdm_core::NodeId::parse("100000000000").unwrap()) },
             CutSpec::AcceptedBuild,
             CutSpec::ProviderDomain,
@@ -517,9 +517,9 @@ mod tests {
         ]
         .into();
         let all = [
-            FaultReply::Armed { node: "mesh1.node-admin.1".into(), id: "c".into(), spec: CutSpec::Receipt { step: "StartNode".into(), operation: None, node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("100000000000").unwrap())), at: None, failed: false } },
+            FaultReply::Armed { node: "mesh1.node-admin.1".into(), id: "c".into(), spec: CutSpec::StepEvent { step: "StartNode".into(), operation: None, node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("100000000000").unwrap())), at: None, failed: false } },
             FaultReply::Released { node: "mesh1.node-admin.1".into(), id: "c".into(), was_held: true, held_ms: Some(3) },
-            FaultReply::State(FaultState { node: "mesh1.node-admin.1".into(), cuts, receipts_seen: 4 }),
+            FaultReply::State(FaultState { node: "mesh1.node-admin.1".into(), cuts, step_events_seen: 4 }),
             FaultReply::Refused { reason: "r".into() },
             FaultReply::PeerUnresolved { reason: "r".into() },
             FaultReply::NotReady { reason: "r".into() },

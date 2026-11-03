@@ -73,7 +73,7 @@ pub(crate) enum Rpc1 {
     Stopped,
     /// Exited, its `TerminateRuntime` step event complete, the delete cut after NodeDeleted's work and
     /// before NodeDeleted's step event is durable: the Build holds the exited verdict and no
-    /// NodeDeleted, and none is published. The fault door's `receipt` cut holds BEFORE the named
+    /// NodeDeleted, and none is published. The fault door's `step-event` cut holds BEFORE the named
     /// step's event is durable (`FaultedBuilds::write_step`), so the cut that leaves TerminateRuntime
     /// durable is the next step's: NodeDeleted.
     ExitProven,
@@ -157,21 +157,21 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     // resubmit's delete sends its stop-node again and the stopped birth answers the same.
     let cut = "leave:rpc2-StopNode";
     // A member's end is its node.delete, under node.delete's own operation (mesh-delete.md step 3).
-    door.arm(cut, json!({"kind": "receipt", "step": "StopNode", "operation": "node.delete", "node": member("2")})).await;
+    door.arm(cut, json!({"kind": "step-event", "step": "StopNode", "operation": "node.delete", "node": member("2")})).await;
     // rpc.1's stop completed (its stop-node answered stopped: its connections deleted, its transport
     // cut, its process alive) and its delete held at that step's event: its NodeStopped, published at
     // the next step, is never published, and it has no TerminateRuntime event. Nothing any admin holds
     // names it.
     let stopped = "leave:rpc1-StopNode";
     if rpc1 == Rpc1::Stopped {
-        door.arm(stopped, json!({"kind": "receipt", "step": "StopNode", "operation": "node.delete", "node": member("1")})).await;
+        door.arm(stopped, json!({"kind": "step-event", "step": "StopNode", "operation": "node.delete", "node": member("1")})).await;
     }
     // rpc.1's whole delete ran to its exited verdict: the runtime is terminated and its TerminateRuntime
     // event is complete, and the executor is held in NodeDeleted before its event: the Build holds the
     // exited verdict and no NodeDeleted, and `NodeDeleted` is never published.
     let exit_proven = "leave:rpc1-NodeDeleted";
     if rpc1 == Rpc1::ExitProven {
-        door.arm(exit_proven, json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete", "node": member("1")})).await;
+        door.arm(exit_proven, json!({"kind": "step-event", "step": "NodeDeleted", "operation": "node.delete", "node": member("1")})).await;
     }
     let leave = estate.submit(&BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] })).await;
     let build_id = leave.build_id().clone();

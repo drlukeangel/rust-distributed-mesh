@@ -340,7 +340,7 @@ mod provider_policy;
 mod read_stream;
 mod readiness_gates;
 mod batch_change;
-mod receipt_refusal;
+mod step_event_refusal;
 mod start_join_order;
 mod pipeline_moves_no_primary;
 mod pipeline_step_io;

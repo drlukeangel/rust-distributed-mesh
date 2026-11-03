@@ -103,7 +103,7 @@ impl Door {
 }
 
 /// The door's state as the cells read it: `{"node", "cuts": {<id>: {"spec", "armed", "held", "released",
-/// "hit", "held_for_ms", "seen_while_held"}}, "receipts_seen"}`, each hit one flat object of its fields.
+/// "hit", "held_for_ms", "seen_while_held"}}, "step_events_seen"}`, each hit one flat object of its fields.
 fn state_value(s: &FaultState) -> Value {
     let cuts: serde_json::Map<String, Value> = s
         .cuts
@@ -116,7 +116,7 @@ fn state_value(s: &FaultState) -> Value {
             (id.clone(), row)
         })
         .collect();
-    json!({"node": s.node, "cuts": cuts, "receipts_seen": s.receipts_seen})
+    json!({"node": s.node, "cuts": cuts, "step_events_seen": s.step_events_seen})
 }
 
 /// The candidate SHA: `I143_CANDIDATE_SHA`, else this checkout's HEAD.

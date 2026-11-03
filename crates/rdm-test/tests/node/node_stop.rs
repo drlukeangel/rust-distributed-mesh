@@ -1739,7 +1739,7 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
 /// node.connection.delete's own rules; its receipt is ... `Deadline { last_in_flight, closed, held }` at its
 /// bound (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`)"; CLAUDE.md, that env var: the bound "on a signal stop alike:
 /// how long in-flight handlers may finish before the node leaves"): the fabric-primary serves a caller's
-/// build.create of a Build that adds a node to mesh2, and the testkit's receipt cut at mesh2's primary
+/// build.create of a Build that adds a node to mesh2, and the testkit's step-event cut at mesh2's primary
 /// holds that create's first step event, so mesh2's section and the build.create the fabric-primary serves
 /// never end. The fabric-primary receives SIGTERM. It leaves by its own signal stop within the bound's steps: its connections delete ends at the
 /// bound, its leave waits for the unsettled call at most the bound, names it, and closes, and its
@@ -1761,7 +1761,7 @@ async fn a_fabric_primary_serving_a_held_build_create_leaves_on_its_signal_withi
     let id_of = |rows: &[Value], at: &PathName| rows.iter().find(|n| rdm_test::estate::location(n) == *at).map(|n| s(&n["node_id"])).expect("a settled row");
     let rows = estate.node_values().await;
     let fp_id = id_of(&rows, &fp);
-    mesh2_door.arm("held-create", serde_json::json!({"kind": "receipt", "step": "AllocateIdentity", "operation": "node.create"})).await;
+    mesh2_door.arm("held-create", serde_json::json!({"kind": "step-event", "step": "AllocateIdentity", "operation": "node.create"})).await;
     // A Build adds a node to mesh2; its create's first step event is held at mesh2's primary, so the
     // caller's build.create the fabric-primary serves stays open. The caller's stream is kept open with it.
     let request = estate.create_node_request("mesh2", "node").await;

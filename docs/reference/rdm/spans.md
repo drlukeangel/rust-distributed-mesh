@@ -354,7 +354,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.deployment.delete.via-path-investigation` | `crates/rdm-admin/src/path_investigation.rs` | 59 |
 | `rdm.node_admin.deployment.reject.via-build-unreadable` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1293 |
 | `rdm.node_admin.deployment.reject.via-lost-executor` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1628 |
-| `rdm.node_admin.deployment.reject.via-receipt-refused` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1452 |
+| `rdm.node_admin.deployment.reject.via-step-event-refused` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1452 |
 | `rdm.node_admin.deployment.remove.via-created-container` | `crates/rdm-admin/src/deployment/container.rs` | 644 |
 | `rdm.node_admin.deployment.resolve.via-executable-hash` | `crates/rdm-admin/src/admin/runner.rs` | 1652 |
 | `rdm.node_admin.deployment.returns-unknown.via-proc-unreadable` | `crates/rdm-admin/src/deployment/process.rs` | 654 |

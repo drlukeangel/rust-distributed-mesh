@@ -64,12 +64,12 @@ impl Op {
         }
     }
 
-    /// The fields of a `receipt` cut held at this operation's `step`: a create's by the path and
+    /// The fields of a `step-event` cut held at this operation's `step`: a create's by the path and
     /// name its Build record names the node.id created at, a delete's by its subject.
     fn cut(&self, step: &str) -> Value {
         match self {
-            Op::Create(at) => json!({"kind": "receipt", "step": step, "operation": "node.create", "at": at}),
-            Op::Delete(id) => json!({"kind": "receipt", "step": step, "operation": "node.delete", "node": {"Node": id}}),
+            Op::Create(at) => json!({"kind": "step-event", "step": step, "operation": "node.create", "at": at}),
+            Op::Delete(id) => json!({"kind": "step-event", "step": step, "operation": "node.delete", "node": {"Node": id}}),
         }
     }
 

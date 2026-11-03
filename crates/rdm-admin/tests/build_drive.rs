@@ -377,7 +377,7 @@ async fn a_peer_mesh_held_unheard_is_never_dispatched_to_until_it_is_heard_again
     let change = move |t: &rdm_admin::topology::Topology| crate::grown(t, &[MeshDesired::of("mesh2".to_string(), [("node-admin", 2), ("node", 2)])]);
     let r = rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await;
     r.switch.peer.lock().unwrap().insert("mesh2".into(), 31_000);
-    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-unheard-mesh-drive");
+    let (capture, _guard) = crate::step_event_refusal::Capture::new("i143-3016-unheard-mesh-drive");
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader();
 

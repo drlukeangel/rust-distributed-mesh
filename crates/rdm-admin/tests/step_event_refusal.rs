@@ -1,6 +1,6 @@
-//! i143.e12.s33 functional: a step whose receipt the Build state refuses is not complete. The
-//! receipt is the step's durable commit (node-recovery.md "Failure and receipts": durable step
-//! outcomes are `Complete` or `Failed { step, reason }`), and a receipt that is not written to the
+//! i143.e12.s33 functional: a step whose step event the Build state refuses is not complete. The
+//! step event is the step's durable commit (node-recovery.md "Failure and receipts": durable step
+//! outcomes are `Complete` or `Failed { step, reason }`), and a step event that is not written to the
 //! executor's own log (a fact with no wire shape, a targeted role, a failed local write) fails the
 //! step by name: its span, and the pipeline's error naming the step and the refusal. Nothing after
 //! it runs. A Build
@@ -144,17 +144,17 @@ impl Refuses {
 }
 
 /// CONTRACT (node-recovery.md "Failure and receipts"; CLAUDE.md "an error state carries every
-/// non-leaking detail"): a standalone node.connection.delete whose `DeleteConnections` receipt the Build state refuses (here
+/// non-leaking detail"): a standalone node.connection.delete whose `DeleteConnections` step event the Build state refuses (here
 /// as a fact with no wire shape) fails at `DeleteConnections`, the error naming the step and the refusal,
-/// under a `rdm.node_admin.deployment.reject.via-receipt-refused` span naming the Build,
+/// under a `rdm.node_admin.deployment.reject.via-step-event-refused` span naming the Build,
 /// operation, step and refusal. Must NOT happen: the refusal swallowed and the run going on to
 /// `Complete` as if the step were committed.
 #[tokio::test]
-async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
+async fn a_step_whose_step_event_is_refused_fails_by_name_and_the_run_stops() {
     let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let target_id = NodeId::mint();
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
-    let (spans_pipeline, layer) = rdm_transport::span_capture("i143-3051-receipt-refusal", exporter.clone());
+    let (spans_pipeline, layer) = rdm_transport::span_capture("i143-3051-step-event-refusal", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
 
     let builds = Refuses::new(&executor, "DeleteConnections", false, None);
@@ -188,22 +188,22 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
 
     let err = match pipeline.delete_connections(&req).await {
         Err(e) => e,
-        Ok(()) => panic!("the DeleteConnections receipt was refused and the node.connection.delete still reported complete: the refusal was swallowed"),
+        Ok(()) => panic!("the DeleteConnections step event was refused and the node.connection.delete still reported complete: the refusal was swallowed"),
     };
-    assert_eq!(err.step, "DeleteConnections", "the step whose receipt was refused: {err:?}");
+    assert_eq!(err.step, "DeleteConnections", "the step whose step event was refused: {err:?}");
     assert!(err.reason.contains("has no wire shape: this cell refuses it"), "the refusal is named in the error: {err:?}");
     let steps: Vec<String> = builds.inner.read_build(&build_id).await.unwrap().steps.iter().map(|s| s.step.clone()).collect();
     assert!(steps.is_empty(), "nothing after the refused step ran: {steps:?}");
 
     spans_pipeline.flush(std::time::Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
-    let spans: Vec<_> = exporter.get_finished_spans().unwrap().into_iter().filter(|s| s.name == "rdm.node_admin.deployment.reject.via-receipt-refused").collect();
+    let spans: Vec<_> = exporter.get_finished_spans().unwrap().into_iter().filter(|s| s.name == "rdm.node_admin.deployment.reject.via-step-event-refused").collect();
     assert_eq!(spans.len(), 1, "one refusal span");
     let attrs: std::collections::BTreeMap<String, String> = spans[0].attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect();
     assert_eq!(attrs.get("step").map(String::as_str), Some("DeleteConnections"), "{attrs:?}");
     assert_eq!(attrs.get("operation").map(String::as_str), Some("node.connection.delete"), "{attrs:?}");
     assert_eq!(attrs.get("build_id"), Some(&build_id.log().to_string()), "{attrs:?}");
     assert!(attrs.get("detail").is_some_and(|d| d.contains("has no wire shape")), "{attrs:?}");
-    eprintln!("span rdm.node_admin.deployment.reject.via-receipt-refused trace_id={} {attrs:?}", spans[0].span_context.trace_id());
+    eprintln!("span rdm.node_admin.deployment.reject.via-step-event-refused trace_id={} {attrs:?}", spans[0].span_context.trace_id());
 }
 
 /// CONTRACT (CLAUDE.md "an error state carries every non-leaking detail": "Never written" and "could
@@ -211,9 +211,9 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
 /// receipts": a run hands on the decisions its earlier attempts made): a standalone node.connection.delete of a Build
 /// whose journal cannot be read fails the run at its start by name, the error naming the node, the
 /// Build, the operation and the read failure, under a
-/// `rdm.node_admin.deployment.reject.via-build-unreadable` span, and no step runs or writes a receipt.
+/// `rdm.node_admin.deployment.reject.via-build-unreadable` span, and no step runs or writes a step event.
 /// A Build this node holds no fact of is refused the same way, its own error. Must NOT happen: the
-/// unreadable Build taken for one with no earlier receipts, so that the run goes on from its first
+/// unreadable Build taken for one with no earlier step events, so that the run goes on from its first
 /// step and decides afresh what an earlier attempt had already decided.
 #[tokio::test]
 async fn a_run_whose_build_cannot_be_read_fails_by_name_before_any_step() {
@@ -226,14 +226,14 @@ async fn a_run_whose_build_cannot_be_read_fails_by_name_before_any_step() {
 
     let err = match standalone_through(&builds, &build_id, &Answers, false, &executor, &target_id).await {
         Err(e) => e,
-        Ok(()) => panic!("the Build could not be read and the node.connection.delete still reported complete: the read failure was taken for no earlier receipts"),
+        Ok(()) => panic!("the Build could not be read and the node.connection.delete still reported complete: the read failure was taken for no earlier step events"),
     };
     assert_eq!(err.step, "ReadBuild", "the run stops at its start: {err:?}");
     for named in [target_id.as_str(), &build_id.to_string(), "node.connection.delete", "this cell's disk refuses it"] {
         assert!(err.reason.contains(named), "the error names {named}: {err:?}");
     }
     let steps: Vec<String> = builds.inner.read_build(&build_id).await.unwrap().steps.iter().map(|s| s.step.clone()).collect();
-    assert!(steps.is_empty(), "no step ran and no receipt was written: {steps:?}");
+    assert!(steps.is_empty(), "no step ran and no step event was written: {steps:?}");
     let spans = capture.spans("rdm.node_admin.deployment.reject.via-build-unreadable");
     assert_eq!(spans.len(), 1, "one rejection span: {spans:?}");
     assert_eq!(spans[0].1.get("build_id"), Some(&build_id.log().to_string()), "{spans:?}");
@@ -382,12 +382,12 @@ async fn accepted(builds: &dyn BuildStateAdapter, build_id: &BuildId, executor: 
 }
 
 /// CONTRACT (node-recovery.md "Failure and receipts"): a standalone node.connection.delete run through the fabric's
-/// real Build state whose local log refuses the `DeleteConnections` receipt (a failed journal write) fails
+/// real Build state whose local log refuses the `DeleteConnections` step event (a failed journal write) fails
 /// at `DeleteConnections`, the error naming the step and the failed write, under
-/// `rdm.node_admin.deployment.reject.via-receipt-refused`. Must NOT happen: the run going on as if
-/// the step were committed, or the receipt broadcast with nothing written locally.
+/// `rdm.node_admin.deployment.reject.via-step-event-refused`. Must NOT happen: the run going on as if
+/// the step were committed, or the step event broadcast with nothing written locally.
 #[tokio::test]
-async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
+async fn a_step_whose_local_step_event_write_fails_fails_by_name() {
     let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let target_id = NodeId::mint();
     let (capture, _guard) = Capture::new("i143-3051-local-write-refused");
@@ -398,14 +398,14 @@ async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
 
     let err = match connections_delete_through(&builds, &build_id, &executor, &target_id).await {
         Err(e) => e,
-        Ok(()) => panic!("the DeleteConnections receipt's local write failed and the node.connection.delete still reported complete"),
+        Ok(()) => panic!("the DeleteConnections step event's local write failed and the node.connection.delete still reported complete"),
     };
     assert_eq!(err.step, "DeleteConnections", "{err:?}");
     assert!(err.reason.contains("this cell's disk refuses it"), "the failed write is named in the error: {err:?}");
     assert!(local.inner.read_build(&build_id).await.unwrap().steps.is_empty(), "nothing after the refused step ran");
-    let spans = capture.spans("rdm.node_admin.deployment.reject.via-receipt-refused");
+    let spans = capture.spans("rdm.node_admin.deployment.reject.via-step-event-refused");
     assert_eq!(spans.len(), 1, "one refusal span: {spans:?}");
     assert_eq!(spans[0].1.get("step").map(String::as_str), Some("DeleteConnections"), "{spans:?}");
-    assert!(capture.spans("rdm.node_admin.build.reject.via-broadcast-refused").is_empty(), "nothing was broadcast for an unwritten receipt");
-    eprintln!("span rdm.node_admin.deployment.reject.via-receipt-refused trace_id={} {:?}", spans[0].0, spans[0].1);
+    assert!(capture.spans("rdm.node_admin.build.reject.via-broadcast-refused").is_empty(), "nothing was broadcast for an unwritten step event");
+    eprintln!("span rdm.node_admin.deployment.reject.via-step-event-refused trace_id={} {:?}", spans[0].0, spans[0].1);
 }
