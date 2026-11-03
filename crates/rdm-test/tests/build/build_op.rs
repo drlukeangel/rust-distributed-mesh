@@ -161,6 +161,7 @@ async fn secondary_node(estate: &Estate) -> PathName {
 /// order, and nothing polls a Build to learn it. A stop is a node command, never a Build (Q342): the
 /// one-node Build is the delete.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/298: attempt claims / HandedOff: s4 removes this contract (D53, inbox 0043)"]
 async fn a_delete_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes() {
     let test = "a_delete_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
@@ -354,6 +355,7 @@ async fn attempt_run(
 /// executor the claim names, and when the claim is not the current folded attempt of the recipient's
 /// projection; a replaced primary is given a new claim, never the stale one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/298: attempt claims / HandedOff: s4 removes this contract (D53, inbox 0043)"]
 async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_is_refused_by_name() {
     let test = "an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_is_refused_by_name";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;

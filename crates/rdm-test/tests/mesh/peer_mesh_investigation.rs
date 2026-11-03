@@ -382,21 +382,22 @@ async fn a_lost_mesh_primary_heard_again_and_its_successor_settle_on_one_mesh_pr
     drop(cut);
     let healed_ns = now_ns();
     // Every view converges on both births, the same births, and one mesh-primary of the mesh: the one
-    // election's, whichever it names.
-    let mut named_by_view = Vec::new();
-    for at in [&fp, &first, &successor] {
-        let primary = f
-            .estate
-            .until_view_at(at, &format!("{at:?}'s view holds {first:?} and {successor:?} as the same births and one primary of {lost}"), floor * 3 + gossip * 4, |v| {
-                let v = Estate::values(v);
-                let same = births.iter().all(|(l, id, inc)| v.iter().any(|n| location(n) == *l && s(&n["node_id"]) == *id && s(&n["incarnation_id"]) == *inc));
-                let primaries: Vec<String> = v.iter().filter(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).collect();
-                (same && primaries.len() == 1 && births.iter().any(|(_, id, _)| *id == primaries[0])).then(|| primaries[0].clone())
-            })
-            .await;
-        named_by_view.push(primary);
-    }
-    assert!(named_by_view.windows(2).all(|w| w[0] == w[1]), "every view holds the same one primary of {lost}: {named_by_view:?}");
+    // election's, whichever it names. The views are read together until they agree: a view read while the
+    // election's answer is still reaching it can name the other birth for a moment.
+    let named_by_view: Vec<String> = wait_for(&format!("every view holds {first:?} and {successor:?} as the same births and the same one primary of {lost}"), floor * 3 + gossip * 4, || async {
+        let mut named = Vec::new();
+        for at in [&fp, &first, &successor] {
+            let v = Estate::values(&f.estate.node_views_at(at).await?);
+            let same = births.iter().all(|(l, id, inc)| v.iter().any(|n| location(n) == *l && s(&n["node_id"]) == *id && s(&n["incarnation_id"]) == *inc));
+            let primaries: Vec<String> = v.iter().filter(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).collect();
+            if !(same && primaries.len() == 1 && births.iter().any(|(_, id, _)| *id == primaries[0])) {
+                return None;
+            }
+            named.push(primaries[0].clone());
+        }
+        named.windows(2).all(|w| w[0] == w[1]).then_some(named)
+    })
+    .await;
     let winner_id = named_by_view[0].clone();
     let loser = births.iter().find(|(_, id, _)| *id != winner_id).map(|(l, _, _)| l.clone()).expect("the one the election does not name");
     let winner = births.iter().find(|(_, id, _)| *id == winner_id).map(|(l, _, _)| l.clone()).expect("the one the election names");
