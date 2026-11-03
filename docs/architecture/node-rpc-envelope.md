@@ -99,8 +99,8 @@ or the body exist to it:
 One process has one endpoint, so the socket a request arrives on names nothing: the target names the node the call is for, and no receiver refuses a call for the node id it names (R-UC1a).
 The target says nothing about the process birth. Which birth a caller is talking to is the
 resolver's and the pool's knowledge (the incarnation, held locally, never on the wire); a dial to
-a superseded birth is invalidated before dispatch. A restarted node keeps its id; a replacement
-is a new id.
+a superseded birth is invalidated before dispatch. A restarted node keeps its id; a new node
+has a new id.
 
 ## Section 1: the context
 
@@ -366,7 +366,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [node.primary.update](lifecycles/node-primary-update.md) | [0x21 PrimaryUpdate / PrimaryUpdated](#primaryupdate-op-0x21-rdm), the primary to its successor's exact birth | node.primary.updated { revisions }; RejectedConflictingPayload; on the commanded arm, `Failed { step, reason }` when the update ends failed | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | the same call, the fabric-primary as the `fabric` entry of `primaries` | node.fabric-primary.updated; the fabric arm's no-successor refusal | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
 | build.create/get/delete | [Build 0x20](#build-op-0x20-rdm); the fabric-primary accepts every Build, writes it once and dispatches each mesh's section; the Build and its events are read from storage ([Build floor read](#build-floor-read-op-0x1f-reserved), Q292) | Started, step frames, Complete / Failed; reattachment reads; deletion result | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
-| build.attempt.run | [Build 0x20](#build-op-0x20-rdm); the fabric-primary dispatches a mesh's section to that mesh's primary | replay of the steps recorded complete, current Blocked, then live frames | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
+| build.attempt.run | [Build 0x20](#build-op-0x20-rdm); the fabric-primary dispatches a mesh's section to that mesh's primary | replay of the steps recorded complete, the current Pending, then live frames | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
 
 Codec evidence: `crates/rdm-core/src/status.rs::StatusRequest`
 (DeclareNodeState, ProbeNodeState; ApplyNodeState, StopNode and StartNode are reserved there),
@@ -391,7 +391,7 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 | `status` | RDM | [node status](lifecycles/node-status.md) only | — | that status's own completion |
 | `path`, `mesh`, `type` | the create spec | path, mesh and type are immutable; node.name.update changes only name and refuses a supplied path different from the registered path | — | — |
 | `name` | the create spec | **`node.name.update { node_id, incarnation, path, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node holds no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1); a live node rejoins its mesh under the new name | `node.name.updated` |
-| `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the create); on replace the successor applies its Build entry through its own property writer | `node.tag.create { label \| [labels] }` adds; `node.tag.delete { All \| [labels] }` removes. The node's property writer applies the label change to its own current tag set and persists it with its other owned fields | none | `node.tag.created` / `node.tag.deleted` |
+| `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the create) | `node.tag.create { label \| [labels] }` adds; `node.tag.delete { All \| [labels] }` removes. The node's property writer applies the label change to its own current tag set and persists it with its other owned fields | none | `node.tag.created` / `node.tag.deleted` |
 | `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own is a local durable property write; a Build sets config and tags only on a node it creates, through ApplyNodeProperties, and never writes a node it does not create (build.md §1, Q236 amended by Q342) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
 | `types` | the birth's [JoinNode](#join-op-0x1d-rdm): what it declared; empty for a node-admin | nothing: a different declaration is a restart. `node.get` answers it whole | — | — |
 | `held`, `held_hash` | RDM: the types the node has joined ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); equal to `types` for an ordinary node; for a node-admin the union of its nodes' declarations and what it read from other node-admins. `held_hash` is blake3 of the sorted set and rides the row's digest (32 bytes; no list rides gossip) | RDM, as members join; grows, never shrinks within a birth; never a put. `node.get` answers `held` whole | — | — |
@@ -408,12 +408,12 @@ Config is a map of name to value; duplicate keys take the last value, including 
 The node persists it in its own part of its record. Neither primary holds a copy in its atlas and the
 map is never carried in the digest. RDM stores application values without interpreting them.
 The initial entry is retained with the row and applied by the node; recovery inherits acknowledged
-properties, replacement uses its Create, and a retained own record
+properties, a new node takes its Create's, and a retained own record
 survives startup. The [config update sequence](lifecycles/node-config-update.md) owns application.
 
 A node record and its completion replies have no record revision (Q323). The node
 serializes local config, caller config, tags and Build entry effects through its property writer.
-A Build's config and tags are one durable put. The exact target and workflow completion remain receipted.
+A Build's config and tags are one durable put. The exact target and the workflow's completion are its step events.
 `NodeConfigUpdated` is not an upward delivery route. The existing election `Primary.revision`
 is independent of the node's record, both its parts, and remains part of the election result.
 
@@ -440,9 +440,9 @@ fabric ready declaration. Source:
 NotReady, on every op and from every handler, means one thing: the door or the handler cannot
 serve this call yet, and the reason says which. It is never a lifecycle fact about the subject.
 A caller that receives NotReady learns nothing about the subject's hook, frames no Build
-`Blocked`, and waits or retries. The subject's readiness blocker is a served answer, Status
-[`Blocked`](#status-op-0x1b-rdm): a probe that reached the exact birth and found its
-`pre_node_ready` hook Blocked. The two must never share a variant.
+`Pending`, and its call retries on its `Send`. The subject's readiness blocker is a served answer, Status
+[`Pending`](#status-op-0x1b-rdm): a probe that reached the exact node and found its
+`pre_node_ready` hook answered `Pending`. The two must never share a variant.
 
 # Schemas
 
@@ -518,8 +518,8 @@ With propagated context, the server shares the caller's TraceId and its ParentSp
 call span's SpanId. Handler spans belong to the serving process. The invocation's own end — a stream's
 `rdm.node_rpc.stream.serve.via-terminal` or refusal, a unary fault or panic — is a child of its serve span.
 Stream result frames and the invocation's end record their own `code` and `detail`; workflow step
-spans retain the step's code and named detail, and a failed Build receipt carries that code beside
-its step and explanation. An application's compatibility adapters emit their own diagnostics, stated
+spans retain the step's code and named detail, and a failed step's `rdm.build.step` event carries that code beside
+its step and reason. An application's compatibility adapters emit their own diagnostics, stated
 on its pages; they do not acquire canonical spans merely by being reserved in the ledger.
 
 Each call carries the operation trace; the child calls of one workflow share it, each with its
@@ -906,7 +906,7 @@ pub enum StatusReply {
     Reserved22 { keys: u32, bytes: u32, max_keys: u32, max_bytes: u32 }, // position 22, reserved (Q203): never sent
     ConfigRowRefused { node: String, reason: String },
     ConfigNotApplied { node: String, answered: String, reason: String },
-    Blocked { node_id: NodeId, incarnation: IncarnationId, reason: String, retry_on: RetryOn },
+    Pending { node_id: NodeId, incarnation: IncarnationId, reason: String }, // the node's pre_node_ready answered Pending (fabric-node-hooks.md)
     NameUpdated { node_id: NodeId, incarnation: IncarnationId },
     RejectedAdmittingConnections { status: NodeStatus, held_connections: Vec<ConnectionId> },
     NameHeld { name: String, by: NodeId },
@@ -941,14 +941,6 @@ pub enum StatusReply {
     RejectedFilter { reason: String }, // position 57: a filter refused naming the pair, INVALID_ARGUMENT
 }
 
-// The event a Blocked pre_node_ready hook runs again on (fabric-node-hooks.md,
-// "Outcomes and the gate"). Positional order is part of the wire schema.
-pub enum RetryOn {
-    PrimaryChanged,
-    TargetReachable { node_id: NodeId },
-    PrimaryReady,
-    PrimaryAddressed,
-}
 ```
 
 ### Node stop command pair
@@ -1337,7 +1329,7 @@ REPLY_VARIANTS is 27. The [schema](#build-schema) gives both enums.
 | Call | Direction / caller → server | Request content | Reply / stream |
 |---|---|---|---|
 | build.create | upward, caller → fabric-primary | a `Create`, `Delete` or `DeleteFabric` change ([build.md §1](build.md#1-build-is-the-only-topology-mutation-engine)), or an existing build_id for resubmission | Started { build_id }, step frames, then Complete, Incomplete { sections } or Failed { reason }; a fabric-primary change ends with FabricPrimaryMoved, the typed frame naming the new one |
-| build.attempt.run | downward, fabric-primary → the mesh-primary of each mesh the Build touches, all at once (Q250) | (build_id, mesh) | replay of the mesh's steps whose `rdm.build.step` ended `complete`, the current Blocked if still blocked, then live step frames, then Complete or Incomplete naming the section; mesh-primary loss ends Indeterminate |
+| build.attempt.run | downward, fabric-primary → the mesh-primary of each mesh the Build touches, all at once (Q250) | (build_id, mesh) | replay of the mesh's steps whose `rdm.build.step` ended `complete`, the current Pending if still pending, then live step frames, then Complete or Incomplete naming the section; mesh-primary loss ends Indeterminate |
 | build.get | caller → fabric-primary | filter over id, current, phase | a stream: Started naming the current Build, then per Build newest first its Topology chunks, its Events chunks and its Build header, then End; the current Build selected once per read and its header marked current; a pair the Build header's schema refuses RejectedFilter, INVALID_ARGUMENT naming the pair; for reattachment after a cut, never progress polling |
 | build.delete | caller → fabric-primary | build_id | named deletion result or refusal; the current Build ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)) cannot be deleted |
 
@@ -1351,7 +1343,7 @@ and a repair are never carried here: they are node commands ([NodeCommand](#node
 
 ### Frames, durable events and reattachment
 
-Every progress frame (Step, Blocked) carries the key `(build_id, mesh, operation, step)` and
+Every progress frame (Step, Pending) carries the key `(build_id, mesh, operation, step)` and
 receivers drop duplicates by that key. A caller watching a Build whose connection closes (a Build
 stream ends with its connection, `StreamingProtocol::ENDS_WITH_ITS_CONNECTION`) reattaches by
 `build_id`: `build.get [id: build_id]` for the events, then the outer stream again, resuming from
@@ -1364,12 +1356,12 @@ the events; the break is never a defect and never a new execution (Node RPC §34
 | Complete | terminal success; steps whose event ended `complete` are read and replayed, never executed again |
 | Incomplete { sections } | terminal: the Build ran and not every section finished, each named by its mesh, operation, step, reason and code; a section's stream names its one section; nothing follows it |
 | Failed { reason } | terminal: the Build could not start; nothing follows it on that stream |
-| Blocked { step, reason } | nonterminal hook blocker, emitted on a new blocker or reason change, never on a timer; replay the current blocker on reattach if still blocked. Its only source is the subject's [Status `Blocked`](#status-op-0x1b-rdm) reply to the executor's ProbeNodeState |
+| Pending { step, reason } | nonterminal: the subject's `pre_node_ready` answered `Pending` ([fabric-node-hooks.md](fabric-node-hooks.md#outcomes-and-the-gate)), emitted when its reason changes; replay the current one on reattach while it is still pending. Its only source is the subject's [Status `Pending`](#status-op-0x1b-rdm) reply to the executor's ProbeNodeState |
 | AlreadyApplied with terminal frame | resubmission of a completed Build |
 | FabricPrimaryMoved { build_id, fabric_primary }, the typed frame naming the new fabric-primary | deliberate outer-stream end naming the new fabric-primary; caller resubmits the same build_id there |
 | NotSent / Indeterminate | transport cut outcome under the request commit cut; mesh-primary loss ends the inner call Indeterminate |
 
-Blocked is live progress, **not a step outcome**. Step outcomes are Complete and Failed. A stream
+Pending is live progress, **not a step outcome**. Step outcomes are `complete` and `failed`. A stream
 cut cancels neither the fabric-primary's dispatch nor the mesh-primary's run. Progress waits on no
 gossip.
 
@@ -1476,7 +1468,7 @@ pub struct UnfinishedSection {
 pub enum BuildReply {
     Started { build_id: String, disposition: Disposition },
     Step { build_id: String, mesh: String, operation: String, step: String, result: StepResult },
-    Blocked { build_id: String, mesh: String, operation: String, step: String, reason: String },
+    Pending { build_id: String, mesh: String, operation: String, step: String, reason: String },
     Complete { build_id: String },
     Failed { build_id: String, reason: String, code: Code },
     Got { build_id: String, phase: BuildPhase, reason: String, last_failure: Option<String>, events: u32, chunks: u32 },
@@ -1505,10 +1497,9 @@ pub enum BuildReply {
 ```
 
 `StoragePersistence` and `Binding` are the node's own ([node properties](#node-properties)); an
-event is the events store's envelope ([build.md §5](build.md#5-buildstateadapter)). The removal of
-the attempt, claim and receipt variants is a durable-format move.
+event is the events store's envelope ([build.md §5](build.md#5-buildstateadapter)).
 
-A stream is one refusal, or Started, then Step, Blocked or Events frames, then one terminal:
+A stream is one refusal, or Started, then Step, Pending or Events frames, then one terminal:
 Complete, Incomplete, Failed or FabricPrimaryMoved for Create; Complete, Incomplete or
 FabricPrimaryMoved for AttemptRun; Got for Get; Deleted for Delete; End for GetBuilds, after per
 Build its Topology and Events chunks and its Build header.
