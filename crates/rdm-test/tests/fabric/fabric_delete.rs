@@ -296,7 +296,7 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
     let mut estate = estate_with("a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after").await;
     let ids = ids_of(&estate).await;
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "node": {"Location": Estate::path("mesh1.node", "1")}})).await;
+    door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "at": Estate::path("mesh1.node", "1")})).await;
     let grown = [MeshDesired::of("mesh1", [("node-admin", 1), ("node", 2)])];
     let mut grow = estate.submit_named("mesh1 grown to two nodes", |current, executables| current.resized(&grown, false, executables)).await;
     let grow_id = grow.build_id().to_string();
@@ -353,7 +353,7 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
     let mut estate = ready_fabric("the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outstanding_is_continued_by_its_successor", &shape).await;
     let ids = ids_of(&estate).await;
     let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-    door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "node": {"Location": Estate::path("mesh1.node", "2")}})).await;
+    door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "at": Estate::path("mesh1.node", "2")})).await;
     let grow = estate.submit_named("one more node in mesh1", |current, executables| current.with_one_more("mesh1", "node", executables)).await;
     let grow_id = grow.build_id().to_string();
     let held = door.wait_held("launch").await;
