@@ -181,7 +181,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
             "spans_dir": estate.kept_evidence(),
             "exported_spans": spans.len(),
             "proof_store_serve_spans": served,
-            "build_attempt_spans": reconciles,
+            "build_reconcile_spans": reconciles,
             "fault_backend_spans": fault_spans.len(),
             "wedge_verdict_spans": verdicts.len(),
         },

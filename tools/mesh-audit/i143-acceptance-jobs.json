@@ -972,10 +972,10 @@
           "dir": "target/i143-rshape/i143-rshape-authority-chaos-process/mock_primary_handoffs_preserve_one_effective_writer"
         },
         {
-          "name": "mock_recovery_retains_build_and_advances_attempt",
+          "name": "mock_recovery_recreates_the_dead_node_with_no_build",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_recovery_retains_build_and_advances_attempt -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-authority-chaos-process/mock_recovery_retains_build_and_advances_attempt"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_recovery_recreates_the_dead_node_with_no_build/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_recovery_recreates_the_dead_node_with_no_build -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-authority-chaos-process/mock_recovery_recreates_the_dead_node_with_no_build"
         }
       ]
     },
@@ -990,10 +990,10 @@
           "dir": "target/i143-rshape/i143-rshape-authority-chaos-container/mock_primary_handoffs_preserve_one_effective_writer"
         },
         {
-          "name": "mock_recovery_retains_build_and_advances_attempt",
+          "name": "mock_recovery_recreates_the_dead_node_with_no_build",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_recovery_retains_build_and_advances_attempt -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-authority-chaos-container/mock_recovery_retains_build_and_advances_attempt"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_recovery_recreates_the_dead_node_with_no_build/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_recovery_recreates_the_dead_node_with_no_build -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-authority-chaos-container/mock_recovery_recreates_the_dead_node_with_no_build"
         }
       ]
     },
@@ -1380,10 +1380,10 @@
           "dir": "target/i143-rshape/i143-rshape-authority-chaos-scale-process/mock_primary_handoffs_preserve_one_effective_writer"
         },
         {
-          "name": "mock_recovery_retains_build_and_advances_attempt",
+          "name": "mock_recovery_recreates_the_dead_node_with_no_build",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-scale-process/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_recovery_retains_build_and_advances_attempt -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-authority-chaos-scale-process/mock_recovery_retains_build_and_advances_attempt"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-scale-process/mock_recovery_recreates_the_dead_node_with_no_build/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_recovery_recreates_the_dead_node_with_no_build -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-authority-chaos-scale-process/mock_recovery_recreates_the_dead_node_with_no_build"
         }
       ]
     },

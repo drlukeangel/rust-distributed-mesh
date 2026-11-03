@@ -2863,8 +2863,8 @@ async fn recovery_run(cell: &str, shape: Shape) {
 /// for an unchanged topology, a Build's create of the dead path, a signal to the fabric-primary, a
 /// missing or extra node in the final view.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mock_recovery_retains_build_and_advances_attempt() {
-    recovery_run("mock_recovery_retains_build_and_advances_attempt", any_tier()).await;
+async fn mock_recovery_recreates_the_dead_node_with_no_build() {
+    recovery_run("mock_recovery_recreates_the_dead_node_with_no_build", any_tier()).await;
 }
 
 // ---- cells 6-8: lifecycle chaos (rafka-v2 #2947) -----------------------------------------------------
