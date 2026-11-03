@@ -208,7 +208,7 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
         .collect();
     assert_eq!(wakes.len(), 1, "one accept from the destination, one wake: {wakes:?}");
     let wake = wakes[0];
-    assert_eq!(wake["attributes"]["outcome"], "coalesced", "the accept coalesced into the pending attempt the Direct Failed row armed: {wake}");
+    assert_eq!(wake["attributes"]["outcome"], "pending", "the accept woke the dial: the Direct Failed rows armed none (Q348): {wake}");
     assert_eq!(s(&wake["attributes"]["destination_incarnation"]), s(&dest["incarnation_id"]), "the attempt is toward the exact birth the Proxy names: {wake}");
     assert!(start(wake) >= t_inbound0 && start(wake) <= t_inbound1 + 5_000_000_000, "the wake belongs to the destination's call");
     let accept = named(&spans, "rdm.node_rpc.connection.create.via-accept").into_iter().find(|sp| sp["span_id"] == wake["parent_span_id"] && sp["trace_id"] == wake["trace_id"]).expect("the wake runs under the accept span");
