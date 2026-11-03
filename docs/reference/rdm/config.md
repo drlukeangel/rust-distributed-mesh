@@ -266,11 +266,11 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (66 names)
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/admin/records.rs` | 176 | fn `AdminConfig::from_env` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `get` |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/admin/runner.rs` | 347 | fn `AdminRunner::template_launching` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.insert` |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1859 | fn `DeploymentPipeline<'_>::create_to_ready_written_body` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.get` |
-| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/storage_backend.rs` | 260 | fn `TopologyStorageProviders::named` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, in `format!` |
+| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/storage_backend.rs` | 262 | fn `TopologyStorageProviders::named` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, in `format!` |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-core/src/launch.rs` | 55 | const `ENV_TOPOLOGY_STORAGE_PROVIDER` | literal |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-core/src/launch.rs` | 454 | fn `Launch::to_env` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.insert` |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-core/src/launch.rs` | 506 | fn `Launch::from_env` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `get` |
-| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-node/src/storage_backend.rs` | 114 | fn `NodeStorageProviders::named` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, in `format!` |
+| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-node/src/storage_backend.rs` | 116 | fn `NodeStorageProviders::named` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, in `format!` |
 | `RDM_TRANSPORT_ADDR` | `crates/rdm-core/src/launch.rs` | 33 | const `ENV_TRANSPORT_ADDR` | literal |
 | `RDM_TRANSPORT_ADDR` | `crates/rdm-core/src/launch.rs` | 446 | fn `Launch::to_env` | `ENV_TRANSPORT_ADDR`, argument to `.insert` |
 | `RDM_TRANSPORT_ADDR` | `crates/rdm-core/src/launch.rs` | 500 | fn `Launch::from_env` | `ENV_TRANSPORT_ADDR`, argument to `req` |
