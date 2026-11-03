@@ -1484,7 +1484,12 @@ impl Dialer {
     /// made again after the schedule's delay while it ends `NotSent` (nothing reached the
     /// destination) and attempts are left; `dial` is told whether its attempt is the last, the one
     /// whose failure the series' Direct Failed row records (connections.md §9.1: one row per dial). A
-    /// refusal, a wrong incarnation or this birth's connections deleted ends it at once.
+    /// refusal, a wrong incarnation or this birth's connections deleted ends it at once. Each dial made
+    /// again is made only while the topology view still holds `destination`'s birth current
+    /// (connections.md §9.5 step 1, "Verify its `Node.incarnation_id` still matches"; §9.1: a series is
+    /// "for the current destination incarnation"): a birth superseded or deleted while the dial waited
+    /// ends it `NotSent` (`destination-incarnation-superseded`), with no further attempt and so no
+    /// Failed row naming that birth.
     async fn on_send<F, Fut>(&self, destination: &Birth, mut dial: F) -> Result<Connection, ConnectError>
     where
         F: FnMut(bool) -> Fut,
@@ -1518,6 +1523,13 @@ impl Dialer {
                 .in_scope(|| tracing::info!("the dial sent nothing: it is made again after the schedule's delay"));
             tokio::time::sleep(after).await;
             attempt += 1;
+            let superseded = self.registry.inner.sink.held().lock().unwrap().end_superseded(&destination.to_end()) == Some(true);
+            if superseded {
+                let reason = "destination-incarnation-superseded".to_string();
+                tracing::info_span!("rdm.node.connection.open.via-destination-superseded", destination = %destination.node_id, incarnation_id = %destination.incarnation.as_str(), alpn = %String::from_utf8_lossy(&self.alpn.name), attempt, allowed, reason = %reason)
+                    .in_scope(|| tracing::info!("the destination's birth is no longer current: the dial is not made again"));
+                return Err(ConnectError::NotSent { reason });
+            }
         }
     }
 

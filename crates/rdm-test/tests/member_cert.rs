@@ -306,3 +306,63 @@ fn a_direct_dial_that_sent_nothing_connects_on_its_second_attempt() {
         }
     })
 }
+
+// @feature: node-lifecycle
+/// CONTRACT (connections.md §9.5 step 1: "Verify its `Node.incarnation_id` still matches the Failed
+/// record"; step 3: "a dial that sent nothing is made again within its attempts"; §9.1: a series is
+/// "for the current destination incarnation"): a direct dial whose first attempt sends nothing (the
+/// dial to its peer is blocked), and whose destination birth the dialer's topology view then holds
+/// deleted while the dial waits, is not made again: it ends `NotSent`
+/// (`destination-incarnation-superseded`) on one `via-destination-superseded` span. Must NOT happen: a
+/// second attempt toward the gone birth, or its attempts spent (the Failed row naming that birth).
+#[test]
+fn a_direct_dial_whose_destination_birth_is_superseded_while_it_waits_is_not_made_again() {
+    use rdm_transport::NodeResolver as _;
+    let cap = crate::common::capture("a_direct_dial_whose_destination_birth_is_superseded_while_it_waits_is_not_made_again");
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let alpn = rdm_transport::connections::Alpn { name: b"dial-superseded/1".to_vec(), proxy: false, carriers: vec!["node".to_string()] };
+        let fabric = FabricId::mint();
+        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(PRIMARY_REFERENCE_MS), root_choice()).await;
+        let (acceptor, a_dir) = alpn_birth(&admin, &fabric, rdm_core::PathName::new("mesh1.node", "1").unwrap(), vec![test_root_public()], &alpn).await;
+        let (dialer, d_dir) = alpn_birth(&admin, &fabric, rdm_core::PathName::new("mesh1.node", "2").unwrap(), vec![test_root_public()], &alpn).await;
+        let dialing = dialer.data_connections_for_testkit();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while dialer.node_rpc.resolver.resolve(&rdm_transport::NodeTarget::ExactNode(acceptor.digest.node.node_id.clone())).is_err() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the dialer resolves its peer");
+
+        let to = birth_of(&acceptor);
+        let peer = to.node_id.to_string();
+        dialing.block_direct_dial(&to.node_id, &alpn.name);
+        let dial = tokio::spawn({
+            let (dialing, to, name) = (dialing.clone(), to.clone(), alpn.name.clone());
+            async move { dialing.probe_direct(&to, &name).await }
+        });
+        let first = |f: &std::collections::BTreeMap<String, String>| f.get("destination") == Some(&peer) && f.get("attempt").map(String::as_str) == Some("1");
+        tokio::time::timeout(Duration::from_secs(30), spans.recorded("rdm.node.connection.open.via-attempt-not-sent", first))
+            .await
+            .expect("the first attempt sends nothing and is spanned");
+        // The destination's birth is deleted in the dialer's view while the dial waits for its next attempt.
+        dialer.node_rpc.resolver.depart(&to.node_id, &to.incarnation, &rdm_core::PathName::new("mesh1.node", "1").unwrap());
+        let ended = tokio::time::timeout(Duration::from_secs(30), dial).await.expect("the dial ends").expect("the dial task");
+        match ended {
+            Err(rdm_transport::connections::ConnectError::NotSent { reason }) => assert_eq!(reason, "destination-incarnation-superseded"),
+            other => panic!("the dial ends NotSent, its destination's birth superseded: {:?}", other.map(|c| c.id().to_string())),
+        }
+        let named = |name: &str| spans.0.lock().unwrap().values().filter(|(n, _, f)| n == name && f.get("destination") == Some(&peer)).count();
+        assert_eq!(named("rdm.node.connection.open.via-destination-superseded"), 1, "the dial names its destination's birth superseded");
+        assert_eq!(named("rdm.node.connection.open.via-attempt-not-sent"), 1, "no attempt is made toward the gone birth after the first");
+        assert_eq!(named("rdm.node.connection.open.via-attempts-spent"), 0, "its attempts are never spent toward the gone birth");
+
+        for n in [acceptor, dialer] {
+            n.stop().await;
+        }
+        for d in [a_dir, d_dir] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    })
+}
