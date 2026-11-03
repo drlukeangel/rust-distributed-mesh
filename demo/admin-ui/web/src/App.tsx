@@ -36,7 +36,7 @@ function Header({ o }: { o: Overview | null }) {
       <span className="pill" style={{ borderColor: col, color: col }} data-testid="fabric-state">{f.status}</span>
       <span>
         build{" "}
-        <b data-testid="current-build">{o.build ? `${o.build.build_id} (${o.build.state}, attempt ${o.build.attempt})` : "none"}</b>
+        <b data-testid="current-build">{o.build ? `${o.build.build_id} (${o.build.state})` : "none"}</b>
       </span>
       <span>{o.meshes.map((m) => `${m.name}: ${m.nodes} nodes, ${m.status}`).join(" · ") || "no meshes"}</span>
       <span>{o.nodes_total} nodes total</span>

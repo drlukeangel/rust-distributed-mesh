@@ -202,7 +202,7 @@ impl Admin {
         Some(Connections::new(self.carrier()).get(&birth, &Filter::new()).await)
     }
 
-    /// `build.get` of `id`: its receipts.
+    /// `build.get` of `id`: its header, its topology and its events.
     pub async fn build(&self, id: &BuildId) -> Result<Build, CallEnd> {
         self.carrier().build(id).await
     }
@@ -275,7 +275,7 @@ impl Admin {
             (false, false) => return Err(CallEnd::Rejected { reason: "add-and-remove".into(), detail: "a Build adds or removes nodes: submit the growth and the shrink one at a time".into() }),
         };
         let s = self.carrier().create(change).await?;
-        Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
+        Ok(Accepted { build_id: s.build_id().clone() })
     }
 
     /// build.create of a new mesh with `desired`'s counts: a Create of the mesh and its nodes.
@@ -286,13 +286,13 @@ impl Admin {
         }
         let nodes = self.resized(&current, std::slice::from_ref(&desired), false)?.into_iter().filter(|s| s.mesh == desired.name).map(nodes_of).collect();
         let s = self.carrier().create(Change::Create { meshes: vec![Meshes { name: desired.name.clone() }], nodes }).await?;
-        Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
+        Ok(Accepted { build_id: s.build_id().clone() })
     }
 
     /// build.create removing the mesh `mesh`: a Delete of it by name.
     pub async fn remove_mesh(&self, mesh: &str) -> Result<Accepted, CallEnd> {
         let s = self.carrier().create(Change::Delete { meshes: vec![mesh.to_string()], node_ids: Vec::new() }).await?;
-        Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
+        Ok(Accepted { build_id: s.build_id().clone() })
     }
 }
 

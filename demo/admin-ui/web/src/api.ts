@@ -14,7 +14,6 @@ export const pathNameText = (n: PathName) => `path ${n.path}, name ${n.name}`;
 
 export interface BuildAccepted {
   build_id: string;
-  attempt: number;
 }
 
 /// A node command's answer: it is never a Build, so it names its terminal frame.
@@ -38,13 +37,14 @@ export interface MeshInfo {
   primary_admin: string | null;
   nodes: number;
 }
+/// How a Build ended, its last `rdm.build.ended`'s state: `complete`, `incomplete { sections }` or
+/// `failed { reason, code }` (it could not start).
+export type BuildEnded = "complete" | { incomplete: { sections: { mesh: string; op: string; step: string; reason: string; code: string }[] } } | { failed: { reason: string; code: string } } | null;
 export interface BuildBrief {
   build_id: string;
   state: string;
-  attempt: number;
-  reason: string;
-  executor: string | null;
-  change: string;
+  time: string | null;
+  ended: BuildEnded;
 }
 export interface Overview {
   fabric: FabricInfo | null;
@@ -85,23 +85,26 @@ export interface Topology {
   connection_errors: string[];
 }
 
+/// One `rdm.build.step` event of a Build: its mesh's section, its operation, the step and how it ended.
 export interface StepView {
-  attempt: number;
-  operation: string;
+  mesh: string;
+  op: string;
   step: string;
-  outcome: unknown;
+  state: unknown;
+  subject: string | null;
+  time: string;
 }
+/// A Build as `build.get` carries it: its state, its topology's node count, its events and its end.
 export interface BuildView {
   build_id: string;
   state: string;
-  attempt: number;
-  reason: string;
-  executor: string | null;
-  last_failure: string | null;
-  time: number;
-  change: Record<string, unknown> | null;
+  current: boolean;
+  nodes: number;
+  time: string | null;
+  runs: number;
+  sections: string[];
   steps: StepView[];
-  topology: unknown;
+  ended: BuildEnded;
 }
 export interface Builds {
   current: string | null;
