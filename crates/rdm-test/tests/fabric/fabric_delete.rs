@@ -111,7 +111,7 @@ async fn delete_admitted(estate: &Estate) -> BuildStream {
     estate.carrier().await.create(Change::DeleteFabric).await.unwrap_or_else(|end| panic!("fabric.delete was refused: {end}"))
 }
 
-/// Every frame of `stream` to its terminal (`Complete`, `Failed` or `FabricPrimaryMoved`), bounded by
+/// Every frame of `stream` to its terminal (`Complete`, `Incomplete`, `Failed` or `FabricPrimaryMoved`), bounded by
 /// `within`: a stream that breaks, ends without a terminal or outlasts the bound fails the cell by name.
 async fn terminal_of(what: &str, stream: &mut BuildStream, within: Duration) -> Vec<BuildFrame> {
     let id = stream.build_id().clone();
@@ -119,7 +119,7 @@ async fn terminal_of(what: &str, stream: &mut BuildStream, within: Duration) -> 
         let mut frames = Vec::new();
         while let Some(frame) = stream.next().await {
             let frame = frame.unwrap_or_else(|e| panic!("{what}: the stream of Build {id} broke before its terminal: {e}"));
-            let end = matches!(frame, BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::FabricPrimaryMoved { .. });
+            let end = matches!(frame, BuildFrame::Complete { .. } | BuildFrame::Incomplete { .. } | BuildFrame::Failed { .. } | BuildFrame::FabricPrimaryMoved { .. });
             frames.push(frame);
             if end {
                 return frames;
@@ -312,7 +312,8 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
 /// fault door inside the launch of the first, and fabric.delete is accepted. The second node's create
 /// was admitted with the first (Q245: a mesh's member creates run at once). Released, the launch ends
 /// within its bound and its create's receipts stand; no create opens after the acceptance; the growth's
-/// run receives `Failed` naming the delete, and the teardown deletes the launched runtimes with the rest.
+/// run receives `Incomplete`, each section it did not finish naming the delete (Q346), and the teardown
+/// deletes the launched runtimes with the rest.
 /// What must NOT happen: a launch opened after the acceptance, the growth resumed, or its runtime left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after() {
@@ -332,8 +333,8 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
     door.release("launch").await;
     let ended = terminal_of("the interrupted growth", &mut grow, SETTLE).await;
     match ended.last() {
-        Some(BuildFrame::Failed { reason, .. }) => assert!(reason.contains(&id), "the growth's run receives Failed naming the delete {id}: {reason}"),
-        other => panic!("the interrupted growth ended {other:?}, not Failed naming the delete: {ended:?}"),
+        Some(BuildFrame::Incomplete { sections }) => assert!(!sections.is_empty() && sections.iter().all(|s| s.reason.contains(&id)), "the growth's run receives Incomplete, each unfinished section naming the delete {id}: {sections:?}"),
+        other => panic!("the interrupted growth ended {other:?}, not Incomplete naming the delete: {ended:?}"),
     }
     let frames = terminal_of("fabric.delete", &mut delete, SETTLE).await;
     assert!(matches!(frames.last(), Some(BuildFrame::Complete { .. })), "fabric.delete {id} completes: {frames:?}");

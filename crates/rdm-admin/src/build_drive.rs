@@ -972,6 +972,18 @@ impl DriveEnv {
                 drive.unfinished.lock().unwrap().clear();
                 continue;
             }
+            // A fabric.delete's teardown runs once every Build it interrupts has ended, each by its own
+            // drive once its steps in flight have ended (build.md §1).
+            if p.deletes_fabric() {
+                match crate::build_state::interrupted_open(&*self.builds, &p).await {
+                    Ok(open) if open.is_empty() => {}
+                    Ok(open) => {
+                        let waits: Vec<String> = open.iter().map(ToString::to_string).collect();
+                        return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: fabric.delete {id} interrupts Build {}, which has not ended: the teardown runs once its steps in flight have ended and it has ended incomplete", waits.join(", "), me_path = &me.path, me_name = &me.name));
+                    }
+                    Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: the Builds fabric.delete {id} interrupts could not be read: {e}", me_path = &me.path, me_name = &me.name)),
+                }
+            }
             // A mesh the Mesh records hold Dead is done whatever the view shows: read at every pass.
             let observed = self.topology.read().await.clone();
             match self.gate.deleted_meshes(&observed).await {

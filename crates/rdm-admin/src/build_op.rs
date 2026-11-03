@@ -648,10 +648,16 @@ pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc
         }
         Ok(b) => {
             let mut driven = vec![drives.ensure(env, &b.build_id)];
-            // The drives this admin holds of the Builds a fabric.delete interrupts are driven on, so each
-            // caller's run receives its terminal, `Failed` naming the delete (build.md §1).
+            // Every Build a fabric.delete interrupts that has not ended is driven on, a drive this admin
+            // holds of it or a new one (a successor fabric-primary holds none), so each ends `incomplete`
+            // naming the delete and its callers receive that terminal (build.md §1).
             if b.deletes_fabric() {
-                for held in drives.unended().into_iter().filter(|h| *h != b.build_id) {
+                let open = crate::build_state::interrupted_open(&*env.builds, &b).await.unwrap_or_default();
+                let mut interrupted = drives.unended();
+                interrupted.extend(open);
+                interrupted.sort();
+                interrupted.dedup();
+                for held in interrupted.into_iter().filter(|h| *h != b.build_id) {
                     driven.push(drives.ensure(env, &held));
                 }
             }

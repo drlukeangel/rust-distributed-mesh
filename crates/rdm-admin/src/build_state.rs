@@ -432,6 +432,28 @@ pub async fn interrupted_by(builds: &dyn BuildStateAdapter, p: &BuildProjection)
     Ok((current.deletes_fabric() && (current.time, &current.build_id) > (p.time, &p.build_id)).then_some(current))
 }
 
+/// The Builds the fabric.delete `delete` interrupts that have not ended (build.md §1): each accepted
+/// before it and neither complete, incomplete nor failed, newest first. A Build that completed is the
+/// last one any older Build ran before, so the read stops there.
+pub async fn interrupted_open(builds: &dyn BuildStateAdapter, delete: &BuildProjection) -> Result<Vec<BuildId>, BuildStateError> {
+    let mut open = Vec::new();
+    for id in builds.accepted_newest_first().await? {
+        if id == delete.build_id {
+            continue;
+        }
+        let p = builds.read_build(&id).await?;
+        if (p.time, &p.build_id) > (delete.time, &delete.build_id) {
+            continue;
+        }
+        match p.state {
+            BuildState::Complete => break,
+            BuildState::Pending | BuildState::Running => open.push(id),
+            BuildState::Failed | BuildState::Incomplete => {}
+        }
+    }
+    Ok(open)
+}
+
 /// The fabric.delete in force, when one is: the current Build when it is one (`false`), or the newest
 /// accepted Build when it is a failed fabric.delete (`true`: it stays in force until resubmitted).
 pub async fn fabric_delete_in_force(builds: &dyn BuildStateAdapter) -> Result<Option<(BuildProjection, bool)>, BuildStateError> {

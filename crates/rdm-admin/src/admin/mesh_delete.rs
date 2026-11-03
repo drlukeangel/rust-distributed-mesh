@@ -751,7 +751,7 @@ impl AdminRunner {
 
     /// Both tiers over the accepted roster, then the one manifest receipt
     /// ([`crate::mesh_delete::members_exited`]). `owner` is the fabric-primary that sent `DeleteMesh`:
-    /// the Build facts it holds are read when this admin's own do not yet admit it.
+    /// the Build is read from its committed records (Q292).
     async fn leave_members(&self, key: &MeshDeleteKey, owner: &crate::mesh_delete::MeshDeleteOwner) -> Result<ExitManifest, String> {
         let me_name = self.node_id.to_string();
         let view = self.topology.read().await.clone();
@@ -765,6 +765,10 @@ impl AdminRunner {
         // Build's committed records in storage when this admin has not yet heard them (Q292;
         // [`crate::mesh_delete::leaving_roster`]).
         let _ = owner;
+        // The Build is read from its committed records first, as a section's run reads it (Q292): the
+        // leaving primary holds no record of the Build its delete-mesh names until it reads it.
+        let facts = self.local.committed_facts(Some(&key.build_id)).await.map_err(|e| format!("{me_name}: the committed records of Build {} could not be read for the leave's roster: {e}", key.build_id))?;
+        self.local.absorb_facts(&facts).await;
         let steps = self.builds.read_build(&key.build_id).await.map_err(|e| format!("{me_name}: the Build {} could not be read for the leave's roster: {e}", key.build_id))?.steps;
         let stored = self.stored_roster(&me.mesh, &key.mesh_id, &steps).await?;
         let roster = crate::mesh_delete::leaving_roster(&*self.builds, key, &me_name, &me_birth, || Ok(stored)).await?;
