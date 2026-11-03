@@ -314,7 +314,8 @@ impl PrimaryUpdate {
     /// fabric-primary has nothing above it), its end told apart as the step needs it: the new
     /// primary's node id, recorded in this admin's atlas (Q355): `is_primary` on it in this admin's mesh
     /// when the mesh-primary role moved, `is_fabric_primary` when the fabric-primary role moved, each
-    /// removed from this admin.
+    /// removed from this admin, while its records still name this admin (its install has moved them
+    /// already when it installed the successor's answer).
     pub async fn update_own_primaries(&self, moving: Moving, build_id: &str, operation: &rdm_core::OperationId, named: Option<&PathName>) -> Result<NodeId, crate::build_drive::RoleMoveEnd> {
         use crate::build_drive::RoleMoveEnd;
         let node_id = match self.update_primary(moving, None, build_id, operation, named).await {
@@ -324,10 +325,10 @@ impl PrimaryUpdate {
             Err(other) => return Err(RoleMoveEnd::Refused(format!("{}: {other:?}", other.name()))),
         };
         if moving.moves_mesh_primary() {
-            self.atlas.primary_updated(self.topology_view.mesh_name(), &self.node_id, &node_id);
+            self.atlas.primary_updated(self.topology_view.primaries(), self.topology_view.mesh_name(), &self.node_id, &node_id);
         }
         if moving.moves_fabric_primary() {
-            self.atlas.fabric_primary_updated(&self.node_id, &node_id);
+            self.atlas.fabric_primary_updated(self.topology_view.primaries(), &self.node_id, &node_id);
         }
         Ok(node_id)
     }
@@ -527,7 +528,7 @@ impl PrimaryUpdate {
                 // A mesh-primary's update: its answer is recorded in this admin's atlas (Q355). A node type's
                 // primary's next command goes to its mesh-primary, which the update did not move.
                 if rdm_core::is_node_admin(&primary.r#type) {
-                    self.atlas.primary_updated(&primary.mesh, &primary.node_id, node_id);
+                    self.atlas.primary_updated(self.topology_view.primaries(), &primary.mesh, &primary.node_id, node_id);
                 }
                 span.record("outcome", "updated").record("detail", format!("node_id={node_id}").as_str())
             }
