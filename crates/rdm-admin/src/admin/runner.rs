@@ -809,7 +809,18 @@ impl AdminRunner {
         use tracing::Instrument;
         let delete = tracing::info_span!("rdm.node_admin.node.delete.via-node-recovery", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
         let operation = rdm_core::OperationId::node("node.delete", &from.node_id);
-        let terminal = self.delete_unreached_as(&*self.builds, None, node, from, false, backbone, &operation).instrument(delete).await?;
+        // Each step is recorded on the node record, and a birth already deleted is not deleted again
+        // (node-recovery.md sequence step 1): a recovery run again after its create failed finds the
+        // exited birth's row Deleted, its node.delete's completion, and runs only the create. The runtime
+        // that delete terminated has exited, so the create takes the inherited data dir as it would on
+        // that delete's read (`R-FM2` still decides a lost one).
+        let recorded = self.nodes_storage.node(&from.node_id).await.map_err(|e| crate::executor::RunEnd::from(format!("node.delete:path {node_path:?}, name {node_name:?}: the record of {} could not be read: {e}", from.node_id, node_path = &node.path, node_name = &node.name)))?;
+        let exited = if recorded.as_ref().is_some_and(|row| row.status == crate::model::NodeStatus::Deleted && row.birth(&from.incarnation).is_some()) {
+            delete.in_scope(|| tracing::info!(outcome = "recorded", "the exited birth's row is Deleted: its node.delete completed and is not run again"));
+            true
+        } else {
+            read_exited(&self.delete_unreached_as(&*self.builds, None, node, from, false, backbone, &operation).instrument(delete).await?)
+        };
         // The re-created node is a new node.id at the same path and name (node-recovery.md), minted
         // when the primary decides the re-create.
         let born = crate::model::NodeId::mint();
@@ -818,7 +829,7 @@ impl AdminRunner {
         // it, a node command) runs after the create, never beside its WaitForNodeReady.
         let _born_turn = self.node_work(&born).await;
         let create = tracing::info_span!("rdm.node_admin.node.create.via-node-recovery", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), created_node_id = %born);
-        self.create_over(&*self.builds, None, node, from, &born, read_exited(&terminal), None, None).instrument(create).await
+        self.create_over(&*self.builds, None, node, from, &born, exited, None, None).instrument(create).await
     }
 
     /// The termination of the deleted birth `(node_id, incarnation)` at `node`, heard again
