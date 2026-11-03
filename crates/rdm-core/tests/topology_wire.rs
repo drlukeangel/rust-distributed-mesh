@@ -118,8 +118,9 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
         (RafkaTime { ms: 300, kind: Some(PrimaryKind::FabricPrimary) }, "0d ac02 01 01"),
         (RafkaTime { ms: 7, kind: Some(PrimaryKind::MeshPrimary) }, "0d 07 01 00"),
         // Q234: the reader's own whole row, a `NodeView` in its field order (its trailing properties Read,
-        // Q318), and nothing after it: a node record carries no revision (i150 D10; durable format moved).
-        (OwnRow { node: own_row() }, "0e 06 6d2e6e6f6465 01 31 04 6e6f6465 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 00 00 00 00 \
+        // Q318), and nothing after it: a node record carries no revision (i150 D10; durable format moved), and no
+        // data-dir facts (Q359; wire format moved).
+        (OwnRow { node: own_row() }, "0e 06 6d2e6e6f6465 01 31 04 6e6f6465 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 00 00 \
             0000000000000000000000000000000000000000000000000000000000000000 00 00 00 00 00"),
     ];
     for (r, hex) in fixtures {

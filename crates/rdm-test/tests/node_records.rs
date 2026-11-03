@@ -420,8 +420,8 @@ async fn a_deleted_birth_is_read_by_its_id() {
 ///    load and gossip counts and the member cert its start's join issues afresh (fabric-certs.md
 ///    "Every JoinNode issues a fresh member cert"), its property record is the same record, and its lifecycle record differs
 ///    only by the stop and start it recorded and that fresh cert. 2. Killed: the node recovered at the pair (a new node id
-///    over the inherited data dir) lists the same pair, type, mesh, config, tags, executable, storage,
-///    data dir and endpoint key; its own property record holds the config and tags; its
+///    and endpoint, Q358, on a new data dir, its storage ephemeral, Q359) lists the same pair, type, mesh,
+///    config, tags, executable and storage; its own property record holds the config and tags; its
 ///    lifecycle record carries the same identity fields and names its predecessor. Must NOT happen: a
 ///    field reset by a restart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -471,11 +471,14 @@ async fn all_node_fields_survive_node_restart() {
     })
     .await;
 
-    // 2. Forced exit: recovered at the pair as a new node over the inherited data dir.
+    // 2. Forced exit: recovered at the pair as a new node, with a new endpoint (Q358), on a new data dir
+    //    (a `node`'s storage is ephemeral, Q359).
     estate.kill_node(&subject).await;
     let recovered = estate.until_node(&subject, "a recovered node is ready at the pair", crate::node_recovery_due(), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
-    let changed = differing(&before, &recovered, &["name", "type", "mesh", "config", "tags", "executable", "storage_persistence", "topology_storage_provider", "data_dir", "endpoint_id", "properties"]);
+    let changed = differing(&before, &recovered, &["name", "type", "mesh", "config", "tags", "executable", "storage_persistence", "topology_storage_provider", "properties"]);
     assert!(changed.is_empty(), "the recovered node lists every retained field: {changed:#?}");
+    assert!(recovered.endpoint_id.is_some() && recovered.endpoint_id != before.endpoint_id, "a new endpoint_id (Q358): {recovered:?}");
+    assert!(recovered.data_dir.is_some() && recovered.data_dir != before.data_dir, "a new data dir: the node's storage is ephemeral (Q359): {recovered:?}");
     assert!(recovered.transport_addr.is_some(), "the recovered node lists the address it bound: {recovered:?}");
     let recovered_properties = wait_for("the recovered node's own property record", Duration::from_secs(30), || async { estate.node_properties(&recovered.node_id) }).await;
     assert_eq!((&recovered_properties.config, &recovered_properties.tags), (&properties.config, &properties.tags), "the recovered node's own record holds the config and tags");
