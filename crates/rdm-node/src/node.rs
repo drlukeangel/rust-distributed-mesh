@@ -496,7 +496,7 @@ async fn start_booted(
     // executable registers, else the start is refused by name. The node reaches it through its one
     // handle, never a store held from here, so a provider change moves every caller ("Each node moves
     // to the new provider").
-    let topology_storage = crate::storage_backend::NodeStorageHandle::open(&providers, launch).await.map_err(|e| anyhow!("{e}"))?;
+    let topology_storage = crate::storage_backend::NodeStorageHandle::open(&providers, launch, &rafka_time).await.map_err(|e| anyhow!("{e}"))?;
     step.record("writes_to", topology_storage.writes_to().as_str());
     let base_storage = topology_storage.connections();
     // Other nodes' rows: nothing opened or read here (Q227), the store opened on the first read (Q237).

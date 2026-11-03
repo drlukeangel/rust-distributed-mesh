@@ -88,7 +88,7 @@ async fn a_node_uses_the_replaced_provider_for_every_storage_call() {
     let (old, new, data) = (store_dir("old"), store_dir("new"), store_dir("data"));
     let providers = NodeStorageProviders::new().register("file", Arc::new(FileNodeBackend::at(&old))).register("file-new", Arc::new(FileNodeBackend::at(&new)));
     let launch = launch("file", &data);
-    let handle = NodeStorageHandle::open(&providers, &launch).await.unwrap_or_else(|e| panic!("the node opens its launch's provider: {e}"));
+    let handle = NodeStorageHandle::open(&providers, &launch, &rdm_transport::clock::RafkaTime::unadopted()).await.unwrap_or_else(|e| panic!("the node opens its launch's provider: {e}"));
     // What the node's connections writer holds: taken once, at its open.
     let storage = handle.connections();
     let before = fact(&launch, 3);
@@ -154,8 +154,8 @@ struct StalledFile {
 
 #[async_trait]
 impl NodeStorageBackend for StalledFile {
-    async fn open(&self, launch: &Launch) -> Result<NodeStorage, String> {
-        let opened = self.file.open(launch).await?;
+    async fn open(&self, launch: &Launch, time: &rdm_transport::clock::RafkaTime) -> Result<NodeStorage, String> {
+        let opened = self.file.open(launch, time).await?;
         Ok(NodeStorage { connections: Arc::new(Stalled { rows: opened.connections, gate: self.gate.clone(), arrived: self.arrived.clone() }), node_rows: opened.node_rows, nodes: opened.nodes, writes_to: opened.writes_to })
     }
 }
@@ -173,7 +173,7 @@ async fn a_provider_change_waits_for_already_issued_writes() {
     let stalled = StalledFile { file: FileNodeBackend::at(&old), gate: gate.clone(), arrived: arrived.clone() };
     let providers = NodeStorageProviders::new().register("file", Arc::new(stalled)).register("file-new", Arc::new(FileNodeBackend::at(&new)));
     let launch = launch("file", &data);
-    let handle = NodeStorageHandle::open(&providers, &launch).await.unwrap_or_else(|e| panic!("the node opens its launch's provider: {e}"));
+    let handle = NodeStorageHandle::open(&providers, &launch, &rdm_transport::clock::RafkaTime::unadopted()).await.unwrap_or_else(|e| panic!("the node opens its launch's provider: {e}"));
     let storage = handle.connections();
     let issued = fact(&launch, 3);
     let write = tokio::spawn({

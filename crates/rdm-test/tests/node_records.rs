@@ -157,7 +157,7 @@ async fn own_properties_survive_node_restart() {
     let own = log
         .iter()
         .rev()
-        .find(|line| line.kind() == "node-properties" && line.key == before.node_id.as_str())
+        .find(|line| line.kind() == "node-properties" && line.subject() == before.node_id.as_str())
         .expect("the original node's acknowledged record survives its process exit");
     let record: rdm_node::node_records::NodeProperties = own.decode(&records).unwrap();
     assert_eq!(
@@ -165,8 +165,8 @@ async fn own_properties_survive_node_restart() {
         "the log contains the entire acknowledged map"
     );
     assert_eq!(
-        own.op.as_ref().unwrap().node_id,
-        before.node_id.to_string(),
+        own.attributes.source_node_id(),
+        Some(before.node_id.as_str()),
         "the node itself wrote the acknowledged record"
     );
     let spans = estate.spans();

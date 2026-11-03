@@ -1025,7 +1025,7 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
         assert_eq!(primary, vec![na2.location()], "{:?} names {:?} mesh2's primary once the stop is complete", admin.location(), na2.location());
     }
     // Step 5: NA2 records `is_primary` on its own row, a local write of the mesh's writer.
-    let recorded = || -> Option<u64> { estate.node_record(&na2_id).and_then(|r| r["record"]["births"].as_array().and_then(|b| b.last()).and_then(|b| b["is_primary"].as_u64())) };
+    let recorded = || -> Option<u64> { estate.node_record(&na2_id).and_then(|r| r["data"]["births"].as_array().and_then(|b| b.last()).and_then(|b| b["is_primary"].as_u64())) };
     let deadline = std::time::Instant::now() + SETTLE;
     while recorded().is_none() {
         assert!(std::time::Instant::now() < deadline, "NA2 recorded is_primary on its own row in nodes.jsonl within {SETTLE:?}");

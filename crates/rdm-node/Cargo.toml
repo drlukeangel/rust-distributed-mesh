@@ -28,6 +28,8 @@ rdm-client = { path = "../rdm-client" }
 rdm-transport = { path = "../rdm-transport" }
 anyhow = { workspace = true }
 async-trait = "0.1"
+# A store line's `time`, RFC 3339 (Q365).
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 hex = { workspace = true }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }

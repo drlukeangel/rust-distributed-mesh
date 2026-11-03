@@ -74,7 +74,7 @@ pub fn build_events(estate: &Estate, id: &str) -> Vec<Event> {
     let mut events: Vec<Event> = rdm_admin::store_log::read_file(&file)
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|l| serde_json::from_value::<Event>(l.record).ok())
+        .filter_map(|l| Event::of_line(&l))
         .filter(|e| e.build_id().as_ref() == Some(&build))
         .collect();
     events.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
@@ -162,7 +162,7 @@ pub fn node_investigated(estate: &Estate, node_id: &str) -> Vec<serde_json::Valu
     rdm_admin::store_log::read_file(&file)
         .unwrap_or_default()
         .into_iter()
-        .map(|l| l.record)
+        .filter_map(|l| serde_json::from_slice::<serde_json::Value>(&l.object).ok())
         .filter(|e| e["type"] == "rdm.node.investigated" && e["subject"] == node_id)
         .collect()
 }

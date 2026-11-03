@@ -62,9 +62,11 @@ impl ConnectionsStorage for MemoryConnectionsStorage {
 }
 
 #[cfg(feature = "file-backend")]
-/// A connection fact's line in the root's `connections.jsonl`: the whole fact, at its index's key.
+/// The `dataschema` of a connection fact's line in the root's `connections.jsonl`: the whole fact, its
+/// `subject` its index's key.
 const CONNECTION_FORMAT: &str = "node-connection/3";
 #[cfg(feature = "file-backend")]
+/// The `type` of [`CONNECTION_FORMAT`]'s lines.
 const CONNECTION_KIND: &str = "node-connection";
 
 #[cfg(feature = "file-backend")]
@@ -110,10 +112,11 @@ impl FileConnectionsStorage {
     }
 
     /// This node's source facts, including its earlier names, and facts explicitly
-    /// persisted by this node's writer. Reusing a location never grants another ID's history.
+    /// persisted by this node's writer (the line's `source`). Reusing a location never grants another
+    /// ID's history.
     fn own(&self, line: &crate::store_log::Line, fact: &NodeConnection) -> bool {
         fact.source.node_id == self.writer.node_id
-            || line.op.as_ref().is_some_and(|op| op.node_id == self.writer.node_id.as_str())
+            || line.attributes.source_node_id() == Some(self.writer.node_id.as_str())
     }
 
     /// The current entry of every key (the latest line of each that is not removed), of every source
@@ -152,7 +155,7 @@ impl FileConnectionsStorage {
 impl ConnectionsStorage for FileConnectionsStorage {
     /// One line: the fact is the raw log's line and its key's latest entry at once.
     async fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError> {
-        self.log.append(&self.writer, CONNECTION_FORMAT, &connection_key(&fact.index()), &ConnectionLine { fact: fact.clone(), removed: false }).await
+        self.log.append(&self.writer, CONNECTION_KIND, CONNECTION_FORMAT, &connection_key(&fact.index()), &ConnectionLine { fact: fact.clone(), removed: false }).await
     }
     async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError> {
         self.current(false).await
@@ -168,7 +171,7 @@ impl ConnectionsStorage for FileConnectionsStorage {
         if line.removed {
             return Ok(());
         }
-        self.log.append(&self.writer, CONNECTION_FORMAT, &key, &ConnectionLine { fact: line.fact, removed: true }).await
+        self.log.append(&self.writer, CONNECTION_KIND, CONNECTION_FORMAT, &key, &ConnectionLine { fact: line.fact, removed: true }).await
     }
     /// The raw log is the file: [`Self::put_connection`]'s line is the fact's log line.
     async fn append_history(&self, _fact: &NodeConnection) -> Result<(), StorageError> {

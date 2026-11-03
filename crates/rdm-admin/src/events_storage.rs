@@ -63,85 +63,8 @@ pub const SPEC_VERSION: &str = "1.0";
 /// The content type of every event's `data`.
 pub const DATA_CONTENT_TYPE: &str = "application/json";
 
-/// An event's identity: a UUIDv7 (RFC 9562), its 48 leading bits the Unix milliseconds of its mint,
-/// written in the canonical lowercase 8-4-4-4-12 form, so lexical order is mint order.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct EventId(String);
-
-impl EventId {
-    /// Mint a fresh id: the Unix milliseconds now, then random bits, monotonic in this process
-    /// (RFC 9562 §6.2, method 2: an id minted in the same millisecond as the last, or with the clock
-    /// behind it, is the last one plus one).
-    pub fn mint() -> Self {
-        // The 122 bits a UUIDv7 carries besides its version and variant: 48 of Unix milliseconds,
-        // then 74 random. The last one minted is held, so the next is past it.
-        static LAST: Mutex<u128> = Mutex::new(0);
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) & ((1u64 << 48) - 1);
-        let fresh = ((now_ms as u128) << 74) | (rand::random::<u128>() & ((1u128 << 74) - 1));
-        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-        let payload = if fresh > *last { fresh } else { *last + 1 };
-        *last = payload;
-        Self(Self::render(Self::stamped(payload)))
-    }
-
-    /// The UUID of the 122 bits `p` (48 of time, 12 of `rand_a`, 62 of `rand_b`): version 7, variant
-    /// 0b10. The version and variant sit at fixed positions, so the order of `p` is the UUID's.
-    fn stamped(p: u128) -> u128 {
-        let rand_b = p & ((1u128 << 62) - 1);
-        let rand_a = (p >> 62) & 0x0fff;
-        let ts = (p >> 74) & ((1u128 << 48) - 1);
-        (ts << 80) | (0x7u128 << 76) | (rand_a << 64) | (0b10u128 << 62) | rand_b
-    }
-
-    fn render(v: u128) -> String {
-        let h = format!("{v:032x}");
-        format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
-    }
-
-    /// The id `value`, refused by name when it is not a canonical lowercase UUIDv7.
-    pub fn parse(value: &str) -> Result<Self, String> {
-        let b = value.as_bytes();
-        let canonical = b.len() == 36
-            && b.iter().enumerate().all(|(i, c)| if matches!(i, 8 | 13 | 18 | 23) { *c == b'-' } else { c.is_ascii_digit() || (b'a'..=b'f').contains(c) })
-            && b[14] == b'7'
-            && matches!(b[19], b'8' | b'9' | b'a' | b'b');
-        if canonical {
-            Ok(Self(value.to_string()))
-        } else {
-            Err(format!("event id {value:?} is not a canonical lowercase UUIDv7 (RFC 9562)"))
-        }
-    }
-
-    /// The Unix milliseconds of the id's mint.
-    pub fn unix_ms(&self) -> u64 {
-        u64::from_str_radix(&self.0[0..8], 16).unwrap_or(0) << 16 | u64::from_str_radix(&self.0[9..13], 16).unwrap_or(0)
-    }
-
-    /// The id as its string.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for EventId {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Self::parse(&value)
-    }
-}
-
-impl From<EventId> for String {
-    fn from(id: EventId) -> String {
-        id.0
-    }
-}
-
-impl std::fmt::Display for EventId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+/// An event's identity, a UUIDv7: every store line's `id` (Q365).
+pub use rdm_core::EventId;
 
 /// The writer of an event: its exact birth, the event's `source`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +183,24 @@ fn object(data: impl Serialize) -> serde_json::Map<String, serde_json::Value> {
     match serde_json::to_value(data) {
         Ok(serde_json::Value::Object(m)) => m,
         _ => serde_json::Map::new(),
+    }
+}
+
+#[cfg(feature = "file-backend")]
+impl Event {
+    /// The event's line attributes in the events store: its own, `dataschema` [`EVENT_FORMAT`].
+    pub fn attributes(&self) -> crate::store_log::Attributes {
+        crate::store_log::Attributes { id: self.id.clone(), source: self.source.clone(), r#type: self.r#type.clone(), subject: self.subject.as_ref().map(|n| n.to_string()), time: Some(self.time.clone()), dataschema: EVENT_FORMAT.into(), traceparent: self.traceparent.clone(), tracestate: self.tracestate.clone() }
+    }
+
+    /// The event a line of the events store is; `None` for a line that is not one.
+    pub fn of_line(line: &crate::store_log::Line) -> Option<Self> {
+        let a = &line.attributes;
+        let subject = match &a.subject {
+            Some(s) => Some(NodeId::parse(s).ok()?),
+            None => None,
+        };
+        Some(Self { specversion: SPEC_VERSION.into(), id: a.id.clone(), source: a.source.clone(), r#type: a.r#type.clone(), subject, time: a.time.clone()?, datacontenttype: DATA_CONTENT_TYPE.into(), traceparent: a.traceparent.clone(), tracestate: a.tracestate.clone(), data: line.data.as_object()?.clone() })
     }
 }
 
@@ -488,18 +429,18 @@ pub trait EventsStorage: Send + Sync {
 #[derive(Debug, Default)]
 struct EventsFold {
     by_id: BTreeMap<EventId, Event>,
-    by_build: BTreeMap<(BuildId, EventId), Event>,
-    by_node: BTreeMap<(NodeId, EventId), Event>,
+    by_build: BTreeMap<BuildId, BTreeMap<EventId, Event>>,
+    by_node: BTreeMap<NodeId, BTreeMap<EventId, Event>>,
     storage: BTreeMap<EventId, Event>,
 }
 
 impl EventsFold {
     fn insert(&mut self, event: Event) {
         if let Some(build_id) = event.build_id() {
-            self.by_build.insert((build_id, event.id.clone()), event.clone());
+            self.by_build.entry(build_id).or_default().insert(event.id.clone(), event.clone());
         }
         if let Some(node_id) = event.subject.clone() {
-            self.by_node.insert((node_id, event.id.clone()), event.clone());
+            self.by_node.entry(node_id).or_default().insert(event.id.clone(), event.clone());
         }
         if event.is_storage() {
             self.storage.insert(event.id.clone(), event.clone());
@@ -508,11 +449,11 @@ impl EventsFold {
     }
 
     fn of_build(&self, build_id: &BuildId) -> Vec<Event> {
-        self.by_build.range((build_id.clone(), EventId(String::new()))..).take_while(|((b, _), _)| b == build_id).map(|(_, e)| e.clone()).collect()
+        self.by_build.get(build_id).map(|of| of.values().cloned().collect()).unwrap_or_default()
     }
 
     fn of_node(&self, node_id: &NodeId) -> Vec<Event> {
-        self.by_node.range((node_id.clone(), EventId(String::new()))..).take_while(|((n, _), _)| n == node_id).map(|(_, e)| e.clone()).collect()
+        self.by_node.get(node_id).map(|of| of.values().cloned().collect()).unwrap_or_default()
     }
 }
 
@@ -548,37 +489,38 @@ impl EventsStorage for MemoryEventsStorage {
 }
 
 #[cfg(feature = "file-backend")]
-/// An event's line in the root's `events.jsonl`: the whole event, at its id.
+/// The `dataschema` of an event's line in the root's `events.jsonl` (Q365): the line is the event, its
+/// `data` the event's data.
 pub const EVENT_FORMAT: &str = "event/1";
 
 #[cfg(feature = "file-backend")]
-/// The events store on the fabric's store root: `events.jsonl`, one whole event per line at its id
-/// (R-SR3). Its open reads nothing (Q227); its first read folds the file, and each read after it
+/// The events store on the fabric's store root: `events.jsonl`, one event per line, the line the
+/// event itself (R-SR3, Q365). Its open reads nothing (Q227); its first read folds the file, and each read after it
 /// folds the lines appended since, into the store's [`EventsFold`].
 #[derive(Debug)]
 pub struct FileEventsStorage {
     log: crate::store_log::StoreLog,
-    writer: crate::store_log::LogWriter,
     fold: std::sync::Arc<Mutex<EventsFold>>,
 }
 
 #[cfg(feature = "file-backend")]
 impl FileEventsStorage {
-    /// Open the store on the fabric's store root, written by `writer`.
-    pub async fn open(root: &crate::store_root::StoreRoot, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
+    /// Open the store on the fabric's store root: each event's line is written by the event's own
+    /// `source`.
+    pub async fn open(root: &crate::store_root::StoreRoot) -> Result<Self, StorageError> {
         let fold: std::sync::Arc<Mutex<EventsFold>> = Default::default();
         let observer: crate::store_log::Observer = {
             let fold = fold.clone();
             std::sync::Arc::new(move |line: &crate::store_log::Line| {
                 // The fold reads only the lines its formats check: an event line decodes.
-                if let Ok(event) = serde_json::from_value::<Event>(line.record.clone()) {
+                if let Some(event) = Event::of_line(line) {
                     fold.lock().unwrap_or_else(|e| e.into_inner()).insert(event);
                 }
             })
         };
         let path = root.dir().join(crate::store_root::EVENTS_FILE);
-        let log = crate::store_log::StoreLog::open_observed_on_first_read(&path, crate::store_log::Formats::new().with::<Event>(EVENT_FORMAT), observer).await?;
-        Ok(Self { log, writer: writer.clone(), fold })
+        let log = crate::store_log::StoreLog::open_observed_on_first_read(&path, crate::store_log::Formats::new().with::<serde_json::Map<String, serde_json::Value>>(EVENT_FORMAT), observer).await?;
+        Ok(Self { log, fold })
     }
 
     /// Finishes every write this store has issued.
@@ -597,7 +539,7 @@ impl FileEventsStorage {
 #[async_trait]
 impl EventsStorage for FileEventsStorage {
     async fn append(&self, event: &Event) -> Result<(), StorageError> {
-        self.log.append(&self.writer, EVENT_FORMAT, event.id.as_str(), event).await
+        self.log.append_with(event.attributes(), &event.data).await
     }
     async fn event(&self, id: &EventId) -> Result<Option<Event>, StorageError> {
         Ok(self.read().await?.by_id.get(id).cloned())
@@ -726,16 +668,42 @@ mod tests {
         {
             let dir = crate::test_support::tempdir("events-read-back");
             let root = crate::store_root::StoreRoot::at(&dir);
-            let writer = crate::store_log::LogWriter::new(&source("fabric-primary").node_id, &source("fabric-primary").incarnation);
-            let file = FileEventsStorage::open(&root, &writer).await.unwrap();
+            let file = FileEventsStorage::open(&root).await.unwrap();
             for e in &events {
                 file.append(e).await.unwrap();
             }
             reads_back(&file, &events, &b1, &b2, &n1, &n2).await;
             let lines = crate::store_log::read_file(&dir.join(crate::store_root::EVENTS_FILE)).unwrap();
             assert_eq!(lines.len(), events.len(), "one line per event in events.jsonl");
-            assert!(lines.iter().all(|l| l.format == EVENT_FORMAT), "every line an event/1 line");
+            assert!(lines.iter().all(|l| l.attributes.dataschema == EVENT_FORMAT), "every line an event/1 line");
+            for (line, event) in lines.iter().zip(&events) {
+                assert_eq!(Event::of_line(line).as_ref(), Some(event), "the line is the event itself");
+            }
         }
+    }
+
+    /// CONTRACT (build.md §5; Q365): an event's line in the root's `events.jsonl` is frozen byte for
+    /// byte: the event itself, a CloudEvents event with its own `id`, `source`, `type`, `subject`,
+    /// `time` and trace context, `dataschema` `event/1` and `data` the event's data. A layout that
+    /// moves moves this cell with it (`durable format moved`). Must NOT happen: an event wrapped in
+    /// another envelope, or a line whose attributes or data bytes moved while this cell still passes.
+    #[cfg(feature = "file-backend")]
+    #[tokio::test]
+    async fn the_events_store_line_is_frozen_byte_for_byte() {
+        let dir = crate::test_support::tempdir("events-store-layout");
+        let store = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir)).await.unwrap();
+        let mp = source("mesh-primary");
+        let (n1, inc) = (NodeId::parse(&rdm_core::fixture_crockford60("node-1")).unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("node-inc")).unwrap());
+        let mut event = Event::node_investigated(&mp, 1_000, &n1, &inc, "mesh1.node", "1", "exited", "recreate");
+        event.id = EventId::parse("0190a8f0-1234-7abc-8def-0123456789ab").unwrap();
+        (event.traceparent, event.tracestate) = (Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), None);
+        store.append(&event).await.unwrap();
+        let line = format!(r#"{{"len":LEN,"specversion":"1.0","id":"0190a8f0-1234-7abc-8def-0123456789ab","source":"{}","type":"rdm.node.investigated","subject":"{n1}","time":"1970-01-01T00:00:01.000Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","data":{{"incarnation":"{inc}","name":"1","next":"recreate","path":"mesh1.node","verdict":"exited"}}"#, mp.uri());
+        let written = String::from_utf8(std::fs::read(dir.join(crate::store_root::EVENTS_FILE)).unwrap()).unwrap();
+        let object = written.trim_matches('\n');
+        let len = object.len();
+        assert_eq!(&object[..object.len() - 20], line.replace("LEN", &len.to_string()), "the event is the line, its data last");
+        assert_eq!(&object[object.len() - 20..], format!(",\"crc32\":\"{:08x}\"}}", crate::store_log::crc32(&object.as_bytes()[..len - 20])));
     }
 
     /// CONTRACT (build.md §5.3: the events store is one of the boundaries on the fabric's shared store
@@ -753,7 +721,7 @@ mod tests {
         let first = source("fabric-primary");
         {
             let root = crate::store_root::StoreRoot::at(&dir);
-            let file = FileEventsStorage::open(&root, &crate::store_log::LogWriter::new(&first.node_id, &first.incarnation)).await.unwrap();
+            let file = FileEventsStorage::open(&root).await.unwrap();
             for e in &events {
                 file.append(e).await.unwrap();
             }
@@ -762,7 +730,7 @@ mod tests {
         // The reading admin restarted: a new incarnation of another node opens the root again.
         let after = source("restarted-admin");
         let root = crate::store_root::StoreRoot::at(&dir);
-        let reopened = FileEventsStorage::open(&root, &crate::store_log::LogWriter::new(&after.node_id, &after.incarnation)).await.unwrap();
+        let reopened = FileEventsStorage::open(&root).await.unwrap();
         reads_back(&reopened, &events, &b1, &b2, &n1, &n2).await;
         let later = Event::build_ended(&after, 2_000, &b1, &EndedState::Complete);
         reopened.append(&later).await.unwrap();
@@ -817,13 +785,13 @@ mod tests {
         events.push(storage[3].clone());
         let memory = MemoryEventsStorage::new();
         let dir = crate::test_support::tempdir("events-storage-changes");
-        let file = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir), &crate::store_log::LogWriter::new(&fp.node_id, &fp.incarnation)).await.unwrap();
+        let file = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir)).await.unwrap();
         for e in &events {
             memory.append(e).await.unwrap();
             file.append(e).await.unwrap();
         }
         file.finish_issued_writes().await;
-        let reopened = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir), &crate::store_log::LogWriter::mint()).await.unwrap();
+        let reopened = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir)).await.unwrap();
         let stores: [(&str, &dyn EventsStorage); 2] = [("memory", &memory), ("file", &reopened)];
         for (backend, store) in stores {
             let read = store.of_storage_changes().await.unwrap();

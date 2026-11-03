@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! <store_dir>/<fabric id>/
-//!   layout                            the layout marker, r-sr1
+//!   layout                            the layout marker, q365
 //!   fabric.jsonl                      the Fabric record's writes
 //!   meshes.jsonl                      every Mesh record's writes
 //!   nodes.jsonl                       every node record's writes, every runtime row, every tag change
@@ -14,8 +14,8 @@
 //!   events.jsonl                      every event of a Build, and each node's investigations
 //! ```
 //!
-//! One append-only JSONL file per storage boundary ([`crate::store_log`]): every write is one line
-//! carrying the whole record, the latest complete line for a key is the current state, nothing is
+//! One append-only JSONL file per storage boundary ([`crate::store_log`]): every write is one line,
+//! a CloudEvents 1.0 event carrying the whole record (Q365), the latest complete line for a subject is the current state, nothing is
 //! ever removed, and the indexes are the fold. The writers are exactly the writer ladder
 //! (node-identity-and-state.md §4.3), one writer per key. A node's data dir keeps only its own runtime
 //! material. A `store_dir` that is missing or unreadable fails the boot by name; nothing falls back to
@@ -57,9 +57,11 @@ pub const FABRIC_RECORD_KIND: &str = "fabric-record";
 /// entry of the root exists.
 pub const LAYOUT: &str = "layout";
 
-/// The layout this build reads and writes (R-SR1): a root whose marker holds another value, or that
-/// holds no marker, is refused by name at open, with no migration. The next layout change bumps it.
-pub const LAYOUT_VALUE: &str = "r-sr1";
+/// The layout this build reads and writes (R-SR1): every line of every store a CloudEvents 1.0 event
+/// (Q365; durable format moved from `r-sr1`, whose lines were the file store's own envelope). A root
+/// whose marker holds another value, or that holds no marker, is refused by name at open, with no
+/// migration. The next layout change bumps it.
+pub const LAYOUT_VALUE: &str = "q365";
 
 /// The marker `dir` holds: `Ok(None)` when it holds none.
 fn read_layout(dir: &Path) -> Result<Option<String>, StorageError> {
@@ -261,9 +263,10 @@ mod tests {
         let other = FabricId::mint();
         let dir = store.join(other.to_string());
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(LAYOUT), b"r-sr0\n").unwrap();
+        // A root of the layout before this one (`r-sr1`, Q365: every line the file store's own envelope).
+        std::fs::write(dir.join(LAYOUT), b"r-sr1\n").unwrap();
         let e = StoreRoot::open(&store, &other).unwrap_err().to_string();
-        assert!(e.contains(&dir.display().to_string()) && e.contains("\"r-sr0\""), "the value found is named: {e}");
+        assert!(e.contains(&dir.display().to_string()) && e.contains("\"r-sr1\"") && e.contains("\"q365\"") && e.contains("never migrated"), "the value found is named: {e}");
     }
 
     /// CONTRACT (R-SR1: the root's creator writes `layout` once): many openers of one new root at once

@@ -1,39 +1,43 @@
 //! One append-only JSONL file of a store root (R-SR1 to R-SR4, proposal
 //! `store-root-one-directory-per-entity.md`): every write of a record is one line carrying the whole
-//! record, the latest complete line for a key is the record's current state, and nothing is ever
+//! record, the latest complete line for a subject is the record's current state, and nothing is ever
 //! removed.
 //!
-//! **A line** (R-SR3) is `\n` + one JSON object + `\n`, written as
+//! **A line** (R-SR3, Q365) is `\n` + one JSON object + `\n`, the object a CloudEvents 1.0 event in its
+//! JSON form, written as
 //!
 //! ```text
-//! {"len":N,"op":{"node_id":"…","incarnation_id":"…","seq":S},"format":"<kind>/<n>","key":"…","record":{…},"crc32":"xxxxxxxx"}
+//! {"len":N,"specversion":"1.0","id":"<uuidv7>","source":"rdm://<fabric_id>/<node_id>/<incarnation>","type":"<type>","subject":"…","time":"…","datacontenttype":"application/json","dataschema":"<type>/<n>","data":{…},"crc32":"xxxxxxxx"}
 //! ```
 //!
 //! - `len` is the object's byte count between its newlines, itself included: the smallest decimal
 //!   `N` for which `{"len":` + `N` + the rest is `N` bytes long.
-//! - `op` is the write: the writer's node id and incarnation, and `seq`, a sequence this writer
-//!   increments for each new write to this file. A retry of one write keeps its `op`; a separate
-//!   write gets a new `seq` even when its record is identical. A writer resumes its sequence from the
-//!   file's own lines (the greatest `seq` of its node id and incarnation), so an `op` is never used
-//!   twice.
-//! - `format` is the record kind and its version; `key` the record's key inside its kind.
-//! - `record` is the whole record, nested so no field of it can be read as a field of the line.
+//! - `id` is the write: a time-ordered UUIDv7 ([`EventId`]) minted once for it. A retry of one write
+//!   keeps its `id`; a separate write gets a new one even when its record is identical, so no two
+//!   writes share an object.
+//! - `source` is the writer's exact birth; `time` the writer's rafka-time at the write, absent before
+//!   its process holds one (never another clock).
+//! - `type` is the record kind and `dataschema` its kind and version; `subject` the record's key
+//!   inside its kind, absent on an event that is about no node.
+//! - `traceparent` and `tracestate`, when present, are the writer's W3C trace context (an event's).
+//! - `data` is the whole record, nested so no field of it can be read as a field of the line, and
+//!   last before `crc32`.
 //! - `crc32` is the CRC-32 (IEEE) of the object's bytes from its opening brace up to, not including,
 //!   the final `,"crc32":`, as eight lowercase hex digits: the last 20 bytes of every object are
-//!   `,"crc32":"xxxxxxxx"}`.
+//!   `,"crc32":"xxxxxxxx"}`. `len` and `crc32` are the line's two extension attributes.
 //!
 //! **The append.** A writer appends one line in one `write` on a descriptor opened `O_APPEND`, then
 //! `fsync`s, and reports success only after the fsync. A short write and a failed fsync are
 //! indeterminate, never success: the writer holds the write as its pending append and reconciles it
-//! before its next write, by its `op`, from the offset its fold had consumed before the write,
+//! before its next write, by its object (its `id` makes it unique), from the offset its fold had consumed before the write,
 //! validating every line between. A complete, terminated object is fsynced and accepted; a complete
 //! object missing only its newline is finished with one newline alone and fsynced; a write that
-//! reported zero bytes, with every line between valid, is retried under the same `op`. A partial
+//! reported zero bytes, with every line between valid, is retried under the same `id`. A partial
 //! object, or an outcome the writer cannot identify, is refused by name: nothing is appended in its
 //! place and no byte is discarded.
 //!
 //! **The fold** (R-SR3, R-SR4) skips blank lines only. Every other line must hold exactly `len`
-//! bytes, match its `crc32` and parse as a format the store reads: a line that does not, the last
+//! bytes, match its `crc32` and parse as an event in a `dataschema` the store reads: a line that does not, the last
 //! one included, refuses the open or the tail read by name, naming the file and the byte offset, and
 //! nothing older is answered as current. A complete valid object with no final newline is kept: the
 //! reader appends one newline alone and fsyncs before it answers (another writer's opening newline
@@ -52,6 +56,7 @@
 
 use crate::blocking::blocking_io;
 use crate::storage_error::StorageError;
+pub use rdm_core::EventId;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -62,7 +67,7 @@ use std::sync::{Arc, Mutex};
 /// fold ([`StoreLog::open`]), at its first read or first append for one opened on its first read
 /// ([`StoreLog::open_on_first_read`], rdm#89, Q227), under the span that read or append runs in. It
 /// names the file, its provider when the opener names it, the caller's span and the reader, the
-/// file's bytes and lines, the latest `op` of each writer and the fold's `duration` in milliseconds; a
+/// file's bytes and lines, each `source` with its count of lines and the fold's `duration` in milliseconds; a
 /// refused fold its `invalid_offset` and cause (i149 plan, "OTLP span-assertion bar").
 pub const OPEN_SPAN: &str = "rdm.node.store.resolve.via-fold";
 
@@ -74,120 +79,167 @@ pub const UNENDED_SPAN: &str = "rdm.node.store.update.via-tail-read-unended";
 /// The bytes every object ends with after its checksummed bytes: `,"crc32":"xxxxxxxx"}`.
 const CRC_SUFFIX: usize = 20;
 
-/// One write of a line: its writer and the writer's sequence in this file.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Op {
-    /// The writer's node id.
-    pub node_id: String,
-    /// The writer's incarnation.
-    pub incarnation_id: String,
-    /// The write's place in this writer's sequence of writes to this file, from 1.
-    pub seq: u64,
+/// The CloudEvents version every line carries.
+pub const SPEC_VERSION: &str = "1.0";
+/// The content type of every line's `data`.
+pub const DATA_CONTENT_TYPE: &str = "application/json";
+
+/// `ms` of rafka-time as RFC 3339 in UTC milliseconds: a line's `time`.
+pub fn rfc3339(ms: u64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms as i64).unwrap_or_default().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-/// The process writing through a store: its node id and incarnation, the first two fields of every
-/// `op` it writes.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// The process writing through a store: its exact birth, every line's `source`, and its rafka-time,
+/// every line's `time`.
+#[derive(Debug, Clone)]
 pub struct LogWriter {
+    /// The writer's fabric.
+    pub fabric_id: crate::model::FabricId,
     /// The writer's node id.
     pub node_id: crate::model::NodeId,
     /// The writer's incarnation.
     pub incarnation_id: crate::model::IncarnationId,
+    /// The writer's rafka-time: a line written before its process holds one carries no `time`.
+    pub time: rdm_transport::clock::RafkaTime,
 }
 
 impl LogWriter {
-    /// The writer born as `incarnation` of `node`.
-    pub fn new(node: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Self {
-        Self { node_id: node.clone(), incarnation_id: incarnation.clone() }
+    /// The writer born as `incarnation` of `node` in `fabric`, stamping `time`.
+    pub fn new(fabric: &crate::model::FabricId, node: &crate::model::NodeId, incarnation: &crate::model::IncarnationId, time: &rdm_transport::clock::RafkaTime) -> Self {
+        Self { fabric_id: fabric.clone(), node_id: node.clone(), incarnation_id: incarnation.clone(), time: time.clone() }
     }
 
-    /// A writer of a newly minted node id and incarnation: a store a cell opens.
+    /// A writer of a newly minted fabric, node id and incarnation, holding no rafka-time: a store a
+    /// cell opens.
     pub fn mint() -> Self {
-        Self { node_id: crate::model::NodeId::mint(), incarnation_id: crate::model::IncarnationId::mint() }
+        Self::new(&crate::model::FabricId::mint(), &crate::model::NodeId::mint(), &crate::model::IncarnationId::mint(), &rdm_transport::clock::RafkaTime::unadopted())
     }
 
-    /// `(node id, incarnation)`, as an `op` names them.
-    fn ids(&self) -> (String, String) {
-        (self.node_id.to_string(), self.incarnation_id.to_string())
+    /// `rdm://<fabric_id>/<node_id>/<incarnation>`: every line's `source`.
+    pub fn source(&self) -> String {
+        format!("rdm://{}/{}/{}", self.fabric_id, self.node_id, self.incarnation_id)
+    }
+
+    /// The writer's rafka-time now as a line's `time`, `None` while its process holds none.
+    pub fn time(&self) -> Option<String> {
+        self.time.try_now_ms().map(rfc3339)
     }
 }
 
 impl std::fmt::Display for LogWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.node_id, self.incarnation_id)
+        f.write_str(&self.source())
     }
 }
 
-/// One record as a store reads it: its format, key and whole record, and, once on the disk, its
-/// `op` and the byte offset of its object in the file.
+/// A line's CloudEvents attributes, every one but `data` (Q365): `specversion` and
+/// `datacontenttype` are the same on every line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attributes {
+    /// The write: a time-ordered UUIDv7.
+    pub id: EventId,
+    /// The writer's exact birth, `rdm://<fabric_id>/<node_id>/<incarnation>`.
+    pub source: String,
+    /// The record kind.
+    pub r#type: String,
+    /// The record's key inside its kind; absent on an event about no node.
+    pub subject: Option<String>,
+    /// The writer's rafka-time at the write, RFC 3339 in UTC milliseconds; absent before its process
+    /// held one.
+    pub time: Option<String>,
+    /// `<type>/<n>`: the record's kind and schema version.
+    pub dataschema: String,
+    /// The writer's W3C trace parent.
+    pub traceparent: Option<String>,
+    /// The writer's W3C trace state.
+    pub tracestate: Option<String>,
+}
+
+impl Attributes {
+    /// The attributes of a new write by `writer` of a `type` record in `dataschema` at `subject`: its
+    /// `id` minted, its `time` the writer's rafka-time.
+    pub fn of(writer: &LogWriter, r#type: &str, dataschema: &str, subject: &str) -> Self {
+        Self { id: EventId::mint(), source: writer.source(), r#type: r#type.into(), subject: Some(subject.into()), time: writer.time(), dataschema: dataschema.into(), traceparent: None, tracestate: None }
+    }
+
+    /// The node id of the writer in `source`.
+    pub fn source_node_id(&self) -> Option<&str> {
+        self.source.strip_prefix("rdm://")?.split('/').nth(1)
+    }
+}
+
+/// One record as a store reads it: its attributes, its whole record, and the object's bytes as
+/// its writer wrote them, with the byte offset of the object in the file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Line {
-    /// The object's byte offset in the file; `None` for a line its writer still holds.
+    /// The object's byte offset in the file; `None` for a line made in memory.
     pub offset: Option<u64>,
-    /// The write that appended it; `None` for a line its writer still holds.
-    pub op: Option<Op>,
-    /// `<kind>/<n>`.
-    pub format: String,
-    /// The record's key inside its kind.
-    pub key: String,
+    /// Its CloudEvents attributes.
+    pub attributes: Attributes,
     /// The whole record.
-    pub record: serde_json::Value,
-    /// The record's bytes as its writer wrote them, for a line read from a store: a copy appends these,
-    /// so the new provider holds the line byte for byte (storage.md §2 Copy). `None` for a line made in
-    /// memory: its record is encoded.
-    pub written: Option<Vec<u8>>,
+    pub data: serde_json::Value,
+    /// The object's bytes, no newlines: a copy appends these, so the new provider holds the line
+    /// byte for byte (storage.md §2 Copy).
+    pub object: Vec<u8>,
 }
 
 impl Line {
-    /// The record kind: the format without its version.
+    /// A line made in memory of `attributes` and the record `data`.
+    pub fn new(attributes: Attributes, data: serde_json::Value) -> Self {
+        let object = encode_object(&attributes, &serde_json::to_vec(&data).expect("a record encodes"));
+        Self { offset: None, attributes, data, object }
+    }
+
+    /// The record kind.
     pub fn kind(&self) -> &str {
-        type_of(&self.format)
+        &self.attributes.r#type
+    }
+
+    /// The record's key inside its kind, `""` for a line with none.
+    pub fn subject(&self) -> &str {
+        self.attributes.subject.as_deref().unwrap_or("")
     }
 
     /// The record as `T`, refused by name (the file and the line's offset) when it does not decode.
     pub fn decode<T: DeserializeOwned>(&self, file: &Path) -> Result<T, StorageError> {
-        T::deserialize(&self.record).map_err(|e| StorageError::Unrecognised { file: file.display().to_string(), reason: format!("the {} line{} does not decode: {e}", self.format, self.offset.map(|o| format!(" at byte offset {o}")).unwrap_or_default()) })
+        T::deserialize(&self.data).map_err(|e| StorageError::Unrecognised { file: file.display().to_string(), reason: format!("the {} line{} does not decode: {e}", self.attributes.dataschema, self.offset.map(|o| format!(" at byte offset {o}")).unwrap_or_default()) })
     }
 }
 
-fn type_of(format: &str) -> &str {
-    format.split('/').next().unwrap_or(format)
-}
-
-/// A check that a record decodes as its format's type.
+/// A check that a record decodes as its `dataschema`'s type.
 type Check = Arc<dyn Fn(&serde_json::Value) -> Result<(), String> + Send + Sync>;
 
-/// The formats a store reads in one file, each with the check its records must pass: a line in any
-/// other format, or whose record fails its check, refuses the fold by name.
+/// The `dataschema`s a store reads in one file, each with the check its records must pass: a line in
+/// any other, or whose record fails its check, refuses the fold by name.
 #[derive(Clone, Default)]
 pub struct Formats {
     checks: BTreeMap<String, Check>,
-    /// Every format is read, unchecked: a look at a file, never a store's fold.
+    /// Every `dataschema` is read, unchecked: a look at a file, never a store's fold.
     any: bool,
 }
 
 impl Formats {
-    /// No format.
+    /// No `dataschema`.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Every format, its records unchecked: a look at a whole file ([`read_file`]).
+    /// Every `dataschema`, its records unchecked: a look at a whole file ([`read_file`]).
     pub fn any() -> Self {
         Self { checks: BTreeMap::new(), any: true }
     }
 
-    /// `format`, whose records decode as `T`.
-    pub fn with<T: DeserializeOwned + 'static>(mut self, format: &str) -> Self {
-        self.checks.insert(format.to_string(), Arc::new(|v: &serde_json::Value| T::deserialize(v).map(|_| ()).map_err(|e| e.to_string())));
+    /// `dataschema`, whose records decode as `T`.
+    pub fn with<T: DeserializeOwned + 'static>(mut self, dataschema: &str) -> Self {
+        self.checks.insert(dataschema.to_string(), Arc::new(|v: &serde_json::Value| T::deserialize(v).map(|_| ()).map_err(|e| e.to_string())));
         self
     }
 
-    fn check(&self, format: &str, record: &serde_json::Value) -> Result<(), String> {
-        match self.checks.get(format) {
-            Some(check) => check(record).map_err(|e| format!("its {format} record does not decode: {e}")),
+    fn check(&self, dataschema: &str, record: &serde_json::Value) -> Result<(), String> {
+        match self.checks.get(dataschema) {
+            Some(check) => check(record).map_err(|e| format!("its {dataschema} record does not decode: {e}")),
             None if self.any => Ok(()),
-            None => Err(format!("format {format:?}, this build reads {:?} here", self.checks.keys().collect::<Vec<_>>())),
+            None => Err(format!("dataschema {dataschema:?}, this build reads {:?} here", self.checks.keys().collect::<Vec<_>>())),
         }
     }
 }
@@ -218,46 +270,24 @@ pub fn read_file(path: &Path) -> Result<Vec<Line>, StorageError> {
     Ok(lines)
 }
 
-/// The latest record of `kind` (at `key`, when given) in the store file at `path`, as
-/// `{"format": …, "record": …}`; `None` when there is none, or when the file cannot be read whole: a
-/// look a cell takes at a root while its nodes write it.
-pub fn read_record(path: &Path, kind: &str, key: Option<&str>) -> Option<serde_json::Value> {
+/// The latest record of `type` (at `subject`, when given) in the store file at `path`, as
+/// `{"type": …, "subject": …, "dataschema": …, "data": …}`; `None` when there is none, or when the
+/// file cannot be read whole: a look a cell takes at a root while its nodes write it.
+pub fn read_record(path: &Path, r#type: &str, subject: Option<&str>) -> Option<serde_json::Value> {
     let lines = read_file(path).ok()?;
-    let l = lines.into_iter().rev().find(|l| l.kind() == kind && key.is_none_or(|k| l.key == k))?;
-    Some(serde_json::json!({ "format": l.format, "key": l.key, "record": l.record }))
+    let l = lines.into_iter().rev().find(|l| l.kind() == r#type && subject.is_none_or(|k| l.subject() == k))?;
+    Some(serde_json::json!({ "type": l.attributes.r#type, "subject": l.attributes.subject, "dataschema": l.attributes.dataschema, "data": l.data }))
 }
 
-/// One object's fields as its bytes hold them: its `op`, `format` and `key`, and its record exactly as
-/// written (a cell rewriting an older writer's record keeps the bytes it does not change).
-#[derive(Debug, Clone)]
-pub struct RawObject {
-    /// The write.
-    pub op: Op,
-    /// `<kind>/<n>`.
-    pub format: String,
-    /// The record's key.
-    pub key: String,
-    /// The record's JSON, byte for byte.
-    pub record_json: String,
+/// The subjects of `type` the store file at `path` holds a line of, sorted ([`read_file`]).
+pub fn subjects_in(path: &Path, r#type: &str) -> Result<Vec<String>, StorageError> {
+    Ok(latest_in(path)?.into_keys().filter(|(k, _)| k == r#type).map(|(_, subject)| subject).collect())
 }
 
-/// The fields of the object `obj` (no newlines) when it verifies, its record as written.
-pub fn read_record_bytes(obj: &[u8]) -> Result<RawObject, String> {
-    let line = verify(obj, 0, &Formats::any())?;
-    let text = std::str::from_utf8(obj).map_err(|e| e.to_string())?;
-    let start = text.find(",\"record\":").ok_or("no record field")? + ",\"record\":".len();
-    let record_json = text[start..text.len() - CRC_SUFFIX].to_string();
-    Ok(RawObject { op: line.op.expect("a line on the disk has its op"), format: line.format, key: line.key, record_json })
-}
-
-/// The keys of `kind` the store file at `path` holds a line of, sorted ([`read_file`]).
-pub fn keys_in(path: &Path, kind: &str) -> Result<Vec<String>, StorageError> {
-    Ok(latest_in(path)?.into_keys().filter(|(k, _)| k == kind).map(|(_, key)| key).collect())
-}
-
-/// The latest line of each (kind, key) of the store file at `path` ([`read_file`]).
+/// The latest line of each (type, subject) of the store file at `path` ([`read_file`]): a line with
+/// no subject is in none.
 pub fn latest_in(path: &Path) -> Result<BTreeMap<(String, String), Line>, StorageError> {
-    Ok(read_file(path)?.into_iter().map(|l| ((l.kind().to_string(), l.key.clone()), l)).collect())
+    Ok(read_file(path)?.into_iter().filter(|l| l.attributes.subject.is_some()).map(|l| ((l.kind().to_string(), l.subject().to_string()), l)).collect())
 }
 
 // ---------------------------------------------------------------- the line's bytes
@@ -292,16 +322,29 @@ fn digits(mut n: usize) -> usize {
     d
 }
 
-/// The object (no newlines) of one write: `op`, `format`, `key` and `record`, its `len` and its
-/// `crc32`.
-pub fn encode_object(op: &Op, format: &str, key: &str, record: &[u8]) -> Vec<u8> {
+/// The object (no newlines) of one write: its `len`, its attributes in their order, `data` (the
+/// record's bytes) and its `crc32`.
+pub fn encode_object(attributes: &Attributes, data: &[u8]) -> Vec<u8> {
     let json = |s: &str| serde_json::to_string(s).expect("a string encodes");
-    let op_json = serde_json::to_string(op).expect("an op encodes");
-    let rest = format!(",\"op\":{op_json},\"format\":{},\"key\":{},\"record\":", json(format), json(key));
-    let fixed = "{\"len\":".len() + rest.len() + record.len() + CRC_SUFFIX;
+    let mut rest = format!(",\"specversion\":{},\"id\":{},\"source\":{},\"type\":{}", json(SPEC_VERSION), json(attributes.id.as_str()), json(&attributes.source), json(&attributes.r#type));
+    if let Some(subject) = &attributes.subject {
+        rest.push_str(&format!(",\"subject\":{}", json(subject)));
+    }
+    if let Some(time) = &attributes.time {
+        rest.push_str(&format!(",\"time\":{}", json(time)));
+    }
+    rest.push_str(&format!(",\"datacontenttype\":{},\"dataschema\":{}", json(DATA_CONTENT_TYPE), json(&attributes.dataschema)));
+    if let Some(traceparent) = &attributes.traceparent {
+        rest.push_str(&format!(",\"traceparent\":{}", json(traceparent)));
+    }
+    if let Some(tracestate) = &attributes.tracestate {
+        rest.push_str(&format!(",\"tracestate\":{}", json(tracestate)));
+    }
+    rest.push_str(",\"data\":");
+    let fixed = "{\"len\":".len() + rest.len() + data.len() + CRC_SUFFIX;
     let len = (1..=20).map(|d| fixed + d).find(|n| digits(*n) == n - fixed).expect("a length has a width");
     let mut obj = format!("{{\"len\":{len}{rest}").into_bytes();
-    obj.extend_from_slice(record);
+    obj.extend_from_slice(data);
     let crc = crc32(&obj);
     obj.extend_from_slice(format!(",\"crc32\":\"{crc:08x}\"}}").as_bytes());
     debug_assert_eq!(obj.len(), len);
@@ -309,8 +352,8 @@ pub fn encode_object(op: &Op, format: &str, key: &str, record: &[u8]) -> Vec<u8>
 }
 
 /// The whole line of one write: `\n` + [`encode_object`] + `\n`.
-pub fn encode_line(op: &Op, format: &str, key: &str, record: &[u8]) -> Vec<u8> {
-    line_of(&encode_object(op, format, key, record))
+pub fn encode_line(attributes: &Attributes, data: &[u8]) -> Vec<u8> {
+    line_of(&encode_object(attributes, data))
 }
 
 /// The line of `obj`: `\n` + the object + `\n`.
@@ -322,23 +365,34 @@ fn line_of(obj: &[u8]) -> Vec<u8> {
     line
 }
 
+/// An object's fields as a CloudEvents 1.0 event in its JSON form, `len` and `crc32` its two
+/// extension attributes.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
     len: usize,
-    op: Op,
-    format: String,
-    key: String,
-    record: serde_json::Value,
+    specversion: String,
+    id: EventId,
+    source: String,
+    r#type: String,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    time: Option<String>,
+    datacontenttype: String,
+    dataschema: String,
+    #[serde(default)]
+    traceparent: Option<String>,
+    #[serde(default)]
+    tracestate: Option<String>,
+    data: serde_json::Value,
     #[allow(dead_code)]
     crc32: String,
 }
 
 /// The line of the object `obj` at byte offset `offset`, or why it is not one: its `len` must be its
-/// byte count, its `crc32` must match, and it must parse as a format `formats` reads.
-/// The object's record field name, as an encoded object holds it.
-const RECORD_FIELD: &[u8] = b",\"record\":";
-
+/// byte count, its `crc32` must match, and it must parse as a CloudEvents 1.0 event in a
+/// `dataschema` `formats` reads.
 fn verify(obj: &[u8], offset: u64, formats: &Formats) -> Result<Line, String> {
     const HEAD: &[u8] = b"{\"len\":";
     if !obj.starts_with(HEAD) {
@@ -362,11 +416,12 @@ fn verify(obj: &[u8], offset: u64, formats: &Formats) -> Result<Line, String> {
     if env.len != len {
         return Err("its len field is not its first".into());
     }
-    formats.check(&env.format, &env.record)?;
-    // The record's bytes: from after the object's `"record":` field name to its `crc32`. A key holding
-    // a quote holds it escaped, so the field name's first unescaped occurrence is the field.
-    let written = obj.windows(RECORD_FIELD.len()).position(|w| w == RECORD_FIELD).map(|at| obj[at + RECORD_FIELD.len()..obj.len() - CRC_SUFFIX].to_vec()).filter(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).is_ok_and(|v| v == env.record));
-    Ok(Line { offset: Some(offset), op: Some(env.op), format: env.format, key: env.key, record: env.record, written })
+    if env.specversion != SPEC_VERSION || env.datacontenttype != DATA_CONTENT_TYPE {
+        return Err(format!("its specversion is {:?} and its datacontenttype {:?}; this build reads {SPEC_VERSION:?} and {DATA_CONTENT_TYPE:?}", env.specversion, env.datacontenttype));
+    }
+    formats.check(&env.dataschema, &env.data)?;
+    let attributes = Attributes { id: env.id, source: env.source, r#type: env.r#type, subject: env.subject, time: env.time, dataschema: env.dataschema, traceparent: env.traceparent, tracestate: env.tracestate };
+    Ok(Line { offset: Some(offset), attributes, data: env.data, object: obj.to_vec() })
 }
 
 /// What one scan of the bytes from an offset found.
@@ -437,40 +492,33 @@ fn read_from(file: &std::fs::File, from: u64) -> std::io::Result<Vec<u8>> {
 
 // ---------------------------------------------------------------- the fold
 
-/// What the fold holds of one file: how far it read it, the latest line per (kind, key), and the
-/// greatest `seq` of each writer.
+/// What the fold holds of one file: how far it read it, the latest line per (type, subject), and
+/// how many lines each `source` wrote.
 #[derive(Default)]
 struct Fold {
     consumed: u64,
     latest: BTreeMap<(String, String), Line>,
     lines: u64,
-    ops: BTreeMap<(String, String), u64>,
+    sources: BTreeMap<String, u64>,
 }
 
 impl Fold {
     fn take(&mut self, lines: Vec<Line>) {
         for l in lines {
-            if let Some(op) = &l.op {
-                let seq = self.ops.entry((op.node_id.clone(), op.incarnation_id.clone())).or_default();
-                *seq = (*seq).max(op.seq);
-            }
+            *self.sources.entry(l.attributes.source.clone()).or_default() += 1;
             self.lines += 1;
-            self.latest.insert((l.kind().to_string(), l.key.clone()), l);
+            if l.attributes.subject.is_some() {
+                self.latest.insert((l.kind().to_string(), l.subject().to_string()), l);
+            }
         }
     }
-}
-
-/// Each writer's last `seq` handed out in this process, per file: two stores of one process writing
-/// one file as one writer never share an `op`.
-fn issued() -> &'static Mutex<BTreeMap<(PathBuf, (String, String)), u64>> {
-    static ISSUED: std::sync::OnceLock<Mutex<BTreeMap<(PathBuf, (String, String)), u64>>> = std::sync::OnceLock::new();
-    ISSUED.get_or_init(Default::default)
 }
 
 /// The append a writer has not proven: its bytes, and where its fold stood before it.
 #[derive(Debug, Clone)]
 struct Pending {
-    op: Op,
+    /// The write's `id`: what an indeterminate outcome names.
+    id: EventId,
     obj: Vec<u8>,
     /// The fold's consumed offset before the write: reconciliation reads from here.
     from: u64,
@@ -720,63 +768,63 @@ impl StoreLog {
         Ok(lines)
     }
 
-    /// The greatest `seq` of each writer the fold has read, by (node id, incarnation).
-    pub fn writers(&self) -> BTreeMap<(String, String), u64> {
-        self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).ops.clone()
+    /// How many lines each `source` wrote, of the lines the fold has read.
+    pub fn sources(&self) -> BTreeMap<String, u64> {
+        self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).sources.clone()
     }
 
-    /// Append `record` as one line in `format` at `key`, written by `writer` (R-SR3): this store's
-    /// pending append is reconciled first, then the line is written in one `write` and fsynced, and success is
-    /// answered only after the fsync.
-    pub async fn append<T: Serialize + ?Sized>(&self, writer: &LogWriter, format: &str, key: &str, record: &T) -> Result<(), StorageError> {
-        let bytes = serde_json::to_vec(record).map_err(|e| StorageError::Io { file: self.0.path.display().to_string(), reason: format!("the {format} record at {key:?} does not encode: {e}") })?;
+    /// Append `record` as one line of `type` in `dataschema` at `subject`, written by `writer` (R-SR3,
+    /// Q365): its `id` minted and its `time` the writer's rafka-time; this store's pending append is
+    /// reconciled first, then the line is written in one `write` and fsynced, and success is answered
+    /// only after the fsync.
+    pub async fn append<T: Serialize + ?Sized>(&self, writer: &LogWriter, r#type: &str, dataschema: &str, subject: &str, record: &T) -> Result<(), StorageError> {
+        self.append_with(Attributes::of(writer, r#type, dataschema, subject), record).await
+    }
+
+    /// Append `record` as one line under `attributes`, as [`Self::append`] writes one: an event's
+    /// line, its attributes the event's own.
+    pub async fn append_with<T: Serialize + ?Sized>(&self, attributes: Attributes, record: &T) -> Result<(), StorageError> {
+        let file = self.0.path.display().to_string();
+        let bytes = serde_json::to_vec(record).map_err(|e| StorageError::Io { file: file.clone(), reason: format!("the {} record at {:?} does not encode: {e}", attributes.dataschema, attributes.subject) })?;
         let value: serde_json::Value = serde_json::from_slice(&bytes).expect("encoded JSON parses");
-        self.0.formats.check(format, &value).map_err(|why| StorageError::Unrecognised { file: self.0.path.display().to_string(), reason: format!("a write refused: {why}") })?;
+        self.0.formats.check(&attributes.dataschema, &value).map_err(|why| StorageError::Unrecognised { file, reason: format!("a write refused: {why}") })?;
+        let subject = attributes.subject.clone().unwrap_or_default();
+        self.append_object(attributes.id.clone(), subject, encode_object(&attributes, &bytes)).await
+    }
+
+    /// Append `line` as its writer wrote it, byte for byte, its `id` kept (storage.md §2 Copy: the old
+    /// provider's lines appended to the new one, every writer's included): this store's pending append
+    /// is reconciled first, then the line is written and fsynced as [`Self::append`] writes one.
+    pub async fn append_line(&self, line: &Line) -> Result<(), StorageError> {
+        let file = self.0.path.display().to_string();
+        self.0.formats.check(&line.attributes.dataschema, &line.data).map_err(|why| StorageError::Unrecognised { file, reason: format!("a write refused: {why}") })?;
+        self.append_object(line.attributes.id.clone(), line.subject().to_string(), line.object.clone()).await
+    }
+
+    /// Append the object `obj` of the write `id` at `subject`, under this store's one-append-at-a-time
+    /// lock, its pending append reconciled first.
+    async fn append_object(&self, id: EventId, subject: String, obj: Vec<u8>) -> Result<(), StorageError> {
         let (caller, parent) = (caller_span(), tracing::Span::current());
         let guard = self.0.append.clone().lock_owned().await;
         let inner = self.0.clone();
-        let (writer, format, key) = (writer.clone(), format.to_string(), key.to_string());
         let dispatch = tracing::dispatcher::get_default(|d| d.clone());
         blocking_io(move || {
             let mut guard = guard;
             #[cfg(feature = "testkit-store")]
-            let door = write_door::take(&inner.path, &key);
+            let door = write_door::take(&inner.path, &subject);
+            #[cfg(not(feature = "testkit-store"))]
+            let _ = &subject;
             #[cfg(feature = "testkit-store")]
             if let Some(door) = door.as_ref().filter(|d| !d.after()) {
                 tracing::dispatcher::with_default(&dispatch, || door.hold());
             }
             tracing::dispatcher::with_default(&dispatch, || inner.fold_before_append(caller, &parent))?;
-            let appended = inner.append_line(&mut *guard, &writer, &format, &key, &bytes);
+            let appended = inner.append_new(&mut *guard, id, obj);
             #[cfg(feature = "testkit-store")]
             if let Some(door) = door.as_ref().filter(|d| d.after() && appended.is_ok()) {
                 tracing::dispatcher::with_default(&dispatch, || door.hold());
             }
             appended
-        })
-        .await
-    }
-
-    /// Append `line` as its writer wrote it, its `op` kept (storage.md §2 Copy: the old provider's lines
-    /// appended to the new one, every writer's included): this store's pending append is reconciled
-    /// first, then the line is written and fsynced as [`Self::append`] writes one, and a sequence this
-    /// process hands its writer later in this file is past it.
-    pub async fn append_line(&self, line: &Line) -> Result<(), StorageError> {
-        let file = self.0.path.display().to_string();
-        let op = line.op.clone().ok_or_else(|| StorageError::Io { file: file.clone(), reason: format!("the {} line at {:?} has no op: only a line on a store is appended as written", line.format, line.key) })?;
-        let bytes = match &line.written {
-            Some(written) => written.clone(),
-            None => serde_json::to_vec(&line.record).map_err(|e| StorageError::Io { file: file.clone(), reason: format!("the {} record at {:?} does not encode: {e}", line.format, line.key) })?,
-        };
-        self.0.formats.check(&line.format, &line.record).map_err(|why| StorageError::Unrecognised { file, reason: format!("a write refused: {why}") })?;
-        let (caller, parent) = (caller_span(), tracing::Span::current());
-        let guard = self.0.append.clone().lock_owned().await;
-        let inner = self.0.clone();
-        let (format, key) = (line.format.clone(), line.key.clone());
-        let dispatch = tracing::dispatcher::get_default(|d| d.clone());
-        blocking_io(move || {
-            let mut guard = guard;
-            tracing::dispatcher::with_default(&dispatch, || inner.fold_before_append(caller, &parent))?;
-            inner.append_written(&mut *guard, op, &format, &key, &bytes)
         })
         .await
     }
@@ -800,12 +848,6 @@ impl StoreLog {
     #[cfg(test)]
     pub(crate) async fn open_with(path: &Path, formats: Formats, io: Arc<dyn AppendIo>) -> Result<Self, StorageError> {
         Self::opened(path, formats, io, None, None).await
-    }
-
-    /// Forget the `seq`s this process handed out for `path`: what a restart of the process is.
-    #[cfg(test)]
-    pub(crate) fn forget_issued(path: &Path) {
-        issued().lock().unwrap().retain(|(p, _), _| p != path);
     }
 }
 
@@ -868,7 +910,7 @@ impl Inner {
         if self.folded.load(std::sync::atomic::Ordering::Acquire) {
             return self.read_tail(kind);
         }
-        let span = tracing::info_span!(parent: parent, "rdm.node.store.resolve.via-fold", file = %self.path.display(), provider = tracing::field::Empty, caller, reader, bytes = tracing::field::Empty, lines = tracing::field::Empty, writers = tracing::field::Empty, duration = tracing::field::Empty, outcome = tracing::field::Empty, invalid_offset = tracing::field::Empty, cause = tracing::field::Empty);
+        let span = tracing::info_span!(parent: parent, "rdm.node.store.resolve.via-fold", file = %self.path.display(), provider = tracing::field::Empty, caller, reader, bytes = tracing::field::Empty, lines = tracing::field::Empty, sources = tracing::field::Empty, duration = tracing::field::Empty, outcome = tracing::field::Empty, invalid_offset = tracing::field::Empty, cause = tracing::field::Empty);
         if let Some(provider) = &self.provider {
             span.record("provider", provider.as_str());
         }
@@ -879,8 +921,8 @@ impl Inner {
             Ok(_) => {
                 self.folded.store(true, std::sync::atomic::Ordering::Release);
                 let f = self.fold.lock().unwrap_or_else(|e| e.into_inner());
-                let writers: Vec<String> = f.ops.iter().map(|((n, i), seq)| format!("{n}/{i}:{seq}")).collect();
-                span.record("bytes", f.consumed).record("lines", f.lines).record("writers", writers.join(",")).record("outcome", "folded");
+                let sources: Vec<String> = f.sources.iter().map(|(source, lines)| format!("{source}:{lines}")).collect();
+                span.record("bytes", f.consumed).record("lines", f.lines).record("sources", sources.join(",")).record("outcome", "folded");
             }
             Err(e) => {
                 span.record("outcome", "refused").record("cause", e.to_string());
@@ -895,10 +937,8 @@ impl Inner {
     }
 
     /// Before the first append to a store opened on its first read whose fold has read nothing, fold
-    /// the file from byte 0 as a tail read, holding the read lock: the writer resumes its sequence from
-    /// the file's own lines, never reusing an `op` (R-SR3; a storage change's copy holds the writer's
-    /// earlier lines on a file this process never wrote), and its pending append reconciles from the
-    /// offset this fold consumed. A store opened to append ([`StoreLog::open_append`]) reads nothing.
+    /// the file from byte 0 as a tail read, holding the read lock: its pending append reconciles from
+    /// the offset this fold consumed. A store opened to append ([`StoreLog::open_append`]) reads nothing.
     fn fold_before_append(&self, caller: &'static str, parent: &tracing::Span) -> Result<(), StorageError> {
         if self.appends || self.folded.load(std::sync::atomic::Ordering::Acquire) {
             return Ok(());
@@ -970,52 +1010,25 @@ impl Inner {
         }
     }
 
-    /// The next `op` of `writer` in this file: past every `seq` of it the fold has read and this
-    /// process has handed out.
-    fn next_op(&self, writer: &LogWriter) -> Op {
-        let ids = writer.ids();
-        let durable = self.fold.lock().unwrap_or_else(|e| e.into_inner()).ops.get(&ids).copied().unwrap_or(0);
-        let mut issued = issued().lock().unwrap_or_else(|e| e.into_inner());
-        let last = issued.entry((self.path.clone(), ids.clone())).or_insert(0);
-        *last = (*last).max(durable) + 1;
-        Op { node_id: ids.0, incarnation_id: ids.1, seq: *last }
-    }
-
-    fn append_line(&self, pending: &mut Option<Pending>, writer: &LogWriter, format: &str, key: &str, record: &[u8]) -> Result<(), StorageError> {
+    /// Append the object `obj` of the write `id`, this store's pending append settled first.
+    fn append_new(&self, pending: &mut Option<Pending>, id: EventId, obj: Vec<u8>) -> Result<(), StorageError> {
         self.settle(pending)?;
-        let op = self.next_op(writer);
-        self.write_new(pending, op, format, key, record)
-    }
-
-    /// Append a line under the `op` its writer wrote it with: this process's sequence of that writer in
-    /// this file moves past it, so no later write reuses it.
-    fn append_written(&self, pending: &mut Option<Pending>, op: Op, format: &str, key: &str, record: &[u8]) -> Result<(), StorageError> {
-        self.settle(pending)?;
-        let mut issued = issued().lock().unwrap_or_else(|e| e.into_inner());
-        let last = issued.entry((self.path.clone(), (op.node_id.clone(), op.incarnation_id.clone()))).or_insert(0);
-        *last = (*last).max(op.seq);
-        drop(issued);
-        self.write_new(pending, op, format, key, record)
-    }
-
-    fn write_new(&self, pending: &mut Option<Pending>, op: Op, format: &str, key: &str, record: &[u8]) -> Result<(), StorageError> {
-        let obj = encode_object(&op, format, key, record);
         // A store opened to append reconciles from the file's end before this write (O_APPEND puts the
         // line at or past it), reading no line another writer wrote before it.
         let from = if self.appends { self.file.metadata().map_err(|e| self.io(e))?.len() } else { self.fold.lock().unwrap_or_else(|e| e.into_inner()).consumed };
-        *pending = Some(Pending { op, obj, from, reported: 0 });
+        *pending = Some(Pending { id, obj, from, reported: 0 });
         self.write_pending(pending)
     }
 
     /// Write the pending append's line in one `write`, then fsync: done only when both answered in
-    /// full. A write that reported zero bytes is retried under the same `op` once the lines after
+    /// full. A write that reported zero bytes is retried under the same `id` once the lines after
     /// the fold's offset validate; a short write is reconciled at once; a failed fsync stays pending.
     fn write_pending(&self, pending: &mut Option<Pending>) -> Result<(), StorageError> {
         let mut zero = 0;
         loop {
-            let (line, op) = {
+            let (line, id) = {
                 let p = pending.as_ref().expect("a pending append");
-                (line_of(&p.obj), describe(&p.op))
+                (line_of(&p.obj), p.id.clone())
             };
             let wrote = self.io.write(&self.file, &line);
             pending.as_mut().expect("a pending append").reported = *wrote.as_ref().unwrap_or(&0);
@@ -1026,7 +1039,7 @@ impl Inner {
                             *pending = None;
                             Ok(())
                         }
-                        Err(e) => Err(StorageError::Io { file: self.path.display().to_string(), reason: format!("indeterminate: the line of op {op} was written and its fsync failed ({e}); it is reconciled by its op before this store's next write") }),
+                        Err(e) => Err(StorageError::Io { file: self.path.display().to_string(), reason: format!("indeterminate: the line of id {id} was written and its fsync failed ({e}); it is reconciled by its object before this store's next write") }),
                     };
                 }
                 Ok(n) if n > 0 => return self.settle(pending),
@@ -1039,7 +1052,7 @@ impl Inner {
                     if zero >= 3 {
                         let why = written.err().map(|e| e.to_string()).unwrap_or_else(|| "it reported zero bytes".into());
                         *pending = None;
-                        return Err(StorageError::Io { file: self.path.display().to_string(), reason: format!("the line of op {op} was not written: {why}, {zero} times; no byte of it is in the file") });
+                        return Err(StorageError::Io { file: self.path.display().to_string(), reason: format!("the line of id {id} was not written: {why}, {zero} times; no byte of it is in the file") });
                     }
                 }
             }
@@ -1057,15 +1070,15 @@ impl Inner {
                 Ok(())
             }
             Reconciled::Absent if p.reported == 0 => self.write_pending(pending),
-            Reconciled::Absent => Err(StorageError::Io { file: self.path.display().to_string(), reason: format!("indeterminate: the write of op {} reported {} bytes and no byte of its object is in the file after byte offset {}; nothing is written in its place", describe(&p.op), p.reported, p.from) }),
+            Reconciled::Absent => Err(StorageError::Io { file: self.path.display().to_string(), reason: format!("indeterminate: the write of id {} reported {} bytes and no byte of its object is in the file after byte offset {}; nothing is written in its place", p.id, p.reported, p.from) }),
         }
     }
 
-    /// Find the pending append by its object (its `op` makes it unique) from the fold's offset before
+    /// Find the pending append by its object (its `id` makes it unique) from the fold's offset before
     /// its write, every other line between validated.
     fn reconcile(&self, p: &Pending) -> Result<Reconciled, StorageError> {
         let bytes = read_from(&self.file, p.from).map_err(|e| self.io(e))?;
-        let refused = |at: u64, why: String| StorageError::Io { file: self.path.display().to_string(), reason: format!("indeterminate: the write of op {} cannot be reconciled: {why} at byte offset {at}; nothing is appended in its place and no byte is discarded", describe(&p.op)) };
+        let refused = |at: u64, why: String| StorageError::Io { file: self.path.display().to_string(), reason: format!("indeterminate: the write of id {} cannot be reconciled: {why} at byte offset {at}; nothing is appended in its place and no byte is discarded", p.id) };
         let mut start = 0usize;
         loop {
             let at = p.from + start as u64;
@@ -1082,7 +1095,7 @@ impl Inner {
                         return Err(refused(at, format!("its ending newline wrote {n} bytes")));
                     }
                 }
-                self.io.sync(&self.file).map_err(|e| StorageError::Io { file: self.path.display().to_string(), reason: format!("indeterminate: the line of op {} stands whole and its fsync failed ({e})", describe(&p.op)) })?;
+                self.io.sync(&self.file).map_err(|e| StorageError::Io { file: self.path.display().to_string(), reason: format!("indeterminate: the line of id {} stands whole and its fsync failed ({e})", p.id) })?;
                 return Ok(Reconciled::Done);
             }
             if !seg.is_empty() {
@@ -1101,9 +1114,6 @@ impl Inner {
     }
 }
 
-fn describe(op: &Op) -> String {
-    format!("{}/{}#{}", op.node_id, op.incarnation_id, op.seq)
-}
 
 
 /// The testkit's door on a store file's tail read (feature `testkit-store`, for rdm-test; absent from

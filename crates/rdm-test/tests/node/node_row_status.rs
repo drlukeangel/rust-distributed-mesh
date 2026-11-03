@@ -42,8 +42,8 @@ async fn frames(mut stream: rdm_client::WorkflowStream) -> Vec<Frame> {
 fn row_status(root: &Path, node_id: &str) -> String {
     let file = root.join(rdm_admin::store_root::NODES_FILE);
     let text = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("the nodes store {} could not be read: {e}", file.display()));
-    let row: Value = text.lines().rev().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|l| l["key"] == node_id).unwrap_or_else(|| panic!("the nodes store holds no record of {node_id}"));
-    row["record"]["status"].as_str().unwrap_or_else(|| panic!("the record of {node_id} carries no status: {row}")).to_string()
+    let row: Value = text.lines().rev().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|l| l["subject"] == node_id).unwrap_or_else(|| panic!("the nodes store holds no record of {node_id}"));
+    row["data"]["status"].as_str().unwrap_or_else(|| panic!("the record of {node_id} carries no status: {row}")).to_string()
 }
 
 /// CONTRACT: every node of a ready fabric has `ready` on its durable row, as

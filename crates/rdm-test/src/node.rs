@@ -105,11 +105,11 @@ struct TargetRefusedByKnob(Arc<dyn rdm_node::storage_backend::NodeStorageBackend
 #[cfg(feature = "file-backend")]
 #[async_trait::async_trait]
 impl rdm_node::storage_backend::NodeStorageBackend for TargetRefusedByKnob {
-    async fn open(&self, launch: &Launch) -> Result<rdm_node::storage_backend::NodeStorage, String> {
+    async fn open(&self, launch: &Launch, time: &rdm_transport::clock::RafkaTime) -> Result<rdm_node::storage_backend::NodeStorage, String> {
         if launch.data_dir.parent().is_some_and(|root| target_refused_knob(root, launch.node_id.as_str()).exists()) {
             return Err(format!("the testkit's knob has the birth {} refuse to open {}", launch.node_id, crate::test_app::TOPOLOGY_STORAGE_TARGET));
         }
-        self.0.open(launch).await
+        self.0.open(launch, time).await
     }
 }
 

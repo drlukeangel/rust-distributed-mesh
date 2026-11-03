@@ -339,7 +339,7 @@ pub trait EventsStorage: Send + Sync {
 }
 ```
 
-A Build is one record, `BuildAccepted`, written once. What happened while executing it is the events store's: one append-only record per event, a CloudEvents 1.0 envelope ([gossip.md §3.4](gossip.md#34-the-envelope)'s attributes, `id` a time-ordered UUIDv7, `datacontenttype` `application/json`), never gossiped:
+A Build is one record, `BuildAccepted`, written once. What happened while executing it is the events store's: one append-only record per event, a CloudEvents 1.0 envelope ([gossip.md §3.4](gossip.md#34-the-envelope)'s attributes, `id` a time-ordered UUIDv7, `datacontenttype` `application/json`, `dataschema` `event/1`), each one line of the events store as it stands, never gossiped:
 
 | `type` | Writer | `subject` | `data` |
 |---|---|---|---|
@@ -405,7 +405,7 @@ Control-plane state has six boundaries on the fabric's shared store root: fabric
 connections, Builds and events. On the file backend these live under
 `<store_dir>/<fabric_id>/{layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl,
 builds.jsonl, events.jsonl}`. Copy every boundary, current values and history, in source
-order.
+order. Every line of every boundary is a CloudEvents 1.0 event ([storage.md §2](storage.md#2-topology_storage_provider-where-rdms-records-go)); a copy appends each line as written, its `id` kept, so a resumed copy appends none twice.
 
 The fabric-primary writes the Fabric record, each Build once, and the Build-level events. Each
 mesh-primary writes the step events of its mesh (the fabric-primary those of the steps it runs in process), its Mesh record and the status and role flags in its members' node records (Q323).

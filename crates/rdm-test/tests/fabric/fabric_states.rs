@@ -403,7 +403,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
         // writer records it on its own record after the view shows it, so the cell reads until it is there.
         let read = || {
             let record: Value = estate.node_record(&s(&n["node_id"])).unwrap_or_else(|| panic!("the record of {name} is in nodes.jsonl"));
-            let birth = record["record"]["births"].as_array().into_iter().flatten().find(|b| b["incarnation_id"] == n["incarnation_id"]).cloned().unwrap_or_default();
+            let birth = record["data"]["births"].as_array().into_iter().flatten().find(|b| b["incarnation_id"] == n["incarnation_id"]).cloned().unwrap_or_default();
             (birth["declared"].clone(), record)
         };
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -437,7 +437,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
         async move {
             let addressed = || {
                 let record = estate.node_record(&id)?;
-                let birth = record["record"]["births"].as_array().and_then(|b| b.last()).and_then(|b| b["incarnation_id"].as_str()).map(str::to_string)?;
+                let birth = record["data"]["births"].as_array().and_then(|b| b.last()).and_then(|b| b["incarnation_id"].as_str()).map(str::to_string)?;
                 let own = estate.node_properties(&rdm_core::NodeId::parse(&id).ok()?)?;
                 (own.birth.incarnation_id.as_str() == birth && own.transport_addr.is_some()).then_some(record)
             };

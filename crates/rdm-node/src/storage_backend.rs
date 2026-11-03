@@ -27,8 +27,9 @@ pub struct NodeStorage {
 /// The backend a node's storage is opened from.
 #[async_trait]
 pub trait NodeStorageBackend: Send + Sync {
-    /// Opens the storage of the node `launch` names.
-    async fn open(&self, launch: &Launch) -> Result<NodeStorage, String>;
+    /// Opens the storage of the node `launch` names, its writes stamped with the node's rafka-time
+    /// `time` (each store line's `time`, Q365).
+    async fn open(&self, launch: &Launch, time: &rdm_transport::clock::RafkaTime) -> Result<NodeStorage, String>;
 }
 
 /// RDM standalone's backend: the node's connection facts, its lines of the fabric's store root's
@@ -52,15 +53,16 @@ impl FileNodeBackend {
 #[cfg(feature = "file-backend")]
 #[async_trait]
 impl NodeStorageBackend for FileNodeBackend {
-    async fn open(&self, launch: &Launch) -> Result<NodeStorage, String> {
+    async fn open(&self, launch: &Launch, time: &rdm_transport::clock::RafkaTime) -> Result<NodeStorage, String> {
         // The root's directory and layout marker are made and fsynced on the blocking pool: no worker
         // thread waits on the disk (crate::blocking).
         let (store_dir, fabric_id) = (self.store_dir.clone().unwrap_or_else(|| launch.store_dir.clone()), launch.fabric_id.clone());
         let root = crate::blocking::blocking_io(move || crate::store_root::StoreRoot::open(&store_dir, &fabric_id)).await.map_err(|e| format!("refusing to start: {e}"))?;
-        let connections = crate::storage::FileConnectionsStorage::open(&root, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("connections storage: {e}"))?;
+        let writer = crate::store_log::LogWriter::new(&launch.fabric_id, &launch.node_id, &launch.incarnation, time);
+        let connections = crate::storage::FileConnectionsStorage::open(&root, &writer).await.map_err(|e| format!("connections storage: {e}"))?;
         Ok(NodeStorage {
             connections: Arc::new(connections),
-            nodes: Arc::new(crate::nodes_storage::FileNodesStorage::open(&launch.data_dir, &root, &launch.mesh, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("nodes storage: {e}"))?),
+            nodes: Arc::new(crate::nodes_storage::FileNodesStorage::open(&launch.data_dir, &root, &launch.mesh, &writer).await.map_err(|e| format!("nodes storage: {e}"))?),
             node_rows: Arc::new(crate::nodes_storage::FileNodeRowsOnFirstRead::at(root)),
             writes_to: "store-root".into(),
         })
@@ -125,6 +127,8 @@ pub struct NodeStorageHandle {
     providers: NodeStorageProviders,
     /// The launch the node's storage is opened for.
     launch: Launch,
+    /// The node's rafka-time: its store lines' `time`.
+    time: rdm_transport::clock::RafkaTime,
     /// One replacement at a time.
     replacing: tokio::sync::Mutex<()>,
 }
@@ -132,12 +136,13 @@ pub struct NodeStorageHandle {
 impl NodeStorageHandle {
     /// Open the provider `launch` names (`topology_storage_provider`), one `providers` registers, else the
     /// node's start is refused by name.
-    pub async fn open(providers: &NodeStorageProviders, launch: &Launch) -> Result<Arc<Self>, String> {
-        let opened = providers.named(&launch.topology_storage_provider).map_err(|e| format!("refusing to start: {e}"))?.open(launch).await?;
+    pub async fn open(providers: &NodeStorageProviders, launch: &Launch, time: &rdm_transport::clock::RafkaTime) -> Result<Arc<Self>, String> {
+        let opened = providers.named(&launch.topology_storage_provider).map_err(|e| format!("refusing to start: {e}"))?.open(launch, time).await?;
         Ok(Arc::new(Self {
             current: crate::storage_handle::StorageHandle::new(&launch.topology_storage_provider, opened),
             providers: providers.clone(),
             launch: launch.clone(),
+            time: time.clone(),
             replacing: tokio::sync::Mutex::new(()),
         }))
     }
@@ -176,7 +181,7 @@ impl NodeStorageHandle {
     /// does not register, or a provider that does not open, is refused by name and nothing moves.
     pub async fn replace(&self, provider: &str) -> Result<(), String> {
         let _one = self.replacing.lock().await;
-        let opened = self.providers.named(provider)?.open(&Launch { topology_storage_provider: provider.to_string(), ..self.launch.clone() }).await?;
+        let opened = self.providers.named(provider)?.open(&Launch { topology_storage_provider: provider.to_string(), ..self.launch.clone() }, &self.time).await?;
         self.current.replace(provider, opened).await;
         Ok(())
     }
@@ -294,7 +299,7 @@ pub struct MemoryNodeBackend;
 
 #[async_trait]
 impl NodeStorageBackend for MemoryNodeBackend {
-    async fn open(&self, _launch: &Launch) -> Result<NodeStorage, String> {
+    async fn open(&self, _launch: &Launch, _time: &rdm_transport::clock::RafkaTime) -> Result<NodeStorage, String> {
         Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), node_rows: Arc::new(NoNodeRows), nodes: Arc::new(crate::nodes_storage::MemoryNodesStorage::default()), writes_to: "memory".into() })
     }
 }
@@ -352,7 +357,7 @@ mod tests {
         ]);
         let launch = Launch::from_env(|k| vars.get(k).cloned()).expect("the launch reads");
         let root = store.join(fabric_id.to_string());
-        let (made, opened) = root_made_while_waiting(root.clone(), Box::pin(async move { FileNodeBackend::default().open(&launch).await.map(|_| ()) }));
+        let (made, opened) = root_made_while_waiting(root.clone(), Box::pin(async move { FileNodeBackend::default().open(&launch, &rdm_transport::clock::RafkaTime::unadopted()).await.map(|_| ()) }));
         assert!(!made, "the store root {} was made on the thread polling the open, not on the blocking pool", root.display());
         opened.unwrap_or_else(|e| panic!("the open completes once the pool's thread is let go: {e}"));
         assert!(root.is_dir(), "the store root stands once the open completes");

@@ -1056,10 +1056,15 @@ impl LocalBuildLog for FileJournal {
 }
 
 #[cfg(feature = "file-backend")]
-/// The format of one Build record's line in `builds.jsonl`, at `<build_id>/<key>` ([`FileJournal`]).
+/// The `dataschema` of one Build record's line in `builds.jsonl`, its `subject` its Build's id
+/// ([`FileJournal`]).
 // durable format moved: the journal holds Builds only; attempts, claims and receipts are gone (the
 // steps are the events store's `rdm.build.step`).
 pub const RECORD_FORMAT: &str = "build-record/3";
+
+#[cfg(feature = "file-backend")]
+/// The `type` of [`RECORD_FORMAT`]'s lines.
+pub const RECORD_KIND: &str = "build-record";
 
 #[cfg(feature = "file-backend")]
 /// One Build record as it is stored: the fact, and `seq`, its place in the order its writer wrote the
@@ -1083,17 +1088,16 @@ fn committed_of(facts: Vec<BuildFact>, build: Option<&BuildId>) -> Result<Vec<Bu
 
 #[cfg(feature = "file-backend")]
 /// The committed records of `build` (every Build's when `None`) in the Build journal `file` (a fabric
-/// store root's `builds.jsonl`), read whole now (Q292): each key once, in the order they were committed
-/// (`seq`), as a take folds them; an object another writer is still writing is left out by the read.
+/// store root's `builds.jsonl`), read whole now (Q292): each write (`id`) once, in the order they were
+/// committed (`seq`), as a take folds them; an object another writer is still writing is left out by the read.
 /// `Err(UnknownBuild)` when it holds none of `build`, an I/O error when the file cannot be read, never
 /// an empty Build. Blocking: the journal calls it on the blocking pool.
 pub fn read_committed(file: &std::path::Path, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
     let lines = crate::store_log::read_file(file).map_err(store_io)?;
-    let prefix = build.map(|b| format!("{b}/"));
     let mut seen = std::collections::HashSet::new();
     let mut stored: Vec<StoredFact> = Vec::new();
-    for line in lines.iter().filter(|l| l.format == RECORD_FORMAT && prefix.as_deref().is_none_or(|p| l.key.starts_with(p))) {
-        if seen.insert(line.key.clone()) {
+    for line in lines.iter().filter(|l| l.attributes.dataschema == RECORD_FORMAT && build.is_none_or(|b| l.subject() == b.as_str())) {
+        if seen.insert(line.attributes.id.clone()) {
             stored.push(line.decode::<StoredFact>(file).map_err(store_io)?);
         }
     }
@@ -1102,30 +1106,19 @@ pub fn read_committed(file: &std::path::Path, build: Option<&BuildId>) -> Result
 }
 
 #[cfg(feature = "file-backend")]
-/// The key `fact` is written at, after its Build's id (`<build_id>/<key>`): one record per fact (build.md §5.3): the
-/// acceptance at `accepted`, an attempt's open, claim and result at `<attempt>-opened`, `-claim` and
-/// `-result` (`<mesh>-<attempt>` for an attempt in a mesh), one receipt per step at
-/// `<attempt>-step-<opaque receipt hash>`, and a forget at `forget`. The record keeps all fields.
-fn record_key(fact: &BuildFact) -> Result<String, BuildStateError> {
-    Ok(match fact {
-        BuildFact::Accepted(_) => "accepted".to_string(),
-        BuildFact::Forget { .. } => "forget".to_string(),
-    })
-}
-
 #[cfg(feature = "file-backend")]
 /// `builds.storage`: the Build journal on the fabric's shared store root, one line of its `builds.jsonl`
-/// per fact at its own key (`<build_id>/<key>`, `record_key`; build.md §5.3; R-SR1), appended when
-/// it is committed (Q61). A successor folds the lines.
+/// per fact, its `subject` its Build's id (build.md §5.3; R-SR1; Q365), appended when it is committed
+/// (Q61). A successor folds the lines, each write (`id`) once.
 pub struct FileJournal {
     /// The root's `builds.jsonl`.
     file: crate::store_log::StoreLog,
-    /// The lines the file's fold has read and no turn has taken yet, in file order.
-    unread: Arc<Mutex<Vec<(String, StoredFact)>>>,
+    /// The lines the file's fold has read and no turn has taken yet, in file order, each by its `id`.
+    unread: Arc<Mutex<Vec<(crate::store_log::EventId, StoredFact)>>>,
     /// The process writing through this journal.
     log_writer: crate::store_log::LogWriter,
-    /// Every record this journal took or wrote, `<build_id>/<key>`: a read takes only the others.
-    seen: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Every record this journal took or wrote, by its line's `id`: a read takes only the others.
+    seen: Arc<Mutex<std::collections::HashSet<crate::store_log::EventId>>>,
     /// The `seq` the next record is written at: past every record read or written.
     next_seq: std::sync::atomic::AtomicU64,
     /// `<own data dir>/attempt-context/`: each attempt's context, local to this admin.
@@ -1246,11 +1239,11 @@ impl FileJournal {
     /// `builds.jsonl`, appended straight to the file and folded on its first read or append, never at
     /// the open (rdm#89, Q227). The Builds' events are in `events`.
     pub async fn open_on_root(root: &crate::store_root::StoreRoot, writer: &crate::store_log::LogWriter, events: Arc<dyn EventsStorage>) -> Result<Self, BuildStateError> {
-        let unread: Arc<Mutex<Vec<(String, StoredFact)>>> = Arc::default();
+        let unread: Arc<Mutex<Vec<(crate::store_log::EventId, StoredFact)>>> = Arc::default();
         let queue = unread.clone();
         let observe: crate::store_log::Observer = Arc::new(move |l: &crate::store_log::Line| {
-            if let Ok(stored) = StoredFact::deserialize(&l.record) {
-                queue.lock().unwrap_or_else(|e| e.into_inner()).push((l.key.clone(), stored));
+            if let Ok(stored) = StoredFact::deserialize(&l.data) {
+                queue.lock().unwrap_or_else(|e| e.into_inner()).push((l.attributes.id.clone(), stored));
             }
         });
         let file = crate::store_log::StoreLog::open_observed_on_first_read(&root.dir().join(crate::store_root::BUILDS_FILE), crate::store_log::Formats::new().with::<StoredFact>(RECORD_FORMAT), observe).await.map_err(store_io)?;
@@ -1335,10 +1328,10 @@ impl FileJournal {
         out
     }
 
-    /// The records on the store root this journal has not taken yet, each with its key: the file's
+    /// The records on the store root this journal has not taken yet, each with its line's `id`: the file's
     /// lines past the fold's offset, read now for `op` (the turn or read it is for, what a read that
     /// waits on the file names), and any a read could not take before. Nothing is marked taken here.
-    async fn read_new(&self, op: &'static str) -> Result<Vec<(String, StoredFact)>, BuildStateError> {
+    async fn read_new(&self, op: &'static str) -> Result<Vec<(crate::store_log::EventId, StoredFact)>, BuildStateError> {
         self.file.advance_for(op).await.map_err(store_io)?;
         Ok(std::mem::take(&mut *self.unread.lock().unwrap_or_else(|e| e.into_inner())))
     }
@@ -1346,7 +1339,7 @@ impl FileJournal {
     /// Take the records `read` from the store root into the log under the writer's turn `w`, in the
     /// order they were written: each is marked taken, and the facts the log does not hold yet are
     /// published.
-    fn take_read(&self, w: &Derived, mut read: Vec<(String, StoredFact)>) {
+    fn take_read(&self, w: &Derived, mut read: Vec<(crate::store_log::EventId, StoredFact)>) {
         if read.is_empty() {
             return;
         }
@@ -1356,8 +1349,8 @@ impl FileJournal {
         let mut stored: Vec<BuildAccepted> = Vec::new();
         {
             let mut seen = self.seen.lock().unwrap();
-            for (key, StoredFact { seq, fact }) in read {
-                if !seen.insert(key) {
+            for (id, StoredFact { seq, fact }) in read {
+                if !seen.insert(id) {
                     continue;
                 }
                 self.holder_facts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1475,16 +1468,17 @@ impl FileJournal {
         }
     }
 
-    /// Append `fact` at its own key and publish it, under the writer's turn `w` that has read the store
+    /// Append `fact` at its Build's id and publish it, under the writer's turn `w` that has read the store
     /// root. Nothing is written when the log holds the fact already: a record is written once.
     async fn append(&self, w: &Derived, fact: BuildFact) -> Result<(), BuildStateError> {
         if !is_new(&snapshot(&self.log), &fact) {
             return Ok(());
         }
-        let key = format!("{}/{}", fact.build_id(), record_key(&fact)?);
         let stored = StoredFact { seq: self.next_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed), fact };
-        self.store_call(self.file.append(&self.log_writer, RECORD_FORMAT, &key, &stored)).await.map_err(store_io)?;
-        self.seen.lock().unwrap().insert(key);
+        let attributes = crate::store_log::Attributes::of(&self.log_writer, RECORD_KIND, RECORD_FORMAT, stored.fact.build_id().as_str());
+        let id = attributes.id.clone();
+        self.store_call(self.file.append_with(attributes, &stored)).await.map_err(store_io)?;
+        self.seen.lock().unwrap().insert(id);
         publish(&self.log, w.0.as_ref(), vec![stored.fact]);
         Ok(())
     }
@@ -1619,26 +1613,29 @@ mod ended_fold_cells {
 mod store_layout_cells {
     use super::*;
 
-    /// CONTRACT (build.md §5.3; R-SR1): one Build record's line in the store root's `builds.jsonl` is
-    /// frozen byte for byte: the store file's line around it, its format `build-record/3`, its key
-    /// `<build_id>/<record_key>` and the record `{"seq", "fact"}` as the journal writes it. A layout that
-    /// moves moves this cell with it (`durable format moved`). Must NOT happen: a line whose format, key
-    /// or record bytes moved while this cell still passes.
+    /// CONTRACT (build.md §5.3; R-SR1; Q365): one Build record's line in the store root's `builds.jsonl`
+    /// is frozen byte for byte: a CloudEvents event whose `source` is its writer, `type` `build-record`,
+    /// `dataschema` `build-record/3`, `subject` its Build's id and `data` the record `{"seq", "fact"}`
+    /// as the journal writes it, its `id` and `time` the write's. A layout that moves moves this cell
+    /// with it (`durable format moved`). Must NOT happen: a line whose attributes or record bytes moved
+    /// while this cell still passes.
     #[tokio::test]
     async fn the_store_layout_is_frozen_byte_for_byte() {
         let d = std::env::temp_dir().join(format!("rdm-store-layout-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&d).unwrap();
         let root = crate::store_root::StoreRoot::at(&d);
         let events: Arc<dyn EventsStorage> = Arc::new(crate::events_storage::MemoryEventsStorage::new());
-        let j = FileJournal::open_on_root(&root, &crate::store_log::LogWriter::mint(), events).await.unwrap();
+        let writer = crate::store_log::LogWriter::mint();
+        let j = FileJournal::open_on_root(&root, &writer, events).await.unwrap();
         let b1 = rdm_core::fixture_crockford60("b1");
         j.forget(&BuildId::parse(&b1).unwrap()).await.unwrap();
         let file = d.join(crate::store_root::BUILDS_FILE);
         let lines = crate::store_log::read_file(&file).unwrap();
         assert_eq!(lines.len(), 1);
-        let op = lines[0].op.clone().unwrap();
+        let written = &lines[0].attributes;
+        let attributes = crate::store_log::Attributes { id: written.id.clone(), source: writer.source(), r#type: "build-record".into(), subject: Some(b1.clone()), time: None, dataschema: "build-record/3".into(), traceparent: None, tracestate: None };
         let record = format!(r#"{{"seq":1,"fact":{{"fact":"forget","build_id":"{b1}"}}}}"#);
-        let line = crate::store_log::encode_line(&op, "build-record/3", &format!("{b1}/forget"), record.as_bytes());
+        let line = crate::store_log::encode_line(&attributes, record.as_bytes());
         assert_eq!(std::fs::read(&file).unwrap(), line);
         let _ = std::fs::remove_dir_all(&d);
     }

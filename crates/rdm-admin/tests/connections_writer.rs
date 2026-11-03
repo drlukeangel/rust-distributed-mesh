@@ -46,7 +46,7 @@ fn data_dir(tag: &str) -> std::path::PathBuf {
 async fn a_restart_holds_none_of_the_previous_births_rows_and_the_first_resolution_dials() {
     let dir = data_dir("restart-holds-none");
     let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
-    let open = || async { FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap() };
+    let open = || async { FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap() };
     {
         let storage = open().await;
         let failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
@@ -71,7 +71,7 @@ async fn a_restart_holds_none_of_the_previous_births_rows_and_the_first_resoluti
 async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pair() {
     let dir = data_dir("bounded");
     let (me, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     let target = resolved(&dest);
@@ -101,7 +101,7 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
 async fn a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_cuts_back() {
     let dir = data_dir("delete");
     let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 11)).await.unwrap();
@@ -178,7 +178,7 @@ async fn until(what: &str, cond: impl Fn() -> bool) {
 async fn proxied(tag: &str, failed_at: u64) -> (std::path::PathBuf, ConnectionEnd, ConnectionEnd, Arc<dyn ConnectionsStorage>, Arc<Mutex<ConnectionsHeld>>, ConnectionsWriter, NodeConnection) {
     let dir = data_dir(tag);
     let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     let failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
@@ -330,7 +330,7 @@ impl ConnectionsStorage for RefusingIndex {
 async fn a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands() {
     let dir = data_dir("refused-delete");
     let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
-    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
+    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();
@@ -371,7 +371,7 @@ async fn a_carrier_names_its_own_connection_only_when_its_latest_direct_is_not_c
     use rdm_transport::CarrierConnections;
     let dir = data_dir("connections");
     let (me, dest) = (end(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
     let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
     assert_eq!(writer.connection_not_active(&dest.node_id).await, None, "no fact is not a connection fact");
     writer.record(row(&me, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();
@@ -420,7 +420,7 @@ async fn a_carrier_names_the_connection_a_dial_has_just_failed_however_slow_the_
     use rdm_transport::CarrierConnections;
     let dir = data_dir("connections-slow");
     let (me, dest) = (end(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node"), end(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(SlowIndex(Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap())));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(SlowIndex(Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap())));
     let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
     writer.direct_failed(&resolved(&dest), "timed out");
     let why = writer.connection_after_dial(&resolved(&dest), "timed out").await.expect("the failed dial's fact is named");
@@ -439,7 +439,7 @@ async fn a_carrier_names_the_connection_a_dial_has_just_failed_however_slow_the_
 async fn a_refused_observation_write_is_held_only_once_its_retry_lands() {
     let dir = data_dir("refused-observation");
     let (me, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
-    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
+    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     storage.refuse.store(1, std::sync::atomic::Ordering::SeqCst);
@@ -476,7 +476,7 @@ async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct
     use rdm_core::ping::{Ping, PingRequest};
     let dir = data_dir("dead-cold");
     let (me, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = Arc::new(ConnectionsWriter::new(me.clone(), storage.clone(), held.clone()));
     let resolver = Arc::new(StaticResolver::new());
@@ -556,7 +556,7 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
     let dir = data_dir("held-name");
     let (me, peer) = (end(rdm_core::PathName::new("mesh1.node", "7").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"));
     let taken: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     // The process's held name, as its topology view holds it: none told yet, so the birth's.
@@ -594,7 +594,7 @@ async fn a_restarted_births_failed_dial_row_names_its_own_birth() {
     let dir = data_dir("restart-birth");
     let (previous, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
     let me = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..previous.clone() };
-    let open = || async { FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap() };
+    let open = || async { FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap() };
     {
         let storage = open().await;
         let failed = row(&previous, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
@@ -622,7 +622,7 @@ async fn a_failed_dial_to_the_destinations_next_birth_names_that_birth() {
     let dir = data_dir("next-birth");
     let (me, gone) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
     let next = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..gone.clone() };
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
     for i in 0..2 {
         writer.direct_failed(&resolved(&gone), &format!("refused {i}"));
@@ -681,7 +681,7 @@ fn the_span_that_owed_a_write_has_ended_once_the_write_has_landed() {
     spans_of("the_span_that_owed_a_write_has_ended_once_the_write_has_landed", Some(owing.clone()), || async {
         let dir = data_dir("owing-span");
         let (me, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
-        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
         let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
         // The call owes its fact inside its own span and lets the span go: the owed write holds it.
         tracing::info_span!("rdm.test.connections_writer.owing").in_scope(|| writer.direct_connected(&resolved(&dest)));
@@ -705,7 +705,7 @@ fn the_span_that_owed_a_write_has_ended_once_the_write_has_landed() {
 async fn an_observation_after_a_recorded_row_of_its_pair_is_held_as_the_latest_whatever_the_clock_reads() {
     let dir = data_dir("recorded-then-observed");
     let (me, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     // Recorded at a millisecond the clock has not passed when the observation is stamped.
@@ -790,7 +790,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
     let names = (me.node_id.to_string(), carrier.node_id.to_string(), dest.node_id.to_string(), other.node_id.to_string());
     let dir = data_dir("transition-spans");
     let spans = spans_of("every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason_and_carrier", None, || async {
-        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
         // Seeded: the carrier's connection, and a Direct Failed toward the destination.

@@ -141,7 +141,7 @@ async fn the_testkit_store_survives_a_restart_and_never_a_recovery_or_a_new_node
         .await;
     let predecessor_id: rdm_core::NodeId = serde_json::from_value(recovered["node_id"].clone()).expect("predecessor ID");
     let predecessor = estate.node_record(predecessor_id.as_str()).expect("predecessor history remains");
-    assert_eq!((&predecessor["record"]["path"], &predecessor["record"]["name"]), (&json!(location().path), &json!(location().name)), "the deleted node's record keeps the pair it held");
+    assert_eq!((&predecessor["data"]["path"], &predecessor["data"]["name"]), (&json!(location().path), &json!(location().name)), "the deleted node's record keeps the pair it held");
     assert_ne!(replacement["endpoint_id"], recovered["endpoint_id"], "a new node has a new endpoint key");
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");

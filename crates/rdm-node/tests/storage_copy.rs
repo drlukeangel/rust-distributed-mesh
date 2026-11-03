@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rdm_core::{BuildId, ChangeId, FabricId, IncarnationId, NodeId};
 use rdm_node::storage_error::StorageError;
-use rdm_node::store_log::{self, Formats, Line, LogWriter, Op, StoreLog};
+use rdm_node::store_log::{self, Attributes, EventId, Formats, Line, LogWriter, StoreLog};
 use rdm_node::store_root::{StoreRoot, BUILDS_FILE, CONNECTIONS_FILE, EVENTS_FILE, FABRIC_FILE, MESHES_FILE, NODES_FILE};
 use serde_json::json;
 
@@ -60,13 +60,17 @@ fn run() -> CopyRun {
     CopyRun { change_id: ChangeId::mint(), source: SOURCE.into(), destination: DESTINATION.into() }
 }
 
-/// A line as a store holds it, its place in the file aside: its op, format, key and record.
-fn line_of(l: &Line) -> (Option<Op>, String, String, serde_json::Value) {
-    (l.op.clone(), l.format.clone(), l.key.clone(), l.record.clone())
+/// One line as [`line_of`] reads it: its `id`, `source`, `subject`, `data` and its object's bytes.
+type Read = (EventId, String, String, serde_json::Value, Vec<u8>);
+
+/// A line as a store holds it, its place in the file aside: its `id`, `source`, `subject` and record,
+/// and its object byte for byte.
+fn line_of(l: &Line) -> Read {
+    (l.attributes.id.clone(), l.attributes.source.clone(), l.subject().to_string(), l.data.clone(), l.object.clone())
 }
 
 /// Every line of `file` under the root `root`, as [`line_of`].
-fn file_lines(root: &Path, file: &str) -> Vec<(Option<Op>, String, String, serde_json::Value)> {
+fn file_lines(root: &Path, file: &str) -> Vec<Read> {
     store_log::read_file(&root.join(file)).unwrap_or_else(|e| panic!("{file} reads: {e}")).iter().map(line_of).collect()
 }
 
@@ -102,13 +106,18 @@ fn spans_named<'a>(spans: &'a [serde_json::Value], name: &str) -> Vec<&'a serde_
     spans.iter().filter(|s| s["name"] == name).collect()
 }
 
-/// `op` as a refusal names it: `<node id>/<incarnation>#<seq>`.
-fn named(op: &Op) -> String {
-    format!("{}/{}#{}", op.node_id, op.incarnation_id, op.seq)
+/// A line's `id`, as a refusal names it.
+fn named(l: &Line) -> String {
+    l.attributes.id.to_string()
+}
+
+/// `l`'s bytes as a store file holds them: `\n` + its object + `\n`.
+fn raw(l: &Line) -> Vec<u8> {
+    [&b"\n"[..], &l.object, &b"\n"[..]].concat()
 }
 
 fn writer() -> LogWriter {
-    LogWriter::new(&NodeId::mint(), &IncarnationId::mint())
+    LogWriter::new(&rdm_core::FabricId::mint(), &NodeId::mint(), &IncarnationId::mint(), &rdm_transport::clock::RafkaTime::unadopted())
 }
 
 async fn log(root: &Path, file: &str) -> StoreLog {
@@ -143,42 +152,42 @@ impl History {
         let build = BuildId::mint();
 
         let f = log(&root, FABRIC_FILE).await;
-        f.append(&fp1, "fabric-record/2", fabric.as_str(), &json!({"fabric_id": fabric, "name": "fabric1", "events": []})).await.unwrap();
-        f.append(&fp2, "fabric-record/2", fabric.as_str(), &json!({"fabric_id": fabric, "name": "fabric1", "events": ["ready"]})).await.unwrap();
+        f.append(&fp1, "fabric-record", "fabric-record/2", fabric.as_str(), &json!({"fabric_id": fabric, "name": "fabric1", "events": []})).await.unwrap();
+        f.append(&fp2, "fabric-record", "fabric-record/2", fabric.as_str(), &json!({"fabric_id": fabric, "name": "fabric1", "events": ["ready"]})).await.unwrap();
 
         let m = log(&root, MESHES_FILE).await;
-        m.append(&fp1, "mesh-record/3", mesh1.as_str(), &json!({"mesh_id": mesh1, "name": "mesh1", "state": "Ready"})).await.unwrap();
-        m.append(&fp1, "mesh-record/3", mesh2.as_str(), &json!({"mesh_id": mesh2, "name": "mesh2", "state": "Ready"})).await.unwrap();
-        m.append(&fp2, "mesh-record/3", mesh2.as_str(), &json!({"mesh_id": mesh2, "name": "mesh2", "state": "Dead"})).await.unwrap();
-        m.append(&fp2, "mesh-record/3", mesh1.as_str(), &json!({"mesh_id": mesh1, "name": "mesh1", "state": "Ready", "config": {"setting": APP_SETTING}})).await.unwrap();
+        m.append(&fp1, "mesh-record", "mesh-record/3", mesh1.as_str(), &json!({"mesh_id": mesh1, "name": "mesh1", "state": "Ready"})).await.unwrap();
+        m.append(&fp1, "mesh-record", "mesh-record/3", mesh2.as_str(), &json!({"mesh_id": mesh2, "name": "mesh2", "state": "Ready"})).await.unwrap();
+        m.append(&fp2, "mesh-record", "mesh-record/3", mesh2.as_str(), &json!({"mesh_id": mesh2, "name": "mesh2", "state": "Dead"})).await.unwrap();
+        m.append(&fp2, "mesh-record", "mesh-record/3", mesh1.as_str(), &json!({"mesh_id": mesh1, "name": "mesh1", "state": "Ready", "config": {"setting": APP_SETTING}})).await.unwrap();
 
         let n = log(&root, NODES_FILE).await;
-        n.append(&mp1, "node-record/1", first.as_str(), &json!({"node_id": first, "name": "mesh1.node.2", "state": "Running", "config": {"setting": APP_SETTING}})).await.unwrap();
-        n.append(&mp1, "node-runtime/1", &format!("{first}--{}", IncarnationId::mint()), &json!({"node_id": first, "name": "mesh1.node.2"})).await.unwrap();
-        n.append(&mp1, "node-tag/1", &format!("{first}/blue"), &json!({"node_id": first, "label": "blue"})).await.unwrap();
-        n.append(&mp2, "node-record/1", second.as_str(), &json!({"node_id": second, "name": "mesh1.node.2", "state": "Running", "config": {"setting": APP_SETTING}})).await.unwrap();
-        n.append(&mp2, "node-record/1", first.as_str(), &json!({"node_id": first, "name": "mesh1.node.2", "state": "Deleted"})).await.unwrap();
+        n.append(&mp1, "node-record", "node-record/1", first.as_str(), &json!({"node_id": first, "name": "mesh1.node.2", "state": "Running", "config": {"setting": APP_SETTING}})).await.unwrap();
+        n.append(&mp1, "node-runtime", "node-runtime/1", &format!("{first}--{}", IncarnationId::mint()), &json!({"node_id": first, "name": "mesh1.node.2"})).await.unwrap();
+        n.append(&mp1, "node-tag", "node-tag/1", &format!("{first}/blue"), &json!({"node_id": first, "label": "blue"})).await.unwrap();
+        n.append(&mp2, "node-record", "node-record/1", second.as_str(), &json!({"node_id": second, "name": "mesh1.node.2", "state": "Running", "config": {"setting": APP_SETTING}})).await.unwrap();
+        n.append(&mp2, "node-record", "node-record/1", first.as_str(), &json!({"node_id": first, "name": "mesh1.node.2", "state": "Deleted"})).await.unwrap();
 
         let c = log(&root, CONNECTIONS_FILE).await;
-        c.append(&gone, "node-connection/2", "gone--live--00--Direct", &json!({"source": "mesh1.node.1", "state": "Connected"})).await.unwrap();
-        c.append(&live, "node-connection/2", "live--gone--00--Direct", &json!({"source": "mesh1.node.3", "state": "Connected"})).await.unwrap();
-        c.append(&gone, "node-connection/2", "gone--live--00--Direct", &json!({"source": "mesh1.node.1", "state": "Disconnected"})).await.unwrap();
+        c.append(&gone, "node-connection", "node-connection/2", "gone--live--00--Direct", &json!({"source": "mesh1.node.1", "state": "Connected"})).await.unwrap();
+        c.append(&live, "node-connection", "node-connection/2", "live--gone--00--Direct", &json!({"source": "mesh1.node.3", "state": "Connected"})).await.unwrap();
+        c.append(&gone, "node-connection", "node-connection/2", "gone--live--00--Direct", &json!({"source": "mesh1.node.1", "state": "Disconnected"})).await.unwrap();
 
         let b = log(&root, BUILDS_FILE).await;
-        b.append(&fp1, "build-record/1", &format!("{build}/accepted"), &json!({"seq": 1, "fact": "accepted"})).await.unwrap();
-        b.append(&fp1, "build-record/1", &format!("{build}/opened/1"), &json!({"seq": 2, "fact": "opened", "attempt": 1})).await.unwrap();
-        b.append(&fp2, "build-record/1", &format!("{build}/opened/1"), &json!({"seq": 3, "fact": "opened", "attempt": 1})).await.unwrap();
-        b.append(&fp2, "build-record/1", &format!("{build}/opened/2"), &json!({"seq": 4, "fact": "opened", "attempt": 2})).await.unwrap();
+        b.append(&fp1, "build-record", "build-record/1", &format!("{build}/accepted"), &json!({"seq": 1, "fact": "accepted"})).await.unwrap();
+        b.append(&fp1, "build-record", "build-record/1", &format!("{build}/opened/1"), &json!({"seq": 2, "fact": "opened", "attempt": 1})).await.unwrap();
+        b.append(&fp2, "build-record", "build-record/1", &format!("{build}/opened/1"), &json!({"seq": 3, "fact": "opened", "attempt": 1})).await.unwrap();
+        b.append(&fp2, "build-record", "build-record/1", &format!("{build}/opened/2"), &json!({"seq": 4, "fact": "opened", "attempt": 2})).await.unwrap();
 
-        // Each event is its own line at its event.id, by its one writer (build.md §5).
+        // Each event is its own line, its `id` the event's, by its one writer (build.md §5).
         let e = log(&root, EVENTS_FILE).await;
-        e.append(&fp1, "event/1", "019a4b2c-0001-7000-8000-000000000001", &json!({"specversion": "1.0", "type": "rdm.build.started", "data": {"build_id": build}})).await.unwrap();
-        e.append(&mp1, "event/1", "019a4b2c-0002-7000-8000-000000000002", &json!({"specversion": "1.0", "type": "rdm.node.investigated", "subject": first, "data": {"verdict": "exited", "next": "recreate"}})).await.unwrap();
+        e.append_with(Attributes { subject: None, ..Attributes::of(&fp1, "rdm.build.started", "event/1", "") }, &json!({"build_id": build})).await.unwrap();
+        e.append(&mp1, "rdm.node.investigated", "event/1", first.as_str(), &json!({"verdict": "exited", "next": "recreate"})).await.unwrap();
 
         // The nodes' own parts of their records are history too, each at its node id in the nodes store (Q333).
         let records = log(&root, NODES_FILE).await;
-        records.append(&mp1, "node-properties/1", first.as_str(), &json!({"node_id": first, "config": {"setting": APP_SETTING}, "applied": [{"build_id": build, "operation": "node.config.update"}]})).await.unwrap();
-        records.append(&mp2, "node-properties/1", second.as_str(), &json!({"node_id": second, "config": {"setting": APP_SETTING}})).await.unwrap();
+        records.append(&mp1, "node-properties", "node-properties/1", first.as_str(), &json!({"node_id": first, "config": {"setting": APP_SETTING}, "applied": [{"build_id": build, "operation": "node.config.update"}]})).await.unwrap();
+        records.append(&mp2, "node-properties", "node-properties/1", second.as_str(), &json!({"node_id": second, "config": {"setting": APP_SETTING}})).await.unwrap();
 
         Self { store_dir, root, fabric, fp2, gone, live, first, second }
     }
@@ -191,14 +200,15 @@ impl History {
 /// CONTRACT (storage.md §2 Copy: "appends every line of every store on the old provider to the new
 /// one in source order, dead births' and deleted nodes' records included"; i149 R5, R6): after the
 /// copy each of the new provider's stores holds the old one's lines, in the old one's order,
-/// each with the op its writer wrote it with. So every current value is the old one's, though the
-/// fabric's, a mesh's and a node's writer changed; a dead birth's connection facts are still that
-/// node's (a connections reader reads ownership from the op); the node at a path.name is the one the
-/// latest node record across node ids names; a Build fact's first line per key is the first writer's;
-/// and a writer that resumes on the new provider writes past its copied ops. The copy's span names
-/// the change, both providers, the source position verified and the lines copied; the new provider's
-/// stores open on spans naming it. Must NOT happen: a line re-stamped with the copier's op, lines
-/// reordered across keys, a dead writer's line left behind, or a copied op used again.
+/// each byte for byte, with the `id`, `source` and `time` its writer wrote it with (Q365). So every
+/// current value is the old one's, though the fabric's, a mesh's and a node's writer changed; a dead
+/// birth's connection facts are still that node's (a connections reader reads ownership from the
+/// `source`); the node at a path.name is the one the latest node record across node ids names; a Build
+/// fact's first line per subject is the first writer's; and a writer that resumes on the new provider
+/// writes under a new `id`. The copy's span names the change, both providers, the source position
+/// verified and the lines copied; the new provider's stores open on spans naming it. Must NOT happen:
+/// a line re-stamped with the copier's `source` or a new `id`, lines reordered across subjects, a dead
+/// writer's line left behind, or a copied `id` used again.
 #[test]
 fn a_copy_preserves_current_values_across_writer_changes() {
     let capture = capture("current");
@@ -212,28 +222,30 @@ fn a_copy_preserves_current_values_across_writer_changes() {
         let dest_root = dest_dir.join(h.fabric.as_str());
 
         for (_, file) in FILES {
-            assert_eq!(file_lines(&dest_root, file), file_lines(&h.root, file), "{file}: the new provider holds the old one's lines in source order, each with its writer's op");
+            assert_eq!(file_lines(&dest_root, file), file_lines(&h.root, file), "{file}: the new provider holds the old one's lines in source order, byte for byte, each with its writer's id");
         }
         let (src, dst) = (store_log::latest_in(&h.root.join(MESHES_FILE)).unwrap(), store_log::latest_in(&dest_root.join(MESHES_FILE)).unwrap());
         assert_eq!(dst.values().map(line_of).collect::<Vec<_>>(), src.values().map(line_of).collect::<Vec<_>>(), "every mesh's current value is the old provider's");
         let fabric_now = store_log::latest_in(&dest_root.join(FABRIC_FILE)).unwrap();
         let fabric_now = fabric_now.values().next().expect("the Fabric record is copied");
-        assert_eq!((fabric_now.op.as_ref().map(|o| (o.node_id.clone(), o.seq)), fabric_now.record["events"].clone()), (Some((h.fp2.node_id.to_string(), 1)), json!(["ready"])), "the Fabric record's current value is the successor's");
-        let at_name = store_log::read_file(&dest_root.join(NODES_FILE)).unwrap().into_iter().filter(|l| l.kind() == "node-record" && l.record["name"] == "mesh1.node.2").last().unwrap();
-        assert_eq!((at_name.key.clone(), at_name.record["state"].clone()), (h.first.to_string(), json!("Deleted")), "the latest node record at the path.name, across node ids, is the old provider's");
+        assert_eq!((fabric_now.attributes.source.clone(), fabric_now.data["events"].clone()), (h.fp2.source(), json!(["ready"])), "the Fabric record's current value is the successor's");
+        let at_name = store_log::read_file(&dest_root.join(NODES_FILE)).unwrap().into_iter().filter(|l| l.kind() == "node-record" && l.data["name"] == "mesh1.node.2").last().unwrap();
+        assert_eq!((at_name.subject().to_string(), at_name.data["state"].clone()), (h.first.to_string(), json!("Deleted")), "the latest node record at the path.name, across node ids, is the old provider's");
         assert!(file_lines(&dest_root, NODES_FILE).iter().any(|l| l.2 == h.second.to_string() && l.3["state"] == "Running"), "the re-created node's record is copied");
-        let gone_lines: Vec<_> = file_lines(&dest_root, CONNECTIONS_FILE).into_iter().filter(|l| l.0.as_ref().is_some_and(|o| o.node_id == h.gone.node_id.to_string())).collect();
-        assert_eq!(gone_lines.len(), 2, "the dead birth's connection facts are still its own, by their op: {gone_lines:?}");
+        let gone_lines: Vec<_> = file_lines(&dest_root, CONNECTIONS_FILE).into_iter().filter(|l| l.1 == h.gone.source()).collect();
+        assert_eq!(gone_lines.len(), 2, "the dead birth's connection facts are still its own, by their source: {gone_lines:?}");
         let mut first_per_key: BTreeMap<String, serde_json::Value> = BTreeMap::new();
         for l in store_log::read_file(&dest_root.join(BUILDS_FILE)).unwrap() {
-            first_per_key.entry(l.key.clone()).or_insert(l.record.clone());
+            first_per_key.entry(l.subject().to_string()).or_insert(l.data.clone());
         }
-        assert!(first_per_key.iter().filter(|(k, _)| k.ends_with("/opened/1")).all(|(_, r)| r["seq"] == 2), "the first Build fact line per key is the first writer's: {first_per_key:?}");
+        assert!(first_per_key.iter().filter(|(k, _)| k.ends_with("/opened/1")).all(|(_, r)| r["seq"] == 2), "the first Build fact line per subject is the first writer's: {first_per_key:?}");
 
         let resumed = log(&dest_root, CONNECTIONS_FILE).await;
-        resumed.append(&h.live, "node-connection/2", "live--gone--00--Direct", &json!({"source": "mesh1.node.3", "state": "Disconnected"})).await.unwrap();
-        let last = store_log::read_file(&dest_root.join(CONNECTIONS_FILE)).unwrap().pop().unwrap();
-        assert_eq!(last.op.map(|o| (o.node_id, o.seq)), Some((h.live.node_id.to_string(), 2)), "a writer resuming on the new provider writes past its copied op");
+        resumed.append(&h.live, "node-connection", "node-connection/2", "live--gone--00--Direct", &json!({"source": "mesh1.node.3", "state": "Disconnected"})).await.unwrap();
+        let mut after = store_log::read_file(&dest_root.join(CONNECTIONS_FILE)).unwrap();
+        let last = after.pop().unwrap();
+        assert_eq!(last.attributes.source, h.live.source(), "the writer resuming on the new provider writes as itself");
+        assert!(after.iter().all(|l| l.attributes.id != last.attributes.id), "a writer resuming on the new provider writes under a new id, never a copied one");
         (h, change)
     });
     let spans = capture.spans().expect("the cell's spans");
@@ -269,10 +281,10 @@ fn a_copy_refuses_a_destination_hole_without_replaying_stale_state() {
         let root = StoreRoot::open(&store_dir, &fabric).unwrap().dir().to_path_buf();
         let w = writer();
         let f = log(&root, FABRIC_FILE).await;
-        f.append(&w, "fabric-record/2", fabric.as_str(), &json!({"fabric_id": fabric, "name": "fabric1"})).await.unwrap();
+        f.append(&w, "fabric-record", "fabric-record/2", fabric.as_str(), &json!({"fabric_id": fabric, "name": "fabric1"})).await.unwrap();
         let n = log(&root, NODES_FILE).await;
         for v in 1..=3 {
-            n.append(&w, "node-record/1", "node-k", &json!({"name": "mesh1.node.2", "v": v, "config": {"setting": APP_SETTING}})).await.unwrap();
+            n.append(&w, "node-record", "node-record/1", "node-k", &json!({"name": "mesh1.node.2", "v": v, "config": {"setting": APP_SETTING}})).await.unwrap();
         }
         let src = store_log::read_file(&root.join(NODES_FILE)).unwrap();
         let source = FileProviderLines::open(SOURCE, &store_dir, &fabric).await.unwrap();
@@ -280,7 +292,6 @@ fn a_copy_refuses_a_destination_hole_without_replaying_stale_state() {
         // A new provider holding the key's lines 1 and 3, not 2.
         let dest_dir = dir("hole-destination");
         let dest_root = StoreRoot::open(&dest_dir, &fabric).unwrap().dir().to_path_buf();
-        let raw = |l: &Line| store_log::encode_line(l.op.as_ref().unwrap(), &l.format, &l.key, &serde_json::to_vec(&l.record).unwrap());
         std::fs::write(dest_root.join(NODES_FILE), [raw(&src[0]), raw(&src[2])].concat()).unwrap();
         let destination = FileProviderLines::open(DESTINATION, &dest_dir, &fabric).await.unwrap();
         let before = snapshot(&dest_dir);
@@ -289,17 +300,17 @@ fn a_copy_refuses_a_destination_hole_without_replaying_stale_state() {
             Err(CopyError::Refused(why)) => why,
             other => panic!("a new provider with a hole is refused by name, nothing appended: {:?}", other.map_err(|e| e.to_string())),
         };
-        let (want, found) = (named(src[1].op.as_ref().unwrap()), named(src[2].op.as_ref().unwrap()));
-        assert!(refused.contains("nodes") && refused.contains("node-k") && refused.contains(&want) && refused.contains(&found), "the refusal names the store, the key and the two ops that differ ({want}, {found}): {refused}");
+        let (want, found) = (named(&src[1]), named(&src[2]));
+        assert!(refused.contains("nodes") && refused.contains("node-k") && refused.contains(&want) && refused.contains(&found), "the refusal names the store, the subject and the two ids that differ ({want}, {found}): {refused}");
         assert!(!refused.contains(APP_SETTING), "the refusal carries no record's application setting: {refused}");
         assert_eq!(snapshot(&dest_dir), before, "nothing is appended to any store of the new provider");
         let now = store_log::latest_in(&dest_root.join(NODES_FILE)).unwrap();
-        assert_eq!(now.values().next().map(|l| l.record["v"].clone()), Some(json!(3)), "the key's current value on the new provider is not replayed to line 2");
+        assert_eq!(now.values().next().map(|l| l.data["v"].clone()), Some(json!(3)), "the key's current value on the new provider is not replayed to line 2");
 
         // A new provider holding a line the old one does not.
         let extra_dir = dir("extra-destination");
         let extra_root = StoreRoot::open(&extra_dir, &fabric).unwrap().dir().to_path_buf();
-        let stray = Line { offset: None, op: Some(Op { node_id: w.node_id.to_string(), incarnation_id: w.incarnation_id.to_string(), seq: 4 }), format: "node-record/1".into(), key: "node-k".into(), record: json!({"v": 4}), written: None };
+        let stray = Line::new(Attributes::of(&w, "node-record", "node-record/1", "node-k"), json!({"v": 4}));
         std::fs::write(extra_root.join(NODES_FILE), [raw(&src[0]), raw(&src[1]), raw(&src[2]), raw(&stray)].concat()).unwrap();
         let destination = FileProviderLines::open(DESTINATION, &extra_dir, &fabric).await.unwrap();
         let before = snapshot(&extra_dir);
@@ -308,7 +319,7 @@ fn a_copy_refuses_a_destination_hole_without_replaying_stale_state() {
             Err(CopyError::Refused(why)) => why,
             other => panic!("a new provider holding a line the old one does not is refused by name: {:?}", other.map_err(|e| e.to_string())),
         };
-        assert!(refused.contains("nodes") && refused.contains("node-k") && refused.contains(&named(stray.op.as_ref().unwrap())), "the refusal names the store, the key and the stray op: {refused}");
+        assert!(refused.contains("nodes") && refused.contains("node-k") && refused.contains(&named(&stray)), "the refusal names the store, the subject and the stray id: {refused}");
         assert_eq!(snapshot(&extra_dir), before, "nothing is appended to the new provider");
         (change, extra_change)
     });
@@ -373,12 +384,12 @@ fn a_copy_resumes_after_a_lost_answer_without_duplicate_records() {
         assert_eq!(landed, 3, "the lines up to the one whose answer was lost landed");
         copy(&changes[1], &source, &destination).await.unwrap_or_else(|e| panic!("the resumed copy finishes: {e}"));
 
-        let mut ops = BTreeSet::new();
+        let mut ids = BTreeSet::new();
         for (_, file) in FILES {
             let lines = file_lines(&dest_root, file);
             assert_eq!(lines, file_lines(&h.root, file), "{file}: the new provider holds the old one's lines once each, in source order");
             for l in lines {
-                assert!(ops.insert((file, l.0.clone())), "{file}: op {:?} appended twice", l.0);
+                assert!(ids.insert((file, l.0.clone())), "{file}: id {} appended twice", l.0);
             }
         }
         (changes, h.total())

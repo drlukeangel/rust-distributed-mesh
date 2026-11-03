@@ -615,7 +615,7 @@ fn a_join_is_admitted_from_the_writers_records_with_the_store_unreadable() {
         // The fabric's nodes store, holding the row, its tail then unended.
         let store = std::env::temp_dir().join(format!("join-atlas-{}", NodeId::mint()));
         std::fs::create_dir_all(&store).unwrap();
-        let writer = rdm_admin::store_log::LogWriter::new(&NodeId::mint(), &IncarnationId::mint());
+        let writer = rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &NodeId::mint(), &IncarnationId::mint(), &rdm_transport::clock::RafkaTime::unadopted());
         let storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::FileNodesStorage::open(&store, &rdm_admin::store_root::StoreRoot::at(&store), "mesh1", &writer).await.unwrap());
         let row = rdm_admin::storage::NodeRow { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         let written = Arc::new(rdm_admin::node_rows::WrittenRows::default());

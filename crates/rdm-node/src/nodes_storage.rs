@@ -399,21 +399,21 @@ pub trait NodeRowsStorage: Send + Sync {
     async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError>;
 }
 
-/// A node's record in `nodes.jsonl`, at its node id.
+/// The `dataschema` of a node's record line in `nodes.jsonl`, its `subject` the node id.
 pub const RECORD_FORMAT: &str = "node-record/1";
-/// The kind of [`RECORD_FORMAT`].
+/// The `type` of [`RECORD_FORMAT`]'s lines.
 pub const RECORD_KIND: &str = "node-record";
-/// A birth's runtime row in `nodes.jsonl`, at `<node id>--<incarnation>`.
+/// The `dataschema` of a birth's runtime row line in `nodes.jsonl`, its `subject` `<node id>--<incarnation>`.
 pub const RUNTIME_FORMAT: &str = "node-runtime/1";
-/// The kind of [`RUNTIME_FORMAT`].
+/// The `type` of [`RUNTIME_FORMAT`]'s lines.
 pub const RUNTIME_KIND: &str = "node-runtime";
-/// The format of the node's own part of its record (Q333): the line the node appends at its node id,
+/// The `dataschema` of the node's own part of its record (Q333): the line the node appends at its node id,
 /// carrying only what it writes ([`crate::node_records::NodeProperties`]).
 pub const PROPERTIES_FORMAT: &str = "node-properties/1";
-/// The kind of [`PROPERTIES_FORMAT`].
+/// The `type` of [`PROPERTIES_FORMAT`]'s lines.
 pub const PROPERTIES_KIND: &str = "node-properties";
 #[cfg(feature = "file-backend")]
-/// The formats `nodes.jsonl` holds: every reader of the file folds all of them.
+/// The `dataschema`s `nodes.jsonl` holds: every reader of the file folds all of them.
 pub fn formats() -> crate::store_log::Formats {
     crate::store_log::Formats::new().with::<NodeRow>(RECORD_FORMAT).with::<RuntimeRow>(RUNTIME_FORMAT).with::<crate::node_records::NodeProperties>(PROPERTIES_FORMAT)
 }
@@ -604,7 +604,7 @@ impl NodesStorage for FileNodesStorage {
     /// A blind put of the birth's own row: one append, nothing read first (its one writer is the admin
     /// that launched the birth, build.md §5.3).
     async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
-        self.records.append(&self.log_writer, RUNTIME_FORMAT, &row.key(), row).await
+        self.records.append(&self.log_writer, RUNTIME_KIND, RUNTIME_FORMAT, &row.key(), row).await
     }
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
         self.records.latest_of(RUNTIME_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect()
@@ -626,10 +626,10 @@ impl NodesStorage for FileNodesStorage {
         Ok(out)
     }
     async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
-        self.records.append(&self.log_writer, RECORD_FORMAT, row.node_id.as_str(), row).await
+        self.records.append(&self.log_writer, RECORD_KIND, RECORD_FORMAT, row.node_id.as_str(), row).await
     }
     async fn put_properties(&self, record: &crate::node_records::NodeProperties) -> Result<(), StorageError> {
-        self.own_parts.append(&self.log_writer, PROPERTIES_FORMAT, record.birth.node_id.as_str(), record).await
+        self.own_parts.append(&self.log_writer, PROPERTIES_KIND, PROPERTIES_FORMAT, record.birth.node_id.as_str(), record).await
     }
     async fn properties(&self, node_id: &NodeId) -> Result<Option<crate::node_records::NodeProperties>, StorageError> {
         self.records.latest(PROPERTIES_KIND, node_id.as_str()).await?.map(|l| l.decode(self.records.path())).transpose()
@@ -688,5 +688,41 @@ mod tests {
         assert_eq!(birth.declared_state(), Some(NodeState::Ready));
         birth.declared.insert(NodeState::Stopped);
         assert_eq!(birth.declared_state(), Some(NodeState::Stopped));
+    }
+
+    /// CONTRACT (node-identity-and-state.md §2; storage.md §2; Q333, Q365): each of the nodes store's
+    /// lines in the root's `nodes.jsonl` is frozen byte for byte: a CloudEvents event whose `source`
+    /// is its writer, `subject` its node id (`<node id>--<incarnation>` for a runtime row), `type` and
+    /// `dataschema` `node-record` `node-record/1`, `node-properties` `node-properties/1` and
+    /// `node-runtime` `node-runtime/1`, and `data` the whole record; its `id` and `time` the write's. A
+    /// layout that moves moves this cell with it (`durable format moved`). Must NOT happen: a line whose
+    /// attributes or record bytes moved while this cell still passes.
+    #[cfg(feature = "file-backend")]
+    #[tokio::test]
+    async fn the_nodes_store_lines_are_frozen_byte_for_byte() {
+        let d = crate::record_store::tempdir("nodes-store-layout");
+        let root = crate::store_root::StoreRoot::at(&d);
+        let writer = crate::store_log::LogWriter::mint();
+        let store = FileNodesStorage::open(&d, &root, "mesh1", &writer).await.unwrap();
+        let name = PathName::new("mesh1.node", "1").unwrap();
+        let node_id = NodeId::parse(&rdm_core::fixture_crockford60("node-1")).unwrap();
+        let incarnation_id = IncarnationId::parse(&rdm_core::fixture_crockford60("node-1-inc")).unwrap();
+        let row = NodeRow::new(name.clone(), "mesh1", "node", node_id.clone(), crate::model::NodeStatus::Ready);
+        store.put_node(&row).await.unwrap();
+        let properties = crate::node_records::NodeProperties { birth: crate::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation_id.clone() }, config: BTreeMap::new(), tags: BTreeSet::new(), endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: BTreeSet::new() };
+        store.put_properties(&properties).await.unwrap();
+        store.finish_issued_writes().await;
+        let file = d.join(crate::store_root::NODES_FILE);
+        let lines = crate::store_log::read_file(&file).unwrap();
+        assert_eq!(lines.len(), 2);
+        let expect = |at: usize, r#type: &str, dataschema: &str, subject: &str, data: String| {
+            let written = &lines[at].attributes;
+            let attributes = crate::store_log::Attributes { id: written.id.clone(), source: writer.source(), r#type: r#type.into(), subject: Some(subject.into()), time: None, dataschema: dataschema.into(), traceparent: None, tracestate: None };
+            crate::store_log::encode_line(&attributes, data.as_bytes())
+        };
+        let record = format!(r#"{{"mesh":"mesh1","type":"node","path":"mesh1.node","name":"1","node_id":"{node_id}","status":"ready","topology_storage_provider":null}}"#);
+        let own = format!(r#"{{"birth":{{"node_id":"{node_id}","incarnation_id":"{incarnation_id}"}},"config":{{}},"tags":[],"endpoint_id":null,"transport_addr":null,"listeners":[],"app_types":null,"held":[]}}"#);
+        assert_eq!(String::from_utf8(std::fs::read(&file).unwrap()).unwrap(), String::from_utf8([expect(0, "node-record", "node-record/1", node_id.as_str(), record), expect(1, "node-properties", "node-properties/1", node_id.as_str(), own)].concat()).unwrap());
+        assert_eq!(lines[1].attributes.source_node_id(), Some(writer.node_id.as_str()), "the source names the writer's node id");
     }
 }

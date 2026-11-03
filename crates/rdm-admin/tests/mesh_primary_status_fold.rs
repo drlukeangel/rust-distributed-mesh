@@ -19,9 +19,9 @@ struct Stores {
 async fn stores(root: &rdm_admin::store_root::StoreRoot, writer: &IncarnationId) -> Stores {
     let data_dir = root.dir().join(format!("data-{}", writer.as_str()));
     Stores {
-        nodes: Arc::new(FileNodesStorage::open(&data_dir, root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap()),
-        meshes: Arc::new(FileMeshStorage::open(root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap()),
-        fabric: Arc::new(FileFabricStorage::open(root, &rdm_admin::store_log::LogWriter::new(&rdm_core::NodeId::mint(), writer)).await.unwrap()),
+        nodes: Arc::new(FileNodesStorage::open(&data_dir, root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap()),
+        meshes: Arc::new(FileMeshStorage::open(root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap()),
+        fabric: Arc::new(FileFabricStorage::open(root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_core::NodeId::mint(), writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap()),
     }
 }
 use rdm_admin::topology::Topology;
@@ -91,8 +91,8 @@ async fn taken_over_one_root(trace_id: String) -> Taken {
     { let (node_id, incarnation_id, name) = (rpc_birth.0.clone(), rpc_birth.1.clone(), rpc.location()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRow::new(name.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Ready); }).await.unwrap(); }
     { let (node_id, incarnation_id, name) = (other.0.clone(), other.1.clone(), rdm_core::PathName::new("mesh1.node", "2").unwrap()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRow::new(name.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Pending); }).await.unwrap(); }
     let fabric_records = rdm_admin::store_log::latest_in(&root.dir().join(rdm_admin::store_root::FABRIC_FILE)).unwrap().into_keys().filter(|(kind, _)| kind == "fabric-record").count();
-    let mesh_records = rdm_admin::store_log::keys_in(&root.dir().join(rdm_admin::store_root::MESHES_FILE), "mesh-record").unwrap().len();
-    let node_records = rdm_admin::store_log::keys_in(&root.dir().join(rdm_admin::store_root::NODES_FILE), "node-record").unwrap().len();
+    let mesh_records = rdm_admin::store_log::subjects_in(&root.dir().join(rdm_admin::store_root::MESHES_FILE), "mesh-record").unwrap().len();
+    let node_records = rdm_admin::store_log::subjects_in(&root.dir().join(rdm_admin::store_root::NODES_FILE), "node-record").unwrap().len();
     assert_eq!((mesh_records, fabric_records, node_records), (1, 1, 2), "A's facts live on the fabric's store root, each on its object's record");
     // B, the other admin of mesh1, with its own store instance over the same root.
     let b_id = before_view.nodes.iter().find(|n| n.location() == rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).unwrap().node_id.clone();

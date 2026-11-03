@@ -180,7 +180,7 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     assert_eq!((attr(app_investigated[0], "verdict"), attr(app_investigated[0], "next")), ("running".to_string(), "recreate".to_string()), "{}", app_investigated[0]);
     // The verdict is one `rdm.node.investigated` event of the hung birth's node.id on the fabric's store
     // root, by its mesh-primary, the event the notice's span names (node-investigation.md, build.md §5).
-    let events = rdm_admin::events_storage::FileEventsStorage::open(&rdm_node::store_root::StoreRoot::at(&estate.fabric_store_root()), &rdm_node::store_log::LogWriter::mint()).await.expect("the fabric's events store opens");
+    let events = rdm_admin::events_storage::FileEventsStorage::open(&rdm_node::store_root::StoreRoot::at(&estate.fabric_store_root())).await.expect("the fabric's events store opens");
     let of_node = rdm_admin::events_storage::EventsStorage::of_node(&events, &node.node_id).await.expect("the hung birth's events read");
     let verdicts: Vec<_> = of_node.iter().filter(|e| e.r#type == rdm_admin::events_storage::NODE_INVESTIGATED && e.data.get("incarnation").and_then(Value::as_str) == Some(incarnation.as_str())).collect();
     assert_eq!(verdicts.len(), 1, "one rdm.node.investigated event for the birth: {of_node:#?}");

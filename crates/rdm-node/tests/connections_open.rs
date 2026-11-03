@@ -86,7 +86,7 @@ async fn a_nodes_connections_store_opens_over_a_file_it_cannot_fold_and_appends_
     std::fs::write(&file, unended).unwrap();
 
     let providers = NodeStorageProviders::new().register("file", Arc::new(FileNodeBackend::at(&store)));
-    let handle = NodeStorageHandle::open(&providers, &launch).await.unwrap_or_else(|e| panic!("the node opens its connections store without reading it: {e}"));
+    let handle = NodeStorageHandle::open(&providers, &launch, &rdm_transport::clock::RafkaTime::unadopted()).await.unwrap_or_else(|e| panic!("the node opens its connections store without reading it: {e}"));
     let written = fact(ConnectionEnd { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), path: launch.path.clone(), name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) }, 3);
     handle.connections().put_connection(&written).await.unwrap_or_else(|e| panic!("the node appends its fact: {e}"));
 
@@ -167,8 +167,8 @@ async fn connection_history_is_scoped_by_source_id_and_explicit_writer() {
     let predecessor = ConnectionEnd { mesh: "explicit-mesh".into(), r#type: "node".into(),
         path: location.path.clone(), name: location.name.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) };
     let successor = ConnectionEnd { node_id: NodeId::mint(), ..predecessor.clone() };
-    let old_writer = LogWriter::new(&predecessor.node_id, predecessor.incarnation.as_ref().unwrap());
-    let new_writer = LogWriter::new(&successor.node_id, successor.incarnation.as_ref().unwrap());
+    let old_writer = LogWriter::new(&rdm_core::FabricId::mint(), &predecessor.node_id, predecessor.incarnation.as_ref().unwrap(), &rdm_transport::clock::RafkaTime::unadopted());
+    let new_writer = LogWriter::new(&rdm_core::FabricId::mint(), &successor.node_id, successor.incarnation.as_ref().unwrap(), &rdm_transport::clock::RafkaTime::unadopted());
     let old_store = FileConnectionsStorage::open(&root, &old_writer).await.unwrap();
     let first = fact(predecessor.clone(), 1);
     old_store.put_connection(&first).await.unwrap();
@@ -189,10 +189,36 @@ async fn connection_history_is_scoped_by_source_id_and_explicit_writer() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// CONTRACT (connections.md §3; storage.md §2; Q365): a connection fact's line in the root's
+/// `connections.jsonl` is frozen byte for byte: a CloudEvents event whose `source` is its writer,
+/// `type` `node-connection`, `dataschema` `node-connection/3`, `subject` its index's key
+/// `<source>--<destination>--<alpn hex>--direct` and `data` the whole fact; its `id` and `time` the
+/// write's. A layout that moves moves this cell with it (`durable format moved`). Must NOT happen: a
+/// line whose attributes or record bytes moved while this cell still passes.
+#[tokio::test]
+async fn the_connections_store_line_is_frozen_byte_for_byte() {
+    use rdm_node::{storage::FileConnectionsStorage, store_log::{encode_line, read_file, Attributes, LogWriter}, store_root::StoreRoot};
+    let directory = store_dir("frozen-line");
+    let root = StoreRoot::open(&directory, &FabricId::mint()).unwrap();
+    let writer = LogWriter::mint();
+    let source = ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), path: "mesh1.node".into(), name: "1".into(), node_id: writer.node_id.clone(), incarnation: Some(writer.incarnation_id.clone()) };
+    let row = fact(source, 2);
+    let store = FileConnectionsStorage::open(&root, &writer).await.unwrap();
+    store.put_connection(&row).await.unwrap();
+    let file = root.dir().join(rdm_node::store_root::CONNECTIONS_FILE);
+    let lines = read_file(&file).unwrap();
+    assert_eq!(lines.len(), 1);
+    let subject = format!("{}--{}--{}--direct", row.source.node_id, row.destination.node_id, hex::encode(&row.alpn));
+    let attributes = Attributes { id: lines[0].attributes.id.clone(), source: writer.source(), r#type: "node-connection".into(), subject: Some(subject), time: None, dataschema: "node-connection/3".into(), traceparent: None, tracestate: None };
+    assert_eq!(std::fs::read(&file).unwrap(), encode_line(&attributes, &serde_json::to_vec(&row).unwrap()), "the whole fact, its index's key the subject");
+    drop((store, root));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// A location-keyed connection format cannot be folded as the ID-keyed format.
 #[tokio::test]
 async fn location_keyed_connection_formats_are_refused_when_read() {
-    use rdm_node::{storage::FileConnectionsStorage, store_log::{encode_line, LogWriter, Op}, store_root::StoreRoot};
+    use rdm_node::{storage::FileConnectionsStorage, store_log::{encode_line, Attributes, LogWriter}, store_root::StoreRoot};
     for format in ["node-connection/1", "node-connection/2"] {
         let directory = store_dir("old-format");
         let root = StoreRoot::open(&directory, &FabricId::mint()).unwrap();
@@ -200,8 +226,7 @@ async fn location_keyed_connection_formats_are_refused_when_read() {
         let source = ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(),
             path: "mesh1.node".into(), name: "1".into(), node_id: writer.node_id.clone(), incarnation: Some(writer.incarnation_id.clone()) };
         let row = fact(source, 2);
-        let op = Op { node_id: writer.node_id.to_string(), incarnation_id: writer.incarnation_id.to_string(), seq: 1 };
-        let bytes = encode_line(&op, format, "obsolete-location-index", &serde_json::to_vec(&row).unwrap());
+        let bytes = encode_line(&Attributes::of(&writer, "node-connection", format, "obsolete-location-index"), &serde_json::to_vec(&row).unwrap());
         std::fs::write(root.dir().join(rdm_node::store_root::CONNECTIONS_FILE), bytes).unwrap();
         let store = FileConnectionsStorage::open(&root, &writer).await.expect("append-only open does not fold history");
         for result in [store.connections().await, store.history().await, store.connections_to(&row.destination.node_id).await] {

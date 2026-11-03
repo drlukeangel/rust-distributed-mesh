@@ -62,7 +62,7 @@ registered in its wiring by name:
 
 | provider | registered by | where the records go |
 |---|---|---|
-| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, `events.jsonl`, with the `layout` marker; every line a whole record with its writer's operation identity, the latest line for a key its current state, nothing removed |
+| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, `events.jsonl`, with the `layout` marker; every line a CloudEvents 1.0 event, the whole record its `data`, its key its `subject`, its writer its `source`, the write its `id` (a time-ordered UUIDv7) and `time`, its kind and schema version its `type` and `dataschema`; the latest line for a `subject` its current state, nothing removed |
 | the application's | the application's binaries, at `start_on` | its own stores; Rafka binds the traits to its system topics |
 
 A provider is one set of stores for the fabric, reached by every node that writes: a node's own record is written by the node and read by its primaries. A backend that keeps its stores in one process, the testkit's `memory` backend, serves a single-process fabric only.

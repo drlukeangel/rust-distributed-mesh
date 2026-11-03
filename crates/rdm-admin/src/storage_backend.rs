@@ -34,16 +34,18 @@ pub struct StorageScope {
     pub own_mesh: String,
     /// The incarnation this process writes as.
     pub writer: IncarnationId,
-    /// The node id this process writes as: with `writer`, the writer every store line's `op` names
-    /// (R-SR3).
+    /// The node id this process writes as: with `fabric_id` and `writer`, every store line's
+    /// `source` (R-SR3, Q365).
     pub node_id: crate::model::NodeId,
+    /// This process's rafka-time: every store line's `time` (Q365), none before it holds one.
+    pub time: rdm_transport::clock::RafkaTime,
 }
 
 impl StorageScope {
     /// The writer of every store file line this process appends.
     #[cfg(feature = "file-backend")]
     pub fn log_writer(&self) -> crate::store_log::LogWriter {
-        crate::store_log::LogWriter::new(&self.node_id, &self.writer)
+        crate::store_log::LogWriter::new(&self.fabric_id, &self.node_id, &self.writer, &self.time)
     }
 }
 
@@ -180,7 +182,7 @@ impl StorageBackend for FileBackend {
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.log_writer()).await.map_err(storage_err)?);
         // Every runtime row is a line of the root's nodes.jsonl: the root's rows are the nodes store's.
         let root_runtimes: Option<Arc<dyn NodesStorage>> = Some(nodes.clone() as Arc<dyn NodesStorage>);
-        let events = Arc::new(crate::events_storage::FileEventsStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
+        let events = Arc::new(crate::events_storage::FileEventsStorage::open(&root).await.map_err(storage_err)?);
         let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.log_writer(), events.clone()).await.map_err(|e| e.to_string())?);
         let finish_writes: FinishWrites = {
             let (meshes, nodes, fabric, events) = (meshes.clone(), nodes.clone(), fabric.clone(), events.clone());
@@ -837,7 +839,7 @@ mod tests {
     /// The scope of an admin on a new data dir in a new fabric.
     #[cfg(feature = "file-backend")]
     fn scope_in(data_dir: PathBuf) -> StorageScope {
-        StorageScope { data_dir, fabric_id: FabricId::mint(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint() }
+        StorageScope { data_dir, fabric_id: FabricId::mint(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint(), time: rdm_transport::clock::RafkaTime::unadopted() }
     }
 
     /// CONTRACT (rdm-node/src/blocking.rs: a disk call "runs on tokio's blocking pool. No worker thread
@@ -1093,7 +1095,7 @@ mod tests {
             file.put_own_row(&data_dir, &own.incarnation_id, &own).await.unwrap();
             assert_eq!(file.own_row(&data_dir, &IncarnationId::mint()).await.unwrap(), Some(own.clone()), "the next process of the data dir reads it back whole");
             assert_eq!(file.own_row(&other, &IncarnationId::mint()).await.unwrap(), None, "another data dir holds none");
-            let scope = StorageScope { data_dir: data_dir.clone(), fabric_id: own.fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint() };
+            let scope = StorageScope { data_dir: data_dir.clone(), fabric_id: own.fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint(), time: rdm_transport::clock::RafkaTime::unadopted() };
             let opened = file.open(&scope).await.unwrap_or_else(|e| panic!("the boundaries open: {e}"));
             assert!(opened.nodes.nodes("mesh1").await.unwrap().is_empty(), "the nodes store holds no copy of the own row");
         }
@@ -1111,7 +1113,7 @@ mod tests {
         let store = crate::test_support::tempdir("file-backend-re-born-store");
         let data_dir = crate::test_support::tempdir("file-backend-re-born-data");
         let fabric_id = FabricId::mint();
-        let at = |data_dir: PathBuf| StorageScope { data_dir, fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint() };
+        let at = |data_dir: PathBuf| StorageScope { data_dir, fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint(), time: rdm_transport::clock::RafkaTime::unadopted() };
         a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes(&FileBackend::at(&store), &at(data_dir.clone()), &at(data_dir), &at(crate::test_support::tempdir("file-backend-re-born-other"))).await;
     }
 }

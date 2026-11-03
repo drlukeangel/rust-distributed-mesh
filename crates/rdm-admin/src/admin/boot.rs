@@ -360,7 +360,7 @@ async fn lone_birth_storage_deleted(cfg: &AdminConfig, providers: &crate::storag
     if cfg.fabric_id_named && cfg.fabric_id != own.fabric_id {
         return Ok(false);
     }
-    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: own.fabric_id.clone(), own_mesh: own.mesh.clone(), writer: reader, node_id: cfg.node_id.clone() };
+    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: own.fabric_id.clone(), own_mesh: own.mesh.clone(), writer: reader, node_id: cfg.node_id.clone(), time: rdm_transport::clock::RafkaTime::unadopted() };
     let unreadable = |e: &dyn std::fmt::Display| format!("refusing to start: {}: the store of Fabric {} could not be read: {e}", cfg.data_dir.display(), own.fabric_id);
     let handle = crate::storage_backend::TopologyStorageHandle::open(providers, &cfg.topology_storage_provider, scope).await?;
     let others = crate::storage::live_records(&*handle.meshes(), &*handle.nodes(), &own.mesh).await.map_err(|e| unreadable(&e))?.into_iter().filter(|r| r.node_id != own.node_id).count();
@@ -476,7 +476,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // else minted by the bootstrap's first step, `AdminConfig::from_env`), held before any store opens,
     // so every store line this process appends names it (R-SR3).
     let minted_node_id = cfg.node_id.clone();
-    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone(), node_id: minted_node_id.clone() };
+    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone(), node_id: minted_node_id.clone(), time: rafka_time.clone() };
     // Every store this admin reads and writes is reached through its one handle, never a store held
     // from here, so a provider change moves every owner at once ("Each node moves to the new
     // provider", storage.md §2).

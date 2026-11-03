@@ -237,17 +237,38 @@ impl FabricStorage for FileFabricStorage {
         match lines.as_slice() {
             [] => Ok(None),
             [line] => line.decode(self.records.path()).map(Some),
-            more => Err(FabricStorageError::Unrecognised { file: self.records.path().display().to_string(), reason: format!("it holds the records of {} fabrics ({}); a root holds one", more.len(), more.iter().map(|l| l.key.as_str()).collect::<Vec<_>>().join(", ")) }),
+            more => Err(FabricStorageError::Unrecognised { file: self.records.path().display().to_string(), reason: format!("it holds the records of {} fabrics ({}); a root holds one", more.len(), more.iter().map(|l| l.subject()).collect::<Vec<_>>().join(", ")) }),
         }
     }
     async fn put_fabric(&self, record: &FabricRecord) -> Result<(), FabricStorageError> {
-        self.records.append(&self.writer, RECORD_FORMAT, &record.fabric_id.to_string(), record).await
+        self.records.append(&self.writer, crate::store_root::FABRIC_RECORD_KIND, RECORD_FORMAT, &record.fabric_id.to_string(), record).await
     }
 }
 
 #[cfg(all(test, feature = "file-backend"))]
 mod tests {
     use super::*;
+
+    /// CONTRACT (build.md §5.3; storage.md §2; Q365): the Fabric record's line in the root's
+    /// `fabric.jsonl` is frozen byte for byte: a CloudEvents event whose `source` is its writer, `type`
+    /// `fabric-record`, `dataschema` `fabric-record/3`, `subject` the fabric's id and `data` the whole
+    /// record; its `id` and `time` the write's. A layout that moves moves this cell with it (`durable
+    /// format moved`). Must NOT happen: a line whose attributes or record bytes moved while this cell
+    /// still passes.
+    #[tokio::test]
+    async fn the_fabric_store_line_is_frozen_byte_for_byte() {
+        let d = tempdir();
+        let writer = crate::store_log::LogWriter::mint();
+        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &writer).await.unwrap();
+        let fabric_id = FabricId::parse(&rdm_core::fixture_crockford60("fabric-1")).unwrap();
+        s.put_fabric(&FabricRecord::new(FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() })).await.unwrap();
+        let file = d.join(crate::store_root::FABRIC_FILE);
+        let lines = crate::store_log::read_file(&file).unwrap();
+        assert_eq!(lines.len(), 1);
+        let attributes = crate::store_log::Attributes { id: lines[0].attributes.id.clone(), source: writer.source(), r#type: "fabric-record".into(), subject: Some(fabric_id.to_string()), time: None, dataschema: "fabric-record/3".into(), traceparent: None, tracestate: None };
+        let record = format!(r#"{{"fabric_id":"{fabric_id}","name":"fabric1","state":"pending","types":[],"topology_storage_provider":null,"previous_topology_storage_providers":[]}}"#);
+        assert_eq!(String::from_utf8(std::fs::read(&file).unwrap()).unwrap(), String::from_utf8(crate::store_log::encode_line(&attributes, record.as_bytes())).unwrap());
+    }
 
     /// CONTRACT (storage.md §2 "The property": `topology_storage_provider` is on the Fabric row beside
     /// `previous_topology_storage_providers`): a record written before the fields reads `file` and no
@@ -279,9 +300,9 @@ mod tests {
         assert_eq!(reopened.fabric().await.unwrap(), Some(ready), "the latest line is the record");
         let lines = crate::store_log::read_file(&d.join(crate::store_root::FABRIC_FILE)).unwrap();
         assert_eq!(lines.len(), 2, "both writes stand as lines");
-        let op = crate::store_log::Op { node_id: "n".into(), incarnation_id: "i".into(), seq: 1 };
+        let writer = crate::store_log::LogWriter::mint();
         let mut line = vec![b'\n'];
-        line.extend(crate::store_log::encode_object(&op, "fabric-record/9", &fabric.fabric_id.to_string(), b"{}"));
+        line.extend(crate::store_log::encode_object(&crate::store_log::Attributes::of(&writer, "fabric-record", "fabric-record/9", &fabric.fabric_id.to_string()), b"{}"));
         line.push(b'\n');
         std::fs::OpenOptions::new().append(true).open(d.join(crate::store_root::FABRIC_FILE)).and_then(|mut f| std::io::Write::write_all(&mut f, &line)).unwrap();
         let e = reopened.fabric().await.unwrap_err();

@@ -152,7 +152,7 @@ fn assert_mesh_primary_ran_the_recovery(run: &[Value], mp: &Value, before: &Valu
 async fn recovery_recorded(estate: &Estate, before: &Value) -> (Value, Value) {
     let node_id = s(&before["node_id"]);
     wait_for(&format!("{node_id}'s record deleted and its rdm.node.investigated event"), Duration::from_secs(30), || async {
-        let record = estate.node_record(&node_id).filter(|r| r["record"]["status"] == "deleted")?;
+        let record = estate.node_record(&node_id).filter(|r| r["data"]["status"] == "deleted")?;
         let event = build_log::node_investigated(estate, &node_id).into_iter().rev().find(|e| e["data"]["incarnation"] == before["incarnation_id"])?;
         Some((record, event))
     })
@@ -218,7 +218,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     // The records hold the recovery: the exited birth's record deleted, and the verdict's event.
     let (record, event) = recovery_recorded(&estate, &before).await;
     assert_eq!(event["data"]["verdict"], "exited", "the investigation's verdict: {event}");
-    assert_eq!(record["record"]["node_id"], before["node_id"], "{record}");
+    assert_eq!(record["data"]["node_id"], before["node_id"], "{record}");
 
     // Each process exports its own spans: the new node's boot span is read once the new node exported it.
     let spans = wait_for("the recovery's create, the exited birth's target and the new node's boot span are exported", SETTLE, || async {

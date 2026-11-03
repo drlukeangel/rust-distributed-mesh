@@ -4,19 +4,19 @@
 //! recognises the lines already there and appends none twice; a new provider holding lines the old one does not is refused by name, and
 //! nothing switches."
 //!
-//! A provider answers the copy through [`ProviderLines`]: its stores as their lines, each with the
-//! op its writer wrote it with. It stores and returns what it is given and decides nothing (Q109); [`copy`] decides. The copy runs once changes are blocked and the
+//! A provider answers the copy through [`ProviderLines`]: its stores as their lines, each a
+//! CloudEvents 1.0 event with the `id` its writer wrote it with (Q365). It stores and returns what it is given and decides nothing (Q109); [`copy`] decides. The copy runs once changes are blocked and the
 //! outstanding writes have finished (steps 1 and 2), so neither provider changes beneath it.
 //!
 //! [`copy`] first verifies that each of the new provider's stores holds a prefix of the old one's
-//! lines, line for line; a store that does not is refused by name, naming the store, the key and the
-//! ops that differ, never a record, and nothing is appended. It then appends the old provider's lines
-//! after that prefix, store by store in source order.
+//! lines, line for line, byte for byte; a store that does not is refused by name, naming the store,
+//! the subject and the ids that differ, never a record, and nothing is appended. It then appends the old provider's lines
+//! after that prefix, store by store in source order, each as its writer wrote it, its `id` kept.
 //! The new provider's verified lines are the copy's progress: a copy resumed after a lost answer
 //! verifies them again and appends only what follows.
 
 use crate::storage_error::StorageError;
-use crate::store_log::{Line, Op, StoreLog};
+use crate::store_log::{Line, StoreLog};
 use async_trait::async_trait;
 use rdm_core::ChangeId;
 use std::path::Path;
@@ -82,9 +82,9 @@ impl std::fmt::Display for Store {
 /// one. Persistence only: every method stores or returns what it is given.
 #[async_trait]
 pub trait ProviderLines: Send + Sync {
-    /// Every line of `store`, in source order, each with its op.
+    /// Every line of `store`, in source order, each with its `id`.
     async fn lines(&self, store: Store) -> Result<Vec<Line>, StorageError>;
-    /// Append `line` to `store` as its writer wrote it, its op kept.
+    /// Append `line` to `store` as its writer wrote it, byte for byte, its `id` kept.
     async fn append_line(&self, store: Store, line: &Line) -> Result<(), StorageError>;
 }
 
@@ -134,14 +134,9 @@ impl std::fmt::Display for CopyError {
 
 impl std::error::Error for CopyError {}
 
-/// `op` as a refusal names it: `<node id>/<incarnation>#<seq>`.
-fn named(op: Option<&Op>) -> String {
-    op.map(|o| format!("{}/{}#{}", o.node_id, o.incarnation_id, o.seq)).unwrap_or_else(|| "no op".into())
-}
-
-/// Whether `a` and `b` are one write: the same op, format, key and record.
+/// Whether `a` and `b` are one write: the same object, byte for byte, its `id` included.
 fn same_line(a: &Line, b: &Line) -> bool {
-    a.op == b.op && a.format == b.format && a.key == b.key && a.record == b.record
+    a.object == b.object
 }
 
 /// Why `destination`'s lines of `store` are not a prefix of `source`'s, or `None` when they are.
@@ -149,9 +144,9 @@ fn mismatch(run: &CopyRun, store: Store, source: &[Line], destination: &[Line]) 
     let at = destination.iter().zip(source).position(|(d, s)| !same_line(d, s)).or((destination.len() > source.len()).then_some(source.len()))?;
     let d = &destination[at];
     let why = match source.get(at) {
-        None => format!("its {store} store holds line {} at key {:?}, op {}, which the old provider `{}` does not hold (it holds {} lines)", at + 1, d.key, named(d.op.as_ref()), run.source, source.len()),
-        Some(s) if s.op == d.op => format!("its {store} store's line {} at key {:?}, op {}, differs from the old provider `{}`'s line of that op", at + 1, d.key, named(d.op.as_ref()), run.source),
-        Some(s) => format!("its {store} store's line {} is op {} at key {:?} where the old provider `{}` holds op {} at key {:?}", at + 1, named(d.op.as_ref()), d.key, run.source, named(s.op.as_ref()), s.key),
+        None => format!("its {store} store holds line {} at subject {:?}, id {}, which the old provider `{}` does not hold (it holds {} lines)", at + 1, d.subject(), d.attributes.id, run.source, source.len()),
+        Some(s) if s.attributes.id == d.attributes.id => format!("its {store} store's line {} at subject {:?}, id {}, differs from the old provider `{}`'s line of that id", at + 1, d.subject(), d.attributes.id, run.source),
+        Some(s) => format!("its {store} store's line {} is id {} at subject {:?} where the old provider `{}` holds id {} at subject {:?}", at + 1, d.attributes.id, d.subject(), run.source, s.attributes.id, s.subject()),
     };
     Some((at, why))
 }

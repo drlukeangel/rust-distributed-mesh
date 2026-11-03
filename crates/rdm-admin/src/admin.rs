@@ -851,7 +851,7 @@ mod tests {
         assert_eq!(p_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 3, "mesh1's primary writes its three members' records");
         assert_eq!(newest_of(&*created_rows, &other).await, None, "mesh1's primary writes nothing of mesh2's");
         assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 0, "an admin that is not its mesh's primary writes no record");
-        let mesh_rows = crate::store_log::keys_in(&root.dir().join(crate::store_root::MESHES_FILE), "mesh-record").unwrap();
+        let mesh_rows = crate::store_log::subjects_in(&root.dir().join(crate::store_root::MESHES_FILE), "mesh-record").unwrap();
         assert_eq!(mesh_rows, [mesh_id("mesh1").to_string()], "mesh1's primary writes mesh1's record alone");
         // Q becomes mesh1's primary; mesh1.node.1 is replaced by a new node at its path and name.
         crate::node_rows::write_deleted(&*created_rows, &crate::node_rows::WrittenRows::default(), &rpc.node.location(), &rpc.node.node_id).await.ok().expect("the replaced node's record is Deleted");

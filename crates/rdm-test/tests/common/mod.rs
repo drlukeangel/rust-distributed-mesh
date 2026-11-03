@@ -367,6 +367,7 @@ pub async fn store_root_nodes(admin: &AdminSide, template: &LaunchTemplate) -> A
         own_mesh: admin.launcher.mesh.clone(),
         writer: admin.launcher.incarnation.clone(),
         node_id: admin.launcher.node_id.clone(),
+        time: rdm_transport::clock::RafkaTime::unadopted(),
     };
     std::fs::create_dir_all(&scope.data_dir).expect("the admin's data dir");
     rdm_admin::storage_backend::file_backend(template.store_dir.clone()).open(&scope).await.unwrap_or_else(|e| panic!("the store root {} opens: {e}", template.store_dir.display())).nodes

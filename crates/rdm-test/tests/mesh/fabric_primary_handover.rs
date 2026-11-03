@@ -280,8 +280,8 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/self.json")).exists(), "mesh1.node-admin.1's own Node row remains in {mesh1_dir}");
     for (name, id) in mesh1_ids.iter() {
         let row: Value = estate.node_record(id).unwrap_or_else(|| panic!("the Node row of {name:?} ({id}) remains in nodes.jsonl"));
-        assert_eq!((s(&row["record"]["node_id"]), s(&row["record"]["status"])), (id.clone(), "deleted".to_string()), "{name:?}'s Node row is written Deleted: {row}");
-        let newest = row["record"]["births"].as_array().and_then(|b| b.last()).cloned().unwrap_or_default();
+        assert_eq!((s(&row["data"]["node_id"]), s(&row["data"]["status"])), (id.clone(), "deleted".to_string()), "{name:?}'s Node row is written Deleted: {row}");
+        let newest = row["data"]["births"].as_array().and_then(|b| b.last()).cloned().unwrap_or_default();
         assert!(newest["is_primary"].is_null() && newest["is_fabric_primary"].is_null(), "mesh-left took {name:?}'s ({id}) primaries off its record: {row}");
     }
     // states.md: the mesh's `deleting` is entered by the delete-mesh down op, and "one commit stores
@@ -291,9 +291,9 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // for each state it entered).
     let record_at = estate.fabric_store_root().join(rdm_admin::store_root::MESHES_FILE);
     let row: Value = rdm_admin::store_log::read_record(&record_at, "mesh-record", Some(&mesh1_bare)).unwrap_or_else(|| panic!("mesh1's record is not in {}", record_at.display()));
-    assert_eq!(s(&row["record"]["mesh_id"]), mesh1_bare.clone(), "{row}");
+    assert_eq!(s(&row["data"]["mesh_id"]), mesh1_bare.clone(), "{row}");
     let lines = rdm_admin::store_log::read_file(&record_at).unwrap_or_default();
-    assert!(lines.iter().any(|l| l.kind() == "mesh-record" && l.key == mesh1_bare && l.record["state"] == "deleting"), "mesh1's primary stored deleting on its mesh's record: {row}");
+    assert!(lines.iter().any(|l| l.kind() == "mesh-record" && l.subject() == mesh1_bare && l.data["state"] == "deleting"), "mesh1's primary stored deleting on its mesh's record: {row}");
 
     // The mesh.delete Build's executor is the fabric-primary; so is the node.delete's: the section that
     // ran `op` ended complete (Q346).

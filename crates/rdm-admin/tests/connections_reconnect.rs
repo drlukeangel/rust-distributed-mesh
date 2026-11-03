@@ -55,7 +55,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
         // The source, its carrier's connection and its own Proxy to the destination (the previous birth's
         // facts), then the destination made unreachable: a key nobody serves, a port nobody listens on.
         let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), end(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"));
-        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&data_dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&data_dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = Arc::new(ConnectionsWriter::new(me.clone(), storage.clone(), held.clone()));
         writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();

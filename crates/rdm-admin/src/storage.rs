@@ -235,7 +235,7 @@ impl MeshStorage for FileMeshStorage {
         mesh_holding(records, name, &self.records.path().display().to_string())
     }
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
-        self.records.append(&self.log_writer, MESH_FORMAT, record.mesh_id.as_str(), record).await
+        self.records.append(&self.log_writer, MESH_KIND, MESH_FORMAT, record.mesh_id.as_str(), record).await
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
         self.records.latest_of(MESH_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect()
@@ -387,6 +387,27 @@ pub use rdm_node::storage::FileConnectionsStorage;
 mod tests {
     use super::*;
     use crate::node_rows::WrittenRows;
+
+    /// CONTRACT (build.md §5.3; storage.md §2; Q365): a Mesh record's line in the root's
+    /// `meshes.jsonl` is frozen byte for byte: a CloudEvents event whose `source` is its writer, `type`
+    /// `mesh-record`, `dataschema` `mesh-record/4`, `subject` the mesh's id and `data` the whole
+    /// record; its `id` and `time` the write's. A layout that moves moves this cell with it (`durable
+    /// format moved`). Must NOT happen: a line whose attributes or record bytes moved while this cell
+    /// still passes.
+    #[tokio::test]
+    async fn the_meshes_store_line_is_frozen_byte_for_byte() {
+        let d = crate::test_support::tempdir("meshes-store-layout");
+        let writer = crate::store_log::LogWriter::mint();
+        let s = FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d), &writer).await.unwrap();
+        let mesh_id = MeshId::parse(&rdm_core::fixture_crockford60("mesh-1")).unwrap();
+        s.put_mesh(&MeshRecord::new(mesh_id.clone(), "mesh1")).await.unwrap();
+        let file = d.join(crate::store_root::MESHES_FILE);
+        let lines = crate::store_log::read_file(&file).unwrap();
+        assert_eq!(lines.len(), 1);
+        let attributes = crate::store_log::Attributes { id: lines[0].attributes.id.clone(), source: writer.source(), r#type: "mesh-record".into(), subject: Some(mesh_id.to_string()), time: None, dataschema: "mesh-record/4".into(), traceparent: None, tracestate: None };
+        let record = format!(r#"{{"mesh_id":"{mesh_id}","name":"mesh1","state":"pending"}}"#);
+        assert_eq!(String::from_utf8(std::fs::read(&file).unwrap()).unwrap(), String::from_utf8(crate::store_log::encode_line(&attributes, record.as_bytes())).unwrap());
+    }
 
     /// The same script over any nodes store: the facts of one birth, each written from the record its
     /// writer holds, all stand on the record a fresh reader loads whole (storage-whole-records.md,
@@ -633,8 +654,8 @@ mod tests {
         check(&mem.0, &mem.1, &mem.2, true).await;
         let connection_writer = crate::store_log::LogWriter::mint();
         let (root, w, _me): (_, IncarnationId, PathName) = (crate::store_root::StoreRoot::at(&d.join("root")), IncarnationId::mint(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap());
-        check(&FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), &FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), &FileConnectionsStorage::open(&root, &connection_writer).await.unwrap(), true).await;
-        let (m, n, c) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), FileConnectionsStorage::open(&root, &connection_writer).await.unwrap());
+        check(&FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &w, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), &FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &w, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), &FileConnectionsStorage::open(&root, &connection_writer).await.unwrap(), true).await;
+        let (m, n, c) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &w, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &w, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), FileConnectionsStorage::open(&root, &connection_writer).await.unwrap());
         check(&m, &n, &c, false).await;
         c.remove_connection(&down.index()).await.unwrap();
         assert!(c.connections().await.unwrap().is_empty());
@@ -643,8 +664,8 @@ mod tests {
         put_own_in(&d, &w, &own).await.unwrap();
         assert_eq!(own_in(&d, &IncarnationId::mint()).await.unwrap(), Some(own.clone()), "the own row is read back by the next process");
         assert_eq!(own.gossip_addr().map(|a| a.id.to_string()), Some(own.endpoint_id.0.clone()));
-        let op = crate::store_log::Op { node_id: "n".into(), incarnation_id: "i".into(), seq: 1 };
-        std::fs::OpenOptions::new().append(true).open(root.dir().join(crate::store_root::MESHES_FILE)).and_then(|mut f| std::io::Write::write_all(&mut f, &crate::store_log::encode_line(&op, "mesh-record/9", mesh.mesh_id.as_str(), b"{}"))).unwrap();
+        let writer = crate::store_log::LogWriter::mint();
+        std::fs::OpenOptions::new().append(true).open(root.dir().join(crate::store_root::MESHES_FILE)).and_then(|mut f| std::io::Write::write_all(&mut f, &crate::store_log::encode_line(&crate::store_log::Attributes::of(&writer, "mesh-record", "mesh-record/9", mesh.mesh_id.as_str()), b"{}"))).unwrap();
         assert!(matches!(m.mesh(&mesh.mesh_id).await, Err(StorageError::Unrecognised { .. })));
     }
 
@@ -748,7 +769,7 @@ mod tests {
         let mut record = crate::model::Node::allocated(from.location(), from.mesh.clone(), &from.r#type);
         record.node_id = from.node_id.clone();
         record.status = from.status;
-        let lines = || crate::store_log::read_file(&root.dir().join(crate::store_root::NODES_FILE)).unwrap().iter().filter(|l| l.kind() == "node-record" && l.key == from.node_id.as_str()).count();
+        let lines = || crate::store_log::read_file(&root.dir().join(crate::store_root::NODES_FILE)).unwrap().iter().filter(|l| l.kind() == "node-record" && l.subject() == from.node_id.as_str()).count();
         let before = lines();
         let (moved, written) = crate::node_rows::move_row(&file, &first, &me, &record, &from.location(), &to).await.expect("the rename is written");
         assert_eq!((moved, written.map(|r| r.location())), (crate::node_rows::Moved::Renamed, Some(to.clone())));
@@ -781,8 +802,8 @@ mod tests {
         let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
         let (data1, data2) = (d.join("admin-1-1-data"), d.join("admin-2-1-data"));
         let (inc1, inc2) = (IncarnationId::mint(), IncarnationId::mint());
-        let (n1, n2) = (FileNodesStorage::open(&data1, &root, "mesh1", &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc1)).await.unwrap(), FileNodesStorage::open(&data2, &root, "mesh2", &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc2)).await.unwrap());
-        let (m1, m2) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc1)).await.unwrap(), FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc2)).await.unwrap());
+        let (n1, n2) = (FileNodesStorage::open(&data1, &root, "mesh1", &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &inc1, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), FileNodesStorage::open(&data2, &root, "mesh2", &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &inc2, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
+        let (m1, m2) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &inc1, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &inc2, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
         let writes = async |n: &FileNodesStorage, m: &FileMeshStorage, mesh: &str| {
             let w = WrittenRows::default();
             crate::storage::write_mesh(&*m, None, &MeshRecord::new(MeshId::mint(), mesh)).await.unwrap().expect("each mesh writes its record at a name no mesh holds");
@@ -798,10 +819,10 @@ mod tests {
         let (ids1, ids2) = tokio::join!(writes(&n1, &m1, "mesh1"), writes(&n2, &m2, "mesh2"));
         let records = crate::store_log::latest_in(&root.dir().join(crate::store_root::NODES_FILE)).unwrap();
         for (mesh, ids) in [("mesh1", ids1), ("mesh2", ids2)] {
-            let of_mesh: Vec<String> = records.iter().filter(|((kind, _), l)| kind == "node-record" && l.record["mesh"] == mesh).map(|((_, key), _)| key.clone()).collect();
+            let of_mesh: Vec<String> = records.iter().filter(|((kind, _), l)| kind == "node-record" && l.data["mesh"] == mesh).map(|((_, key), _)| key.clone()).collect();
             assert_eq!(of_mesh, ids, "{mesh}'s records, keyed by node id, in the root's nodes.jsonl");
         }
-        assert_eq!(crate::store_log::keys_in(&root.dir().join(crate::store_root::MESHES_FILE), "mesh-record").unwrap().len(), 2, "one record per mesh");
+        assert_eq!(crate::store_log::subjects_in(&root.dir().join(crate::store_root::MESHES_FILE), "mesh-record").unwrap().len(), 2, "one record per mesh");
         for data in [&data1, &data2] {
             assert!(!data.join(crate::store_root::MESHES_FILE).exists() && !data.join(crate::store_root::NODES_FILE).exists(), "{} holds a shared record", data.display());
         }
@@ -863,7 +884,7 @@ mod tests {
             assert_eq!(crate::node_rows::record_at(store, &name).await.unwrap().map(|r| r.node_id), Some(z.node_id.clone()), "{backend}: the name is z's");
             if backend == "file" {
                 let lines = crate::store_log::read_file(&root.dir().join(crate::store_root::NODES_FILE)).unwrap();
-                assert_eq!(lines.iter().filter(|l| l.kind() == "node-record" && l.key == x.node_id.as_str()).count(), 2, "x's record and its Withdrawn record both stand as lines");
+                assert_eq!(lines.iter().filter(|l| l.kind() == "node-record" && l.subject() == x.node_id.as_str()).count(), 2, "x's record and its Withdrawn record both stand as lines");
             }
         }
     }
@@ -952,8 +973,8 @@ mod tests {
         let mut held = FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap().runtimes().await.unwrap();
         held.sort_by_key(|r| r.incarnation_id.to_string());
         assert_eq!(held, [a.clone(), b.clone()], "two births, two rows; a repeated put is the same row");
-        let op = crate::store_log::Op { node_id: "n".into(), incarnation_id: "i".into(), seq: 1 };
-        std::fs::OpenOptions::new().append(true).open(root.dir().join(crate::store_root::NODES_FILE)).and_then(|mut f| std::io::Write::write_all(&mut f, &crate::store_log::encode_line(&op, "node-runtime/9", &a.key(), b"{}"))).unwrap();
+        let writer = crate::store_log::LogWriter::mint();
+        std::fs::OpenOptions::new().append(true).open(root.dir().join(crate::store_root::NODES_FILE)).and_then(|mut f| std::io::Write::write_all(&mut f, &crate::store_log::encode_line(&crate::store_log::Attributes::of(&writer, "node-runtime", "node-runtime/9", &a.key()), b"{}"))).unwrap();
         assert!(matches!(n.runtimes().await, Err(StorageError::Unrecognised { .. })));
     }
 

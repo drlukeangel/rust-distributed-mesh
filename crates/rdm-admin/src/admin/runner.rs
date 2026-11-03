@@ -2044,7 +2044,7 @@ mod tests {
         let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh1_id, "mesh1.node-admin.1", Arc::new(time.clone()), vec![], &[]).await.unwrap();
         let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() }, vec![]).await.unwrap();
         let providers = crate::storage_backend::TopologyStorageProviders::file(dir.clone());
-        let scope = crate::storage_backend::StorageScope { data_dir: dir.clone(), fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: incarnation.clone(), node_id: node_id.clone() };
+        let scope = crate::storage_backend::StorageScope { data_dir: dir.clone(), fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: incarnation.clone(), node_id: node_id.clone(), time: rdm_transport::clock::RafkaTime::unadopted() };
         let topology_storage = crate::storage_backend::TopologyStorageHandle::open(&providers, "file", scope).await.unwrap();
         let storage_changes = Arc::new(crate::storage_change::StorageChanges::new(topology_storage, providers, fabric_id.clone(), node_id.clone()));
         let node_rpc = crate::node_rpc::ProcessNodeRpc::new(Arc::new(rdm_transport::LiveNodeResolver::default()), ep.clone());

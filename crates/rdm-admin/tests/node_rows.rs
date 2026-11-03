@@ -602,7 +602,7 @@ fn a_node_lets_go_only_of_its_own_row() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let dir = std::env::temp_dir().join(format!("node-rows-own-{}", NodeId::mint()));
-        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rdm_admin::storage::FileNodesStorage::open(&dir, &rdm_admin::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap()))];
+        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rdm_admin::storage::FileNodesStorage::open(&dir, &rdm_admin::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap()))];
         for (kind, store) in stores {
             let id = NodeId::mint();
             let held = NodeRow { r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: "mesh1.node".into(), name: "1".into(), node_id: id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };

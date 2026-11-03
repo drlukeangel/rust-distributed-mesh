@@ -892,14 +892,14 @@ impl Estate {
             &self.fabric_store_root().join(rdm_admin::store_root::NODES_FILE),
             "node-properties", Some(node_id.as_str()),
         )?;
-        let properties: rdm_node::node_records::NodeProperties = serde_json::from_value(stored["record"].clone())
+        let properties: rdm_node::node_records::NodeProperties = serde_json::from_value(stored["data"].clone())
             .expect("complete node-owned properties");
         assert_eq!(&properties.birth.node_id, node_id, "property record matches its node ID index");
         Some(properties)
     }
 
     /// The latest record of `node_id` in the root's `nodes.jsonl` (R-SR1), as
-    /// `{"format", "key", "record"}`; `None` while there is none, or while the file cannot be read whole.
+    /// `{"type", "subject", "dataschema", "data"}`; `None` while there is none, or while the file cannot be read whole.
     pub fn node_record(&self, node_id: &str) -> Option<serde_json::Value> {
         rdm_admin::store_log::read_record(&self.fabric_store_root().join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id))
     }

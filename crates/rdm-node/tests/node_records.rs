@@ -553,7 +553,7 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
     let providers = NodeStorageProviders::new()
         .register("file", Arc::new(FileNodeBackend::at(&source)))
         .register("target", Arc::new(FileNodeBackend::at(&destination)));
-    let handle = NodeStorageHandle::open(&providers, &launch).await.unwrap();
+    let handle = NodeStorageHandle::open(&providers, &launch, &rdm_transport::clock::RafkaTime::unadopted()).await.unwrap();
     let writer = NodePropertyWriter::new(handle.nodes(), || "file".into());
     let door = rdm_node::store_log::write_door::arm(
         &source

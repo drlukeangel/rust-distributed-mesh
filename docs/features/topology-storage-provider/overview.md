@@ -43,7 +43,7 @@ one backend are two names. A node moves only between providers its own executabl
 | `rdm-client` | `Fabrics::update_storage`, `FabricView`, `NodeView`, `CallEnd` | what a caller sends and reads |
 
 `file` is registered by every RDM binary: one append-only JSONL file per store under the fabric's
-root in `RDM_STORE_DIR` (`<store dir>/<fabric id>/`), with its `layout` marker. A name
+root in `RDM_STORE_DIR` (`<store dir>/<fabric id>/`), with its `layout` marker, every line a CloudEvents 1.0 event. A name
 an executable does not register refuses that executable's start by name (`RDM_TOPOLOGY_STORAGE_PROVIDER
 names topology storage provider `<name>`, which this executable does not register (it registers:
 ...)`).

@@ -24,20 +24,19 @@ fn writer(tag: &str) -> LogWriter {
     WRITERS.lock().unwrap().entry(tag.to_string()).or_insert_with(LogWriter::mint).clone()
 }
 
-fn op_of(w: &LogWriter, seq: u64) -> Op {
-    Op { node_id: w.node_id.to_string(), incarnation_id: w.incarnation_id.to_string(), seq }
+/// The attributes of a write of a `rec` at `key` by `w`, its `id` minted.
+fn attrs_of(w: &LogWriter, key: &str) -> Attributes {
+    Attributes::of(w, "rec", "rec/1", key)
 }
 
 fn file(tag: &str) -> PathBuf {
     crate::record_store::tempdir(tag).join("nodes.jsonl")
 }
 
-/// Another process's append of `record` at `key` as `w` with `seq`: one write on its own `O_APPEND`
-/// descriptor.
-fn other_appends(path: &Path, w: &LogWriter, seq: u64, key: &str, record: &Rec) {
+/// Another process's append of `record` at `key` as `w`: one write on its own `O_APPEND` descriptor.
+fn other_appends(path: &Path, w: &LogWriter, key: &str, record: &Rec) {
     use std::io::Write as _;
-    let op = op_of(w, seq);
-    let line = line_of(&encode_object(&op, "rec/1", key, &serde_json::to_vec(record).unwrap()));
+    let line = line_of(&encode_object(&attrs_of(w, key), &serde_json::to_vec(record).unwrap()));
     std::fs::OpenOptions::new().append(true).open(path).unwrap().write_all(&line).unwrap();
 }
 
@@ -96,25 +95,79 @@ async fn current(log: &StoreLog, key: &str) -> Option<Rec> {
     log.latest("rec", key).await.unwrap().map(|l| l.decode(log.path()).unwrap())
 }
 
-/// CONTRACT (R-SR3, the line's bytes): an object's `len` is its own byte count between its newlines,
-/// its first field, and its `crc32` the CRC-32 of its bytes before the final `,"crc32":`, its last;
-/// the object is ordinary JSON. Must NOT happen: a `len` that misstates the object, or a checksum over
-/// other bytes. The fixture pins the bytes for ever.
+/// CONTRACT (R-SR3, Q365, the line's bytes): an object is a CloudEvents 1.0 event in its JSON form:
+/// its `len`, its own byte count between its newlines, first; its attributes in their order; `data`,
+/// the whole record, last before its `crc32`, the CRC-32 of its bytes before the final `,"crc32":`.
+/// Must NOT happen: a `len` that misstates the object, a checksum over other bytes, or an attribute
+/// moved. The fixture pins the bytes for ever (durable format moved: the layout `q365`).
 #[test]
 fn a_line_states_its_own_length_first_and_its_checksum_last() {
     assert_eq!(crc32(b"123456789"), 0xCBF4_3926, "CRC-32 (IEEE) check value");
-    let op = Op { node_id: "n".into(), incarnation_id: "i".into(), seq: 1 };
-    let obj = encode_object(&op, "rec/1", "k", br#"{"name":"a","n":1}"#);
-    assert_eq!(String::from_utf8(obj.clone()).unwrap(), r#"{"len":135,"op":{"node_id":"n","incarnation_id":"i","seq":1},"format":"rec/1","key":"k","record":{"name":"a","n":1},"crc32":"ead78455"}"#);
-    assert_eq!(obj.len(), 135);
-    assert_eq!(crc32(&obj[..obj.len() - 20]), 0xead7_8455, "the checksum covers the bytes before the final ,\"crc32\":");
+    let at = |subject: &str| Attributes { id: EventId::parse("0190a8f0-1234-7abc-8def-0123456789ab").unwrap(), source: "rdm://f/n/i".into(), r#type: "rec".into(), subject: Some(subject.into()), time: Some("2026-11-03T00:00:00.000Z".into()), dataschema: "rec/1".into(), traceparent: None, tracestate: None };
+    let obj = encode_object(&at("k"), br#"{"name":"a","n":1}"#);
+    assert_eq!(String::from_utf8(obj.clone()).unwrap(), r#"{"len":262,"specversion":"1.0","id":"0190a8f0-1234-7abc-8def-0123456789ab","source":"rdm://f/n/i","type":"rec","subject":"k","time":"2026-11-03T00:00:00.000Z","datacontenttype":"application/json","dataschema":"rec/1","data":{"name":"a","n":1},"crc32":"c3f681c0"}"#);
+    assert_eq!(obj.len(), 262);
+    assert_eq!(crc32(&obj[..obj.len() - 20]), 0xc3f6_81c0, "the checksum covers the bytes before the final ,\"crc32\":");
     let v: serde_json::Value = serde_json::from_slice(&obj).unwrap();
-    assert_eq!(v["len"], 135);
+    assert_eq!((v["len"].as_u64(), v["specversion"].as_str(), v["data"]["n"].as_u64()), (Some(262), Some("1.0"), Some(1)));
     for n in 0..400 {
-        let obj = encode_object(&op, "rec/1", &"k".repeat(n), b"{}");
+        let obj = encode_object(&at(&"k".repeat(n)), b"{}");
         let line = verify(&obj, 0, &Formats::new().with::<serde_json::Value>("rec/1")).unwrap_or_else(|e| panic!("{n}: {e}"));
-        assert_eq!(line.key.len(), n);
+        assert_eq!(line.subject().len(), n);
+        assert_eq!(line.object, obj, "the line holds its object byte for byte");
     }
+}
+
+/// CONTRACT (Q365: every line of every store is a CloudEvents event: the record in `data`, its key in
+/// `subject`, its writer in `source`, the write in `id` and `time`, its kind and schema version in
+/// `type` and `dataschema`): a write by a writer holding rafka-time reads back with each attribute, its
+/// `time` that rafka-time; a writer holding none writes no `time`; two writes have two ids; a line
+/// whose `dataschema` the store does not read, or that is not a CloudEvents event (the `r-sr1` envelope
+/// of `op`, `format`, `key` and `record`), refuses the read by name. Must NOT happen: a `time` from any
+/// other clock, or an older line read as a value.
+#[tokio::test]
+async fn every_line_is_a_cloudevents_event_read_back_whole() {
+    let path = file("store-log-cloudevents");
+    let time = rdm_transport::clock::RafkaTime::unadopted();
+    time.adopt(1_762_128_000_000);
+    let held = LogWriter::new(&crate::model::FabricId::mint(), &crate::model::NodeId::mint(), &crate::model::IncarnationId::mint(), &time);
+    let log = reopen(&path).await.unwrap();
+    log.append(&held, "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 2)).await.unwrap();
+    let lines = read_file(&path).unwrap();
+    let first: serde_json::Value = serde_json::from_slice(&lines[0].object).unwrap();
+    assert_eq!(first["specversion"], "1.0");
+    assert_eq!(first["source"], held.source().as_str());
+    assert_eq!((first["type"].as_str(), first["subject"].as_str(), first["dataschema"].as_str(), first["datacontenttype"].as_str()), (Some("rec"), Some("k"), Some("rec/1"), Some("application/json")));
+    assert!(first["time"].as_str().is_some_and(|t| t.starts_with("2025-11-03T00:00:00")), "the writer's rafka-time: {first}");
+    assert_eq!(first["data"], serde_json::json!({"name": "a", "n": 1}), "the whole record");
+    EventId::parse(first["id"].as_str().unwrap()).expect("a UUIDv7");
+    assert_eq!(lines[1].attributes.time, None, "a writer holding no rafka-time writes no time");
+    assert_ne!(lines[0].attributes.id, lines[1].attributes.id, "two writes, two ids");
+    assert_eq!(current(&log, "k").await, Some(rec("a", 2)), "the latest line at the subject is current");
+    let unread = file("store-log-other-dataschema");
+    append_raw(&unread, &line_of(&encode_object(&Attributes::of(&writer("a"), "rec", "rec/9", "k"), b"{}")));
+    let e = reopen(&unread).await.unwrap_err().to_string();
+    assert!(e.contains("rec/9") && e.contains("byte offset 1"), "{e}");
+    let older = file("store-log-r-sr1");
+    append_raw(&older, &line_of(br#"{"len":135,"op":{"node_id":"n","incarnation_id":"i","seq":1},"format":"rec/1","key":"k","record":{"name":"a","n":1},"crc32":"ead78455"}"#));
+    let e = reopen(&older).await.unwrap_err().to_string();
+    assert!(e.contains("byte offset 1") && e.contains("does not parse"), "a line of the r-sr1 envelope is no event: {e}");
+}
+
+/// CONTRACT (Q333, Q365: the fold takes the latest line per (`type`, `subject`)): two types at one
+/// subject each keep their own latest line. Must NOT happen: one type's line read as the other's.
+#[tokio::test]
+async fn the_fold_takes_the_latest_line_of_each_type_at_a_subject() {
+    let path = file("store-log-two-types");
+    let formats = Formats::new().with::<Rec>("rec/1").with::<Rec>("other/1");
+    let log = StoreLog::open(&path, formats.clone()).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "other", "other/1", "k", &rec("b", 2)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 3)).await.unwrap();
+    let reopened = StoreLog::open(&path, formats).await.unwrap();
+    assert_eq!(reopened.latest("rec", "k").await.unwrap().unwrap().decode::<Rec>(&path).unwrap(), rec("a", 3));
+    assert_eq!(reopened.latest("other", "k").await.unwrap().unwrap().decode::<Rec>(&path).unwrap(), rec("b", 2));
 }
 
 /// CONTRACT (R-SR3: one `write` on a descriptor opened `O_APPEND`; R-SR1: one file per store, many
@@ -128,7 +181,7 @@ async fn two_writers_appending_at_once_leave_every_line_whole_and_in_order() {
     let run = |log: StoreLog, w: LogWriter| {
         tokio::spawn(async move {
             for n in 0..200u64 {
-                log.append(&w, "rec/1", &format!("{}-{n}", w.node_id), &rec(&"x".repeat((n % 50) as usize), n)).await.unwrap();
+                log.append(&w, "rec", "rec/1", &format!("{}-{n}", w.node_id), &rec(&"x".repeat((n % 50) as usize), n)).await.unwrap();
             }
         })
     };
@@ -137,9 +190,10 @@ async fn two_writers_appending_at_once_leave_every_line_whole_and_in_order() {
     jb.await.unwrap();
     let lines = reopen(&path).await.unwrap().lines().await.unwrap();
     assert_eq!(lines.len(), 400, "every line found whole");
-    for w in [writer("a").node_id.to_string(), writer("b").node_id.to_string()] {
-        let seqs: Vec<u64> = lines.iter().filter_map(|l| l.op.as_ref()).filter(|o| o.node_id == w).map(|o| o.seq).collect();
-        assert_eq!(seqs, (1..=200).collect::<Vec<_>>(), "{w}'s lines stand in the order it wrote them");
+    for w in [writer("a").source(), writer("b").source()] {
+        let mine: Vec<&Line> = lines.iter().filter(|l| l.attributes.source == w).collect();
+        assert_eq!(mine.iter().map(|l| l.decode::<Rec>(&path).unwrap().n).collect::<Vec<_>>(), (0..200).collect::<Vec<_>>(), "{w}'s lines stand in the order it wrote them");
+        assert!(mine.windows(2).all(|p| p[0].attributes.id < p[1].attributes.id), "{w}'s ids are minted in its order");
     }
 }
 
@@ -153,12 +207,12 @@ async fn two_writers_appending_at_once_leave_every_line_whole_and_in_order() {
 async fn a_partial_object_followed_by_another_writers_line_refuses_the_read() {
     let path = file("store-log-partial-then-valid");
     let log = reopen(&path).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("first", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("first", 1)).await.unwrap();
     assert_eq!(current(&log, "k").await, Some(rec("first", 1)));
     let at = std::fs::metadata(&path).unwrap().len() + 1;
-    let partial = line_of(&encode_object(&op_of(&writer("a"), 2), "rec/1", "k", br#"{"name":"second","n":2}"#));
+    let partial = line_of(&encode_object(&attrs_of(&writer("a"), "k"), br#"{"name":"second","n":2}"#));
     append_raw(&path, &partial[..partial.len() - 30]);
-    other_appends(&path, &writer("b"), 1, "k", &rec("third", 3));
+    other_appends(&path, &writer("b"), "k", &rec("third", 3));
     let e = log.latest("rec", "k").await.unwrap_err().to_string();
     assert!(e.contains(&path.display().to_string()) && e.contains(&format!("byte offset {at}")), "refused by name with the file and the offset: {e}");
     assert!(log.latest_of("rec").await.is_err(), "no older or partial view is answered");
@@ -170,11 +224,11 @@ async fn a_partial_object_followed_by_another_writers_line_refuses_the_read() {
 /// object.
 async fn two_lines_then_a_line_still_being_written(path: &Path) -> (StoreLog, Vec<u8>, u64) {
     let log = reopen(path).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
-    log.append(&writer("a"), "rec/1", "j", &rec("a", 2)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "j", &rec("a", 2)).await.unwrap();
     assert_eq!(current(&log, "k").await, Some(rec("a", 1)));
     let at = std::fs::metadata(path).unwrap().len() + 1;
-    let line = line_of(&encode_object(&op_of(&writer("b"), 1), "rec/1", "k", br#"{"name":"b","n":3}"#));
+    let line = line_of(&encode_object(&attrs_of(&writer("b"), "k"), br#"{"name":"b","n":3}"#));
     append_raw(path, &line[..line.len() / 2]);
     (log, line, at)
 }
@@ -243,12 +297,12 @@ async fn a_write_short_of_its_newline_is_finished_and_folded_once_under_either_s
         let faulted = Arc::new(Faulted::default());
         let then: Option<Box<dyn FnOnce() + Send>> = other_first.then(|| {
             let p = path.clone();
-            Box::new(move || other_appends(&p, &writer("b"), 1, "other", &rec("b", 1))) as Box<dyn FnOnce() + Send>
+            Box::new(move || other_appends(&p, &writer("b"), "other", &rec("b", 1))) as Box<dyn FnOnce() + Send>
         });
         faulted.writes.lock().unwrap().push_back(WriteFault::Short { drop: 1, then });
         let log = StoreLog::open_with(&path, formats(), faulted.clone()).await.unwrap();
         let synced = faulted.synced.load(Ordering::SeqCst);
-        log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.expect("the short write is reconciled to success");
+        log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.expect("the short write is reconciled to success");
         assert!(faulted.synced.load(Ordering::SeqCst) > synced, "success follows an fsync");
         let written = faulted.written.lock().unwrap().clone();
         assert_eq!(written.len(), if other_first { 1 } else { 2 }, "the payload is never written again ({other_first})");
@@ -256,7 +310,7 @@ async fn a_write_short_of_its_newline_is_finished_and_folded_once_under_either_s
             assert_eq!(written[1], b"\n", "the reconciliation appends one newline alone");
         }
         let lines = reopen(&path).await.unwrap().lines().await.unwrap();
-        assert_eq!(lines.iter().filter(|l| l.key == "k").count(), 1, "the record is folded once ({other_first})");
+        assert_eq!(lines.iter().filter(|l| l.subject() == "k").count(), 1, "the record is folded once ({other_first})");
         assert_eq!(lines.len(), if other_first { 2 } else { 1 });
     }
 }
@@ -268,10 +322,10 @@ async fn a_write_short_of_its_newline_is_finished_and_folded_once_under_either_s
 async fn a_line_with_a_wrong_checksum_refuses_the_open_by_name() {
     let path = file("store-log-crc");
     let log = reopen(&path).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
     let mut bytes = std::fs::read(&path).unwrap();
     let at = bytes.len() as u64 + 1;
-    let mut obj = encode_object(&op_of(&writer("a"), 2), "rec/1", "k", br#"{"name":"b","n":2}"#);
+    let mut obj = encode_object(&attrs_of(&writer("a"), "k"), br#"{"name":"b","n":2}"#);
     let n = obj.len();
     obj[n - 3] = if obj[n - 3] == b'0' { b'1' } else { b'0' };
     assert!(serde_json::from_slice::<serde_json::Value>(&obj).is_ok(), "the damaged line still parses");
@@ -287,9 +341,9 @@ async fn a_line_with_a_wrong_checksum_refuses_the_open_by_name() {
 async fn a_blank_line_is_skipped() {
     let path = file("store-log-blank");
     let log = reopen(&path).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
     append_raw(&path, b"\n\n\n");
-    log.append(&writer("a"), "rec/1", "j", &rec("b", 2)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "j", &rec("b", 2)).await.unwrap();
     let reopened = reopen(&path).await.unwrap();
     assert_eq!((current(&reopened, "k").await, current(&reopened, "j").await), (Some(rec("a", 1)), Some(rec("b", 2))));
 }
@@ -302,7 +356,7 @@ async fn several_writes_of_one_key_all_stand_and_the_latest_is_current() {
     let path = file("store-log-one-key");
     let log = reopen(&path).await.unwrap();
     for n in 1..=5 {
-        log.append(&writer("a"), "rec/1", "k", &rec("a", n)).await.unwrap();
+        log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", n)).await.unwrap();
     }
     let reopened = reopen(&path).await.unwrap();
     let all: Vec<u64> = reopened.lines().await.unwrap().iter().map(|l| l.decode::<Rec>(&path).unwrap().n).collect();
@@ -318,11 +372,11 @@ async fn several_writes_of_one_key_all_stand_and_the_latest_is_current() {
 async fn a_writers_own_append_does_not_move_its_consumed_offset() {
     let path = file("store-log-aba");
     let (a, b) = (reopen(&path).await.unwrap(), reopen(&path).await.unwrap());
-    a.append(&writer("a"), "rec/1", "first", &rec("a", 1)).await.unwrap();
+    a.append(&writer("a"), "rec", "rec/1", "first", &rec("a", 1)).await.unwrap();
     a.advance().await.unwrap();
     let consumed = a.consumed();
-    b.append(&writer("b"), "rec/1", "k", &rec("b", 1)).await.unwrap();
-    a.append(&writer("a"), "rec/1", "k", &rec("a", 2)).await.unwrap();
+    b.append(&writer("b"), "rec", "rec/1", "k", &rec("b", 1)).await.unwrap();
+    a.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 2)).await.unwrap();
     assert_eq!(a.consumed(), consumed, "A's own append leaves its offset where its fold stood");
     assert_eq!(current(&a, "k").await, Some(rec("a", 2)), "A's next fold reads B's line, then its own: its own is the latest");
     assert_eq!(current(&a, "first").await, Some(rec("a", 1)));
@@ -340,11 +394,11 @@ async fn a_damaged_acknowledged_record_refuses_the_reopen_and_leaves_the_bytes()
     for (damage, last) in [("json", true), ("json", false), ("len", true), ("len", false)] {
         let path = file("store-log-damaged");
         let log = reopen(&path).await.unwrap();
-        log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
+        log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
         let at = std::fs::metadata(&path).unwrap().len() + 1;
-        log.append(&writer("a"), "rec/1", "k", &rec("b", 2)).await.unwrap();
+        log.append(&writer("a"), "rec", "rec/1", "k", &rec("b", 2)).await.unwrap();
         if !last {
-            log.append(&writer("a"), "rec/1", "j", &rec("c", 3)).await.unwrap();
+            log.append(&writer("a"), "rec", "rec/1", "j", &rec("c", 3)).await.unwrap();
         }
         let mut bytes = std::fs::read(&path).unwrap();
         let i = at as usize;
@@ -373,20 +427,20 @@ async fn a_damaged_acknowledged_record_refuses_the_reopen_and_leaves_the_bytes()
 async fn a_valid_last_object_missing_only_its_newline_is_ended_at_open_and_folded_once() {
     let path = file("store-log-unended");
     let log = reopen(&path).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
-    let line = line_of(&encode_object(&op_of(&writer("a"), 2), "rec/1", "k", br#"{"name":"b","n":2}"#));
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
+    let line = line_of(&encode_object(&attrs_of(&writer("a"), "k"), br#"{"name":"b","n":2}"#));
     append_raw(&path, &line[..line.len() - 1]);
     let faulted = Arc::new(Faulted::default());
     let reopened = StoreLog::open_with(&path, formats(), faulted.clone()).await.unwrap();
     assert_eq!(faulted.written.lock().unwrap().clone(), vec![b"\n".to_vec()], "one newline alone ends it");
     assert_eq!(faulted.synced.load(Ordering::SeqCst), 1, "fsynced before the open completed");
     assert_eq!(current(&reopened, "k").await, Some(rec("b", 2)), "the object is kept and current");
-    reopened.append(&writer("a"), "rec/1", "j", &rec("c", 3)).await.unwrap();
+    reopened.append(&writer("a"), "rec", "rec/1", "j", &rec("c", 3)).await.unwrap();
     let lines = reopen(&path).await.unwrap().lines().await.unwrap();
-    assert_eq!(lines.iter().map(|l| l.op.as_ref().unwrap().seq).collect::<Vec<_>>(), vec![1, 2, 3], "folded once each, the later write after it");
+    assert_eq!(lines.iter().map(|l| l.decode::<Rec>(&path).unwrap().n).collect::<Vec<_>>(), vec![1, 2, 3], "folded once each, the later write after it");
 }
 
-/// CONTRACT (R-SR3: the writer reconciles its pending append by its `op`; "a complete valid object
+/// CONTRACT (R-SR3: the writer reconciles its pending append by its object, its `id` making it unique; "a complete valid object
 /// missing only its terminator is finished with one newline and fsync"): the same unended tail, met by
 /// its own writer's reconciliation instead of an open, has the same outcome: one newline alone, an
 /// fsync, the record folded once. Must NOT happen: the payload written again.
@@ -396,7 +450,7 @@ async fn the_same_unended_tail_reconciled_by_its_writer_has_the_same_outcome() {
     let faulted = Arc::new(Faulted::default());
     faulted.writes.lock().unwrap().push_back(WriteFault::Short { drop: 1, then: None });
     let log = StoreLog::open_with(&path, formats(), faulted.clone()).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
     let written = faulted.written.lock().unwrap().clone();
     assert_eq!(written.len(), 2);
     assert_eq!(written[1], b"\n");
@@ -416,23 +470,23 @@ async fn a_malformed_short_write_refuses_without_retrying_its_payload() {
         let faulted = Arc::new(Faulted::default());
         let then: Option<Box<dyn FnOnce() + Send>> = other_after.then(|| {
             let p = path.clone();
-            Box::new(move || other_appends(&p, &writer("b"), 1, "other", &rec("b", 1))) as Box<dyn FnOnce() + Send>
+            Box::new(move || other_appends(&p, &writer("b"), "other", &rec("b", 1))) as Box<dyn FnOnce() + Send>
         });
         faulted.writes.lock().unwrap().push_back(WriteFault::Short { drop: 30, then });
         let log = StoreLog::open_with(&path, formats(), faulted.clone()).await.unwrap();
-        let e = log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap_err().to_string();
+        let e = log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap_err().to_string();
         assert!(e.contains("indeterminate") && e.contains("partial object"), "{other_after}: {e}");
         let bytes = std::fs::read(&path).unwrap();
-        assert!(log.append(&writer("a"), "rec/1", "j", &rec("c", 2)).await.is_err(), "{other_after}: the next write is refused while the append is pending");
+        assert!(log.append(&writer("a"), "rec", "rec/1", "j", &rec("c", 2)).await.is_err(), "{other_after}: the next write is refused while the append is pending");
         assert_eq!(faulted.written.lock().unwrap().len(), 1, "{other_after}: the payload is never written again");
         assert_eq!(std::fs::read(&path).unwrap(), bytes, "{other_after}: no byte is appended or removed");
         assert!(reopen(&path).await.is_err(), "{other_after}: the file refuses an open by name");
     }
 }
 
-/// CONTRACT (R-SR3: "a separate write gets a new sequence even when its payload is identical. Equal
+/// CONTRACT (R-SR3: "a separate write gets a new id even when its payload is identical. Equal
 /// payloads never identify the pending operation"): two writes of one identical record at one key are
-/// two lines with two `op`s; a second write that reported zero bytes is found absent by its own `op`,
+/// two lines with two `id`s; a second write that reported zero bytes is found absent by its own `id`,
 /// never mistaken for the first, and written again. Must NOT happen: the first write accepted as the
 /// second's.
 #[tokio::test]
@@ -440,86 +494,83 @@ async fn identical_payloads_are_distinct_writes_and_reconciliation_never_takes_t
     let path = file("store-log-identical");
     let faulted = Arc::new(Faulted::default());
     let log = StoreLog::open_with(&path, formats(), faulted.clone()).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("same", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("same", 1)).await.unwrap();
     faulted.writes.lock().unwrap().push_back(WriteFault::Zero);
-    log.append(&writer("a"), "rec/1", "k", &rec("same", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("same", 1)).await.unwrap();
     let lines = reopen(&path).await.unwrap().lines().await.unwrap();
     assert_eq!(lines.len(), 2, "two writes, two lines");
-    assert_eq!(lines.iter().map(|l| l.op.as_ref().unwrap().seq).collect::<Vec<_>>(), vec![1, 2], "two ops");
-    assert_eq!(lines[0].record, lines[1].record, "one identical payload");
+    assert_ne!(lines[0].attributes.id, lines[1].attributes.id, "two ids");
+    assert_eq!(lines[0].data, lines[1].data, "one identical payload");
 }
 
 /// CONTRACT (R-SR3: "Short writes and fsync failures are indeterminate, never success"; reconciliation
-/// by `op`): a write whose fsync failed answers indeterminate, never success; the store's next
-/// reconciliation finds the line whole by its `op`, fsyncs it and accepts it without writing it again.
+/// by its object): a write whose fsync failed answers indeterminate, never success; the store's next
+/// reconciliation finds the line whole by its object, fsyncs it and accepts it without writing it again.
 /// Must NOT happen: success answered after the failed fsync, or the line written twice.
 #[tokio::test]
-async fn a_failed_fsync_answers_indeterminate_and_reconciles_by_op() {
+async fn a_failed_fsync_answers_indeterminate_and_reconciles_by_its_object() {
     let path = file("store-log-fsync");
     let faulted = Arc::new(Faulted::default());
     let log = StoreLog::open_with(&path, formats(), faulted.clone()).await.unwrap();
     faulted.syncs.lock().unwrap().push_back(());
-    let e = log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap_err().to_string();
+    let e = log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap_err().to_string();
     assert!(e.contains("indeterminate") && e.contains("fsync"), "{e}");
     log.reconcile().await.expect("the next reconciliation accepts the line found whole");
-    log.append(&writer("a"), "rec/1", "j", &rec("b", 2)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "j", &rec("b", 2)).await.unwrap();
     assert_eq!(faulted.written.lock().unwrap().len(), 2, "the first line is never written again");
     let lines = reopen(&path).await.unwrap().lines().await.unwrap();
-    assert_eq!(lines.iter().map(|l| (l.key.clone(), l.op.as_ref().unwrap().seq)).collect::<Vec<_>>(), vec![("k".to_string(), 1), ("j".to_string(), 2)]);
+    assert_eq!(lines.iter().map(|l| (l.subject().to_string(), l.decode::<Rec>(&path).unwrap().n)).collect::<Vec<_>>(), vec![("k".to_string(), 1), ("j".to_string(), 2)]);
 }
 
 /// CONTRACT (R-SR3: "If the syscall reported zero bytes written and the intervening bytes validate, the
-/// line may be retried. Retries retain the pending op"): a write that reported zero bytes is written
-/// again with the same bytes, its `op` unchanged, and answers success once. Must NOT happen: the retry
-/// under a new `op`, or the write answered failed.
+/// line may be retried. Retries retain the pending id"): a write that reported zero bytes is written
+/// again with the same bytes, its `id` unchanged, and answers success once. Must NOT happen: the retry
+/// under a new `id`, or the write answered failed.
 #[tokio::test]
-async fn a_zero_byte_write_is_retried_under_its_pending_op() {
+async fn a_zero_byte_write_is_retried_under_its_pending_id() {
     let path = file("store-log-zero");
     let faulted = Arc::new(Faulted::default());
     faulted.writes.lock().unwrap().push_back(WriteFault::Zero);
     let log = StoreLog::open_with(&path, formats(), faulted.clone()).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
     let written = faulted.written.lock().unwrap().clone();
     assert_eq!(written.len(), 2);
-    assert_eq!(written[0], written[1], "the retry writes the same bytes: the same op");
+    assert_eq!(written[0], written[1], "the retry writes the same bytes: the same id");
     let lines = reopen(&path).await.unwrap().lines().await.unwrap();
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0].op.as_ref().unwrap().seq, 1);
+    assert_eq!(line_of(&lines[0].object), written[0], "the line is the retried bytes");
 }
 
-/// CONTRACT (R-SR3: "A writer must not reuse an op after restart: it resumes its sequence from durable
-/// evidence"): a writer's process restarts (nothing of its sequence held in memory) and its next write
-/// continues from the greatest `seq` of its own lines in the file; two stores of one process writing as
-/// one writer never share a `seq`. Must NOT happen: an `op` written twice.
+/// CONTRACT (R-SR3, Q365: no two writes share an `id`): a writer's process restarts, and two stores
+/// of one process write one file as one writer; every write's `id` is new, minted at the write with
+/// nothing read. Must NOT happen: an `id` written twice.
 #[tokio::test]
-async fn a_restart_never_reuses_an_earlier_op() {
+async fn a_restart_never_reuses_an_earlier_id() {
     let path = file("store-log-restart");
     let log = reopen(&path).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 2)).await.unwrap();
-    StoreLog::forget_issued(&path);
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 2)).await.unwrap();
     let restarted = reopen(&path).await.unwrap();
-    let a = writer("a");
-    assert_eq!(restarted.writers().get(&(a.node_id.to_string(), a.incarnation_id.to_string())), Some(&2), "the fold holds the writer's greatest seq");
-    restarted.append(&writer("a"), "rec/1", "k", &rec("a", 3)).await.unwrap();
+    assert_eq!(restarted.sources().get(&writer("a").source()), Some(&2), "the fold counts the writer's lines");
+    restarted.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 3)).await.unwrap();
     let twin = reopen(&path).await.unwrap();
-    twin.append(&writer("a"), "rec/1", "k", &rec("a", 4)).await.unwrap();
-    restarted.append(&writer("a"), "rec/1", "k", &rec("a", 5)).await.unwrap();
-    let seqs: Vec<u64> = reopen(&path).await.unwrap().lines().await.unwrap().iter().map(|l| l.op.as_ref().unwrap().seq).collect();
-    assert_eq!(seqs, vec![1, 2, 3, 4, 5], "every op is new");
+    twin.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 4)).await.unwrap();
+    restarted.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 5)).await.unwrap();
+    let ids: std::collections::BTreeSet<EventId> = reopen(&path).await.unwrap().lines().await.unwrap().iter().map(|l| l.attributes.id.clone()).collect();
+    assert_eq!(ids.len(), 5, "every id is new");
 }
 
 /// CONTRACT (proposal §4 "What open costs": "The open records one span per file,
-/// rdm.node.store.resolve.via-fold, with the file's bytes, lines, the latest op per writer and the fold's
+/// rdm.node.store.resolve.via-fold, with the file's bytes, lines, each source's lines and the fold's
 /// duration; a refused fold names its invalid offset and cause"): an open of a populated file records
-/// its bytes, lines, writers and fold duration; an open of a damaged file records `refused` with the
+/// its bytes, lines, sources and fold duration; an open of a damaged file records `refused` with the
 /// offset and the cause. Must NOT happen: an open with no span, or a refusal with no offset.
 #[tokio::test]
 async fn the_open_span_carries_the_files_bytes_lines_and_duration() {
     let path = file("store-log-span");
     let log = reopen(&path).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
-    log.append(&writer("b"), "rec/1", "j", &rec("b", 2)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("b"), "rec", "rec/1", "j", &rec("b", 2)).await.unwrap();
     let spans = capture_spans(|| async { reopen(&path).await.unwrap() }).await;
     let open = spans.named(OPEN_SPAN);
     let len = std::fs::metadata(&path).unwrap().len().to_string();
@@ -527,7 +578,7 @@ async fn the_open_span_carries_the_files_bytes_lines_and_duration() {
     assert_eq!(open.1.get("lines").map(String::as_str), Some("2"), "{open:?}");
     let mut expected = vec![format!("{}:1", writer("a")), format!("{}:1", writer("b"))];
     expected.sort();
-    assert_eq!(open.1.get("writers"), Some(&expected.join(",")), "{open:?}");
+    assert_eq!(open.1.get("sources"), Some(&expected.join(",")), "{open:?}");
     assert!(open.1.contains_key("duration") && open.1.get("outcome").map(String::as_str) == Some("folded"), "{open:?}");
     let at = std::fs::metadata(&path).unwrap().len() + 1;
     append_raw(&path, b"\n{\"len\":5}\n");
@@ -546,12 +597,12 @@ async fn the_open_span_carries_the_files_bytes_lines_and_duration() {
 async fn a_store_opened_on_its_first_read_folds_nothing_at_open_and_its_first_read_refuses_by_name() {
     let path = file("store-log-first-read");
     let log = reopen(&path).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
     let at = std::fs::metadata(&path).unwrap().len() + 1;
     append_raw(&path, b"\n{\"len\":5}\n");
     let written = std::fs::read(&path).unwrap();
     let opened = StoreLog::open_on_first_read(&path, formats()).await.expect("the open reads nothing");
-    assert_eq!((opened.consumed(), opened.writers().len()), (0, 0), "the fold has read nothing");
+    assert_eq!((opened.consumed(), opened.sources().len()), (0, 0), "the fold has read nothing");
     let e = opened.latest_of("rec").await.expect_err("the first read folds the file and meets the line").to_string();
     assert!(e.contains("nodes.jsonl") && e.contains(&format!("byte offset {at}")), "refused by name, naming the file and the offset: {e}");
     let e = opened.latest("rec", "k").await.unwrap_err().to_string();
@@ -560,24 +611,23 @@ async fn a_store_opened_on_its_first_read_folds_nothing_at_open_and_its_first_re
     assert_eq!(std::fs::read(&path).unwrap(), written, "the file is left as written");
 }
 
-/// CONTRACT (rdm#89; R-SR3: "A writer must not reuse an op after restart: it resumes its sequence from
-/// durable evidence"): a writer's lines stand in a file its process holds no sequence of (a restart, or
-/// a storage change's copy onto a file it never wrote); a store opened on its first read appends for it
-/// with nothing read before: the append folds the file first, and its line continues the writer's
-/// sequence. Must NOT happen: an `op` written twice.
+/// CONTRACT (rdm#89; R-SR3: a pending append reconciles from the offset its fold consumed): a
+/// writer's lines stand in a file its process never wrote (a restart, or a storage change's copy); a
+/// store opened on its first read appends for it with nothing read before: the append folds the file
+/// first, and its line, under a new `id`, follows them. Must NOT happen: an `id` written twice, or the
+/// append made before the fold.
 #[tokio::test]
-async fn a_writers_first_append_on_a_store_opened_on_its_first_read_resumes_its_sequence() {
+async fn a_writers_first_append_on_a_store_opened_on_its_first_read_folds_the_file_first() {
     let path = file("store-log-first-append");
     let log = reopen(&path).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
-    log.append(&writer("a"), "rec/1", "k", &rec("a", 2)).await.unwrap();
-    StoreLog::forget_issued(&path);
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 2)).await.unwrap();
     let opened = StoreLog::open_on_first_read(&path, formats()).await.unwrap();
-    opened.append(&writer("a"), "rec/1", "k", &rec("a", 3)).await.unwrap();
-    let a = writer("a");
-    assert_eq!(opened.writers().get(&(a.node_id.to_string(), a.incarnation_id.to_string())), Some(&2), "the first append folded the file before it wrote: the writer's greatest seq it read");
-    let seqs: Vec<u64> = reopen(&path).await.unwrap().lines().await.unwrap().iter().map(|l| l.op.as_ref().unwrap().seq).collect();
-    assert_eq!(seqs, vec![1, 2, 3], "the writer's sequence continues: every op is new");
+    opened.append(&writer("a"), "rec", "rec/1", "k", &rec("a", 3)).await.unwrap();
+    assert_eq!(opened.sources().get(&writer("a").source()), Some(&2), "the first append folded the file before it wrote: the writer's lines it read");
+    let lines = reopen(&path).await.unwrap().lines().await.unwrap();
+    assert_eq!(lines.iter().map(|l| l.decode::<Rec>(&path).unwrap().n).collect::<Vec<_>>(), vec![1, 2, 3]);
+    assert_eq!(lines.iter().map(|l| l.attributes.id.clone()).collect::<std::collections::BTreeSet<_>>().len(), 3, "every id is new");
     assert_eq!(current(&opened, "k").await, Some(rec("a", 3)), "its next read folds its own line");
 }
 
@@ -678,7 +728,7 @@ async fn a_cancelled_append_cannot_land_after_a_takeover_write() {
     let door = write_door::arm(&path, "subject");
     let old = {
         let store = store.clone();
-        tokio::spawn(async move { store.append(&writer("regained"), "rec/1", "subject", &rec("old", 1)).await })
+        tokio::spawn(async move { store.append(&writer("regained"), "rec", "rec/1", "subject", &rec("old", 1)).await })
     };
     tokio::time::timeout(std::time::Duration::from_secs(5), door.entered()).await.expect("the old append reaches the disk boundary");
     old.abort();
@@ -686,7 +736,7 @@ async fn a_cancelled_append_cannot_land_after_a_takeover_write() {
     assert!(store.0.append.try_lock().is_err(), "the unresolved provider job still owns ordering after cancellation");
     let takeover = {
         let store = store.clone();
-        tokio::spawn(async move { store.append(&writer("regained"), "rec/1", "subject", &rec("takeover", 2)).await })
+        tokio::spawn(async move { store.append(&writer("regained"), "rec", "rec/1", "subject", &rec("takeover", 2)).await })
     };
     door.release();
     tokio::time::timeout(std::time::Duration::from_secs(5), takeover).await.unwrap().unwrap().unwrap();
@@ -708,7 +758,7 @@ async fn dropping_an_append_fault_releases_its_disk_job() {
     let door = write_door::arm(&path, "subject");
     let put = {
         let store = store.clone();
-        tokio::spawn(async move { store.append(&writer("cleanup"), "rec/1", "subject", &rec("value", 1)).await })
+        tokio::spawn(async move { store.append(&writer("cleanup"), "rec", "rec/1", "subject", &rec("value", 1)).await })
     };
     tokio::time::timeout(std::time::Duration::from_secs(5), door.entered()).await.unwrap();
     drop(door);

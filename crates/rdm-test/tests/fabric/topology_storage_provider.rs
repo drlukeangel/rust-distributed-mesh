@@ -378,7 +378,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     let subject_after = after.iter().find(|v| v.location() == path).cloned().expect("mesh2.node.1 after the change");
     let last_record: Value = rdm_admin::store_log::read_record(&target_root.join(rdm_admin::store_root::NODES_FILE), "node-properties", Some(subject_after.node_id.as_str()))
         .expect("mesh2.node.1's property record is on the new provider");
-    let record_config: BTreeMap<String, String> = serde_json::from_value(last_record["record"]["config"].clone()).expect("a property record carries its whole config map");
+    let record_config: BTreeMap<String, String> = serde_json::from_value(last_record["data"]["config"].clone()).expect("a property record carries its whole config map");
     assert_eq!(subject_after.config, record_config, "mesh2.node.1 carries the config its last property record on {TOPOLOGY_STORAGE_TARGET} names");
     let old = store_lines(&file_root);
     history_carried(&old, &store_lines(&target_root));
@@ -477,7 +477,6 @@ async fn ended(estate: &Estate, change_id: &str) -> Value {
         async move {
             roots.iter().flat_map(|r| std::fs::read_to_string(r.join(rdm_admin::store_root::EVENTS_FILE)).unwrap_or_default().lines().map(String::from).collect::<Vec<_>>())
                 .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
-                .map(|l| l["record"].clone())
                 .find(|e| e["type"] == "rdm.storage.ended" && e["data"]["change_id"] == change_id)
         }
     })
@@ -552,10 +551,10 @@ fn dial(estate: &Estate, from: &str, to: &str) -> Value {
 fn foreign_line(target: &Path) {
     std::fs::create_dir_all(target).unwrap();
     std::fs::write(target.join(rdm_admin::store_root::LAYOUT), format!("{}\n", rdm_admin::store_root::LAYOUT_VALUE)).unwrap();
-    let op = rdm_admin::store_log::Op { node_id: "zzzzzzzzzzz1".into(), incarnation_id: "zzzzzzzzzzz2".into(), seq: 1 };
+    let writer = rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), &rdm_core::IncarnationId::parse("zzzzzzzzzzz2").unwrap(), &rdm_transport::clock::RafkaTime::unadopted());
     // A whole node record (`node-record/4`), as a writer of that store writes one.
     let record = serde_json::to_vec(&rdm_admin::storage::NodeRow::new(rdm_core::PathName::new("mesh9.node", "1").unwrap(), "mesh9", "node", rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), rdm_core::model::NodeStatus::Ready)).unwrap();
-    let line = rdm_admin::store_log::encode_line(&op, "node-record/4", "zzzzzzzzzzz1", &record);
+    let line = rdm_admin::store_log::encode_line(&rdm_admin::store_log::Attributes::of(&writer, "node-record", "node-record/4", "zzzzzzzzzzz1"), &record);
     use std::io::Write;
     std::fs::OpenOptions::new().create(true).append(true).open(target.join(rdm_admin::store_root::NODES_FILE)).unwrap().write_all(&line).unwrap();
 }
@@ -1281,11 +1280,11 @@ async fn every_node_serves_through_a_change(test: &str, provider: &str) {
     let written: Vec<Value> = node_lines_from(&file_after, file_before[NODES].len()).into_iter().chain(node_lines_from(&target_after, file_after[NODES].len())).collect();
     estate.artifact("rows-written.json", &json!(written));
     for (name, (id, _)) in &before {
-        let status = &held.iter().rev().find(|l| l["key"] == id.as_str()).unwrap_or_else(|| panic!("{name:?}: its row before the change"))["record"]["status"];
-        let own: Vec<&Value> = written.iter().filter(|l| l["key"] == id.as_str()).collect();
-        assert!(own.iter().all(|l| l["record"]["status"] == *status && rdm_test::estate::is_location(&l["record"], name)), "{name:?}: every row written during the change records the same node at its (path, name) with the status {status} its row held before: {own:#?}");
+        let status = &held.iter().rev().find(|l| l["subject"] == id.as_str()).unwrap_or_else(|| panic!("{name:?}: its row before the change"))["data"]["status"];
+        let own: Vec<&Value> = written.iter().filter(|l| l["subject"] == id.as_str()).collect();
+        assert!(own.iter().all(|l| l["data"]["status"] == *status && rdm_test::estate::is_location(&l["data"], name)), "{name:?}: every row written during the change records the same node at its (path, name) with the status {status} its row held before: {own:#?}");
         let last = own.last().unwrap_or_else(|| panic!("{name:?}: its row records its move: no row of it written during the change"));
-        assert_eq!(last["record"]["topology_storage_provider"], TOPOLOGY_STORAGE_TARGET, "{name:?}: its last row records the provider it writes: {last}");
+        assert_eq!(last["data"]["topology_storage_provider"], TOPOLOGY_STORAGE_TARGET, "{name:?}: its last row records the provider it writes: {last}");
     }
     let stopped_ns = now_ns();
     estate.stop().await;
@@ -1349,8 +1348,8 @@ async fn a_previous_provider_remains_unchanged_after_cutover() {
     }
     let fabric_on = |root: &Path| rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::FABRIC_FILE), "fabric-record", None).unwrap_or_else(|| panic!("the Fabric row reads on {}", root.display()));
     let (old, new) = (fabric_on(&file_root), fabric_on(&target_root));
-    assert_eq!((&old["record"]["topology_storage_provider"], old["record"]["previous_topology_storage_providers"].as_array().map_or(0, Vec::len)), (&json!(FILE), 0), "the Fabric row on {FILE} is the one before the switch: {old}");
-    assert_eq!((&new["record"]["topology_storage_provider"], &new["record"]["previous_topology_storage_providers"]), (&json!(TOPOLOGY_STORAGE_TARGET), &json!([FILE])), "the Fabric row on {TOPOLOGY_STORAGE_TARGET} names it, {FILE} previous: {new}");
+    assert_eq!((&old["data"]["topology_storage_provider"], old["data"]["previous_topology_storage_providers"].as_array().map_or(0, Vec::len)), (&json!(FILE), 0), "the Fabric row on {FILE} is the one before the switch: {old}");
+    assert_eq!((&new["data"]["topology_storage_provider"], &new["data"]["previous_topology_storage_providers"]), (&json!(TOPOLOGY_STORAGE_TARGET), &json!([FILE])), "the Fabric row on {TOPOLOGY_STORAGE_TARGET} names it, {FILE} previous: {new}");
     for v in &views {
         assert!(rdm_admin::store_log::read_record(&file_root.join(NODES), "node-record", Some(v.node_id.as_str())).is_some(), "{:?}: its row reads on {FILE}", v.name);
     }

@@ -686,7 +686,7 @@ fn investigated(estate: &Estate, birth: &(String, String)) -> Vec<Value> {
     rdm_admin::store_log::read_file(&file)
         .unwrap_or_default()
         .into_iter()
-        .map(|l| l.record)
+        .filter_map(|l| serde_json::from_slice::<Value>(&l.object).ok())
         .filter(|e| e["type"] == "rdm.node.investigated" && e["subject"] == birth.0.as_str() && e["data"]["incarnation"] == birth.1.as_str())
         .map(|e| e["data"].clone())
         .collect()
@@ -740,7 +740,7 @@ async fn until_unheard(estate: &mut Estate, known: &[Admin], births: &[(PathName
             // offline is read there; pending-reconnect from any admin that answers.
             let mut judge = entry.clone();
             if true_offline {
-                if let (Some(v), Some(mesh)) = (views_at(estate, &entry).await, births.first().and_then(|(_, id)| estate.node_record(id)).and_then(|r| r["record"]["mesh"].as_str().map(str::to_string))) {
+                if let (Some(v), Some(mesh)) = (views_at(estate, &entry).await, births.first().and_then(|(_, id)| estate.node_record(id)).and_then(|r| r["data"]["mesh"].as_str().map(str::to_string))) {
                     if let Some(primary) = v.iter().find(|n| n["type"] == "node-admin" && n["mesh"] == mesh && n["is_primary"] == true && n["status"] == "ready").and_then(admin_of) {
                         judge = primary;
                     }
@@ -748,7 +748,7 @@ async fn until_unheard(estate: &mut Estate, known: &[Admin], births: &[(PathName
             }
             let mut judges = vec![judge.clone()];
             if direct && !true_offline {
-                if let (Some(v), Some(mesh)) = (views_at(estate, &entry).await, births.first().and_then(|(_, id)| estate.node_record(id)).and_then(|r| r["record"]["mesh"].as_str().map(str::to_string))) {
+                if let (Some(v), Some(mesh)) = (views_at(estate, &entry).await, births.first().and_then(|(_, id)| estate.node_record(id)).and_then(|r| r["data"]["mesh"].as_str().map(str::to_string))) {
                     let own: Vec<Admin> = v.iter().filter(|n| n["type"] == "node-admin" && n["mesh"] == mesh && n["status"] == "ready").filter_map(admin_of).filter(|a| known.contains(a)).collect();
                     if !own.is_empty() {
                         judges = own;

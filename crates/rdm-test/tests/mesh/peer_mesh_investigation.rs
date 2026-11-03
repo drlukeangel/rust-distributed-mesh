@@ -164,9 +164,9 @@ fn result(dir: &std::path::Path, v: Value) {
 /// path.name `node`'s name is held by (`None`: released).
 fn stored_birth(root: &std::path::Path, node: &PathName, node_id: &str) -> (Option<String>, Option<String>) {
     let record = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id));
-    let status = record.as_ref().map(|r| s(&r["record"]["status"]));
+    let status = record.as_ref().map(|r| s(&r["data"]["status"]));
     // The name is read from the record (i152 s5: no name claim): the node id whose live record holds the pair.
-    let name = record.filter(|r| r["record"]["path"] == node.path.as_str() && r["record"]["name"] == node.name.as_str() && r["record"]["status"] != "deleted").map(|r| s(&r["record"]["node_id"]));
+    let name = record.filter(|r| r["data"]["path"] == node.path.as_str() && r["data"]["name"] == node.name.as_str() && r["data"]["status"] != "deleted").map(|r| s(&r["data"]["node_id"]));
     (status, name)
 }
 

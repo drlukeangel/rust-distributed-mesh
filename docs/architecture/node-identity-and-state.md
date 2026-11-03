@@ -43,8 +43,8 @@ The lifecycle architecture rests on five design rules:
 
 ## 2. A node is an ENTITY, and it has three ids
 
-**A node is one entity with one record** (Q323) in `nodes.jsonl`, keyed by its node ID, append-only, in two parts:
-the mesh-primary's whole row line and the node's own line, the reader folding the latest of each (Q333).
+**A node is one entity with one record** (Q323) in `nodes.jsonl`, keyed by its node ID, each line's `subject`, append-only, in two parts:
+the mesh-primary's whole row line (`type` `node-record`) and the node's own line (`type` `node-properties`), the reader folding the latest of each (Q333).
 The node writes its own properties in it: config, tags, bound addresses and
 application declarations. Its mesh-primary writes the status and role flags in the same record,
 beside identity, explicit mesh and type, certificates and executable facts.

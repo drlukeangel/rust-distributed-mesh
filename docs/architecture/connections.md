@@ -210,7 +210,7 @@ For one source/destination/alpn triple there are therefore at most two current i
 
 A later event of the same kind replaces that kind's index row. The raw log still contains the older
 events until normal raw-log retention removes them. In RDM's file backend the raw log and the current
-view are one file, `connections.jsonl`, the view the fold's latest line per key.
+view are one file, `connections.jsonl`, the view the fold's latest line per `subject`.
 
 Example raw history:
 

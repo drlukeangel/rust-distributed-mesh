@@ -233,7 +233,7 @@ fn the_day0_admin_writes_its_own_record_at_its_path_name_as_the_first_write_of_i
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&day0.store, &fabric_id).unwrap();
             let reader = rdm_admin::model::IncarnationId::mint();
-            let nodes = rdm_admin::storage::FileNodesStorage::open(&day0.data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
+            let nodes = rdm_admin::storage::FileNodesStorage::open(&day0.data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &reader, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             nodes.record_at(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await.unwrap()
         })
     };
@@ -311,12 +311,12 @@ impl Prepared {
         std::fs::write(data_dir.join("node-key"), hex::encode(key.to_bytes())).unwrap();
         let launched = tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
-            let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::NodeId::mint(), &incarnation)).await.unwrap();
+            let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_core::NodeId::mint(), &incarnation, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             let identity = rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
             rdm_admin::fabric_storage::write_identity(&fabric, &identity).await.unwrap().expect("the fabric's name is free");
-            let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
+            let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &incarnation, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             rdm_admin::storage::write_mesh(&meshes, None, &rdm_admin::storage::MeshRecord { mesh_id: mesh_id.clone(), name: "mesh1".into(), state: rdm_core::status::MeshState::Pending }).await.unwrap().expect("mesh1's name is free");
-            let nodes = rdm_admin::storage::FileNodesStorage::open(&data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
+            let nodes = rdm_admin::storage::FileNodesStorage::open(&data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &incarnation, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             let own = rdm_admin::storage::NodeRecord { mesh: "mesh1".into(),
                 node_id: node_id.clone(),
                 fabric_id: fabric_id.clone(),
@@ -394,7 +394,7 @@ impl Prepared {
                 nodes.write_record(&row).await.unwrap();
                 launched.push((location, node_id));
             }
-            let journal = journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await;
+            let journal = journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &incarnation, &rdm_transport::clock::RafkaTime::unadopted())).await;
             let accepted = rdm_admin::build_state::BuildAccepted {
                 build_id: build_id.clone(),
                 topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", mesh_id.clone()),
@@ -407,7 +407,7 @@ impl Prepared {
         let prepared = Self { dir, store, data_dir, fabric_id, mesh_id, node_id, incarnation, build_id, endpoint_id: EndpointId(key.public().to_string()), launched };
         assert_eq!(fabric_dirs(&prepared.store), vec![prepared.fabric_id.to_string()], "one fabric on the root");
         assert!(rdm_admin::store_log::read_record(&prepared.fabric_row(), "fabric-record", None).is_some(), "the Fabric row stands on the root");
-        assert!(rdm_admin::store_log::read_record(&prepared.store.join(prepared.fabric_id.to_string()).join(rdm_admin::store_root::BUILDS_FILE), "build-record", Some(&format!("{}/accepted", prepared.build_id))).is_some(), "the accepted Build stands on the shared store root as its own record");
+        assert!(rdm_admin::store_log::read_record(&prepared.store.join(prepared.fabric_id.to_string()).join(rdm_admin::store_root::BUILDS_FILE), "build-record", Some(&prepared.build_id.to_string())).is_some(), "the accepted Build stands on the shared store root as its own record");
         assert!(!prepared.data_dir.join("fabric").exists(), "no per-admin Build journal in data_dir");
         prepared
     }
@@ -436,9 +436,9 @@ impl Prepared {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();
             let reader = rdm_admin::model::IncarnationId::mint();
-            let nodes = rdm_admin::storage::FileNodesStorage::open(&self.data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
+            let nodes = rdm_admin::storage::FileNodesStorage::open(&self.data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &reader, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             let row = nodes.record_at(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await.unwrap();
-            let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
+            let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &reader, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             // A birth's address is the node's own part of its record at that birth (Q333).
             let mut contacts = Vec::new();
             for r in rdm_admin::storage::live_records(&meshes, &nodes, "mesh1").await.unwrap() {
@@ -655,7 +655,7 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     assert_eq!(adopted["trace_id"], opened["trace_id"], "the rafka-time adoption is the boot's own story");
     assert_eq!(fabric_dirs(&root.store), vec![root.fabric_id.to_string()], "no second fabric directory");
     let mesh_row = rdm_admin::store_log::read_record(&root.store.join(root.fabric_id.to_string()).join(rdm_admin::store_root::MESHES_FILE), "mesh-record", Some(&root.mesh_id.to_string())).expect("mesh1's row");
-    assert_eq!(mesh_row["record"]["mesh_id"].as_str(), Some(root.mesh_id.to_string().as_str()), "mesh1's row keeps its MeshId: {mesh_row}");
+    assert_eq!(mesh_row["data"]["mesh_id"].as_str(), Some(root.mesh_id.to_string().as_str()), "mesh1's row keeps its MeshId: {mesh_row}");
     let (row, contacts) = root.rows_after();
     let row = row.expect("a row at mesh1.node-admin.1");
     assert_eq!(row.node_id.to_string(), node_id, "mesh1.node-admin.1 is held by the new node.id: {row:?}");
@@ -727,7 +727,7 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     };
     let recreated_id = rdm_admin::model::MeshId::mint().to_string();
     // mesh1 created again: its record at its own id, live under the name.
-    let (err, pid) = refused(&|| append_record(&meshes, held["format"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "state": "pending"})), "mesh1 created again");
+    let (err, pid) = refused(&|| append_record(&meshes, held["dataschema"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "state": "pending"})), "mesh1 created again");
     assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains(&recreated_id), "the refusal names this admin's mesh and the mesh created again under its name: {err}");
     let spans = spans_of(&root.dir, pid);
     let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("the refused start left no storage step: {spans:?}"));
@@ -736,15 +736,16 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     assert_eq!(opened["attributes"]["mesh_id"].as_str(), Some(own_id.as_str()), "the storage step names the mesh id the own row holds: {opened}");
     assert!(opened["attributes"]["error"].as_str().is_some_and(|e| e.contains(&recreated_id)), "the storage step names the refusal and the mesh created again: {opened}");
     // The mesh created again is removed in turn: its record deleted.
-    append_record(&meshes, held["format"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "state": "deleted"}));
-    let (err, _) = refused(&|| append_record(&meshes, held["format"].as_str().unwrap(), &own_id, serde_json::json!({"mesh_id": own_id, "name": "mesh1", "state": "deleted"})), "mesh1 deleted");
+    append_record(&meshes, held["dataschema"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "state": "deleted"}));
+    let (err, _) = refused(&|| append_record(&meshes, held["dataschema"].as_str().unwrap(), &own_id, serde_json::json!({"mesh_id": own_id, "name": "mesh1", "state": "deleted"})), "mesh1 deleted");
     assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains("whose record is deleted"), "the refusal names this admin's mesh as deleted: {err}");
 }
 
-/// Append `record` as one line of the store file `file`, as another writer would.
-fn append_record(file: &std::path::Path, format: &str, key: &str, record: serde_json::Value) {
-    let op = rdm_admin::store_log::Op { node_id: rdm_admin::model::NodeId::mint().to_string(), incarnation_id: rdm_admin::model::IncarnationId::mint().to_string(), seq: 1 };
-    let line = rdm_admin::store_log::encode_line(&op, format, key, &serde_json::to_vec(&record).unwrap());
+/// Append `record` as one line of the store file `file` in `dataschema` at `subject`, as another
+/// writer would.
+fn append_record(file: &std::path::Path, dataschema: &str, subject: &str, record: serde_json::Value) {
+    let r#type = dataschema.split('/').next().unwrap();
+    let line = rdm_admin::store_log::encode_line(&rdm_admin::store_log::Attributes::of(&rdm_admin::store_log::LogWriter::mint(), r#type, dataschema, subject), &serde_json::to_vec(&record).unwrap());
     std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(file).unwrap(), &line).unwrap();
 }
 
@@ -763,7 +764,7 @@ const ADOPTION_CHECK: &str = "rdm.node_admin.fabric.update.via-adoption-check";
 /// The Build journal on `root`, over the root's events store, written as `writer`: what the store
 /// backend opens (`storage_backend.rs`).
 async fn journal_on(root: &rdm_admin::store_root::StoreRoot, writer: &rdm_admin::store_log::LogWriter) -> rdm_admin::build_state::FileJournal {
-    let events = std::sync::Arc::new(rdm_admin::events_storage::FileEventsStorage::open(root, writer).await.unwrap());
+    let events = std::sync::Arc::new(rdm_admin::events_storage::FileEventsStorage::open(root).await.unwrap());
     rdm_admin::build_state::FileJournal::open_on_root(root, writer, events).await.unwrap()
 }
 
@@ -862,13 +863,13 @@ impl Prepared {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let store = rdm_admin::store_root::StoreRoot::open(&root.store, &root.fabric_id).unwrap();
             let writer = rdm_admin::model::IncarnationId::mint();
-            let nodes = rdm_admin::storage::FileNodesStorage::open(&root.dir.join("fixture"), &store, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
+            let nodes = rdm_admin::storage::FileNodesStorage::open(&root.dir.join("fixture"), &store, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             let mut row = nodes.record_at(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await.unwrap().expect("the lost birth's row");
             let birth = row.births.last_mut().unwrap();
             (birth.is_primary, birth.is_fabric_primary) = (Some(1), Some(1));
             nodes.write_record(&row).await.unwrap();
             use rdm_admin::fabric_storage::FabricStorage as _;
-            let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&store, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
+            let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&store, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             let mut record = fabric.fabric().await.unwrap().expect("the Fabric record");
             record.provider = Some(rdm_admin::model::ProviderKind::Process);
             fabric.put_fabric(&record).await.unwrap();
@@ -995,7 +996,7 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
         let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
         let reader = rdm_admin::model::IncarnationId::mint();
-        let writer = rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader);
+        let writer = rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &reader, &rdm_transport::clock::RafkaTime::unadopted());
         let journal = journal_on(&root, &writer).await;
         let converged = match journal.accepted_newest_first().await.unwrap().last() {
             Some(day0) => journal.read_build(day0).await.unwrap().state == rdm_admin::build_state::BuildState::Complete,
@@ -1011,7 +1012,7 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
         let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
         let reader = rdm_admin::model::IncarnationId::mint();
-        journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.facts().await.unwrap().len()
+        journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &reader, &rdm_transport::clock::RafkaTime::unadopted())).await.facts().await.unwrap().len()
     });
     // Nothing precedes the launch's checks (no lock, Q342): the live admin answers them.
     let mut a = adopter(&d.dir, "adopter", &d.store, &fabric_id, &custody);
@@ -1027,8 +1028,8 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
         let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
         let reader = rdm_admin::model::IncarnationId::mint();
-        let nodes = rdm_admin::storage::FileNodesStorage::open(&d.dir.join("reader"), &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
-        let journal = journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await;
+        let nodes = rdm_admin::storage::FileNodesStorage::open(&d.dir.join("reader"), &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &reader, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
+        let journal = journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &reader, &rdm_transport::clock::RafkaTime::unadopted())).await;
         (nodes.record_at(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await.unwrap(), journal.facts().await.unwrap())
     });
     let row = row.expect("the live fabric-primary's row");
@@ -1046,7 +1047,7 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
         let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
         let reader = rdm_admin::model::IncarnationId::mint();
-        journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.facts().await.unwrap()
+        journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &reader, &rdm_transport::clock::RafkaTime::unadopted())).await.facts().await.unwrap()
     });
     assert_eq!(later.len(), builds_before, "a Build was written after the refused launch: {later:?}");
     assert!(live.child.try_wait().unwrap().is_none(), "the live admin is still running");
@@ -1062,7 +1063,7 @@ impl Prepared {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();
             let writer = rdm_admin::model::IncarnationId::mint();
-            let journal = journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await;
+            let journal = journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await;
             let delete = rdm_admin::build_state::BuildAccepted {
                 build_id: rdm_admin::build::BuildId::mint(),
                 topology: rdm_admin::accepted::FabricTopology { created: Vec::new(), pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },
@@ -1071,7 +1072,7 @@ impl Prepared {
             };
             rdm_admin::build_state::accept(&journal, &delete, None, "mesh1.node-admin.1", "fabric.delete").await.unwrap();
             if dead {
-                let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
+                let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
                 let mut m = meshes.mesh_named("mesh1").await.unwrap().expect("mesh1's row");
                 m.state = rdm_core::status::MeshState::Deleted;
                 meshes.put_mesh(&m).await.unwrap();

@@ -558,7 +558,7 @@ async fn many_failed_attempts_grow_the_raw_log_and_hold_one_direct_and_one_proxy
     let pair = format!("{}--{}--{}--", id_at(&estate, &SOURCE).await, id_at(&estate, &DEST).await, hex::encode(control));
     let members: Vec<(&String, &rdm_node::store_log::Line)> = view.iter().filter(|((kind, key), _)| kind == "node-connection" && key.starts_with(&pair)).map(|((_, key), line)| (key, line)).collect();
     assert_eq!(members.iter().map(|(k, _)| k.trim_start_matches(&pair).to_string()).collect::<Vec<_>>(), vec!["direct".to_string(), "proxy".to_string()], "the current view holds one Direct and one Proxy member for the pair: {members:?}");
-    let direct = &members[0].1.record;
+    let direct = &members[0].1.data;
     assert_eq!((direct["state"].as_str(), &direct["id"]), (Some("Failed"), latest), "the Direct member is the latest attempt: {direct}");
     let snap = snapshot(&estate, &*SOURCE);
     let held: Vec<&Value> = snap["own_latest_directs"].as_array().into_iter().flatten().filter(|d| rdm_test::estate::is_location(&d["destination"], &*DEST) && d["alpn"] == serde_json::json!(control)).collect();

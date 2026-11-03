@@ -248,6 +248,86 @@ impl fmt::Display for EndpointId {
     }
 }
 
+/// The identity of one write to a store, every store line's `id` (Q365), an event's included: a UUIDv7 (RFC 9562), its 48 leading bits the Unix milliseconds of its mint,
+/// written in the canonical lowercase 8-4-4-4-12 form, so lexical order is mint order.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct EventId(String);
+
+impl EventId {
+    /// Mint a fresh id: the Unix milliseconds now, then random bits, monotonic in this process
+    /// (RFC 9562 §6.2, method 2: an id minted in the same millisecond as the last, or with the clock
+    /// behind it, is the last one plus one).
+    pub fn mint() -> Self {
+        // The 122 bits a UUIDv7 carries besides its version and variant: 48 of Unix milliseconds,
+        // then 74 random. The last one minted is held, so the next is past it.
+        static LAST: std::sync::Mutex<u128> = std::sync::Mutex::new(0);
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) & ((1u64 << 48) - 1);
+        let fresh = ((now_ms as u128) << 74) | (rand::random::<u128>() & ((1u128 << 74) - 1));
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        let payload = if fresh > *last { fresh } else { *last + 1 };
+        *last = payload;
+        Self(Self::render(Self::stamped(payload)))
+    }
+
+    /// The UUID of the 122 bits `p` (48 of time, 12 of `rand_a`, 62 of `rand_b`): version 7, variant
+    /// 0b10. The version and variant sit at fixed positions, so the order of `p` is the UUID's.
+    fn stamped(p: u128) -> u128 {
+        let rand_b = p & ((1u128 << 62) - 1);
+        let rand_a = (p >> 62) & 0x0fff;
+        let ts = (p >> 74) & ((1u128 << 48) - 1);
+        (ts << 80) | (0x7u128 << 76) | (rand_a << 64) | (0b10u128 << 62) | rand_b
+    }
+
+    fn render(v: u128) -> String {
+        let h = format!("{v:032x}");
+        format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+    }
+
+    /// The id `value`, refused by name when it is not a canonical lowercase UUIDv7.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let b = value.as_bytes();
+        let canonical = b.len() == 36
+            && b.iter().enumerate().all(|(i, c)| if matches!(i, 8 | 13 | 18 | 23) { *c == b'-' } else { c.is_ascii_digit() || (b'a'..=b'f').contains(c) })
+            && b[14] == b'7'
+            && matches!(b[19], b'8' | b'9' | b'a' | b'b');
+        if canonical {
+            Ok(Self(value.to_string()))
+        } else {
+            Err(format!("event id {value:?} is not a canonical lowercase UUIDv7 (RFC 9562)"))
+        }
+    }
+
+    /// The Unix milliseconds of the id's mint.
+    pub fn unix_ms(&self) -> u64 {
+        u64::from_str_radix(&self.0[0..8], 16).unwrap_or(0) << 16 | u64::from_str_radix(&self.0[9..13], 16).unwrap_or(0)
+    }
+
+    /// The id as its string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for EventId {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Self::parse(&value)
+    }
+}
+
+impl From<EventId> for String {
+    fn from(id: EventId) -> String {
+        id.0
+    }
+}
+
+impl std::fmt::Display for EventId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

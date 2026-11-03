@@ -1068,6 +1068,7 @@ mod tests {
             own_mesh: "mesh1".into(),
             writer: incarnation.clone(),
             node_id: node_id.clone(),
+            time: rdm_transport::clock::RafkaTime::unadopted(),
         };
         let topology_storage = crate::storage_backend::TopologyStorageHandle::open(&providers, "file", scope)
             .await
