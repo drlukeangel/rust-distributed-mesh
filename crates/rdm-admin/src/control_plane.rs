@@ -10,10 +10,10 @@
 //! routes are runtime administration, outside Build.
 
 use tracing::Instrument as _;
-use crate::accepted::{AcceptedStore, AttemptAction};
+use crate::accepted::AcceptedStore;
 use rdm_core::build::BuildChange;
 use crate::build::{BuildId, BuildReject};
-use crate::build_state::{AttemptOpened, AttemptReason, BuildAccepted, BuildState, BuildStateAdapter, BuildStateError};
+use crate::build_state::{BuildAccepted, BuildState, BuildStateAdapter, BuildStateError};
 use crate::model::{IncarnationId, NodeId, PathName};
 use crate::topology::Topology;
 use std::sync::Arc;
@@ -369,7 +369,7 @@ impl ControlPlane {
             // The Build's id, minted once.
             let build_id = BuildId::mint();
             // A created node's type is declared (node-identity-and-state.md §2), refused by name, nothing accepted.
-            if let Some(reject) = created_of_unknown_type(&current.topology, &topology, &declared) {
+            if let Some(reject) = created_of_unknown_type(&topology, &declared) {
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
@@ -378,18 +378,17 @@ impl ControlPlane {
             // hashes it again.
             if matches!(change, BuildChange::Create { .. }) {
                 let provider = self.topology.read().await.fabric.provider;
-                if let Some(reject) = named_executable_refusal(&current.topology, &topology, provider, &self.executable_dirs).await {
+                if let Some(reject) = named_executable_refusal(&topology, provider, &self.executable_dirs).await {
                     outer.in_scope(|| reject_span(route, &reject));
                     return Err(Refusal::Reject(reject));
                 }
             }
             // Every node this Build deletes is pinned to the exact birth the view holds at its path now
             // (build.md §4.4): its node.delete carries that birth, and the executing mesh-primary
-            // refuses another `birth-replaced`. A Build deletes only a path the current Build named and
-            // its change removes, never a node it does not touch (build.md §1): a stopped node renamed
-            // `<name>-old` is no path of any Build. A birth with no incarnation cannot be pinned.
+            // refuses another `birth-replaced`. A Build deletes exactly the nodes its change names, never a
+            // node it does not touch (build.md §1). A birth with no incarnation cannot be pinned.
             let mut pinned = Vec::new();
-            for n in crate::accepted::surplus_births(&topology, &observed).filter(|n| current.topology.contains(&n.location())) {
+            for n in deleting.iter().filter_map(|at| observed.node(at)) {
                 match crate::build::PinnedBirth::of(n) {
                     Some(birth) => pinned.push((n.location(), birth)),
                     None => return Err(not_live(&outer, route, &n.location(), n.status, "the node holds no incarnation id to pin its delete to")),
@@ -493,122 +492,6 @@ impl ControlPlane {
         .instrument(span.clone())
         .await
     }
-
-    /// Open the next attempt of `current` with `action`, putting its context first.
-    async fn open_with(&self, current: &crate::build_state::BuildProjection, reason: AttemptReason, action: AttemptAction, route: &'static str, outer: &tracing::Span, span: tracing::Span) -> Result<Opened, Refusal> {
-        let opener = self.node_id.get().cloned().ok_or_else(|| Refusal::Unavailable("attempt opener node ID is not bound".into()))?;
-        let opened = AttemptOpened {
-            mesh: None,
-            build_id: current.build_id.clone(),
-            attempt: current.attempt + 1,
-            reason,
-            action: Some(action),
-            opened_by: opener,
-            opened_at_ms: self.time.now_ms(),
-            // The request's context, in the open's own record: a refused open writes nothing, and
-            // a claim of the attempt the moment it lands takes this context (build.md §4.4).
-            context: Some(crate::build_claim::current_context()),
-        };
-        span.record("build_id", current.build_id.as_str());
-        span.record("attempt", opened.attempt);
-        // The attempt is opened with its context in one record: a refusal (`attempt-taken`, the number
-        // another writer's open holds) writes nothing (build.md §4.4), so the context of the attempt
-        // that holds the number stays its own.
-        if let Err(e) = self.builds.open_attempt(&opened).await {
-            return Err(match e {
-                BuildStateError::AttemptTaken { .. } => {
-                    outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-attempt-taken", route, build_id = %current.build_id.log(), attempt = opened.attempt, action = ?opened.action, detail = %e)
-                            .in_scope(|| tracing::info!(detail = %e, "attempt refused: another action holds the number"))
-                    });
-                    Refusal::AttemptTaken(e.to_string())
-                }
-                e => Refusal::State(e),
-            });
-        }
-        tracing::info!(build_id = %current.build_id.log(), attempt = opened.attempt, "attempt opened");
-        if let Some(action) = &opened.action {
-            self.atlas.note_accepted(&opened.build_id, opened.attempt, action);
-        }
-        self.build_submitted.notify_waiters();
-        Ok(Opened { build_id: current.build_id.clone(), attempt: opened.attempt, mesh: opened.mesh })
-    }
-
-    /// Open the next attempt of the current Build with the delete of one birth the topology never names
-    /// (a stopped retained predecessor, or the last admin of a deleted mesh), under `span`, which names
-    /// the surface the request came through. The topology is unchanged; the Build stays the current one.
-    pub async fn open_delete_in(&self, span: tracing::Span, route: &'static str, path: PathName) -> Result<Opened, Refusal> {
-        let outer = tracing::Span::current();
-        async {
-            self.require_fabric_primary(route).await?;
-            let (_admitted, current) = self.current_settled().await?;
-            let mut t = match self.view_now.get() {
-                Some(project) => project().await,
-                None => self.topology.read().await.clone(),
-            };
-            self.apply_atlas(&mut t).await?;
-            // build.md §4.4, "A node stands at the path": none stands there, refused by name on its span.
-            let Some(n) = self.atlas_row(&path, &t).await? else {
-                let reject = BuildReject::UnknownNode { path: path.path.clone(), name: path.name.clone() };
-                outer.in_scope(|| reject_span(route, &reject));
-                return Err(Refusal::Reject(reject));
-            };
-            let mesh = n.mesh.clone();
-            if let Some(held) = holding(&current, Some(&mesh)) {
-                return Err(Refusal::BuildInProgress(held));
-            }
-            // The pair resolves through its name claim to the node's record; a node a rename moved off its
-            // accepted entry (a replacement's retained predecessor) is acted on as that entry's node,
-            // whatever its new name spells.
-            let predecessor = n.entry_left(&current.topology).is_some();
-            let deleted_mesh = !predecessor
-                && !current.topology.meshes.contains_key(&mesh)
-                && t.meshes.iter().any(|m| m.name == mesh && m.status == crate::model::ScopeStatus::Dead);
-            if !(predecessor || deleted_mesh) {
-                let reject = BuildReject::UnknownNode { path: path.path.clone(), name: path.name.clone() };
-                outer.in_scope(|| reject_span(route, &reject));
-                return Err(Refusal::Reject(reject));
-            }
-            let (node_id, from_incarnation) = {
-                // Gate 5 for a delete ([`crate::build::delete_admits`]): the stopped predecessor, or one whose
-                // exit node investigation proved, or the last admin of a deleted mesh, live or stopped: its
-                // node.delete stops it first. A Dead mark alone admits nothing (Q219).
-                let deletable = match self.delete_gate(&n, &t, &outer).await {
-                    Some(crate::build::DeleteAdmitted::Stopped | crate::build::DeleteAdmitted::Exited) => true,
-                    Some(crate::build::DeleteAdmitted::Live) => deleted_mesh,
-                    None => false,
-                };
-                if !deletable {
-                    return Err(not_live(&outer, route, &path, n.status, "a delete of a retained predecessor needs that stopped birth or one whose exit is proven; any other delete through this route is of a deleted mesh's birth"));
-                }
-                // A node of a peer mesh this fabric-primary holds unheard is not its to delete: the mesh's
-                // own primary, once heard again, reconciles it (R-D1).
-                if mesh != t.node(&self.me()).map(|n| n.mesh.as_str()).unwrap_or_default() {
-                    if let Some(unheard_ms) = self.mesh_unheard.get().and_then(|f| f(&mesh)) {
-                        let reject = BuildReject::UnheardMesh { path: path.path.clone(), name: path.name.clone(), mesh: mesh.clone(), unheard_ms };
-                        outer.in_scope(|| reject_span(route, &reject));
-                        return Err(Refusal::Reject(reject));
-                    }
-                }
-                // A primary's role moves by node.primary.update to another node-admin of its mesh;
-                // with none, the update has no other node of its type and the delete is refused (R-MT1).
-                if let Some(reject) = last_admin(&path, ActionKind::Delete.name(), &t, t.node(&self.me()).map(|n| n.mesh.as_str()).unwrap_or_default()) {
-                    outer.in_scope(|| reject_span(route, &reject));
-                    return Err(Refusal::Reject(reject));
-                }
-                // The exact birth the gates pinned (build.md §4.4): its node id and incarnation, which the
-                // executing mesh-primary verifies before any effect.
-                match n.incarnation.clone() {
-                    Some(incarnation) => (n.node_id.clone(), incarnation),
-                    None => return Err(not_live(&outer, route, &path, n.status, "the node holds no incarnation id to pin the attempt to")),
-                }
-            };
-            let action = AttemptAction::Delete { r#type: n.r#type.clone(), mesh, path, node_id, from_incarnation };
-            self.open_with(&current, AttemptReason::Delete, action, route, &outer, span.clone()).await
-        }
-        .instrument(span.clone())
-        .await
-    }
 }
 
 /// A caller's node command refused by the primary above the node before anything is sent to the
@@ -705,35 +588,6 @@ impl ControlPlane {
         outer.in_scope(|| tracing::info!(node_path = %n.path, node_name = %n.name, node_id = %n.node_id, verdict, detail = %detail, admitted = admitted.map(|a| a.name()).unwrap_or("none"), "gate 5: the birth is neither stopped nor heard live, so node investigation of its exact birth decides the delete"));
         admitted
     }
-
-    /// The path and name of the birth holding `node_id` in the live view now
-    /// ([`crate::accepted::birth_of_node_id`]); `None` for a node.id the view holds no current birth of.
-    pub async fn path_of_node_id(&self, node_id: &crate::model::NodeId) -> Option<PathName> {
-        let t = match self.view_now.get() {
-            Some(project) => project().await,
-            None => self.topology.read().await.clone(),
-        };
-        crate::accepted::birth_of_node_id(&t, node_id).map(|n| n.location())
-    }
-
-    /// Whether `path` names a birth the accepted topology never names there, deleted by the next attempt
-    /// of the accepted Build: a node a rename moved off its accepted entry (its record's provenance names
-    /// the entry, [`crate::atlas::AtlasRow::entry_left`]), or a birth of a mesh deleted at mesh.deleted, as
-    /// the live view holds it: the mesh's status is deleted (its row Dead), and its last admin lives on
-    /// until its own node.delete (mesh-delete.md steps 6-7).
-    pub async fn of_deleted_mesh(&self, path: &PathName) -> Result<bool, Refusal> {
-        let t = match self.view_now.get() {
-            Some(project) => project().await,
-            None => self.topology.read().await.clone(),
-        };
-        let Some(n) = self.atlas_row(path, &t).await? else { return Ok(false) };
-        // A node a rename moved off the entry the accepted topology names (the pair resolved through its
-        // claim to the node's record, whose provenance names the entry): the topology never names its pair.
-        let current = self.builds.current().await.map_err(Refusal::State)?;
-        let left = current.as_ref().is_some_and(|c| n.entry_left(&c.topology).is_some());
-        Ok(left || t.meshes.iter().any(|m| m.name == n.mesh && m.status == crate::model::ScopeStatus::Dead))
-    }
-
 
     /// A finished Build leaves history. The current Build, and a Build still reconciling, stay.
     pub async fn forget_build(&self, id: &BuildId) -> Result<(), Refusal> {
@@ -842,7 +696,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology, own_mesh: &str) -> Op
 /// file (path and sha) is hashed once, however many kinds share it, and every one at once, each on the
 /// blocking pool (rdm#148); no file is read past the first binding refused before its file is read. The
 /// refusal is the first binding's in that order, whichever check refuses it.
-async fn named_executable_refusal(current: &crate::accepted::FabricTopology, next: &crate::accepted::FabricTopology, provider: crate::model::ProviderKind, executable_dirs: &[std::path::PathBuf]) -> Option<BuildReject> {
+async fn named_executable_refusal(next: &crate::accepted::FabricTopology, provider: crate::model::ProviderKind, executable_dirs: &[std::path::PathBuf]) -> Option<BuildReject> {
     let mut checked: std::collections::BTreeSet<(std::path::PathBuf, String, String)> = std::collections::BTreeSet::new();
     let mut to_hash: Vec<(&PathName, &rdm_core::binding::Binding)> = Vec::new();
     let mut refused_unread = None;
@@ -904,11 +758,11 @@ fn with_type_defaults(change: &mut BuildChange, declared: &[rdm_core::NodeType])
 
 /// The first node `next` creates whose type is neither `node` nor `node-admin` and that `declared`, the
 /// Fabric's types, does not name: refused by name, nothing accepted (node-identity-and-state.md §2).
-fn created_of_unknown_type(current: &crate::accepted::FabricTopology, next: &crate::accepted::FabricTopology, declared: &[rdm_core::NodeType]) -> Option<BuildReject> {
+fn created_of_unknown_type(next: &crate::accepted::FabricTopology, declared: &[rdm_core::NodeType]) -> Option<BuildReject> {
     next.meshes
         .values()
         .flat_map(|m| m.spec_by_path.iter())
-        .find(|(path, spec)| !current.contains(path) && rdm_core::NodeType::undeclared(declared, &spec.r#type).is_some())
+        .find(|(path, spec)| next.created_id(path).is_some() && rdm_core::NodeType::undeclared(declared, &spec.r#type).is_some())
         .map(|(path, spec)| BuildReject::UnknownType { path: path.path.clone(), name: path.name.clone(), r#type: spec.r#type.clone() })
 }
 
@@ -1231,7 +1085,7 @@ mod tests {
             next
         };
         let good = bind("node");
-        assert_eq!(named_executable_refusal(&current, &with(PathName::new("mesh1.node", "2").unwrap(), "node", good.clone()), ProviderKind::Process, &[]).await, None, "a hash-true file of the path's kind");
+        assert_eq!(named_executable_refusal(&with(PathName::new("mesh1.node", "2").unwrap(), "node", good.clone()), ProviderKind::Process, &[]).await, None, "a hash-true file of the path's kind");
         let refused = |r: Option<BuildReject>| match r {
             Some(BuildReject::ExecutableRefused { path, name, detail }) => (PathName { path, name }, detail),
             other => panic!("refused executable-refused: {other:?}"),
@@ -1240,14 +1094,14 @@ mod tests {
         let wrong = rdm_core::binding::Binding { sha256: "0".repeat(64), ..good.clone() };
         let admin = bind("node-admin");
         for (b, what) in [(missing, "a missing file"), (wrong, "a sha its bytes do not hash to"), (admin.clone(), "a binding of another kind")] {
-            let (node, detail) = refused(named_executable_refusal(&current, &with(PathName::new("mesh1.node", "2").unwrap(), "node", b), ProviderKind::Process, &[]).await);
+            let (node, detail) = refused(named_executable_refusal(&with(PathName::new("mesh1.node", "2").unwrap(), "node", b), ProviderKind::Process, &[]).await);
             assert_eq!(node, PathName::new("mesh1.node", "2").unwrap(), "{what}: {detail}");
         }
         // A held path, which this Build does not create, is not hashed: its file may be gone.
         let gone = rdm_core::binding::Binding { executable: dir.join("gone"), ..admin.clone() };
         let mut held = with(PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", gone);
         held.created.clear();
-        assert_eq!(named_executable_refusal(&current, &held, ProviderKind::Process, &[]).await, None);
+        assert_eq!(named_executable_refusal(&held, ProviderKind::Process, &[]).await, None);
         assert_eq!(BuildReject::ExecutableRefused { path: "root".into(), name: "x".into(), detail: "y".into() }.reason(), "executable-refused");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1289,7 +1143,7 @@ mod tests {
         let capture = crate::span_capture::Capture::new("rdm148-hash-once-shared");
         let refused = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            named_executable_refusal(&current, &next, ProviderKind::Process, &[]).await
+            named_executable_refusal(&next, ProviderKind::Process, &[]).await
         };
         assert_eq!(refused, None, "the shared file is hash-true for every type");
         let hashes: Vec<_> = capture.named("rdm.node_admin.deployment.resolve.via-executable-hash").into_iter().filter(|s| s.attributes.get("from").map(String::as_str) == Some("request")).collect();
@@ -1297,7 +1151,7 @@ mod tests {
         assert_eq!(hashes[0].attributes.get("outcome").map(String::as_str), Some("hashed"), "{hashes:#?}");
         // Each type's launch id is still checked: the shared file bound for the node-admin at a broker path.
         let (current, next) = creating(&[(PathName::new("mesh1.broker", "1").unwrap(), &("broker".to_string()), as_kind("broker")), (PathName::new("mesh1.gateway", "1").unwrap(), &("gateway".to_string()), as_kind("node-admin"))]);
-        match named_executable_refusal(&current, &next, ProviderKind::Process, &[]).await {
+        match named_executable_refusal(&next, ProviderKind::Process, &[]).await {
             Some(BuildReject::ExecutableRefused { path: node_path, name: node_name, detail }) => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; assert_eq!(*node, PathName::new("mesh1.gateway", "1").unwrap(), "{detail}") }
             other => panic!("refused executable-refused at mesh1.gateway.1: {other:?}"),
         }
@@ -1316,7 +1170,7 @@ mod tests {
         let capture = crate::span_capture::Capture::new("rdm148-hash-once-distinct");
         let refused = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            named_executable_refusal(&current, &next, ProviderKind::Process, &[]).await
+            named_executable_refusal(&next, ProviderKind::Process, &[]).await
         };
         assert_eq!(refused, None, "every file is hash-true for its type");
         let hashes: Vec<_> = capture.named("rdm.node_admin.deployment.resolve.via-executable-hash").into_iter().filter(|s| s.attributes.get("from").map(String::as_str) == Some("request")).collect();
@@ -1346,7 +1200,7 @@ mod tests {
         ] {
             let (current, next) = creating(&created);
             assert_eq!(next.meshes["mesh1"].spec_by_path.iter().find(|(_, spec)| !rdm_core::is_node_admin(&spec.r#type)).map(|(location, _)| location.clone()), Some(PathName::new("mesh1.broker", "1").unwrap()), "the topology's order");
-            match named_executable_refusal(&current, &next, ProviderKind::Process, &[]).await {
+            match named_executable_refusal(&next, ProviderKind::Process, &[]).await {
                 Some(BuildReject::ExecutableRefused { path: node_path, name: node_name, detail }) => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; assert_eq!(*node, first, "{what}: {detail}") }
                 other => panic!("{what}: refused executable-refused: {other:?}"),
             }
@@ -1387,10 +1241,10 @@ mod tests {
             next
         };
         let dirs = vec![inside.clone()];
-        assert_eq!(named_executable_refusal(&current, &with(bind(&inside, image)), ProviderKind::Container, &dirs).await, None, "inside a configured directory");
+        assert_eq!(named_executable_refusal(&with(bind(&inside, image)), ProviderKind::Container, &dirs).await, None, "inside a configured directory");
         let out = bind(&outside, image);
         for (configured, what) in [(dirs.clone(), "outside every configured directory"), (Vec::new(), "none configured")] {
-            match named_executable_refusal(&current, &with(out.clone()), ProviderKind::Container, &configured).await {
+            match named_executable_refusal(&with(out.clone()), ProviderKind::Container, &configured).await {
                 Some(BuildReject::ExecutableRefused { path: node_path, name: node_name, detail }) => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
                     assert_eq!(*node, PathName::new("mesh1.node", "1").unwrap(), "{what}: {detail}");
                     assert!(detail.contains("RDM_EXECUTABLE_DIRS") && detail.contains(&out.executable.display().to_string()), "{what}: {detail}");
@@ -1400,11 +1254,11 @@ mod tests {
         }
         // Outside, and absent: refused for its place, never misreported as missing.
         let absent = rdm_core::binding::Binding { executable: root.join("elsewhere").join("node"), ..out.clone() };
-        match named_executable_refusal(&current, &with(absent), ProviderKind::Container, &dirs).await {
+        match named_executable_refusal(&with(absent), ProviderKind::Container, &dirs).await {
             Some(BuildReject::ExecutableRefused { detail, .. }) => assert!(detail.contains("RDM_EXECUTABLE_DIRS"), "{detail}"),
             other => panic!("refused executable-refused naming RDM_EXECUTABLE_DIRS: {other:?}"),
         }
-        assert_eq!(named_executable_refusal(&current, &with(bind(&outside, None)), ProviderKind::Process, &dirs).await, None, "the process provider reads the host");
+        assert_eq!(named_executable_refusal(&with(bind(&outside, None)), ProviderKind::Process, &dirs).await, None, "the process provider reads the host");
         let _ = std::fs::remove_dir_all(&root);
     }
 

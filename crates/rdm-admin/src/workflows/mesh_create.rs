@@ -217,8 +217,9 @@ mod tests {
             "Acceptance emits rdm.node_admin.build.create.via-accepted correlated by Build id: {accepted_spans:?}"
         );
 
-        // MeshId (line 18, 30-32): carried unchanged by every Build after it; never reissued.
-        let grown = compile(&build_proj.topology, &crate::test_support::create_of(&[], &[("mesh2.node", "2", "mesh2", "node")]), &settled_view).unwrap();
+        // MeshId (line 18, 30-32): carried unchanged by every Build after it, composed from the records
+        // once mesh2 is realized; never reissued.
+        let grown = compile(&build_proj.topology, &crate::test_support::create_of(&[], &[("mesh2.node", "2", "mesh2", "node")]), &crate::test_support::records_of(&build_proj.topology)).unwrap();
         assert_eq!(grown.mesh("mesh2").unwrap().mesh_id, mesh2_id);
 
 

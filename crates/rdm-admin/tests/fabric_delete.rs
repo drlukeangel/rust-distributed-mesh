@@ -408,19 +408,21 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     assert_eq!(nodes_storage.record_at(&m1_a1.location()).await.unwrap().unwrap().status, NodeStatus::Ready, "fabric-primary's node row is still live at fabric.deleted");
 
     // Step 4: a separate call from outside the fabric runs `node.delete` of the fabric-primary.
-    assert!(cp.of_deleted_mesh(&m1_a1.location()).await.unwrap(), "the fabric-primary's mesh is deleted after fabric.deleted");
+    // It is a Delete of the fabric-primary's node.id, its own Build (build.md §1), composed from the
+    // records: the fabric's last node, of a deleted mesh.
     let fp_delete = cp
-        .open_delete_in(tracing::info_span!("cell.fp-delete"), "build.create", m1_a1.location())
+        .submit_in(tracing::info_span!("cell.fp-delete"), "build.create", BuildChange::Delete { meshes: Vec::new(), node_ids: vec![m1_a1.node_id.clone()] })
         .await
         .expect("the separate node.delete of the fabric-primary is admitted");
-    assert_eq!(fp_delete.attempt, 2);
-    let proj2 = builds.read_build(&build_id).await.unwrap();
+    assert_ne!(fp_delete.build_id, build_id, "the fabric-primary's node.delete is a Build of its own");
+    let proj2 = builds.read_build(&fp_delete.build_id).await.unwrap();
+    assert!(proj2.topology.meshes.is_empty(), "no mesh is left: {:?}", proj2.topology.meshes.keys().collect::<Vec<_>>());
     let fp_ops = plan_for_build(&proj2, &*observed.read().await).operations;
-    assert_eq!(fp_ops, vec![BuildOperation::DeleteLiveNode { r#type: m1_a1.r#type.clone(), mesh: m1_a1.mesh.clone(), path: m1_a1.path.clone(), name: m1_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m1_a1) }], "attempt 2 plans only the fabric-primary's own node.delete");
+    assert_eq!(fp_ops, vec![BuildOperation::DeleteLiveNode { r#type: m1_a1.r#type.clone(), mesh: m1_a1.mesh.clone(), path: m1_a1.path.clone(), name: m1_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m1_a1) }], "the Build plans only the fabric-primary's own node.delete");
     assert_eq!(role_move(&fp_ops[0], &*observed.read().await), None, "the last node of the last mesh moves no role on its separate node.delete");
     assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.node_id.clone()), "the fabric-primary executes its own final node.delete");
 
-    let term_m1_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m1_a1).node_id), build_id: Some(build_id.clone()), attempt: 2, node: m1_a1.clone(), handle: handles[&m1_a1.node_id].clone(), unreached: false }).await.unwrap();
+    let term_m1_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m1_a1).node_id), build_id: Some(fp_delete.build_id.clone()), attempt: 1, node: m1_a1.clone(), handle: handles[&m1_a1.node_id].clone(), unreached: false }).await.unwrap();
     observed.write().await.nodes.iter_mut().filter(|n| n.location() == m1_a1.location()).for_each(|n| {
         n.status = NodeStatus::Leaving;
         n.stopped = true;

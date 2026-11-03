@@ -315,6 +315,33 @@ impl FabricTopology {
         Self { fabric: observed.fabric.name.clone(), meshes, topology_storage_provider: None, pinned: Vec::new(), created: Vec::new(), section_of: None }
     }
 
+    /// The topology the fabric-primary's records hold now (build.md §4: "the fabric-primary composes
+    /// the complete topology from its records at acceptance"): every mesh not deleted, and every node
+    /// that is the current birth at its path and name, live, stopped or unheard. A deleted mesh is held
+    /// while a node of it stands (its last admin, until its own node.delete: mesh-delete.md step 7).
+    /// Each mesh takes the id the records hold for it, else the id `accepted` holds for its name; each
+    /// node takes the spec `accepted` holds at its path and name when its type and mesh match, else
+    /// its type's defaults.
+    pub fn of_records(observed: &Topology, accepted: &FabricTopology) -> Self {
+        let held_id = |name: &str, id: Option<&MeshId>| id.cloned().or_else(|| accepted.meshes.get(name).map(|m| m.mesh_id.clone())).unwrap_or_else(MeshId::mint);
+        let empty = |name: &str, mesh_id: MeshId| MeshTopology { name: name.to_string(), mesh_id, nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() };
+        let standing: Vec<&crate::model::Node> = observed.births().filter(|n| observed.node(&n.location()).is_some_and(|current| current.node_id == n.node_id)).collect();
+        let mut meshes: BTreeMap<String, MeshTopology> = observed
+            .meshes
+            .iter()
+            .filter(|m| m.status != crate::model::ScopeStatus::Dead || standing.iter().any(|n| n.mesh == m.name))
+            .map(|m| (m.name.clone(), empty(&m.name, held_id(&m.name, m.id.as_ref()))))
+            .collect();
+        for n in standing {
+            let mesh = meshes.entry(n.mesh.clone()).or_insert_with(|| empty(&n.mesh, held_id(&n.mesh, None)));
+            let at = n.location();
+            let spec = accepted.node_spec(&at).filter(|s| s.r#type == n.r#type && s.mesh == n.mesh).cloned().unwrap_or_else(|| NodeSpec::default_for(at.clone(), &n.mesh, &n.r#type));
+            mesh.spec_by_path.insert(at.clone(), spec);
+            mesh.nodes.insert(at);
+        }
+        Self { fabric: observed.fabric.name.clone(), meshes, topology_storage_provider: accepted.topology_storage_provider.clone(), pinned: Vec::new(), created: Vec::new(), section_of: None }
+    }
+
     /// The topology as per-mesh counts (the view's convenience shape).
     pub fn desired(&self) -> FabricDesired {
         FabricDesired {
@@ -354,11 +381,13 @@ pub enum AttemptAction {
     },
 }
 
-/// Apply `change` once to `current`, against `observed` (the records: build.md §1, the fabric-primary
-/// composes the topology from its records). The result is the complete next topology, or a refusal by name.
-pub fn compile(current: &FabricTopology, change: &BuildChange, observed: &Topology) -> Result<FabricTopology, BuildReject> {
-    let mut next = current.clone();
-    next.created.clear();
+/// Apply `change` once to the topology `observed`, the fabric-primary's records, holds now
+/// ([`FabricTopology::of_records`], build.md §4: "the fabric-primary composes the complete topology from
+/// its records at acceptance"), `accepted` the current Build's topology, read only for each standing
+/// node's spec and each mesh's id the records do not state. The result is the complete next topology,
+/// or a refusal by name.
+pub fn compile(accepted: &FabricTopology, change: &BuildChange, observed: &Topology) -> Result<FabricTopology, BuildReject> {
+    let mut next = FabricTopology::of_records(observed, accepted);
     match change {
         BuildChange::DeleteFabric => {
             next.meshes.clear();
@@ -367,9 +396,10 @@ pub fn compile(current: &FabricTopology, change: &BuildChange, observed: &Topolo
         BuildChange::Create { meshes, nodes } => created(&mut next, meshes, nodes, observed)?,
         BuildChange::Delete { meshes, node_ids } => deleted(&mut next, meshes, node_ids, observed)?,
     }
-    next.validate()?;
-    // Each node a Create names is born with a node.id minted now, written in the Build record (D58),
-    // a path an earlier Build left included (a replace's successor at the name its predecessor released).
+    if !next.meshes.is_empty() {
+        next.validate()?;
+    }
+    // Each node a Create names is born with a node.id minted now, written in the Build record (D58).
     next.mint_created(&created_paths(change).unwrap_or_default());
     Ok(next)
 }
@@ -409,15 +439,9 @@ fn created(next: &mut FabricTopology, meshes: &[rdm_core::build::Meshes], nodes:
     for n in nodes {
         let path = PathName::new(&n.path, &n.name).map_err(|e| BuildReject::InvalidNodeName { path: n.path.clone(), name: n.name.clone(), detail: e.to_string() })?;
         // A path and name a node holds now, by the records, is held (build.md §1: the fabric-primary
-        // composes the topology from its records); so is one this request names twice. An entry an
-        // earlier Build left at a path no node holds now (a predecessor renamed `<name>-old`) is the
-        // new node's.
+        // composes the topology from its records); so is one this request names twice.
         if observed.node(&path).is_some() || !named.insert(path.clone()) {
             return Err(BuildReject::NameHeld { path: path.path, name: path.name });
-        }
-        for m in next.meshes.values_mut() {
-            m.nodes.remove(&path);
-            m.spec_by_path.remove(&path);
         }
         let executable = n.executable.clone().ok_or_else(|| BuildReject::ExecutableMissing { path: path.path.clone(), name: path.name.clone() })?;
         if let Some(detail) = rdm_core::status::tags_refusal(&n.tags) {
@@ -444,9 +468,10 @@ fn created(next: &mut FabricTopology, meshes: &[rdm_core::build::Meshes], nodes:
 }
 
 /// What a [`BuildChange::Delete`] removes from `next` (build.md §1): each node the birth holding its
-/// node.id stands at ([`birth_of_node_id`]), and each mesh by name. Refused by name: nothing listed, a
-/// node.id no birth holds now, a node the topology does not name, a mesh's last node-admin, a mesh the
-/// fabric does not hold, and the fabric's last mesh.
+/// node.id stands at ([`birth_of_node_id`]), and each mesh by name. The last node of a deleted mesh (its
+/// last admin, mesh-delete.md step 7) takes its mesh with it. Refused by name: nothing listed, a node.id
+/// no birth holds now, a live mesh's last node-admin, a mesh the fabric does not hold, and the fabric's
+/// last mesh.
 fn deleted(next: &mut FabricTopology, meshes: &[String], node_ids: &[NodeId], observed: &Topology) -> Result<(), BuildReject> {
     if meshes.is_empty() && node_ids.is_empty() {
         return Err(BuildReject::NoNodeListed);
@@ -455,19 +480,25 @@ fn deleted(next: &mut FabricTopology, meshes: &[String], node_ids: &[NodeId], ob
         let node = birth_of_node_id(observed, id).map(|b| b.location()).ok_or_else(|| BuildReject::UnknownNodeId { node_id: id.clone() })?;
         let spec = next.node_spec(&node).ok_or_else(|| BuildReject::UnknownNodeId { node_id: id.clone() })?;
         let (mesh, admin) = (spec.mesh.clone(), rdm_core::is_node_admin(&spec.r#type));
+        let dead = observed.meshes.iter().any(|m| m.name == mesh && m.status == crate::model::ScopeStatus::Dead);
         let m = next.meshes.get_mut(&mesh).expect("the entry belongs to this accepted mesh");
-        if admin && m.count("node-admin") <= 1 && !meshes.contains(&mesh) {
+        if admin && m.count("node-admin") <= 1 && !meshes.contains(&mesh) && !dead {
             return Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh });
         }
         m.nodes.remove(&node);
         m.spec_by_path.remove(&node);
+        if dead && m.nodes.is_empty() {
+            next.meshes.remove(&mesh);
+        }
     }
     for mesh in meshes {
         if next.meshes.remove(mesh).is_none() {
             return Err(BuildReject::UnknownMesh { mesh: mesh.clone() });
         }
     }
-    if next.meshes.is_empty() {
+    // The fabric-primary, the last node of a deleted fabric, is deleted on its own after fabric.deleted
+    // (fabric-delete.md step 4): only a fabric with a live mesh left is refused its last mesh.
+    if next.meshes.is_empty() && observed.meshes.iter().any(|m| m.status != crate::model::ScopeStatus::Dead) {
         return Err(BuildReject::EmptyFabric);
     }
     Ok(())
@@ -520,7 +551,12 @@ impl ActionProgress {
 /// The births of a kept mesh `observed` holds live or stopped at a path `topology` no longer names: the
 /// nodes a topology Build deletes, each pinned at its acceptance (build.md §4.4).
 pub(crate) fn surplus_births<'a>(topology: &'a FabricTopology, observed: &'a Topology) -> impl Iterator<Item = &'a crate::model::Node> + 'a {
-    observed.births().filter(move |n| (n.status.is_live() || n.stopped || topology.pinned.iter().any(|(at, b)| *at == n.location() && b.is(n))) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.location()))
+    observed.births().filter(move |n| {
+        let pinned = topology.pinned.iter().any(|(at, b)| *at == n.location() && b.is(n));
+        // A pinned birth is the Build's to delete whatever its mesh: a deleted mesh's last admin leaves
+        // with its mesh (mesh-delete.md step 7).
+        (n.status.is_live() || n.stopped || pinned) && (topology.meshes.contains_key(&n.mesh) || pinned) && !topology.contains(&n.location())
+    })
 }
 
 /// The final primary a mesh.deleted manifest names, as the path and the exact birth its fabric.delete
@@ -655,8 +691,9 @@ fn plan_with(
     // fabric.delete (lifecycles/fabric-delete.md): run mesh.delete on each mesh leaf-inward (every
     // other mesh in name order first, the fabric-primary's own mesh last), run node.delete of each
     // other mesh's final primary after its mesh.deleted, then release the fabric name and report
-    // fabric.deleted while the fabric-primary stays alive for its separate node.delete.
-    if topology.meshes.is_empty() && action.is_none() {
+    // fabric.deleted while the fabric-primary stays alive for its separate node.delete. That separate
+    // node.delete is a Build with no mesh left and the fabric-primary's birth pinned: never this.
+    if topology.meshes.is_empty() && topology.pinned.is_empty() && action.is_none() {
         let fp_mesh = observed.fabric_primary().map(|n| n.mesh.as_str());
         // A deleted mesh the view no longer holds: its final primary's node.delete, once this Build began
         // it, is owed its receipt (fabric-delete.md "Failure": a runtime whose delete has no receipt is
@@ -998,21 +1035,23 @@ mod tests {
     fn a_meshs_id_is_minted_once_when_it_is_accepted_and_every_plan_carries_it() {
         let cur = t(&[("mesh1", 2, 3)]);
         let m1 = cur.mesh("mesh1").unwrap().mesh_id.clone();
+        // Each Build composes from the records of the one before, realized (build.md §4).
+        let realized = crate::test_support::records_of;
         let mesh2 = || crate::test_support::create_of(&["mesh2"], &[("mesh2.node-admin", "1", "mesh2", "node-admin"), ("mesh2.node", "1", "mesh2", "node")]);
-        let two = compile(&cur, &mesh2(), &mn()).unwrap();
+        let two = compile(&cur, &mesh2(), &realized(&cur)).unwrap();
         let m2 = two.mesh("mesh2").unwrap().mesh_id.clone();
         assert_ne!(m2, m1, "mesh2 enters the topology under an id of its own");
         assert_eq!(two.mesh("mesh1").unwrap().mesh_id, m1, "a kept mesh keeps its id");
         let create = |t: &FabricTopology| plan(t, &mn(), None).operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. }));
         let want = Some(BuildOperation::CreateMesh { mesh: "mesh2".into(), mesh_id: m2.clone() });
         assert_eq!((create(&two), create(&two)), (want.clone(), want.clone()), "every plan of the Build carries the id minted at acceptance");
-        let grown = compile(&two, &crate::test_support::create_of(&[], &[("mesh2.node", "2", "mesh2", "node")]), &mn()).unwrap();
-        let whole = compile(&grown, &crate::test_support::create_of(&["mesh3"], &[("mesh3.node-admin", "1", "mesh3", "node-admin")]), &mn()).unwrap();
+        let grown = compile(&two, &crate::test_support::create_of(&[], &[("mesh2.node", "2", "mesh2", "node")]), &realized(&two)).unwrap();
+        let whole = compile(&grown, &crate::test_support::create_of(&["mesh3"], &[("mesh3.node-admin", "1", "mesh3", "node-admin")]), &realized(&grown)).unwrap();
         assert_eq!((whole.mesh("mesh1").unwrap().mesh_id.clone(), whole.mesh("mesh2").unwrap().mesh_id.clone()), (m1.clone(), m2.clone()), "a later Build carries every kept mesh's id unchanged");
         let m3 = whole.mesh("mesh3").unwrap().mesh_id.clone();
         assert!(m3 != m1 && m3 != m2, "a mesh a Create adds enters under an id of its own");
-        let removed = compile(&whole, &BuildChange::Delete { meshes: vec!["mesh2".into()], node_ids: Vec::new() }, &mn()).unwrap();
-        let again = compile(&removed, &mesh2(), &mn()).unwrap();
+        let removed = compile(&whole, &BuildChange::Delete { meshes: vec!["mesh2".into()], node_ids: Vec::new() }, &realized(&whole)).unwrap();
+        let again = compile(&removed, &mesh2(), &realized(&removed)).unwrap();
         assert_ne!(again.mesh("mesh2").unwrap().mesh_id, m2, "a mesh removed and created again is a new mesh with a new id");
     }
 

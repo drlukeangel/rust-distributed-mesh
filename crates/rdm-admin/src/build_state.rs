@@ -3215,11 +3215,7 @@ mod tests {
         assert_eq!(current.topology, intent("b1").topology, "read as it is: every entry names none");
         let rpc = rdm_core::build::Nodes { path: "mesh1.node".into(), name: "1".into(), mesh: "mesh1".into(), r#type: "node".into(), storage_persistence: None, executable: Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None }), tags: Default::default(), config: Default::default() };
         let change = rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: vec![rpc] };
-        let observed = crate::topology::Topology {
-            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
-            meshes: vec![],
-            nodes: vec![],
-        };
+        let observed = crate::test_support::records_of(&current.topology);
         let next = crate::accepted::compile(&current.topology, &change, &observed).expect("the next request compiles over it");
         assert_eq!(next.meshes["mesh1"].nodes.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);

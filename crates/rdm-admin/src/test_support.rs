@@ -86,6 +86,29 @@ pub(crate) fn op_waits_on_the_blocking_pool<S: Send + 'static, T: Send + 'static
 
 
 
+/// The records once `topology` is realized: each of its nodes Ready under a fixture incarnation, each
+/// mesh Ready under its id. What a compile cell's next Build composes from (build.md §4).
+pub(crate) fn records_of(topology: &crate::accepted::FabricTopology) -> crate::topology::Topology {
+    use crate::model::{Fabric, FabricId, Mesh, Node, NodeStatus, ProviderKind, ScopeStatus};
+    let nodes = topology
+        .meshes
+        .values()
+        .flat_map(|m| {
+            m.spec_by_path.iter().map(move |(at, spec)| {
+                let mut n = Node::allocated(at.clone(), &m.name, &spec.r#type);
+                n.status = NodeStatus::Ready;
+                n.incarnation_id = Some(crate::model::IncarnationId::mint());
+                n
+            })
+        })
+        .collect();
+    crate::topology::Topology {
+        fabric: Fabric { id: FabricId::mint(), name: topology.fabric.clone(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: topology.meshes.values().map(|m| Mesh { id: Some(m.mesh_id.clone()), name: m.name.clone(), status: ScopeStatus::Ready }).collect(),
+        nodes,
+    }
+}
+
 /// A Create of `meshes` and of each `(path, name, mesh, type)` in `nodes`, each node on a fixture
 /// binding of its type: a compile or plan cell's request (build.md §1), never hashed.
 pub(crate) fn create_of(meshes: &[&str], nodes: &[(&str, &str, &str, &str)]) -> rdm_core::build::BuildChange {

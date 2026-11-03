@@ -97,7 +97,6 @@ impl BuildDoor {
     /// A change a caller submitted: a new Build or the next attempt of the accepted one.
     async fn admit_change(&self, change: &BuildChange) -> Result<Admitted, BuildReply> {
         let cp = &self.control;
-        let node_span = |node: &PathName| tracing::info_span!("rdm.node_admin.build.update.via-node-rpc", route = "build.create", build_id = tracing::field::Empty, attempt = tracing::field::Empty, node_path = %node.path, node_name = %node.name);
         let created = |change: &BuildChange| {
             tracing::info_span!(
                 "rdm.node_admin.build.create.via-node-rpc",
@@ -113,27 +112,10 @@ impl BuildDoor {
             cp.submit_in(span, "build.create", c).await
         };
         let r = match change {
-            // The meshes and nodes a Create adds, as it came in (build.md §1).
-            BuildChange::Create { .. } => topology(change.clone()).await,
-            // The stopped predecessor a replacement left at the predecessor name `<name>-old` at the same
-            // path, and the last admin of a mesh deleted at mesh.deleted (mesh-delete.md step 7: a separate
-            // node.delete after mesh.deleted), named alone by its node.id, are deleted by the next attempt
-            // of the accepted Build, targeted to the exact birth: the topology never names that path. Every
-            // other Delete is a topology Build, each node.id resolved at acceptance.
-            BuildChange::Delete { meshes, node_ids } => {
-                let alone = match (meshes.as_slice(), node_ids.as_slice()) {
-                    ([], [id]) => cp.path_of_node_id(id).await,
-                    _ => None,
-                };
-                match alone {
-                    Some(node) => match cp.of_deleted_mesh(&node).await {
-                        Ok(true) => cp.open_delete_in(node_span(&node), "build.create", node.clone()).await,
-                        Ok(false) => topology(change.clone()).await,
-                        Err(e) => Err(e),
-                    },
-                    None => topology(change.clone()).await,
-                }
-            }
+            // The meshes and nodes a Create adds, and the nodes and meshes a Delete removes, as it came in
+            // (build.md §1): each its own Build, composed from the records at acceptance, a replaced
+            // predecessor's delete and a deleted mesh's last admin's among them.
+            BuildChange::Create { .. } | BuildChange::Delete { .. } => topology(change.clone()).await,
             BuildChange::DeleteFabric => match cp.fabric_delete_in_force().await {
                 Ok(Some((o, failed))) => return Ok(Admitted::Resumed(o, if failed { Disposition::NextAttempt } else { Disposition::Attached })),
                 Ok(None) => topology(change.clone()).await,
