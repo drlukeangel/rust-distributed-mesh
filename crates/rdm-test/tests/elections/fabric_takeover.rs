@@ -302,7 +302,7 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &PathName, node_id: &
     let record = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id));
     let status = record.as_ref().map(|r| s(&r["record"]["status"]));
     // The name is read from the record (i152 s5: no name claim): the node id whose live record holds the pair.
-    let name = record.filter(|r| r["record"]["name"]["path"] == node.path.as_str() && r["record"]["name"]["name"] == node.name.as_str() && r["record"]["status"] != "deleted").map(|r| s(&r["record"]["node_id"]));
+    let name = record.filter(|r| r["record"]["path"] == node.path.as_str() && r["record"]["name"] == node.name.as_str() && r["record"]["status"] != "deleted").map(|r| s(&r["record"]["node_id"]));
     (status, name)
 }
 
