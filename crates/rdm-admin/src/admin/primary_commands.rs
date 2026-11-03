@@ -128,11 +128,14 @@ impl PrimaryCommandDoor {
         };
         tracing::Span::current().record("subject_path", path.path.as_str()).record("subject_name", path.name.as_str());
         // A primary's roles move first by node.primary.update (R-MT1; node-primary-update.md §1,
-        // node-connections-delete.md step 0). A node-admin's command then goes on to its commander as it
+        // node-connections-delete.md step 0). A node-admin's command then goes on to its mesh-primary as it
         // stands after the update, the new primary the update's node.primary.updated names (step 6). A
         // delete of named connections moves no role: step 0 is `All`'s alone.
         if !start && named.is_none() {
-            let view = self.runner.topology.read().await.clone();
+            // The roles the node holds as this admin's atlas holds them (Q355): an update this admin
+            // commanded is answered before gossip carries it here.
+            let mut view = self.runner.topology.read().await.clone();
+            self.control.atlas.primaries(&mut view);
             if let Some(m) = crate::executor::node_role_move(&pin, false, &view) {
                 let successor = match self.move_roles(&m, operation).await {
                     Ok(successor) => successor,
@@ -224,13 +227,18 @@ impl PrimaryCommandDoor {
     /// commander as it stands after the update (commands go down: the primary above the node runs it),
     /// whose frames go on to the caller as they arrive: the new primary the update's
     /// node.primary.updated names (`successor`), by which it is stopped (node-stop.md "Primary",
-    /// node-primary-update.md step 6); the view's mesh-primary of `mesh`, when the answer names none.
+    /// node-primary-update.md step 6); the mesh-primary of `mesh` this admin's atlas holds (Q355), when
+    /// the answer names none.
     async fn hand_on(&self, req: &NodeCommandRequest, mesh: &str, node_id: &NodeId, successor: Option<NodeId>, frames: &mut Box<dyn CommandFrames>) -> NodeCommandReply {
         use rdm_transport::stream::StreamItem;
         self.runner.refresh_view().await;
         let to = match successor {
             Some(s) => Some(s),
-            None => self.runner.topology.read().await.node_type_primary(mesh, rdm_core::NODE_ADMIN).map(|p| p.node_id.clone()),
+            None => {
+                let mut view = self.runner.topology.read().await.clone();
+                self.control.atlas.primaries(&mut view);
+                view.node_type_primary(mesh, rdm_core::NODE_ADMIN).map(|p| p.node_id.clone())
+            }
         }
         .filter(|p| p != node_id);
         let Some(to) = to else {

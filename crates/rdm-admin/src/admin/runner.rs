@@ -2091,6 +2091,7 @@ mod tests {
                 heard_again: Default::default(),
                 connections: None,
             },
+            atlas: Arc::default(),
         });
         let template = LaunchTemplate {
             fabric: "fab".into(),

@@ -77,9 +77,9 @@ pub fn mesh_primary(mesh: &str, t: &Topology) -> Option<rdm_core::framing::Birth
 
 /// A primary role a node.primary.update this admin commanded for a Build moved, as the update's
 /// answer, `node.primary.updated { node_id }`, names it (node-primary-update.md step 6: the commander
-/// continues on the answer, never on gossip, and records nothing from it). The commander's view
-/// learns the new primary from gossip; until it does, the Build's next command goes to the node's
-/// commander as it stands after the update ([`executor_after`]).
+/// continues on the answer, never on gossip; the fabric-primary records a mesh-primary's answer in its
+/// atlas, Q355). The commander's view learns the new primary from gossip; until it does, the Build's
+/// next command goes to the node's mesh-primary as it stands after the update ([`executor_after`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrimaryMoved {
     /// The mesh of the primary that moved.

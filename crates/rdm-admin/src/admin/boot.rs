@@ -1688,6 +1688,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, digest_view.clone(), records.clone()),
                                 finish_writes: finish_writes.clone(),
                                 looker: crate::primary_watch::Looker { me_path: name.path.clone(), me_name: name.name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()) },
+                                atlas: control.atlas.clone(),
                             });
                             let _ = primary_update_slot.set(primary_update.clone());
                             // The drives of the Builds this admin drives (`build_drive`): its executor ends its own

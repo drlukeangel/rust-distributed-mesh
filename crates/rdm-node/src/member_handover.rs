@@ -6,7 +6,8 @@
 //! excluded, calls `PrimaryUpdate` on the successor's exact birth carrying the election's result, and
 //! answers its commander `PrimaryUpdated { node_id }` (Terminal), the successor's node id. The successor
 //! answers `PrimaryUpdating`, installs the result in its own view and answers `PrimaryUpdated` with its
-//! own node id. The commander records nothing from the answer. The only difference between node types is what a
+//! own node id. The commander installs nothing from the answer (the fabric-primary records a
+//! mesh-primary's answer in its atlas, Q355). The only difference between node types is what a
 //! node-admin records afterwards (`is_primary`, `is_fabric_primary` on its own row, as its mesh's
 //! writer): the shared parts are here, and `rdm-admin`'s door adds the node-admin's.
 

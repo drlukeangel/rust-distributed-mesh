@@ -1073,6 +1073,50 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
     estate.record_trace_url(cmd["trace_id"].as_str().unwrap_or(""));
 }
 
+/// CONTRACT (node-primary-update.md, Operation contract, "The commander": "The fabric-primary, when its
+/// `node.primary.update` of a mesh's mesh-primary is answered `node.primary.updated { node_id }`,
+/// changes its atlas: it sets `is_primary` on `node_id` and removes it from the node it sent
+/// `node.primary.update` to; it reads a node's mesh-primary from its atlas (Q355)"): `node.stop` of
+/// mesh2's mesh-primary P moves its role to NA2 first; the moment the stop completes, with no wait for
+/// gossip to reach the fabric-primary, `node.start` of P is sent where the fabric-primary's `node.get`
+/// names P's mesh-primary, NA2, and NA2 runs it (`node.update.via-node-command` at NA2, `start-node`,
+/// `node-started`). P rejoins as the same birth, Ready. Must NOT happen: the fabric-primary running P's
+/// start itself from a view that still names P mesh2's mesh-primary (rdm#320: NA2 then refused P's
+/// Ready, `RejectedInvalidNodeTransition { current: Stopped }`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_start_of_a_mesh_primary_stopped_just_now_is_run_by_the_new_mesh_primary() {
+    let test = "a_start_of_a_mesh_primary_stopped_just_now_is_run_by_the_new_mesh_primary";
+    let (mut estate, before) = two_meshes(test, 2).await;
+    let fp = before.iter().find(|n| n.is_fabric_primary).map(|n| n.location()).expect("a fabric-primary");
+    let p = before.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2's mesh-primary");
+    let na2 = before.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && !n.is_primary).cloned().expect("mesh2's other node-admin");
+    assert_ne!(fp, p.location(), "mesh2's mesh-primary is not the fabric-primary");
+    let p_id = p.node_id.to_string();
+
+    let nodes = estate.nodes_obj().await;
+    let stopped = frames(nodes.stop(&p.location()).await.expect("the stop was accepted")).await;
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+    // At once: no wait for gossip to carry NA2's is_primary to the fabric-primary.
+    let started = frames(nodes.start(&p.location()).await.expect("the start was accepted")).await;
+    assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
+    let after = estate
+        .until_view_at(&na2.location(), "P ready again at its mesh-primary", SETTLE, |view| view.iter().find(|n| n.node_id == p.node_id && n.status == NodeStatus::Ready).cloned())
+        .await;
+    assert_eq!(after.incarnation_id, p.incarnation_id, "P is the same birth after its stop and start: {after:?}");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let starts: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().filter(|sp| attr(sp, "command") == "start-node" && attr(sp, "subject_id") == p_id).collect();
+    assert!(starts.iter().all(|sp| !at_location(sp, &fp)), "the fabric-primary never runs the start of a node whose mesh-primary is NA2: {starts:#?}");
+    let run: Vec<&Value> = starts.iter().copied().filter(|sp| at_location(sp, &na2.location())).collect();
+    assert_eq!(run.len(), 1, "NA2, P's mesh-primary after the update, ran P's start once: {starts:#?}");
+    assert_eq!(attr(run[0], "outcome"), "node-started", "{:#?}", run[0]);
+    let cmd = named(&spans, "rdm.node_admin.primary.update.via-command").into_iter().find(|sp| attr(sp, "primary_node_id") == p_id && attr(sp, "outcome") == "updated").unwrap_or_else(|| panic!("the fabric-primary commanded P's node.primary.update"));
+    assert!(at_location(cmd, &fp), "the fabric-primary commanded P's update: {cmd:#?}");
+    assert!(end_ns(cmd) <= start_ns(run[0]), "NA2 ran the start after the update was answered");
+    estate.record_trace_url(run[0]["trace_id"].as_str().unwrap_or(""));
+}
+
 /// CONTRACT (the approved proposal Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12:
 /// "`node.primary.update` commanded for a node type with no other node of that type in the mesh is refused
 /// by name, `cannot transfer: no secondary of type <type> in mesh <mesh>`"; node-primary-update.md step 2:
@@ -1192,9 +1236,8 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let moved = frames(nodes.stop(&primary).await.expect("the stop of mesh2's primary was accepted")).await;
     assert_eq!(moved.last(), Some(&Frame::Complete), "{moved:?}");
-    // The fabric-primary, the stop's commander, records nothing from the update's answer: its view takes
-    // mesh2's new primary from gossip (node-primary-update.md "The commander", Q352).
-    estate.until_view(&format!("{successor:?} holds mesh2's role in the fabric-primary's view"), Duration::from_secs(10), |view| view.iter().any(|n| n.location() == successor && n.is_primary).then_some(())).await;
+    // The fabric-primary, the stop's commander, recorded the update's answer in its atlas: the start
+    // goes to mesh2's new mesh-primary with no wait for gossip (node-primary-update.md "The commander", Q355).
     let started = frames(nodes.start(&stopped_node).await.expect("the start was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     // Start completes at the mesh-primary's ready apply. This entry admin is in another mesh:

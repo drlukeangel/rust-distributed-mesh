@@ -170,7 +170,8 @@ fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, ro
 /// Every birth `view` holds, sorted by `(path, name)`, each with what `loads` carries for it and what its
 /// record carries, stopped renamed nodes included: each record read through `current` (query.md §1: the
 /// lifecycle record at its node id, never a copy an atlas holds), the lifecycle the ops
-/// left each birth in from `atlas` ([`Atlas::read`]). A birth the view no longer holds is answered at a
+/// left each birth in from `atlas` ([`Atlas::read`]), and `is_primary` and `is_fabric_primary` as the
+/// primary updates' answers `atlas` holds set them ([`Atlas::primaries`], Q355). A birth the view no longer holds is answered at a
 /// path `planned` names and no birth holds, from the data-dir-unreadable fact on the record of that pair
 /// among its mesh's records ([`crate::current_record::CurrentRecords::lifecycle_rows`]:
 /// its Deleted record released the pair's claim). A node `ids` names that the view no longer holds is
@@ -184,6 +185,9 @@ fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, ro
 /// (query.md §1: "Record read errors remain named errors, not empty results or fabricated lifecycle
 /// status").
 async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, atlas: &Atlas, current: Option<&crate::current_record::CurrentRecords<'_>>, planned: &BTreeMap<String, Vec<PathName>>, ids: &BTreeSet<crate::model::NodeId>, names: &BTreeSet<PathName>) -> Result<Vec<NodeView>, String> {
+    let mut held = view.clone();
+    atlas.primaries(&mut held);
+    let view = &held;
     let mut out: Vec<NodeView> = Vec::new();
     for b in view.births() {
         let (row, predecessor) = match current {

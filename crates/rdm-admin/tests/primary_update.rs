@@ -4,7 +4,8 @@
 //! over its own view with itself excluded, finishes the writes it issued (a node-admin), and calls
 //! `PrimaryUpdate` on the successor, which installs the election's result and answers
 //! `node.primary.updating`, then `node.primary.updated { node_id }`; the primary answers its commander the
-//! same, naming the new primary, and the commander records nothing from it (Q352). No row and no frame of
+//! same, naming the new primary, and the commander installs nothing from it (Q352); the fabric-primary
+//! records a mesh-primary's answer in its atlas (Q355). No row and no frame of
 //! its own record the change. Each cell reads the spans the update emitted, in the order they happened.
 // @feature: node-lifecycle
 
@@ -283,6 +284,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
             })
         },
         looker,
+        atlas: Arc::default(),
     });
     if fill_slot {
         let _ = slot.set(primary_update.clone());
@@ -744,14 +746,17 @@ fn an_update_named_for_a_node_that_was_never_primary_is_no_update_and_calls_no_o
 /// primary, `successor` none: a node-admin computes the election itself ...
 /// The primary answers `node.primary.updating` once it admitted the command, runs the sequence and
 /// answers `PrimaryUpdated { node_id }` when it completes, `node_id` the new primary"; node-primary-update.md
-/// "The commander": "Records nothing from the answer: it learns the new primary from gossip"; Q352): X,
-/// the fabric-primary, commands P's update. P names N by the election over its own view, calls it, and
-/// answers X with N's node id. X records nothing from it: P and N hold N mesh-primary of mesh1 at 4, X
-/// still holds P at 3 (no gossip runs here), and X holds the move for Build `b1` alone, where its next
-/// command goes. The fabric-primary stays X at 7. One command span at X, sent to P. What must NOT
-/// happen: X installing the successor from the answer.
+/// "The commander": "The fabric-primary, when its `node.primary.update` of a mesh's mesh-primary is
+/// answered `node.primary.updated { node_id }`, changes its atlas: it sets `is_primary` on `node_id` and
+/// removes it from the node it sent `node.primary.update` to"; Q352, Q355): X, the fabric-primary,
+/// commands P's update. P names N by the election over its own view, calls it, and answers X with N's
+/// node id. X installs nothing from it: P and N hold N mesh-primary of mesh1 at 4, X's election records
+/// still hold P at 3 (no gossip runs here); X's atlas names N mesh1's mesh-primary and P no more, and X
+/// holds the move for Build `b1`, where its next command goes. The fabric-primary stays X at 7. One
+/// command span at X, sent to P. What must NOT happen: X installing the successor from the answer, or
+/// its atlas still naming P.
 #[test]
-fn the_fabric_primary_commands_a_mesh_primarys_update_and_records_nothing_from_its_answer() {
+fn the_fabric_primary_commands_a_mesh_primarys_update_and_records_its_answer_in_its_atlas() {
     let cap = trace_capture("primary-update");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
@@ -764,7 +769,11 @@ fn the_fabric_primary_commands_a_mesh_primarys_update_and_records_nothing_from_i
         for a in [&f.p, &f.n] {
             assert_eq!(a.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "{:?}", a.resolved.name);
         }
-        assert_eq!(f.x.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "X, the commander, records nothing from the answer");
+        assert_eq!(f.x.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "X, the commander, installs nothing from the answer");
+        let mut atlas_view = f.x.primary_update.topology.read().await.clone();
+        f.x.primary_update.atlas.primaries(&mut atlas_view);
+        let named: Vec<_> = atlas_view.nodes.iter().filter(|n| n.mesh == "mesh1" && n.r#type == "node-admin" && n.is_primary).map(|n| n.node_id.clone()).collect();
+        assert_eq!(named, vec![f.n.resolved.node_id.clone()], "X's atlas sets is_primary on N and removes it from P");
         for a in [&f.x, &f.p, &f.n] {
             assert_eq!(a.primary_update.topology_view.primaries().fabric(), Some(primary_of(&f.x, 7)), "{:?}: the fabric-primary stays X", a.resolved.name);
         }

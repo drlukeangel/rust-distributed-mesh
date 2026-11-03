@@ -17,9 +17,11 @@
 //! a mesh-primary, a mesh-primary commands the primaries of its mesh's other node types. Who is primary
 //! is the election's result; the write records the role and does not grant it, and the record follows
 //! the role through the mesh rows writer (`crate::admin::rows_writer::keep_mesh_rows`). No row and no
-//! frame of its own record the change. The commander records nothing from the answer (Q352): its view
-//! learns the new primary from gossip, and the Build's next command goes to the node's commander as it
-//! stands after the update (`crate::executor::PrimariesMoved`).
+//! frame of its own record the change. The fabric-primary, the commander of a mesh-primary, records the
+//! answer in its atlas (Q355): `is_primary` on the `node_id` it names, removed from the node it sent the
+//! update to, read wherever it decides which node runs a node command (`crate::atlas::Atlas::primaries`);
+//! every other node learns the new primary from gossip. The Build's next command goes to the node's
+//! mesh-primary as it stands after the update (`crate::executor::PrimariesMoved`).
 
 pub use crate::election::Moving;
 use crate::model::{IncarnationId, NodeId, PathName};
@@ -136,6 +138,9 @@ pub struct PrimaryUpdate {
     /// node investigation on one exact birth (node-investigation.md), run on a successor that did not
     /// answer the call.
     pub looker: crate::primary_watch::Looker,
+    /// This admin's atlas, which records each update's answer as the commander (Q355): `is_primary`
+    /// (`is_fabric_primary`) on the `node_id` it names, removed from the node the update was sent to.
+    pub atlas: Arc<crate::atlas::Atlas>,
 }
 
 impl PrimaryUpdate {
@@ -307,15 +312,24 @@ impl PrimaryUpdate {
 
     /// [`Self::update_primary`] moving this admin's own primaries as a step of its Build (the
     /// fabric-primary has nothing above it), its end told apart as the step needs it: the new
-    /// primary's node id.
+    /// primary's node id, recorded in this admin's atlas (Q355): `is_primary` on it in this admin's mesh
+    /// when the mesh-primary role moved, `is_fabric_primary` when the fabric-primary role moved, each
+    /// removed from this admin.
     pub async fn update_own_primaries(&self, moving: Moving, build_id: &str, operation: &rdm_core::OperationId, named: Option<&PathName>) -> Result<NodeId, crate::build_drive::RoleMoveEnd> {
         use crate::build_drive::RoleMoveEnd;
-        match self.update_primary(moving, None, build_id, operation, named).await {
-            Ok(node_id) => Ok(node_id),
-            Err(Reply::AlreadyApplied { revisions }) => successor_of(&revisions).ok_or_else(|| RoleMoveEnd::Refused(format!("{}: node.primary.update {operation:?} answered already-applied naming no successor", self.node_id))),
-            Err(Reply::Failed { step, reason, code }) => Err(RoleMoveEnd::Failed { step, reason, code }),
-            Err(other) => Err(RoleMoveEnd::Refused(format!("{}: {other:?}", other.name()))),
+        let node_id = match self.update_primary(moving, None, build_id, operation, named).await {
+            Ok(node_id) => node_id,
+            Err(Reply::AlreadyApplied { revisions }) => successor_of(&revisions).ok_or_else(|| RoleMoveEnd::Refused(format!("{}: node.primary.update {operation:?} answered already-applied naming no successor", self.node_id)))?,
+            Err(Reply::Failed { step, reason, code }) => return Err(RoleMoveEnd::Failed { step, reason, code }),
+            Err(other) => return Err(RoleMoveEnd::Refused(format!("{}: {other:?}", other.name()))),
+        };
+        if moving.moves_mesh_primary() {
+            self.atlas.primary_updated(self.topology_view.mesh_name(), &self.node_id, &node_id);
         }
+        if moving.moves_fabric_primary() {
+            self.atlas.fabric_primary_updated(&self.node_id, &node_id);
+        }
+        Ok(node_id)
     }
 
     async fn update_primary_in(&self, moving: Moving, build_id: &str, operation: &rdm_core::OperationId, named: Option<&PathName>) -> Result<NodeId, Reply> {
@@ -496,9 +510,10 @@ impl PrimaryUpdate {
     /// The fabric-primary commands the primary `primary` before the Build's stop, delete or
     /// node.connection.delete of it runs: a mesh-primary directly, another node type's primary through
     /// its mesh-primary (commands go down). The answer is the primary's node.primary.updating, then its
-    /// node.primary.updated naming the new primary's node id, which this admin records nothing from (Q352):
-    /// its view learns the new primary from gossip, and what the update preceded goes to the node's
-    /// commander as it stands now ([`crate::executor::PrimariesMoved`]). A `Failed` answer fails the
+    /// node.primary.updated naming the new primary's node id. A mesh-primary's answer this admin records
+    /// in its atlas (Q355): `is_primary` on that node id, removed from `primary`, read wherever it
+    /// decides which node runs a node command; every other node learns it from gossip. What the update
+    /// preceded goes to the node's mesh-primary as it stands now ([`crate::executor::PrimariesMoved`]). A `Failed` answer fails the
     /// step on the variant, never on its text; a command that does not answer leaves the step
     /// incomplete, and the next attempt sends the identical command.
     pub async fn command_update_primary(&self, primary: &crate::model::Node, build_id: &str, operation: &rdm_core::OperationId) -> Result<NodeId, crate::build_drive::RoleMoveEnd> {
@@ -509,11 +524,16 @@ impl PrimaryUpdate {
             Ok(node_id) => {
                 self.memo.acknowledge(build_id, operation, *node_id == self.node_id);
                 self.moved(build_id, primary, node_id);
+                // A mesh-primary's update: its answer is recorded in this admin's atlas (Q355). A node type's
+                // primary's next command goes to its mesh-primary, which the update did not move.
+                if rdm_core::is_node_admin(&primary.r#type) {
+                    self.atlas.primary_updated(&primary.mesh, &primary.node_id, node_id);
+                }
                 span.record("outcome", "updated").record("detail", format!("node_id={node_id}").as_str())
             }
             Err(e) => span.record("outcome", "ended").record("detail", e.to_string().as_str()),
         };
-        span.in_scope(|| tracing::info!("the commander's node.primary.update ended: it records nothing from the answer"));
+        span.in_scope(|| tracing::info!("the commander's node.primary.update ended: a mesh-primary's answer is recorded in its atlas"));
         r
     }
 
@@ -521,12 +541,13 @@ impl PrimaryUpdate {
         use crate::build_drive::RoleMoveEnd;
         let me = self.held_name();
         let Some(hb) = birth_of(primary) else { return Err(RoleMoveEnd::Refused(format!("{} has no known birth: it cannot be commanded", primary.node_id))) };
-        // The mesh-primary of a non-admin primary is its commander; this admin is when it is that
-        // mesh-primary.
+        // The mesh-primary of a non-admin primary is its commander, read from this admin's atlas (Q355);
+        // this admin is when it is that mesh-primary.
         let to = if rdm_core::is_node_admin(&primary.r#type) {
             primary.clone()
         } else {
-            let view = self.topology.read().await.clone();
+            let mut view = self.topology.read().await.clone();
+            self.atlas.primaries(&mut view);
             let Some(mp) = view.node_type_primary(&primary.mesh, "node-admin").cloned() else {
                 return Err(RoleMoveEnd::Refused(format!("path {me_path:?}, name {me_name:?}'s view names no mesh-primary of {}: the {} primary {} is commanded through its mesh-primary", primary.mesh, primary.r#type, primary.node_id, me_path = &me.path, me_name = &me.name)));
             };
@@ -840,6 +861,7 @@ mod tests {
             project_view: Arc::new(|| Box::pin(async {})),
             finish_writes: Arc::new(|| Box::pin(async {})),
             looker,
+            atlas: Arc::default(),
         };
 
         let lost_fp = Primary {

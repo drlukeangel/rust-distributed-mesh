@@ -11,7 +11,8 @@
 //! [`NodePrimaryUpdateReply::PrimaryUpdated`] (node.primary.updated, the Terminal frame) naming the
 //! new primary's `node_id`, or `Failed`; a refusal is the stream's one frame. The successor installs
 //! the election's result in its own view and answers; the primary answers its commander with the
-//! successor's `node_id`, and the commander records nothing from it. The receiver refuses
+//! successor's `node_id`, and the commander installs nothing from it (the fabric-primary records a
+//! mesh-primary's answer in its atlas, Q355). The receiver refuses
 //! only a conflicting payload for the same operation and a fabric not first ready; it never
 //! refuses a call for the birth it names (R-UC1a, R-RX5). No row and no frame of its own record the
 //! change: the successor's digest carries it and the mesh-primary records it on the node's row. The
