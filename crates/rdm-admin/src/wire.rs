@@ -255,7 +255,7 @@ impl From<WireChange> for TopologyChange {
             WireChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh },
             WireChange::DeleteFabric => Self::DeleteFabric,
             WireChange::Reserved7 => Self::Reserved {},
-            WireChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on, nodes: nodes.into_iter().map(|(p, w)| w.at(p)).collect(), topology_storage_provider: None },
+            WireChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on, nodes: nodes.into_iter().map(|(p, w)| w.at(p)).collect() },
         }
     }
 }
@@ -349,7 +349,7 @@ impl From<WireTopology> for FabricTopology {
             .collect();
         // The Build topic carries no topology_storage_provider: the journal's record of the accepted
         // Build is the one that does.
-        Self { fabric: t.fabric, meshes, topology_storage_provider: None, storage_change: None, pinned: t.pinned, section_of: None }
+        Self { fabric: t.fabric, meshes, topology_storage_provider: None, pinned: t.pinned, section_of: None }
     }
 }
 
@@ -766,7 +766,6 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
                 fabric: c.fabric,
                 meshes: c.meshes.into_iter().map(|m| (m.name.clone(), m.into())).collect(),
                 topology_storage_provider: c.topology_storage_provider,
-                storage_change: None,
                 pinned: c.pinned,
                 section_of: Some(c.named),
             },

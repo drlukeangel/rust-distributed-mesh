@@ -126,6 +126,9 @@ pub enum FabricOp {
     AtlasGet,
     /// `fabric.root.update`: a new root's secret to the fabric-primary (fabric-ca-renew.md).
     RootUpdate,
+    /// `fabric.storage.update`: the fabric's new `topology_storage_provider` to the fabric-primary
+    /// (storage.md §2 "Changing it").
+    StorageUpdate,
 }
 
 impl FabricOp {
@@ -135,6 +138,7 @@ impl FabricOp {
             Self::Get => "fabric.get",
             Self::AtlasGet => "fabric.atlas.get",
             Self::RootUpdate => "fabric.root.update",
+            Self::StorageUpdate => "fabric.storage.update",
         }
     }
 
@@ -144,6 +148,7 @@ impl FabricOp {
             Self::Get => tracing::info_span!("rdm.node_admin.fabric.resolve.via-call", op = "fabric.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
             Self::AtlasGet => tracing::info_span!("rdm.node_admin.fabric.resolve.via-atlas-call", op = "fabric.atlas.get", outcome = tracing::field::Empty),
             Self::RootUpdate => tracing::info_span!("rdm.node_admin.root.update.via-call", op = "fabric.root.update", outcome = tracing::field::Empty),
+            Self::StorageUpdate => tracing::info_span!("rdm.node_admin.storage.update.via-call", op = "fabric.storage.update", outcome = tracing::field::Empty),
         }
     }
 }

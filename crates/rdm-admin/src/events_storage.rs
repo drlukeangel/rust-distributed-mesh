@@ -8,10 +8,11 @@
 //! when it is about one; `time` rafka-time; `datacontenttype` `application/json`; `traceparent` and
 //! `tracestate` from the writer's span; `data` a JSON object.
 //!
-//! The store answers three reads: by event.id, the events of one Build (by `data.build_id`) and the
-//! events of one node (by `subject`), each in event.id order. The file backend is the root's
-//! `events.jsonl`, one whole event per line; its reads fold two ordered maps, `(build.id, event.id)`
-//! and `(node.id, event.id)`, and answer a Build's or a node's events as a range of one of them.
+//! The store answers four reads: by event.id, the events of one Build (by `data.build_id`), the
+//! events of one node (by `subject`) and the storage changes' events (`type` `rdm.storage.*`), each in
+//! event.id order. The file backend is the root's `events.jsonl`, one whole event per line; its reads
+//! fold three ordered maps, `(build.id, event.id)`, `(node.id, event.id)` and the storage changes'
+//! events by event.id, and answer each read as one of them or a range of one.
 
 use rdm_core::status::MeshState;
 use rdm_core::{BuildId, ChangeId, FabricId, IncarnationId, MeshId, NodeId};
@@ -36,7 +37,7 @@ pub const NODE_INVESTIGATED: &str = "rdm.node.investigated";
 /// `rdm.storage.started`: the fabric-primary started a storage change. `data` {change_id, topology_storage_provider}.
 pub const STORAGE_STARTED: &str = "rdm.storage.started";
 /// `rdm.storage.committed`: the fabric-primary switched a storage change to its new provider. `data`
-/// {build_id, change_id, topology_storage_provider}.
+/// {change_id, topology_storage_provider}.
 pub const STORAGE_COMMITTED: &str = "rdm.storage.committed";
 /// `rdm.storage.ended`: the fabric-primary ended a storage change. `data` {change_id, topology_storage_provider, state}.
 pub const STORAGE_ENDED: &str = "rdm.storage.ended";
@@ -316,25 +317,46 @@ impl Event {
         Self::new(source, time_ms, NODE_INVESTIGATED, Some(node_id.clone()), object(Data { incarnation, path, name, verdict, next }))
     }
 
-    /// `rdm.storage.started` {change_id, topology_storage_provider}.
+    /// `rdm.storage.started` {change_id, topology_storage_provider}: the change's start, appended to the
+    /// old provider's events store before its first command (storage.md §2 "Changing it");
+    /// `topology_storage_provider` the provider the change names.
     pub fn storage_started(source: &EventSource, time_ms: u64, change_id: &ChangeId, topology_storage_provider: &str) -> Self {
-        Self::new(source, time_ms, STORAGE_STARTED, None, object(StorageData { build_id: None, change_id, topology_storage_provider, state: None }))
+        Self::new(source, time_ms, STORAGE_STARTED, None, object(StorageData { change_id, topology_storage_provider, state: None }))
     }
 
-    /// `rdm.storage.committed` {build_id, change_id, topology_storage_provider}: the change's commit,
-    /// appended to the new provider's events store (storage.md §2 step 3).
-    pub fn storage_committed(source: &EventSource, time_ms: u64, build_id: &BuildId, change_id: &ChangeId, topology_storage_provider: &str) -> Self {
-        Self::new(source, time_ms, STORAGE_COMMITTED, None, object(StorageData { build_id: Some(build_id), change_id, topology_storage_provider, state: None }))
+    /// `rdm.storage.committed` {change_id, topology_storage_provider}: the change's commit, appended to
+    /// the new provider's events store (storage.md §2 step 3).
+    pub fn storage_committed(source: &EventSource, time_ms: u64, change_id: &ChangeId, topology_storage_provider: &str) -> Self {
+        Self::new(source, time_ms, STORAGE_COMMITTED, None, object(StorageData { change_id, topology_storage_provider, state: None }))
     }
 
-    /// Whether this is the `rdm.storage.committed` event of `(build_id, change_id)`.
-    pub fn commits(&self, build_id: &BuildId, change_id: &ChangeId) -> bool {
-        self.r#type == STORAGE_COMMITTED && self.build_id().as_ref() == Some(build_id) && self.data.get("change_id").and_then(|v| v.as_str()) == Some(change_id.as_str())
+    /// Whether this is the `rdm.storage.committed` event of the change `change_id`.
+    pub fn commits(&self, change_id: &ChangeId) -> bool {
+        self.r#type == STORAGE_COMMITTED && self.change_id().as_ref() == Some(change_id)
     }
 
-    /// `rdm.storage.ended` {change_id, topology_storage_provider, state}.
+    /// `rdm.storage.ended` {change_id, topology_storage_provider, state}: the change's end, appended to
+    /// the events store of the provider it decided; `topology_storage_provider` that provider.
     pub fn storage_ended(source: &EventSource, time_ms: u64, change_id: &ChangeId, topology_storage_provider: &str, state: &StepState) -> Self {
-        Self::new(source, time_ms, STORAGE_ENDED, None, object(StorageData { build_id: None, change_id, topology_storage_provider, state: Some(state) }))
+        Self::new(source, time_ms, STORAGE_ENDED, None, object(StorageData { change_id, topology_storage_provider, state: Some(state) }))
+    }
+
+    /// The storage change the event is of: its `data.change_id`, on an `rdm.storage.*` event.
+    pub fn change_id(&self) -> Option<ChangeId> {
+        if !self.is_storage() {
+            return None;
+        }
+        self.data.get("change_id").and_then(|v| v.as_str()).and_then(|s| ChangeId::parse(s).ok())
+    }
+
+    /// The event's `data.topology_storage_provider`, on an `rdm.storage.*` event.
+    pub fn topology_storage_provider(&self) -> Option<&str> {
+        self.data.get("topology_storage_provider").and_then(|v| v.as_str())
+    }
+
+    /// Whether the event is one of a storage change's three.
+    pub fn is_storage(&self) -> bool {
+        matches!(self.r#type.as_str(), STORAGE_STARTED | STORAGE_COMMITTED | STORAGE_ENDED)
     }
 
     /// The mesh's move to `state`: `rdm.mesh.pending`, `rdm.mesh.ready`, `rdm.mesh.deleting` or
@@ -376,8 +398,6 @@ impl Event {
 /// The `data` of the storage change's three events.
 #[derive(Serialize)]
 struct StorageData<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    build_id: Option<&'a BuildId>,
     change_id: &'a ChangeId,
     topology_storage_provider: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -437,15 +457,18 @@ pub trait EventsStorage: Send + Sync {
     async fn of_build(&self, build_id: &BuildId) -> Result<Vec<Event>, StorageError>;
     /// The events of the node `node_id` (by `subject`), in event.id order.
     async fn of_node(&self, node_id: &NodeId) -> Result<Vec<Event>, StorageError>;
+    /// The storage changes' events (`type` `rdm.storage.*`), in event.id order.
+    async fn of_storage_changes(&self) -> Result<Vec<Event>, StorageError>;
 }
 
-/// The events a store holds, folded: by event.id, and the two ordered maps its range reads use,
-/// `(build.id, event.id)` and `(node.id, event.id)`.
+/// The events a store holds, folded: by event.id, the two ordered maps its range reads use,
+/// `(build.id, event.id)` and `(node.id, event.id)`, and the storage changes' events by event.id.
 #[derive(Debug, Default)]
 struct EventsFold {
     by_id: BTreeMap<EventId, Event>,
     by_build: BTreeMap<(BuildId, EventId), Event>,
     by_node: BTreeMap<(NodeId, EventId), Event>,
+    storage: BTreeMap<EventId, Event>,
 }
 
 impl EventsFold {
@@ -455,6 +478,9 @@ impl EventsFold {
         }
         if let Some(node_id) = event.subject.clone() {
             self.by_node.insert((node_id, event.id.clone()), event.clone());
+        }
+        if event.is_storage() {
+            self.storage.insert(event.id.clone(), event.clone());
         }
         self.by_id.insert(event.id.clone(), event);
     }
@@ -493,6 +519,9 @@ impl EventsStorage for MemoryEventsStorage {
     }
     async fn of_node(&self, node_id: &NodeId) -> Result<Vec<Event>, StorageError> {
         Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).of_node(node_id))
+    }
+    async fn of_storage_changes(&self) -> Result<Vec<Event>, StorageError> {
+        Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).storage.values().cloned().collect())
     }
 }
 
@@ -556,6 +585,9 @@ impl EventsStorage for FileEventsStorage {
     }
     async fn of_node(&self, node_id: &NodeId) -> Result<Vec<Event>, StorageError> {
         Ok(self.read().await?.of_node(node_id))
+    }
+    async fn of_storage_changes(&self) -> Result<Vec<Event>, StorageError> {
+        Ok(self.read().await?.storage.values().cloned().collect())
     }
 }
 
@@ -730,5 +762,53 @@ mod tests {
         }
         assert!(minted.windows(2).all(|w| w[0] < w[1]), "each id orders after the one minted before it");
         assert!(EventId::parse("0190a8f0-1234-4abc-8def-0123456789ab").is_err(), "a UUIDv4 is refused by name");
+    }
+
+    /// CONTRACT (build.md §5: "The store answers four reads: ... and the storage changes' events
+    /// (`type` `rdm.storage.*`, in event.id order)"; the `rdm.storage.*` row: written by the
+    /// fabric-primary, `subject` none, `data` `change_id`, `topology_storage_provider`, and for the
+    /// ending its `state`): two storage changes' events written among a Build's and a node's read back
+    /// as the storage changes' events alone, in event.id order, from memory and from `events.jsonl`
+    /// reopened; each carries its change and provider and no Build, so no Build's read answers one;
+    /// `commits` names only its own change's `rdm.storage.committed`. Must NOT happen: a storage event
+    /// carrying a build_id, or a Build's or a node's event among the storage changes' events.
+    // @feature: topology-storage-provider
+    #[cfg(feature = "file-backend")]
+    #[tokio::test]
+    async fn the_storage_changes_events_read_back_alone_in_event_id_order() {
+        let (mut events, b1, _, n1, _) = written();
+        let fp = source("fabric-primary");
+        let (c1, c2) = (ChangeId::mint(), ChangeId::mint());
+        let storage = vec![
+            Event::storage_started(&fp, 3_000, &c1, "test-target"),
+            Event::storage_committed(&fp, 3_001, &c1, "test-target"),
+            Event::storage_ended(&fp, 3_002, &c1, "test-target", &StepState::Complete),
+            Event::storage_started(&fp, 3_003, &c2, "file"),
+        ];
+        events.insert(2, storage[0].clone());
+        events.insert(5, storage[1].clone());
+        events.push(storage[2].clone());
+        events.push(Event::build_ended(&fp, 3_004, &b1, &EndedState::Complete));
+        events.push(storage[3].clone());
+        let memory = MemoryEventsStorage::new();
+        let dir = crate::test_support::tempdir("events-storage-changes");
+        let file = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir), &crate::store_log::LogWriter::new(&fp.node_id, &fp.incarnation)).await.unwrap();
+        for e in &events {
+            memory.append(e).await.unwrap();
+            file.append(e).await.unwrap();
+        }
+        file.finish_issued_writes().await;
+        let reopened = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir), &crate::store_log::LogWriter::mint()).await.unwrap();
+        let stores: [(&str, &dyn EventsStorage); 2] = [("memory", &memory), ("file", &reopened)];
+        for (backend, store) in stores {
+            let read = store.of_storage_changes().await.unwrap();
+            assert_eq!(ids(&read), ids(&storage), "{backend}: the storage changes' events alone, in event.id order");
+            assert!(read.iter().all(|e| e.build_id().is_none() && e.subject.is_none()), "{backend}: no storage event names a Build or a node");
+            let carried: Vec<(Option<ChangeId>, Option<String>)> = read.iter().map(|e| (e.change_id(), e.topology_storage_provider().map(String::from))).collect();
+            let expected: Vec<(Option<ChangeId>, Option<String>)> = vec![(Some(c1.clone()), Some("test-target".into())), (Some(c1.clone()), Some("test-target".into())), (Some(c1.clone()), Some("test-target".into())), (Some(c2.clone()), Some("file".into()))];
+            assert_eq!(carried, expected, "{backend}");
+            assert!(read[1].commits(&c1) && !read[1].commits(&c2) && !read[0].commits(&c1), "{backend}: commits names its own change's commit alone");
+            assert!(!store.of_build(&b1).await.unwrap().iter().any(Event::is_storage) && !store.of_node(&n1).await.unwrap().iter().any(Event::is_storage), "{backend}: no Build's or node's read answers a storage event");
+        }
     }
 }

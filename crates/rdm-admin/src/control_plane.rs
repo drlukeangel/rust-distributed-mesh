@@ -379,14 +379,25 @@ impl ControlPlane {
             // compiled against the current Build whatever its state, and a fabric.delete in force answers
             // a second one, which accepts nothing.
             let deletes = matches!(change, TopologyChange::DeleteFabric);
+            // A storage change in progress is the fabric-primary's own workflow, never a Build: every
+            // Build but fabric.delete is refused `build-in-progress` beside it (storage.md §2 "Changing it").
+            if !deletes {
+                if let Some(running) = self.storage_changes.get().and_then(|c| c.in_progress()) {
+                    outer.in_scope(|| {
+                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, change_id = %running.change_id, held_by = %self.node_id.get().map(|id| id.as_str()).unwrap_or(""))
+                            .in_scope(|| tracing::info!("a storage change is in progress: no Build is admitted beside it"))
+                    });
+                    return Err(Refusal::StorageChangeInProgress { change_id: running.change_id, held_by: self.node_id.get().cloned() });
+                }
+            }
             let (_admitted, current) = if deletes { self.current_read().await? } else { self.current_settled().await? };
             if deletes {
-                // A storage change in progress is resolved before anything of the delete is written: its
-                // commit record read, and this fabric-primary unblocked onto the provider it decided
-                // (storage.md §2: fabric.delete "interrupts the change as it interrupts any Build";
-                // i149 R12).
+                // A storage change in progress is ended before anything of the delete is written: its
+                // rdm.storage.committed event read, every mesh-primary sent mesh.unblock onto the provider
+                // it decided, and its rdm.storage.ended event written failed (storage.md §2: fabric.delete
+                // "interrupts the change as it interrupts any Build").
                 if let Some(changes) = self.storage_changes.get() {
-                    changes.interrupt_for_delete();
+                    changes.interrupt_for_delete().await;
                 }
                 if let Some((resumed, _)) = self.fabric_delete_in_force().await? {
                     span.record("build_id", resumed.build_id.as_str());
@@ -399,32 +410,11 @@ impl ControlPlane {
             // nothing accepted, so a list from a stale read never removes a node another caller added.
             // It compiles against what the rows record of each path's executable.
             let recorded = match &change {
-                TopologyChange::Reconcile { based_on, topology_storage_provider, .. } => {
+                TopologyChange::Reconcile { based_on, .. } => {
                     if based_on != &current.build_id {
                         let reject = BuildReject::BasedOnNotCurrent { based_on: based_on.to_string(), current: current.build_id.to_string() };
                         outer.in_scope(|| reject_span(route, &reject));
                         return Err(Refusal::Reject(reject));
-                    }
-                    // A provider this fabric-primary's wiring does not register is refused by name, nothing
-                    // accepted and nothing moved (storage.md §2 "Changing it").
-                    if let Some(provider) = topology_storage_provider.as_ref().filter(|p| !self.topology_storage_providers.contains(p)) {
-                        let reject = BuildReject::TopologyStorageProviderNotRegistered { provider: provider.clone(), registered: self.topology_storage_providers.clone() };
-                        outer.in_scope(|| reject_span(route, &reject));
-                        return Err(Refusal::Reject(reject));
-                    }
-                    // A registered provider other than the Fabric row's is opened now, on this fabric-primary's
-                    // scope, and closed again: one that does not open is refused by name, nothing accepted and
-                    // nothing moved (storage.md §2 "Changing it": "does not register or cannot open").
-                    if let Some(provider) = topology_storage_provider.as_ref() {
-                        let named = self.accepted.topology_storage_provider().await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
-                        if named.as_deref() != Some(provider.as_str()) {
-                            let changes = self.storage_changes.get().ok_or_else(|| Refusal::Unavailable(format!("path={} name={}: no topology storage handle is held yet to open `{provider}`", self.me.path, self.me.name)))?;
-                            if let Err(detail) = changes.handle.opens(provider).await {
-                                let reject = BuildReject::TopologyStorageProviderNotOpened { provider: provider.clone(), detail };
-                                outer.in_scope(|| reject_span(route, &reject));
-                                return Err(Refusal::Reject(reject));
-                            }
-                        }
                     }
                     let rows = self.node_rows.get().ok_or_else(|| Refusal::Unavailable(format!("path={} name={}: no nodes.storage is open yet to read what each node's row records", self.me.path, self.me.name)))?;
                     crate::accepted::recorded_executables(&**rows, &current.topology).await.map_err(Refusal::Unavailable)?
@@ -480,26 +470,11 @@ impl ControlPlane {
                     return Err(Refusal::Reject(reject));
                 }
             };
-            // The fabric's topology_storage_provider the Build realizes: the request's, else the Fabric row's,
-            // unchanged (storage.md §2: "a Build that omits the property leaves it unchanged", Q166).
-            let current_provider = self.accepted.topology_storage_provider().await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
-            topology.topology_storage_provider = match &change {
-                TopologyChange::Reconcile { topology_storage_provider: Some(p), .. } => Some(p.clone()),
-                _ => current_provider.clone(),
-            };
-            // A Build naming another provider than the Fabric row's is a storage change: its change_id is
-            // minted now and recorded with the accepted Build, before its first command (storage.md §2
-            // "Changing it"). Any other Build is none, whatever Build it was compiled against.
-            // The Build's id, minted once: a storage change accepted now is keyed by it.
+            // The fabric's topology_storage_provider at the acceptance, the Fabric row's: a Build never
+            // changes it (storage.md §2: a storage change is fabric.storage.update, never a Build).
+            topology.topology_storage_provider = self.accepted.topology_storage_provider().await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
+            // The Build's id, minted once.
             let build_id = BuildId::mint();
-            topology.storage_change = match (&change, &current_provider) {
-                (TopologyChange::Reconcile { topology_storage_provider: Some(to), .. }, Some(from)) if to != from => Some(rdm_core::build::StorageChange { change_id: rdm_core::ChangeId::mint(), from: from.clone(), to: to.clone(), build_id: build_id.clone() }),
-                // A fabric.delete interrupting a storage change carries it: the delete sends each
-                // mesh-primary `mesh.unblock` onto the provider the change's `commit` record decided
-                // before its teardown.
-                (TopologyChange::DeleteFabric, _) => current.topology.storage_change.clone().filter(|_| matches!(current.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running)),
-                _ => None,
-            };
             // Every create names its executable (build-deployment.md §2.1): whatever change compiled it, a
             // path created with none is refused by name, nothing accepted.
             if let Some(reject) = created_without_executable(&current.topology, &topology) {
@@ -1468,6 +1443,14 @@ pub enum Refusal {
     /// change), or the attempt holding the mesh the request acts in (one attempt in flight per mesh,
     /// R-BI7 caveat 3).
     BuildInProgress(InProgress),
+    /// A storage change is in progress (storage.md §2 "Changing it"): the fabric-primary's own workflow,
+    /// beside which no Build but fabric.delete is admitted, refused `build-in-progress` by name.
+    StorageChangeInProgress {
+        /// The change in progress.
+        change_id: rdm_core::ChangeId,
+        /// The fabric-primary running it.
+        held_by: Option<crate::model::NodeId>,
+    },
     /// This admin may not open or claim on the mesh the request acts in: a topology attempt is the
     /// fabric-primary's, a drift attempt its mesh's primary's (R-BI7 caveat 2), as its view holds them.
     NotClaimant {
@@ -1585,7 +1568,7 @@ fn settled(current: &crate::build_state::BuildProjection) -> Result<(), Refusal>
 /// The mesh `op` acts in.
 fn op_mesh(op: &crate::build::BuildOperation) -> Option<String> {
     match op {
-        crate::build::BuildOperation::CreateMesh { mesh, .. } | crate::build::BuildOperation::ShutdownMesh { mesh, .. } | crate::build::BuildOperation::BlockStorage { mesh, .. } | crate::build::BuildOperation::UnblockStorage { mesh, .. } => Some(mesh.clone()),
+        crate::build::BuildOperation::CreateMesh { mesh, .. } | crate::build::BuildOperation::ShutdownMesh { mesh, .. } => Some(mesh.clone()),
         other => other.mesh().map(str::to_owned),
     }
 }
@@ -1772,7 +1755,7 @@ mod tests {
         let operation = rdm_core::OperationId::new("node.start", rdm_core::OperationSubject::Birth { node_id: t.node(&started).unwrap().node_id.clone(), incarnation: from.clone() });
         let p = BuildProjection {
             build_id: build_id.clone(),
-            topology: FabricTopology { section_of: None, storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default(), pinned: Default::default() },
+            topology: FabricTopology { section_of: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default(), pinned: Default::default() },
             submitted_change: None,
             submitted_at_ms: 0,
             state: BuildState::Pending,
@@ -1835,7 +1818,7 @@ mod tests {
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
             rdm_core::binding::Binding { launch_id: id.into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
         };
-        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
+        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
         let with = |p: PathName, kind: NodeKind, b: rdm_core::binding::Binding| {
             let mut next = current.clone();
             let m = next.meshes.get_mut("mesh1").unwrap();
@@ -1869,7 +1852,7 @@ mod tests {
 
     /// A topology of mesh1 holding one node-admin, and that topology with each `(path, binding)` created.
     fn creating(created: &[(PathName, NodeKind, rdm_core::binding::Binding)]) -> (crate::accepted::FabricTopology, crate::accepted::FabricTopology) {
-        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])))].into() };
+        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])))].into() };
         let mut next = current.clone();
         let m = next.meshes.get_mut("mesh1").unwrap();
         for (p, kind, b) in created {
@@ -1991,7 +1974,7 @@ mod tests {
             rdm_core::binding::Binding { launch_id: "rpc_node".into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: image.map(str::to_string) }
         };
         let image = Some(crate::deployment::container::RUNTIME_IMAGE);
-        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 0)])))].into() };
+        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 0)])))].into() };
         let with = |b: rdm_core::binding::Binding| {
             let mut next = current.clone();
             let p: PathName = PathName::new("mesh1.rpc", "1").unwrap();
@@ -2031,7 +2014,7 @@ mod tests {
     /// Must NOT happen: a create accepted with nothing naming what it runs.
     #[test]
     fn a_path_created_naming_no_executable_is_refused_by_name_whatever_the_change() {
-        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
+        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
         let observed = crate::topology::Topology { fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![] };
         let grown = crate::accepted::compile(&current, &crate::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, &observed).unwrap();
         assert_eq!(created_without_executable(&current, &grown), Some(BuildReject::ExecutableMissing { node: PathName::new("mesh1.rpc", "2").unwrap() }));

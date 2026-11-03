@@ -111,7 +111,7 @@ fn properties(estate: &Estate, node: &NodeView) -> rdm_node::node_records::NodeP
 /// ready after it. A Build with no terminal frame within the bound is the defect, named with
 /// what `build.get` and `fabric.get` say of it then.
 async fn row(estate: &Estate, what: &str, based_on: rdm_client::BuildId, request: Vec<NodeSpec>, back: Back, rows: &mut Vec<(String, String, Back)>) {
-    let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await;
+    let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
     let id = stream.build_id().clone();
     let done = match tokio::time::timeout(BOUND, estate.follow(stream)).await {
         Ok(done) => done,

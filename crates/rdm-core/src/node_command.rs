@@ -106,8 +106,6 @@ pub enum NodeCommandRequest {
         node_id: NodeId,
         /// Its exact incarnation.
         incarnation: IncarnationId,
-        /// The storage change's Build.
-        build_id: String,
         /// The change.
         change_id: crate::ChangeId,
         /// The provider the birth writes from here on.
@@ -139,10 +137,46 @@ pub enum NodeCommandRequest {
         node_id: NodeId,
         /// The commanded incarnation.
         incarnation: IncarnationId,
-        /// The storage change's Build.
-        build_id: String,
         /// The exact change whose move or rollback releases this block.
         change_id: crate::ChangeId,
+    },
+    /// `mesh.block` (storage.md §2 "Changing it", step 1): the fabric-primary's command to the exact
+    /// birth of a mesh's mesh-primary, a step of the fabric-primary's own storage change, never a
+    /// Build. The mesh-primary waits until its in-flight commands complete and every node of its mesh
+    /// has frozen its writes, then answers [`NodeCommandReply::MeshBlocked`] and issues no new command
+    /// until it is unblocked. Appended: no variant before it moves.
+    ///
+    /// Position 6 on the wire.
+    BlockMesh {
+        /// The mesh-primary's node.
+        node_id: NodeId,
+        /// Its exact incarnation.
+        incarnation: IncarnationId,
+        /// The change.
+        change_id: crate::ChangeId,
+        /// The provider the fabric writes at the change's start: the old provider.
+        from: String,
+        /// The provider the change names: the new provider.
+        to: String,
+    },
+    /// `mesh.unblock` (storage.md §2 "Changing it", step 4): the fabric-primary's command to the exact
+    /// birth of a mesh's mesh-primary. The mesh-primary moves itself and every node of its mesh onto
+    /// the provider the change's `rdm.storage.committed` event decided (`to` when the event exists,
+    /// `from` when it does not), answers [`NodeCommandReply::MeshUnblocked`] naming it, and issues
+    /// commands again. Appended: no variant before it moves.
+    ///
+    /// Position 7 on the wire.
+    UnblockMesh {
+        /// The mesh-primary's node.
+        node_id: NodeId,
+        /// Its exact incarnation.
+        incarnation: IncarnationId,
+        /// The change.
+        change_id: crate::ChangeId,
+        /// The old provider.
+        from: String,
+        /// The new provider.
+        to: String,
     },
 }
 
@@ -156,13 +190,15 @@ impl NodeCommandRequest {
             Self::StorageStep { .. } => "storage-step",
             Self::StorageBlock { .. } => "storage-block",
             Self::LeaveMesh { .. } => "leave-mesh",
+            Self::BlockMesh { .. } => "block-mesh",
+            Self::UnblockMesh { .. } => "unblock-mesh",
         }
     }
 
     /// The birth the command names.
     pub fn subject(&self) -> (&NodeId, &IncarnationId) {
         match self {
-            Self::DeleteConnections { node_id, incarnation, .. } | Self::StopNode { node_id, incarnation, .. } | Self::StartNode { node_id, incarnation, .. } | Self::StorageBlock { node_id, incarnation, .. } | Self::StorageStep { node_id, incarnation, .. } | Self::LeaveMesh { node_id, incarnation, .. } => (node_id, incarnation),
+            Self::DeleteConnections { node_id, incarnation, .. } | Self::StopNode { node_id, incarnation, .. } | Self::StartNode { node_id, incarnation, .. } | Self::StorageBlock { node_id, incarnation, .. } | Self::StorageStep { node_id, incarnation, .. } | Self::LeaveMesh { node_id, incarnation, .. } | Self::BlockMesh { node_id, incarnation, .. } | Self::UnblockMesh { node_id, incarnation, .. } => (node_id, incarnation),
         }
     }
 }
@@ -359,7 +395,19 @@ pub enum NodeCommandReply {
     ///
     /// Position 23 on the wire.
     StorageBlocked,
-
+    /// `blocked`: the mesh-primary's answer to [`NodeCommandRequest::BlockMesh`], the command's
+    /// terminal. Appended: no variant before it moves.
+    ///
+    /// Position 24 on the wire.
+    MeshBlocked,
+    /// `unblocked`: the mesh-primary's answer to [`NodeCommandRequest::UnblockMesh`], the command's
+    /// terminal: every node of its mesh writes `provider`. Appended: no variant before it moves.
+    ///
+    /// Position 25 on the wire.
+    MeshUnblocked {
+        /// The provider the change decided, which every node of the mesh writes.
+        provider: String,
+    },
 }
 
 impl NodeCommandReply {
@@ -390,6 +438,8 @@ impl NodeCommandReply {
             Self::StopMeshLeft { .. } => "stop-mesh-left",
             Self::MeshLeft { .. } => "mesh-left",
             Self::BusyHoldingConnections { .. } => "busy-holding-connections",
+            Self::MeshBlocked => "mesh-blocked",
+            Self::MeshUnblocked { .. } => "mesh-unblocked",
         }
     }
 }
@@ -417,8 +467,8 @@ impl NodeProtocol for NodeCommand {
     /// A connections-deleting node still takes a command: a second `All` leaves an incomplete
     /// closure (node-connections-delete.md step 5).
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 6;
-    const REPLY_VARIANTS: u32 = 24;
+    const REQUEST_VARIANTS: u32 = 8;
+    const REPLY_VARIANTS: u32 = 26;
 
     type Request = NodeCommandRequest;
     type Reply = NodeCommandReply;
@@ -449,12 +499,14 @@ impl NodeProtocol for NodeCommand {
             NodeCommandReply::StopMeshLeft { .. } => "stop-mesh-left",
             NodeCommandReply::MeshLeft { .. } => "mesh-left",
             NodeCommandReply::BusyHoldingConnections { .. } => "busy-holding-connections",
+            NodeCommandReply::MeshBlocked => "mesh-blocked",
+            NodeCommandReply::MeshUnblocked { .. } => "mesh-unblocked",
         }
     }
 
     fn classify_reply(reply: &NodeCommandReply) -> ReplyKind {
         match reply {
-            NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeJoined | NodeCommandReply::NodeStarted | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked => ReplyKind::Success,
+            NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeJoined | NodeCommandReply::NodeStarted | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } => ReplyKind::Success,
             NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } | NodeCommandReply::MeshLeft { .. } => ReplyKind::Success,
             // As Status 0x1B classifies the same refusal.
             NodeCommandReply::BusyHoldingConnections { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
@@ -502,7 +554,7 @@ impl StreamingProtocol for NodeCommand {
         match frame {
             NodeCommandReply::CommandAccepted { .. } => FrameKind::Started,
             NodeCommandReply::ConnectionsDeleting { .. } | NodeCommandReply::StopConnectionsDeleted { .. } | NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } | NodeCommandReply::NodeJoined => FrameKind::Data,
-            NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::MeshLeft { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked => FrameKind::Terminal,
+            NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::MeshLeft { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(NodeCommand::classify_reply(other)),
         }
     }
@@ -598,6 +650,32 @@ mod tests {
             let bytes = NodeCommand::encode_reply(&reply).unwrap();
             assert!(bytes.len() <= NodeCommand::MAX_REPLY_FRAME_BYTES, "{}: {} bytes", reply.name(), bytes.len());
             assert_eq!(NodeCommand::decode_reply(&bytes).unwrap(), reply);
+        }
+    }
+
+    /// CONTRACT (storage.md §2 "Changing it", steps 1 and 4: "The fabric-primary sends `mesh.block` to
+    /// every mesh-primary" ... "The fabric-primary sends `mesh.unblock` to every mesh-primary"; a
+    /// storage change is the fabric-primary's own workflow, never a Build): `BlockMesh` and
+    /// `UnblockMesh` round-trip at positions 6 and 7, carrying the change and its two providers and no
+    /// Build; each streams `CommandAccepted` then its one terminal, `MeshBlocked` or `MeshUnblocked`
+    /// naming the provider its mesh writes. Must NOT happen: a frame after the terminal.
+    // @feature: topology-storage-provider
+    #[test]
+    fn a_mesh_block_and_a_mesh_unblock_stream_their_acceptance_then_their_one_terminal() {
+        let change_id = crate::ChangeId::mint();
+        for (req, terminal, position) in [
+            (NodeCommandRequest::BlockMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), change_id: change_id.clone(), from: "file".into(), to: "test-target".into() }, NodeCommandReply::MeshBlocked, 6u8),
+            (NodeCommandRequest::UnblockMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), change_id: change_id.clone(), from: "file".into(), to: "test-target".into() }, NodeCommandReply::MeshUnblocked { provider: "test-target".into() }, 7u8),
+        ] {
+            let bytes = NodeCommand::encode_request(&req).unwrap();
+            assert_eq!(bytes[0], position, "{} is appended at position {position}", req.op());
+            assert_eq!(NodeCommand::decode_request(&bytes).unwrap(), req);
+            assert_eq!(NodeCommand::decode_reply(&NodeCommand::encode_reply(&terminal).unwrap()).unwrap(), terminal);
+            let mut order = FrameOrder::new();
+            for f in [accepted(), terminal.clone()] {
+                order.admit(NodeCommand::frame_kind(&f)).unwrap_or_else(|e| panic!("{}: {f:?}: {e}", req.op()));
+            }
+            assert!(order.admit(NodeCommand::frame_kind(&terminal)).is_err(), "{}: one terminal", req.op());
         }
     }
 }

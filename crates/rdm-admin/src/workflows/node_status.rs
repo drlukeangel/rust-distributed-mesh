@@ -328,7 +328,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(std::sync::OnceLock::new()),
             mesh_deleter: Arc::new(std::sync::OnceLock::new()),
-            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             fabric_states: Default::default(),
             atlas: Default::default(),

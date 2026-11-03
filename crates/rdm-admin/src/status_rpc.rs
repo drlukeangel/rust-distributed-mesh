@@ -567,6 +567,10 @@ pub struct StatusDoor {
     /// Testkit knob: hold the next reply past the caller's bound after applying (acceptance 2:
     /// apply + reply loss is `Indeterminate`, and the retry is `AlreadyApplied`).
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
+    /// This admin's storage changes (storage.md §2 "Changing it"): the one it runs as fabric-primary,
+    /// requested by `fabric.storage.update`, and the `mesh.block` and `mesh.unblock` it serves as a
+    /// mesh-primary. Set once at its boot.
+    pub storage_changes: Arc<OnceLock<Arc<crate::storage_change::StorageChanges>>>,
     /// Wakes this admin's declarer: a view this Status door changed, and a down op's receipt.
     pub wake: Arc<crate::status_declare::DeclareWake>,
     /// This admin's fabric states; filled once the admin holds the handles they act through.
@@ -726,7 +730,7 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
-        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateRoots { .. } | StatusRequest::UpdateRoot { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::Reserved34 { .. } | StatusRequest::ReportCallFailed { .. } => {
+        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateRoots { .. } | StatusRequest::UpdateRoot { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::Reserved34 { .. } | StatusRequest::ReportCallFailed { .. } | StatusRequest::UpdateStorage { .. } => {
             (crate::node_self::request_not_handled(door.node_id.as_str(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state, changed_at_rafka_ms } => {
@@ -1098,16 +1102,16 @@ impl StatusDoor {
 
     /// Close one exact birth's own-property admission before the provider copy. Silence or
     /// an unanswered command is never a successful block.
-    pub async fn carry_storage_block(&self, subject: &crate::model::Node, build_id: &crate::build::BuildId, change_id: &rdm_core::ChangeId) -> Result<(), String> {
+    pub async fn carry_storage_block(&self, subject: &crate::model::Node, change_id: &rdm_core::ChangeId) -> Result<(), String> {
         use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
         let incarnation = subject.incarnation_id.as_ref().ok_or_else(|| format!("{} has no exact incarnation to block", subject.node_id))?;
         let result = if subject.node_id == self.node_id {
             let moves = self.own.get().and_then(|own| own.storage_moves())
                 .ok_or_else(|| format!("{} has no storage handle to block", subject.node_id))?;
-            moves.block(build_id, change_id).await
+            moves.block(change_id).await
         } else {
             let configs = self.configs.get().ok_or_else(|| "this admin has no client to block node properties".to_string())?;
-            let request = NodeCommandRequest::StorageBlock { node_id: subject.node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.to_string(), change_id: change_id.clone() };
+            let request = NodeCommandRequest::StorageBlock { node_id: subject.node_id.clone(), incarnation: incarnation.clone(), change_id: change_id.clone() };
             crate::storage_change::command(configs.client(), &self.commands, &subject.node_id, &request).await?
         };
         match result {
@@ -1120,7 +1124,7 @@ impl StatusDoor {
     /// of this admin's mesh onto `provider`, carried by this mesh-primary in its `mesh.unblock` to the
     /// exact birth on the node command op 0x22 (its own birth in-process). Once the birth moved, this
     /// mesh-primary, the writer of its mesh's rows, records the provider on its row.
-    pub async fn carry_storage_step(&self, node_id: &NodeId, incarnation: &IncarnationId, build_id: &str, change_id: &rdm_core::ChangeId, provider: &str) -> crate::storage_change::Carried {
+    pub async fn carry_storage_step(&self, node_id: &NodeId, incarnation: &IncarnationId, change_id: &rdm_core::ChangeId, provider: &str) -> crate::storage_change::Carried {
         use crate::storage_change::Carried;
         use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
         let view = self.topology.read().await.clone();
@@ -1134,7 +1138,7 @@ impl StatusDoor {
         if subject.incarnation_id.as_ref() != Some(incarnation) {
             return Carried::NotDone(format!("{} is another birth now", subject.node_id));
         }
-        let command = NodeCommandRequest::StorageStep { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.to_string(), change_id: change_id.clone(), provider: provider.to_string() };
+        let command = NodeCommandRequest::StorageStep { node_id: node_id.clone(), incarnation: incarnation.clone(), change_id: change_id.clone(), provider: provider.to_string() };
         // A decoration holding the command (the testkit's cut): it is carried once released, its answer
         // dropped, and the move is not done now.
         if let (Some(release), Some(configs)) = (self.command_frame_seam.as_ref().and_then(|seam| seam.hold_storage_step(&subject.name, change_id)), self.configs.get()) {
@@ -1151,12 +1155,9 @@ impl StatusDoor {
             let Some(storage) = self.own.get().and_then(|own| own.storage_moves()) else {
                 return Carried::NotDone(format!("path {me_name_path:?}, name {me_name_name:?} holds no storage handle yet", me_name_path = &me_name.path, me_name_name = &me_name.name));
             };
-            let Ok(build) = build_id.parse::<crate::build::BuildId>() else {
-                return Carried::NotDone(format!("{build_id:?} is no Build id"));
-            };
-            match storage.refusal(&build, change_id, provider).await {
+            match storage.refusal(change_id, provider).await {
                 Some(refused) => refused,
-                None => storage.serve(&build, change_id, provider).await,
+                None => storage.serve(change_id, provider).await,
             }
         } else {
             let Some(configs) = self.configs.get() else {
@@ -1354,6 +1355,14 @@ impl StatusDoor {
             // holds the new root as the next root, writes the roots row `minted` and answers; the phases
             // follow on its renewal tick (`cert_renewal::rotate_roots`).
             StatusRequest::UpdateRoot { secret } => return self.update_root(&view, secret).await,
+            // fabric.storage.update (storage.md §2 "Changing it"): the fabric-primary starts the storage
+            // change, its own workflow and never a Build, and answers its change_id.
+            StatusRequest::UpdateStorage { topology_storage_provider } => {
+                return match self.storage_changes.get() {
+                    Some(changes) => changes.update(topology_storage_provider).await,
+                    None => rdm_core::reply::status::not_ready(format!("{}: this admin holds no storage changes yet", self.node_id)),
+                };
+            }
             // A caller's call to a birth ended with its attempts spent (node-rpc.md §43; Q311).
             StatusRequest::ReportCallFailed { sender: from, receiver, reason } => return self.report_call_failed(&view, from, receiver, reason),
             _ => {}
@@ -2761,6 +2770,28 @@ fn serve_node_command(b: ServerBuilder, door: Arc<OnceLock<Arc<StatusDoor>>>) ->
                 return Ok(rdm_core::reply::node_command::not_ready(format!("{} has not yet joined its mesh; {} is refused", door.node_id, req.op())));
             };
             let sender = door.sender_of(&EndpointId(peer.endpoint_id.to_string())).await;
+            // `mesh.block` and `mesh.unblock`, the fabric-primary's commands to this mesh-primary's exact
+            // birth in its storage change (storage.md §2 "Changing it", steps 1 and 4), are this admin's.
+            if let NodeCommandRequest::BlockMesh { incarnation, change_id, from, to, .. } | NodeCommandRequest::UnblockMesh { incarnation, change_id, from, to, .. } = &req {
+                if *incarnation != own.incarnation {
+                    return Ok(rdm_core::reply::node_command::rejected_stale_incarnation(own.incarnation.clone()));
+                }
+                let Some(changes) = door.storage_changes.get().cloned() else {
+                    return Ok(rdm_core::reply::node_command::not_ready(format!("{} holds no storage changes yet; {} is refused", door.node_id, req.op())));
+                };
+                let mut frames = crate::node_self::StreamFrames::new(sink);
+                if crate::node_self::CommandFrames::accepted(&mut frames, NodeCommandReply::CommandAccepted { node_id: door.node_id.clone(), incarnation: own.incarnation.clone() }).await.is_err() {
+                    return Ok(rdm_core::reply::node_command::not_ready(format!("the caller left before {} was accepted", req.op())));
+                }
+                let change = rdm_core::build::StorageChange { change_id: change_id.clone(), from: from.clone(), to: to.clone() };
+                let reply = match &req {
+                    NodeCommandRequest::BlockMesh { .. } => changes.serve_block(&change).await,
+                    _ => changes.serve_unblock(&change).await,
+                };
+                tracing::info_span!("rdm.node_admin.status.update.via-command", node_path = %door.me.path, node_name = %door.me.name, op = req.op(), sender = %sender.map(|n| n.node_id.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("a node command naming this admin was decided"));
+                return Ok(reply);
+            }
             let reply = own.serve_node_command_on(sender.as_ref().map(|n| &n.node_id), Some(peer.endpoint_id), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
             tracing::info_span!("rdm.node_admin.status.update.via-command", node_path = %door.me.path, node_name = %door.me.name, op = req.op(), sender = %sender.map(|n| n.node_id.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("a node command naming this admin was decided"));
@@ -3055,7 +3086,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
-            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
@@ -3122,7 +3153,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
-            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
@@ -3323,7 +3354,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
-            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status,
@@ -3655,7 +3686,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
-            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
@@ -3819,7 +3850,7 @@ mod tests {
             commands: Default::default(),
             own: Default::default(),
             mesh_deleter: Default::default(),
-            hold_next_reply: Default::default(),
+            storage_changes: Default::default(), hold_next_reply: Default::default(),
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
@@ -4222,7 +4253,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
-            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
@@ -4325,7 +4356,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
-            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
@@ -4435,7 +4466,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
-            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),

@@ -206,7 +206,12 @@ impl BuildStream {
 
 /// The refusal `reply` is, as the call ends.
 fn refusal(reply: BuildReply) -> CallEnd {
-    if let BuildReply::BuildInProgress { current_build_id, .. } = &reply {
+    if let BuildReply::BuildInProgress { current_build_id, held_by, .. } = &reply {
+        // A storage change is in progress (storage.md §2 "Changing it"): no Build holds it, so the
+        // refusal names none, and the fabric-primary running the change.
+        if current_build_id.is_empty() {
+            return CallEnd::Rejected { reason: "build-in-progress".into(), detail: format!("a storage change is in progress at the fabric-primary {}: no Build is admitted beside it", held_by.as_ref().map(|id| id.as_str()).unwrap_or("unnamed")) };
+        }
         return match BuildId::parse(current_build_id) {
             Ok(current) => CallEnd::BuildInProgress { current },
             Err(e) => CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("the fabric-primary answered BuildInProgress naming a Build id that is not a Crockford id: {e}") },

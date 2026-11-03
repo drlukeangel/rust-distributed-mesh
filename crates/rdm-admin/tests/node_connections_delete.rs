@@ -371,7 +371,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
-            hold_next_reply: Arc::new(AtomicBool::new(false)),
+            storage_changes: Default::default(), hold_next_reply: Arc::new(AtomicBool::new(false)),
             wake: Default::default(),
             fabric_states: Default::default(),
             atlas: Default::default(),

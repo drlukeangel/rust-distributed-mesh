@@ -66,16 +66,16 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
                         },
                         rdm_core::meta::NodeSpec { path: rdm_core::PathName::new("m.rpc", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
                     ],
-                    topology_storage_provider: None,
                 }),
             },
-            // the fabric's topology_storage_provider appended last (storage.md §2): `00`, none named.
-            "00 00 0f 0c 303132333435363738396162 02 07 6d2e61646d696e 01 31 01 6d 00 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 00 05 6d2e727063 01 31 01 6d 01 00 00 00 01 01 6b 01 76 00",
+            // the change carries no provider: a storage change is fabric.storage.update, never a Build
+            // (storage.md §2 "Changing it").
+            "00 00 0f 0c 303132333435363738396162 02 07 6d2e61646d696e 01 31 01 6d 00 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 00 05 6d2e727063 01 31 01 6d 01 00 00 00 01 01 6b 01 76",
         ),
-        // a complete topology naming the provider `file`: `01`, then the name.
+        // a complete topology listing no node: based_on, then the empty list.
         (
-            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { based_on: rdm_core::BuildId::parse("0123456789ab").unwrap(), nodes: vec![], topology_storage_provider: Some("file".into()) }) },
-            "00 00 0f 0c 303132333435363738396162 00 01 04 66696c65",
+            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { based_on: rdm_core::BuildId::parse("0123456789ab").unwrap(), nodes: vec![] }) },
+            "00 00 0f 0c 303132333435363738396162 00",
         ),
         (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into(), from_attempt: 3 } }, "00 01 01 62 03"),
         (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: executor_birth(), context: CallContext::default(), operations: vec![b"{}".to_vec()], hand_off_to: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()), mesh: None }, "01 01 62 02 0c 303132333435363738396162 0c 303132333435363738396163 00 00 00 00 01 02 7b7d 01 0c 303132333435363738396162 00"),

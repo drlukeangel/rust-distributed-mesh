@@ -400,16 +400,6 @@ impl TopologyStorageHandle {
         })
     }
 
-    /// Replace the provider with the one this executable registers as `provider`, opened now, off the
-    /// admin's boot, with the admin's connections rows for each node ID it opened them for and the Build
-    /// journal's derivation installed: from the swap every call goes to it, and this returns once every
-    /// write admitted to the old provider has been answered there and the old provider has finished
-    /// the writes it issued ("Finish outstanding writes"). A name the executable does not register, or
-    /// a provider that does not open, is refused by name and nothing moves.
-    pub async fn replace(&self, provider: &str) -> Result<(), String> {
-        self.replace_for(provider, None).await
-    }
-
     /// Keep `record` as the admin's own row in its data dir, naming the provider it writes now (storage.md
     /// §2: a start with no launcher opens "its own row in its data dir"'s provider), through the
     /// provider it writes; each later move writes it again naming the provider it moves onto.
@@ -461,17 +451,18 @@ impl TopologyStorageHandle {
         *self.provider_written.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(written));
     }
 
-    /// [`Self::replace`] as the move of the storage change `change` (`(build_id, change_id)`), which its
-    /// open span names; a move onto the provider the admin writes already moves nothing.
-    pub async fn replace_for(&self, provider: &str, change: Option<(&crate::build::BuildId, &rdm_core::ChangeId)>) -> Result<(), String> {
+    /// Replace the provider with the one this executable registers as `provider`, opened now, off the
+    /// admin's boot, with the admin's connections rows for each node ID it opened them for and the Build
+    /// journal's derivation installed: from the swap every call goes to it, and this returns once every
+    /// write admitted to the old provider has been answered there and the old provider has finished
+    /// the writes it issued ("Finish outstanding writes"). A name the executable does not register, or
+    /// a provider that does not open, is refused by name and nothing moves.
+    pub async fn replace(&self, provider: &str) -> Result<(), String> {
         if self.provider() == provider {
             return Ok(());
         }
         let _one = self.replacing.lock().await;
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-storage-open", build_id = tracing::field::Empty, change_id = tracing::field::Empty, node_id = %self.scope.node_id, provider = %provider, outcome = tracing::field::Empty);
-        if let Some((build_id, change_id)) = change {
-            span.record("build_id", build_id.log().to_string().as_str()).record("change_id", change_id.as_str());
-        }
+        let span = tracing::info_span!("rdm.node_admin.storage.update.via-open", node_id = %self.scope.node_id, provider = %provider, outcome = tracing::field::Empty);
         let opened = async {
             let boundaries = self.providers.named(provider)?.open(&self.scope).await?;
             let mut connections = std::collections::HashMap::new();
@@ -765,6 +756,9 @@ impl EventsStorage for Through {
     }
     async fn of_node(&self, node_id: &NodeId) -> Result<Vec<crate::events_storage::Event>, StorageError> {
         self.read().stores().boundaries.events.of_node(node_id).await
+    }
+    async fn of_storage_changes(&self) -> Result<Vec<crate::events_storage::Event>, StorageError> {
+        self.read().stores().boundaries.events.of_storage_changes().await
     }
 }
 

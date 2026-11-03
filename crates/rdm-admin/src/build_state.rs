@@ -3573,7 +3573,7 @@ mod tests {
         let admin = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, path: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve }, executable: None, tags: Default::default(), config: Default::default() };
         let mut rpc = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, path: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
         rpc.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
-        let change = crate::accepted::TopologyChange::Reconcile { topology_storage_provider: None, based_on: current.build_id.clone(), nodes: vec![admin, rpc] };
+        let change = crate::accepted::TopologyChange::Reconcile { based_on: current.build_id.clone(), nodes: vec![admin, rpc] };
         let observed = crate::topology::Topology {
             fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
             meshes: vec![],

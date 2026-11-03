@@ -36,6 +36,13 @@ pub fn root_updated(phase: crate::status::RootsPhase) -> StatusReply { StatusRep
 /// Construct the typed rotation-in-progress outcome: `fabric.root.update` refused by name while a
 /// rotation is in flight at `phase` (fabric-ca-renew.md).
 pub fn rotation_in_progress(phase: crate::status::RootsPhase) -> StatusReply { StatusReply::RejectedRotationInProgress { phase } }
+/// Construct the typed `fabric.storage.updated` outcome: the storage change `change_id` is started.
+pub fn storage_updated(change_id: crate::ChangeId) -> StatusReply { StatusReply::StorageUpdated { change_id } }
+/// Construct the typed build-in-progress outcome of `fabric.storage.update`: a Build or another storage
+/// change is in progress, and nothing is started.
+pub fn storage_build_in_progress(build_id: Option<String>, change_id: Option<crate::ChangeId>) -> StatusReply { StatusReply::RejectedBuildInProgress { build_id, change_id } }
+/// Construct the typed refusal of `fabric.storage.update`'s provider by the rule `reason`.
+pub fn topology_storage_provider_refused(reason: &str, detail: String) -> StatusReply { StatusReply::RejectedTopologyStorageProvider { reason: reason.into(), detail } }
 /// Construct the typed root-already-trusted outcome: `fabric.root.update` refused by name for a root
 /// the fabric trusts (fabric-ca-renew.md).
 pub fn root_already_trusted(root: String) -> StatusReply { StatusReply::RejectedRootAlreadyTrusted { root } }

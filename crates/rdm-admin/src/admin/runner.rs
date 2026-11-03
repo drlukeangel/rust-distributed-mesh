@@ -305,14 +305,13 @@ impl AdminRunner {
     }
 
     /// The `topology_storage_provider` a node this admin launches writes (storage.md §2 "every launch":
-    /// "the Fabric row and any Build in progress"): while the Build in progress is a storage change, the
-    /// provider its `commit` record decided (the new one once it switched, the old one before),
-    /// read again until the provider answers as the change's every reader does; otherwise the Fabric row's.
-    /// The provider this admin writes only while the store holds no Fabric record.
+    /// "the Fabric row and any change in progress"): while this fabric-primary runs a storage change, the
+    /// provider its `rdm.storage.committed` event decided (the new one once it switched, the old one
+    /// before), read again until the provider answers as the change's every reader does; otherwise the
+    /// Fabric row's, which the switch writes before any mesh-primary is unblocked. The provider this admin
+    /// writes only while the store holds no Fabric record.
     async fn launch_provider(&self) -> Result<String, String> {
-        let current = self.builds.current().await.map_err(|e| format!("the Build in progress could not be read for the topology storage provider a launch writes: {e}"))?;
-        let change = current.filter(|b| matches!(b.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running)).and_then(|b| b.topology.storage_change);
-        if let Some(change) = change {
+        if let Some(change) = self.storage_changes.in_progress() {
             return Ok(self.storage_changes.decide(&change).await);
         }
         let row = self.fabric_storage.fabric().await.map_err(|e| format!("the Fabric row could not be read for the topology storage provider a launch writes: {e}"))?;
@@ -1368,12 +1367,6 @@ impl OperationRunner for AdminRunner {
         r
     }
 
-    async fn before_claim(&self, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
-        match op {
-            BuildOperation::UnblockStorage { change, .. } => self.storage_changes.move_own_to_decided(change, self.observer.status_door.get().cloned()).await,
-            _ => Ok(()),
-        }
-    }
 }
 
 impl AdminRunner {
@@ -1419,12 +1412,10 @@ impl AdminRunner {
                 return Err(crate::executor::RunEnd::failed(format!("path {me_path:?}, name {me_name:?}: {:?} is neither an operation of a node recovery nor a create of a section, the work mesh {mesh}'s lane runs (attempt {attempt} of {build_id})", op.key(), me_path = &me.path, me_name = &me.name)));
             }
         }
-        // A mesh-primary that replied `blocked` to a storage change runs no other operation until it is
+        // A mesh-primary that replied `blocked` to a storage change runs no operation until it is
         // unblocked: an operation issues commands (storage.md §2 step 1).
-        if !matches!(op, BuildOperation::BlockStorage { .. } | BuildOperation::SwitchStorage { .. } | BuildOperation::UnblockStorage { .. } | BuildOperation::FinishStorage { .. }) {
-            if let Some(status_door) = self.observer.status_door.get() {
-                status_door.commands.admitted().await;
-            }
+        if let Some(status_door) = self.observer.status_door.get() {
+            status_door.commands.admitted().await;
         }
         let ended: Result<(), crate::executor::RunEnd> = match op {
             BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor_birth(), self.node_id.as_str(), build_id, attempt, op).await.map_err(Into::into),
@@ -1471,39 +1462,6 @@ impl AdminRunner {
             BuildOperation::UpdateConfig { node, .. } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, operation = ?op.key());
                 self.apply_in_place(build_id, attempt, node, op).instrument(span).await
-            }
-            BuildOperation::BlockStorage { mesh, change } => self.storage_changes.block_mesh(&*builds, build_id, attempt, mesh, change, self.observer.status_door.get().cloned()).await,
-            BuildOperation::UnblockStorage { mesh, change } => {
-                // A node that will not move is re-created at its path and name on the decided provider, steps of
-                // this attempt of the change's own Build (node.delete then node.create, as node recovery's;
-                // i149 R19): the attempt holds the mesh's in-flight row, so no other attempt could. The
-                // workflows run here, not through run_op again: one run_op frame on the stack (4c5007a60).
-                let attempt_builds: &dyn BuildStateAdapter = &*builds;
-                let recreate = move |node: PathName, from: crate::build::ExitedBirth| async move {
-                    self.delete_exited(attempt_builds, build_id, attempt, &node, &from, &rdm_core::OperationId::node("node.delete", &from.node_id)).await?;
-                    let created = self.create_over_exited(attempt_builds, build_id, attempt, &node, &from).await;
-                    self.refresh_view().await;
-                    created
-                };
-                self.storage_changes.unblock_mesh(&*builds, build_id, attempt, mesh, change, self.observer.status_door.get().cloned(), self.topology.clone(), &recreate).await
-            }
-            BuildOperation::FinishStorage { change } => self.storage_changes.finish(&*builds, build_id, attempt, change).await,
-            BuildOperation::SwitchStorage { change } => {
-                // The Fabric row's line once the change is switched: the new provider current, the old
-                // appended to the providers the fabric left (storage.md §2 step 4), written if missing.
-                let (caches, fabric_storage, fabric_id, change_row) = (self.records.caches.clone(), self.fabric_storage.clone(), self.fabric_id.clone(), change.clone());
-                let fabric_row = async move {
-                    caches
-                        .update_fabric(&*fabric_storage, &fabric_id, None, move |r| {
-                            if r.topology_storage_provider.as_deref() != Some(change_row.to.as_str()) {
-                                let left = r.topology_storage_provider.replace(change_row.to.clone()).unwrap_or(change_row.from.clone());
-                                r.previous_topology_storage_providers.push(left);
-                            }
-                        })
-                        .await
-                        .and_then(|done| done.ok_or_else(|| "this fabric-primary holds no Fabric record".to_string()))
-                };
-                self.storage_changes.switch(&*builds, build_id, attempt, change, self.observer.status_door.get().cloned(), fabric_row).await
             }
         };
         ended

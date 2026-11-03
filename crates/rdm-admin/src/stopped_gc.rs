@@ -485,7 +485,7 @@ mod tests {
         let mut facts = vec![
             BuildFact::Accepted(crate::build_state::BuildAccepted {
                 build_id: build_id.clone(), submitted_change: None, submitted_at_ms: 0,
-                topology: crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: Default::default(), topology_storage_provider: None, storage_change: None, pinned: vec![], section_of: None },
+                topology: crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: Default::default(), topology_storage_provider: None, pinned: vec![], section_of: None },
             }),
             BuildFact::Opened(AttemptOpened {
                 mesh: None,

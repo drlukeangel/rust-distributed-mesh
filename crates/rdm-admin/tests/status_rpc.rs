@@ -192,7 +192,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
         own: Arc::new(OnceLock::new()),
         mesh_deleter: Arc::new(OnceLock::new()),
-        hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
         fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
         configs: Default::default(),

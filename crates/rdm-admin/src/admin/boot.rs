@@ -1549,7 +1549,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     own: own_commands.clone(),
                                     certs: Some(issuer.clone()),
                                     mesh_deleter: mesh_deleter.clone(),
-                                    hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                                    storage_changes: { let slot: Arc<std::sync::OnceLock<_>> = Default::default(); let _ = slot.set(storage_changes.clone()); slot }, hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                                     wake: records.wake.clone(),
                                     fabric_states: states_slot.clone(), atlas: Arc::new(std::sync::OnceLock::from(control.atlas.clone())), fabric_recovery: Arc::new(std::sync::OnceLock::from(crate::fabric_recovery::reader(digest_view.clone(), records.clone()))),
                                     configs: configs_slot.clone(),
@@ -1749,6 +1749,27 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 issuer: issuer.clone(),
                             });
                             let _ = runner_slot.set(runner.clone());
+                            // The storage change's wiring (storage.md §2 "Changing it"): this admin's status door, the Build
+                            // state a change is refused beside, and the Fabric row's line its switch writes: the new provider
+                            // current, the old appended to the providers the fabric left, written if missing.
+                            {
+                                let (caches, fabric_storage, fabric_id) = (records.caches.clone(), fabric_storage.clone(), cfg.fabric_id.clone());
+                                let fabric_row: Arc<dyn Fn(rdm_core::build::StorageChange) -> futures_util::future::BoxFuture<'static, Result<(), String>> + Send + Sync> = Arc::new(move |change: rdm_core::build::StorageChange| {
+                                    let (caches, fabric_storage, fabric_id) = (caches.clone(), fabric_storage.clone(), fabric_id.clone());
+                                    Box::pin(async move {
+                                        caches
+                                            .update_fabric(&*fabric_storage, &fabric_id, None, move |r| {
+                                                if r.topology_storage_provider.as_deref() != Some(change.to.as_str()) {
+                                                    let left = r.topology_storage_provider.replace(change.to.clone()).unwrap_or(change.from.clone());
+                                                    r.previous_topology_storage_providers.push(left);
+                                                }
+                                            })
+                                            .await
+                                            .and_then(|done| done.ok_or_else(|| "this fabric-primary holds no Fabric record".to_string()))
+                                    })
+                                });
+                                let _ = storage_changes.wiring.set(crate::storage_change::Wiring { door: status_door.clone(), builds: control.builds.clone(), fabric_row });
+                            }
                             let _ = heard_again_slot.set(Arc::new(crate::heard_again::HeardAgain { client: node_rpc.client.clone(), status_door: status_door.clone(), builds: builds_dyn.clone(), runner: runner_slot.clone(), digest_view: topology_view.digest_view.clone(), investigated: investigated.clone() }));
                             // What the provider holds recorded at a path: the proof of a node the accepted topology names
                             // that no view and no durable runtime row holds a birth of (node-recovery.md step 2, Q335).
@@ -2159,6 +2180,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 })
                             };
                             let mut tasks = vec![contacts_task, node_rpc_feed, superseded_rows_task, app_channels_task];
+                            // A fabric-primary resumes the storage change its predecessor started and did not end, from its
+                            // events, each time the primary records change (storage.md §2 "Changing it").
+                            tasks.push(tokio::spawn(crate::storage_change::keep_resumed(storage_changes.clone(), topology_view.primaries().clone())));
                             tasks.extend(tasks_early);
                             // Entering an existing mesh (a recovering mesh's first admin after its maker's join; a fabric
                             // primary recovered into its mesh from its durable map): connect to a local node, read its
@@ -2549,6 +2573,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     resubmits: Arc::default(),
                                                     investigated: investigated.clone(),
                                                 };
+                                                // A node that will not move in a storage change's mesh.unblock is re-created by this
+                                                // mesh-primary's node recovery, never part of the change (storage.md §2 step 4).
+                                                {
+                                                    let recovery = recovery.clone();
+                                                    let _ = storage_changes.recreate.set(Arc::new(move |node: crate::model::Node| {
+                                                        let recovery = recovery.clone();
+                                                        Box::pin(async move {
+                                                            recovery.recover(&node).await;
+                                                        })
+                                                    }));
+                                                }
                                                 // A refused caller (Q207) is decided by its path and name and this admin's atlas, and acts
                                                 // through this recovery submitter's terminate report and the heard-again door.
                                                 // Its verification at the root is owed to the fabric-primary the view names, sent again

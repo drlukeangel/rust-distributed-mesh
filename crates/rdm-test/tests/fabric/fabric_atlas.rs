@@ -382,7 +382,7 @@ async fn a_reconcile_removing_a_primary_right_after_its_only_other_admins_start_
     let current = estate.current().await;
     let mut held = current.held(&estate.executables).unwrap_or_else(|e| panic!("{e}"));
     held.get_mut("mesh2").expect("the topology holds mesh2").remove(&primary);
-    let change = rdm_client::Change::Reconcile { topology_storage_provider: None, based_on: current.based_on.clone(), nodes: held.into_values().flat_map(|m| m.into_values()).collect() };
+    let change = rdm_client::Change::Reconcile { based_on: current.based_on.clone(), nodes: held.into_values().flat_map(|m| m.into_values()).collect() };
     let submitted = estate.carrier().await.create(change).await;
     let refused = match submitted {
         Ok(stream) => {

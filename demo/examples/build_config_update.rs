@@ -48,7 +48,7 @@ async fn build(carrier: &BuildCarrier, node: &PathName, change: impl FnOnce(&mut
     let spec = nodes.iter_mut().find(|s| s.path == *node).ok_or_else(|| anyhow!("the current Build names no path {:?}, name {:?}", node.path, node.name))?;
     change(&mut spec.config);
     let config = spec.config.clone();
-    let stream = match carrier.create(Change::Reconcile { based_on, nodes, topology_storage_provider: None }).await {
+    let stream = match carrier.create(Change::Reconcile { based_on, nodes}).await {
         Ok(s) => s,
         Err(CallEnd::Rejected { reason, detail }) => return Err(anyhow!("refused {reason}: {detail}")),
         Err(e) => return Err(e.into()),

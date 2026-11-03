@@ -320,7 +320,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Default::default(),
             mesh_deleter: Default::default(),
-            hold_next_reply: Default::default(),
+            storage_changes: Default::default(), hold_next_reply: Default::default(),
             wake: Default::default(),
             fabric_states: Default::default(),
             atlas: Default::default(),

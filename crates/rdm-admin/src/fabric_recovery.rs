@@ -619,7 +619,7 @@ mod tests {
         let claims = crate::storage::MemoryMeshStorage::default();
         let contexts = crate::build_claim::AttemptContexts::in_memory();
         let id = crate::build::BuildId::mint();
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric), submitted_at_ms: 1 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric), submitted_at_ms: 1 }).await.unwrap();
         let birth = |id: &str| rdm_core::framing::Birth { node_id: NodeId::parse(id).unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60(id)).unwrap() };
         let lost = birth("100000000000");
         let a_birth = birth("200000000000");
@@ -815,7 +815,7 @@ mod tests {
     async fn the_next_executor_under_fabric_delete_folds_earlier_transitions_so_the_lost_mesh_primary_holds_no_role_or_liveness() {
         let builds = MemoryBuildStateAdapter::new();
         let id = crate::build::BuildId::mint();
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric), submitted_at_ms: 1 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric), submitted_at_ms: 1 }).await.unwrap();
         let make_admin = |name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind| {
             let mut n = Node::allocated(name, mesh, kind);
             n.incarnation_id = Some(crate::model::IncarnationId::mint());

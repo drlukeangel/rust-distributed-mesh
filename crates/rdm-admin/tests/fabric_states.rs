@@ -150,8 +150,7 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
                 "reconcile-props",
                 TopologyChange::Reconcile {
                     based_on: root_build.build_id.clone(),
-                    nodes: vec![admin_spec.clone()],
-                    topology_storage_provider: None,
+                    nodes: vec![admin_spec.clone()]
                 },
             )
             .await
@@ -195,8 +194,7 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
                 "reconcile-resize",
                 TopologyChange::Reconcile {
                     based_on: prop_opened.build_id.clone(),
-                    nodes: vec![admin_spec, rpc_spec],
-                    topology_storage_provider: None,
+                    nodes: vec![admin_spec, rpc_spec]
                 },
             )
             .await

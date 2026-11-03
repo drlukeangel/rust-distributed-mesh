@@ -177,7 +177,7 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let entry = b_nodes.iter_mut().find(|s| s.path == PathName::new("mesh1.rpc", "2").unwrap()).expect("the entry named");
     entry.tags = ["zone_a".to_string()].into();
     entry.config = zone.clone();
-    let b = followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on: b_based_on, nodes: b_nodes }).await).await.build_id.to_string();
+    let b = followed(&estate, estate.submit_change(Change::Reconcile { based_on: b_based_on, nodes: b_nodes }).await).await.build_id.to_string();
     let created = estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1.rpc.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
     assert_eq!(exe_of(&estate, &PathName::new("mesh1.rpc", "2").unwrap()).await, next.executable, "the created node runs the executable its request named");
     let row = record_of(&estate, created.node_id.as_str());
@@ -195,7 +195,7 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
 
     // A, from its earlier read: refused, nothing accepted, (path mesh1.rpc, name 2) untouched.
     let carrier = estate.carrier().await;
-    let (reason, detail) = rejected("a request based on the Build before B's", carrier.create(Change::Reconcile { topology_storage_provider: None, based_on: a_based_on.clone(), nodes: a_request }).await);
+    let (reason, detail) = rejected("a request based on the Build before B's", carrier.create(Change::Reconcile { based_on: a_based_on.clone(), nodes: a_request }).await);
     assert_eq!(reason, "based-on-not-current", "{detail}");
     assert!(detail.contains(&a_based_on.to_string()) && detail.contains(&b), "the detail names both Builds: {detail}");
     assert_eq!(estate.accepted_build_id().await, b, "nothing is accepted");
@@ -204,14 +204,14 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let (based_on, request) = read_request(&estate).await;
     assert_eq!(based_on.to_string(), b);
     assert!(request.iter().any(|s| s.path == PathName::new("mesh1.rpc", "2").unwrap()), "the read holds what B added");
-    let (reason, detail) = rejected("a request listing no node", carrier.create(Change::Reconcile { topology_storage_provider: None, based_on: based_on.clone(), nodes: vec![] }).await);
+    let (reason, detail) = rejected("a request listing no node", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: vec![] }).await);
     assert_eq!(reason, "no-node-listed", "{detail}");
     assert!(detail.contains("fabric.delete"), "the refusal names fabric.delete: {detail}");
-    let (reason, detail) = rejected("a created path naming no executable", carrier.create(Change::Reconcile { topology_storage_provider: None, based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None) }).await);
+    let (reason, detail) = rejected("a created path naming no executable", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None) }).await);
     assert_eq!(reason, "executable-missing", "{detail}");
     assert!(detail.contains("path `mesh1.rpc`, name `3`"), "{detail}");
     let differing = Binding { sha256: "0".repeat(64), ..next.clone() };
-    let (reason, detail) = rejected("a created path on an executable whose bytes hash otherwise", carrier.create(Change::Reconcile { topology_storage_provider: None, based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(&differing)) }).await);
+    let (reason, detail) = rejected("a created path on an executable whose bytes hash otherwise", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(&differing)) }).await);
     assert_eq!(reason, "executable-refused", "{detail}");
     assert!(detail.contains("path `mesh1.rpc`, name `3`"), "{detail}");
     let (reason, detail) = rejected("a request at a count form's reserved position", carrier.create(Change::Reserved2).await);
@@ -219,7 +219,7 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     assert_eq!(estate.accepted_build_id().await, b, "nothing is accepted");
     assert!(estate.node_value_opt(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).await.is_none(), "nothing runs at mesh1.rpc.3");
 
-    followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await).await;
+    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: request }).await).await;
     assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await["node_id"], json!(created.node_id), "the re-read request changes nothing");
     // The bootstrap admin is the estate's own process, launched by no pipeline: its row records the binary it starts.
     let day0 = record_of(&estate, &s(&estate.node_value(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await["node_id"]));
@@ -282,7 +282,7 @@ async fn a_request_changing_only_the_gateways_executables_replaces_every_gateway
     let gateway = before[&PathName::new("mesh1.gateway", "1").unwrap()].executable.clone().expect("a gateway's row records its executable");
     let next = another_build(&estate, &gateway, "next");
     let (based_on, request) = gateways_on(&estate, &next).await;
-    let build = followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await).await.build_id.to_string();
+    let build = followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: request }).await).await.build_id.to_string();
     let (fp, status, accepted) = fabric_at_its_primary(&estate).await;
     assert_eq!((status, accepted.as_deref()), (ScopeStatus::Ready, Some(build.as_str())), "Complete only once the fabric is ready again under it ({fp:?})");
 
@@ -324,7 +324,7 @@ async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_
     let next = another_build(&estate, &gateway, "next");
     let (based_on, request) = gateways_on(&estate, &next).await;
 
-    let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await;
+    let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
     let build = stream.build_id().to_string();
     let held = door.wait_held("gateway-created").await;
     assert_eq!((s(&held["hit"]["build_id"]), held["hit"]["operation"].clone()), (build.clone(), json!(OperationId::location("node.create", &first))), "{p:?} is held at {first:?}'s create Complete: {held}");
@@ -376,7 +376,7 @@ async fn a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_exec
     let (based_on, request) = read_request(&estate).await;
     let stale = request.clone();
 
-    let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on: based_on.clone(), nodes: naming(request, PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, Some(&next)) }).await;
+    let stream = estate.submit_change(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request, PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, Some(&next)) }).await;
     let build = stream.build_id().to_string();
     let accepted = build_log::build_value(&estate, &build).await;
     assert!(accepted["topology"]["meshes"]["mesh2"]["nodes"].as_array().is_some_and(|n| n.iter().any(|p| p == &json!(PathName::new("mesh2.admin", "2").unwrap()))), "the added admin is in the accepted topology from acceptance: {}", accepted["topology"]);
@@ -397,9 +397,9 @@ async fn a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_exec
     // The next request, built from the read, lists the added admin and leaves it as it is.
     let (current, again) = read_request(&estate).await;
     assert!(again.iter().any(|s| s.path == PathName::new("mesh2.admin", "2").unwrap() && s.executable.as_ref() == Some(&next)), "the read lists the node RDM created");
-    let (reason, detail) = rejected("a request without the added admin, under the stale based_on", estate.carrier().await.create(Change::Reconcile { topology_storage_provider: None, based_on, nodes: stale }).await);
+    let (reason, detail) = rejected("a request without the added admin, under the stale based_on", estate.carrier().await.create(Change::Reconcile { based_on, nodes: stale }).await);
     assert_eq!(reason, "based-on-not-current", "{detail}");
-    followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on: current, nodes: again }).await).await;
+    followed(&estate, estate.submit_change(Change::Reconcile { based_on: current, nodes: again }).await).await;
     assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh2.admin", "2").unwrap()).await["node_id"], json!(added.node_id), "the next request keeps it");
     estate.shutdown().await;
 }
@@ -431,7 +431,7 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
     for (p, mesh, kind, b) in [(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", NodeKind::NodeAdmin, &admin), (PathName::new("mesh2.admin", "2").unwrap(), "mesh2", NodeKind::NodeAdmin, &admin), (PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", NodeKind::RpcNode, &rpc), (PathName::new("mesh3.admin", "1").unwrap(), "mesh3", NodeKind::NodeAdmin, &admin), (PathName::new("mesh3.rpc", "1").unwrap(), "mesh3", NodeKind::RpcNode, &rpc)] {
         grown = naming(grown, p, mesh, kind, Some(b));
     }
-    followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: grown }).await).await;
+    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: grown }).await).await;
     estate.settles_to(&[("mesh1", 2, 1), ("mesh2", 2, 1), ("mesh3", 1, 1)], SETTLE).await;
     for m in ["mesh2", "mesh3"] {
         let view = estate.mesh_view(m).await;
@@ -445,7 +445,7 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
     assert!(fp.mesh == "mesh1", "the fabric-primary is mesh1's: {fp:?}");
     let (based_on, request) = read_request(&estate).await;
     let without3: Vec<_> = request.into_iter().filter(|s| s.mesh != "mesh3").collect();
-    followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: without3 }).await).await;
+    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: without3 }).await).await;
     rdm_client::Fabrics::new(estate.carrier().await)
         .fact("mesh3 deleted", SETTLE, |f| f.meshes.iter().any(|m| m.name == "mesh3" && m.status == ScopeStatus::Dead))
         .await
@@ -458,7 +458,7 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
     estate.enter(&mesh2_admin).await;
     let (based_on, request) = read_request(&estate).await;
     let without1: Vec<_> = request.into_iter().filter(|s| s.mesh != "mesh1").collect();
-    let done = followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: without1 }).await).await;
+    let done = followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: without1 }).await).await;
     let build = done.build_id.to_string();
     let moved = done.frames.iter().position(|f| matches!(f, BuildFrame::FabricPrimaryMoved { .. })).unwrap_or_else(|| panic!("the caller's stream ended FabricPrimaryMoved and the same build_id completed: {:?}", done.frames));
     let first_step = done.frames.iter().position(|f| matches!(f, BuildFrame::Step { operation, .. } if operation.action == "mesh.delete" || operation.action == "node.delete")).unwrap_or_else(|| panic!("the mesh.delete's steps: {:?}", done.frames));
@@ -540,7 +540,7 @@ async fn an_ephemeral_paths_replacement_is_created_over_a_newly_allocated_data_d
     assert_eq!(request.iter().find(|s| s.path == PathName::new("mesh1.rpc", "1").unwrap()).map(|s| s.storage_persistence), Some(rdm_core::meta::StoragePersistence::Ephemeral), "mesh1.rpc.1's path is Ephemeral");
     let current = before[&PathName::new("mesh1.rpc", "1").unwrap()].view.executable.clone().expect("mesh1.rpc.1's row records its executable");
     let next = another_build(&estate, &current, "next");
-    followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: naming(request, PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(&next)) }).await).await;
+    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: naming(request, PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(&next)) }).await).await;
     replaced(&estate, &PathName::new("mesh1.rpc", "1").unwrap(), &before[&PathName::new("mesh1.rpc", "1").unwrap()], &next).await;
     assert!(std::path::Path::new(&before[&PathName::new("mesh1.rpc", "1").unwrap()].data_dir).is_dir(), "the predecessor's data dir is left where it was (node-delete.md \"Storage\")");
     estate.shutdown().await;
@@ -619,7 +619,7 @@ async fn a_request_replacing_every_nodes_executable_moves_the_fabric_primary_onc
     assert!(before[&fp_before].view.mesh == "mesh1", "the fabric-primary is mesh1's: {fp_before:?}");
     let (based_on, request, next) = every_path_on_another_build(&estate).await;
 
-    let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await;
+    let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
     let build = stream.build_id().to_string();
     let (frames, moves) = follow_across_replacement(&estate, stream, &[PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.admin", "2").unwrap(), PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap()]).await;
     assert_eq!(moves, 1, "the stream ended FabricPrimaryMoved once, at the fabric-primary's own replacement, and the same build_id completed at the new fabric-primary: {frames:?}");
@@ -681,7 +681,7 @@ async fn an_executor_lost_after_a_replaced_brokers_delete_leaves_its_create_alon
     door.arm("broker-deleted", json!({"kind": "event", "event": "deleted", "node": before[&broker()].view.node_id})).await;
     let (based_on, request, next) = broker_on_another_build(&estate).await;
 
-    let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await;
+    let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
     let build = stream.build_id().to_string();
     let held = door.wait_held("broker-deleted").await;
     assert_eq!((s(&held["hit"]["build_id"]), held["hit"]["operation"].clone()), (build.clone(), json!(OperationId::node("node.delete", &before[&broker()].view.node_id))), "{p:?} is held at the broker's node.deleted: {held}");
@@ -720,7 +720,7 @@ async fn an_executor_lost_inside_a_replaced_brokers_delete_has_its_successor_cre
     door.arm("broker-deleted-row", json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete", "node": OperationSubject::Node(before[&broker()].view.node_id.clone())})).await;
     let (based_on, request, next) = broker_on_another_build(&estate).await;
 
-    let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await;
+    let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
     let build = stream.build_id().to_string();
     let held = door.wait_held("broker-deleted-row").await;
     assert_eq!((s(&held["hit"]["build_id"]), held["hit"]["operation"].clone()), (build.clone(), json!(OperationId::node("node.delete", &before[&broker()].view.node_id))), "{p:?} is held inside the broker's NodeDeleted step: {held}");
@@ -795,14 +795,14 @@ async fn a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_ex
     let rpc = set.bindings.iter().find(|b| b.launch_id == "rpc_node").cloned().expect("the set binds rpc_node");
     let outside = another_build(&estate, &rpc, "outside");
     let (based_on, request) = read_request(&estate).await;
-    let (reason, detail) = rejected("an executable outside RDM_EXECUTABLE_DIRS", estate.carrier().await.create(Change::Reconcile { topology_storage_provider: None, based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Some(&outside)) }).await);
+    let (reason, detail) = rejected("an executable outside RDM_EXECUTABLE_DIRS", estate.carrier().await.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Some(&outside)) }).await);
     assert_eq!(reason, "executable-refused", "{detail}");
     assert!(detail.contains("path `mesh2.rpc`, name `1`") && detail.contains("RDM_EXECUTABLE_DIRS"), "the refusal names the path and the directories: {detail}");
     assert_eq!(estate.accepted_build_id().await, based_on.to_string(), "nothing is accepted");
     let inside_path = added.join("rpc-node-inside");
     std::fs::copy(&outside.executable, &inside_path).unwrap();
     let inside = Binding { executable: inside_path, ..outside.clone() };
-    followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: naming(request, PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Some(&inside)) }).await).await;
+    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: naming(request, PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Some(&inside)) }).await).await;
     let created = estate.until_node(&rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2.rpc.1 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
     let row = record_of(&estate, created.node_id.as_str());
     assert_eq!(row["record"]["executable"]["executable"], json!(inside.executable.display().to_string()), "mesh2's launched admin launched the executable from the added directory: {row}");
@@ -838,7 +838,7 @@ async fn a_replacements_delete_of_a_birth_replaced_after_acceptance_is_refused_b
     let (based_on, request) = gateways_on(&estate, &next).await;
 
     // Accepted with every gateway's birth pinned; mesh1's replacement held at its first create's Complete.
-    let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await;
+    let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
     let build = stream.build_id().to_string();
     let held = door.wait_held("mesh1-gateway-created").await;
     assert_eq!(s(&held["hit"]["build_id"]), build, "{p1:?} is held inside the Build's mesh1 replacement: {held}");

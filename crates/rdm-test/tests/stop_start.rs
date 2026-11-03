@@ -122,15 +122,14 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
 
         // Stopped means the application is stopped, with its Node RPC endpoint still bound.
         // Exercise the actual storage command on that endpoint, not an in-process writer call.
-        let build_id = rdm_core::BuildId::mint().to_string();
         let change_id = rdm_core::ChangeId::mint();
-        let freeze = rdm_core::node_command::NodeCommandRequest::StorageBlock { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.clone(), change_id: change_id.clone() };
+        let freeze = rdm_core::node_command::NodeCommandRequest::StorageBlock { node_id: node_id.clone(), incarnation: incarnation.clone(), change_id: change_id.clone() };
         assert_eq!(storage_command(&admin, &target, &freeze).await, rdm_core::node_command::NodeCommandReply::StorageBlocked);
         let stopped_map = std::collections::BTreeMap::from([("source".into(), "written-after-rollback".into())]);
         let mut queued = Box::pin(running.config_update(stopped_map.clone()));
         assert!(futures_lite::future::poll_once(&mut queued).await.is_none(), "an own write waits while frozen");
         assert_eq!(running.topology_view.config().unwrap()["source"], "written-while-stopped");
-        let rollback = rdm_core::node_command::NodeCommandRequest::StorageStep { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id, change_id, provider: "file".into() };
+        let rollback = rdm_core::node_command::NodeCommandRequest::StorageStep { node_id: node_id.clone(), incarnation: incarnation.clone(), change_id, provider: "file".into() };
         assert_eq!(storage_command(&admin, &target, &rollback).await, rdm_core::node_command::NodeCommandReply::StorageStepped { provider: "file".into() });
         queued.await.expect("rollback releases the stopped node's own write");
 

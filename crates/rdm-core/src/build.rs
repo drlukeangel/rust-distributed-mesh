@@ -175,12 +175,6 @@ pub enum BuildChange {
         based_on: crate::BuildId,
         /// Every node of the fabric, each by its create spec.
         nodes: Vec<crate::meta::NodeSpec>,
-        /// The fabric's `topology_storage_provider` (storage.md §2): the registered name of the backend
-        /// RDM's five record stores go to. `None` leaves the fabric's current one unchanged (Q166); a
-        /// name the fabric-primary's wiring does not register is refused by name at acceptance, nothing
-        /// moved. Appended last: the Build wire is positional.
-        #[serde(default)]
-        topology_storage_provider: Option<String>,
     },
 }
 
@@ -280,19 +274,17 @@ impl Step {
     }
 }
 
-/// A storage change (storage.md §2 "Changing it"): the Build that moves RDM's five stores from the
-/// fabric's provider to the one it names, recorded with the accepted Build before its first command.
+/// A storage change (storage.md §2 "Changing it"): the fabric-primary's own workflow, never a Build,
+/// that moves RDM's stores from the fabric's provider to the one `fabric.storage.update` names,
+/// recorded as its `rdm.storage.started` event before its first command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageChange {
-    /// The change's durable identity: every command of the change carries it.
+    /// The change's durable identity: every command and event of the change carries it.
     pub change_id: crate::ChangeId,
-    /// The provider the fabric writes at the acceptance: the old provider.
+    /// The provider the fabric writes at the change's start: the old provider.
     pub from: String,
-    /// The provider the Build names: the new provider.
+    /// The provider the change names: the new provider.
     pub to: String,
-    /// The change's own Build: its `commit` record is keyed `(build_id, change_id)` whichever Build reads
-    /// it, a fabric.delete interrupting the change included.
-    pub build_id: crate::BuildId,
 }
 
 /// What `Create` asks.

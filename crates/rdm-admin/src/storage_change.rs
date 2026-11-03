@@ -1,34 +1,36 @@
-//! A storage change (storage.md §2 "Changing it"; Q198): the Build that moves RDM's five stores from
-//! the fabric's provider to the one it names, four steps, each an operation of the Build claimed and
-//! dispatched by the fabric-primary as the Build's ordinary order (`build.attempt.run`), each ending in
-//! its receipt:
+//! A storage change (storage.md §2 "Changing it"; Q342): the fabric-primary's own workflow, never a
+//! Build, that moves RDM's stores from the fabric's provider to the one `fabric.storage.update` names.
+//! One change runs at a time and never beside a Build: each refuses the other `build-in-progress`.
+//! Its record is its three events, `rdm.storage.started` on the old provider's events store before its
+//! first command, `rdm.storage.committed` on the new one's at the switch, and `rdm.storage.ended` on the
+//! one it decided at its end; whoever resumes it learns where it stands only from them.
 //!
-//! 1. **Block**, `mesh.block:<mesh>`, run by each mesh's mesh-primary: it waits until its in-flight
-//!    commands complete, replies `blocked` and gossips a current mesh topology of its mesh; from there it
-//!    issues no new command until it is unblocked.
-//! 2. **Copy** and 3. **Switch**, `storage.switch:<change_id>`, run by the fabric-primary once every
-//!    mesh-primary replied `blocked`: the copy ([`rdm_node::storage_copy::copy`]), then the change's
-//!    `rdm.storage.committed` event for `(build_id, change_id)` appended to the new provider's events
-//!    store, then the Fabric row's line.
-//! 4. **Unblock**, `mesh.unblock:<mesh>`, run by each mesh-primary: it moves its nodes to the provider
-//!    the `rdm.storage.committed` event decided (each node's storage handle replaced, node command op 0x22
-//!    `StorageStep`), replies `unblocked` and issues commands again. A node that will not move (it refuses
-//!    its move by name, a `rejected-stale-change` included, or leaves it unanswered past the staleness
-//!    floor: Q182) is re-created at its `(path, name)` on the provider the change decided, node.delete then
-//!    node.create as node recovery's, steps of this attempt of the change's own Build (i149 R19): the
-//!    attempt holds the mesh's in-flight row, so no other attempt could. The mesh replies `unblocked`
-//!    once every node moved or was re-created.
+//! 1. **Block.** The fabric-primary sends `mesh.block` (node command op 0x22 `BlockMesh`) to every
+//!    mesh-primary, its own mesh first. Each waits until its in-flight commands complete and every node
+//!    of its mesh froze its writes, replies `blocked` and gossips a current mesh topology of its mesh;
+//!    from there it issues no new command until it is unblocked.
+//! 2. **Copy** and 3. **Switch**, the fabric-primary's own, once every mesh-primary replied `blocked`:
+//!    the copy ([`rdm_node::storage_copy::copy`]), then the change's `rdm.storage.committed` event
+//!    appended to the new provider's events store, then the Fabric row's line.
+//! 4. **Unblock.** The fabric-primary sends `mesh.unblock` (`UnblockMesh`) to every mesh-primary. Each
+//!    moves itself and its nodes to the provider the `rdm.storage.committed` event decided (each node's
+//!    storage handle replaced, node command op 0x22 `StorageStep`), replies `unblocked` and issues
+//!    commands again. A node that will not move (it refuses its move by name, a `rejected-stale-change`
+//!    included, or leaves it unanswered past the staleness floor: Q182) is re-created on the decided
+//!    provider by its mesh-primary's node recovery, never part of the change.
 //!
-//! The Build's verdict, `storage.change:<change_id>`, is the fabric-primary's: a change that failed
-//! before its switch fails the Build only once no `rdm.storage.committed` event is read, its
-//! mesh-primaries sent `mesh.unblock` on the old provider. Whoever resumes the change learns the
-//! decision only from that event; a provider that does not answer is read again until it does. No timer ends a block.
+//! A change that fails before its switch fails only once no `rdm.storage.committed` event is read, its
+//! mesh-primaries sent `mesh.unblock` on the old provider. A fabric.delete ends the change: its
+//! mesh-primaries are sent `mesh.unblock` onto the provider the change decided and it ends `failed`.
+//! A provider that does not answer is read again until it does. No timer ends a block.
 
-use crate::build::BuildId;
-use crate::model::{NodeId, PathName};
+use crate::model::{Node, NodeId, PathName};
+use crate::status_rpc::StatusDoor;
 use crate::topology::Topology;
+use futures_util::future::BoxFuture;
 use rdm_core::build::StorageChange;
 use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
+use rdm_core::status::StatusReply;
 use rdm_core::ChangeId;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -38,30 +40,17 @@ use tokio::sync::RwLock;
 pub const BLOCK_SPAN: &str = "rdm.node_admin.mesh.update.via-block";
 /// A mesh-primary's `mesh.unblock` span.
 pub const UNBLOCK_SPAN: &str = "rdm.node_admin.mesh.update.via-unblock";
-
 /// The fabric-primary's switch: the `rdm.storage.committed` event appended, or read by whoever resumes
 /// the change.
-pub const SWITCH_SPAN: &str = "rdm.node_admin.build.update.via-storage-switch";
-
-/// The operation key of a storage change's verdict.
-pub fn operation(change_id: &ChangeId) -> rdm_core::OperationId {
-    rdm_core::OperationId::new("storage.change", rdm_core::OperationSubject::Named(change_id.to_string()))
-}
-
-/// The operation key of `mesh`'s block (`mesh.block`).
-pub fn block_operation(_change_id: &ChangeId, mesh: &str) -> rdm_core::OperationId {
-    rdm_core::OperationId::new("mesh.block", rdm_core::OperationSubject::Named(mesh.to_string()))
-}
-
-/// The operation key of the copy and the switch.
-pub fn switch_operation(change_id: &ChangeId) -> rdm_core::OperationId {
-    rdm_core::OperationId::new("storage.switch", rdm_core::OperationSubject::Named(change_id.to_string()))
-}
-
-/// The operation key of `mesh`'s unblock (`mesh.unblock`).
-pub fn unblock_operation(_change_id: &ChangeId, mesh: &str) -> rdm_core::OperationId {
-    rdm_core::OperationId::new("mesh.unblock", rdm_core::OperationSubject::Named(mesh.to_string()))
-}
+pub const SWITCH_SPAN: &str = "rdm.node_admin.storage.update.via-switch";
+/// The change's start: its `rdm.storage.started` event written, or found by a fabric-primary that resumes it.
+pub const STARTED_SPAN: &str = "rdm.node_admin.storage.update.via-started";
+/// The change's end: its `rdm.storage.ended` event written.
+pub const ENDED_SPAN: &str = "rdm.node_admin.storage.update.via-ended";
+/// The fabric-primary's command of one mesh's block or unblock, sent to its mesh-primary.
+pub const MESH_COMMAND_SPAN: &str = "rdm.node_admin.storage.update.via-mesh-command";
+/// The reason a fabric.delete ends a change with (storage.md §2: "it interrupts the change").
+pub const INTERRUPTED: &str = "interrupted by fabric.delete";
 
 /// How a storage step carried to one birth ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,15 +67,16 @@ pub enum Carried {
     NotDone(String),
 }
 
-/// One storage step on the exact birth `node_id`, on the node command op 0x22: its terminal frame, or
-/// a refusal before its acceptance; `Err` names how the call ended with neither.
+/// One command of a storage change on the exact birth `node_id`, on the node command op 0x22: its
+/// terminal frame, or a refusal before its acceptance; `Err` names how the call ended with neither.
+/// The command is tracked while it is open: a storage command is no Build's, so its key names none.
 pub async fn command(client: &rdm_transport::NodeRpcClient, commands: &crate::node_commands::CommandView, node_id: &NodeId, command: &NodeCommandRequest) -> Result<NodeCommandReply, String> {
-    let (build_id, change_id) = match command {
-        NodeCommandRequest::StorageBlock { build_id, change_id, .. } | NodeCommandRequest::StorageStep { build_id, change_id, .. } => (build_id, change_id),
+    let change_id = match command {
+        NodeCommandRequest::StorageBlock { change_id, .. } | NodeCommandRequest::StorageStep { change_id, .. } | NodeCommandRequest::BlockMesh { change_id, .. } | NodeCommandRequest::UnblockMesh { change_id, .. } => change_id,
         _ => return Err("the storage command function accepts only storage commands".into()),
     };
     let _tracked = commands.track(crate::node_commands::CommandKey {
-        build_id: build_id.clone(), attempt: 0, operation: rdm_core::OperationId::new(command.op(), rdm_core::OperationSubject::Named(change_id.to_string())), 
+        build_id: String::new(), attempt: 0, operation: rdm_core::OperationId::new(command.op(), rdm_core::OperationSubject::Named(change_id.to_string())),
         node_id: node_id.clone(), incarnation: command.subject().1.clone(),
     });
     command_reply(client, node_id, command).await
@@ -113,21 +103,6 @@ async fn command_reply(client: &rdm_transport::NodeRpcClient, node_id: &NodeId, 
     Err("the stream ended without its terminal frame".into())
 }
 
-/// The step of the switch operation whose `Failed` receipt names why a change failed before its switch.
-pub const COPY_STEP: &str = "Copy";
-
-/// A step's receipt: `step` of `operation`, ending `outcome`. A storage step commits no output: the Build
-/// fact's wire carries none for it (`wire.rs` `produces`).
-async fn receipt_of(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, operation: rdm_core::OperationId, step: &str, outcome: crate::build_state::StepOutcome) -> Result<(), crate::executor::RunEnd> {
-    let r = crate::build_state::BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.into(), outcome, output: None, executor: None };
-    builds.append_step_receipt(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation:?}: its {step} could not be recorded: {e}")))
-}
-
-/// A step's `Complete` receipt.
-async fn receipt(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, operation: rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
-    receipt_of(builds, build_id, attempt, operation, "Complete", crate::build_state::StepOutcome::Complete).await
-}
-
 /// What a read of the change's `rdm.storage.committed` event found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -149,38 +124,42 @@ impl Decision {
     }
 }
 
-/// The events store of the provider registered as `to`, opened on `scope` (storage.md §2 step 3: the
-/// change's commit is its event in the new provider's events store).
-async fn events_on(providers: &crate::storage_backend::TopologyStorageProviders, scope: &crate::storage_backend::StorageScope, to: &str) -> Result<std::sync::Arc<dyn crate::events_storage::EventsStorage>, String> {
-    Ok(providers.named(to)?.open(scope).await?.events)
+/// The events store of the provider registered as `provider`, opened on `scope` (storage.md §2: the
+/// change's events are in the events stores of its two providers).
+async fn events_on(providers: &crate::storage_backend::TopologyStorageProviders, scope: &crate::storage_backend::StorageScope, provider: &str) -> Result<Arc<dyn crate::events_storage::EventsStorage>, String> {
+    Ok(providers.named(provider)?.open(scope).await?.events)
 }
 
-/// Read the change's `rdm.storage.committed` event for `(build_id, change_id)` in the events store of
-/// the provider registered as `to`, opened on `scope`.
-pub async fn read_commit(providers: &crate::storage_backend::TopologyStorageProviders, scope: &crate::storage_backend::StorageScope, to: &str, build_id: &BuildId, change_id: &ChangeId) -> Decision {
+/// Read the change `change_id`'s `rdm.storage.committed` event in the events store of the provider
+/// registered as `to`, opened on `scope`.
+pub async fn read_commit(providers: &crate::storage_backend::TopologyStorageProviders, scope: &crate::storage_backend::StorageScope, to: &str, change_id: &ChangeId) -> Decision {
     // A read that errs, answered or not, is no read that the event is absent: the block holds.
     let events = match events_on(providers, scope, to).await {
         Ok(e) => e,
         Err(e) => return Decision::NoAnswer(e),
     };
-    match events.of_build(build_id).await {
-        Ok(of_build) if of_build.iter().any(|e| e.commits(build_id, change_id)) => Decision::Switched,
+    match events.of_storage_changes().await {
+        Ok(read) if read.iter().any(|e| e.commits(change_id)) => Decision::Switched,
         Ok(_) => Decision::NotSwitched,
         Err(e) => Decision::NoAnswer(e.to_string()),
     }
 }
 
-/// Append the change's `rdm.storage.committed` event for `(build_id, change_id)`, written by the admin
-/// `scope` names at rafka-time `time_ms`, to the events store of the provider registered as `to`:
-/// `true` when this append wrote it, `false` when it stood already.
-async fn insert_commit(providers: &crate::storage_backend::TopologyStorageProviders, scope: &crate::storage_backend::StorageScope, to: &str, time_ms: u64, build_id: &BuildId, change_id: &ChangeId) -> Result<bool, String> {
+/// Append the change `change_id`'s `rdm.storage.committed` event, written by the admin `scope` names at
+/// rafka-time `time_ms`, to the events store of the provider registered as `to`: `true` when this
+/// append wrote it, `false` when it stood already.
+async fn insert_commit(providers: &crate::storage_backend::TopologyStorageProviders, scope: &crate::storage_backend::StorageScope, to: &str, time_ms: u64, change_id: &ChangeId) -> Result<bool, String> {
     let events = events_on(providers, scope, to).await?;
-    if events.of_build(build_id).await.map_err(|e| e.to_string())?.iter().any(|e| e.commits(build_id, change_id)) {
+    if events.of_storage_changes().await.map_err(|e| e.to_string())?.iter().any(|e| e.commits(change_id)) {
         return Ok(false);
     }
-    let source = crate::events_storage::EventSource { fabric_id: scope.fabric_id.clone(), node_id: scope.node_id.clone(), incarnation: scope.writer.clone() };
-    events.append(&crate::events_storage::Event::storage_committed(&source, time_ms, build_id, change_id, to)).await.map_err(|e| e.to_string())?;
+    events.append(&crate::events_storage::Event::storage_committed(&source_of(scope), time_ms, change_id, to)).await.map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+/// The writer of an event: the admin `scope` names.
+fn source_of(scope: &crate::storage_backend::StorageScope) -> crate::events_storage::EventSource {
+    crate::events_storage::EventSource { fabric_id: scope.fabric_id.clone(), node_id: scope.node_id.clone(), incarnation: scope.writer.clone() }
 }
 
 /// How a copy ended.
@@ -194,10 +173,10 @@ enum Copy {
     NoAnswer(String),
 }
 
-/// The copy (step 3), at its one call site: [`rdm_node::storage_copy::copy`]. An error opening either
+/// The copy (step 2), at its one call site: [`rdm_node::storage_copy::copy`]. An error opening either
 /// provider's lines is told apart as the copy's own are: answered, the copy fails naming the provider;
 /// unanswered, it is resumed.
-async fn copy_stores(providers: &crate::storage_backend::TopologyStorageProviders, fabric_id: &crate::model::FabricId, build_id: &BuildId, change: &StorageChange) -> Copy {
+async fn copy_stores(providers: &crate::storage_backend::TopologyStorageProviders, fabric_id: &crate::model::FabricId, change: &StorageChange) -> Copy {
     #[cfg(feature = "file-backend")]
     {
         use rdm_node::storage_copy::{copy, CopyError, CopyRun};
@@ -214,7 +193,7 @@ async fn copy_stores(providers: &crate::storage_backend::TopologyStorageProvider
             (Err(e), _) => return unopened(&change.from, e),
             (_, Err(e)) => return unopened(&change.to, e),
         };
-        let run = CopyRun { build_id: build_id.clone(), change_id: change.change_id.clone(), source: change.from.clone(), destination: change.to.clone() };
+        let run = CopyRun { change_id: change.change_id.clone(), source: change.from.clone(), destination: change.to.clone() };
         match copy(&run, &*source, &*destination).await {
             Ok(_) => Copy::Copied,
             Err(CopyError::Refused(why) | CopyError::Failed(why)) => Copy::Failed(why),
@@ -223,14 +202,14 @@ async fn copy_stores(providers: &crate::storage_backend::TopologyStorageProvider
     }
     #[cfg(not(feature = "file-backend"))]
     {
-        let _ = (providers, fabric_id, build_id);
+        let _ = (providers, fabric_id);
         Copy::Failed(format!("this build copies no provider's lines: `{}` to `{}`", change.from, change.to))
     }
 }
 
-/// The switch span of one read or insert of the `rdm.storage.committed` event.
+/// The switch span of one read or append of the `rdm.storage.committed` event.
 fn switch_span(change: &StorageChange) -> tracing::Span {
-    tracing::info_span!("rdm.node_admin.build.update.via-storage-switch", build_id = %change.build_id.log(), change_id = %change.change_id, provider = %change.to, commit_found = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty)
+    tracing::info_span!("rdm.node_admin.storage.update.via-switch", change_id = %change.change_id, provider = %change.to, commit_found = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty)
 }
 
 /// Record a read of the `rdm.storage.committed` event on `span`.
@@ -245,13 +224,40 @@ fn record_read(span: &tracing::Span, decision: &Decision) {
     };
 }
 
-/// A change whose switch the fabric-primary runs now: a fabric.delete accepted meanwhile ends it.
-struct Running {
-    change_id: ChangeId,
-    interrupted: Arc<tokio::sync::Notify>,
+/// How the change's steps ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Ended {
+    /// Switched and every mesh unblocked on the new provider.
+    Complete,
+    /// Failed before its switch, why; every mesh unblocked on the old provider.
+    Failed(String),
 }
 
-/// A node-admin's storage changes: the operations of a change it runs.
+/// The change this fabric-primary runs now.
+struct Running {
+    change: StorageChange,
+    /// A fabric.delete accepted meanwhile ends the change.
+    interrupted: Arc<tokio::sync::Notify>,
+    /// Set once the change ended, its `rdm.storage.ended` event written.
+    ended: tokio::sync::watch::Receiver<bool>,
+}
+
+/// What a fabric-primary's change needs of the admin it runs on, set once at its boot.
+pub struct Wiring {
+    /// The admin's status door: its view, its commands, its own birth and its Node RPC client.
+    pub door: crate::status_rpc::StatusDoorSlot,
+    /// The Build state: a Build in progress refuses a change (storage.md §2).
+    pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
+    /// The Fabric row's line once the change is switched: the new provider current, the old appended to
+    /// the providers the fabric left, written if missing.
+    pub fabric_row: Arc<dyn Fn(StorageChange) -> BoxFuture<'static, Result<(), String>> + Send + Sync>,
+}
+
+/// Re-create, by this mesh-primary's node recovery, a node of its mesh that will not move.
+pub type Recreate = Arc<dyn Fn(Node) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// A node-admin's storage changes: the one it runs as fabric-primary, and the `mesh.block` and
+/// `mesh.unblock` it serves as a mesh-primary.
 pub struct StorageChanges {
     /// The admin's storage handle.
     pub handle: Arc<crate::storage_backend::TopologyStorageHandle>,
@@ -262,7 +268,11 @@ pub struct StorageChanges {
     /// The admin's node id.
     pub node_id: NodeId,
     /// Publishes this admin's current mesh topology of its mesh, once it holds its backbone.
-    pub aggregate: OnceLock<Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>>,
+    pub aggregate: OnceLock<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
+    /// What the change needs of this admin, set at its boot.
+    pub wiring: OnceLock<Wiring>,
+    /// This mesh-primary's node recovery, set once it holds it.
+    pub recreate: OnceLock<Recreate>,
     running: std::sync::Mutex<Option<Running>>,
 }
 
@@ -271,21 +281,46 @@ pub struct StorageChanges {
 enum PathEnd {
     /// The birth at the path moved, or the view holds none there.
     Moved,
-    /// The birth would not move: the path was re-created, and the new birth moved.
+    /// The birth would not move: its node recovery re-created it, and the new birth moved.
     Recreated,
+}
+
+/// Which of its two commands the fabric-primary sends a mesh-primary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MeshCommand {
+    Block,
+    Unblock,
+}
+
+impl MeshCommand {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Block => "mesh.block",
+            Self::Unblock => "mesh.unblock",
+        }
+    }
 }
 
 impl StorageChanges {
     /// The storage changes of the admin `node_id` writing through `handle`.
     pub fn new(handle: Arc<crate::storage_backend::TopologyStorageHandle>, providers: crate::storage_backend::TopologyStorageProviders, fabric_id: crate::model::FabricId, node_id: NodeId) -> Self {
-        Self { handle, providers, fabric_id, node_id, aggregate: OnceLock::new(), running: std::sync::Mutex::new(None) }
+        Self { handle, providers, fabric_id, node_id, aggregate: OnceLock::new(), wiring: OnceLock::new(), recreate: OnceLock::new(), running: std::sync::Mutex::new(None) }
+    }
+
+    /// The change this fabric-primary runs now, when one is in progress.
+    pub fn in_progress(&self) -> Option<StorageChange> {
+        self.running.lock().unwrap().as_ref().map(|r| r.change.clone())
+    }
+
+    fn door(&self) -> Result<Arc<StatusDoor>, String> {
+        self.wiring.get().and_then(|w| w.door.get().cloned()).ok_or_else(|| format!("{}: this admin holds no status door yet", self.node_id))
     }
 
     /// Read the `rdm.storage.committed` event until its provider answers: the provider the change decided.
     pub(crate) async fn decide(&self, change: &StorageChange) -> String {
         let mut backoff = Duration::from_millis(500);
         loop {
-            let decision = read_commit(&self.providers, self.handle.scope(), &change.to, &change.build_id, &change.change_id).await;
+            let decision = read_commit(&self.providers, self.handle.scope(), &change.to, &change.change_id).await;
             let span = switch_span(change);
             record_read(&span, &decision);
             span.in_scope(|| tracing::info!("the change's decision is read from its rdm.storage.committed event"));
@@ -300,101 +335,503 @@ impl StorageChanges {
         }
     }
 
-    fn door(status_door: Option<Arc<crate::status_rpc::StatusDoor>>) -> Result<Arc<crate::status_rpc::StatusDoor>, crate::executor::RunEnd> {
-        status_door.ok_or_else(|| crate::executor::RunEnd::Incomplete("this admin holds no status door yet".into()))
+    /// `fabric.storage.update { topology_storage_provider }` at the fabric-primary (storage.md §2
+    /// "Changing it"): refused by name for a provider its wiring does not register or cannot open, and
+    /// `build-in-progress` while a Build or another change is in progress; a provider the fabric writes
+    /// already is `AlreadyApplied`. Otherwise the change's `rdm.storage.started` event is written on the
+    /// old provider, the change runs as this fabric-primary's own workflow, and the reply names it.
+    pub async fn update(self: &Arc<Self>, provider: &str) -> StatusReply {
+        let span = tracing::info_span!("rdm.node_admin.storage.update.via-caller", node_id = %self.node_id, provider = %provider, change_id = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let reply = self.admit(provider, &span).await;
+        span.record("outcome", reply.name());
+        span.in_scope(|| tracing::info!("fabric.storage.update decided"));
+        reply
     }
 
-    /// Step 1, `mesh.block` of `mesh`, run by its mesh-primary: it waits until its in-flight commands
-    /// complete, replies `blocked` (its receipt) and gossips a current mesh topology of its mesh; it issues no
-    /// new command until it is unblocked.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn block_mesh(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusDoor>>) -> Result<(), crate::executor::RunEnd> {
-        let door = Self::door(status_door)?;
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-block", build_id = %build_id.log(), change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, in_flight = tracing::field::Empty, outcome = tracing::field::Empty);
-        // Nodes now own property writes. The primary's command block alone cannot make
-        // their old provider quiescent. Include stopped births and retained predecessors.
-        let subjects: Vec<_> = door.topology.read().await.births()
-            .filter(|node| node.mesh == mesh && node.status != crate::model::NodeStatus::Deleted)
-            .cloned().collect();
-        for subject in &subjects {
-            door.carry_storage_block(subject, build_id, &change.change_id).await
-                .map_err(|reason| crate::executor::RunEnd::Incomplete(format!("mesh.block:{mesh}: {reason}; the provider is not copied")))?;
+    async fn admit(self: &Arc<Self>, provider: &str, span: &tracing::Span) -> StatusReply {
+        let (door, wiring) = match (self.door(), self.wiring.get()) {
+            (Ok(door), Some(wiring)) => (door, wiring),
+            (Err(e), _) => return rdm_core::reply::status::not_ready(e),
+            (_, None) => return rdm_core::reply::status::not_ready(format!("{}: this admin holds no storage change wiring yet", self.node_id)),
+        };
+        if !door.topology.read().await.is_fabric_primary(&self.node_id) {
+            return rdm_core::reply::status::rejected_not_primary(rdm_core::status::NotPrimary::ReceiverNotPrimary { needed: "fabric-primary".into() });
         }
-        // An unanswered freeze returns through the existing attempt hand-off while normal
-        // commands/recovery remain admitted. Only a completed freeze closes mesh commands.
+        if !self.providers.names().iter().any(|n| n == provider) {
+            let reject = crate::build::BuildReject::TopologyStorageProviderNotRegistered { provider: provider.to_string(), registered: self.providers.names() };
+            span.record("reason", reject.reason());
+            return rdm_core::reply::status::topology_storage_provider_refused(reject.reason(), reject.to_string());
+        }
+        let from = match self.fabric_provider(&door).await {
+            Ok(from) => from,
+            Err(e) => return rdm_core::reply::status::not_ready(e),
+        };
+        if from == provider {
+            return StatusReply::AlreadyApplied;
+        }
+        if let Err(detail) = self.handle.opens(provider).await {
+            let reject = crate::build::BuildReject::TopologyStorageProviderNotOpened { provider: provider.to_string(), detail };
+            span.record("reason", reject.reason());
+            return rdm_core::reply::status::topology_storage_provider_refused(reject.reason(), reject.to_string());
+        }
+        let change = StorageChange { change_id: ChangeId::mint(), from, to: provider.to_string() };
+        // One change at a time, and never beside a Build: this one is held before the Build state is
+        // read, so a Build accepted after the read is refused beside it.
+        let (interrupted, ended) = {
+            let mut running = self.running.lock().unwrap();
+            if let Some(r) = running.as_ref() {
+                return rdm_core::reply::status::storage_build_in_progress(None, Some(r.change.change_id.clone()));
+            }
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            let interrupted = Arc::new(tokio::sync::Notify::new());
+            *running = Some(Running { change: change.clone(), interrupted: interrupted.clone(), ended: rx });
+            (interrupted, tx)
+        };
+        let release = |me: &Self| *me.running.lock().unwrap() = None;
+        match wiring.builds.current().await {
+            Ok(Some(b)) if matches!(b.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) => {
+                release(self);
+                return rdm_core::reply::status::storage_build_in_progress(Some(b.build_id.to_string()), None);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                release(self);
+                return rdm_core::reply::status::not_ready(format!("{}: the Build in progress could not be read: {e}", self.node_id));
+            }
+        }
+        if let Err(e) = self.write_started(&door, &change).await {
+            release(self);
+            return rdm_core::reply::status::not_ready(e);
+        }
+        span.record("change_id", change.change_id.as_str());
+        let me = self.clone();
+        let change_id = change.change_id.clone();
+        tokio::spawn(async move { me.run(change, interrupted, ended).await });
+        rdm_core::reply::status::storage_updated(change_id)
+    }
+
+    /// The provider the Fabric row names current.
+    async fn fabric_provider(&self, door: &StatusDoor) -> Result<String, String> {
+        let row = door.fabric_storage.fabric().await.map_err(|e| format!("{}: the Fabric row could not be read: {e}", self.node_id))?;
+        Ok(row.and_then(|r| r.topology_storage_provider).unwrap_or_else(|| self.handle.provider()))
+    }
+
+    /// The change's `rdm.storage.started` event, on the old provider's events store, before its first
+    /// command.
+    async fn write_started(&self, door: &StatusDoor, change: &StorageChange) -> Result<(), String> {
+        let time_ms = door.certs.as_ref().and_then(|c| c.now_ms()).ok_or_else(|| format!("{}: this admin holds no rafka-time to write the rdm.storage.started event on", self.node_id))?;
+        let events = events_on(&self.providers, self.handle.scope(), &change.from).await?;
+        events.append(&crate::events_storage::Event::storage_started(&source_of(self.handle.scope()), time_ms, &change.change_id, &change.to)).await.map_err(|e| e.to_string())?;
+        tracing::info_span!("rdm.node_admin.storage.update.via-started", change_id = %change.change_id, from = %change.from, to = %change.to, outcome = "written")
+            .in_scope(|| tracing::info!("the change's rdm.storage.started event is written on the old provider: the change is started"));
+        Ok(())
+    }
+
+    /// A fabric-primary that takes the role (or starts holding it) resumes a change its predecessor
+    /// started (storage.md §2: "Whoever resumes the change learns the decision only from that record"):
+    /// the storage changes' events on the provider it writes, the newest change with no
+    /// `rdm.storage.ended` event resumed from its first step; each step is idempotent.
+    pub async fn resume(self: &Arc<Self>) {
+        let Ok(door) = self.door() else { return };
+        if !door.topology.read().await.is_fabric_primary(&self.node_id) || self.in_progress().is_some() {
+            return;
+        }
+        let read = match self.handle.events().of_storage_changes().await {
+            Ok(read) => read,
+            Err(e) => {
+                tracing::info_span!("rdm.node_admin.storage.update.via-started", node_id = %self.node_id, outcome = "no-answer", reason = %e)
+                    .in_scope(|| tracing::info!("the storage changes' events could not be read: a change in progress is resumed at the next read"));
+                return;
+            }
+        };
+        let Some(started) = read.iter().rev().find(|e| e.r#type == crate::events_storage::STORAGE_STARTED) else { return };
+        let (Some(change_id), Some(to)) = (started.change_id(), started.topology_storage_provider().map(String::from)) else { return };
+        if read.iter().any(|e| e.r#type == crate::events_storage::STORAGE_ENDED && e.change_id().as_ref() == Some(&change_id)) {
+            return;
+        }
+        // The old provider: the Fabric row's current one before the switch, the last it left after it.
+        let row = match door.fabric_storage.fabric().await {
+            Ok(row) => row,
+            Err(_) => return,
+        };
+        let current = row.as_ref().and_then(|r| r.topology_storage_provider.clone()).unwrap_or_else(|| self.handle.provider());
+        let from = if current == to { row.and_then(|r| r.previous_topology_storage_providers.last().cloned()).unwrap_or(current) } else { current };
+        let change = StorageChange { change_id, from, to };
+        let (interrupted, ended) = {
+            let mut running = self.running.lock().unwrap();
+            if running.is_some() {
+                return;
+            }
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            let interrupted = Arc::new(tokio::sync::Notify::new());
+            *running = Some(Running { change: change.clone(), interrupted: interrupted.clone(), ended: rx });
+            (interrupted, tx)
+        };
+        tracing::info_span!("rdm.node_admin.storage.update.via-started", change_id = %change.change_id, from = %change.from, to = %change.to, node_id = %self.node_id, outcome = "resumed")
+            .in_scope(|| tracing::info!("a change this fabric-primary's predecessor started has no rdm.storage.ended event: it is resumed from its events"));
+        let me = self.clone();
+        tokio::spawn(async move { me.run(change, interrupted, ended).await });
+    }
+
+    /// The change, to its `rdm.storage.ended` event: its steps, or, once a fabric.delete interrupts it,
+    /// every mesh-primary sent `mesh.unblock` onto the provider it decided and the change ended failed.
+    async fn run(self: Arc<Self>, change: StorageChange, interrupted: Arc<tokio::sync::Notify>, ended: tokio::sync::watch::Sender<bool>) {
+        let notified = interrupted.notified();
+        let end = tokio::select! {
+            end = self.steps(&change) => end,
+            // Each mesh-primary's unblock reads the decision itself: the provider it moves onto is the
+            // one the change's rdm.storage.committed event decided.
+            _ = notified => {
+                self.command_every_mesh(&change, MeshCommand::Unblock).await;
+                Ended::Failed(INTERRUPTED.into())
+            }
+        };
+        let provider = self.decide(&change).await;
+        self.write_ended(&change, &provider, &end).await;
+        *self.running.lock().unwrap() = None;
+        let _ = ended.send(true);
+    }
+
+    /// The change's `rdm.storage.ended` event on the provider it decided, written once that provider
+    /// answers.
+    async fn write_ended(&self, change: &StorageChange, provider: &str, end: &Ended) {
+        let state = match end {
+            Ended::Complete => crate::events_storage::StepState::Complete,
+            Ended::Failed(reason) => crate::events_storage::StepState::Failed { reason: reason.clone(), code: if reason == INTERRUPTED { "ABORTED".into() } else { "FAILED_PRECONDITION".into() } },
+        };
+        let mut backoff = Duration::from_millis(500);
+        loop {
+            let time_ms = self.door().ok().and_then(|d| d.certs.as_ref().and_then(|c| c.now_ms()));
+            let written = match time_ms {
+                None => Err(format!("{}: this admin holds no rafka-time to write the rdm.storage.ended event on", self.node_id)),
+                Some(time_ms) => match events_on(&self.providers, self.handle.scope(), provider).await {
+                    Ok(events) => events.append(&crate::events_storage::Event::storage_ended(&source_of(self.handle.scope()), time_ms, &change.change_id, provider, &state)).await.map_err(|e| e.to_string()),
+                    Err(e) => Err(e),
+                },
+            };
+            let span = tracing::info_span!("rdm.node_admin.storage.update.via-ended", change_id = %change.change_id, provider = %provider, state = tracing::field::Empty, reason = tracing::field::Empty, outcome = tracing::field::Empty);
+            match &end {
+                Ended::Complete => span.record("state", "complete"),
+                Ended::Failed(reason) => span.record("state", "failed").record("reason", reason.as_str()),
+            };
+            match written {
+                Ok(()) => {
+                    span.record("outcome", "written");
+                    span.in_scope(|| tracing::info!("the change's rdm.storage.ended event is written on the provider it decided: the change is over"));
+                    return;
+                }
+                Err(e) => {
+                    span.record("outcome", "no-answer").record("reason", e.as_str());
+                    drop(span);
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(5));
+                }
+            }
+        }
+    }
+
+    /// Steps 1 to 4: every mesh blocked, the copy, the switch and the Fabric row's line, every mesh
+    /// unblocked. A copy refused by name, or answered by a provider with a named error, fails the change
+    /// before its switch once no `rdm.storage.committed` event is read: every mesh is unblocked on the
+    /// old provider. A copy no provider answered is resumed on a backoff, no timer ending it.
+    async fn steps(&self, change: &StorageChange) -> Ended {
+        self.command_every_mesh(change, MeshCommand::Block).await;
+        if let Ok(door) = self.door() {
+            if let Some(seam) = &door.command_frame_seam {
+                seam.before_storage_switch(&change.change_id).await;
+            }
+        }
+        if read_commit(&self.providers, self.handle.scope(), &change.to, &change.change_id).await == Decision::Switched {
+            let span = switch_span(change);
+            record_read(&span, &Decision::Switched);
+            span.in_scope(|| tracing::info!("the change is resumed and its rdm.storage.committed event is found: it is switched"));
+        } else {
+            // 2. Copy.
+            let mut backoff = Duration::from_millis(500);
+            loop {
+                match copy_stores(&self.providers, &self.fabric_id, change).await {
+                    Copy::Copied => break,
+                    Copy::Failed(why) => {
+                        if self.decide(change).await == change.to {
+                            break;
+                        }
+                        self.command_every_mesh(change, MeshCommand::Unblock).await;
+                        return Ended::Failed(why);
+                    }
+                    Copy::NoAnswer(_) => {
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(Duration::from_secs(5));
+                    }
+                }
+            }
+            // 3. Switch: the event's append is the decision; a lost answer is learnt by reading it.
+            self.switch(change).await;
+        }
+        // This admin writes the new provider before the Fabric row's line, so the line lands there.
+        let mut backoff = Duration::from_millis(500);
+        loop {
+            let moved = match self.door() {
+                Ok(door) => self.move_own(&door, &change.change_id, &change.to).await,
+                Err(e) => Err(e),
+            };
+            match moved {
+                Ok(()) => break,
+                Err(e) => {
+                    tracing::info_span!("rdm.node_admin.storage.update.via-switch", change_id = %change.change_id, provider = %change.to, outcome = "not-moved", reason = %e)
+                        .in_scope(|| tracing::info!("this fabric-primary has not moved onto the new provider yet: moved again"));
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(5));
+                }
+            }
+        }
+        // The Fabric row's line, written if missing.
+        let mut backoff = Duration::from_millis(500);
+        while let Some(wiring) = self.wiring.get() {
+            match (wiring.fabric_row)(change.clone()).await {
+                Ok(()) => break,
+                Err(e) => {
+                    tracing::info_span!("rdm.node_admin.storage.update.via-switch", change_id = %change.change_id, provider = %change.to, outcome = "fabric-row-unwritten", reason = %e)
+                        .in_scope(|| tracing::info!("the Fabric row's line naming the new provider is not written yet: written again"));
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(5));
+                }
+            }
+        }
+        // 4. Unblock.
+        self.command_every_mesh(change, MeshCommand::Unblock).await;
+        Ended::Complete
+    }
+
+    /// Append the change's `rdm.storage.committed` event on the new provider until it stands.
+    async fn switch(&self, change: &StorageChange) {
+        let mut backoff = Duration::from_millis(500);
+        loop {
+            let span = switch_span(change);
+            let Some(time_ms) = self.door().ok().and_then(|d| d.certs.as_ref().and_then(|c| c.now_ms())) else {
+                span.record("outcome", "no-answer").record("reason", "this admin holds no rafka-time to write the rdm.storage.committed event on");
+                drop(span);
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(5));
+                continue;
+            };
+            match insert_commit(&self.providers, self.handle.scope(), &change.to, time_ms, &change.change_id).await {
+                Ok(true) => {
+                    span.record("commit_found", false).record("outcome", "inserted");
+                    span.in_scope(|| tracing::info!("the rdm.storage.committed event is appended on the new provider: the change is switched"));
+                    return;
+                }
+                Ok(false) => {
+                    span.record("commit_found", true).record("outcome", "found");
+                    span.in_scope(|| tracing::info!("the rdm.storage.committed event stood already: the change is switched"));
+                    return;
+                }
+                Err(e) => {
+                    span.record("outcome", "no-answer").record("reason", e.as_str());
+                    drop(span);
+                    if read_commit(&self.providers, self.handle.scope(), &change.to, &change.change_id).await == Decision::Switched {
+                        record_read(&switch_span(change), &Decision::Switched);
+                        return;
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(5));
+                }
+            }
+        }
+    }
+
+    /// `command` to every mesh's mesh-primary, the fabric-primary's own mesh first, each sent again
+    /// until it answers its terminal: commands go down, fabric-primary to mesh-primary (a lost
+    /// mesh-primary is investigated and recovered as any node is, and its successor is sent it).
+    async fn command_every_mesh(&self, change: &StorageChange, command: MeshCommand) {
+        let Ok(door) = self.door() else { return };
+        let view = door.topology.read().await.clone();
+        let own_mesh = view.own(&self.node_id).map(|n| n.mesh.clone());
+        let mut meshes: Vec<String> = view.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead).map(|m| m.name.clone()).collect();
+        meshes.sort_by_key(|m| (Some(m) != own_mesh.as_ref(), m.clone()));
+        for mesh in meshes {
+            self.command_mesh(&door, change, &mesh, command).await;
+        }
+    }
+
+    /// `command` to `mesh`'s mesh-primary, the birth the view names now, sent again on a backoff until
+    /// it answers its terminal (`blocked` or `unblocked`). This fabric-primary's own mesh is served
+    /// in-process.
+    async fn command_mesh(&self, door: &Arc<StatusDoor>, change: &StorageChange, mesh: &str, command: MeshCommand) {
+        let mut backoff = Duration::from_millis(250);
+        loop {
+            let primary = door.topology.read().await.node_type_primary(mesh, rdm_core::NodeKind::NodeAdmin).cloned();
+            let span = tracing::info_span!("rdm.node_admin.storage.update.via-mesh-command", change_id = %change.change_id, mesh = %mesh, command = command.name(), mesh_primary = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+            let reply = match &primary {
+                None => Err(format!("the view names no mesh-primary of {mesh} yet")),
+                Some(p) if p.node_id == self.node_id => Ok(match command {
+                    MeshCommand::Block => self.serve_block(change).await,
+                    MeshCommand::Unblock => self.serve_unblock(change).await,
+                }),
+                Some(p) => match (p.incarnation_id.clone(), door.configs.get()) {
+                    (Some(incarnation), Some(configs)) => {
+                        let request = match command {
+                            MeshCommand::Block => NodeCommandRequest::BlockMesh { node_id: p.node_id.clone(), incarnation, change_id: change.change_id.clone(), from: change.from.clone(), to: change.to.clone() },
+                            MeshCommand::Unblock => NodeCommandRequest::UnblockMesh { node_id: p.node_id.clone(), incarnation, change_id: change.change_id.clone(), from: change.from.clone(), to: change.to.clone() },
+                        };
+                        self::command(configs.client(), &door.commands, &p.node_id, &request).await
+                    }
+                    (None, _) => Err(format!("{mesh}'s mesh-primary {} holds no incarnation in the view", p.node_id)),
+                    (_, None) => Err("this admin has no Node RPC client yet".into()),
+                },
+            };
+            if let Some(p) = &primary {
+                span.record("mesh_primary", p.node_id.as_str());
+            }
+            match reply {
+                Ok(NodeCommandReply::MeshBlocked) if command == MeshCommand::Block => {
+                    span.record("outcome", "blocked");
+                    return;
+                }
+                Ok(NodeCommandReply::MeshUnblocked { .. }) if command == MeshCommand::Unblock => {
+                    span.record("outcome", "unblocked");
+                    return;
+                }
+                Ok(other) => {
+                    span.record("outcome", other.name());
+                }
+                Err(e) => {
+                    span.record("outcome", "no-answer").record("reason", e.as_str());
+                }
+            }
+            drop(span);
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(Duration::from_secs(5));
+        }
+    }
+
+    /// `mesh.block` at this mesh-primary (step 1): every birth of its mesh, a stopped one and a retained
+    /// predecessor included, freezes its writes; then its in-flight commands complete, it gossips a
+    /// current mesh topology of its mesh, replies `blocked` and issues no new command until it is
+    /// unblocked. A freeze not answered yet is no block: the fabric-primary sends it again.
+    pub async fn serve_block(&self, change: &StorageChange) -> NodeCommandReply {
+        let door = match self.door() {
+            Ok(door) => door,
+            Err(e) => return rdm_core::reply::node_command::not_ready(e),
+        };
+        let view = door.topology.read().await.clone();
+        let Some(mesh) = view.own(&self.node_id).filter(|n| view.is_mesh_primary(&n.mesh, &self.node_id)).map(|n| n.mesh.clone()) else {
+            return rdm_core::reply::node_command::not_ready(format!("{}: this admin is no mesh-primary in its view; mesh.block is a mesh-primary's", self.node_id));
+        };
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-block", change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, in_flight = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        // Nodes own their property writes: the primary's command block alone cannot make their old
+        // provider quiescent. Stopped births and retained predecessors are included.
+        let subjects: Vec<Node> = view.births().filter(|node| node.mesh == mesh && node.status != crate::model::NodeStatus::Deleted).cloned().collect();
+        for subject in &subjects {
+            if let Err(reason) = door.carry_storage_block(subject, &change.change_id).await {
+                span.record("outcome", "not-blocked").record("reason", reason.as_str());
+                span.in_scope(|| tracing::info!("mesh.block: a node of this mesh has not frozen its writes yet; nothing is copied"));
+                return rdm_core::reply::node_command::not_ready(format!("mesh.block:{mesh}: {reason}; the provider is not copied"));
+            }
+        }
         let in_flight = door.commands.block().await;
         if let Some(aggregate) = self.aggregate.get() {
             aggregate().await;
         }
         span.record("in_flight", in_flight as u64).record("outcome", "blocked");
         span.in_scope(|| tracing::info!("mesh.block: every command in flight completed; this mesh-primary replies blocked, gossips its mesh's topology and issues no new command until it is unblocked"));
-        receipt(builds, build_id, attempt, block_operation(&change.change_id, mesh)).await
+        NodeCommandReply::MeshBlocked
+    }
+
+    /// `mesh.unblock` at this mesh-primary (step 4): the provider the `rdm.storage.committed` event
+    /// decided (the old one when the change failed before its switch), this mesh-primary and each other
+    /// node of its mesh moved onto it, each row recording it; a node that will not move is re-created
+    /// on it by this mesh-primary's node recovery; once every node moved or was re-created it replies
+    /// `unblocked` and issues commands again.
+    pub async fn serve_unblock(&self, change: &StorageChange) -> NodeCommandReply {
+        let door = match self.door() {
+            Ok(door) => door,
+            Err(e) => return rdm_core::reply::node_command::not_ready(e),
+        };
+        let mesh = {
+            let view = door.topology.read().await;
+            match view.own(&self.node_id).filter(|n| view.is_mesh_primary(&n.mesh, &self.node_id)) {
+                Some(n) => n.mesh.clone(),
+                None => return rdm_core::reply::node_command::not_ready(format!("{}: this admin is no mesh-primary in its view; mesh.unblock is a mesh-primary's", self.node_id)),
+            }
+        };
+        // The decision, read once (storage.md step 4): a read error fails the unblock by name, never as
+        // absence, and the fabric-primary sends it again.
+        let provider = match read_commit(&self.providers, self.handle.scope(), &change.to, &change.change_id).await {
+            Decision::Switched => change.to.clone(),
+            Decision::NotSwitched => change.from.clone(),
+            Decision::NoAnswer(e) => return rdm_core::reply::node_command::not_ready(format!("storage change {}: its rdm.storage.committed event on {} could not be read: {e}", change.change_id, change.to)),
+        };
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-unblock", change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, provider = %provider, moved = tracing::field::Empty, recreated = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        if let Err(e) = self.move_own(&door, &change.change_id, &provider).await {
+            span.record("outcome", "not-moved").record("reason", e.as_str());
+            return rdm_core::reply::node_command::not_ready(e);
+        }
+        // Moved: this admin writes rows again, on the decided provider.
+        door.commands.release_rows();
+        let topology = door.topology.clone();
+        let paths: Vec<PathName> = topology.read().await.births().filter(|n| n.mesh == mesh && n.node_id != self.node_id && n.status != crate::model::NodeStatus::Deleted).map(|n| n.name.clone()).collect();
+        let ends = futures_util::future::join_all(paths.iter().map(|p| self.move_until(&door, &topology, &change.change_id, &mesh, p, &provider))).await;
+        let recreated = ends.iter().filter(|e| **e == PathEnd::Recreated).count();
+        door.commands.unblock();
+        span.record("moved", (paths.len() - recreated) as u64).record("recreated", recreated as u64).record("outcome", "unblocked");
+        span.in_scope(|| tracing::info!("mesh.unblock: every node of this mesh moved or was re-created; this mesh-primary replies unblocked and issues commands again"));
+        NodeCommandReply::MeshUnblocked { provider }
     }
 
     /// Carry the move onto `provider` to the birth at `path` until the birth the view holds there moves
     /// (storage.md §2 step 4). A birth that refuses its move by name (a `rejected-stale-change` of this
     /// change included), or leaves it unanswered past the staleness floor (Q182), will not move: it is
-    /// re-created at `path` by `recreate` on the provider this mesh-primary writes (i149 R19), and the move
-    /// is carried to the new birth. No timer ends it.
-    #[allow(clippy::too_many_arguments)]
-    async fn move_until<F, Fut>(&self, door: &crate::status_rpc::StatusDoor, topology: &Arc<RwLock<Topology>>, build_id: &BuildId, change_id: &ChangeId, mesh: &str, path: &PathName, provider: &str, recreate: &F) -> PathEnd
-    where
-        F: Fn(PathName, crate::build::ExitedBirth) -> Fut,
-        Fut: std::future::Future<Output = Result<(), crate::executor::RunEnd>>,
-    {
+    /// re-created by this mesh-primary's node recovery, and the move is carried to the new birth. No
+    /// timer ends it.
+    async fn move_until(&self, door: &StatusDoor, topology: &Arc<RwLock<Topology>>, change_id: &ChangeId, mesh: &str, path: &PathName, provider: &str) -> PathEnd {
         let floor = rdm_transport::topology::staleness_floor();
         let mut backoff = Duration::from_millis(250);
         // The births re-created at the path: the view may still hold one a moment after its re-create.
         let mut recreated: Vec<NodeId> = Vec::new();
         // The birth whose move went unanswered, since the send of its first unanswered move.
         let mut unanswered: Option<(NodeId, tokio::time::Instant)> = None;
-        // A re-create that did not complete, and why: owed until the path holds another birth.
-        let mut owed: Option<(crate::build::ExitedBirth, String)> = None;
         loop {
             let birth = topology.read().await.node(path).cloned();
-            let lost = match (owed.take(), birth) {
-                (Some((from, why)), b) if b.as_ref().is_none_or(|b| b.node_id == from.node_id) => Some((from, format!("its re-create did not complete: {why}"))),
+            let lost = match birth {
                 // No birth held there: nothing to move, or the re-created birth not in the view yet.
-                (_, None) if recreated.is_empty() => return PathEnd::Moved,
-                (_, None) => None,
-                (_, Some(birth)) if recreated.contains(&birth.node_id) => None,
-                (_, Some(birth)) => match birth.incarnation_id.clone() {
+                None if recreated.is_empty() => return PathEnd::Moved,
+                None => None,
+                Some(birth) if recreated.contains(&birth.node_id) => None,
+                Some(birth) => match birth.incarnation_id.clone() {
                     None => None,
                     Some(incarnation) => {
                         let sent = tokio::time::Instant::now();
-                        let from = crate::build::ExitedBirth { node_id: birth.node_id.clone(), incarnation: incarnation.clone() };
-                        match door.carry_storage_step(&birth.node_id, &incarnation, build_id.as_str(), change_id, provider).await {
+                        match door.carry_storage_step(&birth.node_id, &incarnation, change_id, provider).await {
                             Carried::Stepped(_) => return if recreated.is_empty() { PathEnd::Moved } else { PathEnd::Recreated },
                             // A refusal of an older change (storage.md §2): a refusal, never a move.
-                            Carried::Stale(held) => Some((from, format!("rejected-stale-change: it acted on storage change {held}"))),
-                            Carried::Refused(why) => Some((from, format!("refused: {why}"))),
+                            Carried::Stale(held) => Some((birth, format!("rejected-stale-change: it acted on storage change {held}"))),
+                            Carried::Refused(why) => Some((birth, format!("refused: {why}"))),
                             Carried::Unanswered(why) => {
                                 let since = match unanswered {
                                     Some((ref id, since)) if *id == birth.node_id => since,
                                     _ => sent,
                                 };
                                 unanswered = Some((birth.node_id.clone(), since));
-                                (tokio::time::Instant::now().saturating_duration_since(since) >= floor).then(|| (from, format!("unanswered past the staleness floor: {why}")))
+                                (tokio::time::Instant::now().saturating_duration_since(since) >= floor).then(|| (birth, format!("unanswered past the staleness floor: {why}")))
                             }
                             Carried::NotDone(_) => None,
                         }
                     }
                 },
             };
-            if let Some((from, reason)) = lost {
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-storage-move-lost", build_id = %build_id.log(), change_id = %change_id, mesh = %mesh, node_path = %path.path, node_name = %path.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), provider = %provider, reason = %reason, outcome = tracing::field::Empty, error = tracing::field::Empty);
-                span.in_scope(|| tracing::info!("the node will not move: it is re-created at its (path, name) on the provider this mesh-primary writes, steps of this attempt"));
-                use tracing::Instrument as _;
-                match recreate(path.clone(), from.clone()).instrument(span.clone()).await {
-                    Ok(()) => {
-                        span.record("outcome", "recreated");
-                        recreated.push(from.node_id);
+            if let Some((birth, reason)) = lost {
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-storage-move-lost", change_id = %change_id, mesh = %mesh, node_path = %path.path, node_name = %path.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or(""), provider = %provider, reason = %reason, outcome = tracing::field::Empty);
+                span.in_scope(|| tracing::info!("the node will not move: this mesh-primary's node recovery re-creates it on the provider this mesh-primary writes"));
+                match self.recreate.get().cloned() {
+                    Some(recreate) => {
+                        use tracing::Instrument as _;
+                        recreate(birth.clone()).instrument(span.clone()).await;
+                        span.record("outcome", "recovery-submitted");
+                        recreated.push(birth.node_id);
                         continue;
                     }
-                    Err(e) => {
-                        let error = format!("{e:?}");
-                        span.record("outcome", "not-recreated").record("error", error.as_str());
-                        owed = Some((from, error));
+                    None => {
+                        span.record("outcome", "no-recovery-yet");
                     }
                 }
             }
@@ -403,194 +840,45 @@ impl StorageChanges {
         }
     }
 
-    /// Step 4, `mesh.unblock` of `mesh`, run by its mesh-primary: the provider the `rdm.storage.committed` event decided
-    /// (the old one when the change failed before its switch), this mesh-primary and each other node of
-    /// the mesh moved onto it, each row recording it; a node that will not move is re-created on it by
-    /// `recreate`, steps of this attempt (i149 R19); once every node moved or was re-created it replies
-    /// `unblocked` (its receipt) and issues commands again. Every move carries the change's own Build
-    /// and `change_id` (`StorageChange::build_id`), the pair each node blocked under, whichever Build
-    /// runs the unblock: a fabric.delete that resolves the change included. The receipt is the running
-    /// attempt's.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn unblock_mesh<F, Fut>(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusDoor>>, topology: Arc<RwLock<Topology>>, recreate: &F) -> Result<(), crate::executor::RunEnd>
-    where
-        F: Fn(PathName, crate::build::ExitedBirth) -> Fut,
-        Fut: std::future::Future<Output = Result<(), crate::executor::RunEnd>>,
-    {
-        let door = Self::door(status_door)?;
-        let provider = self.decide(change).await;
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-unblock", build_id = %build_id.log(), change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, provider = %provider, moved = tracing::field::Empty, recreated = tracing::field::Empty, outcome = tracing::field::Empty);
-        self.move_own(&door, &change.build_id, &change.change_id, &provider).await?;
-        // Moved: this admin writes rows again, on the decided provider (its re-creates' rows among them).
-        door.commands.release_rows();
-        let paths: Vec<PathName> = topology.read().await.births().filter(|n| n.mesh == mesh && n.node_id != self.node_id && n.status != crate::model::NodeStatus::Deleted).map(|n| n.name.clone()).collect();
-        let ends = futures_util::future::join_all(paths.iter().map(|p| self.move_until(&door, &topology, &change.build_id, &change.change_id, mesh, p, &provider, recreate))).await;
-        let recreated = ends.iter().filter(|e| **e == PathEnd::Recreated).count();
-        door.commands.unblock();
-        span.record("moved", (paths.len() - recreated) as u64).record("recreated", recreated as u64).record("outcome", "unblocked");
-        span.in_scope(|| tracing::info!("mesh.unblock: every node of this mesh moved or was re-created; this mesh-primary replies unblocked and issues commands again"));
-        receipt(builds, build_id, attempt, unblock_operation(&change.change_id, mesh)).await
-    }
-
-    /// Before a `mesh.unblock` attempt's claim is read (Q320): the attempt is opened and claimed after
-    /// the switch, on the provider the change decided. The change's `rdm.storage.committed` event is read once on the
-    /// new provider (storage.md step 3): present, this admin moves its own stores there (the unblock's own
-    /// move then finds it moved); absent, the change is not committed and the claim is read where it is.
-    /// A read error fails the attempt by name, never as absence.
-    pub async fn move_own_to_decided(&self, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusDoor>>) -> Result<(), crate::executor::RunEnd> {
-        let door = Self::door(status_door)?;
-        let decision = read_commit(&self.providers, self.handle.scope(), &change.to, &change.build_id, &change.change_id).await;
-        let span = switch_span(change);
-        record_read(&span, &decision);
-        span.in_scope(|| tracing::info!("before the unblock's claim is read, the change's decision is read from its rdm.storage.committed event"));
-        match decision {
-            Decision::Switched => self.move_own(&door, &change.build_id, &change.change_id, &change.to).await,
-            Decision::NotSwitched => Ok(()),
-            Decision::NoAnswer(e) => Err(crate::executor::RunEnd::failed(format!("storage change {}: its rdm.storage.committed event on {} could not be read: {e}", change.change_id, change.to))),
-        }
-    }
-
     /// This admin moved onto `provider`, its own row recording it.
-    async fn move_own(&self, door: &crate::status_rpc::StatusDoor, build_id: &BuildId, change_id: &ChangeId, provider: &str) -> Result<(), crate::executor::RunEnd> {
-        let own = door.own.get().and_then(|own| own.storage_moves()).ok_or_else(|| crate::executor::RunEnd::Incomplete("this admin holds no storage handle yet".into()))?;
-        match own.serve(build_id, change_id, provider).await {
+    async fn move_own(&self, door: &StatusDoor, change_id: &ChangeId, provider: &str) -> Result<(), String> {
+        let own = door.own.get().and_then(|own| own.storage_moves()).ok_or_else(|| "this admin holds no storage handle yet".to_string())?;
+        if let Some(refused) = own.refusal(change_id, provider).await {
+            return Err(format!("this admin's move onto {provider}: {}", refused.name()));
+        }
+        match own.serve(change_id, provider).await {
             NodeCommandReply::StorageStepped { .. } => {}
-            other => return Err(crate::executor::RunEnd::Incomplete(format!("this admin's move onto {provider}: {}", other.name()))),
+            other => return Err(format!("this admin's move onto {provider}: {}", other.name())),
         }
-        door.record_own_provider(provider).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("this admin's row: {e}")))
-    }
-
-    /// Steps 2 and 3, `storage.switch:<change_id>`, run by the fabric-primary once every mesh-primary
-    /// replied `blocked`: the copy, the `rdm.storage.committed` event inserted, this admin onto the new provider and
-    /// the Fabric row's line. A copy refused by name, or answered by a provider with a named error,
-    /// fails the change before its switch once no `rdm.storage.committed` event is read, its receipt naming why; a copy no
-    /// provider answered is resumed on a backoff, no timer ending it. A change resumed after its switch
-    /// learns it from the record alone.
-    /// A fabric.delete accepted meanwhile ends the operation.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn switch(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusDoor>>, fabric_row: impl std::future::Future<Output = Result<(), String>>) -> Result<(), crate::executor::RunEnd> {
-        let door = Self::door(status_door)?;
-        let interrupted = Arc::new(tokio::sync::Notify::new());
-        *self.running.lock().unwrap() = Some(Running { change_id: change.change_id.clone(), interrupted: interrupted.clone() });
-        let notified = interrupted.notified();
-        let ran = tokio::select! {
-            r = self.switch_steps(builds, build_id, attempt, change, &door, fabric_row) => r,
-            _ = notified => Err(crate::executor::RunEnd::failed(format!("storage change {} of Build {build_id} is interrupted by fabric.delete, which resolves it", change.change_id))),
-        };
-        let mut running = self.running.lock().unwrap();
-        if running.as_ref().is_some_and(|r| r.change_id == change.change_id) {
-            *running = None;
-        }
-        ran
-    }
-
-    async fn switch_steps(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange, door: &Arc<crate::status_rpc::StatusDoor>, fabric_row: impl std::future::Future<Output = Result<(), String>>) -> Result<(), crate::executor::RunEnd> {
-        if let Some(seam) = &door.command_frame_seam {
-            seam.before_storage_switch(&change.change_id).await;
-        }
-        let key = switch_operation(&change.change_id);
-        if read_commit(&self.providers, self.handle.scope(), &change.to, &change.build_id, &change.change_id).await == Decision::Switched {
-            let span = switch_span(change);
-            record_read(&span, &Decision::Switched);
-            span.in_scope(|| tracing::info!("the change is resumed and its rdm.storage.committed event is found: it is switched"));
-        } else {
-            // 2. Copy.
-            let mut backoff = Duration::from_millis(500);
-            loop {
-                match copy_stores(&self.providers, &self.fabric_id, build_id, change).await {
-                    Copy::Copied => break,
-                    Copy::Failed(why) => return self.fail_before_switch(builds, build_id, attempt, change, why).await,
-                    Copy::NoAnswer(_) => {
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(5));
-                    }
-                }
-            }
-            // 3. Switch: the event's append is the decision; a lost answer is learnt by reading it.
-            let mut backoff = Duration::from_millis(500);
-            loop {
-                let span = switch_span(change);
-                let Some(time_ms) = door.certs.as_ref().and_then(|c| c.now_ms()) else {
-                    span.record("outcome", "no-answer").record("reason", "this admin holds no rafka-time to write the rdm.storage.committed event on");
-                    drop(span);
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(5));
-                    continue;
-                };
-                match insert_commit(&self.providers, self.handle.scope(), &change.to, time_ms, &change.build_id, &change.change_id).await {
-                    Ok(true) => {
-                        span.record("commit_found", false).record("outcome", "inserted");
-                        span.in_scope(|| tracing::info!("the rdm.storage.committed event is appended on the new provider: the change is switched"));
-                        break;
-                    }
-                    Ok(false) => {
-                        span.record("commit_found", true).record("outcome", "found");
-                        span.in_scope(|| tracing::info!("the rdm.storage.committed event stood already: the change is switched"));
-                        break;
-                    }
-                    Err(e) => {
-                        span.record("outcome", "no-answer").record("reason", e.as_str());
-                        drop(span);
-                        let decision = read_commit(&self.providers, self.handle.scope(), &change.to, &change.build_id, &change.change_id).await;
-                        if !matches!(decision, Decision::NoAnswer(_)) {
-                            record_read(&switch_span(change), &decision);
-                        }
-                        if decision == Decision::Switched {
-                            break;
-                        }
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(5));
-                    }
-                }
-            }
-        }
-        // This admin writes the new provider before the Fabric row's line and its receipt.
-        self.move_own(door, build_id, &change.change_id, &change.to).await?;
-        if let Err(e) = fabric_row.await {
-            return Err(crate::executor::RunEnd::Incomplete(format!("{key:?}: the Fabric row's line naming {} could not be written: {e}", change.to)));
-        }
-        receipt(builds, build_id, attempt, key).await
-    }
-
-    /// A step failed before the switch: the change fails only once no `rdm.storage.committed` event is read for it (its
-    /// mesh-primaries then sent `mesh.unblock` on the old provider, and the Build's verdict names why).
-    /// An `rdm.storage.committed` event found means the change switched after all: it resumes.
-    async fn fail_before_switch(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange, why: String) -> Result<(), crate::executor::RunEnd> {
-        if self.decide(change).await == change.to {
-            return Err(crate::executor::RunEnd::Incomplete(format!("storage change {}: {why}; its rdm.storage.committed event is found, so it is switched and resumes", change.change_id)));
-        }
-        let key = switch_operation(&change.change_id);
-        receipt_of(builds, build_id, attempt, key.clone(), COPY_STEP, crate::build_state::StepOutcome::Failed { reason: why, code: rdm_core::outcome::Code::FailedPrecondition }).await?;
-        receipt(builds, build_id, attempt, key).await
-    }
-
-    /// The Build's verdict (`storage.change:<change_id>`), the fabric-primary's once every mesh-primary
-    /// replied `unblocked`: switched, the change is done; not switched, the Build fails naming why.
-    pub async fn finish(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange) -> Result<(), crate::executor::RunEnd> {
-        if self.decide(change).await == change.to {
-            return receipt(builds, build_id, attempt, operation(&change.change_id)).await;
-        }
-        let key = switch_operation(&change.change_id);
-        let why = builds
-            .read_build(build_id)
-            .await
-            .ok()
-            .and_then(|b| b.steps.iter().rev().find_map(|r| match &r.outcome {
-                crate::build_state::StepOutcome::Failed { reason, .. } if r.operation == key && r.step == COPY_STEP => Some(reason.clone()),
-                _ => None,
-            }))
-            .unwrap_or_else(|| "its switch did not happen".into());
-        Err(crate::executor::RunEnd::failed(format!("storage change {} to {} failed before its switch ({why}); no rdm.storage.committed event exists, and every mesh-primary was sent mesh.unblock on {}", change.change_id, change.to, change.from)))
+        door.record_own_provider(provider).await.map_err(|e| format!("this admin's row: {e}"))
     }
 
     /// `fabric.delete` admitted while a storage change is in progress (storage.md §2: "it interrupts the
-    /// change as it interrupts any Build"): the switch this admin runs is ended; the delete's own Build
-    /// sends each mesh-primary `mesh.unblock` onto the provider the `rdm.storage.committed` event decided before its
-    /// teardown.
-    pub fn interrupt_for_delete(&self) {
-        if let Some(r) = self.running.lock().unwrap().take() {
+    /// change as it interrupts any Build"): the change is ended, every mesh-primary sent `mesh.unblock`
+    /// onto the provider its `rdm.storage.committed` event decided and its `rdm.storage.ended` event
+    /// written failed, before this returns and the delete is written.
+    pub async fn interrupt_for_delete(&self) {
+        let ended = {
+            let running = self.running.lock().unwrap();
+            let Some(r) = running.as_ref() else { return };
             r.interrupted.notify_waiters();
             r.interrupted.notify_one();
+            r.ended.clone()
+        };
+        let mut ended = ended;
+        let _ = ended.wait_for(|e| *e).await;
+    }
+}
+
+/// Keep a fabric-primary's storage change resumed: each time the primary records change, and once at
+/// the start, an admin that holds the fabric-primary role resumes a change its predecessor started and
+/// did not end ([`StorageChanges::resume`]).
+pub async fn keep_resumed(changes: Arc<StorageChanges>, primaries: rdm_transport::topology::PrimaryView) {
+    let mut changed = primaries.subscribe();
+    loop {
+        changes.resume().await;
+        if changed.changed().await.is_err() {
+            return;
         }
     }
 }

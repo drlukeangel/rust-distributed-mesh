@@ -439,7 +439,6 @@ async fn a_provider_copy_preserves_both_record_kinds() {
         .await
         .unwrap();
     let run = CopyRun {
-        build_id: rdm_core::BuildId::mint(),
         change_id: rdm_core::ChangeId::mint(),
         source: "file".into(),
         destination: "target".into(),

@@ -197,8 +197,7 @@ mod tests {
                 spec_with_exe(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin),
                 spec_with_exe(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin),
                 spec_with_exe(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode),
-            ],
-            topology_storage_provider: None,
+            ]
         };
 
         let opened = cp
@@ -618,7 +617,7 @@ mod tests {
                 commands: Arc::new(crate::node_commands::CommandView::default()),
                 own: Arc::new(OnceLock::new()),
                 mesh_deleter: Arc::new(OnceLock::new()),
-                hold_next_reply: Arc::new( std::sync::atomic::AtomicBool::new(false)),
+                storage_changes: Default::default(), hold_next_reply: Arc::new( std::sync::atomic::AtomicBool::new(false)),
                 wake: Default::default(),
                 fabric_states: Default::default(),
                 atlas: Default::default(),

@@ -329,35 +329,6 @@ pub enum BuildOperation {
         /// The labels the row loses.
         labels: std::collections::BTreeSet<String>,
     },
-    /// A storage change's block of `mesh` (storage.md §2 "Changing it", steps 1 and 2), run by the
-    /// mesh's mesh-primary: every other node of the mesh blocks ([`crate::storage_change`]). Its key is
-    /// `storage.block:<change_id>:<mesh>`. Appended, so every earlier variant keeps its name.
-    BlockStorage {
-        /// The mesh.
-        mesh: String,
-        /// The change.
-        change: rdm_core::build::StorageChange,
-    },
-    /// A storage change's copy and switch (steps 3 and 4), run by the fabric-primary. Its key is
-    /// `storage.switch:<change_id>`.
-    SwitchStorage {
-        /// The change.
-        change: rdm_core::build::StorageChange,
-    },
-    /// A storage change's unblock of `mesh` (step 5), run by the mesh's mesh-primary. Its key is
-    /// `storage.unblock:<change_id>:<mesh>`.
-    UnblockStorage {
-        /// The mesh.
-        mesh: String,
-        /// The change.
-        change: rdm_core::build::StorageChange,
-    },
-    /// A storage change's verdict, the fabric-primary's once every mesh unblocked: the Build fails when
-    /// the change was not switched. Its key is `storage.change:<change_id>`.
-    FinishStorage {
-        /// The change.
-        change: rdm_core::build::StorageChange,
-    },
 }
 
 impl BuildOperation {
@@ -386,7 +357,7 @@ impl BuildOperation {
             Self::CreateNode { node, .. } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::DeleteLiveNode { node, .. } => Some(node),
             Self::Step { step, .. } => Some(step.node()),
             Self::TerminateNode { node, .. } | Self::UpdateConfig { node, .. } | Self::CreateTags { node, .. } | Self::DeleteTags { node, .. } => Some(node),
-            Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } | Self::BlockStorage { .. } | Self::SwitchStorage { .. } | Self::UnblockStorage { .. } | Self::FinishStorage { .. } => None,
+            Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } => None,
         }
     }
 
@@ -395,14 +366,13 @@ impl BuildOperation {
     pub fn mesh(&self) -> Option<&str> {
         match self {
             Self::CreateMesh { mesh, .. } | Self::ShutdownMesh { mesh, .. }
-            | Self::BlockStorage { mesh, .. } | Self::UnblockStorage { mesh, .. }
             | Self::CreateNode { mesh, .. } | Self::DeleteConnections { mesh, .. }
             | Self::StopNode { mesh, .. } | Self::StartNode { mesh, .. }
             | Self::DeleteNode { mesh, .. } | Self::DeleteLiveNode { mesh, .. }
             | Self::TerminateNode { mesh, .. } | Self::UpdateConfig { mesh, .. }
             | Self::CreateTags { mesh, .. } | Self::DeleteTags { mesh, .. }
             | Self::Step { mesh, .. } => Some(mesh),
-            Self::DeleteFabric { .. } | Self::SwitchStorage { .. } | Self::FinishStorage { .. } => None,
+            Self::DeleteFabric { .. } => None,
         }
     }
 
@@ -448,10 +418,6 @@ impl BuildOperation {
             Self::UpdateConfig { node_id, .. } => rdm_core::OperationId::node("node.config.update", node_id),
             Self::CreateTags { node_id, .. } => rdm_core::OperationId::node("node.tag.create", node_id),
             Self::DeleteTags { node_id, .. } => rdm_core::OperationId::node("node.tag.delete", node_id),
-            Self::BlockStorage { mesh, change } => crate::storage_change::block_operation(&change.change_id, mesh),
-            Self::SwitchStorage { change } => crate::storage_change::switch_operation(&change.change_id),
-            Self::UnblockStorage { mesh, change } => crate::storage_change::unblock_operation(&change.change_id, mesh),
-            Self::FinishStorage { change } => crate::storage_change::operation(&change.change_id),
         }
     }
 }

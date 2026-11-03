@@ -334,7 +334,6 @@ mod tests {
         let topology = crate::accepted::FabricTopology {
             section_of: None,
             pinned: vec![(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), pin)],
-            storage_change: None,
             topology_storage_provider: Some("file".into()),
             fabric: "fabric1".into(),
             meshes,

@@ -711,6 +711,19 @@ pub enum StatusRequest {
         /// [`MAX_REPORT_REASON_BYTES`].
         reason: String,
     },
+    /// Caller (`fabric.storage.update`; storage.md §2 "Changing it"): the application names the
+    /// fabric's new `topology_storage_provider` to the fabric-primary, which starts the storage change,
+    /// its own workflow and never a Build; answered [`StatusReply::StorageUpdated`] once its
+    /// `rdm.storage.started` event is written, or refused by name: `build-in-progress` while a Build or
+    /// another change is in progress ([`StatusReply::RejectedBuildInProgress`]), and a provider the
+    /// fabric-primary's wiring does not register or cannot open
+    /// ([`StatusReply::RejectedTopologyStorageProvider`]). Appended last: no variant before it moves.
+    ///
+    /// Position 39 on the wire.
+    UpdateStorage {
+        /// The registered name of the provider RDM's records go to.
+        topology_storage_provider: String,
+    },
 }
 
 /// One exact birth as a [`StatusRequest::ReportCallFailed`] names it: `(node_id, incarnation, path,
@@ -1213,6 +1226,7 @@ impl StatusRequest {
             Self::UpdateRoots { .. } => "node.roots.update",
             Self::UpdateRoot { .. } => "fabric.root.update",
             Self::ReportCallFailed { .. } => "report-call-failed",
+            Self::UpdateStorage { .. } => "fabric.storage.update",
         }
     }
 }
@@ -1919,6 +1933,35 @@ pub enum StatusReply {
         /// The root's public key, as hex.
         root: String,
     },
+    /// `fabric.storage.updated`: the storage change is started, its `rdm.storage.started` event written;
+    /// its end is its `rdm.storage.ended` event. Appended last: no variant before it moves.
+    ///
+    /// Position 63 on the wire.
+    StorageUpdated {
+        /// The change's durable identity, which every command of the change carries.
+        change_id: crate::ChangeId,
+    },
+    /// `fabric.storage.update` refused by name (`build-in-progress`): a Build, or another storage change,
+    /// is in progress; nothing is started. Appended last: no variant before it moves.
+    ///
+    /// Position 64 on the wire.
+    RejectedBuildInProgress {
+        /// The Build in progress, when a Build is.
+        build_id: Option<String>,
+        /// The storage change in progress, when a change is.
+        change_id: Option<crate::ChangeId>,
+    },
+    /// `fabric.storage.update` refused by name for its provider (`topology-storage-provider-not-registered`
+    /// or `topology-storage-provider-not-opened`, the rule in `reason`): nothing is started and nothing
+    /// moved. Appended last: no variant before it moves.
+    ///
+    /// Position 65 on the wire.
+    RejectedTopologyStorageProvider {
+        /// The rule's name.
+        reason: String,
+        /// The rule's detail, naming the provider.
+        detail: String,
+    },
 }
 
 /// The event a Blocked `pre_node_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -2166,6 +2209,9 @@ impl StatusReply {
             Self::RootUpdated { .. } => "fabric.root.updated",
             Self::RejectedRotationInProgress { .. } => "rotation-in-progress",
             Self::RejectedRootAlreadyTrusted { .. } => "root-already-trusted",
+            Self::StorageUpdated { .. } => "fabric.storage.updated",
+            Self::RejectedBuildInProgress { .. } => "build-in-progress",
+            Self::RejectedTopologyStorageProvider { .. } => "rejected-topology-storage-provider",
         }
     }
 }
@@ -2206,8 +2252,8 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 39;
-    const REPLY_VARIANTS: u32 = 63;
+    const REQUEST_VARIANTS: u32 = 40;
+    const REPLY_VARIANTS: u32 = 66;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -2277,6 +2323,9 @@ impl NodeProtocol for Status {
             StatusReply::RootUpdated { .. } => "fabric.root.updated",
             StatusReply::RejectedRotationInProgress { .. } => "rotation-in-progress",
             StatusReply::RejectedRootAlreadyTrusted { .. } => "root-already-trusted",
+            StatusReply::StorageUpdated { .. } => "fabric.storage.updated",
+            StatusReply::RejectedBuildInProgress { .. } => "build-in-progress",
+            StatusReply::RejectedTopologyStorageProvider { .. } => "rejected-topology-storage-provider",
         }
     }
 
@@ -2348,6 +2397,8 @@ impl NodeProtocol for Status {
             StatusReply::RejectedRootStillChained { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::RootUpdated { .. } => ReplyKind::Success,
             StatusReply::RejectedRotationInProgress { .. } | StatusReply::RejectedRootAlreadyTrusted { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::StorageUpdated { .. } => ReplyKind::Success,
+            StatusReply::RejectedBuildInProgress { .. } | StatusReply::RejectedTopologyStorageProvider { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
         }
     }
 
@@ -2490,6 +2541,9 @@ mod tests {
             (StatusReply::RootUpdated { phase: RootsPhase::Minted }, ReplyKind::Success),
             (StatusReply::RejectedRotationInProgress { phase: RootsPhase::Distributed }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::RejectedRootAlreadyTrusted { root: "ab".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::StorageUpdated { change_id: crate::ChangeId::mint() }, ReplyKind::Success),
+            (StatusReply::RejectedBuildInProgress { build_id: Some("66h8qrqvaajk".into()), change_id: None }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::RejectedTopologyStorageProvider { reason: "topology-storage-provider-not-registered".into(), detail: "d".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -2552,6 +2606,7 @@ mod tests {
                 ReportedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc", "2").unwrap() },
                 "not-sent: Connection(\"connect refused\")",
             ),
+            StatusRequest::UpdateStorage { topology_storage_provider: "test-target".into() },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {

@@ -10,7 +10,7 @@
 //! provider's history is written through the store log and the store locks as its writers write it;
 //! the new provider's is read back the same way.
 //!
-//! The copy's span is `rdm.node_admin.build.update.via-storage-copy` (i149 plan, "OTLP span-assertion
+//! The copy's span is `rdm.node_admin.storage.update.via-copy` (i149 plan, "OTLP span-assertion
 //! bar"), with `build_id`, `change_id`, `source`, `destination`, `source_position`, `copied` and
 //! `outcome`:
 //! - `source_position`: how many lines of the old provider, over its stores, the new provider
@@ -37,7 +37,7 @@ use serde_json::json;
 
 use rdm_node::storage_copy::{copy, Claim, ClaimTaken, CopyError, CopyRun, FileProviderLines, ProviderLines, Store};
 
-const COPY_SPAN: &str = "rdm.node_admin.build.update.via-storage-copy";
+const COPY_SPAN: &str = "rdm.node_admin.storage.update.via-copy";
 const OPEN_SPAN: &str = "rdm.node.store.resolve.via-fold";
 const SOURCE: &str = "file";
 const DESTINATION: &str = "target";
@@ -57,7 +57,7 @@ fn capture(tag: &str) -> rdm_transport::EvidenceCapture {
 }
 
 fn run() -> CopyRun {
-    CopyRun { build_id: BuildId::mint(), change_id: ChangeId::mint(), source: SOURCE.into(), destination: DESTINATION.into() }
+    CopyRun { change_id: ChangeId::mint(), source: SOURCE.into(), destination: DESTINATION.into() }
 }
 
 /// A line as a store holds it, its place in the file aside: its op, format, key and record.
@@ -243,8 +243,8 @@ fn a_copy_preserves_current_values_across_writer_changes() {
     let total = h.total();
     let s = copies[0];
     assert_eq!(
-        ["build_id", "change_id", "source", "destination", "source_position", "copied", "outcome"].map(|k| attr(s, k)),
-        [Some(change.build_id.log().to_string()), Some(change.change_id.to_string()), Some(SOURCE.into()), Some(DESTINATION.into()), Some(total.to_string()), Some(total.to_string()), Some("copied".into())],
+        ["change_id", "source", "destination", "source_position", "copied", "outcome"].map(|k| attr(s, k)),
+        [Some(change.change_id.to_string()), Some(SOURCE.into()), Some(DESTINATION.into()), Some(total.to_string()), Some(total.to_string()), Some("copied".into())],
         "the copy span names the change, both providers, the verified source position and the lines copied: {s}"
     );
     let opens: Vec<_> = spans_named(&spans, OPEN_SPAN).into_iter().filter(|s| attr(s, "provider").as_deref() == Some(DESTINATION)).collect();
@@ -318,8 +318,8 @@ fn a_copy_refuses_a_destination_hole_without_replaying_stale_state() {
     let of = |c: &CopyRun| copies.iter().find(|s| attr(s, "change_id").as_deref() == Some(c.change_id.as_str())).copied().unwrap_or_else(|| panic!("a copy span for change {}: {copies:?}", c.change_id));
     let s = of(&change);
     assert_eq!(
-        ["build_id", "source", "destination", "source_position", "copied", "outcome"].map(|k| attr(s, k)),
-        [Some(change.build_id.log().to_string()), Some(SOURCE.into()), Some(DESTINATION.into()), Some("1".into()), Some("0".into()), Some("refused".into())],
+        ["change_id", "source", "destination", "source_position", "copied", "outcome"].map(|k| attr(s, k)),
+        [Some(change.change_id.to_string()), Some(SOURCE.into()), Some(DESTINATION.into()), Some("1".into()), Some("0".into()), Some("refused".into())],
         "the refused copy's span: one source line verified, none copied: {s}"
     );
     assert_eq!(attr(of(&extra_change), "outcome").as_deref(), Some("refused"));

@@ -854,7 +854,7 @@ mod tests {
         let builds = Arc::new(CountedReads { inner: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()), reads: Default::default() });
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
         let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])));
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         claim(&builds.inner, &id, 1, &fp.birth().unwrap()).await;
         // The fabric-primary alone in its one-mesh fabric, its mesh ready; pending went out.
@@ -897,7 +897,7 @@ mod tests {
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
         let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])));
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         claim(&builds, &id, 1, &fp.birth().unwrap()).await;
         let view = projected(vec![fp.clone()]);
@@ -1026,7 +1026,7 @@ mod tests {
             let mut c = m.spec(&rpc).cloned().unwrap();
             c.executable = sha.map(exe);
             m.set_spec(c).unwrap();
-            FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
+            FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
         };
         let a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
         builds.publish_accepted(&BuildAccepted { build_id: a.clone(), topology: topology(Some("aa")), submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
@@ -1078,7 +1078,7 @@ mod tests {
             let mut c = m.spec(&admin).cloned().unwrap();
             c.executable = sha.map(exe);
             m.set_spec(c).unwrap();
-            FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
+            FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
         };
         let (fp, _) = fabric_primary_and_mesh2();
         // The Day-0 admin's row records the executable it runs.
@@ -1410,7 +1410,7 @@ mod tests {
             let mut c = m.spec(&rpc).cloned().unwrap();
             c.executable = Some(exe("rpc_node", "rr"));
             m.set_spec(c).unwrap();
-            FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
+            FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
         };
         fn at<'a>(r: &'a mut [NodeSpec], p: PathName) -> &'a mut NodeSpec {
             r.iter_mut().find(|s| s.path == p).expect("the request lists the path")
@@ -1457,7 +1457,7 @@ mod tests {
             }
             let mut nodes: Vec<NodeSpec> = topology.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
             edit(&mut nodes);
-            let change = TopologyChange::Reconcile { topology_storage_provider: None, based_on: a.clone(), nodes };
+            let change = TopologyChange::Reconcile { based_on: a.clone(), nodes };
             let next = compile_against(&topology, &change, &view, &recorded).unwrap_or_else(|e| panic!("{what}: the request compiles: {e}"));
             let b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
             builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: next.clone(), submitted_change: Some(change), submitted_at_ms: 2_000 }).await.unwrap();
@@ -1616,7 +1616,6 @@ mod tests {
                     topology: FabricTopology {
                         section_of: None,
                         pinned: Vec::new(),
-                        storage_change: None,
                         topology_storage_provider: None,
                         fabric: "fabric1".into(),
                         meshes: [mesh1_a].into(),
@@ -1734,7 +1733,6 @@ mod tests {
                     topology: FabricTopology {
                         section_of: None,
                         pinned: Vec::new(),
-                        storage_change: None,
                         topology_storage_provider: None,
                         fabric: "fabric1".into(),
                         meshes: [mesh1_b].into(),

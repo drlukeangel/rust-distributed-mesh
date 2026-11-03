@@ -88,7 +88,7 @@ async fn main() -> Result<()> {
     let image = spec.executable.as_ref().and_then(|b| b.image.clone());
     spec.executable = Some(Binding { launch_id: spec.kind.name().into(), executable: executable.clone(), sha256, image });
 
-    let stream = match carrier.create(Change::Reconcile { based_on, nodes, topology_storage_provider: None }).await {
+    let stream = match carrier.create(Change::Reconcile { based_on, nodes}).await {
         Ok(s) => s,
         Err(CallEnd::Rejected { reason, detail }) => return Err(anyhow!("refused {reason}: {detail}")),
         Err(e) => return Err(e.into()),

@@ -682,23 +682,25 @@ impl NodeSelf {
     /// Serve the command on its caller's connection, which a stop spares and a start joins back over.
     pub async fn serve_node_command_on(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &NodeCommandRequest, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         use tracing::Instrument;
-        if let NodeCommandRequest::StorageBlock { incarnation, build_id, change_id, .. } = req {
+        if let NodeCommandRequest::StorageBlock { incarnation, change_id, .. } = req {
             if *incarnation != self.incarnation {
                 return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
             }
             let Some(storage) = self.storage_moves() else {
                 return rdm_core::reply::node_command::not_ready("this birth has no storage handle yet".into());
             };
-            let Ok(build_id) = build_id.parse::<rdm_core::BuildId>() else {
-                return rdm_core::reply::node_command::not_ready("storage block names no valid Build ID".into());
-            };
             if frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await.is_err() {
                 return rdm_core::reply::node_command::not_ready("caller gone before storage block acceptance".into());
             }
-            return storage.block(&build_id, change_id).await;
+            return storage.block(change_id).await;
         }
-        if let NodeCommandRequest::StorageStep { incarnation, build_id, change_id, provider, .. } = req {
-            return self.serve_storage_step(incarnation, build_id, change_id, provider, frames).await;
+        if let NodeCommandRequest::StorageStep { incarnation, change_id, provider, .. } = req {
+            return self.serve_storage_step(incarnation, change_id, provider, frames).await;
+        }
+        // `mesh.block` and `mesh.unblock` are a mesh-primary's: its node-admin serves them before this
+        // birth's own path is reached, and any other birth is no mesh-primary.
+        if let NodeCommandRequest::BlockMesh { .. } | NodeCommandRequest::UnblockMesh { .. } = req {
+            return rdm_core::reply::node_command::not_ready(format!("{}: {} is a mesh-primary's command, and this birth serves none", self.node_id, req.op()));
         }
         if let NodeCommandRequest::LeaveMesh { incarnation, operation, .. } = req {
             return self.serve_leave_mesh(spare, incarnation, operation, frames).await;
@@ -765,23 +767,20 @@ impl NodeSelf {
     /// A storage change's move of this exact birth (storage.md §2 "Changing it"): a command of an older
     /// change is refused by name before it is accepted; an accepted one ends with the birth writing the
     /// provider (`StorageStepped`) or refused by name.
-    async fn serve_storage_step(&self, incarnation: &IncarnationId, build_id: &str, change_id: &rdm_core::ChangeId, provider: &str, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
+    async fn serve_storage_step(&self, incarnation: &IncarnationId, change_id: &rdm_core::ChangeId, provider: &str, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         if *incarnation != self.incarnation {
             return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
         }
         let Some(storage) = self.storage_moves() else {
             return rdm_core::reply::node_command::not_ready(format!("{}: this birth holds no storage handle yet; nothing is done", self.node_id));
         };
-        let Ok(build_id) = build_id.parse::<rdm_core::BuildId>() else {
-            return rdm_core::reply::node_command::not_ready(format!("{}: the storage step names Build {build_id:?}, which is no Build id; nothing is done", self.node_id));
-        };
-        if let Some(refused) = storage.refusal(&build_id, change_id, provider).await {
+        if let Some(refused) = storage.refusal(change_id, provider).await {
             return refused;
         }
         if frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await.is_err() {
             return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing done", self.node_id));
         }
-        match storage.serve(&build_id, change_id, provider).await {
+        match storage.serve(change_id, provider).await {
             // Refused after the acceptance (an older change raced it): the command's terminal.
             NodeCommandReply::RejectedStaleChange { held } => rdm_core::reply::node_command::failed("storage-step".into(), format!("rejected-stale-change: this node acted on storage change {held}"), rdm_core::outcome::Code::Aborted),
             done => done,

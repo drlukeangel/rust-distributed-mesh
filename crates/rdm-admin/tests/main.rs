@@ -172,7 +172,7 @@ pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, change: 
             s
         })
         .collect();
-    rdm_admin::accepted::TopologyChange::Reconcile { topology_storage_provider: None, based_on: current.build_id, nodes }
+    rdm_admin::accepted::TopologyChange::Reconcile { based_on: current.build_id, nodes }
 }
 
 /// A nodes store holding the record of every birth `t` names, each written as its create wrote it

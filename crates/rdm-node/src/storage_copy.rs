@@ -21,12 +21,12 @@
 use crate::storage_error::StorageError;
 use crate::store_log::{Line, LockKind, LockTaken, Op, StoreLocks, StoreLog};
 use async_trait::async_trait;
-use rdm_core::{BuildId, ChangeId};
+use rdm_core::ChangeId;
 use std::path::Path;
 
 /// The span of a copy: the change, both providers, the source position verified and the lines copied
 /// (i149 plan, "OTLP span-assertion bar").
-pub const COPY_SPAN: &str = "rdm.node_admin.build.update.via-storage-copy";
+pub const COPY_SPAN: &str = "rdm.node_admin.storage.update.via-copy";
 
 /// One of the stores of a provider (storage.md §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -136,13 +136,11 @@ pub trait ProviderLines: Send + Sync {
 /// The change a copy is a step of, and the registered names of its two providers.
 #[derive(Debug, Clone)]
 pub struct CopyRun {
-    /// The Build that carries the change.
-    pub build_id: BuildId,
     /// The change.
     pub change_id: ChangeId,
     /// The provider copied from: the fabric's current one.
     pub source: String,
-    /// The provider copied to: the one the Build names.
+    /// The provider copied to: the one the change names.
     pub destination: String,
 }
 
@@ -214,8 +212,7 @@ fn refused(run: &CopyRun, why: String) -> CopyError {
 /// copy resumed after a lost answer appends nothing twice.
 pub async fn copy(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn ProviderLines) -> Result<Copied, CopyError> {
     let span = tracing::info_span!(
-        "rdm.node_admin.build.update.via-storage-copy",
-        build_id = %run.build_id.log(),
+        "rdm.node_admin.storage.update.via-copy",
         change_id = %run.change_id,
         source = %run.source,
         destination = %run.destination,

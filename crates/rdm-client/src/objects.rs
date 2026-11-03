@@ -28,6 +28,10 @@ async fn read(carrier: &BuildCarrier, target: &NodeTarget, req: &StatusRequest) 
 
 /// A reply other than the read's answer: the refusal, named, with what it carries.
 fn refused(target: &NodeTarget, op: &str, reply: StatusReply) -> CallEnd {
+    // A refusal naming its own rule is that rule's.
+    if let StatusReply::RejectedTopologyStorageProvider { reason, detail } = reply {
+        return CallEnd::Rejected { reason, detail: format!("{target:?}: {detail}") };
+    }
     let detail = match &reply {
         StatusReply::RejectedFilter { reason } => format!("{target:?}: {reason}"),
         StatusReply::ReadOverBound { read, bytes, max } => format!("{target:?}: the {read} answer encodes to {bytes} bytes, past the {max}-byte Status reply bound"),
@@ -236,7 +240,7 @@ impl Nodes {
     /// The stream is `Started`, then the step events of the create, ending `Complete` or
     /// `Failed { step, reason }`.
     pub async fn create_named(&self, based_on: BuildId, nodes: Vec<rdm_core::meta::NodeSpec>) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Create, BuildChange::Reconcile { topology_storage_provider: None, based_on, nodes }).await
+        self.workflow(WorkflowKind::Create, BuildChange::Reconcile { based_on, nodes }).await
     }
 
     /// `node.stop` of `node` (`lifecycles/node-stop.md`): delete its connections, leave its mesh and stop, keeping its `node.id`, `incarnation`, `(path, name)` and data dir.
@@ -402,6 +406,25 @@ impl Fabrics {
         };
         let r = tracing::Instrument::instrument(call, span.clone()).await;
         ended_read(&span, FabricOp::RootUpdate.name(), &r);
+        r
+    }
+
+    /// `fabric.storage.update` (storage.md §2 "Changing it"): the fabric's new
+    /// `topology_storage_provider` to the fabric-primary, which starts the storage change, its own
+    /// workflow, and answers the change's id once its `rdm.storage.started` event is written; refused
+    /// by name while a Build or another change is in progress (`build-in-progress`) and for a provider
+    /// its wiring does not register or cannot open. The change's end is its `rdm.storage.ended` event.
+    pub async fn update_storage(&self, topology_storage_provider: &str) -> Result<rdm_core::ChangeId, CallEnd> {
+        let span = FabricOp::StorageUpdate.span();
+        let target = self.carrier.target().clone();
+        let call = async {
+            match read(&self.carrier, &target, &StatusRequest::UpdateStorage { topology_storage_provider: topology_storage_provider.to_string() }).await? {
+                StatusReply::StorageUpdated { change_id } => Ok(change_id),
+                other => Err(refused(&target, FabricOp::StorageUpdate.name(), other)),
+            }
+        };
+        let r = tracing::Instrument::instrument(call, span.clone()).await;
+        ended_read(&span, FabricOp::StorageUpdate.name(), &r);
         r
     }
 

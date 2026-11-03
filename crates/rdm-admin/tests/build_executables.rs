@@ -272,7 +272,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
             .submit(
                 "test-missing-exe",
                 TopologyChange::Reconcile {
-                    topology_storage_provider: None,
+                    
                     based_on: base_build.clone(),
                     nodes: missing_specs,
                 },
@@ -303,7 +303,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
             .submit(
                 "test-wrong-sha",
                 TopologyChange::Reconcile {
-                    topology_storage_provider: None,
+                    
                     based_on: base_build.clone(),
                     nodes: wrong_sha_specs,
                 },
@@ -336,7 +336,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
             .submit(
                 "test-valid-reconcile",
                 TopologyChange::Reconcile {
-                    topology_storage_provider: None,
+                    
                     based_on: base_build,
                     nodes: valid_specs,
                 },

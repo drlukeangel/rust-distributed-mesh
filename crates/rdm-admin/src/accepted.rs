@@ -128,15 +128,10 @@ pub struct FabricTopology {
     pub fabric: String,
     /// The accepted meshes, by name.
     pub meshes: BTreeMap<String, MeshTopology>,
-    /// The fabric's `topology_storage_provider` the Build realizes (storage.md §2): the request's, or,
-    /// when it names none, the Fabric row's at acceptance (Q166). The journal's record of the accepted
-    /// Build carries it; the Build topic does not carry it, so a copy heard there holds `None`.
+    /// The fabric's `topology_storage_provider` at the Build's acceptance (storage.md §2), the Fabric
+    /// row's: a Build never changes it. The journal's record of the accepted Build carries it; the
+    /// Build topic does not carry it, so a copy heard there holds `None`.
     pub topology_storage_provider: Option<String>,
-    /// The storage change this Build is (storage.md §2 "Changing it"): its `change_id`, minted and
-    /// recorded with the accepted Build before its first command, and the old and new providers. `None`
-    /// for every Build that does not change the provider. The Build topic does not carry it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage_change: Option<rdm_core::build::StorageChange>,
     /// The exact birth each node this Build deletes held when it was accepted (build.md §4.4: "The
     /// operation carries the exact birth the gates pinned"), by path: every node.delete the Build plans
     /// acts on its path's pinned birth and on no other. Set at acceptance, never compiled forward.
@@ -161,7 +156,7 @@ impl FabricTopology {
     pub fn root_on(fabric: &str, mesh: &str, mesh_id: MeshId, topology_storage_provider: &str) -> Self {
         let mut meshes = BTreeMap::new();
         meshes.insert(mesh.to_string(), MeshTopology::with_id(&MeshDesired::of(mesh, [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 0)]), mesh_id));
-        Self { fabric: fabric.into(), meshes, topology_storage_provider: Some(topology_storage_provider.into()), storage_change: None, pinned: Vec::new(), section_of: None }
+        Self { fabric: fabric.into(), meshes, topology_storage_provider: Some(topology_storage_provider.into()), pinned: Vec::new(), section_of: None }
     }
 
     /// The accepted mesh named `name`.
@@ -200,7 +195,6 @@ impl FabricTopology {
             fabric: self.fabric.clone(),
             meshes: held,
             topology_storage_provider: self.topology_storage_provider.clone(),
-            storage_change: self.storage_change.clone(),
             section_of: Some(named.clone()),
         };
         let cut: Vec<FabricTopology> = self.meshes.iter().filter(|(n, _)| wanted(n)).map(|(n, m)| of(BTreeMap::from([(n.clone(), m.clone())]))).collect();
@@ -274,7 +268,7 @@ impl FabricTopology {
             mesh.spec_by_path.insert(n.name.clone(), NodeSpec::default_for(n.name.clone(), &n.mesh, n.kind));
             mesh.nodes.insert(n.name.clone());
         }
-        Self { fabric: observed.fabric.name.clone(), meshes, topology_storage_provider: None, storage_change: None, pinned: Vec::new(), section_of: None }
+        Self { fabric: observed.fabric.name.clone(), meshes, topology_storage_provider: None, pinned: Vec::new(), section_of: None }
     }
 
     /// The topology as per-mesh counts (the view's convenience shape).
@@ -339,10 +333,6 @@ pub enum TopologyChange {
         based_on: BuildId,
         /// Every node of the fabric, each by its create spec.
         nodes: Vec<NodeSpec>,
-        /// The `topology_storage_provider` the request names (storage.md §2); `None` leaves the
-        /// fabric's unchanged (Q166). A change stored before the field names none.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        topology_storage_provider: Option<String>,
     },
 }
 
@@ -1504,16 +1494,6 @@ fn plan_with(
     // other mesh's final primary after its mesh.deleted, then release the fabric name and report
     // fabric.deleted while the fabric-primary stays alive for its separate node.delete.
     if topology.meshes.is_empty() && action.is_none() {
-        // A storage change the delete interrupted: each mesh-primary is sent `mesh.unblock` before the
-        // teardown (storage.md §2 "Changing it").
-        if let Some(change) = &topology.storage_change {
-            let done = |key: &rdm_core::OperationId| steps.iter().any(|r| &r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
-            let mut meshes: Vec<&crate::model::Mesh> = observed.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead).collect();
-            meshes.sort_by(|a, b| a.name.cmp(&b.name));
-            for m in meshes.into_iter().filter(|m| !done(&crate::storage_change::unblock_operation(&change.change_id, &m.name))) {
-                ops.push(BuildOperation::UnblockStorage { mesh: m.name.clone(), change: change.clone() });
-            }
-        }
         let fp_mesh = observed.fabric_primary().map(|n| n.mesh.as_str());
         // A deleted mesh the view no longer holds: its final primary's node.delete, once this Build began
         // it, is owed its receipt (fabric-delete.md "Failure": a runtime whose delete has no receipt is
@@ -1650,30 +1630,6 @@ fn plan_with(
             Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-mesh-id-unknown", mesh = %m).in_scope(|| tracing::info!(error = %e, "the mesh's shutdown is not planned")),
         }
     }
-    // A storage change's operations follow every other the Build plans (storage.md §2 "Changing it"):
-    // each mesh's `mesh.block`, its mesh-primary's, the fabric-primary's own mesh first; the copy and the
-    // switch; each mesh's `mesh.unblock`; the Build's verdict. Each is planned until its `Complete` is
-    // receipted.
-    if let Some(change) = topology.storage_change.as_ref().filter(|_| action.is_none()) {
-        let done = |key: &rdm_core::OperationId| steps.iter().any(|r| &r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
-        let waited = |key: &rdm_core::OperationId| steps.iter().filter(|r| &r.operation == key && r.step == "Waiting").count();
-        let fp_mesh = observed.fabric_primary().map(|n| n.mesh.clone());
-        let mut meshes: Vec<&String> = topology.meshes.keys().collect();
-        meshes.sort_by_key(|m| (Some(m.as_str()) != fp_mesh.as_deref(), m.to_string()));
-        for (key_of, block) in [(crate::storage_change::block_operation as fn(&rdm_core::ChangeId, &str) -> rdm_core::OperationId, true), (crate::storage_change::unblock_operation, false)] {
-            let mut owed: Vec<&String> = meshes.iter().copied().filter(|m| !done(&key_of(&change.change_id, m))).collect();
-            owed.sort_by_key(|m| waited(&key_of(&change.change_id, m)));
-            for mesh in owed {
-                ops.push(if block { BuildOperation::BlockStorage { mesh: mesh.clone(), change: change.clone() } } else { BuildOperation::UnblockStorage { mesh: mesh.clone(), change: change.clone() } });
-            }
-            if block && !done(&crate::storage_change::switch_operation(&change.change_id)) {
-                ops.push(BuildOperation::SwitchStorage { change: change.clone() });
-            }
-        }
-        if !done(&crate::storage_change::operation(&change.change_id)) {
-            ops.push(BuildOperation::FinishStorage { change: change.clone() });
-        }
-    }
     BuildPlan { operations: ops }
 }
 
@@ -1801,7 +1757,7 @@ mod tests {
     }
 
     fn t(meshes: &[(&str, u32, u32)]) -> FabricTopology {
-        FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() }
+        FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() }
     }
 
     fn paths(m: &MeshTopology) -> Vec<PathName> {
@@ -2750,7 +2706,7 @@ mod tests {
         assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap().storage_persistence, preserve);
         assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.gateway", "1").unwrap()).unwrap().storage_persistence, StoragePersistence::Ephemeral);
         assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).unwrap().storage_persistence, StoragePersistence::Ephemeral);
-        let mut topology = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
+        let mut topology = FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
         assert_eq!(topology.validate(), Ok(()));
         // Grow and shrink keep the create specs in step with the paths.
         let observed = Topology {
@@ -2956,7 +2912,7 @@ mod tests {
     }
 
     fn reconcile(nodes: Vec<NodeSpec>) -> TopologyChange {
-        TopologyChange::Reconcile { topology_storage_provider: None, based_on: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b0")).unwrap(), nodes }
+        TopologyChange::Reconcile { based_on: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b0")).unwrap(), nodes }
     }
 
     /// What the rows record: every live member of `o` on `tag`'s executable of its kind.
@@ -3278,7 +3234,7 @@ mod tests {
     fn a_replacements_delete_carries_the_birth_its_acceptance_pinned() {
         use NodeStatus::Ready as R;
         let desired = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Gateway, 1)]);
-        let cur = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&desired))].into() };
+        let cur = FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&desired))].into() };
         let o = observed(vec![n(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, R, true)], &["mesh1"]);
         let rows = rows_on(&o, "a");
         let request: Vec<NodeSpec> = o.nodes.iter().map(|x| entry(x.name.clone(), &x.mesh, x.kind, Some(if x.kind == NodeKind::Gateway { "b" } else { "a" }))).collect();
@@ -3340,7 +3296,7 @@ mod tests {
     fn only_the_paths_whose_entry_differs_from_their_row_are_replaced_and_a_resume_finishes_the_rest() {
         use NodeStatus::Ready as R;
         let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 2), (NodeKind::Compute, 1)]);
-        let cur = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: ["mesh1", "mesh2"].iter().map(|m| (m.to_string(), MeshTopology::of(&mesh(m)))).collect() };
+        let cur = FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: ["mesh1", "mesh2"].iter().map(|m| (m.to_string(), MeshTopology::of(&mesh(m)))).collect() };
         let mut nodes = Vec::new();
         for m in ["mesh1", "mesh2"] {
             nodes.extend([n(PathName::new(format!("{m}.admin"), "1").unwrap(), m, NodeKind::NodeAdmin, R, true), n(PathName::new(format!("{m}.admin"), "2").unwrap(), m, NodeKind::NodeAdmin, R, false), n(PathName::new(format!("{m}.broker"), "1").unwrap(), m, NodeKind::Broker, R, true), n(PathName::new(format!("{m}.gateway"), "1").unwrap(), m, NodeKind::Gateway, R, true), n(PathName::new(format!("{m}.gateway"), "2").unwrap(), m, NodeKind::Gateway, R, false), n(PathName::new(format!("{m}.compute"), "1").unwrap(), m, NodeKind::Compute, R, true)]);
