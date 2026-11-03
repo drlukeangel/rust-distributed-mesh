@@ -40,7 +40,7 @@ fn topology(rpcs: u32) -> FabricTopology {
 /// and its verdict.
 async fn build(log: &MemoryBuildStateAdapter, id: &BuildId, at: u64, t: FabricTopology, receipts: &[(rdm_core::OperationId, StepOutcome)], verdict: AttemptOutcome) {
     let executor_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: t, submitted_change: None, source: None, submitted_at_ms: at }).await.unwrap();
+    log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: t, change: None, source: None, time: at }).await.unwrap();
     log.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
     for (operation, outcome) in receipts {
         let receipt = BuildStepReceipt { build_id: id.clone(), attempt: 1, operation: operation.clone(), step: "Complete".into(), outcome: outcome.clone(), output: None, executor: Some(executor_birth.clone()), mesh: None };

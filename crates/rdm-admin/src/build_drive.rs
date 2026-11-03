@@ -1054,7 +1054,7 @@ fn world(drive: &Drive, p: &BuildProjection, t: &Topology, fabric_ready: bool) -
         other => other.mesh().map(str::to_owned),
     });
     let mut members: Vec<String> = t
-        .members()
+        .births()
         .filter(|n| Some(&n.mesh) == mesh.as_ref())
         .map(|n| format!("{}:{}:{:?}:{}", n.node_id, n.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("-"), n.status, n.is_primary))
         .collect();
@@ -1096,7 +1096,7 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
 /// again. A Build whose topology the change left as it was puts nothing back, and the fabric it finds
 /// ready holds it.
 fn changes_the_fabric(p: &BuildProjection) -> bool {
-    !p.submitted_change.as_ref().is_some_and(|c| matches!(c, rdm_core::build::BuildChange::DeleteFabric))
+    !p.change.as_ref().is_some_and(|c| matches!(c, rdm_core::build::BuildChange::DeleteFabric))
 }
 
 /// Whether `p`'s attempt waits for the fabric's ready before its Build is Complete: the
@@ -1656,7 +1656,7 @@ impl DriveEnv {
             Ok(active) => active,
             Err(e) => return Some(self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: the Builds fabric.delete {} interrupts could not be read: {e}", delete.build_id, me_path = &me.path, me_name = &me.name))),
         };
-        for p in active.iter().filter(|b| (b.submitted_at_ms, &b.build_id) < (delete.submitted_at_ms, &delete.build_id)) {
+        for p in active.iter().filter(|b| (b.time, &b.build_id) < (delete.time, &delete.build_id)) {
             if let Interrupted::Open(why) = self.end_interrupted(me, p, delete).await {
                 return Some(self.stalled(me, drive, why));
             }

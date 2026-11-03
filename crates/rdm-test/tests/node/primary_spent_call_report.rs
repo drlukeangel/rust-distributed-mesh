@@ -57,7 +57,7 @@ fn one(views: &[NodeView], what: &str, f: impl Fn(&NodeView) -> bool) -> NodeVie
 async fn a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_primary_which_marks_and_investigates_it() {
     let floor_ms = FLOOR.as_millis().to_string();
     let mut estate = Estate::bootstrap_with_env(owner(), "fabric1", "mesh1", &[("RDM_STALENESS_MS", floor_ms.as_str())]).await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter_fabric_primary().await;

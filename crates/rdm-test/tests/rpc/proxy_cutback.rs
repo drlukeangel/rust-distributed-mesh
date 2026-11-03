@@ -59,7 +59,7 @@ fn now_ns() -> u64 {
 /// The born estate: two node-admins and three nodes, every one ready.
 async fn born(cell: &str) -> Estate {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The settled view is the admin's. The source records a Proxy to the destination through the

@@ -66,7 +66,7 @@ pub fn sectioned(facts: Vec<BuildFact>, meshes: Option<&std::collections::BTreeS
     facts
         .into_iter()
         .flat_map(|f| match f {
-            BuildFact::Accepted(a) => a.topology.sections(meshes).into_iter().map(|topology| BuildFact::Accepted(BuildAccepted { topology, submitted_change: a.submitted_change.clone().filter(|c| matches!(c, rdm_core::build::BuildChange::DeleteFabric)), ..a.clone() })).collect(),
+            BuildFact::Accepted(a) => a.topology.sections(meshes).into_iter().map(|topology| BuildFact::Accepted(BuildAccepted { topology, change: a.change.clone().filter(|c| matches!(c, rdm_core::build::BuildChange::DeleteFabric)), ..a.clone() })).collect(),
             other => vec![other],
         })
         .collect()
@@ -332,7 +332,7 @@ mod tests {
             fabric: "fabric1".into(),
             meshes,
         };
-        BuildAccepted { build_id: BuildId::mint(), topology, submitted_change: None, source: None, submitted_at_ms: 7 }
+        BuildAccepted { build_id: BuildId::mint(), topology, change: None, source: None, time: 7 }
     }
 
     /// CONTRACT (INDEX Q284: "The fabric-primary records the accepted Build whole in the journal, and
@@ -357,7 +357,7 @@ mod tests {
         let names: std::collections::BTreeSet<String> = whole.topology.meshes.keys().cloned().collect();
         for f in &heard {
             let BuildFact::Accepted(a) = f else { panic!("a section is an acceptance: {f:?}") };
-            assert_eq!((a.build_id.clone(), a.submitted_at_ms, a.topology.fabric.as_str(), a.topology.topology_storage_provider.as_deref()), (whole.build_id.clone(), 7, "fabric1", Some("file")));
+            assert_eq!((a.build_id.clone(), a.time, a.topology.fabric.as_str(), a.topology.topology_storage_provider.as_deref()), (whole.build_id.clone(), 7, "fabric1", Some("file")));
             assert_eq!(a.topology.meshes.len(), 1, "one mesh's section");
             assert_eq!(a.topology.mesh_names(), names, "every section names every mesh of the Build");
             let (mesh, m) = a.topology.meshes.iter().next().unwrap();
@@ -379,7 +379,7 @@ mod tests {
         assert!(a.topology.names_mesh("mesh7") && !a.topology.meshes.contains_key("mesh7"), "mesh7 is the Build's, its section not here");
         let delete = BuildAccepted {
             topology: crate::accepted::FabricTopology { meshes: Default::default(), pinned: Vec::new(), ..whole.topology.clone() },
-            submitted_change: Some(rdm_core::build::BuildChange::DeleteFabric),
+            change: Some(rdm_core::build::BuildChange::DeleteFabric),
             ..whole
         };
         for wanted in [None, Some(&touched)] {
@@ -389,7 +389,7 @@ mod tests {
             let heard = BuildMessage::from_bytes(&messages[0]).unwrap().facts;
             let [BuildFact::Accepted(a)] = heard.as_slice() else { panic!("the Build's one section: {heard:?}") };
             assert!(a.topology.meshes.is_empty() && a.topology.mesh_names().is_empty());
-            assert_eq!(a.submitted_change, Some(rdm_core::build::BuildChange::DeleteFabric), "it says it deletes the fabric");
+            assert_eq!(a.change, Some(rdm_core::build::BuildChange::DeleteFabric), "it says it deletes the fabric");
         }
     }
 

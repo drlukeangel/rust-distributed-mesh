@@ -40,7 +40,7 @@ fn start_ns(sp: &Value) -> u64 {
 /// role (its stop moves no role first) and its exact runtime.
 async fn mesh_with_a_member(test: &str) -> (Estate, PathName, ExactRuntime) {
     let estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[]).await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let member = estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh1" && n.r#type == "node" && !n.is_primary).map(|n| n.location()).min().expect("an rpc member that holds no primary role");
@@ -150,7 +150,7 @@ async fn hold_until_recovered(estate: &Estate, path: &PathName) -> Held {
 async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_and_its_runtime_is_sent_nothing() {
     let test = "an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_and_its_runtime_is_sent_nothing";
     let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[]).await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter_fabric_primary().await;

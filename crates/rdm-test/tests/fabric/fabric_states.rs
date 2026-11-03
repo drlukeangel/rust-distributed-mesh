@@ -107,7 +107,7 @@ async fn role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_n
     let test = "role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_names";
     let mut estate = estate_with_roles(test).await;
     let mesh = |m: &str| MeshDesired::of(m, [("node-admin", 2), ("broker", 1), ("gateway", 1), ("compute", 1)]);
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
     let want: std::collections::BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| PathName::new(&format!("{m}.node-admin"), &i.to_string()).unwrap()).chain(["broker", "gateway", "compute"].iter().map(move |r#type| PathName::new(&format!("{m}.{}", r#type), "1").unwrap()))).collect();
     let nodes = estate.settles_to_named(&want, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
@@ -140,8 +140,8 @@ async fn role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_n
 /// `members` under each mesh.
 async fn two_mesh_change(mut estate: Estate, shape: &[(String, u32)], members: &[(&str, &str)]) {
     let mesh = |m: &str| MeshDesired::of(m, shape.iter().cloned());
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
-    let two_meshes = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await.build_id.to_string();
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
+    let two_meshes = estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await.build_id.to_string();
     let want: std::collections::BTreeSet<PathName> = ["mesh1", "mesh2"]
         .iter()
         .flat_map(|m| (1..=2).map(move |i| PathName::new(&format!("{m}.node-admin"), &i.to_string()).unwrap()).chain(members.iter().map(move |(kind, name)| PathName::new(&format!("{m}.{kind}"), *name).unwrap())))
@@ -252,7 +252,7 @@ async fn until_blocked_on(stream: &mut BuildStream, node: &rdm_core::NodeId, wit
 }
 
 /// `stream` followed to its `Complete` (`Estate::follow`), bounded by `within`: `what` names the wait.
-async fn followed(estate: &Estate, stream: BuildStream, what: &str, within: Duration) -> rdm_test::typed::Reconciled {
+async fn followed(estate: &Estate, stream: BuildStream, what: &str, within: Duration) -> rdm_test::typed::Completed {
     tokio::time::timeout(within, estate.follow(stream)).await.unwrap_or_else(|_| panic!("{what}: no Complete within {within:?}"))
 }
 
@@ -324,7 +324,7 @@ async fn a_resize_is_complete_only_after_its_own_ready_state_is_set() {
 async fn every_build_sends_one_started_then_one_ended_and_a_resizes_ending_follows_its_on_fabric_ready() {
     let test = "every_build_sends_one_started_then_one_ended_and_a_resizes_ending_follows_its_on_fabric_ready";
     let mut estate = estate_with(test).await;
-    let resize = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])] }).await;
+    let resize = estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])] }).await;
     let resize_id = resize.build_id.to_string();
     ready_under(&estate, &resize_id).await;
     // The second Build: a Create of one node (a Build states only the nodes it adds or removes, Q342).
@@ -335,7 +335,7 @@ async fn every_build_sends_one_started_then_one_ended_and_a_resizes_ending_follo
     estate.stop().await;
 
     let spans = estate.spans();
-    let completed_at = |r: &rdm_test::typed::Reconciled| match r.frames.last() {
+    let completed_at = |r: &rdm_test::typed::Completed| match r.frames.last() {
         Some(BuildFrame::Complete { attempt }) => u64::from(*attempt),
         other => panic!("Build {} ended {other:?}", r.build_id),
     };
@@ -458,7 +458,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     // The growth Build, accepted after the first ready (Q170), adds mesh2 and a node to
     // mesh1: every row its nodes write goes straight to the store.
     let shape = |m: &str, rpc: u32| MeshDesired::of(m, [("node-admin", 1), ("node", rpc)]);
-    let second = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1", 1), shape("mesh2", 1)] }).await.build_id.to_string();
+    let second = estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1", 1), shape("mesh2", 1)] }).await.build_id.to_string();
     let mut want_later = want.clone();
     want_later.extend([("mesh1.node", "1"), ("mesh2.node-admin", "1"), ("mesh2.node", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()));
     let later_nodes = estate.settles_to_named(&want_later, Duration::from_secs(60)).await;
@@ -545,7 +545,7 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
     let mut estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"], &env).await.expect("the faulted-admin binding set is accepted");
     // The Day-0 Build's change ends first: the admin alone, whose attempt's claim is the last thing the fabric waits on.
     until_fabric(&estate, ScopeStatus::Ready, None, Duration::from_secs(60)).await;
-    let build = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])] }).await.build_id.to_string();
+    let build = estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])] }).await.build_id.to_string();
     until_fabric(&estate, ScopeStatus::Ready, Some(build.as_str()), Duration::from_secs(60)).await;
     let nodes = estate.node_views().await;
     let rpc = nodes.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node").expect("the `node` fixture");

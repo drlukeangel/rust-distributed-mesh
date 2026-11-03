@@ -67,7 +67,7 @@ fn two_mesh_names() -> BTreeSet<PathName> {
 /// The estate grown to [`two_meshes`], every node ready and the fabric ready.
 async fn two_mesh_estate(test: &str, env: &[(&str, &str)]) -> (Estate, Vec<NodeView>) {
     let mut estate = estate_with(test, env).await;
-    estate.reconcile(&two_meshes()).await;
+    estate.resize(&two_meshes()).await;
     let views = estate.settles_to_named(&two_mesh_names(), SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     (estate, views)
@@ -334,9 +334,9 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     let mut grown = two_meshes();
     grown.meshes[0].counts.insert("node".into(), 2);
     grown.meshes.push(MeshDesired::of("mesh3", [("node-admin", 1)]));
-    estate.reconcile(&grown).await;
+    estate.resize(&grown).await;
     let deleted = estate.node_view(&PathName::new("mesh1.node", "2").unwrap()).await;
-    estate.reconcile(&two_meshes()).await;
+    estate.resize(&two_meshes()).await;
     // A deleted mesh's last node-admin is a separate node.delete after mesh.deleted (mesh-delete.md step 7).
     Estate::workflow("node.delete of mesh3.node-admin.1", estate.delete_node(&Estate::path("mesh3.node-admin", "1")).await).await;
     let views = estate.settles_to_named(&two_mesh_names(), SETTLE).await;
@@ -678,7 +678,7 @@ async fn a_restart_without_a_launcher_writes_the_provider_its_own_row_names() {
     let test = "a_restart_without_a_launcher_writes_the_provider_its_own_row_names";
     let names: BTreeSet<PathName> = [bootstrap(), PathName::new("mesh1.node", "1").unwrap()].into_iter().collect();
     let mut estate = estate_with(test, &[]).await;
-    estate.reconcile(&one_mesh()).await;
+    estate.resize(&one_mesh()).await;
     estate.settles_to_named(&names, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let (file_root, target_root) = roots(&estate);
@@ -1199,7 +1199,7 @@ async fn two_mesh_estate_on(test: &str, provider: &str) -> (Estate, Vec<NodeView
     }
     let owner = Owner { provider: provider.into(), ..owner(test) };
     let mut estate = Estate::bootstrap_on_with_env(owner, "fabric1", "mesh1", &set, &sha, &[], &[]).await.expect("the faulted-admin binding set is accepted");
-    estate.reconcile(&two_meshes()).await;
+    estate.resize(&two_meshes()).await;
     let views = estate.settles_to_named(&two_mesh_names(), SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     (estate, views)
@@ -1355,7 +1355,7 @@ async fn a_previous_provider_remains_unchanged_after_cutover() {
         assert!(rdm_admin::store_log::read_record(&file_root.join(NODES), "node-record", Some(v.node_id.as_str())).is_some(), "{:?}: its row reads on {FILE}", v.name);
     }
     // Writes after the cutover: a node created by a Build that omits the provider, and its connection event.
-    estate.reconcile(&grown()).await;
+    estate.resize(&grown()).await;
     let mut names = two_mesh_names();
     names.insert(grown_location());
     let grown_id = estate.settles_to_named(&names, SETTLE).await.into_iter().find(|v| v.location() == grown_location()).expect("the grown node").node_id.to_string();
@@ -1400,7 +1400,7 @@ async fn returns_to_a_previous_provider(test: &str, provider: &str) {
     assert!(after.iter().all(|v| v.status == NodeStatus::Ready), "every node is ready: {after:?}");
     nodes_write(&after, FILE);
     // The fabric serves on `file`: a Build that omits the provider creates a node, written there alone.
-    estate.reconcile(&grown()).await;
+    estate.resize(&grown()).await;
     let mut names = two_mesh_names();
     names.insert(grown_location());
     let grown_view = estate.settles_to_named(&names, SETTLE).await.into_iter().find(|v| v.location() == grown_location()).expect("the grown node");

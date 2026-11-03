@@ -115,7 +115,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let mesh1 = MeshDesired::of("mesh1", [("node-admin", 2)]);
     let mesh2 = MeshDesired::of("mesh2", [("node-admin", mesh2_admins), ("node", 2)]);
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1.clone(), mesh2] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1.clone(), mesh2] }).await;
     let mut want: BTreeSet<PathName> = [("mesh1.node-admin", "1"), ("mesh1.node-admin", "2"), ("mesh2.node", "1"), ("mesh2.node", "2")].iter().map(|(path, name)| Estate::path(path, name)).collect();
     want.extend((1..=mesh2_admins).map(|i| Estate::path("mesh2.node-admin", &i.to_string())));
     let before = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);

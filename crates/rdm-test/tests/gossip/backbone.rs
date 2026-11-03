@@ -61,7 +61,7 @@ fn shape(fabric: &str, rpc1: u32) -> FabricDesired {
 
 /// MM with two admins and two nodes per mesh, settled.
 async fn mm(estate: &Estate, fabric: &str) -> Vec<Value> {
-    estate.reconcile(&shape(fabric, 2)).await;
+    estate.resize(&shape(fabric, 2)).await;
     let want: BTreeSet<PathName> = ["mesh1", "mesh2"]
         .iter()
         .flat_map(|m| (1..=2).flat_map(move |i| [PathName::new(format!("{m}.node-admin"), i.to_string()).unwrap(), PathName::new(format!("{m}.node"), i.to_string()).unwrap()]))

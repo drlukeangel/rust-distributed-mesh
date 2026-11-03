@@ -33,7 +33,7 @@ fn ready(n: &rdm_client::NodeView) -> bool {
 /// Bootstraps mesh1 and builds 1 more node-admin and 2 nodes, all ready, on a fabric ready.
 async fn small_estate(test: &str) -> Estate {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     estate
@@ -106,7 +106,7 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
     o.rung = "fault-door".into();
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on(o, "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("faulted-admin binding set accepted");
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 0)]).await;
     estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
     // Either admin may execute: arm the same cut on both doors.
@@ -160,7 +160,7 @@ async fn poc_probe_round_trips_and_a_cut_frame_is_not_sent() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric() {
     let mut estate = Estate::bootstrap(owner("poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric"), "fabric1", "mesh1").await;
-    let build = estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await.build_id.to_string();
+    let build = estate.resize_shape("fabric1", &[("mesh1", 2, 1)]).await.build_id.to_string();
     let want: std::collections::BTreeSet<PathName> = [PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node-admin", "2").unwrap(), PathName::new("mesh1.node", "1").unwrap()].into();
     let before = estate.settles_to_named(&want, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;

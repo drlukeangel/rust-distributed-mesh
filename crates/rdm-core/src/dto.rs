@@ -80,9 +80,9 @@ pub struct BuildView {
     pub topology: serde_json::Value,
     /// The change that produced it, tagged by `kind` (`add_node`, `remove_node`, ...): history.
     #[serde(default)]
-    pub submitted_change: Option<serde_json::Value>,
+    pub change: Option<serde_json::Value>,
     /// When the Build was submitted, in milliseconds since the Unix epoch.
-    pub submitted_at_ms: u64,
+    pub time: u64,
     /// Where the Build is in its life.
     pub state: BuildState,
     /// The current attempt, counting from 1.

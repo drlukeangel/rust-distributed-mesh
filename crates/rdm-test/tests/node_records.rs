@@ -27,7 +27,7 @@ async fn a_nodes_config_update_stands_through_a_later_build() {
     };
     let mut estate = Estate::bootstrap(owner, "fabric1", "mesh1").await;
     let shape = [("mesh1", 1, 2)];
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     estate.settled_views(&shape).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let subject: rdm_core::PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
@@ -91,7 +91,7 @@ async fn own_properties_survive_node_restart() {
     };
     let mut estate = Estate::bootstrap(owner, "fabric1", "mesh1").await;
     let shape = [("mesh1", 1, 2)];
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     estate.settled_views(&shape).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let before = estate
@@ -193,7 +193,7 @@ fn owner_of(test: &str, subfeature: &str) -> Owner {
 /// `estate` reconciled to `shape` (each `(mesh, node_admin, rpc_node)`), its views settled and its
 /// fabric ready: a cell acts on its nodes only once the fabric has first reached ready (Q74).
 async fn estate_at(estate: Estate, shape: &[(&str, u32, u32)]) -> Estate {
-    estate.reconcile_shape("fabric1", shape).await;
+    estate.resize_shape("fabric1", shape).await;
     estate.settled_views(shape).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate

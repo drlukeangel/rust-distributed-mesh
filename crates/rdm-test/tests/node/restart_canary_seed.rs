@@ -161,7 +161,7 @@ async fn seed_runner_completes_every_operation_on_container() {
 async fn estate_with_build_in_flight(cell: &str) -> (Estate, BuildStream) {
     let estate = Estate::bootstrap(owner(cell, "restart-refusals"), "fabric1", "mesh1").await;
     let desired = |rpcs: u32| FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", rpcs)])] };
-    estate.reconcile(&desired(3)).await;
+    estate.resize(&desired(3)).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let stream = estate.submit(&BuildSpec::Fabric(desired(5))).await;

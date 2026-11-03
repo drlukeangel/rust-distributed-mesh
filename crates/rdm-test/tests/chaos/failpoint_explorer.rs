@@ -429,7 +429,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     let run = Run { estate, root, doors: Default::default(), rows: Default::default(), builds: Default::default(), span_checks: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: the mesh holds two
     // admins before any cut is armed, and either may hold the roles.
-    let shape = run.estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await.build_id.to_string();
+    let shape = run.estate.resize_shape("fabric1", &[("mesh1", 2, 0)]).await.build_id.to_string();
     // The initial fabric refuses a node delete until it has first reached ready (states.md "The initial fabric before ready").
     run.estate.until_fabric_ready(Duration::from_secs(120)).await;
     run.estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;

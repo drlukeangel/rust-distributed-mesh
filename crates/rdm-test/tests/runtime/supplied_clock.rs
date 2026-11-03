@@ -153,7 +153,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
 
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 1)]).await;
     let nodes = estate.settled_views(&[("mesh1", 1, 1)]).await;
     let target = nodes.iter().find(|n| n.r#type == "node").expect("node");
     let node_id = &target.node_id;

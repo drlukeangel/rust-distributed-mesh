@@ -68,7 +68,7 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     let views = estate.settled_views(&shape).await;
     let nodes: Vec<Value> = views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
     let ordinary: BTreeSet<String> = views.iter().filter(|n| n.r#type == "node").map(|n| n.node_id.to_string()).collect();

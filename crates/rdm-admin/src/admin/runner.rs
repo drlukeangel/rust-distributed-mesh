@@ -362,7 +362,7 @@ impl AdminRunner {
                 .topology
                 .read()
                 .await
-                .members()
+                .births()
                 .filter(|n| n.mesh == mesh && matches!(n.status, NodeStatus::Ready | NodeStatus::PendingReconnect))
                 .filter_map(|n| Some((n.endpoint_id.as_ref()?.0.clone(), n.transport_addr?)))
                 .collect();
@@ -2294,7 +2294,7 @@ mod tests {
         let build_id = crate::build::BuildId::mint();
         let mut fab_top = FabricTopology::root("fab", "mesh1", mesh1_id);
         fab_top.meshes.insert("mesh1".into(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])));
-        adapter.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: fab_top, submitted_change: None, source: None, submitted_at_ms: 1000 }).await.unwrap();
+        adapter.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: fab_top, change: None, source: None, time: 1000 }).await.unwrap();
         (dir, runner, adapter, build_id)
     }
 

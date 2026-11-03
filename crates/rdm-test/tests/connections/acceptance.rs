@@ -170,7 +170,7 @@ async fn born(cell: &str) -> Estate {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let root = estate.bootstrap_data_dir("mesh1").parent().expect("the estate root holds the data dirs").to_path_buf();
     std::fs::write(root.join(rdm_test::node::APP_PROTOCOL_PROXY_KNOB), b"").unwrap();
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     for (witness, peer) in [(&*SOURCE, &*CARRIER), (&*SOURCE, &*DEST), (&*CARRIER, &*DEST), (&*DEST, &*SOURCE)] {
@@ -762,7 +762,7 @@ async fn an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work
 async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_all() {
     let cell = "a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_all";
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let p = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2's primary");

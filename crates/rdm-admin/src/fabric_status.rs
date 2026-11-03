@@ -816,7 +816,7 @@ mod tests {
         let builds = Arc::new(CountedReads { inner: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()), reads: Default::default() });
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
         let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, source: None, submitted_at_ms: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: None, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         claim(&builds.inner, &id, 1, &fp.birth().unwrap()).await;
         // The fabric-primary alone in its one-mesh fabric, its mesh ready; pending went out.
@@ -859,7 +859,7 @@ mod tests {
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
         let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, source: None, submitted_at_ms: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: None, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         claim(&builds, &id, 1, &fp.birth().unwrap()).await;
         let view = projected(vec![fp.clone()]);
@@ -896,7 +896,7 @@ mod tests {
         let deleted = node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::ConnectionsDeleting, false);
         let re_born = node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, false);
         let view = projected(vec![deleted.clone(), re_born.clone(), node(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, true)]);
-        assert_eq!(view.members().filter(|n| n.location() == re_born.location()).count(), 2, "both births of mesh1.node-admin.1 are in the view");
+        assert_eq!(view.births().filter(|n| n.location() == re_born.location()).count(), 2, "both births of mesh1.node-admin.1 are in the view");
         let me = view.own(&re_born.node_id).expect("this admin is in its view");
         assert_eq!(me.node_id, re_born.node_id, "the re-born admin's own row, not the deleted birth's {}", deleted.node_id);
     }
@@ -991,7 +991,7 @@ mod tests {
             FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
         };
         let a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
-        builds.publish_accepted(&BuildAccepted { build_id: a.clone(), topology: topology(Some("aa")), submitted_change: None, source: None, submitted_at_ms: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: a.clone(), topology: topology(Some("aa")), change: None, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         claim(&builds, &a, 1, &fp.birth().unwrap()).await;
         let view = projected(vec![fp.clone()]);
@@ -1008,7 +1008,7 @@ mod tests {
         }
         assert_eq!(records.fabric_state(), FabricState::Ready, "the same Build read from the store root is no resize: the fabric stays ready");
         let b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
-        builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology(Some("bb")), submitted_change: None, source: None, submitted_at_ms: 2_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology(Some("bb")), change: None, source: None, time: 2_000 }).await.unwrap();
         claim(&builds, &b, 1, &fp.birth().unwrap()).await;
         {
             let mut change = states.change.lock().await;
@@ -1403,8 +1403,8 @@ mod tests {
                         fabric: "fabric1".into(),
                         meshes: [mesh1_a].into(),
                     },
-                    submitted_change: None,
-                    source: None, submitted_at_ms: 1_000,
+                    change: None,
+                    source: None, time: 1_000,
                 })
                 .await
                 .unwrap();
@@ -1520,8 +1520,8 @@ mod tests {
                         fabric: "fabric1".into(),
                         meshes: [mesh1_b].into(),
                     },
-                    submitted_change: None,
-                    source: None, submitted_at_ms: 2_000,
+                    change: None,
+                    source: None, time: 2_000,
                 })
                 .await
                 .unwrap();

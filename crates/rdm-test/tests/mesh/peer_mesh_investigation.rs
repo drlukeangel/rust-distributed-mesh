@@ -79,7 +79,7 @@ struct Fixture {
 async fn fixture(cell: &str) -> Fixture {
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     let before = values(&estate.settled_views(&shape).await);
     let fabric_primary_row = before.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("one fabric primary");
     let (fabric_primary, fabric_primary_id) = (location(&fabric_primary_row), s(&fabric_primary_row["node_id"]));
@@ -203,7 +203,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 1), ("mesh2", 1, 2)];
-    let built = estate.reconcile_shape("fabric1", &shape).await;
+    let built = estate.resize_shape("fabric1", &shape).await;
     let accepted = built.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
     let fp_row = before.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("one fabric-primary");

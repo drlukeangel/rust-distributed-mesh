@@ -307,7 +307,7 @@ impl FabricTopology {
     pub fn of_observed(observed: &Topology) -> Self {
         let empty = |name: &str, mesh_id: Option<MeshId>| MeshTopology { name: name.to_string(), mesh_id: mesh_id.unwrap_or_else(MeshId::mint), nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() };
         let mut meshes: BTreeMap<String, MeshTopology> = observed.meshes.iter().map(|m| (m.name.clone(), empty(&m.name, m.id.clone()))).collect();
-        for n in observed.members().filter(|n| n.status.is_live()) {
+        for n in observed.births().filter(|n| n.status.is_live()) {
             let mesh = meshes.entry(n.mesh.clone()).or_insert_with(|| empty(&n.mesh, None));
             mesh.spec_by_path.insert(n.location(), NodeSpec::default_for(n.location(), &n.mesh, &n.r#type));
             mesh.nodes.insert(n.location());
@@ -520,7 +520,7 @@ impl ActionProgress {
 /// The births of a kept mesh `observed` holds live or stopped at a path `topology` no longer names: the
 /// nodes a topology Build deletes, each pinned at its acceptance (build.md §4.4).
 pub(crate) fn surplus_births<'a>(topology: &'a FabricTopology, observed: &'a Topology) -> impl Iterator<Item = &'a crate::model::Node> + 'a {
-    observed.members().filter(move |n| (n.status.is_live() || n.stopped || topology.pinned.iter().any(|(at, b)| *at == n.location() && b.is(n))) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.location()))
+    observed.births().filter(move |n| (n.status.is_live() || n.stopped || topology.pinned.iter().any(|(at, b)| *at == n.location() && b.is(n))) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.location()))
 }
 
 /// The final primary a mesh.deleted manifest names, as the path and the exact birth its fabric.delete
@@ -857,7 +857,7 @@ impl AcceptedStore {
             .map_err(|held| BuildStateError::Io(held.to_string()))?;
         let store = Arc::new(Self::new(storage, me.node_id.as_str()));
         let build_id = BuildId::mint();
-        crate::build_state::accept(builds, &crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, source: None, submitted_at_ms: 0 }, None, me.node_id.as_str(), "seeded").await?;
+        crate::build_state::accept(builds, &crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, change: None, source: None, time: 0 }, None, me.node_id.as_str(), "seeded").await?;
         builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: me_mesh.to_owned(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: me.clone() }).await?;
         builds
             .append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { mesh: None, build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged })
@@ -1271,8 +1271,8 @@ mod tests {
         let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             topology: cur.clone(),
-            submitted_change: None,
-            submitted_at_ms: 0,
+            change: None,
+            time: 0,
             state: BuildState::Pending,
             attempt: 9,
             executor: None,
@@ -1327,8 +1327,8 @@ mod tests {
         let build = |action: &AttemptAction, actions: Vec<(u32, AttemptAction)>, steps: Vec<BuildStepReceipt>| BuildProjection {
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             topology: cur.clone(),
-            submitted_change: None,
-            submitted_at_ms: 0,
+            change: None,
+            time: 0,
             state: BuildState::Pending,
             attempt: 6,
             executor: None,

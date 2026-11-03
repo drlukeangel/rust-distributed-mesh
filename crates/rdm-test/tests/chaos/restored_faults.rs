@@ -55,7 +55,7 @@ fn capture(test: &str) -> rdm_transport::EvidenceCapture {
 /// mesh1 with two node-admins and three nodes, all ready.
 async fn estate(test: &str) -> Estate {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     estate

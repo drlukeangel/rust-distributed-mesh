@@ -55,7 +55,7 @@ fn names(meshes: &[&str], rpc: u32) -> BTreeSet<PathName> {
 }
 
 async fn build(estate: &Estate, body: &FabricDesired) {
-    let accepted = estate.reconcile(body).await;
+    let accepted = estate.resize(body).await;
     canonical("build id", &Value::String(accepted.build_id.to_string()));
 }
 

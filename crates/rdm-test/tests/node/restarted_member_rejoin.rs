@@ -52,7 +52,7 @@ fn now_nano() -> u64 {
 /// restart's wall time, every span).
 async fn restart_one_member(test: &str) -> (Value, Value, Value, u64, Vec<Value>) {
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     let nodes = estate.settled_views(&[("mesh1", 1, 2)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;

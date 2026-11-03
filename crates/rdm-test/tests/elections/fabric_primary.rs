@@ -68,7 +68,7 @@ fn location(row: &Value) -> PathName {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_backbone() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
     estate.settles_to(&[("mesh1", 2, 3), ("mesh2", 2, 3)], Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let nodes = estate.node_values().await;
@@ -139,7 +139,7 @@ async fn a_member_whose_runtime_exited_is_replaced() {
         "mesh1",
     )
     .await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     let gone = estate.until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "this admin hears mesh1.node.2", Duration::from_secs(30), |n| n.cloned()).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.kill_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
@@ -165,7 +165,7 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
     )
     .await;
     let desired = FabricDesired { fabric: "fabric1".into(), meshes: ["mesh3", "mesh1", "mesh2"].map(|m| MeshDesired::of(m, [("node-admin", 2), ("node", 1)])).to_vec() };
-    estate.reconcile(&desired).await;
+    estate.resize(&desired).await;
     let all_ready = |nodes: &[Value]| nodes.len() == 9 && nodes.iter().all(|n| n["status"] == "ready");
     let nodes = estate
         .until_view("three meshes settle on the computed roles", Duration::from_secs(30), |views| {
@@ -196,7 +196,7 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
     let survivor_admin = location(survivors[0]);
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter(&survivor_admin).await;
-    estate.reconcile_shape("fabric1", &[("mesh3", 2, 1), ("mesh2", 2, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh3", 2, 1), ("mesh2", 2, 1)]).await;
     estate.kill_bootstrap();
     let next_id = survivors.iter().map(|m| s(&m["node_id"])).min().unwrap();
     let winner_id = s(&winner_node["node_id"]);

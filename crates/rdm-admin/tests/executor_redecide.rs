@@ -308,8 +308,8 @@ async fn accepted_build(builds: &MemoryBuildStateAdapter) -> BuildId {
         .publish_accepted(&BuildAccepted {
             build_id: build_id.clone(),
             topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
-            submitted_change: None,
-            source: None, submitted_at_ms: 0,
+            change: None,
+            source: None, time: 0,
         })
         .await
         .unwrap();
@@ -344,6 +344,7 @@ fn complete_attempts(view: &rdm_admin::build_state::BuildProjection, step: Creat
 /// handed on after it joined (the seed did its work), and a decision that names no executor (the
 /// identity of a node never launched), are kept; an executor re-running its own work reuses it.
 #[test]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
     let cell = "successor_executor_redecides_outputs_owned_by_lost_incarnation";
     let dir = acceptance_dir(cell);

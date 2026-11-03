@@ -151,7 +151,7 @@ async fn executor(calls: &Arc<Calls>, hold: Hold, op: BuildOperation) -> (RunDoo
     let runner = Arc::new(OwnAdmin { calls: calls.clone(), gate: gate.clone(), hold });
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: builds.clone(), topology, runner });
     memory
-        .publish_accepted(&BuildAccepted { build_id: build_id(), topology: FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id(), topology: FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
         .await
         .unwrap();
     memory.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();

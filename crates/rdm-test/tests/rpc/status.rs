@@ -42,7 +42,7 @@ fn declared(out: &Value) -> (String, String) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_decides() {
     let mut estate = Estate::bootstrap(owner("a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_decides"), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
     let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == true).expect("a mesh primary").clone();
@@ -153,7 +153,7 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_reject_span() {
     let mut estate = Estate::bootstrap(owner("a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_reject_span"), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
     let (rpc1, rpc2) = (estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await);
     let node = format!("exact:{}", rpc2["node_id"].as_str().unwrap());
@@ -186,7 +186,7 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
 async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_own_decision() {
     let test = "a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_own_decision";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let (a1, a2, rpc1) = (Estate::path("mesh1.node-admin", "1"), Estate::path("mesh1.node-admin", "2"), Estate::path("mesh1.node", "1"));

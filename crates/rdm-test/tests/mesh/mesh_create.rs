@@ -102,14 +102,14 @@ async fn built(estate: &Estate, id: &str) -> Value {
 async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     let mesh = |m: &str| MeshDesired::of(m, [("node-admin", 2), ("node", 3)]);
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
     // mesh2's rows are written to the store at once (node-identity-and-state.md §2.7, Q171), where
     // mesh2's own primary finds the row the fabric-primary wrote. The Build is Complete only after
     // the fabric's change from it (Q154; build.md §10); the wait records that the fabric has started.
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     // {mesh1} -> {mesh1, mesh2}
-    let create = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await.build_id.to_string();
+    let create = estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await.build_id.to_string();
     let build = built(&estate, &create).await;
     let want: std::collections::BTreeSet<PathName> = ["mesh1", "mesh2"]
         .iter()

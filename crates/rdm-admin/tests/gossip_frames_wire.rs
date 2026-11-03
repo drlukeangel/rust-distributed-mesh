@@ -196,7 +196,7 @@ fn facts() -> Vec<BuildFact> {
     let deleted_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let mut out = Vec::new();
     for change in changes() {
-        out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), submitted_change: change, source: None, submitted_at_ms: 55 }));
+        out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), change: change, source: None, time: 55 }));
     }
     let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Delete, action: a, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 56, context: None });
     out.push(action(None));
@@ -474,7 +474,7 @@ fn without_executables(t: &FabricTopology) -> FabricTopology {
 fn the_accepted_fact_on_the_build_topic_carries_no_executable_and_a_twelve_node_fabric_fits_one_message() {
     let named = twelve_node_topology();
     assert_eq!(named.meshes.values().map(|m| m.nodes.len()).sum::<usize>(), 12);
-    let fact = |t: FabricTopology| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, submitted_change: None, source: None, submitted_at_ms: 1_700_000_000_000 });
+    let fact = |t: FabricTopology| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, change: None, source: None, time: 1_700_000_000_000 });
     let with = fact(named.clone());
     let without = fact(without_executables(&named));
 

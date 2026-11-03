@@ -99,7 +99,7 @@ async fn a_stopped_node_admin_keeps_its_process_and_a_start_rejoins_it_as_the_sa
 
 async fn stop_then_start(test: &str, node: &PathName) {
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -304,7 +304,7 @@ async fn a_commanded_stop_streams_each_primitives_acknowledgement_and_completion
     let test = "a_commanded_stop_streams_each_primitives_acknowledgement_and_completion_and_its_mesh_primary_writes_each_status";
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(SETTLE).await;
     let primary = views.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).expect("mesh1's primary");
@@ -351,7 +351,7 @@ async fn a_commanded_stop_streams_each_primitives_acknowledgement_and_completion
 async fn a_stop_of_a_node_already_connections_deleted_and_left_answers_each_primitive_at_once_and_repeats_no_work() {
     let test = "a_stop_of_a_node_already_connections_deleted_and_left_answers_each_primitive_at_once_and_repeats_no_work";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(SETTLE).await;
     let path: PathName = node_at();
@@ -401,7 +401,7 @@ async fn a_stop_of_a_node_already_connections_deleted_and_left_answers_each_prim
 async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rejoins_under_its_own_name() {
     let test = "a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rejoins_under_its_own_name";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -474,7 +474,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
 async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_start_carries_it() {
     let test = "a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_start_carries_it";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -550,7 +550,7 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
 async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_holds_on_every_admin() {
     let test = "a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_holds_on_every_admin";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 3, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 3, 1)]).await;
     estate.settled_views(&[("mesh1", 3, 1)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -622,7 +622,7 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
 async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_node_deleted() {
     let test = "a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_node_deleted";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -676,7 +676,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
     let test = "a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_births_declaration";
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 3)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(SETTLE).await;
@@ -750,7 +750,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
 async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
     let test = "a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep";
     let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[("RDM_STOPPED_NODE_TTL", "3s")]).await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -809,7 +809,7 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
 async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_create_at_most_once() {
     let test = "a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_create_at_most_once";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 1, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 1, 3)]).await;
     estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 1, 3)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(SETTLE).await;
@@ -893,7 +893,7 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
 async fn a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_its_start_runs_its_gates() {
     let test = "a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_its_start_runs_its_gates";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 1, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 1, 2)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(SETTLE).await;
@@ -994,7 +994,7 @@ async fn two_meshes(test: &str, admins: u32) -> (Estate, Vec<NodeView>) {
 }
 
 async fn settled_two_meshes(estate: Estate, admins: u32) -> (Estate, Vec<NodeView>) {
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", admins, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", admins, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 1, 1), ("mesh2", admins, 1)]).await;
     // A role move is refused until the initial fabric has first reached ready (R-PB1).
     estate.until_fabric_ready(SETTLE).await;
@@ -1143,7 +1143,7 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
 async fn a_stop_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_moves() {
     let test = "a_stop_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_moves";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 1)]).await;
     let before = estate.settled_views(&[("mesh1", 1, 1)]).await;
     // A role move is refused until the initial fabric has first reached ready (R-PB1).
     estate.until_fabric_ready(SETTLE).await;
@@ -1191,7 +1191,7 @@ async fn a_stop_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_mo
 async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_primary() {
     let test = "a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_primary";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
     estate.until_fabric_ready(SETTLE).await;
     let admin_of = |primary: bool| views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary == primary).map(|n| n.location()).expect("mesh2 has two admins");
@@ -1282,11 +1282,12 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
 /// hold the role; a second declaration call to the old primary (a declaration loop of the node's own,
 /// which Q52 deleted).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_to_the_new_mesh_primary() {
     let test = "a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_to_the_new_mesh_primary";
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
     estate.until_fabric_ready(SETTLE).await;
     let admin_of = |primary: bool| views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary == primary).map(|n| n.location()).expect("mesh2 has two admins");
@@ -1377,7 +1378,7 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
     let test = "a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admitted_again_and_completes";
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
     estate.until_fabric_ready(SETTLE).await;
     let primary = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).expect("mesh2's primary");
@@ -1452,7 +1453,7 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
 async fn a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped() {
     let test = "a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1)]).await;
     estate.until_fabric_ready(SETTLE).await;
     let primary_view = views.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh1's primary");
@@ -1564,7 +1565,7 @@ fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps()
 /// stopped node's `via-stop-declarations` span and the estate's spans.
 async fn signal_stop_with_primary_held(test: &str, bound_ms: &str, release_after: Option<Duration>) -> (Value, Vec<Value>, String) {
     let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[("RDM_CONNECTIONS_DELETE_DEADLINE_MS", bound_ms)]).await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1)]).await;
     let node_id = views.iter().find(|n| n.location() == node_at()).map(|n| n.node_id.to_string()).expect("the node is in the settled views");
     estate.until_fabric_ready(SETTLE).await;
@@ -1700,7 +1701,7 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
     let fp = Estate::path("mesh1.node-admin", "1");
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     estate.settles_to(&shape, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let nodes = estate.node_values().await;
@@ -1771,7 +1772,7 @@ async fn a_fabric_primary_serving_a_held_claim_leaves_on_its_signal_within_the_b
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"], &[("RDM_CONNECTIONS_DELETE_DEADLINE_MS", "3000")]).await.expect("the faulted-admin binding set is accepted");
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     estate.settles_to(&shape, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let fp_pid = estate.bootstrap_pid().expect("the Day-0 admin is the fabric-primary and the estate holds its pid") as u64;

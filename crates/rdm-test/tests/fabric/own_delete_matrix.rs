@@ -71,7 +71,7 @@ fn running(pid: u32) -> bool {
 /// the fabric-primary.
 async fn ready(test: &str, shape: &[(&str, u32, u32)]) -> (Estate, Vec<NodeView>) {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", shape).await;
+    estate.resize_shape("fabric1", shape).await;
     let views = estate.settles_to(shape, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let fp: Vec<&NodeView> = views.iter().filter(|n| n.is_fabric_primary).collect();

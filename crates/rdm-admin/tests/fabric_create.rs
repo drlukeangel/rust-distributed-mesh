@@ -193,7 +193,7 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         };
         assert_eq!(day0_proj.build_id, build_id);
         assert_eq!(day0_proj.state, rdm_admin::build_state::BuildState::Complete);
-        assert!(day0_proj.submitted_change.is_none());
+        assert!(day0_proj.change.is_none());
         assert_eq!(day0_proj.topology.meshes.get("mesh1").map(|m| &m.mesh_id), Some(&mesh_id));
 
         running.leave().await;

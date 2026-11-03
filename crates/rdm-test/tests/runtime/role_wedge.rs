@@ -32,7 +32,7 @@ fn s(v: &Value) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_fresh_data_dir() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 2), ("gateway", 1)])] }).await.build_id.to_string();
+    let build_id = estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 2), ("gateway", 1)])] }).await.build_id.to_string();
     let want = [("mesh1.node-admin", "1"), ("mesh1.broker", "1"), ("mesh1.broker", "2"), ("mesh1.gateway", "1")].into_iter().map(|(path, name)| rdm_core::PathName::new(path, name).unwrap()).collect();
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await);
     let target = nodes.iter().find(|n| n["type"] == "broker" && n["is_primary"] == false).cloned().expect("a non-primary broker");

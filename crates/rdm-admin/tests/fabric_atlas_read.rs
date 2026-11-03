@@ -178,8 +178,8 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
             .publish_accepted(&BuildAccepted {
                 build_id: build_id.clone(),
                 topology: top,
-                submitted_change: None,
-                source: None, submitted_at_ms: 1_000,
+                change: None,
+                source: None, time: 1_000,
             })
             .await
             .unwrap();

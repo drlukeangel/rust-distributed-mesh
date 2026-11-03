@@ -48,7 +48,7 @@ fn id_of(n: &Value) -> rdm_core::NodeId {
 /// node that is not its type's primary, the rpc type's primary, the node-admin that is not the
 /// mesh-primary, then the mesh-primary (a primary's stop moves its primary first).
 async fn two_meshes(estate: &mut Estate) -> Vec<Value> {
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 2)]).await;
     estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
     estate.enter_fabric_primary().await;
@@ -360,8 +360,8 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
 /// (`rdm.node_admin.build.reject.via-last-admin`) because the gossip view still holds the started
 /// node-admin stopped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_reconcile_removing_a_primary_right_after_its_only_other_admins_start_is_accepted() {
-    let test = "a_reconcile_removing_a_primary_right_after_its_only_other_admins_start_is_accepted";
+async fn a_delete_of_a_primary_right_after_its_only_other_admins_start_is_accepted() {
+    let test = "a_delete_of_a_primary_right_after_its_only_other_admins_start_is_accepted";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     let targets = two_meshes(&mut estate).await;
     let (other, primary) = (path_of(&targets[2]), path_of(&targets[3]));
@@ -386,5 +386,5 @@ async fn a_reconcile_removing_a_primary_right_after_its_only_other_admins_start_
     estate.stop().await;
     let spans = estate.spans();
     let last_admin: Vec<Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().cloned().collect();
-    assert!(refused.is_none() && last_admin.is_empty(), "R-FA1: the Reconcile removing {primary:?} right after {other:?}'s start completed was refused: {refused:?}; last-admin spans: {last_admin:#?}");
+    assert!(refused.is_none() && last_admin.is_empty(), "R-FA1: the Delete of {primary:?} right after {other:?}'s start completed was refused: {refused:?}; last-admin spans: {last_admin:#?}");
 }

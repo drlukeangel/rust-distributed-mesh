@@ -108,8 +108,8 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
         nodes
     };
     let added = vec![location("mesh1.node", "1"), location("mesh1.node", "2"), location("mesh1.node", "3"), location("mesh1.node-admin", "2")];
-    assert_eq!(created(&recorded["record"]["fact"]["submitted_change"]), added, "the change is kept as history, as it came in: {recorded}");
-    assert_eq!(created(&built["submitted_change"]), added, "the Build read whole from the store carries its change: {built}");
+    assert_eq!(created(&recorded["record"]["fact"]["change"]), added, "the change is kept as history, as it came in: {recorded}");
+    assert_eq!(created(&built["change"]), added, "the Build read whole from the store carries its change: {built}");
 
     // 3. The accepted Build is never history; Day 0's is.
     let refused = estate.builds_obj().await.delete(&BuildId::parse(&a).unwrap()).await;

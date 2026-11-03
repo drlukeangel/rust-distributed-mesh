@@ -73,7 +73,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let mut estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let mesh1 = MeshDesired::of("mesh1", [("node-admin", 2), ("node", 2)]);
     let mesh2 = MeshDesired::of("mesh2", [("node-admin", 2), ("node", 1)]);
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1, mesh2] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1, mesh2] }).await;
     let want: std::collections::BTreeSet<PathName> = [("mesh1.node-admin", "1"), ("mesh1.node-admin", "2"), ("mesh1.node", "1"), ("mesh1.node", "2"), ("mesh2.node-admin", "1"), ("mesh2.node-admin", "2"), ("mesh2.node", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect();
     let views = estate.settles_to_named(&want, Duration::from_secs(30)).await;
 

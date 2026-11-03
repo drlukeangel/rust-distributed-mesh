@@ -38,7 +38,7 @@ fn owner(shape: &str) -> Owner {
 async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     let estate = Estate::bootstrap(owner(shape), "fabric1", "mesh1").await;
     let desired = FabricDesired { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired::of(*m, [("node-admin", *a), ("node", *r)])).collect() };
-    let build_id = estate.reconcile(&desired).await.build_id.to_string();
+    let build_id = estate.resize(&desired).await.build_id.to_string();
     let build = build_log::build_value(&estate, &build_id).await;
     estate.artifact("build.json", &build);
 

@@ -111,68 +111,31 @@ the chaos kit (`rdm-test`'s `faults` modules), the fault backends with typed out
 
 ## 1. Build is the only topology mutation engine
 
-A submitted BuildIntent/change request is **input to compilation**, not the topology itself.
+Every external requested change to the topology that results in the addition or a removal of a node is its own Build, submitted through build.create with its own build_id. node.stop, node.start and node.connection.delete change no shape: each is a node command the primary above the node runs, recorded on the node record, never a Build or part of one. A repair (delete, then create at the same path and name) is not external: it is the primary's own workflow ([node recovery](lifecycles/node-recovery.md)), recorded on the node record, never a Build or part of one. Work on one node is serialized at its mesh-primary.
 
-The current fabric-primary applies that change once to the complete topology of the current Build (§4) and produces the complete explicit next-topology map.
+The request is a batch (Q280; [batch call](node-rpc-envelope.md#caller-execution-and-certainty)), one of three changes, each with a result per node:
+
+| Change | Names | Refused by name |
+|---|---|---|
+| `Create { meshes, nodes }` | each mesh by its Meshes schema, each node by its Nodes schema ([schemas](node-rpc-envelope.md#build-schema)), whole; a node whose mesh is not yet live creates that mesh with its first node-admin | a new mesh with no node-admin among its nodes; a node naming a mesh neither in the request nor live; a path and name already held; an undeclared type; a node with no executable, its own or its type's |
+| `Delete { meshes, node_ids }` | each mesh by name, each node by its node.id, never by its path and name | a node.id already deleted or replaced, in its own result |
+| `DeleteFabric` | the fabric | (§1, the one exception below) |
+
+The caller states only what it adds or removes, never a node it does not touch: an existing node's `config` and `tags` change through `node.config.update` and `node.tag.*` at any time, the last write winning, and no Build writes them back. A Build states each node it creates whole (Q236, amended by Q342).
 
 ~~~text
 current Build = B (completed)
 
 submitted change
-    -> apply once to B.topology
-    -> exact complete next topology
-    -> persist new Build B' (written once; current once durable)
-    -> reconcile B'.topology
+    -> applied once to the fabric-primary's records
+    -> the complete topology at acceptance, each created node's type defaults filled in
+    -> persist Build B' (the change as it came in, that topology, its source and time; written once; current once durable)
+    -> dispatch each mesh's section to its mesh-primary
 ~~~
 
-The accepted topology names the exact paths and names that should exist, grouped by mesh. Counts may remain product-facing resize input, but the compiler resolves a count change to exact paths before the Build is persisted.
-
-Each node's create spec carries the executable the node runs ([build-deployment.md](build-deployment.md)); a request creates a node by naming its `path` and `name` and its properties, the compiler holds the executable on the path's entry before the Build is persisted, and a created path with none is refused by name. Counts are the product's door's vocabulary, expanded into named paths before the typed call; RDM mints a `path` and `name` only for a create it originates itself.
-
-**The create spec is the node's properties, flat (Q166).** A node entry names its `path` and `name` and the
-node's own properties under the [node properties](node-rpc-envelope.md#node-properties) names:
-`executable`, `storage`, `placement`, `tags` and `config`. There is no nested configuration type;
-`config` is the application's map and nothing else (RDM never reads it).
-
-**The Build applies the diff.** The reconciler compares each node's entry with what the node's row
-records and applies every property that differs, each by its own operation. It decides nothing else:
-
-| What differs | Applied as |
-|---|---|
-| a path added / removed | `node.create` / `node.delete`: a resize |
-| `executable` | the node's replacement: a new birth at the same `path` and `name` ([build-deployment.md §3](build-deployment.md#3-changing-a-nodes-executable)) |
-| `config` | in place, as a caller's `node.config.update` applies a map: the row first, then the node. The Build's map supersedes the node's current one, whoever set it: every write is a PUT, and the submitter reads the node's current config (`node.get`) before it composes (Q236) |
-| `tags` | in place: the node's tag rows |
-| `storage`, `placement` | onto the row, effective at the node's next birth; with an executable change they ride that re-birth (Q157) |
-
-Only a resize or a replacement puts the fabric back to pending ([states.md](lifecycles/states.md#resize-and-executable-replacement)); a change of `config`, `tags`, `storage` or `placement` alone leaves it ready. A node's `config` and `tags` change at any time, between Builds and while one runs, through `node.config.update` and `node.tag.*`; the last write wins: a property a Build applied to a node, at its create's claim or by its own operation, is not applied again by a later attempt of that Build.
-
-~~~text
-B.topology:
-  mesh1:
-    mesh1.node-admin.alpha
-    mesh1.node-admin.beta
-    mesh1.node.north
-    mesh1.node.south
-    mesh1.node.east
-
-submit: remove mesh1.node.south
-
-B'.topology:
-  mesh1:
-    mesh1.node-admin.alpha
-    mesh1.node-admin.beta
-    mesh1.node.north
-    mesh1.node.east
-~~~
-
-The reconciler never later decides which node "count 2" meant. It diffs the stored exact topology map against current realized/observed state.
-
-The submitted change may remain on B' as audit/history for build.get, but it is never replayed as topology and is never read to decide reconciliation after B' exists.
+The Build record is never updated as the system runs: the topology of the moment is the records ([node identity](node-identity-and-state.md)), and the Build's progress is its events (§5). Counts are the product's door's vocabulary, expanded into named nodes before the typed call; RDM mints a path and name only for a create it originates itself.
 
 Exactly one current fabric-primary accepts topology-changing requests. A non-primary refuses by name. A second topology-changing request while the current Build is actively reconciling is refused with a named build-in-progress refusal naming the current Build; RDM does not implement Build supersession/cancellation. The one exception is fabric.delete, which may interrupt the Build in progress because its target is nothing. Its acceptance record is the durable intent: once written, the interrupted Build opens no further operation and is never resumed, and a successor fabric-primary reads the delete as the current Build and continues the teardown. Operations already admitted at an executor finish or fail within their existing bounds and their launch evidence is retained; a fabric state the fabric-primary is setting ends at the acceptance, its hook's future dropped. When every open attempt of the interrupted Build has ended, its run receives `Failed { step, reason }` naming the delete, and the teardown's steps open mesh by mesh under the one-attempt-per-mesh rule. An operation that fails to end within its bound fails the delete's attempt by name, the intent retained; nothing reconciles the interrupted Build again. No other Build ends another.
-
-Every change to the topology is its own Build, submitted through build.create with its own build_id: node.create, node.delete, Rafka's replace steps (one Build of node primitives, [node replace](lifecycles/node-replace.md)), mesh.delete and fabric.delete. node.stop, node.start and node.connection.delete change no shape: each is a node command the primary above the node runs, recorded on the node record, never a Build or part of one. A repair (delete, then create at the same path and name) is not external: it is the primary's own workflow ([node recovery](lifecycles/node-recovery.md)), recorded on the node record, never a Build or part of one. Work on one node is serialized at its mesh-primary.
 
 A node command and a repair carry the exact birth they act on (node id and incarnation), which refuses a stale birth by name. They never change the Build.
 
@@ -183,14 +146,14 @@ Forbidden:
 - application entry points directly spawning or killing nodes outside Build execution;
 - a separate Rafka shape/resize/recovery engine beside imported Build;
 - any node-admin other than the current fabric-primary accepting a topology change;
-- treating BuildIntent/change-request data as the accepted topology;
-- storing only counts and letting each executor independently choose which logical path to add/remove;
+- storing only counts and letting each executor independently choose which node to add or remove;
 - a Build for node.stop, node.start, node.connection.delete, node recovery or a primary change, or any of them run as part of a Build;
+- a Build that states a node it does not add or remove;
+- updating a Build record after it is written;
 - accepting a second topology mutation while the current Build is actively reconciling;
-- replaying the submitted change to reconstruct topology;
 - blindly replaying operations already satisfied in current state.
 
-Rafka shape vocabulary may remain product-facing input. It compiles once into the exact complete topology map stored in the accepted Build.
+Rafka shape vocabulary may remain product-facing input. It is expanded into the named nodes of one `Create` or `Delete` before the typed call.
 
 ---
 
@@ -199,9 +162,9 @@ Rafka shape vocabulary may remain product-facing input. It compiles once into th
 RDM creates, drives, reads and deletes Builds only through the
 [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm), which defines build.create,
 build.attempt.run, build.get and build.delete, their direction, streams and refusals.
-node.create and node.delete are submitted through build.create; §1 decides whether an input
-compiles a new Build or opens an attempt of the current one. node.stop, node.start and
-node.connection.delete are node commands, never Build calls (§1). Application bootstrap and fault injection are application work, not
+node.create and node.delete are submitted through build.create, as §1's `Create` and
+`Delete`; node.stop, node.start and node.connection.delete are node commands, never Build calls
+(§1). Application bootstrap and fault injection are application work, not
 Build calls.
 
 ---

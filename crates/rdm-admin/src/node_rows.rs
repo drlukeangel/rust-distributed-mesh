@@ -832,8 +832,8 @@ impl NodeRows {
         for mesh in self.written.filled_meshes().into_iter().filter(|m| !writes_for(now, me, m)) {
             self.written.release(&mesh);
         }
-        let births = |t: &Topology, mesh: &str| t.members().filter(|n| n.mesh == mesh).filter_map(|n| n.incarnation_id.clone().map(|inc| (n.node_id.clone(), inc))).collect::<HashSet<_>>();
-        let meshes: std::collections::BTreeSet<String> = now.members().map(|n| n.mesh.clone()).filter(|m| writes_for(now, me, m)).collect();
+        let births = |t: &Topology, mesh: &str| t.births().filter(|n| n.mesh == mesh).filter_map(|n| n.incarnation_id.clone().map(|inc| (n.node_id.clone(), inc))).collect::<HashSet<_>>();
+        let meshes: std::collections::BTreeSet<String> = now.births().map(|n| n.mesh.clone()).filter(|m| writes_for(now, me, m)).collect();
         let mut out = Vec::new();
         for mesh in meshes {
             let took = !writes_for(prev, me, &mesh);
@@ -844,7 +844,7 @@ impl NodeRows {
                 tenure.clear();
                 self.to_fill.lock().unwrap().push(mesh.clone());
             }
-            out.extend(now.members().filter(|n| n.mesh == mesh && n.incarnation_id.clone().is_some_and(|inc| tenure.insert((n.node_id.clone(), inc)))).cloned());
+            out.extend(now.births().filter(|n| n.mesh == mesh && n.incarnation_id.clone().is_some_and(|inc| tenure.insert((n.node_id.clone(), inc)))).cloned());
         }
         out
     }

@@ -68,7 +68,7 @@ pub(crate) struct WireSection {
     build_id: BuildId,
     fabric: String,
     topology_storage_provider: Option<String>,
-    submitted_at_ms: u64,
+    time: u64,
     deletes_fabric: bool,
     named: BTreeMap<String, MeshId>,
     meshes: Vec<WireMesh>,
@@ -79,8 +79,8 @@ pub(crate) struct WireSection {
 pub(crate) struct WireAccepted {
     build_id: BuildId,
     topology: WireTopology,
-    submitted_change: Option<BuildChange>,
-    submitted_at_ms: u64,
+    change: Option<BuildChange>,
+    time: u64,
     /// The record's writer (appended).
     source: Option<String>,
 }
@@ -577,8 +577,8 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
             build_id: a.build_id.clone(),
             fabric: a.topology.fabric.clone(),
             topology_storage_provider: a.topology.topology_storage_provider.clone(),
-            submitted_at_ms: a.submitted_at_ms,
-            deletes_fabric: matches!(a.submitted_change, Some(BuildChange::DeleteFabric)),
+            time: a.time,
+            deletes_fabric: matches!(a.change, Some(BuildChange::DeleteFabric)),
             named: a.topology.section_of.clone().unwrap_or_default(),
             meshes: a.topology.meshes.values().map(WireMesh::from).collect(),
             pinned: a.topology.pinned.clone(),
@@ -586,8 +586,8 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
         BuildFact::Accepted(a) => WireFact::Accepted(WireAccepted {
             build_id: a.build_id.clone(),
             topology: (&a.topology).into(),
-            submitted_change: a.submitted_change.clone(),
-            submitted_at_ms: a.submitted_at_ms,
+            change: a.change.clone(),
+            time: a.time,
             source: a.source.clone(),
         }),
         BuildFact::Opened(o) => WireFact::Opened(WireOpened {
@@ -628,8 +628,8 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
         WireFact::Accepted(a) => BuildFact::Accepted(BuildAccepted {
             build_id: a.build_id,
             topology: a.topology.into(),
-            submitted_change: a.submitted_change,
-            source: a.source, submitted_at_ms: a.submitted_at_ms,
+            change: a.change,
+            source: a.source, time: a.time,
         }),
         WireFact::Opened(o) => BuildFact::Opened(AttemptOpened {
             action: {
@@ -667,8 +667,8 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
                 pinned: c.pinned,
                 created: Vec::new(), section_of: Some(c.named),
             },
-            submitted_change: c.deletes_fabric.then_some(BuildChange::DeleteFabric),
-            source: None, submitted_at_ms: c.submitted_at_ms,
+            change: c.deletes_fabric.then_some(BuildChange::DeleteFabric),
+            source: None, time: c.time,
         }),
     })
 }

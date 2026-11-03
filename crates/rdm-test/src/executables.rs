@@ -158,8 +158,8 @@ impl Current {
         Ok(out)
     }
 
-    /// The complete request that resizes each of `meshes` to its counts, as the compiler's count form
-    /// resized it: a grow takes the lowest free ordinal of the kind, a shrink drops the highest ordinal
+    /// The complete topology that resizes each of `meshes` to its counts: a grow takes the lowest free
+    /// ordinal of the type, a shrink drops the highest ordinal
     /// that is not the type's primary (else the highest). Every path the topology holds keeps its spec
     /// ([`Self::held`]); every created path is named on its executable. A mesh the topology holds that
     /// `meshes` leaves out is left out of the request (its mesh.delete) when `whole`, the fabric's
@@ -205,8 +205,8 @@ impl Current {
         MeshDesired { name: mesh.into(), counts }
     }
 
-    /// The complete request that adds one node of `kind` to `mesh` (`node.create`), at the lowest free
-    /// ordinal, as the count form's `AddNode` did.
+    /// The complete topology with one more node of `type` in `mesh` (`node.create`), at the lowest free
+    /// ordinal.
     pub fn with_one_more(&self, mesh: &str, r#type: &str, executables: &Executables) -> Vec<NodeSpec> {
         self.try_with_one_more(mesh, r#type, executables).unwrap_or_else(|e| panic!("{e}"))
     }

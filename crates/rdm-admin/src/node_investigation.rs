@@ -330,7 +330,7 @@ pub fn leads_of(rows: &[NodeConnection], view: &Topology, node: &Node, me: Optio
         if row.destination.node_id != node.node_id || row.destination.incarnation.as_ref() != Some(incarnation) {
             continue;
         }
-        let Some(source) = view.members().find(|m| m.node_id == row.source.node_id) else { continue };
+        let Some(source) = view.births().find(|m| m.node_id == row.source.node_id) else { continue };
         let same_birth = row.source.incarnation.as_ref().is_none_or(|i| source.incarnation_id.as_ref() == Some(i));
         if !same_birth || source.node_id == node.node_id || Some(&source.node_id) == me || source.status != NodeStatus::Ready {
             continue;
@@ -370,7 +370,7 @@ mod tests {
     }
 
     fn of(view: &Topology, name: rdm_core::PathName) -> Node {
-        view.members().find(|n| n.location() == name).cloned().unwrap()
+        view.births().find(|n| n.location() == name).cloned().unwrap()
     }
 
     fn end(n: &Node) -> ConnectionEnd {

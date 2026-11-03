@@ -43,7 +43,7 @@ pub struct FabricRecovery {
 /// Fabric recovery in `view` with the records `inc` and the digest view `digest_view`; `None` while the fabric-primary
 /// record names a heard primary, or no record is held.
 pub fn of(view: &Topology, inc: &Incumbency, digest_view: &DigestView) -> Option<FabricRecovery> {
-    let members: Vec<Node> = view.members().cloned().collect();
+    let members: Vec<Node> = view.births().cloned().collect();
     let target = crate::election::fabric_recovery_target(&members, inc)?.clone();
     let lost = rdm_core::handover::HandoverBirth { mesh: target.mesh.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
     let at = members.iter().find(|n| n.node_id == target.node_id).map(|n| n.location()).or_else(|| crate::admin::lost_birth_name(digest_view, &lost));
@@ -462,7 +462,7 @@ impl FabricRecoveryDoor {
                 }
             }
             let view = self.topology.read().await.clone();
-            let lost = view.members().find(|n| n.node_id == target.node_id && n.incarnation_id.as_ref() == Some(&target.incarnation)).cloned();
+            let lost = view.births().find(|n| n.node_id == target.node_id && n.incarnation_id.as_ref() == Some(&target.incarnation)).cloned();
             // Ready in the view, or re-created by this workflow's completed attempt, whose create
             // waited for it to be ready (an executor of another mesh holds no member status of it).
             let restored = view.node(&at).filter(|n| rdm_core::is_node_admin(&n.r#type) && (n.status == NodeStatus::Ready || (done && n.node_id != target.node_id))).cloned();
@@ -662,7 +662,7 @@ mod tests {
         let claims = crate::storage::MemoryMeshStorage::default();
         let contexts = crate::build_claim::AttemptContexts::in_memory();
         let id = crate::build::BuildId::mint();
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(rdm_core::build::BuildChange::DeleteFabric), source: None, submitted_at_ms: 1 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, change: Some(rdm_core::build::BuildChange::DeleteFabric), source: None, time: 1 }).await.unwrap();
         let birth = |id: &str| rdm_core::framing::Birth { node_id: NodeId::parse(id).unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60(id)).unwrap() };
         let lost = birth("100000000000");
         let a_birth = birth("200000000000");
@@ -806,7 +806,7 @@ mod tests {
     async fn the_next_executor_under_fabric_delete_folds_earlier_transitions_so_the_lost_mesh_primary_holds_no_role_or_liveness() {
         let builds = MemoryBuildStateAdapter::new();
         let id = crate::build::BuildId::mint();
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(rdm_core::build::BuildChange::DeleteFabric), source: None, submitted_at_ms: 1 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, change: Some(rdm_core::build::BuildChange::DeleteFabric), source: None, time: 1 }).await.unwrap();
         let make_admin = |name: rdm_core::PathName, mesh: &str, r#type: &str| {
             let mut n = Node::allocated(name, mesh, r#type);
             n.incarnation_id = Some(crate::model::IncarnationId::mint());

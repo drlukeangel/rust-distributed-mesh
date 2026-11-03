@@ -230,7 +230,7 @@ pub fn unheard_mesh_primary_executor(node: &PathName, mesh: &str, node_id: &crat
 /// Ready NodeId of its own mesh"). A proven loss only: a planned move is node.primary.update.
 fn elected_after_loss(target: &PathName, t: &Topology) -> Option<NodeId> {
     let primary = t.node(target)?;
-    let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
+    let nodes: Vec<crate::model::Node> = t.births().cloned().collect();
     let mut inc = crate::election::Incumbency::default();
     inc.lost.extend(primary.incarnation_id.clone());
     crate::election::node_type_successor(&nodes, &inc, primary).map(|n| n.node_id)
@@ -1074,8 +1074,8 @@ mod tests {
             BuildFact::Accepted(BuildAccepted {
                 build_id: id.clone(),
                 topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()),
-                submitted_change: None,
-                source: None, submitted_at_ms: 0,
+                change: None,
+                source: None, time: 0,
             }),
             BuildFact::Claim(BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt: 1, executor: rdm_core::framing::Birth { node_id: NodeId::parse("100000000000").unwrap(), incarnation: crate::model::IncarnationId::mint() } }),
             BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::HandedOff { to: NodeId::parse("200000000000").unwrap() } }),

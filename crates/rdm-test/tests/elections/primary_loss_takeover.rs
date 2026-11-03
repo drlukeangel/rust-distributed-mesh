@@ -91,7 +91,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     let both = [mesh("mesh1"), mesh("mesh2")];
-    estate.reconcile_shape("fabric1", &both).await;
+    estate.resize_shape("fabric1", &both).await;
     let before: Vec<Value> = estate.settled_views(&both).await.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
 
     // The role's primary and the mesh that outlives it.
@@ -163,7 +163,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     // ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let started = now_ns();
-    let build_id = estate.reconcile_shape("fabric1", &[mesh(&survivor_mesh)]).await.build_id.to_string();
+    let build_id = estate.resize_shape("fabric1", &[mesh(&survivor_mesh)]).await.build_id.to_string();
     let build_complete = now_ns();
     // mesh.deleted leaves the lost mesh's last admin alive; its end is its own node.delete, which the
     // fabric-primary executes and whose TerminateRuntime proves the exit (mesh-delete.md step 7).

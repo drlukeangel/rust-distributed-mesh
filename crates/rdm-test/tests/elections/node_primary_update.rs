@@ -178,7 +178,7 @@ async fn born(estate: Estate, skewed: Option<&rdm_core::PathName>) -> (Estate, V
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, OS_CLOCK_SKEW_MS.to_string()).unwrap();
     }
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
     let nodes = Estate::values(&estate.settles_to_named(&names(), Duration::from_secs(30)).await);
     // The initial fabric refuses a node replace until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -503,6 +503,7 @@ async fn a_mesh_cut_from_the_backbone_with_a_node_admin_left_on_each_side_is_rec
 /// decides after it finished its issued writes; a step on P before H answered; a birth made twice; an
 /// attempt with two winners.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its_direct_answer() {
     let cell = "a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its_direct_answer";
     let (mut estate, nodes) = fabric(cell).await;

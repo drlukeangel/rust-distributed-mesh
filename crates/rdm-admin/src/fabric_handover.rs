@@ -246,7 +246,7 @@ impl HandoverDoor {
                 return rdm_core::reply::handover::bounded_not_primary(&reason);
             }
             let leaving = matches!(&operation.subject, Some(rdm_core::OperationSubject::PrimaryUpdate { preceding, .. }) if preceding.action == "mesh.delete");
-            let same_mesh_successor = !leaving && self.topology.read().await.members().any(|n| n.mesh == self.topology_view.mesh_name() && rdm_core::is_node_admin(&n.r#type) && n.node_id != self.node_id && n.status == crate::model::NodeStatus::Ready);
+            let same_mesh_successor = !leaving && self.topology.read().await.births().any(|n| n.mesh == self.topology_view.mesh_name() && rdm_core::is_node_admin(&n.r#type) && n.node_id != self.node_id && n.status == crate::model::NodeStatus::Ready);
             if mesh_primary && same_mesh_successor { Moving::BothRoles } else { Moving::FabricRoleOutside }
         } else {
             let view = self.topology.read().await.clone();
@@ -335,7 +335,7 @@ impl HandoverDoor {
         }
         // Step 2: the election over this admin's own view, itself excluded.
         let view = self.topology.read().await.clone();
-        let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
+        let nodes: Vec<crate::model::Node> = view.births().cloned().collect();
         let Some(me_node) = nodes.iter().find(|n| n.node_id == self.node_id).cloned() else {
             let reason = format!("path {me_name_path:?}, name {me_name_name:?} is not a member of its own view", me_name_path = &me_name.path, me_name_name = &me_name.name);
             refused("primary", "not-primary", &reason, operation);
@@ -661,7 +661,7 @@ impl HandoverDoor {
         // Step 2: the writer's pre-check, from its own view, names the successor the command carries: the
         // primary calls it and runs no election of its own (Q129).
         let view = self.topology.read().await.clone();
-        let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
+        let nodes: Vec<crate::model::Node> = view.births().cloned().collect();
         let successor = match crate::election::commanded_node_type_successor(&nodes, &self.incumbency(), primary) {
             Ok(n) => n,
             Err(text) => {

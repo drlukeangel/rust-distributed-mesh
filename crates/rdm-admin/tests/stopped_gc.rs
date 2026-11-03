@@ -133,7 +133,7 @@ fn now(cp: &ControlPlane) -> u64 {
 
 /// CONTRACT (§6.9 Action, Effect, Span): `mesh1.node.1`, stopped ten ttl ago by its own recorded
 /// stop, and `mesh1.node.2`, stopped just now, are both stopped. One sweep accepts exactly one
-/// ordinary node.delete Build, the one `DELETE /api/nodes/mesh1.node.1` accepts (`RemoveNode`), whose
+/// ordinary node.delete Build, the one `DELETE /api/nodes/mesh1.node.1` accepts (`Delete { node_ids }`), whose
 /// topology lacks `mesh1.node.1` and still names `mesh1.node.2`; the sweep is spanned
 /// `rdm.node_admin.node.delete.via-stopped-ttl` with the node, its recorded stop's time, the ttl and
 /// the Build. Must NOT happen: a delete of the node stopped inside the ttl, or any write beside the Build.
@@ -154,7 +154,7 @@ async fn a_node_stopped_past_the_ttl_is_collected_by_one_ordinary_delete_build()
     assert_eq!(*node, old.0);
     assert_ne!(build_id, b0, "a new topology Build, never an attempt of the settled one");
     let p = builds.read_build(&build_id).await.unwrap();
-    assert_eq!(p.submitted_change, Some(BuildChange::Delete { meshes: Vec::new(), node_ids: vec![old.1.clone()] }), "the ordinary node.delete Build");
+    assert_eq!(p.change, Some(BuildChange::Delete { meshes: Vec::new(), node_ids: vec![old.1.clone()] }), "the ordinary node.delete Build");
     assert!(!p.topology.contains(&old.0) && p.topology.contains(&young.0), "only the expired node leaves the topology: {:?}", p.topology);
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(build_id.clone()), "the current build_id names the delete");
 

@@ -117,7 +117,7 @@ async fn config_at(estate: &rdm_test::estate::Estate, admin: &rdm_core::PathName
 async fn a_nodes_own_config_is_read_from_its_record_at_both_primaries() {
     let cell = "a_nodes_own_config_is_read_from_its_record_at_both_primaries";
     let mut estate = rdm_test::estate::Estate::bootstrap(estate_owner(cell), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
     let node_id = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").expect("mesh2 node").node_id.clone();
     let target = format!("exact:{node_id}");
@@ -153,7 +153,7 @@ async fn a_lone_fabric_primary_keeps_its_own_config_across_its_restart() {
     let cell = "a_lone_fabric_primary_keeps_its_own_config_across_its_restart";
     let shape = [("mesh1", 1, 1)];
     let mut estate = rdm_test::estate::Estate::bootstrap(estate_owner(cell), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     estate.settled_views(&shape).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let fp = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();

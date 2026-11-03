@@ -139,7 +139,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     let builds = MemoryBuildStateAdapter::new();
     let build_id = BuildId::mint();
     builds
-        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
         .await
         .unwrap();
     builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
@@ -285,8 +285,8 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
             .publish_accepted(&BuildAccepted {
                 build_id: build_id.clone(),
                 topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
-                submitted_change: None,
-                source: None, submitted_at_ms: 0,
+                change: None,
+                source: None, time: 0,
             })
             .await
             .unwrap();
@@ -428,8 +428,8 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
             .publish_accepted(&BuildAccepted {
                 build_id: build_id_2.clone(),
                 topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
-                submitted_change: None,
-                source: None, submitted_at_ms: 0,
+                change: None,
+                source: None, time: 0,
             })
             .await
             .unwrap();

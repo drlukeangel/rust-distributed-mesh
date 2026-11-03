@@ -45,7 +45,7 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
     let root = estate.root.clone();
     let data_dir = estate.bootstrap_data_dir("mesh1");
     wait_for("the bootstrap admin's Fabric row is durable", Duration::from_secs(30), || async { holds_fabric_identity_row(&estate.fabric_store_root()).then_some(()) }).await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 0)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mut admin_pids = Vec::new();
     for admin in estate.node_views().await.into_iter().filter(|n| n.r#type == "node-admin" && n.location() != Estate::path("mesh1.node-admin", "1")) {
@@ -77,7 +77,7 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
 async fn an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before_the_kill() {
     let test = "an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before_the_kill";
     let mut estate = Estate::bootstrap(owner("signal-stop", test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
     let rpc: Vec<String> = estate.node_values().await.iter().filter(|n| n["type"] == "node").filter_map(|n| n["node_id"].as_str().map(str::to_string)).collect();
     assert_eq!(rpc.len(), 3, "three nodes: {rpc:?}");

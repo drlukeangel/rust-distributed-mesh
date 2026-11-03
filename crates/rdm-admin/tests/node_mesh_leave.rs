@@ -361,8 +361,8 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
                     "mesh1",
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
-                submitted_change: None,
-                source: None, submitted_at_ms: 1000,
+                change: None,
+                source: None, time: 1000,
             })
             .await
             .unwrap();

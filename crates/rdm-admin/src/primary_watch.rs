@@ -83,7 +83,7 @@ pub fn plan(view: &Topology, mesh: &str, me_birth: &Birth, said: &mut Said, was_
     // Silent by its gossip, or marked at once for a call whose attempts are spent (node-investigation.md:
     // "A node that does not answer a call is silent, whatever it gossips"; Q332, Q338).
     let silent_of = |n: &Node| rdm_core::is_node_admin(&n.r#type) && (n.status == NodeStatus::PendingReconnect || marked(n));
-    let silent: HashSet<Birth> = view.members().filter(|n| silent_of(n)).filter_map(birth).collect();
+    let silent: HashSet<Birth> = view.births().filter(|n| silent_of(n)).filter_map(birth).collect();
     said.investigated.retain(|b| silent.contains(b));
     let mut plan = Plan::default();
 
@@ -98,9 +98,9 @@ pub fn plan(view: &Topology, mesh: &str, me_birth: &Birth, said: &mut Said, was_
     // fabric-primary itself at least), whose tick investigates it as any member.
     // The fabric-primary looks at no other silent node-admin of its own mesh: step 2's "Only the
     // mesh-primary acts" makes a secondary node-admin its mesh-primary's tick's.
-    let fabric_mesh = view.members().find(|n| n.is_fabric_primary).map(|n| n.mesh.clone());
+    let fabric_mesh = view.births().find(|n| n.is_fabric_primary).map(|n| n.mesh.clone());
     let holds_fabric = view.is_fabric_primary(&me_birth.0);
-    for n in view.members().filter(|n| silent_of(n) && n.node_id != me_birth.0) {
+    for n in view.births().filter(|n| silent_of(n) && n.node_id != me_birth.0) {
         let own_primary = n.mesh == mesh && (n.is_primary || n.is_fabric_primary);
         let incumbent = !holds_fabric && fabric_mesh.as_ref() == Some(&n.mesh);
         let peer_primary = holds_fabric && n.mesh != mesh && (n.is_primary || was_mesh_primary(n)) && aggregate_unheard(&n.mesh);
@@ -261,7 +261,7 @@ pub async fn run(w: Watch) {
         let fabric_mesh = w.topology_view.primaries().fabric().map(|h| h.mesh.clone());
         // A node-admin in the view whose digest has returned (`Ready`).
         let commands = view.own(&w.me_id).is_some_and(|me| me.is_fabric_primary);
-        for n in view.members().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.status == NodeStatus::Ready) {
+        for n in view.births().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.status == NodeStatus::Ready) {
             if let Some(b) = birth(n) {
                 // A primary this watch said unreachable, heard again by its digest, is commanded
                 // back through node.mesh.join by the fabric-primary (Q87), on its own task.
@@ -307,7 +307,7 @@ pub async fn run(w: Watch) {
         // and role its view row holds, and this watch's node investigation of it is the workflow's
         // verdict, its one look (Q337).
         if let Some(asked) = w.fabric_recovery.asked() {
-            if let Some(n) = view.members().find(|n| n.node_id == asked.node_id && n.incarnation_id.as_ref() == Some(&asked.incarnation)) {
+            if let Some(n) = view.births().find(|n| n.node_id == asked.node_id && n.incarnation_id.as_ref() == Some(&asked.incarnation)) {
                 if !plan.investigate.iter().any(|p| p.node_id == n.node_id) {
                     plan.investigate.push(n.clone());
                 }

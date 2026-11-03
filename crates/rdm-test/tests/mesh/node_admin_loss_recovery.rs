@@ -88,7 +88,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
-    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
+    let accepted = estate.resize_shape("fabric1", &shape).await.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
     // The node-admins are lost from a running fabric: the fault falls after its first ready.
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -309,7 +309,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
-    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
+    let accepted = estate.resize_shape("fabric1", &shape).await.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
     // The fault falls on an established fabric: the person's admin restarts from the Fabric record the
     // fabric-primary writes at the state commit, so the fabric is ready first.
@@ -450,7 +450,7 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
     let cell = "fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clock";
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 1), ("mesh2", 2, 1)];
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     let before = values(&estate.settled_views(&shape).await);
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let former = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");

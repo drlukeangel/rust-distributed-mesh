@@ -324,8 +324,8 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
                     "mesh1",
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
-                submitted_change: None,
-                source: None, submitted_at_ms: 0,
+                change: None,
+                source: None, time: 0,
             })
             .await
             .unwrap();
@@ -830,8 +830,8 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
                     "mesh1",
                     rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
                 ),
-                submitted_change: None,
-                source: None, submitted_at_ms: 0,
+                change: None,
+                source: None, time: 0,
             })
             .await
             .unwrap();

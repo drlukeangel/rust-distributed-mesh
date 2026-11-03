@@ -641,7 +641,7 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
 
 /// The node at `name` in `a`'s view.
 async fn node_at(a: &Admin, name: &rdm_core::PathName) -> Node {
-    a.door.topology.read().await.members().find(|n| &n.location() == name).cloned().unwrap_or_else(|| panic!("{name:?} is in the view"))
+    a.door.topology.read().await.births().find(|n| &n.location() == name).cloned().unwrap_or_else(|| panic!("{name:?} is in the view"))
 }
 
 /// CONTRACT (node-primary-update.md steps 2-4 and "Both primaries": "When the mesh-primary is also the

@@ -1315,8 +1315,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             build_id: crate::build::BuildId::mint(),
                                             // Day 0's shape is the bootstrap admin alone; its row records what it runs.
                                             topology: crate::accepted::FabricTopology::root_on(&cfg.fabric, &cfg.mesh, mesh_id.clone(), &cfg.topology_storage_provider),
-                                            submitted_change: None,
-                                            source: None, submitted_at_ms: rafka_time.now_ms(),
+                                            change: None,
+                                            source: None, time: rafka_time.now_ms(),
                                         };
                                         // The fabric-primary claims the Fabric's identity at Day 0 (node-identity-and-state.md
                                         // §2.8; fabric-create.md).
@@ -3164,7 +3164,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     let forgot = {
                                                         let mut meshes = records.meshes.lock().unwrap();
                                                         let before = meshes.len();
-                                                        meshes.retain(|name, _| b.topology.names_mesh(name) || t.members().any(|n| &n.mesh == name));
+                                                        meshes.retain(|name, _| b.topology.names_mesh(name) || t.births().any(|n| &n.mesh == name));
                                                         meshes.len() < before
                                                     };
                                                     if forgot {
@@ -3175,7 +3175,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // The mesh's rows on the shared root follow its mesh-primary, and a mesh with no
                                                 // primary's follow the fabric-primary (`MeshRowsWriter`, `crate::node_rows::writes_for`).
                                                 let written: std::collections::BTreeSet<String> = t
-                                                    .members()
+                                                    .births()
                                                     .map(|n| n.mesh.clone())
                                                     .filter(|m| *m != mesh && crate::node_rows::writes_for(&t, &role_node_id, m))
                                                     .chain(mesh_primary.then(|| mesh.clone()))
@@ -3206,7 +3206,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // a mesh handed away is narrowed off. It holds no node record: each is read through the
                                                 // reader (query.md §1).
                                                 let scope: std::collections::BTreeSet<String> = if fabric_primary {
-                                                    t.members().map(|n| n.mesh.clone()).chain(current.and_then(|c| c.as_ref()).map(|b| b.topology.mesh_names().into_iter().collect::<Vec<_>>()).unwrap_or_default()).collect()
+                                                    t.births().map(|n| n.mesh.clone()).chain(current.and_then(|c| c.as_ref()).map(|b| b.topology.mesh_names().into_iter().collect::<Vec<_>>()).unwrap_or_default()).collect()
                                                 } else if mesh_primary {
                                                     std::iter::once(mesh.clone()).collect()
                                                 } else {
@@ -3287,7 +3287,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // The fabric is ready once every planned mesh is, and a
                                                 // status change is sent at once (states.md; gossip.md §3.2: timers only for
                                                 // heartbeat and anti-entropy).
-                                                let decides = |v: &Topology| (v.members().map(|n| (n.location(), n.status, n.is_primary, n.is_fabric_primary)).collect::<Vec<_>>(), v.meshes.iter().map(|m| (m.name.clone(), m.status)).collect::<Vec<_>>());
+                                                let decides = |v: &Topology| (v.births().map(|n| (n.location(), n.status, n.is_primary, n.is_fabric_primary)).collect::<Vec<_>>(), v.meshes.iter().map(|m| (m.name.clone(), m.status)).collect::<Vec<_>>());
                                                 let decided_on = decides(&t);
                                                 let publication_wake = tokio::time::sleep_until(tokio::time::Instant::now() + if build_read_now && !build_read_owed { std::time::Duration::ZERO } else { gossip_interval() });
                                                 tokio::pin!(publication_wake);
@@ -3373,7 +3373,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 elections.observe(&t);
                                                 // A name this view held and now lacks: the exclusion is named from the same
                                                 // inputs at the moment it happens, not reconstructed later.
-                                                let now: BTreeSet<PathName> = t.members().map(|n| n.location()).collect();
+                                                let now: BTreeSet<PathName> = t.births().map(|n| n.location()).collect();
                                                 for gone in held.difference(&now) {
                                                     tracing::info_span!("rdm.node_admin.topology.update.via-vanished-from-view", node_path = %me_now.path, node_name = %me_now.name, missing_path = %gone.path, missing_name = %gone.name, why = %describe_absence(&digest_view, &records, gone))
                                                         .in_scope(|| tracing::info!("a name this admin's view held is excluded by the projection now"));

@@ -142,14 +142,9 @@ pub struct FabricView {
 }
 
 impl Topology {
-    /// The members used by planning, election, primaries and executors: every birth the view holds.
-    pub fn members(&self) -> impl Iterator<Item = &Node> {
-        self.nodes.iter()
-    }
-
-    /// Every birth the view holds, replaced predecessors included. For what names or waits on a
-    /// birth wherever it is: the REST views, an identity lookup by node id or endpoint, and the
-    /// shutdown that stops every runtime still present.
+    /// Every birth the view holds, replaced predecessors included: what planning, the election, the
+    /// primaries, the executors, the REST views, an identity lookup by node id or endpoint and the
+    /// shutdown that stops every runtime still present read (D63: the one list of the view's births).
     pub fn births(&self) -> impl Iterator<Item = &Node> {
         self.nodes.iter()
     }
@@ -159,18 +154,18 @@ impl Topology {
     /// is still a node of the mesh; a deleted one has left the view. The one place that rule lives: the
     /// Build door (`http`) and the drive (`executor::role_move`) read it.
     pub fn only_node(&self, mesh: &str, node_id: &NodeId) -> bool {
-        self.members().filter(|n| n.mesh == mesh).all(|n| n.node_id == *node_id)
+        self.births().filter(|n| n.mesh == mesh).all(|n| n.node_id == *node_id)
     }
 
     /// Every node of one type in `mesh`, among the members.
     pub fn nodes_of_type(&self, mesh: &str, r#type: &str) -> impl Iterator<Item = &Node> + '_ {
         let (mesh, r#type) = (mesh.to_string(), r#type.to_string());
-        self.members().filter(move |n| n.mesh == mesh && n.r#type == r#type)
+        self.births().filter(move |n| n.mesh == mesh && n.r#type == r#type)
     }
 
     /// The types of the members of `mesh`, `node-admin` first, then by name.
     pub fn types_in(&self, mesh: &str) -> Vec<String> {
-        let mut all: Vec<String> = self.members().filter(|n| n.mesh == mesh).map(|n| n.r#type.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        let mut all: Vec<String> = self.births().filter(|n| n.mesh == mesh).map(|n| n.r#type.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
         all.sort_by_key(|t| !rdm_core::is_node_admin(t));
         all
     }
@@ -200,10 +195,10 @@ impl Topology {
         }
         let paths: Vec<PathName> = match planned {
             Some(p) => p.iter().cloned().collect(),
-            None => self.members().filter(|n| n.mesh == mesh).map(|n| n.location()).collect(),
+            None => self.births().filter(|n| n.mesh == mesh).map(|n| n.location()).collect(),
         };
         for path in paths {
-            match self.members().find(|n| n.location() == path) {
+            match self.births().find(|n| n.location() == path) {
                 None => out.push(Missing { who: crate::checklist::MissingSubject::Location(path.clone()), why: "no-birth-heard" }),
                 Some(n) if n.stopped => {}
                 Some(n) if n.status != NodeStatus::Ready => out.push(Missing { who: crate::checklist::MissingSubject::Node(n.node_id.clone()), why: "not-ready" }),
@@ -227,7 +222,7 @@ impl Topology {
     /// The fabric primary, when exactly one member holds the role: the holder the election resolved
     /// from the primary records, whatever its status, as [`Self::node_type_primary`].
     pub fn fabric_primary(&self) -> Option<&Node> {
-        let mut p = self.members().filter(|n| n.is_fabric_primary);
+        let mut p = self.births().filter(|n| n.is_fabric_primary);
         let first = p.next()?;
         p.next().is_none().then_some(first)
     }
@@ -330,7 +325,7 @@ impl Topology {
         }
         // One primary per declared node type in a mesh that has a live member.
         let mut node_types: BTreeMap<(String, String), Vec<&Node>> = BTreeMap::new();
-        for n in self.members().filter(|n| n.status.is_live()) {
+        for n in self.births().filter(|n| n.status.is_live()) {
             node_types.entry((n.mesh.clone(), n.r#type.clone())).or_default().push(n);
         }
         for ((mesh, r#type), members) in &node_types {
@@ -342,7 +337,7 @@ impl Topology {
             }
         }
         // Exactly one fabric primary, a node-admin that is its mesh's admin primary.
-        let fps: Vec<&Node> = self.members().filter(|n| n.is_fabric_primary).collect();
+        let fps: Vec<&Node> = self.births().filter(|n| n.is_fabric_primary).collect();
         if fps.len() != 1 {
             out.push(V::FabricPrimaryCount(fps.len()));
         }

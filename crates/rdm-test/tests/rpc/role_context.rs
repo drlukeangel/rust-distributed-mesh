@@ -27,7 +27,7 @@ fn owner() -> Owner {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_call_through_a_gateway_to_a_broker_is_one_trace_across_three_processes() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 1), ("gateway", 1)])] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 1), ("gateway", 1)])] }).await;
     let want = [rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "1").unwrap(), rdm_core::PathName::new("mesh1.gateway", "1").unwrap()].into_iter().collect();
     estate.settles_to_named(&want, Duration::from_secs(30)).await;
     let broker = estate.node_value(&rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await;

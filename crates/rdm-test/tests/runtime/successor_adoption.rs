@@ -54,10 +54,10 @@ fn alive(pid: u64) -> bool {
 async fn a_successor_manages_births_it_never_launched() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     // Build A: the bootstrap admin launches three nodes; A completes.
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 3)]).await;
     let a_births = estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
     // Only now is the successor born: A is no longer active.
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
     let nodes = estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     // The initial fabric refuses a node restart and a node delete until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;

@@ -74,9 +74,9 @@ async fn pending_contract(cell: &str) {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let mesh = |m: &'static str| (m, 2, 2);
-    estate.reconcile_shape("fabric1", &[mesh("mesh1")]).await;
+    estate.resize_shape("fabric1", &[mesh("mesh1")]).await;
     // {mesh1} -> {mesh1, mesh2}, through the rectifier.
-    let created = estate.reconcile_shape("fabric1", &[mesh("mesh1"), mesh("mesh2")]).await;
+    let created = estate.resize_shape("fabric1", &[mesh("mesh1"), mesh("mesh2")]).await;
     let create = created.build_id.to_string();
     let build = estate.carrier().await.build(&created.build_id).await.expect("build.get [id] of the creation Build");
     let nodes = estate.settled_views(&[mesh("mesh1"), mesh("mesh2")]).await;
@@ -214,9 +214,9 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let mesh = |m: &'static str, admins: u32| (m, admins, 1);
-    estate.reconcile_shape("fabric1", &[mesh("mesh1", 2)]).await;
+    estate.resize_shape("fabric1", &[mesh("mesh1", 2)]).await;
     let shape = [mesh("mesh1", 2), mesh("mesh2", 2), mesh("mesh3", 2)];
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     let settled = estate.settled_views(&shape).await;
     // The bootstrap admin restarted is one that does not hold the fabric-primary role (the role goes to the
     // lowest node id fabric-wide, and the fabric primary is never restarted by this cell).
@@ -279,7 +279,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let mesh = |m: &'static str, admins: u32| (m, admins, 1);
     let shape = [mesh("mesh1", 2), mesh("mesh2", 1), mesh("mesh3", 1)];
-    let built = estate.reconcile_shape("fabric1", &shape).await;
+    let built = estate.resize_shape("fabric1", &shape).await;
     let accepted = built.build_id.to_string();
     let before = estate.settled_views(&shape).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;

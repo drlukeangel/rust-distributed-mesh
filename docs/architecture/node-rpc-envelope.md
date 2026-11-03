@@ -1453,36 +1453,25 @@ storage before it plans (Q292).
 ### Build schema
 
 ```rust
+pub struct Meshes {
+    pub name: String,
+}
+
+pub struct Nodes {                       // the settable fields; the record adds node_id, incarnation, state, endpoint, is_primary, is_fabric_primary
+    pub path: String,
+    pub name: String,
+    pub mesh: String,
+    pub r#type: String,                  // the node's type, by its name
+    pub storage_persistence: Option<StoragePersistence>, // none: the type's
+    pub executable: Option<Binding>,     // none: the type's; a node with neither is refused by name
+    pub tags: BTreeSet<String>,
+    pub config: BTreeMap<String, String>, // the application's map; RDM never reads it
+}
+
 pub enum BuildChange {
-    Reserved0,
-    Reserved1,
-    Reserved2,
-    RemoveNode { node: PathName },
-    Reserved4,
-    RemoveMesh { mesh: String },
-    Reserved6,
-    // Step = Create | Stop | Update | Start | Delete | DeleteConnections | LeaveMesh: one node
-    // primitive per step. Create names the node and the executable binding the Build fixes for it
-    // (launch id, hash); the executing admin launches that binding, verified at launch, whichever
-    // admin runs or resumes the step.
-    // Steps are one Build of node primitives (lifecycles/node-replace.md).
-    Steps { steps: Vec<Step> },
-    // Every create names the node's create spec, its properties flat (Q166):
-    // NodeSpec { path, storage, placement, executable, tags, config }. The executable (path, sha256,
-    // image) the node runs is compiled onto the accepted topology's entry and recorded on the row at
-    // the claim (build-deployment.md); config is the application's map, written to the row at the
-    // claim. The Build applies the diff against each node's row (build.md §1). Positions 0, 1, 2 and 4 (the count forms),
-    // 6 (the removed node.restart, Q183) and 14 (the removed change of the old per-kind set) are reserved: never sent, and a request at one is an unknown
-    // variant (positional, no format move).
-    ConnectionsDelete { node: PathName },
-    Stop { node: PathName },
-    Start { node: PathName },
-    Recover { node: PathName, node_id: NodeId, incarnation: IncarnationId },
-    // A caller birth a primary refused and decided by its path and name and the atlas to delete
-    // (a deleted birth heard again among them), reported by that primary; the fabric-primary
-    // terminates its runtime (lifecycles/node-investigation.md, Q207).
-    Terminate { node: PathName, node_id: NodeId, incarnation: IncarnationId },
-    Reconcile { based_on: BuildId, nodes: Vec<NodeSpec> },
+    Create { meshes: Vec<Meshes>, nodes: Vec<Nodes> },
+    Delete { meshes: Vec<String>, node_ids: Vec<NodeId> },
+    DeleteFabric,
 }
 
 pub enum BuildSubmit {

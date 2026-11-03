@@ -203,7 +203,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 2)];
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     let nodes = estate.settled_views(&shape).await;
     let member_id = nodes.iter().find(|n| n.location() == member_at()).map(|n| n.node_id.to_string()).expect("the member's settled view");
     // A node's own spans and a join's `served_by` name a node by its id; an admin's read by its path and name.

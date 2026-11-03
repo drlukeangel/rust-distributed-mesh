@@ -396,8 +396,8 @@ impl Prepared {
             let accepted = rdm_admin::build_state::BuildAccepted {
                 build_id: build_id.clone(),
                 topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", mesh_id.clone()),
-                submitted_change: None,
-                source: None, submitted_at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+                change: None,
+                source: None, time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
             };
             rdm_admin::build_state::accept(&journal, &accepted, None, "mesh1.node-admin.1", "prepared-root").await.unwrap();
             launched
@@ -1056,8 +1056,8 @@ impl Prepared {
             let delete = rdm_admin::build_state::BuildAccepted {
                 build_id: rdm_admin::build::BuildId::mint(),
                 topology: rdm_admin::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },
-                submitted_change: Some(rdm_core::build::BuildChange::DeleteFabric),
-                source: None, submitted_at_ms: now_ms(),
+                change: Some(rdm_core::build::BuildChange::DeleteFabric),
+                source: None, time: now_ms(),
             };
             rdm_admin::build_state::accept(&journal, &delete, None, "mesh1.node-admin.1", "fabric.delete").await.unwrap();
             if dead {

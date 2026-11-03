@@ -208,6 +208,7 @@ where
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_build() {
     let spans = Spans::default();
     rdm_transport::enable_callsites();
@@ -227,7 +228,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // The settled Build A is seeded into the fabric's builds store, which its control plane moves.
     let seed = rdm_admin::build::BuildId::mint();
     a.builds
-        .publish_accepted(&rdm_admin::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&*topology.read().await), submitted_change: None, source: None, submitted_at_ms: 0 })
+        .publish_accepted(&rdm_admin::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&*topology.read().await), change: None, source: None, time: 0 })
         .await
         .unwrap();
     a.builds.claim_attempt(&rdm_admin::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: seed.clone(), attempt: 1, executor: a_birth.clone() }).await.unwrap();

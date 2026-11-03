@@ -64,7 +64,7 @@ fn row_status(root: &Path, node_id: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let mut estate = Estate::bootstrap(owner("a_node_row_carries_its_status_through_ready_stop_and_start"), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     let views: Vec<NodeView> = estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(SETTLE).await;
     let root = estate.fabric_store_root();

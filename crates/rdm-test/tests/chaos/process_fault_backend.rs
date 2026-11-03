@@ -94,7 +94,7 @@ fn attr<'a>(sp: &'a Value, k: &str) -> &'a str {
 /// mesh1 with `admins` node-admins and `rpcs` nodes, through the rectifier.
 async fn estate(cell: &str, admins: u32, rpcs: u32) -> Estate {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", admins, rpcs)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", admins, rpcs)]).await;
     estate.settled_views(&[("mesh1", admins, rpcs)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate

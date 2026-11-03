@@ -47,7 +47,7 @@ fn at(sp: &Value) -> u64 {
 async fn estate(cell: &str) -> (Estate, Vec<NodeView>) {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 2)];
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     let nodes = estate.settled_views(&shape).await;
     (estate, nodes)
 }

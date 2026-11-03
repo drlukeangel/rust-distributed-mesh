@@ -82,7 +82,7 @@ async fn an_accepted_build_is_current_from_the_build_store_alone() {
     let (cp, builds, b0) = fabric_primary().await;
     let topology = builds.read_build(&b0).await.unwrap().topology;
     let b1 = BuildId::mint();
-    builds.publish_accepted(&BuildAccepted { build_id: b1.clone(), topology, submitted_change: None, source: None, submitted_at_ms: 5 }).await.unwrap();
+    builds.publish_accepted(&BuildAccepted { build_id: b1.clone(), topology, change: None, source: None, time: 5 }).await.unwrap();
     match cp.submit("POST /api/meshes", crate::named_request(&cp, move |t: &rdm_admin::topology::Topology| crate::grown(t, &[mesh("mesh2")])).await).await {
         Err(Refusal::BuildInProgress(held)) => assert_eq!(held.current_build_id, b1, "the refusal names the Build in progress"),
         Err(other) => panic!("refused, but not as the Build in progress {b1}: {other:?}"),

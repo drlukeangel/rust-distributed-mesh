@@ -80,7 +80,7 @@ fn shape(r2: u32) -> FabricDesired {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_by_the_fabric_primary_and_the_build_completes() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile(&shape(3)).await;
+    estate.resize(&shape(3)).await;
     let before = estate.settles_to_named(&names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]), Duration::from_secs(15)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.expect("mesh2 carries its id").to_string();

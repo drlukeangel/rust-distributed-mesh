@@ -55,7 +55,7 @@ fn birth_of(n: &NodeView) -> ExactBirth {
 async fn a_mesh_primary_answers_its_own_meshs_read_with_the_fabric_primary_held_and_carries_another_meshs_read_up() {
     let test = "a_mesh_primary_answers_its_own_meshs_read_with_the_fabric_primary_held_and_carries_another_meshs_read_up";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter_fabric_primary().await;

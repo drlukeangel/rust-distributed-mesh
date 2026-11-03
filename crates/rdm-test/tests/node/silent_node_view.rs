@@ -47,7 +47,7 @@ fn now_ns() -> u64 {
 async fn an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_marked_by_the_pruner_and_recovered() {
     let test = "an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_marked_by_the_pruner_and_recovered";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
     let nodes = estate

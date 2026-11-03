@@ -105,8 +105,8 @@ mod tests {
             .publish_accepted(&BuildAccepted {
                 build_id: day0_id.clone(),
                 topology: root_top.clone(),
-                submitted_change: None,
-                source: None, submitted_at_ms: 1,
+                change: None,
+                source: None, time: 1,
             })
             .await
             .unwrap();

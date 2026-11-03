@@ -161,7 +161,7 @@ async fn secondary_node(estate: &Estate) -> PathName {
 /// order, and nothing polls a Build to learn it. A stop is a node command, never a Build (Q342): the
 /// one-node Build is the delete.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/298: attempt claims / HandedOff: s4 removes this contract (D53, inbox 0043)"]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 async fn a_delete_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes() {
     let test = "a_delete_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
@@ -357,7 +357,7 @@ async fn attempt_run(
 /// executor the claim names, and when the claim is not the current folded attempt of the recipient's
 /// projection; a replaced primary is given a new claim, never the stale one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/298: attempt claims / HandedOff: s4 removes this contract (D53, inbox 0043)"]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_is_refused_by_name() {
     let test = "an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_is_refused_by_name";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
@@ -402,7 +402,7 @@ async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_
 /// its `StartNode` receipt not yet durable, and it is killed while held. The successor reissues the
 /// start, which the node settles `AlreadyApplied`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "i152 s2 (rdm#296): a stop and a start are node commands, never a Build (Q342), so this cell's vehicle is gone; its contract (attempt claims, executor loss) is removed by i152 s4 (rdm#298)"]
+#[ignore = "i152 s2 (rdm#296): a stop and a start are node commands, never a Build (Q342), so this cell's vehicle is gone; its contract (attempt claims, executor loss) is removed by i152 s4b (rdm#306)"]
 async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_its_exit_is_inspected() {
     let test = "a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_its_exit_is_inspected";
     let sha = candidate_sha();
@@ -563,7 +563,7 @@ fn now_ns() -> u64 {
 /// behind it (gate run gates-4-41c1b4003: attempt 4 executor-lost, then fourteen refusals), a signal to
 /// the suspended runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "i152 s2 (rdm#296): a stop and a start are node commands, never a Build (Q342), so this cell's vehicle is gone; its contract (attempt claims, executor loss) is removed by i152 s4 (rdm#298)"]
+#[ignore = "i152 s2 (rdm#296): a stop and a start are node commands, never a Build (Q342), so this cell's vehicle is gone; its contract (attempt claims, executor loss) is removed by i152 s4b (rdm#306)"]
 async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_its_mesh_recovered_leaving_the_runtime_stopped() {
     let test = "an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_its_mesh_recovered_leaving_the_runtime_stopped";
     let Suspended { mut estate, carrier, accepted, mut stream, rt, node_id, executor, successor, fabric_primary, data_dir, ticks, .. } = suspended_executor(test).await;
@@ -634,7 +634,7 @@ async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_i
 /// Must NOT happen: a record of the superseded attempt in the journal, the Build decided by it, the
 /// re-created birth displaced, or the resumed birth's own write read as its record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/303: red on main in three lanes' gates, unattributed; its contract (attempt claims, HandedOff) is removed by i152 s4 (rdm#298)"]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/303: red on main in three lanes' gates, unattributed; its contract (attempt claims, HandedOff) is removed by i152 s4b (rdm#306)"]
 async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_receipt_of_its_attempt() {
     let test = "an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_receipt_of_its_attempt";
     let Suspended { mut estate, carrier, node, accepted, mut stream, door, rt, node_id, executor, successor, fabric_primary, .. } = suspended_executor(test).await;
@@ -772,7 +772,7 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_r
 /// by the Build id streams it to `Complete`. No step has a second receipt, and no attempt beyond the
 /// claimed one is opened.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "i152 s2 (rdm#296): a stop and a start are node commands, never a Build (Q342), so this cell's vehicle is gone; its contract (attempt claims, executor loss) is removed by i152 s4 (rdm#298)"]
+#[ignore = "i152 s2 (rdm#296): a stop and a start are node commands, never a Build (Q342), so this cell's vehicle is gone; its contract (attempt claims, executor loss) is removed by i152 s4b (rdm#306)"]
 async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_and_no_step_runs_twice() {
     let test = "a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_and_no_step_runs_twice";
     let sha = candidate_sha();
@@ -1276,7 +1276,7 @@ async fn a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_co
 /// node.delete Build's `DeleteConnections` step (a standalone connections delete is a node command,
 /// never a Build, Q342).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "i152 s2 (rdm#296): a connections delete is a node command, never a Build (Q342, D18), and node.delete's Build has no DeleteConnections step, so this cell's vehicle is gone; its contract (executor loss, attempt claims) is removed by i152 s4 (rdm#298)"]
+#[ignore = "i152 s2 (rdm#296): a connections delete is a node command, never a Build (Q342, D18), and node.delete's Build has no DeleteConnections step, so this cell's vehicle is gone; its contract (executor loss, attempt claims) is removed by i152 s4b (rdm#306)"]
 async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_its_reissue_settles_it() {
     async fn at_cut(cut: &str) {
         let test = format!("an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_its_reissue_settles_it_{cut}");

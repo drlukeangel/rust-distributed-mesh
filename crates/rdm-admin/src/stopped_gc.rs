@@ -251,7 +251,7 @@ impl crate::control_plane::ControlPlane {
                 Some(id) => self.builds.read_build(&id).await.map(|b| Some(b.topology)).map_err(|e| format!("the current Build {id} cannot be read: {e}")),
             },
         };
-        let mut stopped: Vec<&crate::model::Node> = view.members().filter(|n| n.stopped).collect();
+        let mut stopped: Vec<&crate::model::Node> = view.births().filter(|n| n.stopped).collect();
         stopped.sort_by(|a, b| a.location().cmp(&b.location()));
         let mut out = Vec::new();
         for n in stopped {

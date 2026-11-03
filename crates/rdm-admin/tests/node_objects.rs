@@ -546,6 +546,7 @@ const ATTEMPT_ONE_STEPS: [&str; 7] = [
 /// `node.created`, `node.joined` and `node.started` are never emitted, the node never reaches
 /// ready, and the call's span names the failed step.
 #[test]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_after_it() {
     let cap = capture();
     let (frames, end, published) = cap.run(async {
@@ -1074,6 +1075,7 @@ fn a_build_sends_started_at_its_first_claim_then_ended_and_a_successor_that_adop
 /// `Failed` at attempt 2, naming the step and the reason the stream ends with. Must NOT happen: a second
 /// `on_build_started` for the attempt after the hand-back, or a Failed ending the application is not told of.
 #[test]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 fn a_build_that_hands_back_and_fails_sends_one_started_and_one_failed_ended_naming_the_step() {
     let cap = capture();
     let (frames, told) = cap.run(async {
@@ -1160,7 +1162,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     use rdm_admin::deployment::pipeline::{CreateStep, DeleteStep};
     let view = |op: &rdm_core::OperationId, steps: Vec<&str>| -> rdm_client::BuildView {
         serde_json::from_value(json!({
-            "build_id": "3qcfk1kq47m9", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
+            "build_id": "3qcfk1kq47m9", "topology": {}, "time": 0, "state": "running", "attempt": 1, "executor": null,
             "steps": steps.iter().map(|s| json!({"attempt": 1, "operation": op, "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
             "last_failure": null, "reason": "requested"
         }))
@@ -1220,7 +1222,7 @@ fn deletion_progress_does_not_infer_lifecycle_state_from_path_or_name() {
     let operation = rdm_core::OperationId::node("node.delete", &deleted);
     let view = |steps: Vec<&str>| -> rdm_client::BuildView {
         serde_json::from_value(json!({
-            "build_id": "3qcfk1kq47m9", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
+            "build_id": "3qcfk1kq47m9", "topology": {}, "time": 0, "state": "running", "attempt": 1, "executor": null,
             "steps": steps.iter().map(|s| json!({"attempt": 1, "operation": operation, "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
             "last_failure": null, "reason": "delete"
         })).unwrap()

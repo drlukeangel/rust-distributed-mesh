@@ -38,7 +38,7 @@ async fn a_create_accepted_inside_a_deletions_window_births_the_path_once() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     // Two meshes: the delete and the create run on mesh2's lane, executed by mesh2's primary, and the
     // fabric-primary in mesh1 plans the create from a view it learns of mesh2 through gossip.
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The soak's shape: the deleted node is mesh2's role-holding node-admin (a hand-off), so the role

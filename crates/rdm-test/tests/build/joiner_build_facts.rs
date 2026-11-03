@@ -26,7 +26,7 @@ fn owner(test: &str) -> Owner {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_build_of_three_node_admins_completes_with_every_joiner_ready() {
     let mut estate = Estate::bootstrap(owner("a_build_of_three_node_admins_completes_with_every_joiner_ready"), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 3, 0)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 3, 0)]).await;
     estate.settled_views(&[("mesh1", 3, 0)]).await;
     estate.stop().await;
 }

@@ -32,7 +32,7 @@ fn owner() -> Owner {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing_else() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 3)]).await;
     estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
     let (b, c, p) = (estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await);
     let (b_id, c_id) = (b["node_id"].as_str().unwrap().to_string(), c["node_id"].as_str().unwrap().to_string());

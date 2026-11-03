@@ -83,7 +83,7 @@ fn primary_of(nodes: &[Value], c: &NodeType) -> Option<String> {
 }
 
 async fn build(estate: &Estate, meshes: &[(&str, u32, u32)]) {
-    estate.reconcile_shape("fabric1", meshes).await;
+    estate.resize_shape("fabric1", meshes).await;
 }
 
 /// The workflow `call` was accepted by the fabric-primary: await its reply stream to `Complete`.

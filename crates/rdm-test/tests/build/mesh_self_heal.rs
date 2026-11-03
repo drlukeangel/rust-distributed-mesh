@@ -27,7 +27,7 @@ fn s(v: &Value) -> String {
 async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stays_completed() {
     let shape = [("mesh1", 2, 1), ("mesh2", 2, 2)];
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id;
+    let accepted = estate.resize_shape("fabric1", &shape).await.build_id;
     estate.settles_to(&shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
 

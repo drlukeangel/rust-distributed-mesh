@@ -62,7 +62,7 @@ async fn a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_whi
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"], &[]).await.expect("the faulted-admin binding set is accepted");
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     estate.settles_to(&shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let nodes = estate.node_values().await;

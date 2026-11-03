@@ -501,7 +501,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", id1.clone()), submitted_change: Some(BuildChange::DeleteFabric), source: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", id1.clone()), change: Some(BuildChange::DeleteFabric), source: None, time: 0 })
             .await
             .unwrap();
         let op_m2 = operation(&id2);
@@ -598,7 +598,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", id1.clone()), submitted_change: Some(BuildChange::DeleteFabric), source: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", id1.clone()), change: Some(BuildChange::DeleteFabric), source: None, time: 0 })
             .await
             .unwrap();
         let op_m2 = operation(&id2);

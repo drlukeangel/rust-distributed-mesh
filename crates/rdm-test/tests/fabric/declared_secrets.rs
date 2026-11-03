@@ -176,7 +176,7 @@ async fn a_declared_secret_reaches_only_the_named_types(test: &str, provider: &s
     let value = fresh_value();
     let mut estate = estate_holding(test, provider, &value).await;
     let mesh1 = mesh_of_every_type("mesh1");
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] }).await;
     let want: BTreeSet<rdm_core::PathName> = [("node-admin", "1"), ("node-admin", "2"), ("node", "1"), ("broker", "1"), ("gateway", "1"), ("compute", "1")].into_iter().map(|(group, name)| rdm_core::PathName::new(format!("mesh1.{group}"), name).unwrap()).collect();
     estate.settles_to_named(&want, SETTLE).await;
     let seen = environs(&estate).await;
@@ -217,7 +217,7 @@ async fn a_launched_admins_create_sets_the_value_and_no_file_carries_it(test: &s
     let value = fresh_value();
     let mut estate = estate_holding(test, provider, &value).await;
     let mesh = |m: &str| MeshDesired::of(m, [("node-admin", 2), ("broker", 1), ("compute", 1)]);
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
     let want: BTreeSet<rdm_core::PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| [("node-admin", "1"), ("node-admin", "2"), ("broker", "1"), ("compute", "1")].map(|(group, name)| rdm_core::PathName::new(format!("{m}.{group}"), name).unwrap())).collect();
     estate.settles_to_named(&want, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
@@ -270,7 +270,7 @@ async fn an_admin_started_again_from_its_data_dir_launches_the_named_types_with_
     let mut estate = estate_holding(test, provider, &value).await;
     estate.until_fabric_ready(SETTLE).await;
     let launched = MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)]);
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![launched] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![launched] }).await;
     let before: BTreeSet<rdm_core::PathName> = [bootstrap(), rdm_core::PathName::new("mesh1.node", "1").unwrap()].into();
     estate.settles_to_named(&before, SETTLE).await;
     let data_dir = estate.bootstrap_data_dir("mesh1");
@@ -281,7 +281,7 @@ async fn an_admin_started_again_from_its_data_dir_launches_the_named_types_with_
     estate.settles_to_named(&before, SETTLE).await;
     estate.until_fabric_ready_at(&restarted, SETTLE).await;
     let mesh1 = MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 1), ("compute", 1)]);
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] }).await;
     let want: BTreeSet<rdm_core::PathName> = ["node-admin", "broker", "compute"].iter().map(|group| rdm_core::PathName::new(format!("mesh1.{group}"), "1").unwrap()).collect();
     estate.settles_to_named(&want, SETTLE).await;
     let broker = environ(estate.node_view(&rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await.node_id.as_str(), estate.pid_of(&rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await);

@@ -28,23 +28,23 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// A Build accepted by the fabric-primary: the complete topology it realizes, and the change that
-/// produced it (history only; planning reads `topology`, never `submitted_change`).
+/// produced it (history only; planning reads `topology`, never `change`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildAccepted {
     /// The Build's id.
     pub build_id: BuildId,
     /// The complete topology the Build realizes.
     pub topology: FabricTopology,
-    /// The change that produced the topology: history only.
+    /// The change as it came in (build.md §1): history only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub submitted_change: Option<BuildChange>,
+    pub change: Option<BuildChange>,
     /// Who wrote the record: the accepting fabric-primary's exact birth,
     /// `rdm://<fabric_id>/<node_id>/<incarnation>` (gossip.md §3.4's `source`). A record written before
     /// the field names none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// When the Build was accepted, in milliseconds since the Unix epoch.
-    pub submitted_at_ms: u64,
+    pub time: u64,
 }
 
 /// Why an attempt of a Build was opened: what a caller asked for (build.md §1, Q342). A node command,
@@ -317,11 +317,11 @@ pub struct BuildProjection {
     pub build_id: BuildId,
     /// The complete topology the Build realizes.
     pub topology: FabricTopology,
-    /// The change that produced the topology: history only.
+    /// The change as it came in (build.md §1): history only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub submitted_change: Option<BuildChange>,
+    pub change: Option<BuildChange>,
     /// When the Build was accepted, in milliseconds since the Unix epoch.
-    pub submitted_at_ms: u64,
+    pub time: u64,
     /// Where the Build is in its life.
     pub state: BuildState,
     /// The current attempt: the highest attempt claimed. An opened attempt is `attempt + 1`.
@@ -439,7 +439,7 @@ impl Lane {
 impl BuildProjection {
     /// Whether the change that produced this Build is fabric.delete.
     pub fn deletes_fabric(&self) -> bool {
-        matches!(self.submitted_change, Some(BuildChange::DeleteFabric))
+        matches!(self.change, Some(BuildChange::DeleteFabric))
     }
 
     /// Whether any mesh's drift lane holds an attempt open.
@@ -596,7 +596,7 @@ pub async fn drivable(builds: &dyn BuildStateAdapter, p: &BuildProjection) -> Re
         CurrentBuild::None => true,
         CurrentBuild::Completed(id) => {
             let c = builds.read_build(&id).await?;
-            (p.submitted_at_ms, &p.build_id) > (c.submitted_at_ms, &c.build_id)
+            (p.time, &p.build_id) > (c.time, &c.build_id)
         }
     })
 }
@@ -612,7 +612,7 @@ pub async fn interrupted_by(builds: &dyn BuildStateAdapter, p: &BuildProjection)
         return Ok(None);
     }
     let current = builds.read_build(&id).await?;
-    Ok((current.deletes_fabric() && (current.submitted_at_ms, &current.build_id) > (p.submitted_at_ms, &p.build_id)).then_some(current))
+    Ok((current.deletes_fabric() && (current.time, &current.build_id) > (p.time, &p.build_id)).then_some(current))
 }
 
 /// The fabric.delete in force (build.md §1: a successor fabric-primary reads the delete as the current
@@ -626,12 +626,12 @@ pub async fn fabric_delete_in_force(builds: &dyn BuildStateAdapter) -> Result<Op
         return Ok(Some((c.clone(), false)));
     }
     let Some(newest) = builds.newest_accepted_at_ms().await? else { return Ok(None) };
-    if current.as_ref().is_some_and(|c| c.submitted_at_ms >= newest) {
+    if current.as_ref().is_some_and(|c| c.time >= newest) {
         return Ok(None);
     }
     let facts = builds.facts().await?;
     let Some(id) = facts.iter().rev().find_map(|f| match f {
-        BuildFact::Accepted(a) if a.submitted_at_ms == newest && matches!(a.submitted_change, Some(BuildChange::DeleteFabric)) => Some(a.build_id.clone()),
+        BuildFact::Accepted(a) if a.time == newest && matches!(a.change, Some(BuildChange::DeleteFabric)) => Some(a.build_id.clone()),
         _ => None,
     }) else {
         return Ok(None);
@@ -658,7 +658,7 @@ pub async fn accept(builds: &dyn BuildStateAdapter, accepted: &BuildAccepted, pr
         node = %node,
         build_id = %accepted.build_id.log(),
         previous_build_id = %previous.map(|b| b.as_str()).unwrap_or(""),
-        submitted_at_ms = accepted.submitted_at_ms,
+        time = accepted.time,
         via,
     );
     let put = builds.publish_accepted(accepted).instrument(span.clone()).await;
@@ -862,7 +862,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
             BuildFact::Accepted(i) if out.contains_key(&i.build_id) => {
                 let p = out.get_mut(&i.build_id).expect("held");
                 if p.topology.section_of.is_some() && i.topology.section_of.is_none() {
-                    p.submitted_change = i.submitted_change.clone();
+                    p.change = i.change.clone();
                 }
                 p.topology.absorb(&i.topology);
             }
@@ -870,8 +870,8 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                 out.entry(i.build_id.clone()).or_insert_with(|| BuildProjection {
                     build_id: i.build_id.clone(),
                     topology: i.topology.clone(),
-                    submitted_change: i.submitted_change.clone(),
-                    submitted_at_ms: i.submitted_at_ms,
+                    change: i.change.clone(),
+                    time: i.time,
                     state: BuildState::Pending,
                     attempt: 0,
                     executor: None,
@@ -1187,7 +1187,7 @@ pub trait BuildStateAdapter: Send + Sync {
     /// failed Build is skipped; no Build accepted before the current one is read. Every adapter
     /// answers it from its index (or delegates to the adapter it decorates).
     async fn current_build(&self) -> Result<CurrentBuild, BuildStateError>;
-    /// The acceptance stamp (`submitted_at_ms`) of the newest Build accepted, whatever its state: the
+    /// The acceptance stamp (`time`) of the newest Build accepted, whatever its state: the
     /// head of the acceptance-order index. A Build accepted next is stamped after it.
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError>;
     /// The current Build's folded view: [`Self::current_build`], then a point read of that Build.
@@ -1203,12 +1203,12 @@ pub trait BuildStateAdapter: Send + Sync {
     /// Builds that are neither complete nor failed.
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
     /// Every Build accepted, newest first: the acceptance-order index (R-BI3) read whole, each Build by
-    /// its own acceptance stamp `(submitted_at_ms, build_id)`. What `build.get` streams in order (Q167
+    /// its own acceptance stamp `(time, build_id)`. What `build.get` streams in order (Q167
     /// R-RD5). RDM's adapters answer it from their index (or delegate to the adapter they decorate); an
     /// adapter that keeps none answers it from its facts' acceptances.
     async fn accepted_newest_first(&self) -> Result<Vec<BuildId>, BuildStateError> {
         let mut accepted: Vec<(u64, BuildId)> = self.facts().await?.into_iter().filter_map(|f| match f {
-            BuildFact::Accepted(a) => Some((a.submitted_at_ms, a.build_id)),
+            BuildFact::Accepted(a) => Some((a.time, a.build_id)),
             _ => None,
         }).collect();
         accepted.sort();
@@ -1363,7 +1363,7 @@ struct FactLog {
     /// The indexes the birth reads answer from ([`BirthIndex`]), filled by [`FactLog::index`].
     births: BirthIndex,
     /// The acceptance-order index (R-BI3): every Build accepted, by its own acceptance stamp
-    /// `(submitted_at_ms, build_id)`, entered once by its `Accepted` fact and never rewritten, in
+    /// `(time, build_id)`, entered once by its `Accepted` fact and never rewritten, in
     /// whatever order the facts arrive. Read newest first by [`current_build`].
     accepted_order: std::collections::BTreeSet<(u64, BuildId)>,
     /// Each Build's own facts, by their position in `facts`: a Build is read by folding its facts
@@ -1445,7 +1445,7 @@ impl FactLog {
     fn index(&mut self, fact: &BuildFact, at: usize) {
         self.births.index(fact);
         if let BuildFact::Accepted(a) = fact {
-            self.accepted_order.insert((a.submitted_at_ms, a.build_id.clone()));
+            self.accepted_order.insert((a.time, a.build_id.clone()));
         }
         self.by_build.entry(fact.build_id().clone()).or_default().push(at);
     }
@@ -2787,8 +2787,8 @@ mod tests {
         BuildAccepted {
             build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(),
             topology: FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()),
-            submitted_change: None,
-            source: None, submitted_at_ms: 1,
+            change: None,
+            source: None, time: 1,
         }
     }
 
@@ -2943,7 +2943,7 @@ mod tests {
         assert_eq!(m.claim_attempt(&claim("b1", 1, "100000000007", "mesh1")).await.unwrap(), ClaimOutcome::Won, "re-claiming your own attempt is idempotent");
         assert_eq!(m.claim_attempt(&claim("b9", 1, "100000000007", "mesh1")).await, Err(BuildStateError::UnknownBuild(BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap())));
         let mut other = intent("b1");
-        other.submitted_at_ms = 2;
+        other.time = 2;
         assert_eq!(m.publish_accepted(&other).await, Err(BuildStateError::ConflictingIntent(BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap())));
         m.publish_accepted(&intent("b1")).await.unwrap();
         assert_eq!(m.list_active().await.unwrap().len(), 1);
@@ -3106,7 +3106,7 @@ mod tests {
         .await;
         let (b1, b2) = (BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap().to_string(), BuildId::parse(&rdm_core::fixture_crockford60("b2")).unwrap().to_string());
         assert_eq!(seen.lock().unwrap().last().unwrap(), &[b1.clone()].into_iter().collect(), "installed: the current Build, b1");
-        m.absorb(&[BuildFact::Accepted(BuildAccepted { source: None, submitted_at_ms: 2, ..intent("b2") })]).await;
+        m.absorb(&[BuildFact::Accepted(BuildAccepted { source: None, time: 2, ..intent("b2") })]).await;
         assert_eq!(seen.lock().unwrap().last().unwrap(), &[b1.clone(), b2.clone()].into_iter().collect(), "b2's acceptance: b2's own, and b1 still current until it is indexed");
         m.absorb(&[BuildFact::Claim(claim("b2", 1, "100000000001", "mesh1"))]).await;
         assert_eq!(seen.lock().unwrap().last().unwrap(), &[b2.clone()].into_iter().collect(), "a fact of the current Build b2: b2 alone, b1 is neither touched, current nor held");
@@ -3263,7 +3263,7 @@ mod tests {
     }
 
     fn accepted_at(id: &str, at_ms: u64) -> BuildAccepted {
-        BuildAccepted { source: None, submitted_at_ms: at_ms, ..intent(id) }
+        BuildAccepted { source: None, time: at_ms, ..intent(id) }
     }
 
     /// CONTRACT (R-BI3: "it reads the builds till it finds the last committed/completed build id and

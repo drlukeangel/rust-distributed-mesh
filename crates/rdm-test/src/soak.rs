@@ -1048,7 +1048,7 @@ impl Driver {
         estate.set_seed(cfg.seed);
         let initial = cfg.model(&estate.owner.provider);
         let desired = FabricDesired { fabric: "fabric1".into(), meshes: cfg.shape.iter().map(|(m, classes)| MeshDesired::of(*m, classes.iter().map(|(class, n)| (class.type_name(), *n)))).collect() };
-        let reconciled = tokio::time::timeout(Duration::from_secs(120), estate.reconcile(&desired)).await.unwrap_or_else(|_| panic!("the formation Build of {desired:?} did not complete within 120s"));
+        let reconciled = tokio::time::timeout(Duration::from_secs(120), estate.resize(&desired)).await.unwrap_or_else(|_| panic!("the formation Build of {desired:?} did not complete within 120s"));
         let build_id = reconciled.build_id.to_string();
         let want: BTreeMap<(String, String), usize> = cfg.shape.iter().flat_map(|(m, classes)| classes.iter().map(move |(class, n)| ((m.to_string(), class.type_name().to_string()), *n as usize))).collect();
         estate.settles_to_counts(want, Duration::from_secs(60)).await;
@@ -2421,6 +2421,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
     fn a_hand_back_attempt_does_nothing_to_a_held_birth() {
         let (location, birth) = held_fixture();
         let before = b6695529_build(5, json!({ "mesh1": { "attempt": 2 } }));

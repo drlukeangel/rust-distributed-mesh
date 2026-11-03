@@ -344,7 +344,7 @@ async fn form(cell: &str, shape: Shape) -> Formed {
     let body = serde_json::to_value(&desired).expect("a desired fabric serializes");
     let t0 = now_ms();
     // `build.create` awaited to its stream's `Complete` (the Build follows the role if it moves while it runs).
-    let reconciled = estate.reconcile(&desired).await;
+    let reconciled = estate.resize(&desired).await;
     let build_id = reconciled.build_id.to_string();
     actions.push(json!({"t_ms": t0, "action": "build.create", "via": "build.create", "attempt": reconciled.attempt, "build_id": build_id, "body": body}));
     let build = build_now(&estate, &build_id).await;

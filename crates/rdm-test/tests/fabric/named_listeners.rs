@@ -117,7 +117,7 @@ async fn published(estate: &Estate, node: &NodeView) -> Vec<(String, SocketAddr)
 async fn a_gateways_listeners_are_bound_reported_at_join_and_published_on_its_row() {
     let test = "a_gateways_listeners_are_bound_reported_at_join_and_published_on_its_row";
     let mut estate = estate_on(test, "process").await;
-    estate.reconcile(&mesh_with_gateways(1)).await;
+    estate.resize(&mesh_with_gateways(1)).await;
     let want = wanted(1);
     let views = estate.settles_to_named(&want, SETTLE).await;
     let gateway = views.iter().find(|n| n.r#type == LISTENER_TYPE).expect("the gateway is in the view");
@@ -142,7 +142,7 @@ async fn a_gateways_listeners_are_bound_reported_at_join_and_published_on_its_ro
 async fn two_gateways_launched_at_once_bind_their_listeners_with_no_conflict() {
     let test = "two_gateways_launched_at_once_bind_their_listeners_with_no_conflict";
     let mut estate = estate_on(test, "process").await;
-    estate.reconcile(&mesh_with_gateways(2)).await;
+    estate.resize(&mesh_with_gateways(2)).await;
     let want = wanted(2);
     let views = estate.settles_to_named(&want, SETTLE).await;
     estate.artifact("views.json", &json!(Estate::values(&views)));
@@ -171,7 +171,7 @@ async fn a_container_fabrics_gateway_listeners_are_on_the_containers_own_address
     }
     let test = "a_container_fabrics_gateway_listeners_are_on_the_containers_own_address";
     let mut estate = estate_on(test, "container").await;
-    estate.reconcile(&mesh_with_gateways(1)).await;
+    estate.resize(&mesh_with_gateways(1)).await;
     let want = wanted(1);
     let views = estate.settles_to_named(&want, SETTLE).await;
     let gateway = views.iter().find(|n| n.r#type == LISTENER_TYPE).expect("the gateway is in the view");

@@ -48,7 +48,7 @@ async fn rpc_node_restarts_as_the_same_birth_in_the_same_process_and_recovers_st
 async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_rows() {
     let test = "a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_rows";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let before = estate.node_values().await;

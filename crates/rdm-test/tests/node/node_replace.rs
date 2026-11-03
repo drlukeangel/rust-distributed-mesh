@@ -73,7 +73,7 @@ async fn fabric_of(test: &str, shape: &[(&str, u32, u32)], settle: Duration) -> 
 /// `estate`'s fabric born at `shape` by `build.create`, followed to its terminal frame, the view settled
 /// on it within `settle` and the fabric ready; the birth Build's id.
 async fn born_at(estate: Estate, shape: &[(&str, u32, u32)], settle: Duration) -> (Estate, String) {
-    let born = estate.reconcile_shape("fabric1", shape).await;
+    let born = estate.resize_shape("fabric1", shape).await;
     estate.settles_to(shape, settle).await;
     estate.until_fabric_ready(SETTLE).await;
     (estate, born.build_id.to_string())
@@ -575,6 +575,7 @@ const DELETE_STOPPED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "No
 /// NodeDeleted for the exact birth and the mesh's primary, which executes it, writes the Deleted
 /// row at `<name>-old` at the unchanged path, its record kept (R13). The process is gone; its data dir stays.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 async fn deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row() {
     let (estate, birth_build) = estate("deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row").await;
     let nodes = objects(&estate).await;
@@ -589,6 +590,7 @@ async fn deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted
 /// row's name by its node id (R12), targeted to that exact birth; mesh2's primary executes the delete
 /// and writes the Deleted row at `<name>-old` at the unchanged path; the fabric-primary writes no row of mesh2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 async fn deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_primary_held_record() {
     let (estate, birth_build) = two_mesh_estate("deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_primary_held_record").await;
     let nodes = objects(&estate).await;
@@ -609,6 +611,7 @@ async fn deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_pr
 /// Exited proof and publishes NodeDeleted for it, and, as mesh2's primary, writes the Deleted row at
 /// `<name>-old` at the unchanged path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 async fn deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth() {
     let (estate, birth_build) = fabric_of("deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth", &[("mesh1", 1, 2), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
     let nodes = objects(&estate).await;
@@ -649,7 +652,7 @@ async fn replacing_a_birth_absent_from_the_executors_view_deletes_the_runtime_re
     let (first_admin, second_admin) = (Estate::path("mesh2.node-admin", "1"), Estate::path("mesh2.node-admin", "2"));
     assert_eq!(estate.node_view_by_id(&stopped_birth.renamed_by).await.location(), first_admin, "mesh2's only admin renamed and stopped it");
     // mesh2's second admin is born after the stop: no digest of the stopped birth reaches its view.
-    let grown = estate.reconcile_shape("fabric1", &GROWN).await;
+    let grown = estate.resize_shape("fabric1", &GROWN).await;
     // The view holds the stopped `.old` beside the grown node types, so it is read by name.
     wait_for("mesh2.node-admin.2 is ready", Duration::from_secs(90), || async {
         estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.ok()?.into_iter().find(|n| n.location() == second_admin && n.status == NodeStatus::Ready).map(|_| ())

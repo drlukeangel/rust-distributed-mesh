@@ -140,7 +140,7 @@ async fn day0(dir: &Path) -> Day0 {
 impl Day0 {
     /// Take the fabric to `meshes` (a Create, then a Delete: [`Current::change_to`]) and follow each
     /// Build to its end.
-    async fn reconcile(&self, meshes: &[MeshDesired]) {
+    async fn resize(&self, meshes: &[MeshDesired]) {
         let executables = Executables::testkit("process");
         let current = Current::read(&self.carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
         let nodes = current.resized(meshes, true, &executables);
@@ -258,7 +258,7 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
         Box::pin(async move {
             let d = day0(&dir).await;
             // Two nodes: a restart of the type primary hands the role to the other first (node-stop.md "Primary": a sole one is refused no-secondary).
-            d.reconcile(&[MeshDesired::of("mesh1", [("node-admin", 2), ("node", 2)])]).await;
+            d.resize(&[MeshDesired::of("mesh1", [("node-admin", 2), ("node", 2)])]).await;
             let rpc: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
             d.until_ready(&rpc).await;
             d.until_fabric_ready().await;
@@ -316,10 +316,10 @@ fn the_day0_admin_and_rpc_nodes_of_both_meshes_dial_each_other_on_an_app_protoco
         Box::pin(async move {
             let d = day0(&dir).await;
             let mesh = |m: &str| MeshDesired::of(m, [("node-admin", 1), ("node", 1)]);
-            d.reconcile(&[mesh("mesh1")]).await;
+            d.resize(&[mesh("mesh1")]).await;
             d.until_ready(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
             d.until_fabric_ready().await;
-            d.reconcile(&[mesh("mesh1"), mesh("mesh2")]).await;
+            d.resize(&[mesh("mesh1"), mesh("mesh2")]).await;
             for node in [PathName::new("mesh2.node", "1").unwrap(), PathName::new("mesh1.node", "1").unwrap()] {
                 d.until_ready(&node).await;
                 let resolved = d.resolved(&node, None).await;

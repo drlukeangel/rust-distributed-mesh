@@ -46,7 +46,7 @@ async fn settle(estate: &Estate, label: &str) -> Vec<Value> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 3), ("gateway", 1), ("compute", 1)])] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 3), ("gateway", 1), ("compute", 1)])] }).await;
     let brokers: NodeType = ("mesh1".into(), "broker".into());
     let nodes = settle(&estate, "roles").await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;

@@ -62,7 +62,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
         fabric: "fabric1".into(),
         meshes: vec![MeshDesired::of("mesh1", [("node-admin", a1), ("node", r1)]), MeshDesired::of("mesh2", [("node-admin", a2), ("node", r2)])],
     };
-    estate.reconcile(&shape(2, 2, 1, 2)).await;
+    estate.resize(&shape(2, 2, 1, 2)).await;
     let before = Estate::values(&estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 1, 2)]).await);
     let (victim_at, witness_at) = (victim(), witness_node());
     let witness = rdm_test::estate::path_target(&witness_at);
@@ -296,7 +296,7 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
     let sha = candidate_sha();
     let estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     let shape = [("mesh1", 1, 1), ("mesh2", 2, 2)];
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     estate.settles_to(&shape, Duration::from_secs(90)).await;
     // The initial fabric refuses the removal of a node until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(SETTLE).await;

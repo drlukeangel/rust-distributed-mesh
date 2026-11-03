@@ -78,7 +78,7 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     let floor_ms = FLOOR.as_millis().to_string();
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on_with_env(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"], &[("RDM_STALENESS_MS", floor_ms.as_str())]).await.expect("the testkit binding set is accepted");
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     let views = estate.settles_to(&[("mesh1", 1, 2)], SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let primary = views.iter().find(|n| n.r#type == "node-admin" && n.is_primary).cloned().expect("the view names mesh1's mesh-primary");

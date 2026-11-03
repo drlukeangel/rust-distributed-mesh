@@ -156,7 +156,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
 
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     let nodes: Vec<Value> = estate.settled_views(&shape).await.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
     // The initial fabric refuses a node delete until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;

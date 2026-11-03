@@ -63,8 +63,8 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
             .publish_accepted(&rdm_admin::build_state::BuildAccepted {
                 build_id: build_id.clone(),
                 topology: common::add_node(),
-                submitted_change: None,
-                source: None, submitted_at_ms: 0,
+                change: None,
+                source: None, time: 0,
             })
             .await
             .unwrap();

@@ -545,7 +545,7 @@ pub fn durable_births(view: &Topology, durable: &[crate::storage::RuntimeRow], p
 /// ladder is the mesh-primary's for its own members (node-recovery.md); a peer mesh's node-admins
 /// are reached by the fabric-primary's primary watch alone (`crate::primary_watch`).
 pub fn watched_births(view: &Topology, me_id: &NodeId, mesh: &str, durable: &[Node]) -> BTreeMap<String, Node> {
-    view.members()
+    view.births()
         .filter(|n| n.node_id != *me_id && n.mesh == mesh && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead))
         .chain(durable.iter().filter(|n| n.mesh == mesh && n.node_id != *me_id))
         .map(|n| (n.node_id.to_string(), n.clone()))
@@ -558,7 +558,7 @@ pub fn watched_births(view: &Topology, me_id: &NodeId, mesh: &str, durable: &[No
 /// (one born while it was silent) enters the view once its digest is installed, after the tick's
 /// snapshot: heard again, it is returned, never gone. A node id in neither is gone.
 pub fn heard_against(view: &Topology, watched: &BTreeMap<String, Node>) -> HashSet<String> {
-    view.members().map(|n| n.node_id.to_string()).chain(watched.keys().cloned()).collect()
+    view.births().map(|n| n.node_id.to_string()).chain(watched.keys().cloned()).collect()
 }
 
 /// The watched births the tick inspects for recovery (node-recovery.md): none unless this admin
@@ -622,7 +622,7 @@ impl RecoverySubmitter {
 /// operations it answers named under the current Build `build_id`.
 pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str, storage: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, build_id: &str) -> Vec<rdm_core::LifecycleOp> {
     let mut at: BTreeMap<PathName, Vec<&Node>> = BTreeMap::new();
-    for n in view.members().filter(|n| n.mesh == mesh && n.status != NodeStatus::Deleted && n.incarnation_id.is_some()) {
+    for n in view.births().filter(|n| n.mesh == mesh && n.status != NodeStatus::Deleted && n.incarnation_id.is_some()) {
         at.entry(n.location()).or_default().push(n);
     }
     let mut ops = Vec::new();

@@ -45,7 +45,7 @@ pub async fn run(scenario: &Scenario, provider: Option<&str>, test: &str) -> Run
 
     let desired = scenario.desired();
     estate.artifact("build-request.json", &json!({"call": "build.create", "desired": desired}));
-    let done = estate.reconcile(&desired).await;
+    let done = estate.resize(&desired).await;
     let build_id = done.build_id.to_string();
     estate.artifact("build-status.json", &json!({"build_id": build_id, "attempt": done.attempt, "frames": format!("{:?}", done.frames)}));
 
@@ -156,7 +156,7 @@ pub async fn run_replayable(
     // A run that fails or crashes still leaves its complete manifest: the outcomes are filled in at the end.
     estate.artifact("replay-manifest.json", &serde_json::to_value(&manifest).expect("manifest serializes"));
     estate.artifact("scenario.json", &serde_json::to_value(&sc).expect("scenario serializes"));
-    estate.reconcile(&sc.desired()).await;
+    estate.resize(&sc.desired()).await;
     let shape: Vec<(&str, u32, u32)> = sc.meshes.iter().map(|m| (m.name.as_str(), m.count(rdm_core::NODE_ADMIN), m.count(rdm_core::NODE))).collect();
     estate.settles_to(&shape, SETTLE).await;
 

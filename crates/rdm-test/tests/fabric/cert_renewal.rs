@@ -635,7 +635,7 @@ async fn a_successor_mesh_primary_continues_the_schedule_from_the_rows() {
     const CELL: &str = "a_successor_mesh_primary_continues_the_schedule_from_the_rows";
     const TTL_SECS: u64 = 60;
     let mut estate = Estate::bootstrap_with_env(estate_owner(CELL), "fabric1", "mesh1", &[(certs::ENV_MEMBER_CERT_TTL_SECS, "60")]).await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 1)]).await;
     let names: std::collections::BTreeSet<rdm_core::PathName> = [Estate::path("mesh1.node-admin", "1"), Estate::path("mesh1.node-admin", "2"), Estate::path("mesh1.node", "1")].into_iter().collect();
     estate.settles_to_named(&names, Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -916,7 +916,7 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_throu
     use rdm_test::estate::Estate;
     const CELL: &str = "the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_through_that_meshs_door";
     let estate = Estate::bootstrap_with_env(estate_owner(CELL), "fabric1", "mesh1", &[(certs::ENV_MEMBER_CERT_TTL_SECS, "30")]).await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 0)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 0)]).await;
     let names: std::collections::BTreeSet<rdm_core::PathName> = [Estate::path("mesh1.node-admin", "1"), Estate::path("mesh2.node-admin", "1")].into_iter().collect();
     estate.settles_to_named(&names, Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -1000,7 +1000,7 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     use rdm_test::estate::{named, Estate};
     const CELL: &str = "an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary";
     let estate = Estate::bootstrap_with_env(estate_owner(CELL), "fabric1", "mesh1", &[(certs::ENV_ISSUING_CERT_TTL_SECS, "45")]).await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 0)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 0)]).await;
     let names: std::collections::BTreeSet<rdm_core::PathName> = [Estate::path("mesh1.node-admin", "1"), Estate::path("mesh2.node-admin", "1"), Estate::path("mesh2.node-admin", "2")].into_iter().collect();
     let views = estate.settles_to_named(&names, Duration::from_secs(30)).await;
     let mesh2_admins: Vec<_> = views.iter().filter(|v| v.mesh == "mesh2").collect();

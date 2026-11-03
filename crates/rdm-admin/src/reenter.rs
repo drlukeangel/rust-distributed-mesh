@@ -640,8 +640,8 @@ mod tests {
                 .publish_accepted(&crate::build_state::BuildAccepted {
                     build_id: build_id.clone(),
                     topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", mesh1_id.clone()),
-                    submitted_change: None,
-                    source: None, submitted_at_ms: 1,
+                    change: None,
+                    source: None, time: 1,
                 })
                 .await
                 .unwrap();

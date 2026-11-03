@@ -108,7 +108,7 @@ fn alive(pid: u64) -> bool {
 async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_then_deletes_it() {
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)]).await;
     let before = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2", "mesh3"]), Duration::from_secs(30)).await);
     // A mesh delete waits for the Build in progress (Q170): the fabric is ready under this
     // Build before mesh1 goes.
@@ -145,7 +145,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     estate.enter(&mesh2_admin).await;
 
     // {mesh1, mesh2, mesh3} -> {mesh2, mesh3}: one Build. It completes at mesh.deleted.
-    let b = estate.reconcile_shape("fabric1", &[("mesh2", 2, 2), ("mesh3", 2, 2)]).await.build_id.to_string();
+    let b = estate.resize_shape("fabric1", &[("mesh2", 2, 2), ("mesh3", 2, 2)]).await.build_id.to_string();
     let survivors_named = names(&["mesh2", "mesh3"]);
     // Every member of mesh1 but its final primary is deleted by mesh1's primary (mesh-delete.md step
     // 3, the whole node.delete: NodeDeleted from its exact exited verdict), so the view settles on mesh2,

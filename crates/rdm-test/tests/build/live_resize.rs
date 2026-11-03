@@ -43,7 +43,7 @@ struct Step {
 
 /// Submit `meshes` as the fabric's desired shape and check the step settled.
 async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], before: &[Value]) -> (Step, Vec<Value>) {
-    let build_id = estate.reconcile_shape("fabric1", meshes).await.build_id.to_string();
+    let build_id = estate.resize_shape("fabric1", meshes).await.build_id.to_string();
     // Exactly the desired nodes, all ready.
     let nodes = Estate::values(&estate.settles_to(meshes, Duration::from_secs(15)).await);
     // Every role is a held one, and a primary that survived the step still holds it.

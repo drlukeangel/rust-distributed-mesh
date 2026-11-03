@@ -34,7 +34,7 @@ fn s(v: &Value) -> String {
 async fn estate_of(test: &str, shape: &[(&str, u32, u32)]) -> Estate {
     let sha = candidate_sha();
     let estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"], &[]).await.expect("the faulted-admin binding set is accepted");
-    estate.reconcile_shape("fabric1", shape).await;
+    estate.resize_shape("fabric1", shape).await;
     estate.settles_to(shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     estate
@@ -618,7 +618,7 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     let fp = &Estate::path("mesh1.node-admin", "1");
     let shape = [("mesh1", 1, 2)];
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     estate.settles_to(&shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let nodes = estate.node_values().await;
@@ -659,7 +659,7 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     assert_eq!(estate.mesh_view("mesh1").await.id.map(|i| i.to_string()), mesh_id, "mesh1 keeps its MeshId");
     // The adoption's attempt closed at its Ready: the adopted fabric-primary runs the next Build on mesh1.
     let grown = [("mesh1", 1, 3)];
-    estate.reconcile_shape("fabric1", &grown).await;
+    estate.resize_shape("fabric1", &grown).await;
     estate.settles_to(&grown, Duration::from_secs(120)).await;
     let fabrics_after: Vec<String> = std::fs::read_dir(&store).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
     assert_eq!(fabrics_after, fabrics_before, "no second fabric on the store");

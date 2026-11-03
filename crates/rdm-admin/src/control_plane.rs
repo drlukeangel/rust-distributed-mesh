@@ -461,14 +461,14 @@ impl ControlPlane {
             }
             // Strictly after every Build accepted before it, a failed one above the current Build
             // included: the acceptance-order index is ordered by this stamp (R-BI3).
-            let newest = self.builds.newest_accepted_at_ms().await.map_err(Refusal::State)?.unwrap_or(current.submitted_at_ms);
+            let newest = self.builds.newest_accepted_at_ms().await.map_err(Refusal::State)?.unwrap_or(current.time);
             let accepted = BuildAccepted {
                 build_id: build_id.clone(),
                 topology,
-                submitted_change: Some(change),
+                change: Some(change),
                 // The record names its writer, this fabric-primary's exact birth (build.md §1).
                 source: self.node_id.get().zip(self.incarnation.get()).map(|(node_id, incarnation)| crate::events_storage::EventSource { fabric_id: observed.fabric.id.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }.uri()),
-                submitted_at_ms: self.time.now_ms().max(newest.max(current.submitted_at_ms) + 1),
+                time: self.time.now_ms().max(newest.max(current.time) + 1),
             };
             // The attempt's context is on this fabric-primary before the Build exists to be claimed.
             self.contexts
@@ -804,7 +804,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology, own_mesh: &str) -> Op
         if !holds || (action == "delete" && only_of_node_type) {
             return None;
         }
-        let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
+        let nodes: Vec<crate::model::Node> = t.births().cloned().collect();
         let refusal = crate::election::commanded_node_type_successor(&nodes, &crate::election::Incumbency::default(), target).err()?;
         return Some(BuildReject::NoSecondary { path: node.path.clone(), name: node.name.clone(), mesh: target.mesh.clone(), action: action.to_string(), refusal });
     }

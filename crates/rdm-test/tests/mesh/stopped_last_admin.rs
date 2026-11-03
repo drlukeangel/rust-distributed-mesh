@@ -81,7 +81,7 @@ struct Deleted {
 async fn delete_mesh1(test: &str) -> Deleted {
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     let both = [mesh("mesh1"), mesh("mesh2")];
-    estate.reconcile_shape("fabric1", &both).await;
+    estate.resize_shape("fabric1", &both).await;
     let before = estate.settled_views(&both).await;
     let mut pids: Vec<(NodeId, u64)> = Vec::new();
     for n in before.iter().filter(|n| n.mesh == "mesh1") {
@@ -98,7 +98,7 @@ async fn delete_mesh1(test: &str) -> Deleted {
     // Control moves to mesh2 before mesh1 goes.
     let mesh2_admin = before.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.status == NodeStatus::Ready).map(|n| n.location()).expect("a ready mesh2 admin");
     estate.enter(&mesh2_admin).await;
-    let b = estate.reconcile_shape("fabric1", &[mesh("mesh2")]).await.build_id.to_string();
+    let b = estate.resize_shape("fabric1", &[mesh("mesh2")]).await.build_id.to_string();
     // mesh.deleted leaves mesh1's last admin alive; its end is its own node.delete.
     let left: Vec<NodeView> = estate
         .until_view("mesh1's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {

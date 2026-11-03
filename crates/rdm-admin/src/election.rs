@@ -329,7 +329,7 @@ pub fn commanded_successor(nodes: &[Node], inc: &Incumbency, primary: &Node, mov
 /// step 7), and a mesh whose mesh.delete runs is leaving; neither mesh's primary takes a primary.
 pub fn commanded_successor_in(t: &Topology, inc: &Incumbency, primary: &Node, moving: Moving) -> Result<Node, String> {
     let gone = |mesh: &str| t.meshes.iter().any(|m| m.name == mesh && matches!(m.status, crate::model::ScopeStatus::Dead | crate::model::ScopeStatus::Leaving));
-    let nodes: Vec<Node> = t.members().filter(|n| n.mesh == primary.mesh || !gone(&n.mesh)).cloned().collect();
+    let nodes: Vec<Node> = t.births().filter(|n| n.mesh == primary.mesh || !gone(&n.mesh)).cloned().collect();
     commanded_successor(&nodes, inc, primary, moving)
 }
 
@@ -384,7 +384,7 @@ impl ElectionLog {
         let Some(mesh) = t.own(observer).map(|n| n.mesh.clone()) else { return };
         let mut last = self.last.lock().unwrap();
         let mut now: BTreeMap<String, Option<PrimaryBirth>> = BTreeMap::new();
-        for n in t.members().filter(|n| n.mesh == mesh) {
+        for n in t.births().filter(|n| n.mesh == mesh) {
             let e = now.entry(n.r#type.clone()).or_default();
             if n.is_primary {
                 *e = Some(PrimaryBirth::of(n));
@@ -457,10 +457,10 @@ impl ElectionLog {
         drop(owned);
         if owner && (gained || last_fabric.as_ref() != Some(&fabric)) {
             let previous = last_fabric.clone().flatten();
-            let candidates: Vec<String> = t.members().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.is_primary).map(|n| n.node_id.to_string()).collect();
+            let candidates: Vec<String> = t.births().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.is_primary).map(|n| n.node_id.to_string()).collect();
             // The exact inputs: every node-admin of every mesh as this view holds it, with the id
             // the order is decided on and the status the eligibility is decided on.
-            let inputs: Vec<String> = t.members().filter(|n| rdm_core::is_node_admin(&n.r#type)).map(|n| format!("node_id={}, status={:?}, primary={}", n.node_id, n.status, n.is_primary)).collect();
+            let inputs: Vec<String> = t.births().filter(|n| rdm_core::is_node_admin(&n.r#type)).map(|n| format!("node_id={}, status={:?}, primary={}", n.node_id, n.status, n.is_primary)).collect();
             let span = tracing::info_span!(
                 parent: None,
                 "rdm.mesh.election.resolve.via-fabric-recompute",

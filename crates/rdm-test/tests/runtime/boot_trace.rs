@@ -34,7 +34,7 @@ fn attr(sp: &Value, k: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_birth_is_one_trace_of_its_boot_steps_and_its_heartbeat_is_marked() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 1)]).await;
     let views = estate.settles_to(&[("mesh1", 1, 1)], Duration::from_secs(30)).await;
     // Each node by its location and its node id: an admin's span names its node by `node_path` and
     // `node_name`, a node's own span by its id.

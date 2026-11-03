@@ -432,7 +432,7 @@ pub enum Tickle {
 /// in path order: every node of its mesh the view holds ready, other than the node and `me` (the
 /// caller is never its own carrier).
 pub fn eligible_carriers<'a>(view: &'a crate::topology::Topology, node: &'a crate::model::Node, me: Option<&'a crate::model::NodeId>) -> impl Iterator<Item = &'a crate::model::Node> + 'a {
-    view.members().filter(move |c| c.mesh == node.mesh && c.node_id != node.node_id && Some(&c.node_id) != me && c.status == crate::model::NodeStatus::Ready)
+    view.births().filter(move |c| c.mesh == node.mesh && c.node_id != node.node_id && Some(&c.node_id) != me && c.status == crate::model::NodeStatus::Ready)
 }
 
 /// What the caller probes with (`docs/architecture/lifecycles/node-tickle.md`): its Node RPC client
@@ -1486,12 +1486,12 @@ pub(crate) mod tests {
             }
 
             fn carriers(&self, view: &crate::topology::Topology, node: &Node) -> Vec<Node> {
-                let me = view.members().find(|n| n.node_id.as_str() == self.caller()).map(|n| n.node_id.clone());
+                let me = view.births().find(|n| n.node_id.as_str() == self.caller()).map(|n| n.node_id.clone());
                 eligible_carriers(view, node, me.as_ref()).cloned().collect()
             }
 
             async fn leads(&self, view: &crate::topology::Topology, _node: &Node) -> Result<Vec<Node>, String> {
-                Ok(self.leads.iter().filter_map(|l| view.members().find(|n| n.location() == *l).cloned()).collect())
+                Ok(self.leads.iter().filter_map(|l| view.births().find(|n| n.location() == *l).cloned()).collect())
             }
         }
 

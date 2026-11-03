@@ -485,8 +485,8 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         .publish_accepted(&rdm_admin::build_state::BuildAccepted {
             build_id: build_id.clone(),
             topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
-            submitted_change: None,
-            source: None, submitted_at_ms: 0,
+            change: None,
+            source: None, time: 0,
         })
         .await
         .unwrap();

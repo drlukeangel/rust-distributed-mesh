@@ -130,10 +130,8 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 /// Day-0 node-admin started on the memory storage backend comes up ready in both roles, its storage
 /// step spanned `writes_to = "memory"`; `node.create` of two nodes in mesh1 completes and lists
 /// them ready; once the fabric has first reached ready, `node.stop` of the
-/// first stops it (its node-type primary role moving to the second) and `node.start` brings it back; before
-/// that, a Reconcile changing mesh1.node.1's config alone completes and its `UpdateConfig` step of
-/// mesh1.node.1 ends complete, on the node's durable apply (build.md §1, "The Build applies the diff";
-/// storage.md §2: the node's record is in its own process, so node.get does not read it); `build.get [id]` of the
+/// first stops it (its node-type primary role moving to the second) and `node.start` brings it back;
+/// `build.get [id]` of the
 /// create's Build answers it Complete with its step receipts. Through all of it the admin
 /// writes nothing of its own to disk:
 /// its data dir holds no store (no `nodes/`, no `attempt-context/`), and every file under the fabric's

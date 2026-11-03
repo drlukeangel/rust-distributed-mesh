@@ -2278,7 +2278,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
     assert_eq!(answer(builds.clone()).await.build_id, Some(held.to_string()), "fabric.get answers the current Build the admin's builds store returns");
     // A newer Build that failed is skipped: the older completed one is still the current Build.
     let newer = rdm_admin::build::BuildId::mint();
-    builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), submitted_change: None, source: None, submitted_at_ms: u64::MAX - 1 }).await.unwrap();
+    builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), change: None, source: None, time: u64::MAX - 1 }).await.unwrap();
     builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: newer.clone(), attempt: 1, executor: admin.node.birth().unwrap() }).await.unwrap();
     assert_eq!(answer(builds.clone()).await.build_id, Some(newer.to_string()), "the newer Build in progress is the current Build");
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: newer, attempt: 1, outcome: AttemptOutcome::Failed { reason: "node.create: PrepareStorage".into(), code: rdm_core::outcome::Code::FailedPrecondition } }).await.unwrap();

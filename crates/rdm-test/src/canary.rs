@@ -34,7 +34,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     // 1. MN = 2 node-admins + 3 nodes, through node-admin Build only.
     let shape = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("node", 3)])] };
     estate.artifact("build-request.json", &json!({"call": "build.create", "desired": shape}));
-    let birth_build = estate.reconcile(&shape).await.build_id.to_string();
+    let birth_build = estate.resize(&shape).await.build_id.to_string();
     estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
 
     // 2. Select the `node` type primary (lowest node_id) and Put{key=41, value="before-restart"} by ExactNode.

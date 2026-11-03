@@ -276,7 +276,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
 
     // 2. The healthy set: the presence control. It starts, serves and restarts through the binding.
     let mut estate = Estate::bootstrap_on(owner(cell, "external-binding"), "fabric1", "mesh1", &set, &sha, &REQUIRED).await.unwrap_or_else(|e| panic!("the healthy set is accepted: {e}"));
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("broker", 2), ("gateway", 1), ("compute", 1)])] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 2), ("broker", 2), ("gateway", 1), ("compute", 1)])] }).await;
     let names: BTreeSet<PathName> = [("mesh1.node-admin", "1"), ("mesh1.node-admin", "2"), ("mesh1.broker", "1"), ("mesh1.broker", "2"), ("mesh1.gateway", "1"), ("mesh1.compute", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect();
     estate.settled_named(&names).await;
     // The presence control of the refusals' observation: scoped to this cell, it sees every runtime of

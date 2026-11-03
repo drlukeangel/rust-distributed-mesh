@@ -3003,7 +3003,7 @@ mod tests {
     /// A Build accepted in `builds` for a cell: mesh1 rooted, nothing else.
     async fn accepted_build(builds: &crate::build_state::MemoryBuildStateAdapter) -> BuildId {
         let build_id = BuildId::mint();
-        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 }).await.unwrap();
+        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 }).await.unwrap();
         build_id
     }
 

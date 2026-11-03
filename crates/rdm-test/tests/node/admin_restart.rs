@@ -57,7 +57,7 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     let mut estate = Estate::bootstrap_on(owner_of("a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_its_mesh_rows"), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"])
         .await
         .expect("the faulted-admin binding set is accepted");
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
     let names: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| [("node-admin", "1"), ("node-admin", "2"), ("node", "1"), ("node", "2")].map(|(r#type, name)| PathName::new(format!("{m}.{}", r#type), name).unwrap())).collect();
     let before = estate.settles_to_named(&names, Duration::from_secs(60)).await;
     // The initial fabric refuses a restart until it has first reached ready; a kill before

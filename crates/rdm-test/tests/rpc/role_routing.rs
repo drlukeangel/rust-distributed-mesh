@@ -29,7 +29,7 @@ fn owner() -> Owner {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_at_all() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 2), ("gateway", 2)])] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 2), ("gateway", 2)])] }).await;
     let want = [rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "2").unwrap(), rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), rdm_core::PathName::new("mesh1.gateway", "2").unwrap()].into_iter().collect();
     estate.settles_to_named(&want, Duration::from_secs(30)).await;
     let (b1, b2) = (estate.node_value(&rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.broker", "2").unwrap()).await);

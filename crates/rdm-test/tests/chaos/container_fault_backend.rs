@@ -265,8 +265,8 @@ async fn container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_pe
     let dir = acceptance_dir(CELL);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(CELL), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
-    let build_id = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    let build_id = estate.resize_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
     let all: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.node-admin"), &i.to_string())).chain((1..=2).map(move |i| Estate::path(&format!("{m}.node"), &i.to_string())))).collect();
     let nodes = values(&estate.settles_to_named(&all, Duration::from_secs(60)).await);
     let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("the view names a fabric primary");
@@ -393,8 +393,8 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
-    let build_id = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    let build_id = estate.resize_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
     let all: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.node-admin"), &i.to_string())).chain((1..=2).map(move |i| Estate::path(&format!("{m}.node"), &i.to_string())))).collect();
     let nodes = values(&estate.settles_to_named(&all, Duration::from_secs(60)).await);
 
@@ -962,7 +962,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let accepted = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
+    let accepted = estate.resize_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
     let all: BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.node-admin"), &i.to_string())).chain((1..=2).map(move |i| Estate::path(&format!("{m}.node"), &i.to_string())))).collect();
     let before = values(&estate.settles_to_named(&all, Duration::from_secs(60)).await);
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -1157,7 +1157,7 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
-    estate.reconcile_shape("fabric1", &shape).await;
+    estate.resize_shape("fabric1", &shape).await;
     let before = values(&estate.settled_views(&shape).await);
     // The initial fabric refuses a mesh delete until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -1215,7 +1215,7 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
 
     // THE HAND-OFF AND LOSS, through the rectifier: one Build deleting the primary's mesh.
     let started = now_nanos();
-    let build_id = estate.reconcile_shape("fabric1", &[(survivor_mesh.as_str(), 2, 3)]).await.build_id.to_string();
+    let build_id = estate.resize_shape("fabric1", &[(survivor_mesh.as_str(), 2, 3)]).await.build_id.to_string();
     let build_complete = now_nanos();
     // mesh-delete.md steps 5–7: mesh.deleted leaves its reporting primary alive.
     // The caller deletes that exact held final primary in a separate node.delete, once the view it
@@ -1415,7 +1415,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     // Three node-admins: the bootstrap admin is the harness's own control address and is never
     // touched, and a launched admin that is neither primary is always left to kill.
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 3, 3)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 3, 3)]).await;
     estate.settled_views(&[("mesh1", 3, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
@@ -1648,7 +1648,7 @@ async fn container_node_silenced_past_the_floor_is_terminated_and_re_created_at_
     let dir = acceptance_dir(HELD_CELL);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(HELD_CELL), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     let nodes = values(&estate.settled_views(&[("mesh1", 2, 2)]).await);
     let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("the view names a fabric primary");
     // The silenced node holds no node-type primary role: its termination moves none.

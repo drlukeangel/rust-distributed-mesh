@@ -311,7 +311,7 @@ impl Declarer {
             return None;
         }
         let maker = self.maker.get()?;
-        view.members().find(|n| &n.node_id == maker)
+        view.births().find(|n| &n.node_id == maker)
     }
 
     /// The declarations due now, each with the authority the view names for it. Pure over the

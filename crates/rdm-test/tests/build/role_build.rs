@@ -41,7 +41,7 @@ fn type_of(r#type: &str) -> String {
 /// `(type, count)` of mesh1 beside its one node-admin.
 async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, Vec<Value>) {
     let mesh = MeshDesired::of("mesh1", std::iter::once(("node-admin".to_string(), 1)).chain(roles.iter().map(|(r#type, n)| (type_of(r#type), *n))));
-    let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh] }).await.build_id.to_string();
+    let build_id = estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh] }).await.build_id.to_string();
     estate.artifact(&format!("build-{label}.json"), &build_log::build_value(&estate, &build_id).await);
     let mut expected = BTreeMap::from([(PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin")]);
     for (t, n) in roles {

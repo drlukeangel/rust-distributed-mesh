@@ -579,7 +579,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     // does not name it and it has no member) is not in the topology. A planned mesh that does not
     // exist yet is not in the view either: the view is what is observed, and the Build's plan is
     // `topology − observed`.
-    let mesh_names: BTreeSet<String> = mesh_ids.keys().filter(|m| digest_view.accepted_has_mesh(m) != Some(false)).cloned().chain(topology.members().map(|n| n.mesh.clone())).collect();
+    let mesh_names: BTreeSet<String> = mesh_ids.keys().filter(|m| digest_view.accepted_has_mesh(m) != Some(false)).cloned().chain(topology.births().map(|n| n.mesh.clone())).collect();
     // Every role, by the one election function (`election`); through a fabric shutdown, the
     // roles held when it was learned (`Primaries`).
     if records.is_entering() {

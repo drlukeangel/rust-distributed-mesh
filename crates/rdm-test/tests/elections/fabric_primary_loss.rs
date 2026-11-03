@@ -55,7 +55,7 @@ fn primaries(nodes: &[Value]) -> Option<(String, bool)> {
 async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fabric_recovery_its_mesh_runs() {
     let test = "a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fabric_recovery_its_mesh_runs";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
@@ -132,7 +132,7 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
 async fn a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives_ends_with_one_birth_at_its_path_that_is_fabric_primary() {
     let test = "a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives_ends_with_one_birth_at_its_path_that_is_fabric_primary";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 1)]).await;
     estate.settled_views(&[("mesh1", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();

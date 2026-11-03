@@ -70,7 +70,7 @@ async fn a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats() {
     write(rdm_test::rafka_time_knob_dir(&estate.root), &rdm_core::PathName::new("mesh2.node", "1").unwrap(), format!("drift_ppm={DRIFT_PPM}\n"));
     write(rdm_test::rafka_time_knob_dir(&estate.root), &rdm_core::PathName::new("mesh1.node", "1").unwrap(), format!("ahead_ms={AHEAD_MS}\n"));
     write(rdm_test::os_clock_skew_dir(&estate.root), &rdm_core::PathName::new("mesh2.node", "2").unwrap(), OS_CLOCK_SKEW_MS.to_string());
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
     let nodes = estate.settles_to_named(&names(), Duration::from_secs(30)).await;
     let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 has a primary").node_id.to_string();
     let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).expect("one fabric primary").node_id.to_string();

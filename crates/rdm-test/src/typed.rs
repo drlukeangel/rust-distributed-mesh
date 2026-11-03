@@ -32,12 +32,12 @@ impl Wire {
 }
 
 /// A fabric shape of counts a cell asks for: [`Estate::submit`] expands it against the current topology
-/// into the complete-topology request (`Change::Reconcile`), every created path on the estate's
-/// executable for its type. The Build wire carries no count form (proposal
-/// executable-bindings-at-create.md §3.10(a)): this is the harness's shorthand, never a request.
+/// into the Builds that reach it (a `Create` of the nodes it adds, then a `Delete` of the nodes it
+/// removes), every created path on the estate's executable for its type. The Build wire carries no
+/// counts: this is the harness's shorthand, never a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildSpec {
-    /// The whole fabric reconciled to these meshes: a mesh left out is removed.
+    /// The whole fabric taken to these meshes: a mesh left out is removed.
     Fabric(FabricDesired),
     /// A new mesh with these counts, beside the meshes the fabric holds.
     CreateMesh(MeshDesired),
@@ -45,7 +45,7 @@ pub enum BuildSpec {
 
 /// A Build that ran to its `Complete` frame.
 #[derive(Debug, Clone)]
-pub struct Reconciled {
+pub struct Completed {
     /// The Build.
     pub build_id: BuildId,
     /// The attempt the call opened.
@@ -687,8 +687,8 @@ impl Estate {
 
     /// `build.create` of `spec`, accepted: the stream of the Build that runs it. The harness names every
     /// path ([`crate::executables`]): a shape of counts (`Fabric`, `CreateMesh`) is expanded
-    /// against the current topology into the complete topology, each created path on its executable,
-    /// and submitted as `Change::Reconcile`. A cell that
+    /// against the current topology into a `Create` of the nodes it adds and a `Delete` of the nodes it
+    /// removes, each created path on its executable. A cell that
     /// does not test a refusal never has a submit refused: the estate's birth followed the Day-0 Build to
     /// its terminal frame, and a cell follows each Build it started (`Estate::follow`) before it submits
     /// the next, so a refusal here, a Build in progress included, is a defect of the cell and panics
@@ -776,8 +776,8 @@ impl Estate {
         self.nodes_obj().await.delete(vec![node_id]).await
     }
 
-    /// Reconcile the fabric to `desired`: `build.create`, awaited to the stream's `Complete`.
-    pub async fn reconcile(&self, desired: &FabricDesired) -> Reconciled {
+    /// Take the fabric to `desired`: each Build `build.create` submits for it, awaited to its `Complete`.
+    pub async fn resize(&self, desired: &FabricDesired) -> Completed {
         let stream = self.submit(&BuildSpec::Fabric(desired.clone())).await;
         self.follow(stream).await
     }
@@ -786,7 +786,7 @@ impl Estate {
     /// a stream that breaks (its connection closed) or ends `FabricPrimaryMoved` (a planned fabric-primary
     /// handover) is reattached by its build id from the attempt it carried, at the role the carrier
     /// reaches now. A failed Build or a reattachment refused is a defect of the cell, named.
-    pub async fn follow(&self, stream: BuildStream) -> Reconciled {
+    pub async fn follow(&self, stream: BuildStream) -> Completed {
         let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
         let followed = rdm_client::follow_with(stream, |id, _from| async move { self.carrier().await.reattach(&id).await })
             .await
@@ -797,16 +797,16 @@ impl Estate {
             other => panic!("Build {build_id} ended at {other:?}, not Complete: {:?}", followed.frames),
         }
         self.refresh().await;
-        Reconciled { build_id, attempt, frames: followed.frames }
+        Completed { build_id, attempt, frames: followed.frames }
     }
 
-    /// Reconcile the fabric to `meshes`, each `(name, node_admin, rpc_node)`.
-    pub async fn reconcile_shape(&self, fabric: &str, meshes: &[(&str, u32, u32)]) -> Reconciled {
+    /// Take the fabric to `meshes`, each `(name, node_admin, rpc_node)`: [`Self::resize`].
+    pub async fn resize_shape(&self, fabric: &str, meshes: &[(&str, u32, u32)]) -> Completed {
         let stream = self.submit_shape(fabric, meshes).await;
         self.follow(stream).await
     }
 
-    /// `build.create` of the fabric reconciled to `meshes`, each `(name, node_admin, rpc_node)`, accepted:
+    /// `build.create` of the fabric taken to `meshes`, each `(name, node_admin, rpc_node)`, accepted:
     /// the stream of the Build, for a cell that acts while the Build runs (its fabric change held, Q154).
     pub async fn submit_shape(&self, fabric: &str, meshes: &[(&str, u32, u32)]) -> BuildStream {
         let desired = FabricDesired { fabric: fabric.into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired::of(*m, [("node-admin", *a), ("node", *r)])).collect() };
@@ -815,7 +815,7 @@ impl Estate {
 
     /// Every frame of a Build stream, to its end; a failed step or a broken stream is a defect of the
     /// cell, named. `Complete` last. A role that moves under the stream is `follow`'s to chase.
-    pub async fn until_complete(stream: &mut BuildStream) -> Reconciled {
+    pub async fn until_complete(stream: &mut BuildStream) -> Completed {
         match Self::read_to_end(stream).await {
             Ok(done) => done,
             Err(moved) => panic!("the fabric-primary role moved ({:?}) while Build {} ran: follow the stream with Estate::follow", moved.1, stream.build_id()),
@@ -824,14 +824,14 @@ impl Estate {
 
     /// The stream's frames to `Complete`, or to the `FabricPrimaryMoved` that ends it (the frames read and the
     /// new role the old one named).
-    async fn read_to_end(stream: &mut BuildStream) -> Result<Reconciled, (Vec<BuildFrame>, Option<rdm_core::NodeId>)> {
+    async fn read_to_end(stream: &mut BuildStream) -> Result<Completed, (Vec<BuildFrame>, Option<rdm_core::NodeId>)> {
         let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
         let mut frames = Vec::new();
         while let Some(frame) = stream.next().await {
             let frame = frame.unwrap_or_else(|e| panic!("the stream of Build {build_id} attempt {attempt} broke before its terminal frame: {e}"));
             frames.push(frame.clone());
             match frame {
-                BuildFrame::Complete { .. } => return Ok(Reconciled { build_id, attempt, frames }),
+                BuildFrame::Complete { .. } => return Ok(Completed { build_id, attempt, frames }),
                 BuildFrame::Failed { attempt, operation, step, reason, .. } => panic!("Build {build_id} attempt {attempt} failed at {operation:?} {step}: {reason}"),
                 BuildFrame::FabricPrimaryMoved { fabric_primary } => return Err((frames, fabric_primary)),
                 _ => {}
@@ -842,7 +842,7 @@ impl Estate {
 
     /// Re-submit Build `build_id` from `from_attempt` and await the stream to the first `Complete`:
     /// the Build goes on at the current fabric-primary, and a later attempt is what converges it.
-    pub async fn resume(&self, build_id: &BuildId, from_attempt: u32) -> Reconciled {
+    pub async fn resume(&self, build_id: &BuildId, from_attempt: u32) -> Completed {
         let carrier = self.carrier().await;
         let stream = carrier.resubmit(build_id, from_attempt).await.unwrap_or_else(|e| panic!("the fabric-primary does not stream Build {build_id} from attempt {from_attempt}: {e}"));
         self.follow(stream).await

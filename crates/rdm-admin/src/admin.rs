@@ -128,7 +128,7 @@ mod tests {
         let marks = crate::offline::held_marks(&crate::offline::UnreachableMarks::default(), &view, &digest_view, now);
         crate::offline::watch_marked(&mut watched, &marks, &view, "mesh1", &me_id);
         assert!(watched.is_empty() && marks.is_empty(), "a heard node-admin that answers its commands is not watched: {watched:?} {marks:?}");
-        let silent = crate::offline::silent_set(view.members().filter(|n| n.node_id == member.node.node_id), &digest_view, now, now_ms, floor);
+        let silent = crate::offline::silent_set(view.births().filter(|n| n.node_id == member.node.node_id), &digest_view, now, now_ms, floor);
         assert!(silent.iter().all(|s| s.marked_at_ms.is_none()), "heard within the floor: no mark: {silent:?}");
         let plan = crate::primary_watch::plan(&view, "mesh1", &(me_id, primary.node.incarnation.clone()), &mut crate::primary_watch::Said::default(), &|_| false, &|_| false, &|_| true);
         assert_eq!(plan, crate::primary_watch::Plan::default(), "the primary watch investigates no live node-admin");
@@ -1016,7 +1016,7 @@ mod tests {
         let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
         let op = crate::accepted::plan(&accepted, &observed, None).operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. })).expect("the plan creates mesh2");
         let build_id = crate::build::BuildId::parse("jrr142w4840j").unwrap();
-        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: accepted, submitted_change: Some(change), source: None, submitted_at_ms: 0 }).await.expect("the Build is accepted");
+        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: accepted, change: Some(change), source: None, time: 0 }).await.expect("the Build is accepted");
         (build_id, op)
     }
 
@@ -2093,7 +2093,7 @@ mod tests {
         };
         let build = crate::build::BuildId::parse(&op.build_id).unwrap();
         let mut facts = vec![
-            BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2", crate::model::MeshId::parse("meshd0000002").unwrap()), submitted_change: None, source: None, submitted_at_ms: 1 }),
+            BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2", crate::model::MeshId::parse("meshd0000002").unwrap()), change: None, source: None, time: 1 }),
             BuildFact::Step(BuildStepReceipt { mesh: None, build_id: build.clone(), attempt: 2, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: Some(serde_json::to_value(&op).unwrap()), executor: None }),
         ];
         let capture = crate::span_capture::Capture::new("i143-3068-failed-removal-recovered");
@@ -3212,7 +3212,7 @@ mod tests {
         let blocked = node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await.expect("blocked while the entry's Build is not held");
         assert_eq!(blocked.need(), crate::fetch_build::Need::BuildFacts(id.clone()), "{blocked}");
         assert!(blocked.to_string().contains(&format!("holds no facts of Build {id}")), "{blocked}");
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 }).await.unwrap();
         assert_eq!(node_admin_not_ready(&me, &builds, None).await, None, "an admin served no entry owes no attempt floor");
         let blocked = node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await.expect("blocked below the entry's attempt").to_string();
         assert!(blocked.contains(&format!("holds attempt 0 of Build {id}")) && blocked.contains("held attempt 2"), "{blocked}");

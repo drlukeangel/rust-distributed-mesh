@@ -186,7 +186,7 @@ fn estate_owner(test: &str) -> rdm_test::estate::Owner {
 async fn a_nodes_row_is_read_from_the_nodes_storage_by_another_node_process_with_no_primary_alive() {
     let cell = "a_nodes_row_is_read_from_the_nodes_storage_by_another_node_process_with_no_primary_alive";
     let mut estate = rdm_test::estate::Estate::bootstrap(estate_owner(cell), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     let views = estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
     let id_at = |name: &str| views.iter().find(|v| v.location() == PathName::new("mesh1.node", name).unwrap()).unwrap_or_else(|| panic!("mesh1.node.{name} is settled: {views:?}")).node_id.to_string();

@@ -35,7 +35,7 @@ use crate::storage::NodeRow;
 /// Effect order: Build admission, original step position, then attempt within that step.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Stamp {
-    submitted_at_ms: u64,
+    time: u64,
     build_id: String,
     recipe_step: Option<u32>,
     attempt: u32,
@@ -340,7 +340,7 @@ impl Taken {
 fn take_effect(held: &mut Held, rows: &[NodeRow], p: &BuildProjection, s: &crate::build_state::BuildStepReceipt) -> Option<&'static str> {
     let lifecycle = lifecycle_of(&s.operation)?;
     let birth = birth_of_step(rows, p, s)?;
-    let stamp = Stamp { submitted_at_ms: p.submitted_at_ms, build_id: p.build_id.to_string(), recipe_step: s.operation.recipe_step, attempt: s.attempt };
+    let stamp = Stamp { time: p.time, build_id: p.build_id.to_string(), recipe_step: s.operation.recipe_step, attempt: s.attempt };
     if held.effects.get(&birth).is_none_or(|e| e.stamp < stamp) {
         held.effects.insert(birth, Effect { lifecycle, stamp });
     }
@@ -678,7 +678,7 @@ impl Atlas {
         })?;
         let lifecycle = if op.state == rdm_core::status::NodeState::Stopped { Lifecycle::Stopped } else { Lifecycle::Started };
         // A node command belongs to no Build (Q342): its effect is the record's, read from no Build.
-        Some(Effect { lifecycle, stamp: Stamp { submitted_at_ms: 0, build_id: rdm_core::LifecycleOp::NO_BUILD.into(), recipe_step: op.operation.operation.recipe_step, attempt: rdm_core::LifecycleOp::NO_ATTEMPT } })
+        Some(Effect { lifecycle, stamp: Stamp { time: 0, build_id: rdm_core::LifecycleOp::NO_BUILD.into(), recipe_step: op.operation.operation.recipe_step, attempt: rdm_core::LifecycleOp::NO_ATTEMPT } })
     }
 
     /// The atlas row of `path`: the birth the current-pair lookup names (query.md §1: the pair's name
@@ -875,7 +875,7 @@ mod tests {
         let second = NodeId::mint();
         atlas.held.lock().unwrap().effects.insert(Birth { node_id: first.clone(), incarnation: incarnation.clone() }, Effect {
             lifecycle: Lifecycle::Deleted,
-            stamp: Stamp { submitted_at_ms: 1, build_id: "fixture".into(), recipe_step: None, attempt: 1 },
+            stamp: Stamp { time: 1, build_id: "fixture".into(), recipe_step: None, attempt: 1 },
         });
         assert!(atlas.holds_deleted_by_delete(&first, &incarnation, None));
         assert!(!atlas.holds_deleted_by_delete(&second, &incarnation, None));
@@ -904,7 +904,7 @@ mod tests {
 
     #[test]
     fn lifecycle_order_keeps_original_step_ahead_of_attempt_retry() {
-        let stamp = |recipe_step, attempt| Stamp { submitted_at_ms: 1, build_id: "same-build".into(), recipe_step: Some(recipe_step), attempt };
+        let stamp = |recipe_step, attempt| Stamp { time: 1, build_id: "same-build".into(), recipe_step: Some(recipe_step), attempt };
         assert!(stamp(2, 1) > stamp(1, 9));
         assert!(stamp(2, 2) > stamp(2, 1));
     }

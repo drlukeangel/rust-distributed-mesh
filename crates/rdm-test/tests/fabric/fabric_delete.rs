@@ -76,7 +76,7 @@ async fn estate_with(test: &str) -> Estate {
 /// A fabric at `shape` that reached ready.
 async fn ready_fabric(test: &str, shape: &[(&str, u32, u32)]) -> Estate {
     let estate = estate_with(test).await;
-    estate.reconcile_shape("fabric1", shape).await;
+    estate.resize_shape("fabric1", shape).await;
     estate.settles_to(shape, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     estate

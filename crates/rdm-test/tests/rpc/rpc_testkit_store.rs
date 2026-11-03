@@ -45,7 +45,7 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replacement() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
     let path = format!("path:{}", serde_json::to_string(&location()).unwrap());
 

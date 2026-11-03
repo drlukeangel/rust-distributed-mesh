@@ -48,7 +48,7 @@ fn birth_of(n: &NodeView) -> ExactBirth {
 /// every row.
 async fn two_meshes_tagged(test: &str) -> (Estate, NodeView, NodeView, NodeView, NodeView, BTreeMap<String, String>) {
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter_fabric_primary().await;

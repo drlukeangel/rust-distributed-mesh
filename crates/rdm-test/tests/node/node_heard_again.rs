@@ -136,7 +136,7 @@ fn after(spans: &[Value], name: &str, node: &NodeView, since: u64) -> Vec<Value>
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_sequence() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
@@ -240,7 +240,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_held_twice_is_commanded_back_and_ready_after_each_release() {
     let mut estate = Estate::bootstrap(owner_of("a_node_held_twice_is_commanded_back_and_ready_after_each_release"), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
@@ -268,7 +268,7 @@ async fn a_node_held_twice_is_commanded_back_and_ready_after_each_release() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_birth_stopped_and_started_by_builds_and_held_later_is_still_commanded_back() {
     let mut estate = Estate::bootstrap(owner_restarted(), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
@@ -319,7 +319,7 @@ fn launched_pid(node: &PathName, root: &Path) -> Option<u32> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_being_created_is_not_commanded_back_while_its_first_start_runs() {
     let mut estate = Estate::bootstrap_with_env(owner_of("a_node_being_created_is_not_commanded_back_while_its_first_start_runs"), "fabric1", "mesh1", &[("RDM_GOSSIP_INTERVAL_MS", "200")]).await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let location = PathName::new("mesh1.node", "3").unwrap();
@@ -338,7 +338,7 @@ async fn a_node_being_created_is_not_commanded_back_while_its_first_start_runs()
         tokio::time::sleep(Duration::from_millis(1_000)).await;
         rt.apply(Fault::Continue).expect("the release is acknowledged by the provider");
     };
-    let (_, ()) = tokio::join!(estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]), hold);
+    let (_, ()) = tokio::join!(estate.resize_shape("fabric1", &[("mesh1", 2, 3)]), hold);
     let node = &estate.until_node(&location, &format!("{location:?} is ready"), Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
     estate.stop().await;
     let spans = estate.spans();

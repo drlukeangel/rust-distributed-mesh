@@ -40,7 +40,7 @@ fn s(v: &Value) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gateway_reaches_the_brokers_same_birth_after_its_restart() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 2), ("gateway", 1)])] }).await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 2), ("gateway", 1)])] }).await;
     let want = [("mesh1.node-admin", "1"), ("mesh1.broker", "1"), ("mesh1.broker", "2"), ("mesh1.gateway", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect();
     let broker_location = PathName::new("mesh1.broker", "1").unwrap();
     let gateway_location = PathName::new("mesh1.gateway", "1").unwrap();

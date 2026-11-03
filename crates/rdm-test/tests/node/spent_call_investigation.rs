@@ -50,7 +50,7 @@ fn now_nano() -> u64 {
 async fn a_mesh_primarys_spent_call_marks_the_birth_and_its_tick_investigates_it_half_a_floor_after() {
     let floor_ms = FLOOR.as_millis().to_string();
     let mut estate = Estate::bootstrap_with_env(owner(), "fabric1", "mesh1", &[("RDM_STALENESS_MS", floor_ms.as_str())]).await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let path = PathName::new("mesh1.node", "1").unwrap();
