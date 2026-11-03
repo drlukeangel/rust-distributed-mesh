@@ -906,7 +906,7 @@ mod tests {
         // The fabric-primary's Fabric record, pending, on the fabric store it writes; its events by its birth.
         let identity = crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
         let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
-        crate::fabric_storage::claim_identity(&*fabric, &identity).await.unwrap().expect("the fabric's name is claimed");
+        crate::fabric_storage::write_identity(&*fabric, &identity).await.unwrap().expect("the fabric's name is claimed");
         records.set_status(Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::storage::MemoryMeshStorage::default()), fabric.clone(), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
         let appended = Arc::new(crate::events_storage::AppendedEvents::default());
         records.caches.writes_events(crate::events_storage::EventsWriter::on(appended.clone(), &identity.fabric_id, &fp.node_id));
