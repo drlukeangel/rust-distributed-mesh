@@ -39,7 +39,7 @@ fn binding_set(candidate: &str) -> BindingSet {
 
 /// The estate of `test`: the demo's node-admin, then one Build to mesh1 holding `shape` (each kind's
 /// count; the node-admin is counted), every node of it Ready.
-pub async fn estate(feature: &str, test: &str, shape: &[(String, u32)]) -> Estate {
+pub async fn estate(feature: &str, test: &str, shape: &[(&str, u32)]) -> Estate {
     let candidate = candidate();
     let owner = Owner { product: "rshape".into(), feature: feature.into(), subfeature: "demo".into(), rung: "MN".into(), provider: "process".into(), test: test.into() };
     let estate = Estate::bootstrap_on(owner, "fabric1", "mesh1", &binding_set(&candidate), &candidate, &["gateway", "broker", "compute"])

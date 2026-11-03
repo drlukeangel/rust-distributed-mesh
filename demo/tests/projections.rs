@@ -116,7 +116,7 @@ impl PreNodeReady for Hydrate {
     }
 }
 
-/// A member of `kind` at `ordinal` in the root admin's mesh, launched by the root admin, declaring
+/// A member of `type` at `ordinal` in the root admin's mesh, launched by the root admin, declaring
 /// `kinds`, hydrating through `hook`.
 async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path, r#type: &str, ordinal: u32, kinds: &[&str], hook: NodeHooks) -> rdm_node::node::RunningNode {
     let d = root.digest.lock().unwrap().clone();
@@ -128,8 +128,8 @@ async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path,
         fabric: config(shared).fabric,
         fabric_id: d.fabric_id.clone(),
         mesh: d.node.mesh.clone(),
-        kind,
-        name: PathName::numbered(&d.node.mesh, kind, ordinal),
+        r#type: r#type.to_string(),
+        name: PathName::numbered(&d.node.mesh, r#type, ordinal),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
