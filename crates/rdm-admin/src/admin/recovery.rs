@@ -388,6 +388,11 @@ impl RecoverySubmitter {
     pub(crate) async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId, route: &'static str) -> Result<RecoveryEnd, String> {
         let runner = self.runner.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary role but its runner is not built yet", self.me_id))?;
         span.record("route", route);
+        // An admin that stopped reconciling (its stop, or a rig that runs no reconciler) starts no repair,
+        // as it starts no Build drive or attempt run: nothing is deleted or re-created by it (rdm#305).
+        if runner.repairs_stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(RecoveryEnd::Failed { reason: format!("{} stopped reconciling: it starts no repair", self.me_id) });
+        }
         // Under an in-force fabric.delete nothing is recovered for being absent and nothing is re-created
         // (fabric-delete.md "Failure": "its executor continues the delete as fabric-primary and
         // re-creates nothing"; fabric-recovery.md step 4, Q155): the delete's own node.delete of the
@@ -656,6 +661,9 @@ impl RecoverySubmitter {
         );
         let r = async {
             let runner = self.runner.get().cloned().ok_or_else(|| format!("{}: its runner is not built yet", self.me_id))?;
+            if runner.repairs_stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(format!("{} stopped reconciling: it starts no repair", self.me_id));
+            }
             let _turn = runner.node_work(&node_id).await;
             runner.terminate(&path, &node_id, &incarnation).await.map_err(|e| e.reason().to_string())
         }

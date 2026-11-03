@@ -1054,8 +1054,12 @@ impl Estate {
     /// Send SIGTERM to every process of this estate not in `told` (the admins it started and every
     /// runtime an admin launched) and to every container of its Fabric: each leaves as a local stop
     /// does. The pids it signalled.
-    fn terminate(&self, told: &[u32]) -> Vec<u32> {
-        let pids: Vec<u32> = self.restarted.iter().map(Child::id).chain(self.bootstrap.as_ref().map(Child::id)).chain(self.live_runtimes().into_iter().map(|(_, p)| p)).filter(|p| !told.contains(p) && runs(*p)).collect();
+    fn terminate(&mut self, told: &[u32]) -> Vec<u32> {
+        // An admin this estate started is signalled only while it is not yet reaped: `try_wait` reaps one
+        // that has exited, and from then its pid is free for any process on the box to take (rdm#305: a
+        // stop's later pass signalled two other cells' processes under the reaped admins' pids).
+        let started: Vec<u32> = self.restarted.iter_mut().chain(self.bootstrap.as_mut()).filter_map(|c| c.try_wait().ok().flatten().is_none().then(|| c.id())).collect();
+        let pids: Vec<u32> = started.into_iter().chain(self.live_runtimes().into_iter().map(|(_, p)| p)).filter(|p| !told.contains(p) && runs(*p)).collect();
         for p in &pids {
             let _ = Command::new("kill").args(["-TERM", &p.to_string()]).status();
         }

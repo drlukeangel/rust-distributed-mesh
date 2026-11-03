@@ -1283,6 +1283,7 @@ mod tests {
             handover,
             issuer: Arc::new(crate::certs::CertIssuer::no_certs(time)),
             node_work: Default::default(),
+            repairs_stopped: Default::default(),
         });
 
         // Set up a Build with `mesh.delete:<mesh2_id>` and its `MeshDeleted` completion receipt.

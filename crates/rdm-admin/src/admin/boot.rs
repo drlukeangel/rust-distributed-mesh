@@ -157,6 +157,7 @@ impl Running {
     /// stop included, whose executor would otherwise begin its operations after it. It returns once
     /// each of them has ended.
     pub async fn stop_reconciling(&self) {
+        self.runner.repairs_stopped.store(true, std::sync::atomic::Ordering::SeqCst);
         self.executor.abort();
         self.runner.drives.stop().await;
         self.runs.stop().await;
@@ -1752,6 +1753,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 handover: handover.clone(),
                                 issuer: issuer.clone(),
                                 node_work: Default::default(),
+                                repairs_stopped: Default::default(),
                             });
                             let _ = runner_slot.set(runner.clone());
                             // The storage change's wiring (storage.md §2 "Changing it"): this admin's status door, the Build

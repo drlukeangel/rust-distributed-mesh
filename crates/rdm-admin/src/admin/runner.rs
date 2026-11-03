@@ -108,6 +108,9 @@ pub struct AdminRunner {
     /// Each node's work turn at this primary ([`Self::node_work`]): a node command, a repair and a
     /// Build's step on one node run one after the other (node-recovery.md "Execution").
     pub node_work: Mutex<HashMap<NodeId, Arc<tokio::sync::Mutex<()>>>>,
+    /// Set once this admin stops reconciling ([`crate::admin::Running::stop_reconciling`]): from then it
+    /// starts no repair, as it starts no Build drive or attempt run.
+    pub repairs_stopped: std::sync::atomic::AtomicBool,
     /// This admin's nodes.storage: the facts on its mesh's births (cert dates among them).
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
     /// This admin's mesh.storage: as a mesh primary, its mesh's row deleted at mesh.deleted, and as
@@ -2434,6 +2437,7 @@ mod tests {
             handover,
             issuer: Arc::new(crate::certs::CertIssuer::no_certs(time)),
             node_work: Default::default(),
+            repairs_stopped: Default::default(),
         });
         let build_id = crate::build::BuildId::mint();
         let mut fab_top = FabricTopology::root("fab", "mesh1", mesh1_id);
