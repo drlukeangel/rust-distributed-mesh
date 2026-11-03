@@ -1707,7 +1707,7 @@ fn a_replayed_delete_of_the_lost_birth_writes_nothing_against_its_replacement() 
 /// Part A; node-identity-and-state.md §2: "`type` is a field of the node record, a string the
 /// caller sets in node.create's spec ... It is immutable"): a node created with a free-text name
 /// (`mesh1.broker.north`, where `path` is `"mesh1.broker"`, `name` is `"north"`, and `type` is
-/// `"broker"`) round-trips `name`, `path` and `type` through:
+/// `"broker"`) keeps `name`, `path` and `type` through:
 /// 1. `create` (writing its row at `mesh1.broker.north` and installing the birth into the view),
 /// 2. `get` (`views::nodes_answer_with_status` by id, its config and tags read from the node's own
 ///    property record),
@@ -1720,7 +1720,7 @@ fn a_replayed_delete_of_the_lost_birth_writes_nothing_against_its_replacement() 
 ///    successor's (`RowFor::Successor`) naming the predecessor's exact birth, its `type` its own
 ///    create spec's, the retained row marked inherited).
 #[test]
-fn a_node_created_with_a_free_text_name_round_trips_name_path_and_type_through_create_get_stop_start_recovery_and_replace() {
+fn a_node_created_with_a_free_text_name_keeps_name_path_and_type_through_create_get_stop_start_recovery_and_replace() {
     use rdm_core::filter::Filter;
     use rdm_core::status::StatusReply;
     let cap = capture();
@@ -1786,7 +1786,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_type_through_c
         let north_for_view = north.clone();
         install(&mp.records, &mp.view, move |v| v.nodes.push(north_for_view)).await;
 
-        // 2. Get: round-trips `name`, `path` and `type`, and the node's own config and tags.
+        // 2. Get: keeps `name`, `path` and `type`, and the node's own config and tags.
         let nodes = get(Filter::new().eq("id", [north.node_id.to_string()])).await;
         assert_eq!(nodes.len(), 1);
         assert_eq!(
