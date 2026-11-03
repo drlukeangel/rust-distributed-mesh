@@ -259,6 +259,7 @@ mod connections_writer;
 mod container_proof;
 mod container_unsupported;
 mod current_build;
+mod declared_types;
 mod drift_convergence;
 #[cfg(feature = "file-backend")]
 mod fabric_handover;

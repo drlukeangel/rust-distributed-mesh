@@ -1417,6 +1417,7 @@ pub(crate) fn reject_span(route: &'static str, reject: &BuildReject) {
         "node-admin-not-node-recovered" => tracing::info_span!("rdm.node_admin.build.reject.via-node-admin-not-node-recovered", route, detail = %reject),
         "last-admin" => tracing::info_span!("rdm.node_admin.build.reject.via-last-admin", route, detail = %reject),
         "no-secondary" => tracing::info_span!("rdm.node_admin.build.reject.via-no-secondary", route, detail = %reject),
+        "unknown-type" => tracing::info_span!("rdm.node_admin.build.reject.via-unknown-type", route, detail = %reject),
         "node-not-stopped" => tracing::info_span!("rdm.node_admin.build.reject.via-node-not-stopped", route, detail = %reject),
         "referenced-by-open-build" => tracing::info_span!("rdm.node_admin.build.reject.via-referenced-by-open-build", route, detail = %reject),
         "empty-steps" => tracing::info_span!("rdm.node_admin.build.reject.via-empty-steps", route, detail = %reject),

@@ -1672,6 +1672,17 @@ impl AcceptedStore {
         Ok(self.storage.fabric().await?.and_then(|r| r.topology_storage_provider))
     }
 
+    /// The application's node types as the Fabric record declares them (the Fabrics schema's `types`,
+    /// fixed by Day 0's `RDM_NODE_TYPES`); none while the store holds no Fabric record.
+    pub async fn types(&self) -> Result<Vec<rdm_core::NodeType>, FabricStorageError> {
+        Ok(self.storage.fabric().await?.map(|r| r.types).unwrap_or_default())
+    }
+
+    /// The `fabric.storage` this store reads the Fabric record from.
+    pub fn storage(&self) -> &Arc<dyn FabricStorage> {
+        &self.storage
+    }
+
     /// A Fabric identity heard in an entry answer (`from`), taken as this admin's runtime state
     /// (nothing is written: the fabric-primary writes `fabric/`), never reading the store (Q227: a node
     /// reads nothing from the store on create, start or rejoin; rdm#89). [`Self::record`] answers the

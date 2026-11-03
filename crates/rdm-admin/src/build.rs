@@ -801,6 +801,14 @@ pub enum BuildReject {
         /// The path created.
         node: PathName,
     },
+    /// A node the request creates names a type that is neither `node` nor `node-admin` and that the
+    /// Fabric does not declare (node-identity-and-state.md §2): nothing is accepted.
+    UnknownType {
+        /// The node.
+        node: PathName,
+        /// The type it names.
+        r#type: String,
+    },
     /// An executable a request names for a path, refused at acceptance before anything is accepted:
     /// its file missing, its hash another, its launch id not the path's kind, or its image not the
     /// fabric provider's.
@@ -852,6 +860,7 @@ impl BuildReject {
             Self::TopologyStorageProviderNotOpened { .. } => "topology-storage-provider-not-opened",
             Self::NodeNamedTwice { .. } => "node-named-twice",
             Self::ExecutableMissing { .. } => "executable-missing",
+            Self::UnknownType { .. } => "unknown-type",
             Self::ExecutableRefused { .. } => "executable-refused",
             Self::TagsRefused { .. } => "tags-refused",
         }
@@ -893,6 +902,7 @@ impl fmt::Display for BuildReject {
             Self::TopologyStorageProviderNotRegistered { provider, registered } => write!(f, "the request names topology_storage_provider `{provider}`, which the fabric-primary's wiring does not register (it registers: {}): nothing is accepted and nothing moved", registered.join(", ")),
             Self::TopologyStorageProviderNotOpened { provider, detail } => write!(f, "the request names topology_storage_provider `{provider}`, which the fabric-primary's wiring registers and cannot open ({detail}): nothing is accepted and nothing moved"),
             Self::NodeNamedTwice { node } => write!(f, "the request names (path `{}`, name `{}`) twice: each node is listed once", node.path, node.name),
+            Self::UnknownType { node, r#type } => write!(f, "(path `{}`, name `{}`) names type `{}`, which is neither `node` nor `node-admin` and which the fabric does not declare; nothing is accepted", node.path, node.name, r#type),
             Self::ExecutableMissing { node } => write!(f, "(path `{}`, name `{}`) is created by the request and its create spec names no executable: every created node names the executable it runs; nothing is accepted", node.path, node.name),
             Self::ExecutableRefused { node, detail } => write!(f, "the executable the request names for (path `{}`, name `{}`) is refused: {detail}; nothing is accepted", node.path, node.name),
             Self::TagsRefused { node, detail } => write!(f, "the tags the request names for (path `{}`, name `{}`) are refused: {detail}; nothing is accepted", node.path, node.name),
