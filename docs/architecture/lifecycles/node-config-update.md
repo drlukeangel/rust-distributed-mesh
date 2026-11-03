@@ -40,7 +40,7 @@ the exact birth; workflow receipts track completion of the operation and its met
 
 A later Build has a new ID and
 can override node or caller changes. True recovery inherits the predecessor's acknowledged properties.
-Replacement initializes from its own Build entry, including an empty map.
+A Create initializes from its own Build entry, including an empty map.
 
 ## Deferred application and startup
 

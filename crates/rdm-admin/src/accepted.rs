@@ -366,9 +366,9 @@ pub fn created_paths(change: &BuildChange) -> Option<BTreeSet<PathName>> {
 pub enum AttemptAction {
     /// Delete the stopped exact birth a rename left at a name node.name.update gave it (node-delete.md): its stop steps
     /// are done; the provider's exact Exited is the proof, then `NodeDeleted` and its Deleted row. The
-    /// topology never names a retained predecessor location: this action is its only door outside a Build's steps.
+    /// topology never names a stopped renamed node's name: this action is its only door outside a Build's steps.
     Delete {
-        /// The node's retained predecessor location.
+        /// The stopped renamed node's path.
         path: PathName,
         /// The explicit mesh owning the target birth.
         mesh: String,
@@ -664,10 +664,10 @@ fn plan_with(
     // say it began (a stop's view drops the Leaving birth), and not once its `Complete` receipt names
     // the birth.
     if let Some(AttemptAction::Delete { r#type, mesh, path, node_id, from_incarnation }) = action {
-        // A delete of a stopped retained predecessor (at the name node.name.update gave it) is admitted
+        // A delete of a stopped renamed node (at the name node.name.update gave it) is admitted
         // from the record the fabric-primary holds of that exact birth, never from a view (a view that did
-        // not run the replace may never name it): it is planned until its `Complete` names the birth. The
-        // accepted topology never names a retained predecessor's name, while its mesh is still named; the
+        // not run the rename may never name it): it is planned until its `Complete` names the birth. The
+        // accepted topology never names a stopped renamed node's name, while its mesh is still named; the
         // admission admits a delete of nothing else but the last admin of a deleted mesh (mesh-delete.md
         // step 7), whose mesh the accepted topology no longer names: that one is the ordinary node.delete
         // of that exact birth, planned while the view holds it.
@@ -1145,7 +1145,7 @@ mod tests {
     }
 
     /// CONTRACT (mesh-delete.md step 7: "A separate node.delete deletes the mesh-primary"): the
-    /// targeted `Delete` action on a birth of a deleted mesh (no retained predecessor location: the topology names no
+    /// targeted `Delete` action on a birth of a deleted mesh (no stopped renamed node's name: the topology names no
     /// such mesh) is the ordinary node.delete of that exact birth, `DeleteLiveNode`, planned while the
     /// view holds it, and nothing once it left or its `Complete` is receipted; a `Delete` of a stopped
     /// a renamed stopped node stays `DeleteNode`. Must NOT happen: the last admin of a deleted mesh deleted through a
@@ -1227,7 +1227,7 @@ mod tests {
         assert!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[failed], None, &BTreeSet::new()).operations.iter().any(|op| op.key() == rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "1").unwrap()))), "a create that did not complete is planned again");
     }
 
-    /// CONTRACT: a replaced predecessor (a name node.name.update gave it) is neither the live birth at `<path>` nor a missing
+    /// CONTRACT: a stopped renamed node (a name node.name.update gave it) is neither the live birth at `<path>` nor a missing
     /// node nor a surplus one: the plan of the settled topology is empty with it in the view, and a
     /// successor at the path is the one birth the plan counts.
     #[test]
@@ -1276,10 +1276,10 @@ mod tests {
         assert_eq!(bad.validate(), Err(BuildReject::MeshWithoutAdmin { mesh: "mesh1".into() }));
     }
 
-    /// CONTRACT (lifecycles/node-delete.md): the delete of the stopped predecessor at a name node.name.update gave it plans its
+    /// CONTRACT (lifecycles/node-delete.md): the delete of a stopped node at a name node.name.update gave it plans its
     /// one typed `node.delete` operation naming its node ID until its `Complete` names the birth, whatever the view
     /// holds: the fabric-primary admitted it from the record it holds of that exact birth, and no view
-    /// names a retained predecessor location but its replace's executor's. It never plans a create or repair of the
+    /// names a stopped renamed node's name but its rename's writer's. It never plans a create or repair of the
     /// path's successor.
     #[test]
     fn a_delete_of_a_stopped_old_birth_plans_only_its_operation_until_its_complete_names_the_birth() {

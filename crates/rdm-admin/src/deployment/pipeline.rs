@@ -1472,13 +1472,6 @@ impl DeploymentPipeline<'_> {
         self.create_with_row_for(req, row_for, pre_node_ready, before_launch).await
     }
 
-    /// `create_with` for a Build's replacement of a member at its own path (`RowFor::Replacement`,
-    /// build-deployment.md §3): over the kept data dir or a fresh one, its row's config and tags its
-    /// entry's (`req.entry`, Q305).
-    pub(crate) async fn create_replacement_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
-        self.create_with_row_for(req, crate::node_rows::RowFor::Replacement, pre_node_ready, before_launch).await
-    }
-
     /// `create_with` for a recovery Build (`RowFor::Recovery` even when `req.data_dir` is `None`
     /// after `RDM_DATA_DIR_GONE_FLOORS`, R-FM2).
     pub(crate) async fn create_recovery_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
@@ -1773,9 +1766,9 @@ impl DeploymentPipeline<'_> {
                 };
                 done_awaits.push("entry-spec");
 
-                // A replace's successor takes its entry's config and tags, never its predecessor's (Q305).
+                // A Build's create takes its entry's config and tags, never a seed's (Q305).
                 let (tags, config) = match (of, &req.entry) {
-                    (crate::node_rows::RowFor::Create | crate::node_rows::RowFor::Replacement, Some(e)) => (e.tags.clone(), e.config.clone()),
+                    (crate::node_rows::RowFor::Create, Some(e)) => (e.tags.clone(), e.config.clone()),
                     _ => Default::default(),
                 };
                 step_span.record("awaiting", "create-row");
@@ -2173,7 +2166,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// [`Self::start_steps`] whose two steps are receipted as `steps` (the send, the readiness): a
-    /// replace's successor starts in the operation that created it, and its start's receipts are its own.
+    /// create's first start runs in the operation that created it, and its start's receipts are its own.
     async fn start_steps_as(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, deployed: &Deployed, steps: [&'static str; 2]) -> Result<(), PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Start, node);
@@ -2526,7 +2519,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// [`Self::stop_steps_with`] whose two steps are receipted as `steps` (the send, the left reply):
-    /// a replace stops two nodes in one operation, and each stop's receipts are its own.
+    /// a delete's stop runs in the operation of the delete, and each stop's receipts are its own.
     async fn stop_steps_as(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, required: RequiredCompletion, end: StopEnd, steps: [&'static str; 2]) -> Result<Option<TerminalReceipt>, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);

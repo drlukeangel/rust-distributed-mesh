@@ -183,7 +183,7 @@ pub enum BuildOperation {
     /// steps are done; `NodeDeleting`, the provider's exact Exited proof, `NodeDeleted`, and `Complete`
     /// naming the birth. Storage is kept. Its key is node.delete's one key, `node.delete:<path>`.
     DeleteNode {
-        /// The stopped node's retained predecessor location.
+        /// The stopped node's path.
         path: String,
         /// The name, beside its path.
         name: String,

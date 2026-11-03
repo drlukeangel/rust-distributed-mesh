@@ -887,7 +887,7 @@ mod tests {
         assert_eq!(types, vec![crate::events_storage::FABRIC_READY.to_string()], "one rdm.fabric.ready event for the move");
     }
 
-    /// CONTRACT (R-RC1): a replace is a delete and a create at the same path and name with a new node
+    /// CONTRACT (R-RC1): a re-birth is a delete and a create at the same path and name with a new node
     /// id, so while the deleted birth's row is still in a view, two rows carry this admin's
     /// path and name. A state op's receiver finds its own row by its node id, the identity it was born
     /// with. What must NOT happen: the deleted birth's row taken as this admin's, which refuses a

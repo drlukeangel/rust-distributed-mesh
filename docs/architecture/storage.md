@@ -76,8 +76,8 @@ registered in its wiring by name:
 A provider is one set of stores for the fabric, reached by every node that writes: a node's own record is written by the node and read by its primaries. A backend that keeps its stores in one process, the testkit's `memory` backend, serves a single-process fabric only.
 
 A name is bound to its place at registration. A node can move only between the providers its own
-executable registers; a provider no executable has is an executable replacement, not a storage
-change.
+executable registers; a provider no executable has needs a new node on a new executable (a Build that adds it), not a
+storage change.
 
 **The property.** `topology_storage_provider` is one value for the fabric, on the Fabric row, beside
 `previous_topology_storage_providers`, each provider the fabric left, in order. The same name on a
@@ -106,8 +106,7 @@ commands carry it, and a node refuses by name a command of an older one (`reject
 It is four steps:
 
 1. **Block.** The fabric-primary sends `mesh.block` to every mesh-primary. Each mesh-primary waits
-   until its in-flight commands complete and every required node, including a stopped node or
-   retained predecessor, has acknowledged its freeze. An unanswered freeze is resolved through
+   until its in-flight commands complete and every required node, including a stopped node, has acknowledged its freeze. An unanswered freeze is resolved through
    the existing unanswered-command clock and node investigation/recovery before `blocked`; no
    second timer or unresolved-investigation state is added. It then replies `blocked` and
    gossips the current topology of its mesh. A mesh-primary that has replied `blocked` issues no new command until it is unblocked.

@@ -142,7 +142,7 @@ pub struct FabricView {
 }
 
 impl Topology {
-    /// Every birth the view holds, replaced predecessors included: what planning, the election, the
+    /// Every birth the view holds, stopped renamed nodes included: what planning, the election, the
     /// primaries, the executors, the REST views, an identity lookup by node id or endpoint and the
     /// shutdown that stops every runtime still present read (D63: the one list of the view's births).
     pub fn births(&self) -> impl Iterator<Item = &Node> {
@@ -229,7 +229,7 @@ impl Topology {
 
     /// The row of the node born as `node_id`, among every birth the view holds: how a node finds
     /// itself (and a primary is told apart from another birth). Never by path and name, its shape
-    /// included: a replace or a recovery keeps the path and name and mints a new node id, the one row
+    /// included: a recovery keeps the path and name and mints a new node id, the one row
     /// this view holds at a path ([`crate::admin::project_at`] keys it by `PathName`) can be the
     /// deleted birth's, and a node whose row its mesh-primary renamed a name node.name.update gave it is still that
     /// exact birth, which reports its own status (states.md "Who sets each state").

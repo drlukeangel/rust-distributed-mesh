@@ -54,7 +54,7 @@ impl NodeObserver for Logged<'_> {
     }
 }
 
-/// The lifecycle events a replace publishes, in the order they leave the executor.
+/// The lifecycle events a recovery publishes, in the order they leave the executor.
 struct Recorder(Log);
 
 #[async_trait::async_trait]

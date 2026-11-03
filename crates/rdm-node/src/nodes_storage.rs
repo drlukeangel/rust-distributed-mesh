@@ -269,7 +269,7 @@ pub struct NodeRow {
     pub predecessor: Option<BirthRef>,
     /// The node's `storage_persistence` as its create spec names it (storage.md §1; Q166, build.md §1:
     /// "onto the row, effective at the node's next birth"): written at the claim and by a Build whose
-    /// spec names another, inherited with the config by a recovery and a replace's successor. A row
+    /// spec names another, inherited with the config by a recovery. A row
     /// written before the field carries none, and no Build compares it. A row written before storage.md
     /// §1's rename carries it as `storage` (durable format moved).
     #[serde(default, alias = "storage", skip_serializing_if = "Option::is_none")]

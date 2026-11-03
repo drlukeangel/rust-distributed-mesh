@@ -6,7 +6,7 @@
 other type alike, and completes as `node.primary.updated`. `node.fabric-primary.update` moves the
 fabric-primary by the same primitive and completes as `node.fabric-primary.updated`. Commands only go
 down: the fabric-primary commands a mesh-primary, and a mesh-primary commands the primaries of its
-mesh's other node types. No node commands its own primary. A stop, delete, replace or
+mesh's other node types. No node commands its own primary. A stop, delete or
 `node.connection.delete { scope: All }` of a primary runs it first.
 
 Who is primary is the [election](../fabric-node-lifecycle-elections.md)'s result, computed by every
@@ -67,7 +67,7 @@ and recording it are separate for every type.
 6. The commanding Build continues on the successor's direct acknowledgement of step 4, never on
    gossip: step 5 is the recording of a change that has already happened, and the Build waits for
    neither the digest nor the record. The successor is now the old primary's primary (for the `node-admin`
-   type, its mesh-primary) and commands the old primary's connections delete, stop or replace.
+   type, its mesh-primary) and commands the old primary's connections delete, stop or delete.
 
 ## Failure contract
 
@@ -129,7 +129,7 @@ and recording it are separate for every type.
   workflow that commanded it (the stop or delete of that node) fails by name with that reason.
   The exceptions that skip the update: the delete of a mesh's only node, and the delete of a type's only
   node in its mesh, whether the node leaves the topology (a removal) or is re-created at the same
-  `path` and `name` (node recovery, an executable replacement); the type has no primary until the election names
+  `path` and `name` (node recovery, a new node at a released `path` and `name`); the type has no primary until the election names
   the new birth Ready. A mesh's sole `broker` cannot be stopped until a second
   broker is Ready. No row and no vacancy inferred from a stop.
 - **No other mesh-primary for the fabric-primary:** the fabric arm's own refusal,
@@ -184,7 +184,7 @@ nothing.
 ## Command, completion and gossip messages
 
 ```text
-commander → primary       (a step of the Build that stops, deletes, replaces or deletes the primary's connections)
+commander → primary       (the command or Build step that stops or deletes the primary, or deletes its connections)
 writer                    pre-check: a Ready successor of the type in the mesh, the primary excluded
 primary                   issued writes finished (node-admin type)
 primary → successor       node.primary.update (PrimaryUpdate)
@@ -207,7 +207,7 @@ sequenceDiagram
     participant NA1 as NA1 (mesh-primary)
     participant NA2 as NA2 (successor, writer)
     participant G as Mesh channel and backbone
-    FP->>NA1: Build step on NA1 (stop, delete, replace, connections delete)
+    FP->>NA1: step on NA1 (stop, delete, connections delete)
     Note over NA1: pre-check: a Ready successor, NA1 excluded
     Note over NA1: issued writes finished
     NA1->>NA2: node.primary.update

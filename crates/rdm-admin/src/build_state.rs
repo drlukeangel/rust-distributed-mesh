@@ -70,7 +70,7 @@ pub enum AttemptReason {
     Reserved6,
     /// Reserved position: the removed node recovery's reason; it is the primary's own workflow (Q342). Never opened.
     Reserved7,
-    /// The delete of a stopped birth at its retained predecessor location, or of a deleted mesh's last admin, was
+    /// The delete of a stopped birth at a name node.name.update gave it, or of a deleted mesh's last admin, was
     /// requested (`node.delete:<path>`, node.delete's one key).
     Delete,
     /// Reserved position: the removed steps' reason (Q342, Q345: a new executable is a new node, a

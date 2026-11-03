@@ -67,7 +67,7 @@ pub struct Capabilities {
     pub network_faults: bool,
 }
 
-/// One node of the model: its path/name pair, class, birth (a replacement is a new NodeId at the same
+/// One node of the model: its path/name pair, class, birth (a re-birth is a new NodeId at the same
 /// path/name pair) and incarnation within that birth (a restart keeps the NodeId).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelNode {
@@ -98,8 +98,6 @@ pub enum Action {
     Shrink { node: PathName },
     /// node.stop then node.start of the node (Q183): the same NodeId and incarnation start again on the live process.
     Restart { node: PathName },
-    /// A Build replaces the node: a new NodeId born at the same path/name pair.
-    Replace { node: PathName },
     /// A Build deletes the connections of the mesh's primary; the remaining admins elect.
     HandOff { mesh: String },
     /// The provider cuts the mesh off from every other mesh.
@@ -239,7 +237,7 @@ impl Model {
                 }
                 self.keeps_an_admin(step, action, &mesh, class)?;
             }
-            Action::Restart { node } | Action::Replace { node } | Action::Kill { node } | Action::Wedge { node } => {
+            Action::Restart { node } | Action::Kill { node } | Action::Wedge { node } => {
                 let (mesh, class) = self.live_node(step, action, node)?;
                 self.keeps_an_admin(step, action, &mesh, class)?;
             }
@@ -292,14 +290,6 @@ impl Model {
                     m.nodes.remove(node);
                 }
             }
-            Action::Replace { node } => {
-                for m in self.meshes.values_mut() {
-                    if let Some(n) = m.nodes.get_mut(node) {
-                        n.birth += 1;
-                        n.incarnation = 1;
-                    }
-                }
-            }
             // A restart (node.stop then node.start) keeps the birth: the same NodeId and incarnation (node-stop.md "Kept").
             Action::Restart { .. } | Action::HandOff { .. } | Action::Store(_) | Action::Kill { .. } | Action::Wedge { .. } => {}
             Action::Unheard { mesh } => self.meshes.get_mut(mesh).expect("checked").unheard = true,
@@ -320,7 +310,6 @@ impl Model {
             for node in m.nodes.keys() {
                 out.push(Action::Shrink { node: node.clone() });
                 out.push(Action::Restart { node: node.clone() });
-                out.push(Action::Replace { node: node.clone() });
                 out.push(Action::Kill { node: node.clone() });
                 out.push(Action::Wedge { node: node.clone() });
             }

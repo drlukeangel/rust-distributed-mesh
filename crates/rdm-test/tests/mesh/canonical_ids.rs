@@ -137,7 +137,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // A restart belongs to no Build: its steps name none (D44).
     let restart_build = String::new();
 
-    // Replacement of a node: removed, then created again at the same path.
+    // A new node at a path: the old one removed, then a node created again at the same path.
     let replaced = node_ids[&PathName::new("mesh1.node", "2").unwrap()].clone();
     let mut removal = estate.delete_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh1.node.2: {e}"));
     Estate::complete(&mut removal).await;
@@ -146,7 +146,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let new_id = canonical("node id", &regrown.iter().find(|n| location(n) == PathName::new("mesh1.node", "2").unwrap()).unwrap()["node_id"]);
     assert_ne!(new_id, replaced, "a recreated node is a new logical node");
 
-    // Replacement of a mesh: removed, then created again. mesh.delete ends at mesh.deleted with
+    // A new mesh of an old name: removed, then created again. mesh.delete ends at mesh.deleted with
     // mesh2's last admin alive; its end is its own node.delete (mesh-delete.md steps 5-7), and only
     // that delete releases its name (R-MN1).
     build(&estate, &shape(&["mesh1"], 2)).await;
@@ -312,7 +312,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_eq!(s(&ready["attributes"]["mesh_id"]), s(&m2["id"]), "under the new MeshId");
     // A mesh created again is a new mesh (R-MN1): the removed mesh's births deleted at mesh-left,
     // so its first admin enters from none of them, and each member is a create over the Deleted
-    // rows, never a replace of a removed birth.
+    // rows, never a re-birth of a removed birth.
     let old_ids: BTreeSet<String> = regrown.iter().filter(|n| n["mesh"] == "mesh2").map(|n| s(&n["node_id"])).collect();
     let swept_old: Vec<&Value> = named(&spans, "rdm.node_admin.node.reject.via-entry-sweep-no-reply").into_iter().filter(|sp| old_ids.contains(&s(&sp["attributes"]["node_id"]))).collect();
     assert!(swept_old.is_empty(), "the recreated mesh's first admin holds no birth of the removed mesh: {swept_old:?}");

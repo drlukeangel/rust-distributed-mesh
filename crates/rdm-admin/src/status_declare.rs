@@ -1131,7 +1131,7 @@ mod tests {
         let deleted = deleted.clone();
         let mut re_born = node(PathName::new("mesh1.node-admin", "1").unwrap(), NodeId::mint(), "mesh1", false, false);
         re_born.node_id = NodeId::mint();
-        assert_ne!(deleted.node_id, re_born.node_id, "a replace mints a new node id");
+        assert_ne!(deleted.node_id, re_born.node_id, "a re-birth mints a new node id");
         assert_eq!(v.fabric_primary().map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds the fabric-primary role in this view");
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();

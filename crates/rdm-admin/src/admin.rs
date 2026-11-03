@@ -2104,7 +2104,7 @@ mod tests {
         }
         assert_eq!(digest_view.in_flight(), vec![op.clone()], "the removal's NodeDeleting receipt opens its overlay");
         // The attempt's verdict: the workflow failed (the member's runtime exited under it).
-        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: build.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "TerminateRuntime: the member exited under the replace".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
+        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: build.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "TerminateRuntime: the member exited under the delete".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             overlays_from_facts(&facts, &digest_view, &mut named);

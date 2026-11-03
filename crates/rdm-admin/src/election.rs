@@ -133,8 +133,7 @@ pub fn resolve(nodes: &mut [Node]) {
 }
 
 /// Mark each node type's primary and the fabric primary in `nodes` by the rules in the module docs,
-/// given the primaries held and the births known gone. `nodes` are members: a replaced
-/// predecessor (a name node.name.update gave it) is not passed (`Topology::members`).
+/// given the primaries held and the births known gone.
 pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
     for n in nodes.iter_mut() {
         n.is_primary = false;
@@ -511,7 +510,7 @@ mod tests {
         nodes.iter().filter(|n| n.is_fabric_primary).map(|n| n.location()).collect()
     }
 
-    /// CONTRACT: a replaced predecessor (a name node.name.update gave it) holds no role and is no candidate, even when its
+    /// CONTRACT: a stopped renamed node (a name node.name.update gave it) holds no role and is no candidate, even when its
     /// digest still reads ready and its NodeId is the lowest: the successor at `<path>` is the node type's.
     /// CONTRACT: an election observer follows its ID through rename and never follows a replacement occupant.
     #[test]

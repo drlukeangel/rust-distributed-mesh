@@ -32,7 +32,6 @@ fn kind(a: &Action) -> &'static str {
         Action::Grow { .. } => "grow",
         Action::Shrink { .. } => "shrink",
         Action::Restart { .. } => "restart",
-        Action::Replace { .. } => "replace",
         Action::HandOff { .. } => "hand-off",
         Action::Unheard { .. } => "unheard",
         Action::Heal { .. } => "heal",
@@ -96,7 +95,7 @@ fn action_generator_replays_seed_preserves_legal_sequence() {
         *m.entry(kind(a)).or_default() += 1;
         m
     });
-    let every = ["grow", "shrink", "restart", "replace", "hand-off", "unheard", "heal", "store-put", "store-cas", "store-delete"];
+    let every = ["grow", "shrink", "restart", "hand-off", "unheard", "heal", "store-put", "store-cas", "store-delete"];
     let missing: Vec<&&str> = every.iter().filter(|k| !kinds.contains_key(**k)).collect();
     assert!(missing.is_empty(), "seed {SEED}: every action kind is generated; missing {missing:?} of {kinds:?}");
 
@@ -163,10 +162,6 @@ fn grown_written_restarted(rule: &str) -> impl Fn(&Model, &[Action]) -> Result<(
             for gone in prev.difference(&now) {
                 grown.remove(gone);
                 written.remove(gone);
-            }
-            if let Action::Replace { node } = a {
-                grown.remove(node);
-                written.remove(node);
             }
             prev = now;
             match a {

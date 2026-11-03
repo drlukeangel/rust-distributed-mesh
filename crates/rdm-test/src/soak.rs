@@ -18,9 +18,9 @@
 //!   compute.
 //!
 //! Topology actions are Node RPC workflows on the typed objects (grow = `node.create`, shrink =
-//! `node.delete`, restart = `node.restart`, replace = delete then create into the freed ordinal,
-//! hand-off = replace of the mesh's role-holding node-admin), each awaited on its reply stream. A
-//! restart or a replacement is confirmed from the Build's own receipts (`AllocateIdentity`, read
+//! `node.delete`, restart = `node.restart`, hand-off = the delete of the mesh's role-holding
+//! node-admin then a create into the freed ordinal), each awaited on its reply stream. A
+//! restart or a re-birth is confirmed from the Build's own receipts (`AllocateIdentity`, read
 //! through the [`BuildRead`] the test binary hands the driver) before anything is judged.
 //!
 //! The fabric-primary node-admin is never signalled, killed, held or silenced: a fault that names
@@ -73,7 +73,6 @@ pub fn kind(a: &Action) -> &'static str {
         Action::Grow { .. } => "grow-rpc",
         Action::Shrink { .. } => "shrink",
         Action::Restart { .. } => "restart",
-        Action::Replace { .. } => "replace",
         Action::HandOff { .. } => "hand-off",
         Action::Unheard { .. } => "unheard",
         Action::Heal { .. } => "heal",
@@ -88,7 +87,7 @@ pub fn kind(a: &Action) -> &'static str {
 /// The node an action names, when it names one.
 fn node_of(a: &Action) -> Option<&PathName> {
     match a {
-        Action::Shrink { node } | Action::Restart { node } | Action::Replace { node } | Action::Kill { node } | Action::Wedge { node } => Some(node),
+        Action::Shrink { node } | Action::Restart { node } | Action::Kill { node } | Action::Wedge { node } => Some(node),
         Action::Store(StoreOp::Put { target, .. } | StoreOp::Cas { target, .. } | StoreOp::Delete { target, .. }) => Some(target),
         _ => None,
     }
@@ -192,7 +191,7 @@ pub enum Profile {
     Primary,
     /// A mesh made unheard by the others, held, healed, converged, repeated.
     Partition,
-    /// Restart, delete (delete), replacement and capacity re-add of role nodes under traffic.
+    /// Restart, delete and capacity re-add of role nodes under traffic.
     Lifecycle,
     /// Holds past the floors (S6): a runtime held and a mesh cut, each kept past the staleness and
     /// the hung-hold floors (`Config::hold`) with traffic on, then released or healed; the same
@@ -215,7 +214,7 @@ impl Profile {
             Profile::Partition => matches!(a, Action::Unheard { .. } | Action::Heal { .. }),
             Profile::Lifecycle => match a {
                 Action::Grow { class, .. } => *class != NodeClass::NodeAdmin,
-                Action::Shrink { .. } | Action::Restart { .. } | Action::Replace { .. } => class.is_some_and(|c| c != NodeClass::NodeAdmin),
+                Action::Shrink { .. } | Action::Restart { .. } => class.is_some_and(|c| c != NodeClass::NodeAdmin),
                 _ => false,
             },
             Profile::Floors => matches!(a, Action::Wedge { .. } | Action::Unheard { .. } | Action::Heal { .. }),
@@ -1121,7 +1120,7 @@ impl Driver {
             }
             None
         };
-        // The restart or delete (a replace's first step) of a node that holds its node type's primary role is
+        // The restart of a node that holds its node type's primary role is
         // refused by name, `no-secondary`, while no other node of its type in its mesh is
         // ready to take the role (node-primary-update.md "No-successor cases"; a
         // desired-state shrink of a node type's only node skips the update, so a shrink is not guarded).
@@ -1132,17 +1131,16 @@ impl Driver {
             let secondary = nodes.iter().any(|o| o["mesh"] == n["mesh"] && o["type"] == n["type"] && (crate::estate::location(&o) != crate::estate::location(&n)) && o["status"] == "ready");
             (!secondary).then(|| format!("{what}: {:?} holds its node-type primary role and no other {} of {} is ready: node.primary.update has no secondary", location(n), s(&n["type"]), s(&n["mesh"])))
         };
-        // A replacement is a delete then a spawn, and a spawn lands at the lowest free ordinal of
-        // its class: it replaces the node at the same path/name pair only when no lower ordinal is free.
+        // A hand-off is a delete then a spawn, and a spawn lands at the lowest free ordinal of its
+        // class: it lands on the deleted node's path/name pair only when no lower ordinal is free.
         let lands_on_same_path = |p: &PathName| -> Option<String> {
             let (mesh, node) = self.model.node(p)?;
             let free = (1..node.ordinal).map(|i| PathName::new(format!("{mesh}.{}", node.class.segment()), i.to_string()).expect("generated model location"))
                 .find(|location| !self.model.meshes[mesh].nodes.contains_key(location))?;
-            Some(format!("replace: {free:?} is free, so a spawn after deleting {p:?} lands there"))
+            Some(format!("hand-off: {free:?} is free, so a spawn after deleting {p:?} lands there"))
         };
         match a {
             Action::Kill { node: p } | Action::Wedge { node: p } => guarded(p, kind(a)),
-            Action::Replace { node: p } => guarded(p, kind(a)).or_else(|| node(p).and_then(|n| no_secondary(n, "replace"))).or_else(|| lands_on_same_path(p)),
             Action::Shrink { node: p } => guarded(p, kind(a)),
             Action::Restart { node: p } => node(p).and_then(|n| {
                 if n["is_fabric_primary"] == true {
@@ -1209,7 +1207,7 @@ impl Driver {
 
     /// Run until the deadline or the first violation.
     pub async fn run(mut self) -> (Report, Estate) {
-        // The initial fabric refuses a node delete, restart and replace until it has first reached ready (states.md "The initial fabric before ready").
+        // The initial fabric refuses a node delete and restart until it has first reached ready (states.md "The initial fabric before ready").
         self.estate.until_fabric_ready(Duration::from_secs(120)).await;
         // The host's counters of a container fabric's bridge, the reference a failed control call's are read against.
         crate::host_net::keep(&self.estate, "start", None).await;
@@ -1375,13 +1373,6 @@ impl Driver {
                 self.await_build(start).await?;
                 restarted = Some((node.clone(), (s(&n["node_id"]), s(&n["incarnation_id"]))));
             }
-            Action::Replace { node } => {
-                let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node:?} is not in the view")))?;
-                let (b2, old) = self.replace(&n, entry).await?;
-                removed = Some((node.clone(), old));
-                watch = Some((b2, 0));
-                deleted_node_id = Some(s(&n["node_id"]));
-            }
             Action::HandOff { mesh } => {
                 let n = nodes
                     .iter()
@@ -1403,7 +1394,7 @@ impl Driver {
                     .await;
                     entry["successor_in_fabric_primary_view"] = json!(successor);
                 }
-                let (b2, old) = self.replace(&n, entry).await?;
+                let (b2, old) = self.delete_then_create(&n, entry).await?;
                 removed = Some((location(&n), old));
                 watch = Some((b2, 0));
                 deleted_node_id = Some(s(&n["node_id"]));
@@ -1652,9 +1643,9 @@ impl Driver {
         }
     }
 
-    /// `node.delete` of `n`, await the Build, `node.create` of the same kind into the freed ordinal. Returns the
-    /// spawn's Build and the replaced incarnation.
-    async fn replace(&mut self, n: &Value, entry: &mut Value) -> Result<(String, (String, String)), Broken> {
+    /// `node.delete` of `n`, await the Build, `node.create` of the same kind into the freed ordinal: two
+    /// Builds (Q345). Returns the spawn's Build and the deleted incarnation.
+    async fn delete_then_create(&mut self, n: &Value, entry: &mut Value) -> Result<(String, (String, String)), Broken> {
         let (path, mesh) = (location(n), s(&n["mesh"]));
         let r#type: String = serde_json::from_value(n["type"].clone()).unwrap_or_else(|e| panic!("{path:?}: the view's type {} is no node type: {e}", n["type"]));
         let nodes = self.estate.nodes_obj().await;

@@ -268,7 +268,7 @@ Complete
 
 A launch that runs a bound executable re-hashes it before `DeployRuntime` and launches it only when the hash matches its binding; the hash reads the whole file, so it runs on the blocking pool, off the runtime's workers ([Node RPC §21](node-rpc.md#21-iroh-owns-liveness)).
 
-Which executable a node runs, and how it is named, recorded, replaced and read, is [build-deployment.md](build-deployment.md)'s.
+Which executable a node runs, and how it is named, recorded and read, is [build-deployment.md](build-deployment.md)'s.
 
 The externally started Day-0 adoption: `AdoptCurrentRuntime`, `RegisterExactRuntimeHandle`, `ResolveProviderControlDomain`, `PublishRuntimeFactAndCurrentRuntimeMetadata`, then the normal bootstrap.
 
@@ -295,7 +295,7 @@ RDM deletes nothing on disk, ever. A node's storage default is its type's: `node
 - Never infers: `Unknown` is an answer, silence is not.
 - Never sends a signal but the stop ladder's and the terminate's; never continues a suspended runtime.
 - Never acts on a locator from another control domain.
-- Never decides topology, identity, readiness, restart versus replacement, or storage.
+- Never decides topology, identity, readiness, restart versus re-birth, or storage.
 
 ## 6. Evidence
 

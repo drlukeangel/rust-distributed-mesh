@@ -29,7 +29,7 @@ pub fn superseded<'a>(row: &NodeRow, re_created: &'a HashMap<BirthRef, NodeId>) 
 }
 
 /// The births another record at the pair names its predecessor, by its re-creation (`predecessor`) or by
-/// its create's admitted provenance (`allocated.predecessor`, a replacement's successor), with the node
+/// its create's admitted provenance (`allocated.predecessor`, a recovery's new birth), with the node
 /// that names each.
 fn succeeded(records: &[NodeRow]) -> HashMap<BirthRef, NodeId> {
     records

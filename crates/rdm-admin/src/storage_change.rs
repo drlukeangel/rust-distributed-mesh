@@ -726,7 +726,7 @@ impl StorageChanges {
         };
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-block", change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, in_flight = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         // Nodes own their property writes: the primary's command block alone cannot make their old
-        // provider quiescent. Stopped births and retained predecessors are included.
+        // provider quiescent. Stopped births are included.
         let subjects: Vec<Node> = view.births().filter(|node| node.mesh == mesh && node.status != crate::model::NodeStatus::Deleted).cloned().collect();
         for subject in &subjects {
             if let Err(reason) = door.carry_storage_block(subject, &change.change_id).await {

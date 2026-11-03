@@ -6686,9 +6686,9 @@ struct Story {
 const S1: Story = Story { id: "S1", profile: SoakProfile::Routing, cycle_kinds: &["restart", "kill", "wedge"], needs_cut: false };
 const S2: Story = Story { id: "S2", profile: SoakProfile::Primary, cycle_kinds: &["restart", "kill", "wedge", "hand-off"], needs_cut: false };
 const S3: Story = Story { id: "S3", profile: SoakProfile::Partition, cycle_kinds: &["heal"], needs_cut: true };
-const S4: Story = Story { id: "S4", profile: SoakProfile::Lifecycle, cycle_kinds: &["restart", "shrink", "replace", "grow-rpc"], needs_cut: false };
+const S4: Story = Story { id: "S4", profile: SoakProfile::Lifecycle, cycle_kinds: &["restart", "shrink", "grow-rpc"], needs_cut: false };
 const S6: Story = Story { id: "S6", profile: SoakProfile::Floors, cycle_kinds: &["wedge", "heal"], needs_cut: true };
-const S5: Story = Story { id: "S5", profile: SoakProfile::All, cycle_kinds: &["restart", "kill", "wedge", "hand-off", "shrink", "replace", "grow-rpc", "grow-admin", "heal"], needs_cut: false };
+const S5: Story = Story { id: "S5", profile: SoakProfile::All, cycle_kinds: &["restart", "kill", "wedge", "hand-off", "shrink", "grow-rpc", "grow-admin", "heal"], needs_cut: false };
 
 fn soak_seconds() -> u64 {
     env("RDM_RSHAPE_SOAK_SECONDS").parse().unwrap_or_else(|e| panic!("REFUSED: RDM_RSHAPE_SOAK_SECONDS is not a u64: {e}"))

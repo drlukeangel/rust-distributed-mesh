@@ -238,18 +238,16 @@ fn a_plain_create_carries_its_create_specs_config_not_the_deleted_rows() {
     assert_eq!((a["moment"].as_str(), (a["subject_path"].as_str(), a["subject_name"].as_str()), a["node_id"].as_str(), a["seeded_from"].as_str(), a["keys"].as_str(), a["outcome"].as_str()), (Some("create"), (Some("mesh1.node"), Some("2")), Some(born.as_str()), None, Some("1"), Some("row-written")), "a plain create's row names no seed: a Deleted row's location is not provenance: {a:#?}");
 }
 
-/// CONTRACT (Q305; build-deployment.md §3: a replacement's "config and tags are its Build entry's,
-/// written at its claim, never the predecessor's"): an entry naming no ports names none until the
-/// node's own update: a Build's replacement of a member at its own path
-/// writes over the `Deleted` row at the key naming its birth by admitted provenance, as a recovery does,
-/// but its row takes the entry's config and tags: an empty entry over a row holding the dead birth's two
-/// ports writes none of them, and an entry naming {tier: gold} and `blue` writes those. Its predecessor
-/// is the Deleted row's birth. The
-/// `via-node-row` span names the seed and the entry's key count (keys 0).
-/// Must NOT happen: a replacement's row starting with the dead birth's ports (rafka #3400, Build
-/// gp0027r3spsd: `row-seeded keys=2`).
+/// CONTRACT (Q305; build-deployment.md §3: a new node's "config and tags are its Build entry's, never
+/// the old node's"): an entry naming no ports names none until the node's own update: a Build's
+/// create at a path a deleted node held, its admitted provenance naming that birth, writes over the
+/// `Deleted` row at the key, and its row takes the entry's config and tags: an empty entry over a row
+/// holding the dead birth's two ports writes none of them, and an entry naming {tier: gold} and `blue`
+/// writes those. A create names no predecessor: only a recovery does. The `via-node-row` span names the
+/// seed and the entry's key count (keys 0). Must NOT happen: a new node's row starting with the dead
+/// birth's ports (rafka #3400, Build gp0027r3spsd: `row-seeded keys=2`).
 #[test]
-fn a_builds_replacement_at_its_own_path_takes_its_entrys_config_and_tags_not_the_deleted_rows() {
+fn a_builds_create_at_a_deleted_nodes_path_takes_its_entrys_config_and_tags_not_the_deleted_rows() {
     let cap = capture();
     let ports: BTreeMap<String, String> = [("kafka_port".to_string(), "127.0.0.1:34003".to_string()), ("admin_port".to_string(), "127.0.0.1:38823".to_string())].into();
     let name: PathName = rdm_core::PathName::new("mesh1.gateway", "1").unwrap();
@@ -261,17 +259,17 @@ fn a_builds_replacement_at_its_own_path_takes_its_entrys_config_and_tags_not_the
         let storage = Arc::new(MemoryNodesStorage::default());
         storage.write_record(&deleted).await.unwrap();
         let born = NodeId::mint();
-        mesh_primary(&storage).rows.create_row_with_spec(&name, "mesh1", "gateway", &born, &replacement.operation, Some(&replacement), None, &Default::default(), &BTreeMap::new(), None, RowFor::Replacement).await.expect("the Deleted row holds no name");
+        mesh_primary(&storage).rows.create_row_with_spec(&name, "mesh1", "gateway", &born, &replacement.operation, Some(&replacement), None, &Default::default(), &BTreeMap::new(), None, RowFor::Create).await.expect("the Deleted row holds no name");
         let other = Arc::new(MemoryNodesStorage::default());
         other.write_record(&deleted).await.unwrap();
         let blue: std::collections::BTreeSet<String> = ["blue".to_string()].into();
-        mesh_primary(&other).rows.create_row_with_spec(&name, "mesh1", "gateway", &NodeId::mint(), &replacement.operation, Some(&replacement), None, &blue, &tier("gold"), None, RowFor::Replacement).await.expect("the Deleted row holds no name");
+        mesh_primary(&other).rows.create_row_with_spec(&name, "mesh1", "gateway", &NodeId::mint(), &replacement.operation, Some(&replacement), None, &blue, &tier("gold"), None, RowFor::Create).await.expect("the Deleted row holds no name");
         (storage.record_at(&name).await.unwrap(), other.record_at(&name).await.unwrap(), born, old)
     });
-    let empty = empty.expect("the replacement's row");
+    let empty = empty.expect("the new node's row");
     assert_eq!((empty.node_id.clone(), empty.initial_properties.clone().map(|p| (p.config, p.tags))), (born.clone(), Some((BTreeMap::new(), Default::default()))), "an empty entry writes no config and no tags, never the dead birth's ports");
-    assert_eq!(empty.predecessor.as_ref().map(|p| p.node_id.clone()), Some(old.clone()), "the predecessor is the Deleted row's birth, as a recovery's is");
-    let named = named.expect("the replacement's row");
+    assert_eq!(empty.predecessor, None, "a create names no predecessor: only a recovery does");
+    let named = named.expect("the new node's row");
     assert_eq!(named.initial_properties.map(|p| (p.config, p.tags)), Some((tier("gold"), ["blue".to_string()].into())), "the entry's config and tags are the row's launch snapshot");
     let spans: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
     assert_eq!(spans.len(), 1, "{spans:#?}");
@@ -281,14 +279,14 @@ fn a_builds_replacement_at_its_own_path_takes_its_entrys_config_and_tags_not_the
 
 // @feature: node-records
 /// CONTRACT (node-config-update.md "Build application": "True recovery inherits the predecessor's
-/// acknowledged properties. Replacement initializes from its own Build entry, including an empty
-/// map."; node-create.md step 1: the row retains the exact entry-owned launch snapshot): over the
-/// same Deleted row, whose node's own property record holds two ports and a tag, a Build B
-/// replacement's row hands its launch an empty map and no tags, while a recovery's row hands on
-/// the predecessor's map and tags. Must NOT happen: a replacement launched with the dead node's
-/// ports, or a recovery that forgets what its predecessor acknowledged.
+/// acknowledged properties. A Create initializes from its own Build entry, including an empty map.";
+/// node-create.md step 1: the row retains the exact entry-owned launch snapshot): over the same
+/// Deleted row, whose node's own property record holds two ports and a tag, a Build B create's row
+/// hands its launch an empty map and no tags, while a recovery's row hands on the predecessor's map
+/// and tags. Must NOT happen: a new node launched with the dead node's ports, or a recovery that
+/// forgets what its predecessor acknowledged.
 #[test]
-fn a_replacement_launches_from_its_entry_and_a_recovery_from_its_predecessors_acknowledged_properties() {
+fn a_create_launches_from_its_entry_and_a_recovery_from_its_predecessors_acknowledged_properties() {
     use rdm_node::node_records::{NodeProperties, RecordBirth};
     let cap = capture();
     cap.run(async {
@@ -302,7 +300,7 @@ fn a_replacement_launches_from_its_entry_and_a_recovery_from_its_predecessors_ac
             held: Default::default(),
         };
         let mut written = Vec::new();
-        for of in [RowFor::Replacement, RowFor::Recovery] {
+        for of in [RowFor::Create, RowFor::Recovery] {
             let storage = Arc::new(MemoryNodesStorage::default());
             // The predecessor's Deleted row holds its birth: the row names it exactly (Allocation.predecessor).
             let mut deleted = NodeRow::new(name.clone(), "mesh1", "gateway", old.clone(), NodeStatus::Deleted);
@@ -329,8 +327,8 @@ fn a_replacement_launches_from_its_entry_and_a_recovery_from_its_predecessors_ac
             };
             written.push(row.initial_properties.expect("the row retains its launch snapshot"));
         }
-        let replacement = &written[0];
-        assert_eq!((&replacement.config, &replacement.tags), (&BTreeMap::new(), &Default::default()), "a replacement launches from its empty entry, never the dead node's ports or tag");
+        let created = &written[0];
+        assert_eq!((&created.config, &created.tags), (&BTreeMap::new(), &Default::default()), "a create launches from its empty entry, never the dead node's ports or tag");
         let recovery = &written[1];
         assert_eq!((&recovery.config, &recovery.tags), (&ports, &acknowledged.tags), "a recovery launches from its predecessor's acknowledged properties");
     });
@@ -1868,7 +1866,7 @@ fn a_node_created_with_a_free_text_name_keeps_name_path_and_type_through_create_
             (succ_row.node_id.clone(), succ_row.path().as_str(), succ_row.node_name().as_str(), succ_row.r#type.as_str()),
             (succ.node_id.clone(), "mesh1.broker", "north", "broker")
         );
-        let retained_old = storage.record_at(&old_key).await.unwrap().expect("retained predecessor row at path mesh1.broker, name north-old");
+        let retained_old = storage.record_at(&old_key).await.unwrap().expect("renamed stopped node's row at path mesh1.broker, name north-old");
         assert_eq!(retained_old.node_name().as_str(), "north-old");
 
         let mut succ_ready = succ.clone();
@@ -1890,7 +1888,7 @@ fn a_node_created_with_a_free_text_name_keeps_name_path_and_type_through_create_
         let mesh_nodes = get(Filter::new().eq("mesh", ["mesh1"]).eq("type", ["broker"])).await;
         let active = mesh_nodes.iter().find(|n| n.location() == north_key).expect("active successor at mesh1.broker.north");
         assert_eq!((active.node_id.clone(), active.path().as_str(), active.node_name().as_str(), active.r#type.as_str()), (succ.node_id.clone(), "mesh1.broker", "north", "broker"));
-        let retained = mesh_nodes.iter().find(|n| n.location() == old_key).expect("retained predecessor at path mesh1.broker, name north-old");
+        let retained = mesh_nodes.iter().find(|n| n.location() == old_key).expect("renamed stopped node at path mesh1.broker, name north-old");
         assert_eq!((retained.node_id.clone(), retained.path().as_str(), retained.node_name().as_str(), retained.r#type.as_str()), (pred_stopped.node_id.clone(), "mesh1.broker", "north-old", "broker"));
     });
 }

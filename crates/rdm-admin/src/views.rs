@@ -168,7 +168,7 @@ fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, ro
 }
 
 /// Every birth `view` holds, sorted by `(path, name)`, each with what `loads` carries for it and what its
-/// record carries, replaced predecessors included: each record read through `current` (query.md §1: the
+/// record carries, stopped renamed nodes included: each record read through `current` (query.md §1: the
 /// lifecycle record at its node id, never a copy an atlas holds), the lifecycle the ops
 /// left each birth in from `atlas` ([`Atlas::read`]). A birth the view no longer holds is answered at a
 /// path `planned` names and no birth holds, from the data-dir-unreadable fact on the record of that pair
@@ -612,7 +612,7 @@ mod tests {
 
             let loads: Loads = Arc::new(BTreeMap::new);
 
-            // 1. A tag query reads each node's own labels: the successor and the retained predecessor both carry tier-a.
+            // 1. A tag query reads each node's own labels: the new node and the stopped renamed node both carry tier-a.
             let read = |filter: Filter| {
                 let (me, view, loads, atlas, claims) = (&me, &view, &loads, &atlas, &claims);
                 let current = crate::current_record::CurrentRecords { nodes: claims };
@@ -623,7 +623,7 @@ mod tests {
                 StatusReply::Nodes { nodes } => {
                     assert_eq!(nodes.len(), 2);
                     let succ = nodes.iter().find(|n| n.node_id == rpc_succ_id).expect("the successor carries tier-a");
-                    assert!(nodes.iter().any(|n| n.node_id == rpc_pred_id), "the retained predecessor's own tier-a stays at its id");
+                    assert!(nodes.iter().any(|n| n.node_id == rpc_pred_id), "the stopped renamed node's own tier-a stays at its id");
                     assert_eq!(succ.config.get("region").map(String::as_str), Some("eu-west"));
                     assert_eq!(succ.cert.as_ref().map(|c| c.expires_at), Some(9_000));
                 }

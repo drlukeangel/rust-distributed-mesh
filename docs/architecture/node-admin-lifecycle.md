@@ -19,11 +19,11 @@ workflow node-admin drives, its events and its gossip),
 1. **Only node-admins create nodes.** Every node of a fabric, node-admins included, is created by a
    node-admin executing a Build, except the Day-0 node-admin (§3) and a node-admin started by a
    person after total loss (§4.4).
-2. **The node-admins are never all down.** A node-admin is replaced one at a time within a mesh.
-   Different meshes may each replace one node-admin at the same time. Every mesh therefore keeps a
+2. **The node-admins are never all down.** A node-admin is stopped, deleted or added one at a time
+   within a mesh. Different meshes may each change one node-admin at the same time. Every mesh therefore keeps a
    running node-admin through any planned operation except mesh.delete, after whose
    mesh.deleted a separate node.delete removes the mesh-primary, and fabric.delete.
-3. **The fabric primary is handed off, never wiped out.** Before its delete, stop or replace, it runs
+3. **The fabric primary is handed off, never wiped out.** Before its delete or stop, it runs
    [node.primary.update](lifecycles/node-primary-update.md), commanded from above, and its successor, now
    its primary, commands the step ([elections §4.4](fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover));
    as its mesh's last admin it stops being fabric-primary only by node.fabric-primary.update inside mesh.delete.
@@ -134,23 +134,20 @@ page says.
 
 The Pending hand-off to a mesh's first admin is a row of [States: who sets each state](lifecycles/states.md#who-sets-each-state). Op fields are the [Status schema](node-rpc-envelope.md#status-op-0x1b-rdm).
 
-## 6. Replacing node-admins
+## 6. Stopping, deleting and adding node-admins
 
-- node.stop then node.start (same NodeId, incarnation, endpoint and port) and replacement (new NodeId at the
-  same path and name) of a node-admin are Builds, one node-admin at a time per mesh (rule 2).
-- A Build that runs `node.connection.delete { scope: All }` on, stops or replaces a
-  primary runs [node.primary.update](lifecycles/node-primary-update.md) first: the primary, commanded from
+- node.stop then node.start (same NodeId, incarnation, endpoint and port) of a node-admin are node
+  commands of the primary above it, never a Build (Q342); a new node-admin, at a path and name of its
+  own or at one an old node-admin released, is a Build that adds it (Q345). One node-admin at a time
+  per mesh (rule 2).
+- A `node.connection.delete { scope: All }`, a stop or a delete of a primary runs
+  [node.primary.update](lifecycles/node-primary-update.md) first: the primary, commanded from
   above, hands over to its successor, who then commands the old primary's step (rule 3).
 
-### 6.1 Named-birth replace input
+### 6.1 A delete of a birth absent from the view
 
-Replacement intent is submitted through build.create to the fabric-primary over
-[0x20](node-rpc-envelope.md#build-op-0x20-rdm). Accepted intent resolves the
-named exact birth, rather than a heard view. The fabric-primary claims and dispatches
-the run to executor_for's executor, which records the won claim before execution.
-
-A replace of a birth absent from the view runs node.delete against its exact
-runtime, rebuilt from the Build action and the data-root runtime record. It emits
+A node.delete of a birth absent from the executor's view runs against its exact runtime, rebuilt
+from the Build action and the data-root runtime record. It emits
 `rdm.node_admin.node.update.via-rebuilt-birth` and refuses by name when no record names
 the birth. Completion requires the NodeDeleted receipt of that exact birth. Source:
 RDM's `rebuild_absent_birth` in `rdm-admin`.

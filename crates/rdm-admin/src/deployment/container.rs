@@ -940,7 +940,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     /// A container is given its own address on the fabric network before it starts (`--ip`): the
     /// one pre-boot address a container needs. Its ports are the operating system's. The address
     /// belongs to the birth it was given to: that birth binds it again, and a new birth at the same
-    /// `(path, name)` (a replace re-births there while its renamed predecessor's container still runs,
+    /// `(path, name)` (a new node is born there while the stopped renamed node's container still runs,
     /// Q79) is given one no container holds. The addresses already taken on the network are asked of
     /// the daemon (no lock held across it); a daemon that cannot answer by the deadline, or a network
     /// with no address left, is an error naming it.

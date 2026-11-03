@@ -111,7 +111,7 @@
 //!
 //! | step / refusal | any layer | process | this section |
 //! |---|---|---|---|
-//! | step 0 a primary target runs node.primary.update first (`All`) | inside a replace: `p:elections/node_primary_update::a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its_direct_answer`; inside a stop: `p:node/node_stop::a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_stops` | none for a standalone `node.connection.delete` | `a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_all` |
+//! | step 0 a primary target runs node.primary.update first (`All`) | inside a stop: `p:node/node_stop::a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_stops` | none for a standalone `node.connection.delete` | `a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_all` |
 //! | step 1 the exact birth, the scope | `p:node/node_connections_delete::a_standalone_connections_delete_completes_on_connections_deleted_and_leaves_the_process_running` | as any layer | - |
 //! | step 2 `Connections([…])`: exactly those closed, unknown and already-closed named | `p:connections_delete::a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id` | `p:node/node_connections_delete::a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command_path_and_records_from_its_own_frames` (an id never opened) | `a_connections_delete_by_id_closes_that_connection_and_names_the_rest` |
 //! | step 2 an empty list refused by name | `p:connections_delete::a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id`; `rdm-core status.rs` unit | none | `a_connections_delete_by_id_closes_that_connection_and_names_the_rest` |

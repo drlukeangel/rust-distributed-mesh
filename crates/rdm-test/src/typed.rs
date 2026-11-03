@@ -213,7 +213,7 @@ impl Estate {
             Ok(views) => views,
             // A read not answered yet (carried up, query.md §1, or not answered within its 2 s bound) or one
             // that ended: the path may hold a new birth (a node-admin re-created at its separate path/name pair, by fabric
-            // recovery or a replace), which every known admin's view names, so the read goes to the path's
+            // recovery or a new node at the path), which every known admin's view names, so the read goes to the path's
             // birth once more; still unanswered, it is not answered yet, and a wait on it goes on to its bound.
             Err(ViewsEnd::NotYet(_) | ViewsEnd::Ended(_)) => {
                 self.relearn(&peers).await;
@@ -702,7 +702,7 @@ impl Estate {
     }
 
     /// `build.create` of `change` (a change of the accepted Build the carrier carries without a
-    /// [`BuildSpec`]: a replace, a mesh removal), accepted: the stream of the Build that runs it. A cell
+    /// [`BuildSpec`]: a node removal, a mesh removal), accepted: the stream of the Build that runs it. A cell
     /// that does not test a refusal never has a submit refused: the Build it started itself is followed to
     /// its terminal frame (`Estate::follow`) before the next change is submitted, so a refusal here, a
     /// Build in progress included, is a defect of the cell and panics naming the change and the refusal.

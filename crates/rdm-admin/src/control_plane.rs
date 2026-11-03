@@ -614,7 +614,7 @@ pub enum ActionKind {
     Stop,
     /// `node.start:<path>`.
     Start,
-    /// `node.delete` targeting the retained predecessor by node ID.
+    /// `node.delete` of a node by its node ID.
     Delete,
 }
 
@@ -647,8 +647,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology, own_mesh: &str) -> Op
     let target = t.node(node)?;
     // The primary of any other node type: its mesh-primary's node.primary.update needs another node
     // of its type (Q7); the delete of a type's only node in its mesh skips the update, whether the node
-    // leaves the topology (a removal) or is re-created at the same path and name (node recovery, an executable
-    // replacement, the replace's Delete step): R5, node-primary-update.md "No-successor cases".
+    // leaves the topology (a removal) or is re-created at the same path and name (node recovery): R5, node-primary-update.md "No-successor cases".
     if !rdm_core::is_node_admin(&target.r#type) {
         let holds = t.node_type_primary(&target.mesh, &target.r#type).is_some_and(|p| p.node_id == target.node_id);
         let only_of_node_type = t.nodes_of_type(&target.mesh, &target.r#type).all(|n| n.node_id == target.node_id);
@@ -946,8 +945,8 @@ mod tests {
     /// node. The stop of mesh1.node.1 moves its role first (`executor::role_move` names it) and no
     /// admin executes the stop until it has; the stop of mesh1.node.2, which holds no role, moves nothing
     /// and its mesh's primary executes it. The Build door admits a stop of mesh1.node.1 and refuses a
-    /// stop of mesh2.node.1 by name with Q7's text; its delete, by the node.delete route or the
-    /// replace's Delete step, skips the update as its removal does (R5).
+    /// stop of mesh2.node.1 by name with Q7's text; its delete, by the node.delete route or a
+    /// re-birth's delete, skips the update as its removal does (R5).
     /// Must NOT happen: a node-type primary stopped with its role unmoved, or the sole node of its type in a
     /// mesh stopped while its mesh has other nodes.
     #[test]

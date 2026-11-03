@@ -4004,7 +4004,7 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![deleted.clone(), member.clone(), owner.clone()],
         };
-        assert_ne!(deleted.node_id, successor.node_id, "a replace mints a new node id");
+        assert_ne!(deleted.node_id, successor.node_id, "a re-birth mints a new node id");
         assert_eq!(view.node_type_primary("mesh1", "node-admin").map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds mesh1's role in this view");
         let door = mesh_primary_of(&successor, view.clone());
         let holding_me = |r: &StatusReply| matches!(r, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "a view holding this admin");

@@ -26,7 +26,7 @@ the linked page before asking: every answer here was already on one.
 | How do I… | Where |
 |---|---|
 | create, resize or reshape meshes and nodes | the Build: [build.md §1–2](../architecture/build.md#1-build-is-the-only-topology-mutation-engine), the wire on [node-rpc-envelope.md, Build op 0x20](../architecture/node-rpc-envelope.md#build-op-0x20-rdm) |
-| name the executable each node runs, and replace it | [build-deployment.md](../architecture/build-deployment.md) |
+| name the executable each node runs, and run a new one (a new node, a Build that adds it) | [build-deployment.md](../architecture/build-deployment.md) |
 | move RDM's records to my own backend, read where they go, return to a previous one | [topology storage provider how-to](../features/topology-storage-provider/how-to.md); the contract on [storage.md §2](../architecture/storage.md#2-topology_storage_provider-where-rdms-records-go) |
 | know when the fabric is usable | [states.md](../architecture/lifecycles/states.md): pending → ready; a Build that changes the fabric is Complete only after its own ready (Q154) |
 | stop, start, rename or delete one node | the lifecycle pages under [lifecycles/](../architecture/fabric-mesh-node-lifecycles.md) (`node-stop.md`, `node-start.md`, `node-name-update.md`, `node-delete.md`); a new executable is a new node, a Build that adds it ([build-deployment.md §3](../architecture/build-deployment.md)) |
@@ -96,7 +96,7 @@ The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/n
 |---|---|
 | small per-node settings | the node's `config` map: mine, RDM never reads it; replaced whole by `node.config.update`, a node's own (`config_update`) going up through its mesh-primary and a caller's down from the fabric-primary; a Build's `config` supersedes the node's current map, whoever set it, so read the node's current config (`node.get`) before composing a Build: every write is a PUT (Q236); at most 32 keys and 2048 bytes ([node-config-update.md](../architecture/lifecycles/node-config-update.md), [gossip.md §3.1](../architecture/gossip.md#31-frame-catalog)) |
 | labels to select nodes by | `tags`: see [Tags](#tags) below |
-| a node's durable data | under its `RDM_DATA_DIR`; carried across stop and start, recovery and replacement by its path's storage policy ([node-storage-runbook.md](node-storage-runbook.md)) |
+| a node's durable data | under its `RDM_DATA_DIR`; carried across stop and start and recovery by its path's storage policy ([node-storage-runbook.md](node-storage-runbook.md)) |
 | my rows and events | my own storage, and my events on gossip ([gossip.md §8](../architecture/gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); RDM orders nothing of mine |
 | RDM's own records on my storage | the storage adapters ([build.md §5](../architecture/build.md#5-buildstateadapter)): persistence only, RDM writes whole records |
 | which backend RDM's records go to (`topology_storage_provider`), and registering mine | [topology storage provider overview](../features/topology-storage-provider/overview.md) |
@@ -117,7 +117,7 @@ and the `tags` row of [Node properties](../architecture/node-rpc-envelope.md#nod
 | remove labels | `node.tag.delete { All \| [labels] }`: every label or the named ones; a label the node does not carry is reported `NOT_FOUND` for that label |
 | read a node's labels | the `tags` field of its node row (`node.get`) |
 | select nodes by label | `node.get [tags: a, b]` for any of the labels, `[tags: a][tags: b]` for all of them, with `[mesh: m]` for one mesh's |
-| keep labels across a re-birth | nothing to do: tags are inherited with the config at the same path and name on recovery and on replacement |
+| keep labels across a re-birth | nothing to do: tags are inherited with the config at the same path and name on recovery; a new node takes its Build entry's |
 
 A label is 1–64 characters of `a-z 0-9 - _ . ~`, with no leading `.`, and a node carries at most 32.
 A label outside that grammar, or one past the 32, is refused by name (`INVALID_ARGUMENT`) and
@@ -149,6 +149,6 @@ count against the config cap.
 | following a call, a Build or a birth across processes | [telemetry.md](../architecture/telemetry.md) |
 | no node-admin is alive: bring the fabric-primary back | [fabric-recovery-runbook.md](fabric-recovery-runbook.md) |
 | a node's data dir is gone or broken | [provider-runbook.md](provider-runbook.md) |
-| a stateful node's data across stop and start, recovery, replacement and delete | [node-storage-runbook.md](node-storage-runbook.md) |
+| a stateful node's data across stop and start, recovery, a rename and delete | [node-storage-runbook.md](node-storage-runbook.md) |
 | a storage change that stays blocked, fails before its switch, or meets a restart | [topology storage provider runbook](../features/topology-storage-provider/runbook.md) |
 | a refusal | its code and named detail: [node-rpc-envelope.md, Runtime spans](../architecture/node-rpc-envelope.md#runtime-spans); every refusal names its reason |

@@ -398,11 +398,6 @@ pub enum RowFor {
     /// birth its admitted provenance names (`Allocation.predecessor`) seeds the row, its launch
     /// snapshot that birth's own acknowledged properties.
     Recovery,
-    /// A Build's create of a member it replaces at its own path (build-deployment.md §3: the reconcile's
-    /// replacement, over the data dir its delete kept or a fresh one): seeded from the exited birth its
-    /// admitted provenance names, as a recovery's is (its executable and its predecessor), but its
-    /// config and tags are its Build entry's (Q305), never the predecessor's.
-    Replacement,
 }
 
 /// What a create's write of its row did.
@@ -588,7 +583,7 @@ impl NodeRows {
         let mut guard = RowCreateGuard { span: span.clone(), done: false };
         let r = tracing::Instrument::instrument(
             async {
-                let me = if matches!(of, RowFor::Recovery | RowFor::Replacement) && rdm_core::is_node_admin(&r#type) {
+                let me = if matches!(of, RowFor::Recovery) && rdm_core::is_node_admin(&r#type) {
                     let t = self.view.read().await;
                     if t.is_fabric_primary(&self.me_id) {
                         self.held_name_in(&t)
@@ -730,7 +725,7 @@ impl NodeRows {
         written.map(|_| ()).map_err(|e| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: the {status:?} status of node {} is not written: {e}", record.node_id, me_path = &me.path, me_name = &me.name)))
     }
 
-    /// `NodeDeleted` (lifecycles/node-delete.md step 3): the row at the node's `(path, name)` (its retained predecessor name
+    /// `NodeDeleted` (lifecycles/node-delete.md step 3): the row at the node's `(path, name)` (a stopped renamed node's name
     /// path for a stopped predecessor) with status `Deleted`, the exact record the executor acted on
     /// and its config kept, a blind put. One `via-node-row` span.
     pub async fn deleted(&self, record: &Node, operation: &rdm_core::OperationId) -> Result<(), RowRefused> {
@@ -1170,7 +1165,7 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
     }
     // Only explicit provenance (`predecessor`: the create's admitted `Allocation.predecessor`, or the
     // inherited birth an admin started on an inherited root takes over) identifies a predecessor: the
-    // exited birth a recovery or a Build's replacement re-creates at the path. A location is never provenance: no record last
+    // exited birth a recovery re-creates at the path. A location is never provenance: no record last
     // written at it seeds a row.
     let seed = match predecessor {
         Some(predecessor) => {
@@ -1182,8 +1177,8 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
         }
         None => None,
     };
-    // The config and the tags of a Build's create, a reconcile's replacement included, are its entry's (`own`, `created_with`; Q305): a Build provides the whole map of a node it
-    // replaces, never the predecessor's, and an empty one is empty; an arrival names none. A recovery
+    // The config and the tags of a Build's create are its entry's (`own`, `created_with`; Q305): a Build
+    // provides the whole map of a node it creates, never a seed's, and an empty one is empty; an arrival names none. A recovery
     // inherits the predecessor's acknowledged properties from that node's own part of its record at its
     // exact ID (node-config-update.md "Build application": "True recovery inherits the predecessor's
     // acknowledged properties."): a lifecycle record never stands in for it, and a predecessor that
@@ -1198,7 +1193,7 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
     };
     // The executable beside the config: the one the create launches (`executable`), else the seed's.
     let executable = executable.cloned().or_else(|| seed.as_ref().and_then(|p| p.executable.clone()));
-    let predecessor = seed.as_ref().filter(|p| matches!(of, RowFor::Recovery | RowFor::Replacement) && p.status == NodeStatus::Deleted).and_then(|p| p.births.last().map(|b| crate::storage::BirthRef { node_id: p.node_id.clone(), incarnation_id: b.incarnation_id.clone() }));
+    let predecessor = seed.as_ref().filter(|p| matches!(of, RowFor::Recovery) && p.status == NodeStatus::Deleted).and_then(|p| p.births.last().map(|b| crate::storage::BirthRef { node_id: p.node_id.clone(), incarnation_id: b.incarnation_id.clone() }));
     if let Some(p) = &seed {
         span.record("seeded_from", p.node_id.as_str());
     }
