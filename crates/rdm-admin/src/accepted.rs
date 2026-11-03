@@ -67,13 +67,13 @@ pub fn root_storage() -> rdm_core::meta::StoragePersistence {
 
 impl MeshTopology {
     /// A new mesh from its counts, entering the accepted topology: its id minted, and every path
-    /// minted with its kind's migration default create spec (ingress normalization; the Build is
+    /// minted with its type's default create spec (ingress normalization; the Build is
     /// explicit from here).
     pub fn of(desired: &MeshDesired) -> Self {
         Self::with_id(desired, MeshId::mint())
     }
 
-    /// The mesh `mesh_id` from its counts: every path minted with its kind's migration default create spec.
+    /// The mesh `mesh_id` from its counts: every path minted with its type's default create spec.
     pub(crate) fn with_id(desired: &MeshDesired, mesh_id: MeshId) -> Self {
         let mut nodes = BTreeSet::new();
         let mut spec_by_path = BTreeMap::new();
@@ -662,7 +662,12 @@ fn validate_counts(m: &MeshDesired) -> Result<(), BuildReject> {
 /// Bring each explicit kind to its requested count. Growth generates the lowest free conventional
 /// name; shrink removes an actual accepted member and preserves the observed primary.
 fn resize(mesh: &mut MeshTopology, counts: &MeshDesired, observed: &Topology) {
-    for (r#type, want) in counts.counts() {
+    // Every type the request names, and at 0 every type the mesh holds that it does not name
+    // ([`MeshDesired::of`]), `node-admin` first.
+    let mut types: Vec<String> = counts.counts().into_iter().map(|(t, _)| t).chain(mesh.types()).collect::<BTreeSet<_>>().into_iter().collect();
+    types.sort_by_key(|t| !rdm_core::is_node_admin(t));
+    for r#type in types {
+        let want = counts.count(&r#type);
         let mut have: Vec<PathName> = mesh.nodes_of_type(&r#type).cloned().collect();
         have.sort();
         let primary = observed.node_type_primary(&mesh.name, &r#type).map(|n| &n.name);
@@ -2715,8 +2720,8 @@ mod tests {
         }
     }
 
-    /// CONTRACT (lock D): a mesh from its counts carries an explicit create spec for every path, the
-    /// kind's migration default; a grow mints a create spec with the path and a shrink drops it; a
+    /// CONTRACT (lock D): a mesh from its counts carries an explicit create spec for every path, its
+    /// type's default; a grow mints a create spec with the path and a shrink drops it; a
     /// path without a create spec, or a create spec without a path, is refused by name; a create spec
     /// set explicitly stands.
     #[test]
@@ -2741,7 +2746,7 @@ mod tests {
         resize(&mut m, &MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 3), ("gateway", 0), ("node", 1)]), &observed);
         assert_eq!(m.nodes.len(), 5);
         assert_eq!(m.spec_by_path.len(), 5);
-        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.broker", "3").unwrap()).unwrap().storage_persistence, preserve, "the grown path carries its default");
+        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.broker", "3").unwrap()).unwrap().storage_persistence, StoragePersistence::Ephemeral, "the grown path carries its type's default: an undeclared type's is `node`'s");
         assert!(m.spec(&rdm_core::PathName::new("mesh1.gateway", "1").unwrap()).is_none(), "the dropped path's create spec goes with it");
         // An explicit create spec stands; a path the mesh does not hold is refused.
         let release = NodeSpec { storage_persistence: StoragePersistence::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node") };
@@ -2758,8 +2763,8 @@ mod tests {
         );
     }
 
-    /// `topology` with every path's entry naming `tag`'s executable of its kind ([`exe`]): what a
-    /// complete-topology request naming one executable per kind compiles to over a mesh with two
+    /// `topology` with every path's entry naming `tag`'s executable of its type ([`exe`]): what a
+    /// complete-topology request naming one executable per type compiles to over a mesh with two
     /// node-admins.
     fn on_entries(topology: &FabricTopology, tag: &str) -> FabricTopology {
         let mut next = topology.clone();
@@ -2923,12 +2928,12 @@ mod tests {
         assert_eq!(paths_owed_replacement(&t(&[("mesh1", 2, 1)]), &Recorded::new()), Vec::<PathName>::new(), "no entry names one, no blocker");
     }
 
-    /// The binding `tag` names for the node at `path`: its kind's launch id, a path and sha of `tag`.
+    /// The binding `tag` names for the node at `path`: its type's launch id, a path and sha of `tag`.
     fn exe(tag: &str, r#type: &str) -> rdm_core::binding::Binding {
         rdm_core::binding::Binding { launch_id: r#type.into(), executable: format!("/{tag}/{}", r#type).into(), sha256: format!("{tag}-{}", r#type), image: None }
     }
 
-    /// `path`'s entry in a complete-topology request: its kind's default create spec on `tag`'s executable.
+    /// `path`'s entry in a complete-topology request: its type's default create spec on `tag`'s executable.
     fn entry(path: PathName, mesh: &str, r#type: &str, tag: Option<&str>) -> NodeSpec {
         let p: PathName = path.clone();
         let executable = tag.map(|t| exe(t, r#type));
@@ -2939,7 +2944,7 @@ mod tests {
         TopologyChange::Reconcile { based_on: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b0")).unwrap(), nodes }
     }
 
-    /// What the rows record: every live member of `o` on `tag`'s executable of its kind.
+    /// What the rows record: every live member of `o` on `tag`'s executable of its type.
     fn rows_on(o: &Topology, tag: &str) -> Recorded {
         o.nodes.iter().map(|n| (n.name.clone(), RecordedRow { mesh: n.mesh.clone(), r#type: n.r#type.clone(), config: Some(Default::default()), tags: None, storage_persistence: None, node_id: n.node_id.clone(), sha256: Some(format!("{tag}-{}", n.r#type)) })).collect()
     }
