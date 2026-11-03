@@ -12,10 +12,10 @@ Every term below links to the architecture pages that define it.
   inside a fabric, identified by its minted `MeshId`. Every node belongs to one mesh and
   therefore belongs to the fabric transitively (`Node.mesh_id -> Mesh.fabric`).
 - **node** ([Node identity and state](architecture/node-identity-and-state.md)): One entity in the
-  fabric's `nodes.storage` (`NodeRecord`) and the `rdm-node` process that runs it, of one `NodeKind`
-  (`NodeAdmin`, `RpcNode`, `Broker`, `Gateway` or `Compute`).
+  fabric's `nodes.storage` (`NodeRecord`) and the `rdm-node` process that runs it, of one `type`:
+  `node`, `node-admin`, or a type the application declares on the Fabric (`RDM_NODE_TYPES`).
 - **node-admin** ([Node-admin lifecycle](architecture/node-admin-lifecycle.md),
-  [Build](architecture/build.md)): A node of kind `NodeAdmin` running `rdm-admin` on top of
+  [Build](architecture/build.md)): A node of type `node-admin` running `rdm-admin` on top of
   `rdm-node`. Node-admins run the control plane: topology stores, elections, Builds, lifecycle
   workflows, and deployment providers.
 - **fabric-primary** ([Fabric primary](architecture/fabric-primary.md),
@@ -27,7 +27,7 @@ Every term below links to the architecture pages that define it.
   `node-admin` nodes in one mesh. A `mesh-primary` commands its own mesh's nodes, writes their
   rows in `nodes.storage`, holds its mesh's atlas, and announces their lifecycle status.
 - **node-type primary** ([Elections](architecture/fabric-node-lifecycle-elections.md)): The
-  elected primary among the `Ready` nodes of one `NodeKind` in one mesh. A primary stays primary
+  elected primary among the `Ready` nodes of one type in one mesh. A primary stays primary
   while it is heard; when unheard past the staleness floor (or when none is recorded), the eligible
   `Ready` candidate in that mesh with the lowest complete `NodeId` wins, or the current primary
   hands over via [`node.primary.update`](architecture/lifecycles/node-primary-update.md).
@@ -39,7 +39,7 @@ Every term below links to the architecture pages that define it.
   public interfaces, logs, and wire responses, is never derived from `endpoint_id`, and is never
   reissued.
 - **`path.name` (`PathName`)** ([Node identity and state](architecture/node-identity-and-state.md)):
-  The node's logical slot in the fabric, formed from `path` and `name` (`<mesh>.<kind>.<name>` by
+  The node's logical slot in the fabric, formed from `path` and `name` (`<mesh>.<type>.<name>` by
   convention). Durable references to a node and Build step keys name the node by `path.name`, while
   a replacement or recovery at that `path.name` mints a new `node.id` or `incarnation`.
 - **`endpoint_id` (`EndpointId`)** ([Node identity and state](architecture/node-identity-and-state.md)):
@@ -181,9 +181,9 @@ Every term below links to the architecture pages that define it.
   a signed `member cert` at `JoinNode` and verifies the peer's `member cert` on product ALPN
   connections via [`node.connections.admit`](architecture/lifecycles/node-connections-admit.md).
 - **declared secret** ([Deployment provider](architecture/deployment-provider.md),
-  [Storage](architecture/storage.md)): A secret the application declares for named node kinds. Its
-  value is set only in the environment of the kinds its declaration names, and is written to the
-  admins that may launch those kinds, each keeping it beside its data dir as `declared-secrets`. It
+  [Storage](architecture/storage.md)): A secret the application declares for named node types. Its
+  value is set only in the environment of the types its declaration names, and is written to the
+  admins that may launch those types, each keeping it beside its data dir as `declared-secrets`. It
   is never written to a row, a Build record, a receipt, the launch record or a span.
 - **`storage_persistence` and `topology_storage_provider`** ([Storage](architecture/storage.md)):
   The two storage properties in RDM. `storage_persistence` (`ephemeral`,

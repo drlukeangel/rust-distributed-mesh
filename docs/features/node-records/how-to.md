@@ -6,7 +6,7 @@
    its stores inside one process serves a single-process fabric only
    ([storage.md §2](../../architecture/storage.md)).
 2. **Launch.** Pass the path and the name separately (`RDM_NODE_PATH`, `RDM_NODE_NAME`), and the
-   kind explicitly (`RDM_NODE_KIND`). Keep the launch's node id and incarnation
+   type explicitly (`RDM_NODE_TYPE`). Keep the launch's node id and incarnation
    ([generated configuration](../../reference/rdm/config.md)).
 3. **A node's own config.** A node changes its own config with `RunningNode::config_update`. The call
    answers once the node's record is durable. Nothing travels up through the primaries.

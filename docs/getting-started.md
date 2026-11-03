@@ -197,5 +197,5 @@ estate at target/demo-estate-20261029T103315 stopped; left: 0
 ## Next steps
 
 - Read the [Glossary](glossary.md) for definitions of every RDM term, or [Fabric, mesh and node lifecycles](architecture/fabric-mesh-node-lifecycles.md) for the index of architecture pages and workflows.
-- Read [Building an application on RDM](eng/consumer-guide.md) and [Your own ops on Node RPC](eng/consumer-guide-ops.md) to wire your own node kinds and protocols.
+- Read [Building an application on RDM](eng/consumer-guide.md) and [Your own ops on Node RPC](eng/consumer-guide-ops.md) to wire your own node types and protocols.
 - Browse the runnable examples in `demo/examples/README.md`.

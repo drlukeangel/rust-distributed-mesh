@@ -27,8 +27,15 @@ pub struct Scenario {
 #[serde(deny_unknown_fields)]
 pub struct MeshShape {
     pub name: String,
-    pub node_admin: u32,
-    pub rpc_node: u32,
+    /// The number of nodes of each type, by the type's name.
+    pub counts: std::collections::BTreeMap<String, u32>,
+}
+
+impl MeshShape {
+    /// The count of `type`; a type not named is at 0.
+    pub fn count(&self, r#type: &str) -> u32 {
+        self.counts.get(r#type).copied().unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,12 +111,12 @@ impl Scenario {
             return Err(mismatch(format!("{} mesh(es), floor {meshes}", self.meshes.len())));
         }
         for m in &self.meshes {
-            if m.node_admin < admins || m.rpc_node < rpc {
-                return Err(mismatch(format!("{} has {} admin / {} rpc, floor {admins} / {rpc}", m.name, m.node_admin, m.rpc_node)));
+            if m.count(rdm_core::NODE_ADMIN) < admins || m.count(rdm_core::NODE) < rpc {
+                return Err(mismatch(format!("{} has {} node-admin / {} node, floor {admins} / {rpc}", m.name, m.count(rdm_core::NODE_ADMIN), m.count(rdm_core::NODE))));
             }
         }
         for t in self.targets() {
-            if !self.is_rpc_node(t) {
+            if !self.is_node(t) {
                 return Err(ScenarioError::UnknownTarget(t.clone()));
             }
         }
@@ -131,9 +138,9 @@ impl Scenario {
             .chain(self.assert.iter().map(|Assertion::Get { target, .. }| target))
     }
 
-    /// Match an explicitly generated location in the declared RPC class; neither field is parsed.
-    pub fn is_rpc_node(&self, location: &PathName) -> bool {
-        self.meshes.iter().any(|mesh| (1..=mesh.rpc_node).any(|ordinal| {
+    /// Match an explicitly generated location of a declared `node`; neither field is parsed.
+    pub fn is_node(&self, location: &PathName) -> bool {
+        self.meshes.iter().any(|mesh| (1..=mesh.count(rdm_core::NODE)).any(|ordinal| {
             PathName::new(format!("{}.node", mesh.name), ordinal.to_string()).as_ref() == Ok(location)
         }))
     }
@@ -142,7 +149,7 @@ impl Scenario {
     pub fn desired(&self) -> rdm_client::FabricDesired {
         rdm_client::FabricDesired {
             fabric: self.fabric.clone(),
-            meshes: self.meshes.iter().map(|m| rdm_client::MeshDesired::of(m.name.clone(), [("node-admin", m.node_admin), ("node", m.rpc_node)])).collect(),
+            meshes: self.meshes.iter().map(|m| rdm_client::MeshDesired::of(m.name.clone(), m.counts.clone())).collect(),
         }
     }
 }
@@ -158,7 +165,7 @@ mod tests {
         let s = Scenario::parse(SEED).expect("seed parses");
         assert_eq!((s.product.as_str(), s.feature.as_str(), s.subfeature.as_str()), ("mesh", "node-rpc", "rpc-certainty"));
         assert_eq!((s.rung.as_str(), s.provider.as_str(), s.shape.as_str()), ("multi-node", "process", "MN"));
-        assert_eq!(s.meshes, vec![MeshShape { name: "mesh1".into(), node_admin: 2, rpc_node: 3 }]);
+        assert_eq!(s.meshes, vec![MeshShape { name: "mesh1".into(), counts: [("node-admin".to_string(), 2), ("node".to_string(), 3)].into() }]);
         assert_eq!(s.operations.len(), 8);
         assert_eq!(
             s.operations[6],
@@ -171,9 +178,9 @@ mod tests {
 
     #[test]
     fn below_the_shape_floor_is_refused() {
-        let bad = SEED.replace("rpc_node: 3", "rpc_node: 2");
+        let bad = SEED.replace("node: 3", "node: 2");
         assert!(matches!(Scenario::parse(&bad), Err(ScenarioError::ShapeMismatch { .. }) | Err(ScenarioError::UnknownTarget(_))));
-        let bad = SEED.replace("node_admin: 2", "node_admin: 1");
+        let bad = SEED.replace("node-admin: 2", "node-admin: 1");
         assert!(matches!(Scenario::parse(&bad), Err(ScenarioError::ShapeMismatch { .. })));
     }
 
@@ -188,9 +195,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_role_names_are_not_rpc_targets() {
+    fn another_types_names_are_not_node_targets() {
         let s = Scenario::parse(SEED).unwrap();
-        assert!(!s.is_rpc_node(&PathName::new("mesh1.broker", "1").unwrap()));
-        assert!(s.is_rpc_node(&PathName::new("mesh1.node", "3").unwrap()));
+        assert!(!s.is_node(&PathName::new("mesh1.broker", "1").unwrap()));
+        assert!(s.is_node(&PathName::new("mesh1.node", "3").unwrap()));
     }
 }

@@ -76,7 +76,7 @@ Shared typed contracts, genuinely role-neutral domain models and RDM substrate p
 
 ### Role-neutral execution and policy
 
-Who executes follows topology and lifecycle ownership, not application NodeKind.
+Who executes follows topology and lifecycle ownership, not a node's type.
 The owning Mesh executor realizes ordinary members and sibling node-admins; an exact Pending
 bootstrap admin or a node-admin joining a live mesh executes only its own Mesh under the fabric-primary. Fabric-wide and
 outside-Mesh retirement rules remain generic control decisions. A general rule equivalent to

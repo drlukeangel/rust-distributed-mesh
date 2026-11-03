@@ -46,7 +46,7 @@ Readiness is three separate scopes, none a substitute for another
 | wait | what it reads |
 |---|---|
 | `estate.until_fabric_ready(within)` | the fabric's `ScopeStatus` reaching `Ready`; afterwards `estate.fabric_ready()` hands out the witness every kill takes |
-| `estate.settles_to(&[(mesh, admins, rpc_nodes)], within)`, `settles_to_named(names, within)` | the node views until the fabric holds exactly that shape, every node ready |
+| `estate.settles_to(&[(mesh, admins, nodes)], within)`, `settles_to_named(names, within)` | the node views until the fabric holds exactly that shape, every node ready |
 | `estate.until_node(name, what, within, check)`, `until_view(what, within, check)` | one node's view, or all of them, until `check` holds |
 | `Fabrics::fact(fact, within, holds)` | the fabric view until `holds` is true (`crates/rdm-client/src/objects.rs`) |
 | `rdm_client::await_fact` | a typed fact, awaited under a bound |

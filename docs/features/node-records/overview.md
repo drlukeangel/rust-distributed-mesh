@@ -11,7 +11,7 @@ declarations. Its mesh-primary writes its status and its role flags (`is_primary
 and no revision. A node that has not written yet has no properties yet.
 
 **How a node is found.** A path and a name are two separate values, and neither encodes the node's
-kind. A `(path, name)` resolves through its name claim to a node id, and the reader reads that node's
+type. A `(path, name)` resolves through its name claim to a node id, and the reader reads that node's
 record. A read by node id reads that node's record directly, whether or not the view still holds the
 node, so a deleted node answers Deleted. The path is fixed for a node's life, and only its name
 changes. A replacement renames the predecessor to `<name>-old` at the same path and creates the

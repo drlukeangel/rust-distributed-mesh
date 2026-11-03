@@ -27,15 +27,14 @@ shape: MN                  # SN | MN | MM
 fabric: fabric1
 meshes:
   - name: mesh1
-    node_admin: 2
-    rpc_node: 3
+    counts: { node-admin: 2, node: 3 }
 operations:                # each a one-key map
-  - put:    { target: mesh1.rpc.1, key: 100, value: "seed-000" }
-  - cas:    { target: mesh1.rpc.1, key: 100, expected: "seed-000", value: "seed-000-cas" }
-  - delete: { target: mesh1.rpc.3, key: 105 }
+  - put:    { target: mesh1.node.1, key: 100, value: "seed-000" }
+  - cas:    { target: mesh1.node.1, key: 100, expected: "seed-000", value: "seed-000-cas" }
+  - delete: { target: mesh1.node.3, key: 105 }
 assert:
-  - get: { target: mesh1.rpc.1, key: 100, equals: "seed-000-cas" }
-  - get: { target: mesh1.rpc.3, key: 105, absent: true }
+  - get: { target: mesh1.node.1, key: 100, equals: "seed-000-cas" }
+  - get: { target: mesh1.node.3, key: 105, absent: true }
 ```
 
 (abridged from `crates/rdm-test/scenarios/i143-node-rpc-seed.yaml`)

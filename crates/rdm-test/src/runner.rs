@@ -49,7 +49,7 @@ pub async fn run(scenario: &Scenario, provider: Option<&str>, test: &str) -> Run
     let build_id = done.build_id.to_string();
     estate.artifact("build-status.json", &json!({"build_id": build_id, "attempt": done.attempt, "frames": format!("{:?}", done.frames)}));
 
-    let shape: Vec<(&str, u32, u32)> = scenario.meshes.iter().map(|m| (m.name.as_str(), m.node_admin, m.rpc_node)).collect();
+    let shape: Vec<(&str, u32, u32)> = scenario.meshes.iter().map(|m| (m.name.as_str(), m.count(rdm_core::NODE_ADMIN), m.count(rdm_core::NODE))).collect();
     estate.settles_to(&shape, SETTLE).await;
     estate.artifact("nodes-before.json", &json!(estate.node_values().await));
 
@@ -157,7 +157,7 @@ pub async fn run_replayable(
     estate.artifact("replay-manifest.json", &serde_json::to_value(&manifest).expect("manifest serializes"));
     estate.artifact("scenario.json", &serde_json::to_value(&sc).expect("scenario serializes"));
     estate.reconcile(&sc.desired()).await;
-    let shape: Vec<(&str, u32, u32)> = sc.meshes.iter().map(|m| (m.name.as_str(), m.node_admin, m.rpc_node)).collect();
+    let shape: Vec<(&str, u32, u32)> = sc.meshes.iter().map(|m| (m.name.as_str(), m.count(rdm_core::NODE_ADMIN), m.count(rdm_core::NODE))).collect();
     estate.settles_to(&shape, SETTLE).await;
 
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").

@@ -181,7 +181,7 @@ impl ReplayManifest {
                 return Err(ManifestError::FaultStepOutOfRange { before_operation: sf.before_operation, operations: self.scenario.operations.len() });
             }
             let Fault::RestartNode { node } = &sf.fault;
-            if !self.scenario.is_rpc_node(node) {
+            if !self.scenario.is_node(node) {
                 return Err(ManifestError::FaultTargetUnknown(node.clone()));
             }
         }
@@ -197,7 +197,7 @@ impl ReplayManifest {
 /// The fault schedule a seed derives for a scenario: one restart of a seeded rpc node before a
 /// seeded operation. The same seed and scenario always derive the same schedule.
 pub fn schedule_from_seed(seed: u64, scenario: &Scenario) -> Vec<ScheduledFault> {
-    let nodes: Vec<PathName> = scenario.meshes.iter().flat_map(|m| (1..=m.rpc_node).map(move |n| PathName::new(format!("{}.node", m.name), n.to_string()).expect("declared scenario location"))).collect();
+    let nodes: Vec<PathName> = scenario.meshes.iter().flat_map(|m| (1..=m.count(rdm_core::NODE)).map(move |n| PathName::new(format!("{}.node", m.name), n.to_string()).expect("declared scenario location"))).collect();
     if nodes.is_empty() {
         return Vec::new();
     }
