@@ -87,14 +87,14 @@ fn launched_by(launcher: &Running, name: rdm_core::PathName, r#type: &str, launc
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         r#type: r#type.to_string(),
-        name,
+        path: name.path.clone(), name: name.name.clone(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: if r#type == "node-admin" { vec![("control".into(), "127.0.0.1:0".parse().unwrap())] } else { vec![] },
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(rdm_core::launch::Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(rdm_core::launch::Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.clone(),
         store_dir: launcher_dir.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -104,7 +104,7 @@ fn launched_by(launcher: &Running, name: rdm_core::PathName, r#type: &str, launc
         declared: Default::default(),
     };
     let _ = launcher.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        name: launch.name.clone(),
+        path: launch.path.clone(), name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
         supersedes: None,
@@ -140,11 +140,11 @@ impl End {
 }
 
 fn conn_birth(b: &MeshNode) -> Birth {
-    Birth { mesh: b.mesh.clone(), r#type: b.r#type.clone(), name: b.name.clone(), node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }
+    Birth { mesh: b.mesh.clone(), r#type: b.r#type.clone(), path: b.path.clone(), name: b.name.clone(), node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }
 }
 
 fn resolved(b: &MeshNode) -> ResolvedNode {
-    ResolvedNode { mesh: b.mesh.clone(), r#type: b.r#type.clone(), node_id: b.node_id.clone(), name: b.name.clone(), endpoint_id: b.endpoint_id.0.parse().unwrap(), transport_addr: b.transport_addr, incarnation: b.incarnation.clone() }
+    ResolvedNode { mesh: b.mesh.clone(), r#type: b.r#type.clone(), node_id: b.node_id.clone(), path: b.path.clone(), name: b.name.clone(), endpoint_id: b.endpoint_id.0.parse().unwrap(), transport_addr: b.transport_addr, incarnation: b.incarnation.clone() }
 }
 
 /// A node of `mesh1` serving the app protocol and admitting on the fabric's root, presenting a member
@@ -162,7 +162,7 @@ async fn peer(name: rdm_core::PathName, mesh: &str, r#type: &str, expiry_ms: Opt
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the peer binds an IPv4 socket");
     let birth = MeshNode { mesh: mesh.into(), r#type: r#type.to_string(),
         node_id: NodeId::mint(),
-        name,
+        path: name.path.clone(), name: name.name.clone(),
         endpoint_id: EndpointId(key.public().to_string()),
         transport_addr: addr,
         incarnation: IncarnationId::mint(),
@@ -175,7 +175,7 @@ async fn peer(name: rdm_core::PathName, mesh: &str, r#type: &str, expiry_ms: Opt
             let now = now_ms();
             let ca = CaKey::mint(&root(), certs::CA_CERT_TTL_SECS, now);
             let issuing = IssuingKey::mint(&ca, "mesh1", now, now + certs::ISSUING_CERT_TTL_SECS * 1000).expect("within the CA's life");
-            let identity = BirthIdentity { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: birth.name.clone(), mesh: "mesh1".into(), endpoint_key: birth.endpoint_id.clone() };
+            let identity = BirthIdentity { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), path: birth.path.clone(), name: birth.name.clone(), mesh: "mesh1".into(), endpoint_key: birth.endpoint_id.clone() };
             certs::cert_to_bytes(&certs::issue(&issuing, &identity, now, expiry).expect("a member cert under the root"))
         }
     };

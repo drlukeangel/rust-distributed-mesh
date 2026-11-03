@@ -284,15 +284,15 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
     for d in &mesh2_doors {
         d.release("atlas:no-gossip").await;
     }
-    let at_old = listed.iter().find(|n| n.name == renamed).cloned();
+    let at_old = listed.iter().find(|n| n.location() == renamed).cloned();
     assert!(
         at_old.as_ref().is_some_and(|n| n.stopped && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()),
         "mesh.nodes.get at the fabric-primary lists {node:?}'s birth stopped at {renamed:?} on the Build's Complete: {listed:#?}"
     );
-    assert!(!listed.iter().any(|n| n.name == node && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()), "the renamed birth is not answered at {node:?} too: {listed:#?}");
+    assert!(!listed.iter().any(|n| n.location() == node && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()), "the renamed birth is not answered at {node:?} too: {listed:#?}");
     // `fabric.atlas.get` answers the paths the current Build names (R-FA4): the birth the rename moved
     // off `<path>` is not at it.
-    assert!(read.nodes.iter().filter(|row| row.name == node).all(|row| row.node_id.to_string() != before["node_id"].as_str().unwrap_or_default()), "R-FA2: on the Build's Complete the atlas holds no birth of {node:?} at {node:?}: {read:#?}");
+    assert!(read.nodes.iter().filter(|row| row.location() == node).all(|row| row.node_id.to_string() != before["node_id"].as_str().unwrap_or_default()), "R-FA2: on the Build's Complete the atlas holds no birth of {node:?} at {node:?}: {read:#?}");
     estate.stop().await;
     let spans = estate.spans();
     let executed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|sp| attr(sp, "outcome") == "complete" && targets[2..].iter().any(|a| attr(sp, "executor").starts_with(&format!("{}/", id_of(a))))).collect();
@@ -321,7 +321,7 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
     let renamed = node.renamed().unwrap();
     let nodes = estate.nodes_obj().await;
     // The node's connections deleted and its mesh left: the precondition of a live rename.
-    Estate::workflow(&format!("node.connection.delete and node.mesh.leave of {node:?}"), nodes.steps(vec![rdm_core::build::Step::DeleteConnections { node: node.clone() }, rdm_core::build::Step::LeaveMesh { node: node.clone() }]).await).await;
+    Estate::workflow(&format!("node.connection.delete and node.mesh.leave of {node:?}"), nodes.steps(vec![rdm_core::build::Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()}, rdm_core::build::Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()}]).await).await;
     let id = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
     let node_id: rdm_core::NodeId = serde_json::from_value(targets[0]["node_id"].clone()).expect("a node id");
     let birth = rdm_client::ExactBirth {

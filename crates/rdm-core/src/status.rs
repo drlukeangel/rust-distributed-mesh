@@ -2712,7 +2712,7 @@ mod tests {
 
     fn node_view() -> crate::views::NodeView {
         crate::views::NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
-            name: crate::PathName::new("mesh1.node", "12").unwrap(),
+            path: "mesh1.node".into(), name: "12".into(),
             r#type: "node".into(),
             mesh: "mesh1".into(),
             node_id: NodeId::mint(),

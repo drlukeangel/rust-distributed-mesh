@@ -213,8 +213,10 @@ pub enum Hit {
     ///
     /// Position 12 on the wire.
     StorageStep {
-        /// The commanded node's separate path and name.
-        node: PathName,
+        /// The commanded node's separate path.
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The change.
         change_id: String,
     },
@@ -240,8 +242,10 @@ pub enum Hit {
     ///
     /// Position 15 on the wire.
     PathTarget {
-        /// The path's separate path and name.
-        node: PathName,
+        /// The path's separate path.
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The unreached birth's node id.
         node_id: rdm_core::NodeId,
     },
@@ -264,10 +268,10 @@ impl Hit {
             Hit::Declaration { node_id, node, state } => json!({"node_id": node_id, "node": node, "state": state}),
             Hit::ProviderInspect { pid } => json!({"pid": pid}),
             Hit::DriftPass { node } => json!({"node": node}),
-            Hit::StorageStep { node, change_id } => json!({"node": node, "change_id": change_id}),
+            Hit::StorageStep { path, name, change_id } => json!({"path": path, "name": name, "change_id": change_id}),
             Hit::StorageSwitch { change_id } => json!({"change_id": change_id}),
             Hit::StoreAppend { file, key, after } => json!({"file": file, "key": key, "after": after}),
-            Hit::PathTarget { node, node_id } => json!({"node": node, "node_id": node_id}),
+            Hit::PathTarget { path, name, node_id } => json!({"path": path, "name": name, "node_id": node_id}),
         }
     }
 }

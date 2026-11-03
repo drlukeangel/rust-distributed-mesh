@@ -102,14 +102,14 @@ fn launch_by(by: &Running, store: &Path, dir: &Path, name: &PathName, r#type: &s
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         r#type: r#type.to_string(),
-        name: name.clone(),
+        path: name.path.clone(), name: name.name.clone(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![],
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -126,7 +126,7 @@ fn deployed(by: &Running, launch: &Launch) {
     fact.write_record(&launch.data_dir).unwrap();
     let key = rdm_node::node::load_or_mint_key(&launch.data_dir).unwrap();
     let _ = by.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        name: launch.name.clone(),
+        path: launch.path.clone(), name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
         supersedes: None,
@@ -168,7 +168,7 @@ async fn launched_admin(root: &Running, store: &Path) -> (Running, BTreeMap<Stri
 }
 
 fn birth_of(n: &RunningNode) -> Birth {
-    Birth { mesh: n.digest.node.mesh.clone(), r#type: n.digest.node.r#type.clone(), name: n.digest.node.name.clone(), node_id: n.digest.node.node_id.clone(), incarnation: n.digest.node.incarnation.clone() }
+    Birth { mesh: n.digest.node.mesh.clone(), r#type: n.digest.node.r#type.clone(), path: n.digest.node.path.clone(), name: n.digest.node.name.clone(), node_id: n.digest.node.node_id.clone(), incarnation: n.digest.node.incarnation.clone() }
 }
 
 fn signed(bytes: &[u8]) -> SignedCert {
@@ -310,7 +310,7 @@ fn a_join_writes_the_births_cert_row_and_node_get_shows_it() {
         let birth = record.birth(&a.digest.node.incarnation).unwrap_or_else(|| panic!("no facts of the exact birth on mesh1.node.1's record: {record:?}"));
         let row = birth.cert.clone().unwrap_or_else(|| panic!("no cert dates on mesh1.node.1's record: {record:?}"));
         assert_eq!(
-            (birth.name.clone(), row.issued_at, row.expires_at, row.issuer_expires_at),
+            (birth.location(), row.issued_at, row.expires_at, row.issuer_expires_at),
             (rdm_core::PathName::new("mesh1.node", "1").unwrap(), issued_at, held.cert.expiry_ms, held.issuer.cert.expiry_ms),
             "the record names the exact birth and its cert"
         );
@@ -928,7 +928,7 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_throu
     for at in [Estate::path("mesh1.node-admin", "1"), Estate::path("mesh2.node-admin", "1")] {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
-            let shown = estate.node_views_at(&at).await.and_then(|vs| vs.into_iter().find(|v| v.name == Estate::path("mesh2.node-admin", "1"))).and_then(|v| v.cert);
+            let shown = estate.node_views_at(&at).await.and_then(|vs| vs.into_iter().find(|v| v.location() == Estate::path("mesh2.node-admin", "1"))).and_then(|v| v.cert);
             if shown.as_ref().is_some_and(|c| (c.issued_at, c.expires_at) == (issued_at, expires_at)) {
                 break;
             }
@@ -1006,9 +1006,9 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     let mesh2_admins: Vec<_> = views.iter().filter(|v| v.mesh == "mesh2").collect();
     let primary = mesh2_admins.iter().find(|v| v.is_primary).cloned().expect("mesh2 holds a primary");
     let secondary = mesh2_admins.iter().find(|v| !v.is_primary).cloned().expect("mesh2 holds a secondary admin");
-    let (primary_name, secondary_name) = (primary.name.clone(), secondary.name.clone());
+    let (primary_name, secondary_name) = (primary.location(), secondary.location());
     let (primary_id, secondary_id) = (primary.node_id.to_string(), secondary.node_id.to_string());
-    let fp_id = views.iter().find(|v| v.name == Estate::path("mesh1.node-admin", "1")).map(|v| v.node_id.to_string()).expect("the fabric-primary's view");
+    let fp_id = views.iter().find(|v| v.location() == Estate::path("mesh1.node-admin", "1")).map(|v| v.node_id.to_string()).expect("the fabric-primary's view");
 
     let rotated = estate_span(&estate, "rdm.node_admin.issuer.create.via-renewal", "the fabric-primary re-mints mesh2's issuer", Duration::from_secs(90), |sp| attr(sp, "mesh") == "mesh2" && attr(sp, "outcome") == "minted").await;
     let expiry = attr(&rotated, "issuer_expires_at");

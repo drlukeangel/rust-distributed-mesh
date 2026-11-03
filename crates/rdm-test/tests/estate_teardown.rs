@@ -48,8 +48,8 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mut admin_pids = Vec::new();
-    for admin in estate.node_views().await.into_iter().filter(|n| n.r#type == "node-admin" && n.name != Estate::path("mesh1.node-admin", "1")) {
-        admin_pids.push(estate.pid_of(&admin.name).await);
+    for admin in estate.node_views().await.into_iter().filter(|n| n.r#type == "node-admin" && n.location() != Estate::path("mesh1.node-admin", "1")) {
+        admin_pids.push(estate.pid_of(&admin.location()).await);
     }
     estate.enter(&Estate::path("mesh1.node-admin", "2")).await;
     let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.node-admin", "1")).await.expect("node.stop of mesh1.node-admin.1");

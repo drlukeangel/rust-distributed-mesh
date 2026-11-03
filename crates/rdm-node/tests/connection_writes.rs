@@ -87,11 +87,11 @@ struct Node {
 
 impl Node {
     async fn boot(name: rdm_core::PathName, mesh: &str, r#type: &str, storage: Arc<dyn ConnectionsStorage>) -> Self {
-        let birth = Birth { mesh: mesh.to_owned(), r#type: r#type.to_string(), name, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let birth = Birth { mesh: mesh.to_owned(), r#type: r#type.to_string(), path: name.path.clone(), name: name.name.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let key = SecretKey::generate();
         let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), &[ALPN.to_vec()]).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let resolved = ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: birth.incarnation.clone() };
+        let resolved = ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node_id: birth.node_id.clone(), path: birth.path.clone(), name: birth.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: birth.incarnation.clone() };
         let resolver = Arc::new(StaticResolver::new());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = Arc::new(ConnectionsWriter::new(birth.to_end(), storage, held));
@@ -312,7 +312,7 @@ async fn a_root_set_that_drops_the_root_a_births_cert_chains_under_is_refused_by
     let (root_a, root_b) = (rdm_core::certs::mint_key(), rdm_core::certs::mint_key());
     let ca = CaKey::mint(&root_a, 3600, 1_000);
     let issuing = IssuingKey::mint(&ca, "mesh1", 1_000, 2_000_000).unwrap();
-    let birth = BirthIdentity { node_id: node.birth.node_id.clone(), incarnation: node.birth.incarnation.clone(), name: node.birth.name.clone(), mesh: "mesh1".into(), endpoint_key: rdm_core::EndpointId(node.resolved.endpoint_id.to_string()) };
+    let birth = BirthIdentity { node_id: node.birth.node_id.clone(), incarnation: node.birth.incarnation.clone(), path: node.birth.path.clone(), name: node.birth.name.clone(), mesh: "mesh1".into(), endpoint_key: rdm_core::EndpointId(node.resolved.endpoint_id.to_string()) };
     let cert = rdm_core::certs::issue(&issuing, &birth, 1_000, 1_000_000).unwrap();
     node.registry.set_member_cert(rdm_core::certs::cert_to_bytes(&cert));
     node.registry.roots().replace(vec![root_a.verifying_key()]);

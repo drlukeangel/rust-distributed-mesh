@@ -5,7 +5,7 @@
 //! `JoinMesh`, and by a node-admin entering a mesh; each of them calls this, never a copy of it.
 
 use super::node_start::{reached_back, JoinThrough, JoinTo, JOIN_ATTEMPTS};
-use crate::model::{NodeId, PathName};
+use crate::model::NodeId;
 use crate::node_self::StartFailed;
 use crate::wire::JoinAnswer;
 use rdm_core::{MemberStatus, MeshDigest};
@@ -85,8 +85,8 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
     let mut digest = node.join_digest();
     digest.status = MemberStatus::Pending;
     let joining = match &report_parent {
-        Some(parent) => tracing::info_span!(parent: parent, "rdm.node.mesh.update.via-joining", node_path = %digest.node.name.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step),
-        None => tracing::info_span!("rdm.node.mesh.update.via-joining", node_path = %digest.node.name.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step),
+        Some(parent) => tracing::info_span!(parent: parent, "rdm.node.mesh.update.via-joining", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step),
+        None => tracing::info_span!("rdm.node.mesh.update.via-joining", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step),
     };
     let (answer, through) = join(&name, client, to, &digest, &node.join_types(), &node.join_listeners()).instrument(joining).await?;
     drop(report_parent);
@@ -106,8 +106,8 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
     drop(reported);
     // The channel step opens only once the report's step has ended (node.start's steps never overlap).
     let channel = match &channel_parent {
-        Some(parent) => tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-topology-joined", node_path = %digest.node.name.path, node_name = %name, node_id = %node_id, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
-        None => tracing::info_span!("rdm.mesh.node.update.via-topology-joined", node_path = %digest.node.name.path, node_name = %name, node_id = %node_id, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
+        Some(parent) => tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-topology-joined", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
+        None => tracing::info_span!("rdm.mesh.node.update.via-topology-joined", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
     };
     let topology_view = node.enter_channel(channel, Some(&answer)).await?;
     topology_view.learn_statuses(&answer.statuses);
@@ -157,6 +157,7 @@ fn whom(to: &JoinTo) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::PathName;
     use crate::model::{FabricIdentity, ProviderKind};
     use crate::wire::{answer_to_wire, JoinControl};
     use rdm_core::catalog::OpOwner;
@@ -191,7 +192,7 @@ mod tests {
             let node_name = handed_name
                 .as_ref()
                 .map(|location| location.name.clone())
-                .unwrap_or_else(|| self.digest.node.name.name.clone());
+                .unwrap_or_else(|| self.digest.node.name.clone());
             tracing::info_span!(
                 parent: &step,
                 "rdm.node.mesh.update.via-joined",
@@ -254,7 +255,7 @@ mod tests {
             let launcher_to = JoinTo::Launcher {
                 target: NodeTarget::ExactNode(admin_id.clone()),
                 endpoint: sample_key,
-                name: admin_name.clone(),
+                path: admin_name.path.clone(), name: admin_name.name.clone(),
             };
             assert_eq!(whom(&launcher_to), admin_id.to_string());
             let (_tx, rx) = tokio::sync::watch::channel(sample_key);
@@ -325,7 +326,7 @@ mod tests {
                 rdm_transport::ResolvedNode {
                     mesh: "mesh1".into(), r#type: "node-admin".into(),
                     node_id: admin_id.clone(),
-                    name: admin_name.clone(),
+                    path: admin_name.path.clone(), name: admin_name.name.clone(),
                     endpoint_id: admin_key.public(),
                     transport_addr: admin_addr,
                     incarnation: admin_incarnation.clone(),
@@ -345,7 +346,7 @@ mod tests {
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),
-                    name: initial_name.clone(),
+                    path: initial_name.path.clone(), name: initial_name.name.clone(),
                     endpoint_id: EndpointId(node_key.public().to_string()),
                     incarnation: node_incarnation.clone(),
                     supersedes: None,
@@ -377,7 +378,7 @@ mod tests {
             let to = JoinTo::Launcher {
                 target: NodeTarget::ExactNode(admin_id.clone()),
                 endpoint: admin_key.public(),
-                name: admin_name.clone(),
+                path: admin_name.path.clone(), name: admin_name.name.clone(),
             };
             let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
 
@@ -610,7 +611,7 @@ mod tests {
                 rdm_transport::ResolvedNode {
                     mesh: "mesh1".into(), r#type: "node-admin".into(),
                     node_id: admin_id.clone(),
-                    name: admin_name.clone(),
+                    path: admin_name.path.clone(), name: admin_name.name.clone(),
                     endpoint_id: admin_key.public(),
                     transport_addr: admin_addr,
                     incarnation: admin_incarnation.clone(),
@@ -624,7 +625,7 @@ mod tests {
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),
-                    name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+                    path: "mesh1.node".into(), name: "1".into(),
                     endpoint_id: EndpointId(node_key.public().to_string()),
                     incarnation: IncarnationId::mint(),
                     supersedes: None,
@@ -654,7 +655,7 @@ mod tests {
             let to = JoinTo::Launcher {
                 target: NodeTarget::ExactNode(admin_id),
                 endpoint: admin_key.public(),
-                name: admin_name,
+                path: admin_name.path.clone(), name: admin_name.name.clone(),
             };
             let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
             let _ = node_mesh_join(

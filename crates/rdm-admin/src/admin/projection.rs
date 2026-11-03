@@ -182,15 +182,15 @@ impl RowNames {
             if &d.fabric_id != fabric_id {
                 continue;
             }
-            let birth = (d.node.node_id.clone(), d.node.incarnation.clone(), d.node.name.clone());
+            let birth = (d.node.node_id.clone(), d.node.incarnation.clone(), d.node.location());
             if publishes(digest_view, records, &d.node.node_id, &d.node.incarnation, age) {
                 publishing.push(birth);
             } else {
                 quiet.push(birth);
             }
         }
-        quiet.extend(digest_view.stopped_digests().into_iter().filter(|d| &d.fabric_id == fabric_id).map(|d| (d.node.node_id, d.node.incarnation, d.node.name)));
-        quiet.extend(digest_view.stopped_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
+        quiet.extend(digest_view.stopped_digests().into_iter().filter(|d| &d.fabric_id == fabric_id).map(|d| { let at = d.node.location(); (d.node.node_id, d.node.incarnation, at) }));
+        quiet.extend(digest_view.stopped_unheard().into_iter().map(|op| { let at = op.location(); (op.node_id, op.incarnation, at) }));
         // Every name a birth the view holds is listed at, by how many births: a publishing birth's row
         // is read only where another birth is listed at its name too.
         let mut listed: HashMap<PathName, usize> = HashMap::new();
@@ -199,7 +199,7 @@ impl RowNames {
         }
         for (d, _) in digest_view.projected_unheard_at(at) {
             if &d.fabric_id == fabric_id {
-                *listed.entry(d.node.name.clone()).or_default() += 1;
+                *listed.entry(d.node.location()).or_default() += 1;
             }
         }
         for (node_id, incarnation, published) in quiet {
@@ -273,7 +273,7 @@ impl RowNames {
     /// current one and `n` is ([`Self::takes_path`]).
     pub(crate) fn place(&self, nodes: &mut BTreeMap<PathName, Node>, name: PathName, mut n: Node) {
         if let Some((_, RowName::At(_, predecessor))) = n.incarnation_id.as_ref().and_then(|inc| self.names.get(&(n.node_id.clone(), inc.clone()))) {
-            n.renamed_from = predecessor.clone();
+            n.renamed_from = predecessor.clone().map(|p| p.name);
         }
         match nodes.get(&name) {
             Some(listed) if self.takes_path(listed, &n) != Some(true) => {}
@@ -298,7 +298,7 @@ pub(crate) async fn row_name(me: &PathName, store: &dyn crate::storage::NodesSto
     match store.node(node_id).await {
         Ok(Some(row)) => {
             let released = crate::node_rows::released_its_name(&row);
-            (RowName::At(row.name.clone(), row.replacement_from.clone()), released)
+            (RowName::At(row.location(), row.replacement_from.clone()), released)
         }
         // The node holds no row: no rename moved it, and the name it published stands.
         Ok(None) => (RowName::At(published.clone(), None), false),
@@ -330,7 +330,7 @@ pub fn describe_absence(digest_view: &DigestView, records: &Records, name: &Path
     let digests: Vec<String> = digest_view
         .all()
         .into_iter()
-        .filter(|d| &d.node.name == name)
+        .filter(|d| &d.node.location() == name)
         .map(|d| {
             let age = digest_view.get_at(d.node.node_id.as_str(), now).map(|(_, a)| a.as_millis() as u64).unwrap_or(0);
             format!(
@@ -398,9 +398,9 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // A birth that publishes names itself (R12); one that does not is listed at the name its row
         // holds (a stopped predecessor a node.update renamed the predecessor name `<name>-old` at the same path), one whose row could not be read not at all.
         let name = if publishes(digest_view, records, &d.node.node_id, &d.node.incarnation, age) {
-            d.node.name.clone()
+            d.node.location()
         } else {
-            match rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.name) {
+            match rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.location()) {
                 Some(n) => n,
                 None => continue,
             }
@@ -460,7 +460,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         }
         heard.insert(d.node.incarnation.clone());
         // A stopped node is told nothing of a rename (R13): it is listed at the name its row holds.
-        let Some(name) = rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.name) else { continue };
+        let Some(name) = rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.location()) else { continue };
         if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
         }
@@ -496,7 +496,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             continue;
         }
         heard.insert(op.incarnation.clone());
-        let Some(name) = rows.name_of(&op.node_id, &op.incarnation, &op.name) else { continue };
+        let Some(name) = rows.name_of(&op.node_id, &op.incarnation, &op.location()) else { continue };
         if removed.contains(&(name.clone(), Some(op.incarnation.clone()))) {
             continue;
         }
@@ -527,7 +527,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             continue;
         }
         heard.insert(d.node.incarnation.clone());
-        let Some(name) = rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.name) else { continue };
+        let Some(name) = rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.location()) else { continue };
         if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
         }
@@ -694,14 +694,14 @@ mod tests {
         let mut admin = super::super::tests::digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
         let fabric = admin.fabric_id.clone();
         let mesh_id = MeshId::mint();
-        admin.node.name = rdm_core::PathName::new("elsewhere.node", "administrator").unwrap();
+        { let at = rdm_core::PathName::new("elsewhere.node", "administrator").unwrap(); admin.node.path = at.path; admin.node.name = at.name; }
         admin.node.mesh = "mesh2".into();
         admin.node.r#type = "node-admin".to_string();
         admin.mesh_id = Some(mesh_id.clone());
         admin.is_primary = Some(7);
         admin.is_fabric_primary = Some(7);
         let mut member = super::super::tests::digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
-        member.node.name = rdm_core::PathName::new("elsewhere.gateway", "north").unwrap();
+        { let at = rdm_core::PathName::new("elsewhere.gateway", "north").unwrap(); member.node.path = at.path; member.node.name = at.name; }
         member.node.mesh = "mesh2".into();
         member.node.r#type = "compute".to_string();
         member.mesh_id = Some(mesh_id.clone());
@@ -722,7 +722,7 @@ mod tests {
         view.recorded_primaries(&mut member);
         assert_eq!(member.is_primary, Some(7));
         let topology = project_at("fabric1", &fabric, ProviderKind::Process, &view, &records, now);
-        let found = topology.node(&member.node.name).expect("the member is projected");
+        let found = topology.node(&member.node.location()).expect("the member is projected");
         assert_eq!((&found.mesh, found.r#type.as_str()), (&"mesh2".to_string(), "compute"));
         assert_eq!(topology.node_type_primary("mesh2", "compute").map(|n| &n.node_id), Some(&member.node.node_id));
         assert_eq!(topology.node_type_primary("mesh2", "node-admin").map(|n| &n.node_id), Some(&admin.node.node_id));

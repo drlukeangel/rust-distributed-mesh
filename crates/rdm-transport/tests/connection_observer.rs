@@ -36,7 +36,7 @@ async fn a_source_observes_its_own_direct_connections_opening_and_failing_once_e
     // An unreachable birth: a key nobody serves, at a port nobody listens on.
     let nobody = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(),
         node_id: NodeId::mint(),
-        name: rdm_core::PathName::new("mesh1.node", "9").unwrap(),
+        path: "mesh1.node".into(), name: "9".into(),
         endpoint_id: iroh::SecretKey::generate().public(),
         transport_addr: "127.0.0.1:1".parse().unwrap(),
         incarnation: IncarnationId::mint(),
@@ -86,7 +86,7 @@ async fn an_accepted_connection_is_handed_to_the_accept_trigger_once() {
     let (dk, de) = bind().await;
     let dialer = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(),
         node_id: NodeId::mint(),
-        name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
+        path: "mesh1.node".into(), name: "2".into(),
         endpoint_id: dk.public(),
         transport_addr: de.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(),
         incarnation: IncarnationId::mint(),
@@ -107,7 +107,7 @@ async fn an_accepted_connection_is_handed_to_the_accept_trigger_once() {
         .unwrap();
     let addr = ae.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let _router = Router::builder(ae).accept(rdm_transport::ALPN, server).spawn();
-    let acceptor = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id, name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), endpoint_id: ak.public(), transport_addr: addr, incarnation };
+    let acceptor = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id, path: "mesh1.node".into(), name: "1".into(), endpoint_id: ak.public(), transport_addr: addr, incarnation };
     let sr = Arc::new(StaticResolver::new());
     sr.insert(acceptor.clone());
     let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(1500)), ..Default::default() };

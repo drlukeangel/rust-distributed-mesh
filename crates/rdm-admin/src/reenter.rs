@@ -32,7 +32,9 @@ pub(crate) struct MapNode {
     pub mesh: String,
     pub r#type: String,
     pub node_id: NodeId,
-    pub name: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     pub endpoint_id: EndpointId,
     pub transport_addr: SocketAddr,
     pub incarnation: IncarnationId,
@@ -49,6 +51,11 @@ pub(crate) struct MapNode {
 }
 
 impl MapNode {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
+}
+
+impl MapNode {
     /// The birth `record` names to reach: its newest birth, at the address the node wrote in its own
     /// part of its record, `own` (Q333), at that birth. A record whose newest birth has no such part
     /// names none. A stored record says nothing of who lives: the birth is settled and not ready.
@@ -58,7 +65,7 @@ impl MapNode {
         Some(Self {
             mesh: record.mesh.clone(), r#type: record.r#type.clone(),
             node_id: record.node_id.clone(),
-            name: record.name.clone(),
+            path: record.path.clone(), name: record.name.clone(),
             endpoint_id: own.endpoint_id.clone()?,
             transport_addr: own.transport_addr?,
             incarnation: b.incarnation_id.clone(),
@@ -72,7 +79,7 @@ impl MapNode {
     pub(crate) fn resolved(&self) -> Option<ResolvedNode> {
         Some(ResolvedNode { mesh: self.mesh.clone(), r#type: self.r#type.clone(),
             node_id: self.node_id.clone(),
-            name: self.name.clone(),
+            path: self.path.clone(), name: self.name.clone(),
             endpoint_id: self.endpoint_id.0.parse().ok()?,
             transport_addr: self.transport_addr,
             incarnation: self.incarnation.clone(),
@@ -84,7 +91,7 @@ impl MapNode {
     /// held for one in transition that answered, `PendingReconnect` for a settled one not yet
     /// reached; never `Dead`).
     pub(crate) fn as_node(&self, status: crate::model::NodeStatus, provider: crate::model::ProviderKind) -> crate::model::Node {
-        let mut node = crate::model::Node::allocated(self.name.clone(), self.mesh.clone(), &self.r#type);
+        let mut node = crate::model::Node::allocated(self.location(), self.mesh.clone(), &self.r#type);
         node.node_id = self.node_id.clone();
         node.endpoint_id = Some(self.endpoint_id.clone());
         node.incarnation_id = Some(self.incarnation.clone());
@@ -119,7 +126,7 @@ pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rd
                 data_dir: d.data_dir.clone(),
                 admin_api_base: d.admin_api_base.clone(),
                 node_id: d.node.node_id.clone(),
-                name: d.node.name.clone(),
+                path: d.node.path.clone(), name: d.node.name.clone(),
                 endpoint_id: d.node.endpoint_id.clone(),
                 transport_addr: d.node.transport_addr,
                 incarnation: d.node.incarnation.clone(),
@@ -143,7 +150,7 @@ pub(crate) fn map_of_stored(read: &crate::topology_read::TopologyRead) -> Vec<Ma
                 data_dir: None,
                 admin_api_base: None,
                 node_id: n.node_id.clone(),
-                name: n.name.clone(),
+                path: n.name.path.clone(), name: n.name.name.clone(),
                 endpoint_id: n.endpoint_id.clone(),
                 transport_addr: n.transport_addr,
                 incarnation: n.incarnation.clone(),
@@ -192,12 +199,19 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
 /// What the entering admin has.
 #[derive(Clone)]
 pub(crate) struct EntryCtx {
-    pub me: PathName,
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     pub me_id: NodeId,
     pub client: Arc<NodeRpcClient>,
     pub resolver: Arc<LiveNodeResolver>,
     pub topology_view: TopologyView,
     pub time: rdm_transport::clock::RafkaTime,
+}
+
+impl EntryCtx {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
 /// What the sweep found.
@@ -239,7 +253,7 @@ pub(crate) fn sweep_targets(map: &[MapNode]) -> Vec<MapNode> {
 /// refuses new non-status calls"), so a settled node that answers is the one to read from.
 pub(crate) fn local_candidates(map: &[MapNode]) -> Vec<MapNode> {
     let mut v = map.to_vec();
-    v.sort_by_key(|n| (n.transition.is_some(), n.name.clone()));
+    v.sort_by_key(|n| (n.transition.is_some(), n.location()));
     v
 }
 
@@ -247,7 +261,7 @@ pub(crate) fn local_candidates(map: &[MapNode]) -> Vec<MapNode> {
 fn own_mesh_map(nodes: &[MapNode], mesh: &str, me_id: &NodeId) -> Vec<MapNode> {
     let mut seen = std::collections::BTreeSet::new();
     let mut own: Vec<_> = nodes.iter().filter(|n| n.mesh == mesh && &n.node_id != me_id && seen.insert(n.node_id.clone())).cloned().collect();
-    own.sort_by_key(|n| n.name.clone());
+    own.sort_by_key(|n| n.location());
     own
 }
 
@@ -267,16 +281,16 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
         }
     }
     if let Some(l) = &local {
-        match get_topology(TopologySource::LocalNode { node: l, client: &ctx.client, topology_view: &ctx.topology_view, me: &ctx.me, me_id: &ctx.me_id, time: &ctx.time, adopt_time: source != "durable-map" }).await {
+        match get_topology(TopologySource::LocalNode { node: l, client: &ctx.client, topology_view: &ctx.topology_view, me: &ctx.me(), me_id: &ctx.me_id, time: &ctx.time, adopt_time: source != "durable-map" }).await {
             Ok(current) => {
                 // The current read replaces metadata for the same node ID and adds new IDs.
                 let current = own(&current);
                 map.retain(|m| !current.iter().any(|c| c.node_id == m.node_id));
                 map.extend(current);
-                map.sort_by_key(|n| n.name.clone());
+                map.sort_by_key(|n| n.location());
             }
             Err(why) => {
-                tracing::info_span!("rdm.node_admin.mesh.reject.via-local-topology-read", node_path = %ctx.me.path, node_name = %ctx.me.name, mesh = %mesh, local = %l.node_id, detail = %why)
+                tracing::info_span!("rdm.node_admin.mesh.reject.via-local-topology-read", node_path = %ctx.me_path, node_name = %ctx.me_name, mesh = %mesh, local = %l.node_id, detail = %why)
                     .in_scope(|| tracing::info!("the local node answered but its topology was not read; the sweep runs on the map held"));
             }
         }
@@ -297,7 +311,7 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
     let report = SweepReport { local: local.map(|l| l.node_id), reached, not_reached, elapsed_ms: started.elapsed().as_millis() as u64 };
     tracing::info_span!(
         "rdm.node_admin.mesh.update.via-entry-sweep",
-        node_path = %ctx.me.path, node_name = %ctx.me.name,
+        node_path = %ctx.me_path, node_name = %ctx.me_name,
         mesh = %mesh,
         source,
         local = report.local.as_ref().map(|l| l.to_string()).unwrap_or_default(),
@@ -311,7 +325,7 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
         for (n, outcome) in &report.not_reached {
             tracing::info_span!(
                 "rdm.node_admin.node.reject.via-entry-sweep-no-reply",
-                node_path = %n.name.path, node_name = %n.name.name,
+                node_path = %n.path, node_name = %n.name,
                 node_id = %n.node_id,
                 incarnation_id = %n.incarnation.as_str(),
                 outcome = %outcome,
@@ -333,7 +347,7 @@ mod tests {
     fn birth(name: PathName, mesh: &str, r#type: &str, status: MemberStatus) -> MapNode {
         MapNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: NodeId::mint(),
-            name,
+            path: name.path.clone(), name: name.name.clone(),
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:1".parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -368,7 +382,7 @@ mod tests {
             birth(PathName::new("mesh2.node", "3").unwrap(), "mesh2", "node", MemberStatus::ConnectionsDeleting),
             birth(PathName::new("mesh2.node", "4").unwrap(), "mesh2", "node", MemberStatus::Pending),
         ];
-        let pinged: Vec<PathName> = sweep_targets(&map).iter().map(|n| n.name.clone()).collect();
+        let pinged: Vec<PathName> = sweep_targets(&map).iter().map(|n| n.location()).collect();
         assert_eq!(pinged, vec![PathName::new("mesh2.node", "1").unwrap(), PathName::new("mesh2.node", "2").unwrap(), PathName::new("mesh2.node", "3").unwrap(), PathName::new("mesh2.node", "4").unwrap()]);
     }
 
@@ -385,7 +399,7 @@ mod tests {
             birth(PathName::new("mesh2.node", "3").unwrap(), "mesh2", "node", MemberStatus::Ready),
             birth(PathName::new("mesh2.node", "4").unwrap(), "mesh2", "node", MemberStatus::Ready),
         ];
-        let tried: Vec<PathName> = local_candidates(&map).iter().map(|n| n.name.clone()).collect();
+        let tried: Vec<PathName> = local_candidates(&map).iter().map(|n| n.location()).collect();
         assert_eq!(tried, vec![PathName::new("mesh2.node", "3").unwrap(), PathName::new("mesh2.node", "4").unwrap(), PathName::new("mesh2.node", "1").unwrap(), PathName::new("mesh2.node", "2").unwrap()]);
     }
 
@@ -484,7 +498,7 @@ mod tests {
                 fabric_id: fabric_id.clone(),
                 node: rdm_core::MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: local_node_id.clone(),
-                    name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+                    path: "mesh1.node".into(), name: "1".into(),
                     endpoint_id: EndpointId(local_ep.id().to_string()),
                     transport_addr: local_addr,
                     incarnation: local_inc.clone(),
@@ -507,7 +521,7 @@ mod tests {
             let dead_digest = rdm_core::MeshDigest {
                 node: rdm_core::MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: dead_node_id.clone(),
-                    name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
+                    path: "mesh1.node".into(), name: "2".into(),
                     endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
                     transport_addr: "127.0.0.1:9".parse().unwrap(),
                     incarnation: dead_inc.clone(),
@@ -582,7 +596,7 @@ mod tests {
             // Durable map includes a peer-mesh node (mesh2.node.1) and the own-mesh node (mesh1.node.1).
             let peer_map_node = MapNode { mesh: "mesh2".into(), r#type: "node".into(),
                 node_id: NodeId::mint(),
-                name: rdm_core::PathName::new("mesh2.node", "1").unwrap(),
+                path: "mesh2.node".into(), name: "1".into(),
                 endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
                 transport_addr: "127.0.0.1:9".parse().unwrap(),
                 incarnation: IncarnationId::mint(),
@@ -593,7 +607,7 @@ mod tests {
             };
             let own_map_node = MapNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: local_node_id.clone(),
-                name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+                path: "mesh1.node".into(), name: "1".into(),
                 endpoint_id: EndpointId(local_ep.id().to_string()),
                 transport_addr: local_addr,
                 incarnation: local_inc.clone(),
@@ -606,7 +620,7 @@ mod tests {
 
             // Steps 1-3: enter_existing_mesh reads GetTopology from own-mesh node first, joins channel, and sweeps own mesh.
             let ctx = EntryCtx {
-                me: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
+                me_path: "mesh1.node-admin".into(), me_name: "1".into(),
                 me_id: fp_node_id.clone(),
                 client: fp_client.clone(),
                 resolver: fp_resolver.clone(),
@@ -615,8 +629,8 @@ mod tests {
             };
             let report = enter_existing_mesh(&ctx, "durable-map", durable_rows).await;
             assert_eq!(report.local, Some(local_node_id.clone()), "GetTopology targets own-mesh durable-map node first");
-            assert_eq!(report.reached.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), vec![PathName::new("mesh1.node", "1").unwrap()]);
-            assert_eq!(report.not_reached.iter().map(|(n, _)| n.name.clone()).collect::<Vec<_>>(), vec![PathName::new("mesh1.node", "2").unwrap()], "non-answering own-mesh member goes to node recovery");
+            assert_eq!(report.reached.iter().map(|n| n.location()).collect::<Vec<_>>(), vec![PathName::new("mesh1.node", "1").unwrap()]);
+            assert_eq!(report.not_reached.iter().map(|(n, _)| n.location()).collect::<Vec<_>>(), vec![PathName::new("mesh1.node", "2").unwrap()], "non-answering own-mesh member goes to node recovery");
 
             // Step 4: Restore secondary admin under the SAME accepted Build, with the claim the recovered fabric-primary's.
             use crate::build_state::BuildStateAdapter as _;
@@ -658,7 +672,7 @@ mod tests {
                 nodes: vec![fp_node, sec_node],
             }));
             let claim_door = Arc::new(crate::build_claim::ClaimDoor {
-                me: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
+                me_path: "mesh1.node-admin".into(), me_name: "1".into(),
                 node_id: fp_node_id.clone(),
                 incarnation: fp_inc.clone(),
                 topology: fp_topology,
@@ -680,7 +694,7 @@ mod tests {
             claimant_resolver.apply(
                 ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(),
                     node_id: fp_node_id.clone(),
-                    name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
+                    path: "mesh1.node-admin".into(), name: "1".into(),
                     endpoint_id: fp_ep.id(),
                     transport_addr: fp_addr,
                     incarnation: fp_inc,

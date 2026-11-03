@@ -36,8 +36,10 @@ use tracing::Instrument;
 /// The exact birth the hook runs for.
 #[derive(Debug, Clone)]
 pub struct Birth {
-    /// The birth's `(path, name)`.
-    pub name: PathName,
+    /// The birth's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// Its node id.
     pub node_id: NodeId,
     /// Its incarnation.
@@ -48,6 +50,11 @@ pub struct Birth {
     pub mesh_id: MeshId,
     /// Its type.
     pub r#type: String,
+}
+
+impl Birth {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// The node-admin that accepted this birth's `JoinNode`: the accepting primary the hook pulls from (`fabric-node-hooks.md` "What the context carries"). A start after
@@ -199,8 +206,15 @@ pub struct CallFailedBirth {
     pub node_id: NodeId,
     /// Its incarnation.
     pub incarnation: IncarnationId,
-    /// Its `(path, name)`, the name the birth holds at the call's end.
-    pub name: PathName,
+    /// Its path, the name the birth holds at the call's end.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
+}
+
+impl CallFailedBirth {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// Why the call ended: `NotSent` with its reason or `Indeterminate` with its reason, the end the
@@ -312,19 +326,20 @@ impl rdm_transport::CallEndObserver for CallFailedNotice {
     /// The client tells `on_call_failed` a spent call alone; an answered one is never its.
     fn call_ended(&self, receiver: Option<&rdm_transport::ResolvedNode>, end: rdm_transport::CallEnd) {
         let rdm_transport::CallEnd::Spent(reason) = end else { return };
+        let held = self.name.now();
         let ctx = CallFailedCtx {
-            sender: CallFailedBirth { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.name.now() },
-            receiver: receiver.map(|r| CallFailedBirth { node_id: r.node_id.clone(), incarnation: r.incarnation.clone(), name: r.name.clone() }),
+            sender: CallFailedBirth { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), path: held.path, name: held.name },
+            receiver: receiver.map(|r| CallFailedBirth { node_id: r.node_id.clone(), incarnation: r.incarnation.clone(), path: r.path.clone(), name: r.name.clone() }),
             reason,
         };
         let span = tracing::info_span!(
             "rdm.mesh.node.update.via-on-call-failed",
-            node_path = %ctx.sender.name.path,
-            node_name = %ctx.sender.name.name,
+            node_path = %ctx.sender.path,
+            node_name = %ctx.sender.name,
             node_id = %ctx.sender.node_id,
             incarnation_id = %ctx.sender.incarnation.as_str(),
-            receiver_path = %ctx.receiver.as_ref().map(|r| r.name.path.as_str()).unwrap_or_default(),
-            receiver_name = %ctx.receiver.as_ref().map(|r| r.name.name.as_str()).unwrap_or_default(),
+            receiver_path = %ctx.receiver.as_ref().map(|r| r.path.as_str()).unwrap_or_default(),
+            receiver_name = %ctx.receiver.as_ref().map(|r| r.name.as_str()).unwrap_or_default(),
             receiver_node_id = %ctx.receiver.as_ref().map(|r| r.node_id.to_string()).unwrap_or_default(),
             receiver_incarnation_id = %ctx.receiver.as_ref().map(|r| r.incarnation.as_str().to_string()).unwrap_or_default(),
             outcome = ctx.reason.name(),
@@ -607,7 +622,7 @@ impl HookDriver {
         let span = tracing::info_span!(
             parent: &self.boot,
             "rdm.mesh.node.update.via-pre-node-ready-attempt",
-            node_path = %self.ctx.birth.name.path, node_name = %self.ctx.birth.name.name,
+            node_path = %self.ctx.birth.path, node_name = %self.ctx.birth.name,
             node_id = %self.ctx.birth.node_id,
             incarnation_id = %self.ctx.birth.incarnation.as_str(),
             attempt = n,
@@ -663,7 +678,7 @@ impl HookDriver {
                 let blocked = tracing::info_span!(
                     parent: &self.boot,
                     "rdm.mesh.node.reject.via-pre-node-ready-blocked",
-                    node_path = %self.ctx.birth.name.path, node_name = %self.ctx.birth.name.name,
+                    node_path = %self.ctx.birth.path, node_name = %self.ctx.birth.name,
                     attempt = n,
                     blocker = %reason,
                     retry_on = retry_on.name(),
@@ -721,7 +736,7 @@ impl HookDriver {
         let Some(after) = self.after.clone() else { return };
         let me = self.clone();
         tokio::spawn(async move {
-            let span = tracing::info_span!(parent: &me.boot, "rdm.mesh.node.update.via-on-node-ready", node_path = %me.ctx.birth.name.path, node_name = %me.ctx.birth.name.name);
+            let span = tracing::info_span!(parent: &me.boot, "rdm.mesh.node.update.via-on-node-ready", node_path = %me.ctx.birth.path, node_name = %me.ctx.birth.name);
             let ctx = me.ctx.clone();
             let cancel = me.ctx.cancel.clone();
             tokio::select! {
@@ -820,7 +835,7 @@ mod tests {
             .expect("join topology view");
 
             let birth = Birth {
-                name: name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
                 node_id: NodeId::mint(),
                 incarnation: IncarnationId::mint(),
                 fabric_id,
@@ -1042,7 +1057,7 @@ mod tests {
         #[async_trait::async_trait]
         impl OnNodeReady for RecordAfter {
             async fn on_node_ready(&self, ctx: &NodeReadyCtx) {
-                self.seen_nodes.lock().unwrap().push(ctx.birth.name.clone());
+                self.seen_nodes.lock().unwrap().push(ctx.birth.location());
                 if let Some(tx) = self.done_tx.lock().unwrap().take() {
                     let _ = tx.send(());
                 }
@@ -1106,7 +1121,7 @@ mod tests {
             .expect("join topology view");
 
             let birth = Birth {
-                name: expected_name.clone(),
+                path: expected_name.path.clone(), name: expected_name.name.clone(),
                 node_id: NodeId::mint(),
                 incarnation: IncarnationId::mint(),
                 fabric_id,
@@ -1145,7 +1160,7 @@ mod tests {
                 done_tx: Mutex::new(Some(done_tx)),
             });
             let hooks = NodeHooks::new(Arc::new(PassBefore)).with_on_node_ready(after.clone());
-            let boot_span = tracing::info_span!("rdm.mesh.node.create.via-boot", node_path = %birth.name.path, node_name = %birth.name.name);
+            let boot_span = tracing::info_span!("rdm.mesh.node.create.via-boot", node_path = %birth.path, node_name = %birth.name);
             let driver = hooks
                 .driver(
                     NodeReadyCtx {

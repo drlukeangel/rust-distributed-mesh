@@ -50,7 +50,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
             fabric_id: fabric,
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: born.clone(),
+            path: born.path.clone(), name: born.name.clone(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -90,8 +90,8 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
             heard.changed().await.unwrap();
         }
         let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-        assert_eq!(d.node.name, born);
-        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        assert_eq!(d.node.location(), born);
+        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let client = &admin.observer.client;
@@ -124,7 +124,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         while digest_view.get(launch.node_id.as_str()).unwrap().0.digest_seq == seq {
             digests.changed().await.unwrap();
         }
-        assert_eq!(digest_view.get(launch.node_id.as_str()).unwrap().0.node.name, born, "a Busy node keeps publishing its birth's name");
+        assert_eq!(digest_view.get(launch.node_id.as_str()).unwrap().0.node.location(), born, "a Busy node keeps publishing its birth's name");
 
         // node.connection.delete { All }, held open by one call in flight at the node: it answers
         // only once that call has its reply, its receipt counting it, and the route is closed.

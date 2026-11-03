@@ -70,7 +70,7 @@ fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide) -> Lau
         fabric_id: fabric.clone(),
         mesh: "mesh1".into(),
         r#type: "node".into(),
-        name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+        path: "mesh1.node".into(), name: "1".into(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,

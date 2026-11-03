@@ -162,10 +162,10 @@ async fn connection_failed_dial_inner_not_sent() {
 fn proxied_held(r: &Rig) -> (rdm_core::connections::ConnectionsHeld, NodeId, rdm_core::connections::NodeConnection) {
     use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
     let own: rdm_core::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-    let end = |n: &ResolvedNode| ConnectionEnd { mesh: n.mesh.clone(), r#type: n.r#type.clone(), name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
+    let end = |n: &ResolvedNode| ConnectionEnd { mesh: n.mesh.clone(), r#type: n.r#type.clone(), path: n.path.clone(), name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let proxy = NodeConnection {
         id: rdm_core::ConnectionId::mint(),
-        source: ConnectionEnd { r#type: "node".into(), mesh: "mesh1".into(), name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
+        source: ConnectionEnd { r#type: "node".into(), mesh: "mesh1".into(), path: own.path.clone(), name: own.name.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
         destination: end(&r.target.resolved),
         kind: ConnectionKind::Proxy,
         alpn: rdm_core::connections::ALPN.to_vec(),
@@ -196,7 +196,7 @@ async fn a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_dis
         let r = rig_with(Some(Arc::new(ConnectionFact(connection))), true).await;
         let (held, own, proxy) = proxied_held(&r);
         let resolution = resolve(&held, &own, &r.target.resolved.node_id, policy.clone());
-        let call = r.origin.call_resolved::<Probe>(resolution, &own, &r.target.resolved.name, &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
+        let call = r.origin.call_resolved::<Probe>(resolution, &own, &r.target.resolved.location(), &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
         assert!(matches!(call.outcome, RpcOutcome::NotSent(_)), "{:?}", call.outcome);
         assert_eq!(call.delete, deleted.then_some((proxy, INVALID_CONNECTION_LOST)).into_iter().collect::<Vec<_>>());
     }

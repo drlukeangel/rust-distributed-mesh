@@ -153,7 +153,7 @@ pub(crate) async fn adopt_from_reachable(
             if d.node.node_id != *me_id && !candidates.iter().any(|c| c.node_id == d.node.node_id) {
                 candidates.push(crate::reenter::MapNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(),
                     node_id: d.node.node_id.clone(),
-                    name: d.node.name.clone(),
+                    path: d.node.path.clone(), name: d.node.name.clone(),
                     endpoint_id: d.node.endpoint_id.clone(),
                     transport_addr: d.node.transport_addr,
                     incarnation: d.node.incarnation.clone(),
@@ -165,7 +165,7 @@ pub(crate) async fn adopt_from_reachable(
             }
         }
         candidates.retain(|c| c.node_id != *me_id);
-        candidates.sort_by_key(|c| (c.mesh != topology_view.mesh_name(), c.name.clone()));
+        candidates.sort_by_key(|c| (c.mesh != topology_view.mesh_name(), c.location()));
         for c in &candidates {
             if let Some(r) = c.resolved() {
                 resolver.apply(r, None);

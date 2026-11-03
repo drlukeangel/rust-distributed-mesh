@@ -134,12 +134,12 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
             .put_connection(&NodeConnection {
                 id: rdm_core::ConnectionId::mint(),
                 source: ConnectionEnd { mesh: lead_carrier.mesh.clone(), r#type: lead_carrier.r#type.clone(),
-                    name: lead_carrier.name.clone(),
+                    path: lead_carrier.path.clone(), name: lead_carrier.name.clone(),
                     node_id: lead_id.clone(),
                     incarnation: Some(lead_inc.clone()),
                 },
                 destination: ConnectionEnd { mesh: target.mesh.clone(), r#type: target.r#type.clone(),
-                    name: target.name.clone(),
+                    path: target.path.clone(), name: target.name.clone(),
                     node_id: target_id.clone(),
                     incarnation: Some(target_inc.clone()),
                 },
@@ -218,7 +218,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(ResolvedNode { mesh: lead_carrier.mesh.clone(), r#type: lead_carrier.r#type.clone(),
             node_id: lead_id.clone(),
-            name: lead_carrier.name.clone(),
+            path: lead_carrier.path.clone(), name: lead_carrier.name.clone(),
             endpoint_id: carrier_key.public(),
             transport_addr: carrier_addr,
             incarnation: lead_inc.clone(),
@@ -280,7 +280,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
         nodes_store
             .put_runtime(&RuntimeRow { r#type: target.r#type.clone(), mesh: target.mesh.clone(),
                 node_id: target_id.clone(),
-                name: target.name.clone(),
+                path: target.path.clone(), name: target.name.clone(),
                 incarnation_id: target_inc.clone(),
                 runtime: rdm_core::RuntimeFact {
                     deployment_id: dep_id,

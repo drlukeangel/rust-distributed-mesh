@@ -131,14 +131,21 @@ impl TestkitStoreOp {
 pub struct Provenance {
     /// The executing node's id.
     pub node_id: String,
-    /// The executing node's separate path and name.
-    pub node: rdm_core::PathName,
+    /// The executing node's separate path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The executing node's mesh.
     pub mesh: String,
     /// The executing node's incarnation id.
     pub incarnation_id: String,
     /// The operation executed.
     pub op: TestkitStoreOp,
+}
+
+impl Provenance {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// A testkit store answer.
@@ -535,9 +542,11 @@ pub fn serve(b: ServerBuilder, store: Arc<FileTestkitStore>, launch: &Launch, na
 pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileTestkitStore>, launch: &Launch, name: &HeldName, cuts: Arc<ApplyCuts>) -> ServerBuilder {
     let (node_id, mesh, incarnation, name) = (launch.node_id.to_string(), launch.mesh.clone(), launch.incarnation.to_string(), name.clone());
     b.serve::<TestkitStore, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: TestkitStoreRequest| {
+        let held = name.now();
         let at = Provenance {
             node_id: node_id.clone(),
-            node: name.now(),
+            path: held.path,
+            name: held.name,
             mesh: mesh.clone(),
             incarnation_id: incarnation.clone(),
             op: req.op(),
@@ -546,7 +555,7 @@ pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileTestkitStore>, launch: &
         async move {
             let span = tracing::info_span!(
                 "rdm.node_rpc.testkit_store.serve.via-request",
-                node_path = %at.node.path, node_name = %at.node.name,
+                node_path = %at.path, node_name = %at.name,
                 node_id = %at.node_id,
                 incarnation_id = %at.incarnation_id,
                 op = at.op.as_str(),
@@ -596,7 +605,7 @@ mod tests {
     fn at(op: TestkitStoreOp) -> Provenance {
         Provenance {
             node_id: "n1".into(),
-            node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             mesh: "mesh1".into(),
             incarnation_id: "i1".into(),
             op,

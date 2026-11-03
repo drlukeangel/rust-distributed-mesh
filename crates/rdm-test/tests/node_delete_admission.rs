@@ -128,7 +128,7 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(publish_build(&builds, add_node()).await),
                 attempt: 1,
-                node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+                path: "mesh1.node".into(), name: "1".into(),
                 spec: &NODE_SPEC,
                 data_dir: None,
                 held_runtimes: Vec::new(), entry: None
@@ -187,7 +187,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(),
             build_id: Some(build_id),
             attempt: 1,
-            node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             spec: &NODE_SPEC,
             data_dir: None,
             held_runtimes: Vec::new(), entry: None

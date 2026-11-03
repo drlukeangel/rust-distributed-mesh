@@ -166,7 +166,7 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
                     if row.newest_birth().is_some_and(|birth| birth.incarnation_id != claim.executor.incarnation) {
                         return rdm_core::reply::build_claim::not_ready(format!("executor node {}, incarnation {} is superseded by the birth recorded on its node row", node_id, claim.executor.incarnation));
                     }
-                    crate::node_rows::deleted_birth(rows, &row.name, node_id).await
+                    crate::node_rows::deleted_birth(rows, &row.location(), node_id).await
                 }
                 Ok(None) => Ok(None),
                 Err(error) => Err(error),
@@ -249,8 +249,10 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
 
 /// The claim door: the one place a Build attempt's claim is decided by its claimant.
 pub struct ClaimDoor {
-    /// This admin's path and name.
-    pub me: PathName,
+    /// This admin's path.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// The node id this admin was born with: whether it holds the fabric-primary role is decided by it.
     pub node_id: NodeId,
     /// This process's established incarnation, fixed at boot.
@@ -269,6 +271,11 @@ pub struct ClaimDoor {
 }
 
 impl ClaimDoor {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
+}
+
+impl ClaimDoor {
     /// This process's established identity, independent of its current name.
     pub fn birth(&self) -> rdm_core::framing::Birth {
         rdm_core::framing::Birth { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }
@@ -280,7 +287,7 @@ impl ClaimDoor {
         if let Some(held) = self.builds.held_name() {
             return held;
         }
-        self.topology.read().await.held_name_of(&self.me, Some(&self.node_id))
+        self.topology.read().await.held_name_of(&self.me(), Some(&self.node_id))
     }
 
     /// The reply of a receiver that may not claim in `lane` (R-BI7 caveat 2), decided from this

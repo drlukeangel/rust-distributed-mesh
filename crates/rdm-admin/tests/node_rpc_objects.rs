@@ -96,7 +96,7 @@ async fn serve(reply: StatusReply, delay: Duration) -> Served {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: incarnation.clone() });
+    resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "1".into(), endpoint_id: key.public(), transport_addr: addr, incarnation: incarnation.clone() });
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(caller, resolver).with_caller_system("rdm");
     Served { birth: ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id, incarnation }, seen, topology_seen, client, _router: router }

@@ -83,7 +83,7 @@ async fn a_fabric_delete_before_the_first_ready_interrupts_the_build_in_progress
     let grow = r.cp.submit("test", crate::named_request(&r.cp, TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }).await).await.expect("growth is admitted before the first ready");
     running(&r, &grow.build_id, 1).await;
     assert_eq!(r.builds.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(grow.build_id.clone()), "the growth Build is in progress");
-    for change in [TopologyChange::RemoveMesh { mesh: "mesh2".into() }, TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.node", "1").unwrap() }] {
+    for change in [TopologyChange::RemoveMesh { mesh: "mesh2".into() }, TopologyChange::RemoveNode { path: "mesh1.node".into(), name: "1".into()}] {
         match r.cp.submit("test", change.clone()).await {
             Err(Refusal::BuildInProgress(_)) => {}
             other => panic!("the standalone {change:?} was not refused build-in-progress: {other:?}"),

@@ -78,7 +78,7 @@ impl ProcessNodeRpc {
 pub fn resolved(d: &MeshDigest) -> Option<ResolvedNode> {
     Some(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(),
         node_id: d.node.node_id.clone(),
-        name: d.node.name.clone(),
+        path: d.node.path.clone(), name: d.node.name.clone(),
         endpoint_id: d.node.endpoint_id.0.parse().ok()?,
         transport_addr: d.node.transport_addr,
         incarnation: d.node.incarnation.clone(),
@@ -90,14 +90,14 @@ pub fn feed_once(digest_view: &DigestView, resolver: &LiveNodeResolver, node: &s
     let held_holder = digest_view.observer_name();
     let node = held_holder.as_deref().unwrap_or(node);
     for op in digest_view.deleted() {
-        let applied = resolver.depart(&op.node_id, &op.incarnation, &op.name);
+        let applied = resolver.depart(&op.node_id, &op.incarnation, &op.location());
         if applied == Applied::Deleted {
-            tracing::info_span!("rdm.node_rpc.node.remove.via-topology", node, target_path = %op.name.path, target_name = %op.name.name, target_id = %op.node_id, incarnation_id = %op.incarnation.as_str())
+            tracing::info_span!("rdm.node_rpc.node.remove.via-topology", node, target_path = %op.path, target_name = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.as_str())
                 .in_scope(|| tracing::info!("the resolver holds the departure: Gone"));
         }
     }
     // A stopped birth (its stop published): the view dropped it, and so does the path it held.
-    let stopped = digest_view.stopped_digests().into_iter().map(|d| (d.node.node_id, d.node.incarnation, d.node.name)).chain(digest_view.stopped_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
+    let stopped = digest_view.stopped_digests().into_iter().map(|d| { let at = d.node.location(); (d.node.node_id, d.node.incarnation, at) }).chain(digest_view.stopped_unheard().into_iter().map(|op| { let at = op.location(); (op.node_id, op.incarnation, at) }));
     for (node_id, incarnation, name) in stopped {
         if resolver.stop(&node_id, &incarnation) {
             tracing::info_span!("rdm.node_rpc.node.update.via-topology", node, target_path = %name.path, target_name = %name.name, target_id = %node_id, incarnation_id = %incarnation.as_str(), change = "Stopped")

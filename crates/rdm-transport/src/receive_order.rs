@@ -541,7 +541,7 @@ mod tests {
         let renamed = PublisherId { ..publisher };
         let old = Frame::MeshTopology { mesh: "mesh1".into(), publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] };
         assert!(order.admit(&old).is_err());
-        let operation = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let operation = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), path: "mesh1.node".into(), name: "1".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation.clone(), renamed.clone(), 20)).is_ok());
         let relabeled = PublisherId { ..renamed };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation, relabeled, 19)).is_err(), "a carried projection floor belongs to the birth, not its label");
@@ -583,7 +583,7 @@ mod tests {
     fn birth(path: rdm_core::PathName, mesh: &str, r#type: &str) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: NodeId::mint(), name: path, endpoint_id: EndpointId(NodeId::mint().to_string()), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
+            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: NodeId::mint(), path: path.path.clone(), name: path.name.clone(), endpoint_id: EndpointId(NodeId::mint().to_string()), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
             status: MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
@@ -611,7 +611,7 @@ mod tests {
     }
 
     fn op(d: &MeshDigest, action: &str) -> LifecycleOp {
-        LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "3qcfk1kq47m9".into(), attempt: 1, operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+        LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "3qcfk1kq47m9".into(), attempt: 1, operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
     }
 
     /// CONTRACT (R-RX3: MeshTopology and MeshTopologyDelta order by `published_at_rafka_ms` then

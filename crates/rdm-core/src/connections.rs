@@ -114,13 +114,20 @@ pub struct ConnectionEnd {
     pub mesh: String,
     /// The end's node type.
     pub r#type: String,
-    /// The end's `(path, name)`.
-    pub name: PathName,
+    /// The end's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The end's logical node id.
     pub node_id: NodeId,
     /// `None` when the writer could not learn the process birth; such an end is never targeting
     /// evidence.
     pub incarnation: Option<IncarnationId>,
+}
+
+impl ConnectionEnd {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// Where a Direct `Failed` entry sits in its reconnect series. `recovery_round` names one failure
@@ -366,7 +373,7 @@ impl ConnectionsHeld {
     /// This node's latest Direct entry per `(destination, alpn)`, whatever its state, sorted by destination then ALPN.
     pub fn own_latest_directs(&self) -> Vec<&NodeConnection> {
         let mut out: Vec<&NodeConnection> = self.own_directs.values().collect();
-        out.sort_by(|a, b| (&a.destination.name, &a.alpn).cmp(&(&b.destination.name, &b.alpn)));
+        out.sort_by(|a, b| (&a.destination.location(), &a.alpn).cmp(&(&b.destination.location(), &b.alpn)));
         out
     }
 
@@ -375,7 +382,7 @@ impl ConnectionsHeld {
     pub fn active_directs(&self) -> Vec<&NodeConnection> {
         let mut out: Vec<&NodeConnection> =
             self.cells.values().filter_map(|c| c.active.as_ref()).filter(|e| !self.names_superseded_destination(e)).collect();
-        out.sort_by(|a, b| (&a.source.name, &a.destination.name, &a.alpn).cmp(&(&b.source.name, &b.destination.name, &b.alpn)));
+        out.sort_by(|a, b| (&a.source.location(), &a.destination.location(), &a.alpn).cmp(&(&b.source.location(), &b.destination.location(), &b.alpn)));
         out
     }
 
@@ -388,7 +395,7 @@ impl ConnectionsHeld {
     /// This node's active Proxy entries, sorted by destination then ALPN.
     pub fn own_active_proxies(&self) -> Vec<&NodeConnection> {
         let mut out: Vec<&NodeConnection> = self.own_proxies.values().collect();
-        out.sort_by(|a, b| (&a.destination.name, &a.alpn).cmp(&(&b.destination.name, &b.alpn)));
+        out.sort_by(|a, b| (&a.destination.location(), &a.alpn).cmp(&(&b.destination.location(), &b.alpn)));
         out
     }
 
@@ -452,7 +459,7 @@ impl ConnectionsHeld {
             .filter_map(|c| c.active.as_ref())
             .filter(|e| &e.destination.node_id == destination && e.alpn.as_slice() == alpn && !self.names_superseded_destination(e))
             .collect();
-        out.sort_by(|a, b| a.source.name.cmp(&b.source.name));
+        out.sort_by(|a, b| a.source.location().cmp(&b.source.location()));
         Some(out)
     }
 
@@ -683,7 +690,7 @@ mod tests {
     fn end(name: PathName, node_id: NodeId, incarnation: Option<IncarnationId>) -> ConnectionEnd {
         ConnectionEnd {
             mesh: "mesh1".into(), r#type: "node".into(),
-            name,
+            path: name.path.clone(), name: name.name.clone(),
             node_id,
             incarnation,
         }
@@ -811,9 +818,9 @@ mod tests {
         let car = end(PathName::new("mesh1.node", "3").unwrap(), car_id.clone(), Some(car_inc.clone()));
 
         let topo = Arc::new(StaticIncarnations::default());
-        topo.set(src_id, src.name.clone(), src_inc);
-        topo.set(dst_id.clone(), dst.name.clone(), dst_inc1.clone());
-        topo.set(car_id.clone(), car.name.clone(), car_inc);
+        topo.set(src_id, src.location(), src_inc);
+        topo.set(dst_id.clone(), dst.location(), dst_inc1.clone());
+        topo.set(car_id.clone(), car.location(), car_inc);
 
         let mut held = ConnectionsHeld::new();
         assert_eq!(held.own_source(), None);
@@ -924,7 +931,7 @@ mod tests {
 
         // Superseding the destination incarnation invalidates the stale Failed fact and makes
         // `end_superseded` / `names_superseded_destination` true.
-        topo.set(dst_id.clone(), dst.name.clone(), dst_inc2);
+        topo.set(dst_id.clone(), dst.location(), dst_inc2);
         assert_eq!(held.end_superseded(&dst), Some(true));
         assert!(held.names_superseded_destination(&direct_conn));
         assert!(!held.latest_direct_failed_for(&src.node_id, &dst.node_id, ALPN));
@@ -933,7 +940,7 @@ mod tests {
             EffectiveRoute::Direct { known: false }
         );
 
-        topo.depart(dst_id, dst.name.clone());
+        topo.depart(dst_id, dst.location());
         assert_eq!(held.end_superseded(&dst), Some(true));
     }
 }

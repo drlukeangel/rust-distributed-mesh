@@ -46,7 +46,7 @@ fn succeeded(records: &[NodeRow]) -> HashMap<BirthRef, NodeId> {
 /// node never gets a birth after its successor's). Two that still hold it are refused by name, naming
 /// both, never answered as either.
 pub fn resolve(records: Vec<NodeRow>, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
-    let at: Vec<NodeRow> = records.into_iter().filter(|r| r.name == *name).collect();
+    let at: Vec<NodeRow> = records.into_iter().filter(|r| r.location() == *name).collect();
     let (re_created, succeeded) = (re_created(&at), succeeded(&at));
     let replaced = |r: &NodeRow| r.newest_birth().is_some_and(|b| succeeded.contains_key(&BirthRef { node_id: r.node_id.clone(), incarnation_id: b.incarnation_id.clone() }));
     let mut holding = at.into_iter().filter(|r| holds_its_name(r) && superseded(r, &re_created).is_none() && !replaced(r));

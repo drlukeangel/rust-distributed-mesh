@@ -46,7 +46,7 @@ pub fn of(view: &Topology, inc: &Incumbency, digest_view: &DigestView) -> Option
     let members: Vec<Node> = view.members().cloned().collect();
     let target = crate::election::fabric_recovery_target(&members, inc)?.clone();
     let lost = rdm_core::handover::HandoverBirth { mesh: target.mesh.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
-    let at = members.iter().find(|n| n.node_id == target.node_id).map(|n| n.name.clone()).or_else(|| crate::admin::lost_birth_name(digest_view, &lost));
+    let at = members.iter().find(|n| n.node_id == target.node_id).map(|n| n.location()).or_else(|| crate::admin::lost_birth_name(digest_view, &lost));
     // Without the lost birth's path and name this admin cannot tell the node re-created there from the mesh's
     // other node-admins: it names no executor of the mesh's own (a node that recovery re-created learns of
     // the workflow from its maker).
@@ -164,7 +164,7 @@ pub async fn record_primaries_taken(builds: &dyn crate::build_state::BuildStateA
     builds.append_step_receipt(&receipt).await.map_err(|e| format!("the {STEP_PRIMARIES_TAKEN} receipt could not be recorded: {e}"))?;
     tracing::info_span!(
         "rdm.node_admin.primary.update.via-fabric-delete-transition",
-        node_path = %me.name.path, node_name = %me.name.name,
+        node_path = %me.path, node_name = %me.name,
         build_id = %build_id.log(),
         attempt,
         lost_node_id = %target.node_id,
@@ -247,8 +247,10 @@ pub fn executes_for(read: Option<&Reader>, t: &Topology, me: &crate::storage::Bi
 
 /// The workflow's door on one admin.
 pub struct FabricRecoveryDoor {
-    /// This admin's path and name as born; its held name is the view's.
-    pub me: PathName,
+    /// This admin's path as born; its held name is the view's.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// This admin's node id.
     pub me_id: NodeId,
     /// The incarnation established when this process starts.
@@ -287,10 +289,15 @@ pub struct FabricRecoveryDoor {
 }
 
 impl FabricRecoveryDoor {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
+}
+
+impl FabricRecoveryDoor {
     /// A door for the admin these name.
     #[allow(clippy::too_many_arguments)]
     pub fn new(me: PathName, me_id: NodeId, me_incarnation: crate::model::IncarnationId, topology: Arc<tokio::sync::RwLock<Topology>>, digest_view: DigestView, records: Arc<crate::admin::Records>, looker: crate::primary_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot, launched_to_recover: bool, gate: crate::stop_gate::StopGate) -> Self {
-        Self { me, me_id, me_incarnation, topology, digest_view, records, looker, recovery, handover, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None), asked: Mutex::new(None), verdict: Mutex::new(None), gate }
+        Self { me_path: me.path.clone(), me_name: me.name.clone(), me_id, me_incarnation, topology, digest_view, records, looker, recovery, handover, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None), asked: Mutex::new(None), verdict: Mutex::new(None), gate }
     }
 
     /// This door's admin is the adoption launch under an in-force fabric.delete, at its own new path and name
@@ -310,7 +317,7 @@ impl FabricRecoveryDoor {
     }
 
     fn held_name(&self) -> PathName {
-        self.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.digest_view.held_path_name().unwrap_or_else(|| self.me())
     }
 
     /// The primary watch's verdict `finding` on `node`'s exact birth (Q337): held for the workflow that
@@ -499,7 +506,7 @@ impl FabricRecoveryDoor {
                         // but cannot reach is unreachable from it, not lost. The next investigation decides
                         // again a staleness floor on, while the record still names the unheard birth.
                         (crate::node_investigation::Finding::Running, _) if !fr.own_mesh && fr.executor.is_some() => {
-                            tracing::info!(subject_path = %node.name.path, subject_name = %node.name.name, verdict = finding.name(), "the backbone arm read the fabric-primary's runtime running: the report stands and nothing is written");
+                            tracing::info!(subject_path = %node.path, subject_name = %node.name, verdict = finding.name(), "the backbone arm read the fabric-primary's runtime running: the report stands and nothing is written");
                             investigated = false;
                             next_look = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
                         }
@@ -510,7 +517,7 @@ impl FabricRecoveryDoor {
                         // (fabric-recovery.md step 3, Q153). The next investigation decides again a
                         // staleness floor on.
                         (crate::node_investigation::Finding::Running, _) if fr.own_mesh && crate::offline::eligible_carriers(&view, &node, Some(&self.me_id)).next().is_none() => {
-                            tracing::info!(subject_path = %node.name.path, subject_name = %node.name.name, verdict = finding.name(), "the own-mesh arm read the fabric-primary's runtime running and reached it through no peer: unreachable from this executor, not lost; nothing is written");
+                            tracing::info!(subject_path = %node.path, subject_name = %node.name, verdict = finding.name(), "the own-mesh arm read the fabric-primary's runtime running and reached it through no peer: unreachable from this executor, not lost; nothing is written");
                             investigated = false;
                             next_look = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
                         }
@@ -559,7 +566,7 @@ impl FabricRecoveryDoor {
         let control = &door.control;
         let own = rdm_core::framing::Birth { node_id: self.me_id.clone(), incarnation: self.me_incarnation.clone() };
         let lost = rdm_core::framing::Birth { node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
-        let attempt = match claim_delete_attempt(&me.name, &own, &me.mesh, &fr.target.mesh, &*control.builds, &*control.claims, &control.contexts, delete, &lost, control.node_rows.get().map(|rows| &**rows)).await {
+        let attempt = match claim_delete_attempt(&me.location(), &own, &me.mesh, &fr.target.mesh, &*control.builds, &*control.claims, &control.contexts, delete, &lost, control.node_rows.get().map(|rows| &**rows)).await {
             DeleteClaim::Won(attempt) => Some(attempt),
             DeleteClaim::First => None,
             DeleteClaim::Lost(why) => {
@@ -618,7 +625,7 @@ impl FabricRecoveryDoor {
         match self.recovery.submit_route(node, inspected, route).await {
             Ok(()) => true,
             Err(e) => {
-                tracing::info!(node_path = %node.name.path, node_name = %node.name.name, error = %e, retry_ms = backoff.as_millis() as u64, "fabric recovery's re-create ended without the node: owed again after the backoff");
+                tracing::info!(node_path = %node.path, node_name = %node.name, error = %e, retry_ms = backoff.as_millis() as u64, "fabric recovery's re-create ended without the node: owed again after the backoff");
                 *next = std::time::Instant::now() + *backoff;
                 *backoff = (*backoff * 2).min(ceiling);
                 false
@@ -821,7 +828,7 @@ mod tests {
         let digest_of = |n: &Node, is_primary: Option<u64>, is_fabric_primary: Option<u64>| rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric_id.clone(),
-            node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,

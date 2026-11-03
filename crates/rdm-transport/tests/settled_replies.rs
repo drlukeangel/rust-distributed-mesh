@@ -41,7 +41,7 @@ async fn settled_waits_for_the_replies_dispatched_before_it_and_for_no_later_one
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let _router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     let resolver = Arc::new(LiveNodeResolver::default());
-    resolver.apply(ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation }, None);
+    resolver.apply(ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "1".into(), endpoint_id: key.public(), transport_addr: addr, incarnation }, None);
     let client = Arc::new(NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver));
     let target = NodeTarget::ExactNode(node_id);
     let call = |payload: &'static [u8]| {

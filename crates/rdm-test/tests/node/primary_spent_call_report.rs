@@ -68,7 +68,7 @@ async fn a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_prim
     let (fp_id, mp_id, rpc_id) = (fp.node_id.to_string(), mp.node_id.to_string(), rpc.node_id.to_string());
 
     // The hold: mesh2's mesh-primary neither gossips nor answers from here.
-    let mp_path: PathName = mp.name.clone();
+    let mp_path: PathName = mp.location();
     let rt = ExactRuntime::published(Path::new(&estate.data_dir(&mp_path).await)).expect("the mesh-primary's published runtime");
     let held_at = now_nano();
     let hung = rt.hang().expect("the hang is acknowledged by the OS");

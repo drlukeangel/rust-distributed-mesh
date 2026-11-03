@@ -86,7 +86,7 @@ async fn a_mesh_primary_answers_its_own_meshs_read_with_the_fabric_primary_held_
     assert_eq!(ids(&no_mesh), [fp.node_id.clone()], "a read naming no mesh is carried up to the fabric-primary");
 
     // The fabric-primary's runtime held: mesh2's mesh-primary answers its own mesh from its atlas.
-    let fp_dir = estate.data_dir(&fp.name).await;
+    let fp_dir = estate.data_dir(&fp.location()).await;
     let fp_rt = ExactRuntime::published(Path::new(&fp_dir)).unwrap_or_else(|r| panic!("{:?}: no exact runtime published in {fp_dir}: {r:?}", fp.name));
     let held = fp_rt.apply(Fault::Stop).expect("the fabric-primary's runtime is held");
     assert_eq!(held.state_after, Some('T'), "the OS holds the fabric-primary: {held:?}");
@@ -98,7 +98,7 @@ async fn a_mesh_primary_answers_its_own_meshs_read_with_the_fabric_primary_held_
     estate.stop().await;
     let spans = estate.spans();
     let mp_name = &mp.name;
-    let from_mp = |sp: &Value| sp["attributes"]["node_path"] == mp.name.path && sp["attributes"]["node_name"] == mp.name.name;
+    let from_mp = |sp: &Value| sp["attributes"]["node_path"] == mp.path && sp["attributes"]["node_name"] == mp.name;
     let carried: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-forward").into_iter().filter(|sp| from_mp(sp)).collect();
     let up = carried.iter().find(|sp| attr(sp, "pairs").contains("mesh1") && attr(sp, "pairs").contains("red")).unwrap_or_else(|| panic!("{mp_name:?} carries [mesh1, red] up: {carried:#?}"));
     assert_eq!(attr(up, "fabric_primary"), fp.node_id.as_str(), "the read is carried to the fabric-primary: {up}");

@@ -43,8 +43,10 @@ pub struct ChangeInputs<'a> {
 
 /// The shared handles one admin's fabric states read and act through.
 pub(crate) struct StatesEnv {
-    /// This admin's `(path, name)`.
-    pub me: PathName,
+    /// This admin's path.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// This admin's node id.
     pub node_id: NodeId,
     /// The fabric.
@@ -61,6 +63,11 @@ pub(crate) struct StatesEnv {
     pub records: Arc<Records>,
     /// The application hooks.
     pub hooks: FabricHooks,
+}
+
+impl StatesEnv {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
 /// Which checklists of an adopted status are complete now.
@@ -164,8 +171,8 @@ impl FabricStates {
         self.env
             .builds
             .held_name()
-            .or_else(|| view.own(&self.env.node_id).map(|n| n.name.clone()))
-            .unwrap_or_else(|| self.env.me.clone())
+            .or_else(|| view.own(&self.env.node_id).map(|n| n.location()))
+            .unwrap_or_else(|| self.env.me())
     }
 
     async fn held_name(&self) -> PathName {
@@ -177,8 +184,8 @@ impl FabricStates {
             .read()
             .await
             .own(&self.env.node_id)
-            .map(|n| n.name.clone())
-            .unwrap_or_else(|| self.env.me.clone())
+            .map(|n| n.location())
+            .unwrap_or_else(|| self.env.me())
     }
 
     // ------------------------------------------------------------------ the fabric-primary
@@ -724,7 +731,7 @@ mod tests {
     async fn states_resolving(me: &Node, view: Topology, builds: Arc<dyn BuildStateAdapter>, records: Arc<Records>, fabric_id: FabricId, resolver: Arc<rdm_transport::StaticResolver>) -> Arc<FabricStates> {
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         FabricStates::new(StatesEnv {
-            me: me.name.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             node_id: me.node_id.clone(),
             fabric_id,
             topology: Arc::new(RwLock::new(view)),
@@ -901,7 +908,7 @@ mod tests {
         let identity = crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
         let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         crate::fabric_storage::write_identity(&*fabric, &identity).await.unwrap().expect("the fabric's name is claimed");
-        records.set_status(Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::storage::MemoryMeshStorage::default()), fabric.clone(), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
+        records.set_status(Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::storage::MemoryMeshStorage::default()), fabric.clone(), "mesh1".into(), fp.location(), fp.node_id.clone());
         let appended = Arc::new(crate::events_storage::AppendedEvents::default());
         records.caches.writes_events(crate::events_storage::EventsWriter::on(appended.clone(), &identity.fabric_id, &fp.node_id));
         let fabric_states = states_of(&fp, view.clone(), builds.clone(), records.clone(), identity.fabric_id.clone()).await;
@@ -928,7 +935,7 @@ mod tests {
         let deleted = node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::ConnectionsDeleting, false);
         let re_born = node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, false);
         let view = projected(vec![deleted.clone(), re_born.clone(), node(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", NodeStatus::Ready, true)]);
-        assert_eq!(view.members().filter(|n| n.name == re_born.name).count(), 2, "both births of mesh1.node-admin.1 are in the view");
+        assert_eq!(view.members().filter(|n| n.location() == re_born.location()).count(), 2, "both births of mesh1.node-admin.1 are in the view");
         let me = view.own(&re_born.node_id).expect("this admin is in its view");
         assert_eq!(me.node_id, re_born.node_id, "the re-born admin's own row, not the deleted birth's {}", deleted.node_id);
     }
@@ -1134,7 +1141,7 @@ mod tests {
 
     /// `n`'s own digest: its exact birth (node id and incarnation), as the member publishes it.
     fn digest_of(n: &crate::model::Node, status: MemberStatus) -> rdm_core::MeshDigest {
-        let mut d = digest(&n.name, n.mesh.clone(), &n.r#type, status);
+        let mut d = digest(&n.location(), n.mesh.clone(), &n.r#type, status);
         d.node.node_id = n.node_id.clone();
         d.node.incarnation = n.incarnation_id.clone().expect("a member names its birth");
         d
@@ -1146,7 +1153,7 @@ mod tests {
             fabric_id: FabricId::mint(),
             node: rdm_core::MeshNode { mesh, r#type: r#type.to_string(),
                 node_id: NodeId::mint(),
-                name: p.clone(),
+                path: p.path.clone(), name: p.name.clone(),
                 endpoint_id: crate::model::EndpointId(String::new()),
                 transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
                 incarnation: IncarnationId::mint(),
@@ -1204,7 +1211,7 @@ mod tests {
         let fabric_states = adopted_states_of(&me, v.clone(), Arc::new(Records::default())).await;
         let digest_view = DigestView::default();
         let awaiting = Announced { mesh_awaiting_checklist: true, fabric_awaiting_checklist: false };
-        let planned = vec![me.name.clone(), rpc.name.clone()];
+        let planned = vec![me.location(), rpc.location()];
         let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), digest_view: &digest_view };
         let held = || capture.named("rdm.node_admin.mesh.update.via-checklist-held").into_iter().map(|s| s.attributes.get("missing").cloned().unwrap_or_default()).collect::<Vec<_>>();
         // The member was heard before the checklist began: held, not checked in.
@@ -1259,7 +1266,7 @@ mod tests {
         assert_eq!(fabric_states.changed_mesh_primaries(&v_early, true).len(), 1);
         assert!(fabric_states.changed_mesh_primaries(&v_early, true).is_empty());
         for n in &mut v_early.nodes {
-            if n.name == early.name {
+            if n.location() == early.location() {
                 n.endpoint_id = Some(crate::model::EndpointId("ep-late".into()));
             }
         }
@@ -1320,7 +1327,7 @@ mod tests {
         let digest_view = DigestView::default();
         let fabric_states = adopted_states_of(&me, v.clone(), Arc::new(Records::default())).await;
         let awaiting = Announced { mesh_awaiting_checklist: true, fabric_awaiting_checklist: false };
-        let planned = vec![me.name.clone(), rpc.name.clone()];
+        let planned = vec![me.location(), rpc.location()];
         let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), digest_view: &digest_view };
         // The member was heard before the checklist began (it is held, but it has not checked in).
         let before = digest_of(&rpc, MemberStatus::Ready);
@@ -1354,7 +1361,7 @@ mod tests {
         let digest_view = DigestView::default();
         let fabric_states = adopted_states_of(&me, v.clone(), Arc::new(Records::default())).await;
         let awaiting = Announced { mesh_awaiting_checklist: true, fabric_awaiting_checklist: false };
-        let planned = vec![me.name.clone(), rpc.name.clone(), at_rest.name.clone()];
+        let planned = vec![me.location(), rpc.location(), at_rest.location()];
         let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), digest_view: &digest_view };
         assert!(!fabric_states.adopted_step(awaiting, inputs()).mesh, "mesh1.node.1 has not checked in");
         assert!(digest_view.record(digest_of(&rpc, MemberStatus::Ready)));
@@ -1407,7 +1414,7 @@ mod tests {
             FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
         };
         fn at<'a>(r: &'a mut [NodeSpec], p: PathName) -> &'a mut NodeSpec {
-            r.iter_mut().find(|s| s.path == p).expect("the request lists the path")
+            r.iter_mut().find(|s| s.location() == p).expect("the request lists the path")
         }
         let rows: [(&str, Option<&str>, Edit, Back); 9] = [
             ("the Day-0 admin named on the executable its row records (its entry names none)", None, |r| at(r, PathName::new("mesh1.node-admin", "1").unwrap()).executable = Some(rdm_core::binding::Binding { launch_id: "node-admin".into(), executable: "/b/node_admin-aa".into(), sha256: "aa".into(), image: None }), Back::Stays),
@@ -1418,9 +1425,9 @@ mod tests {
             ("another executable for the Day-0 admin (a replacement)", None, |r| at(r, PathName::new("mesh1.node-admin", "1").unwrap()).executable = Some(rdm_core::binding::Binding { launch_id: "node-admin".into(), executable: "/b/node_admin-cc".into(), sha256: "cc".into(), image: None }), Back::ToPending),
             ("a new path (a resize)", None, |r| {
                 let spec = at(r, PathName::new("mesh1.node", "1").unwrap()).clone();
-                r.push(NodeSpec { path: rdm_core::PathName::new("mesh1.node", "2").unwrap(), ..spec });
+                r.push(NodeSpec { path: "mesh1.node".into(), name: "2".into(), ..spec });
             }, Back::ToPending),
-            ("a removed path (a resize)", None, |r| r.retain(|s| s.path != PathName::new("mesh1.node", "1").unwrap()), Back::ToPending),
+            ("a removed path (a resize)", None, |r| r.retain(|s| s.location() != PathName::new("mesh1.node", "1").unwrap()), Back::ToPending),
             ("storage only", None, |r| at(r, PathName::new("mesh1.node", "1").unwrap()).storage_persistence = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve }, Back::Stays),
         ];
         let mut red = Vec::new();
@@ -1641,7 +1648,7 @@ mod tests {
             .await
             .unwrap();
             let states = FabricStates::new(StatesEnv {
-                me: fp.name.clone(),
+                me_path: fp.path.clone(), me_name: fp.name.clone(),
                 node_id: fp.node_id.clone(),
                 fabric_id: fabric_id.clone(),
                 topology: Arc::new(RwLock::new(view_a.clone())),
@@ -1685,7 +1692,7 @@ mod tests {
             every_mesh_ready(&successor_records, None);
             successor_records.set_published_fabric_state(Some(FabricState::Ready));
             let successor_states = FabricStates::new(StatesEnv {
-                me: fp.name.clone(),
+                me_path: fp.path.clone(), me_name: fp.name.clone(),
                 node_id: fp.node_id.clone(),
                 fabric_id: fabric_id.clone(),
                 topology: Arc::new(RwLock::new(view_a.clone())),

@@ -125,7 +125,7 @@ async fn a_gateways_listeners_are_bound_reported_at_join_and_published_on_its_ro
     estate.artifact("row.json", &row_of(&estate, gateway));
     let listeners = published(&estate, gateway).await;
     // Bound, and held: each port is a listening socket of the gateway's own process.
-    let pid = estate.pid_of(&gateway.name).await;
+    let pid = estate.pid_of(&gateway.location()).await;
     for (n, a) in &listeners {
         let who = rdm_admin::deployment::endpoint::port_holder(*a, rdm_admin::deployment::endpoint::SlotTransport::Tcp).unwrap();
         assert!(who.contains("listen") && who.contains(&format!("pid {pid} ")), "{n} at {a} is held listening by the gateway's process (pid {pid}): {who}");

@@ -178,7 +178,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
             command_frame_seam: None,
             operation_effects: Default::default(),
         stopped: Default::default(),
-        me: me.node.name.clone(),
+        me: me.node.location(),
         node_id: me.node.node_id.clone(),
         fabric_id,
         topology,
@@ -222,7 +222,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type.clone(),
         node_id: me.node.node_id.clone(),
-        name: me.node.name.clone(),
+        path: me.node.path.clone(), name: me.node.name.clone(),
         endpoint_id: me.key.public(),
         transport_addr: addr,
         incarnation: me.node.incarnation_id.clone().unwrap(),
@@ -437,7 +437,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
             "i143-2805".into()
         }
         async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-            Err(DeployError::Spawn { node: spec.node.clone(), reason: "this cell births nothing".into() })
+            Err(DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: "this cell births nothing".into() })
         }
         async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
@@ -496,7 +496,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
@@ -992,7 +992,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
     capture.run(async {
         let fp = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
         let handoff = |rig: &Rig, mesh_id: MeshId, target: Node| {
-            let (topology, me, me_id) = (rig.door.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
+            let (topology, me, me_id) = (rig.door.topology.clone(), fp.node.location(), fp.node.node_id.clone());
             let fp = &fp;
             async move {
                 let ep = fp.endpoint().await;
@@ -1088,7 +1088,7 @@ fn pending_handoff_waits_for_an_elected_mesh_primary_before_its_one_call() {
         r.ready.store(false, Ordering::SeqCst);
         let mut target = r.me.node.clone();
         target.transport_addr = Some(r.resolved.transport_addr);
-        let (topology, me, me_id) = (r.door.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
+        let (topology, me, me_id) = (r.door.topology.clone(), fp.node.location(), fp.node.node_id.clone());
         let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
         let client = NodeRpcClient::new(fp.endpoint().await, resolver.clone()).with_caller_system("rdm");
         let gate = r.ready.clone();
@@ -1205,7 +1205,7 @@ async fn scripted_member(b: &Birth, script: Script) -> (ResolvedNode, Router) {
     let ep = b.endpoint().await;
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    (ResolvedNode { mesh: b.node.mesh.clone(), r#type: b.node.r#type.clone(), node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() }, router)
+    (ResolvedNode { mesh: b.node.mesh.clone(), r#type: b.node.r#type.clone(), node_id: b.node.node_id.clone(), path: b.node.path.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() }, router)
 }
 
 // @feature: node-lifecycle
@@ -1323,7 +1323,7 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
         let rig = rig(mp, &[&member], BTreeMap::new()).await;
         let client = NodeRpcClient::new(rig.me.endpoint().await, resolver.clone()).with_caller_system("rdm");
         let _ = rig.door.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Arc::new(rdm_admin::node_rows::WrittenRows::default()))).await));
-        rig.door.nodes_storage.put_node(&rdm_admin::storage::NodeRow::new(member.node.name.clone(), member.node.mesh.clone(), &member.node.r#type, member.node.node_id.clone(), NodeStatus::Ready)).await.unwrap();
+        rig.door.nodes_storage.put_node(&rdm_admin::storage::NodeRow::new(member.node.location(), member.node.mesh.clone(), &member.node.r#type, member.node.node_id.clone(), NodeStatus::Ready)).await.unwrap();
         let (node_id, incarnation) = (member.node.node_id.clone(), member.node.incarnation_id.clone().unwrap());
         let status = || async { rig.door.nodes_storage.node(&node_id).await.unwrap().expect("the member's row").status };
 

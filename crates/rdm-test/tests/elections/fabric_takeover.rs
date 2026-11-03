@@ -167,7 +167,7 @@ async fn a_lost_fabric_primary_whose_runtime_lives_in_another_control_domain_is_
 async fn new_birth_within(estate: &Estate, node: &PathName, old: &str, within: Duration) -> Option<rdm_core::views::NodeView> {
     let until = std::time::Instant::now() + within;
     while std::time::Instant::now() < until {
-        let found = estate.node_views().await.into_iter().find(|n| n.name == *node && n.node_id.to_string() != old && n.status == rdm_core::views::NodeStatus::Ready);
+        let found = estate.node_views().await.into_iter().find(|n| n.location() == *node && n.node_id.to_string() != old && n.status == rdm_core::views::NodeStatus::Ready);
         if found.is_some() {
             return found;
         }
@@ -222,7 +222,7 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
             let id = n.node_id.to_string();
             wait_for(&format!("the fabric's views name {id} mesh-primary and fabric-primary"), floor * 12 + Duration::from_secs(60), || async {
                 let views = estate.node_views().await;
-                assert!(views.iter().filter(|v| v.is_fabric_primary).all(|v| v.name == Estate::path("mesh1.node-admin", "1")), "only the node at mesh1.node-admin.1 is ever fabric-primary");
+                assert!(views.iter().filter(|v| v.is_fabric_primary).all(|v| v.location() == Estate::path("mesh1.node-admin", "1")), "only the node at mesh1.node-admin.1 is ever fabric-primary");
                 views.iter().any(|v| v.node_id.to_string() == id && v.is_fabric_primary && v.is_primary).then_some(())
             })
             .await;

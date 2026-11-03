@@ -39,7 +39,7 @@ use rdm_core::connections::{
     ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery, NodeConnection,
 };
 use rdm_core::reconnect::next_due;
-use rdm_core::{ConnectionId, IncarnationId, NodeId, PathName};
+use rdm_core::{ConnectionId, IncarnationId, NodeId};
 use rdm_transport::ResolvedNode;
 use rdm_transport::connections::{Birth, ConnectError, ConnectionsRegistry};
 
@@ -181,7 +181,7 @@ pub fn registry_recovery_dial(
                     return "NotSent".to_string();
                 };
                 let birth = Birth { mesh: destination.mesh.clone(), r#type: destination.r#type.clone(),
-                    name: destination.name,
+                    path: destination.path.clone(), name: destination.name.clone(),
                     node_id: destination.node_id,
                     incarnation: inc,
                 };
@@ -378,7 +378,7 @@ fn spent_span(source: &NodeId, destination: &ConnectionEnd, reason: &'static str
     tracing::info_span!(
         "rdm.node_admin.connection.remove.via-recovery-attempt",
         source_node_id = %source,
-        destination_id = %destination.node_id, destination_path = %destination.name.path, destination_name = %destination.name.name,
+        destination_id = %destination.node_id, destination_path = %destination.path, destination_name = %destination.name,
         destination_node_id = %destination.node_id,
         destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
         reason,
@@ -493,7 +493,7 @@ pub async fn run_due_at(
                 let span = tracing::info_span!(
                     "rdm.node_admin.connection.create.via-recovery-dial",
                     source_node_id = %source,
-                    destination_id = %destination.node_id, destination_path = %destination.name.path, destination_name = %destination.name.name,
+                    destination_id = %destination.node_id, destination_path = %destination.path, destination_name = %destination.name,
                     destination_node_id = %destination.node_id,
                     destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
                     due_ms,
@@ -616,7 +616,7 @@ pub(crate) fn accepted_on_alpn(
     let span = tracing::info_span!(
         "rdm.node_admin.connection.update.via-accept-trigger",
         source_node_id = %source,
-        destination_id = %destination.node_id, destination_path = %destination.name.path, destination_name = %destination.name.name,
+        destination_id = %destination.node_id, destination_path = %destination.path, destination_name = %destination.name,
         destination_node_id = %destination.node_id,
         destination_incarnation = %peer.incarnation,
         proxy_destination_node_id = %named.node_id,
@@ -672,7 +672,7 @@ pub(crate) fn accepted_resolved(writer: &ConnectionsWriter, node: &ResolvedNode)
             .collect()
     };
     let birth = Birth { mesh: node.mesh.clone(), r#type: node.r#type.clone(),
-        name: node.name.clone(),
+        path: node.path.clone(), name: node.name.clone(),
         node_id: node.node_id.clone(),
         incarnation: node.incarnation.clone(),
     };
@@ -755,18 +755,18 @@ mod tests {
 
         rt.block_on(async {
             let src = ConnectionEnd { mesh: "mesh1".into(), r#type: "gateway".into(),
-                name: PathName::numbered("mesh1", "gateway", 1),
+                path: format!("{}.{}", "mesh1", "gateway"), name: (1).to_string(),
                 node_id: NodeId::mint(),
                 incarnation: Some(IncarnationId::mint()),
             };
             let carrier = ConnectionEnd { mesh: "mesh1".into(), r#type: "gateway".into(),
-                name: PathName::numbered("mesh1", "gateway", 2),
+                path: format!("{}.{}", "mesh1", "gateway"), name: (2).to_string(),
                 node_id: NodeId::mint(),
                 incarnation: Some(IncarnationId::mint()),
             };
             let dst_inc = IncarnationId::mint();
             let dst = ConnectionEnd { mesh: "mesh1".into(), r#type: "broker".into(),
-                name: PathName::numbered("mesh1", "broker", 1),
+                path: format!("{}.{}", "mesh1", "broker"), name: (1).to_string(),
                 node_id: NodeId::mint(),
                 incarnation: Some(dst_inc.clone()),
             };
@@ -824,7 +824,7 @@ mod tests {
             accepted_on_alpn(
                 &writer,
                 &Birth { mesh: dst.mesh.clone(), r#type: dst.r#type.clone(),
-                    name: dst.name.clone(),
+                    path: dst.path.clone(), name: dst.name.clone(),
                     node_id: dst.node_id.clone(),
                     incarnation: dst_inc.clone(),
                 },
@@ -834,7 +834,7 @@ mod tests {
             accepted_on_alpn(
                 &writer,
                 &Birth { mesh: dst.mesh.clone(), r#type: dst.r#type.clone(),
-                    name: dst.name.clone(),
+                    path: dst.path.clone(), name: dst.name.clone(),
                     node_id: dst.node_id.clone(),
                     incarnation: IncarnationId::mint(),
                 },

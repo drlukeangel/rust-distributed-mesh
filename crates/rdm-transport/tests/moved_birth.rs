@@ -47,7 +47,7 @@ async fn birth(key: &SecretKey, node_id: &NodeId, addr: SocketAddr) -> Birth {
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let record = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), endpoint_id: key.public(), transport_addr: bound, incarnation };
+    let record = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "1".into(), endpoint_id: key.public(), transport_addr: bound, incarnation };
     Birth { router, record }
 }
 

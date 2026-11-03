@@ -3,7 +3,7 @@
 use rdm_admin::deployment::endpoint::ListenerNames;
 use rdm_admin::join::{Deployed, JoinDoor, Joins};
 use rdm_admin::model::{
-    EndpointId, FabricId, IncarnationId, NodeId, PathName, ProviderKind,
+    EndpointId, FabricId, IncarnationId, NodeId, ProviderKind,
 };
 use rdm_admin::node_rows::WrittenRows;
 use rdm_admin::storage::{MemoryNodesStorage, NodesStorage};
@@ -94,7 +94,7 @@ fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verifi
             .collect();
 
         let dep = Deployed { mesh: "mesh1".into(), r#type: "gateway".into(),
-            name: PathName::numbered("mesh1", "gateway", 1),
+            path: format!("{}.{}", "mesh1", "gateway"), name: (1).to_string(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -112,7 +112,7 @@ fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verifi
             fabric_id: FabricId::mint(),
             node: MeshNode { mesh: dep.mesh.clone(), r#type: dep.r#type.clone(),
                 node_id: dep.node_id.clone(),
-                name: dep.name.clone(),
+                path: dep.path.clone(), name: dep.name.clone(),
                 endpoint_id: dep.endpoint_id.clone(),
                 transport_addr: "127.0.0.1:41000".parse().expect("addr"),
                 incarnation: dep.incarnation.clone(),
@@ -142,7 +142,7 @@ fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verifi
         let admin_id = NodeId::mint();
         let door = JoinDoor {
             nodes: Some((nodes_storage.clone(), written_rows)),
-            me: PathName::numbered("mesh1", "node-admin", 1),
+            me_path: format!("{}.{}", "mesh1", "node-admin"), me_name: (1).to_string(),
             joins: joins.clone(),
             answer: { let admin_id = admin_id.clone(); Arc::new(move || {
                 let admin_id = admin_id.clone();

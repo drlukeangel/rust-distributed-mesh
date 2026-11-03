@@ -152,7 +152,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     build(&estate, &shape(&["mesh1"], 2)).await;
     let last = estate
         .until_view("mesh2's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
-            let mesh2: Vec<PathName> = views.iter().filter(|n| n.mesh == "mesh2").map(|n| n.name.clone()).collect();
+            let mesh2: Vec<PathName> = views.iter().filter(|n| n.mesh == "mesh2").map(|n| n.location()).collect();
             let alive = views.iter().any(|n| n.mesh == "mesh2" && n.status == NodeStatus::Ready);
             (mesh2.len() == 1 && alive).then(|| mesh2[0].clone())
         })

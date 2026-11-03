@@ -44,7 +44,7 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
         fabric_id: fabric(),
         node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::mint(),
-            name: PathName::new("mesh1.node", ordinal.to_string()).unwrap(),
+            path: "mesh1.node".into(), name: (ordinal.to_string()).to_string(),
             endpoint_id: EndpointId(format!("key{ordinal}")),
             transport_addr: format!("127.0.0.1:{}", 41_000 + ordinal).parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -80,7 +80,7 @@ fn container_runtime() -> RuntimeFact {
 
 fn op(action: &str, name: PathName, mesh: &str, r#type: &str) -> LifecycleOp {
     let node_id = NodeId::mint();
-    LifecycleOp { r#type: r#type.to_string(), mesh: mesh.into(), build_id: "3qcfk1kq47m9".into(), attempt: 2, operation: rdm_core::OperationId::node(action, &node_id), node_id, incarnation: IncarnationId::mint(), name, event_at_rafka_ms: 7, traceparent: None, tracestate: None }
+    LifecycleOp { r#type: r#type.to_string(), mesh: mesh.into(), build_id: "3qcfk1kq47m9".into(), attempt: 2, operation: rdm_core::OperationId::node(action, &node_id), node_id, incarnation: IncarnationId::mint(), path: name.path.clone(), name: name.name.clone(), event_at_rafka_ms: 7, traceparent: None, tracestate: None }
 }
 
 fn publisher() -> PublisherId {
@@ -177,7 +177,7 @@ fn changes() -> Vec<Option<TopologyChange>> {
         Some(TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric-1".into(), meshes: vec![desired.clone(), MeshDesired::of("mesh1", [("node-admin", 1)])] } }),
         Some(TopologyChange::ReconcileMesh { desired: desired.clone() }),
         Some(TopologyChange::AddNode { mesh: "mesh2".into(), r#type: "gateway".into() }),
-        Some(TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh2.node", "2").unwrap() }),
+        Some(TopologyChange::RemoveNode { path: "mesh2.node".into(), name: "2".into()}),
         Some(TopologyChange::CreateMesh { desired }),
         Some(TopologyChange::RemoveMesh { mesh: "mesh2".into() }),
         // A stored change of the removed operation, read as history: its reserved position (proposal
@@ -216,13 +216,13 @@ fn facts() -> Vec<BuildFact> {
             reason: AttemptReason::Steps,
             action: Some(AttemptAction::Steps { rename_intents: Default::default(),
                 steps: vec![
-                    Step::DeleteConnections { node: node.clone() },
-                    Step::LeaveMesh { node: node.clone() },
-                    Step::Update { node: node.clone(), name: node.renamed().unwrap() },
-                    Step::Stop { node: node.renamed().unwrap() },
+                    Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()},
+                    Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()},
+                    Step::Update { path: node.path.clone(), name: node.name.clone(), new_path: node.path.clone(), new_name: node.renamed().unwrap().name },
+                    Step::Stop { path: node.renamed().unwrap().path, name: node.renamed().unwrap().name},
                     // The executable the Build fixes rides the positional wire with every field written.
-                    Step::Create { mesh: "mesh1".into(), r#type: "node".into(), node: node.clone(), executable: Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/opt/node".into(), sha256: "ab".repeat(32), image: None }) },
-                    Step::Delete { node: node.renamed().unwrap() },
+                    Step::Create { mesh: "mesh1".into(), r#type: "node".into(), path: node.path.clone(), name: node.name.clone(), executable: Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/opt/node".into(), sha256: "ab".repeat(32), image: None }) },
+                    Step::Delete { path: node.renamed().unwrap().path, name: node.renamed().unwrap().name},
                 ],
                 pinned: vec![(node, pin)],
             }),
@@ -262,7 +262,7 @@ fn facts() -> Vec<BuildFact> {
         operation: rdm_core::OperationId::node("node.delete", &deleted_birth.node_id),
         step: DeleteStep::TerminateRuntime.name().into(),
         outcome: StepOutcome::Complete,
-        output: Some(to_json(&rdm_admin::deployment::pipeline::TerminalReceipt { node: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: deleted_birth.node_id.to_string(), incarnation_id: deleted_birth.incarnation.to_string(), runtime: None, exit_code: None, verdict: Some("running".into()), data_dir: Some("/data/mesh2.node.1-3qcfk1kq47m9".into()) })),
+        output: Some(to_json(&rdm_admin::deployment::pipeline::TerminalReceipt { path: "mesh2.node".into(), name: "1".into(), node_id: deleted_birth.node_id.to_string(), incarnation_id: deleted_birth.incarnation.to_string(), runtime: None, exit_code: None, verdict: Some("running".into()), data_dir: Some("/data/mesh2.node.1-3qcfk1kq47m9".into()) })),
         executor: Some(executor()),
     }));
     out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": null, "deployment_id": "an16er0436pg" }))));

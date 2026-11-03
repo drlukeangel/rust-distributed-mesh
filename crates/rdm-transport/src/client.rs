@@ -658,7 +658,7 @@ impl NodeRpcClient {
             }
             _ => match self.resolver.resolve(target) {
                 Ok(n) => {
-                    tracing::info!(step = "resolved", node_path = %n.name.path, node_name = %n.name.name, node_id = %n.node_id, peer = %n.endpoint_id.fmt_short(), addr = %n.transport_addr, incarnation = %n.incarnation.as_str(), "the target resolved to one birth");
+                    tracing::info!(step = "resolved", node_path = %n.path, node_name = %n.name, node_id = %n.node_id, peer = %n.endpoint_id.fmt_short(), addr = %n.transport_addr, incarnation = %n.incarnation.as_str(), "the target resolved to one birth");
                     // Whatever this node's record no longer names leaves the pool now.
                     self.pool.purge_stale(&n);
                     Reach { peer: n.endpoint_id, addr: n.transport_addr, observed: Some(n.clone()), node: Some(n) }

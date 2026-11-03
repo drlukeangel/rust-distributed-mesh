@@ -170,7 +170,9 @@ impl crate::build_drive::Gate for RoleGate {
 /// exited runtime counts.
 pub(crate) struct ProviderDeparture {
     /// The admin proving the departure: the reader its refusals name.
-    pub(crate) me: PathName,
+    pub(crate) me_path: String,
+    /// This node's name, beside its path.
+    pub(crate) me_name: String,
     /// Projects this admin's view now and installs it, so the next attempt is planned from the view
     /// as it is now.
     pub(crate) refresh: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>,
@@ -180,8 +182,13 @@ pub(crate) struct ProviderDeparture {
 }
 
 impl ProviderDeparture {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub(crate) fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
+}
+
+impl ProviderDeparture {
     pub(crate) fn held_name(&self) -> PathName {
-        self.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.digest_view.held_path_name().unwrap_or_else(|| self.me())
     }
 }
 
@@ -220,8 +227,8 @@ pub(crate) fn lost_birth_name(digest_view: &DigestView, lost: &rdm_core::handove
         .map(|(d, _)| d)
         .filter(exact)
         .or_else(|| digest_view.stopped_digests().into_iter().find(exact))
-        .map(|d| d.node.name)
-        .or_else(|| digest_view.deleted().into_iter().find(|op| op.node_id == lost.node_id && op.incarnation == lost.incarnation).map(|op| op.name))
+        .map(|d| d.node.location())
+        .or_else(|| digest_view.deleted().into_iter().find(|op| op.node_id == lost.node_id && op.incarnation == lost.incarnation).map(|op| op.location()))
 }
 
 /// What woke the reconcile loop for its next pass ([`ReconcileWake::next`]).
@@ -313,6 +320,7 @@ impl ReconcileWake {
         woken
     }
 }
+
 
 /// What an entry answer hands this admin of Fabric control: the Fabric identity, the answering
 /// admin's current Build with its attempt (the floor this admin's copy of that Build must reach), and
@@ -433,16 +441,16 @@ async fn not_ready_in(me: &PathName, builds: &dyn Holdings, floor: Option<(crate
     use crate::fetch_build::NodeAdminNotReady as B;
     if let Some((id, attempt)) = floor {
         match builds.build(&id).await {
-            Ok(held) if held.attempt < attempt => return Some(B::BehindFloor { me: me.clone(), build_id: id, held: held.attempt, floor: attempt }),
+            Ok(held) if held.attempt < attempt => return Some(B::BehindFloor { me_path: me.path.clone(), me_name: me.name.clone(), build_id: id, held: held.attempt, floor: attempt }),
             Ok(_) => {}
-            Err(crate::build_state::BuildStateError::UnknownBuild(_)) => return Some(B::NoCurrentBuild { me: me.clone(), wanted: Some(id) }),
-            Err(e) => return Some(B::UnreadableBuild { me: me.clone(), build_id: id, error: e.to_string() }),
+            Err(crate::build_state::BuildStateError::UnknownBuild(_)) => return Some(B::NoCurrentBuild { me_path: me.path.clone(), me_name: me.name.clone(), wanted: Some(id) }),
+            Err(e) => return Some(B::UnreadableBuild { me_path: me.path.clone(), me_name: me.name.clone(), build_id: id, error: e.to_string() }),
         }
     }
     match builds.current().await {
-        Ok(crate::build_state::CurrentBuild::None) => Some(B::NoCurrentBuild { me: me.clone(), wanted: None }),
+        Ok(crate::build_state::CurrentBuild::None) => Some(B::NoCurrentBuild { me_path: me.path.clone(), me_name: me.name.clone(), wanted: None }),
         Ok(_) => None,
-        Err(e) => Some(B::BuildStoreUnreadable { me: me.clone(), error: e.to_string() }),
+        Err(e) => Some(B::BuildStoreUnreadable { me_path: me.path.clone(), me_name: me.name.clone(), error: e.to_string() }),
     }
 }
 
@@ -469,7 +477,7 @@ mod tests {
             fabric_id,
             node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
                 node_id: node_id.clone(),
-                name: name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
                 endpoint_id: EndpointId("e".repeat(64)),
                 transport_addr: "127.0.0.1:41001".parse().unwrap(),
                 incarnation: incarnation.clone(),
@@ -525,6 +533,7 @@ mod tests {
         let mesh_id = MeshId::mint();
         let fabric_id = FabricId::mint();
 
+
         // 2. `take_entry_control` learns Fabric identity, records the Build floor, and adopts the mesh's held MeshState.
         let fab_store = Arc::new(MemoryFabricStorage::default());
         let accepted = AcceptedStore::new(fab_store, NodeId::mint().to_string());
@@ -570,7 +579,7 @@ mod tests {
         assert_eq!(
             node_admin_not_ready_held(&me, &log, Some((build_id.clone(), 2))).await,
             Some(NodeAdminNotReady::NoCurrentBuild {
-                me: me.clone(),
+                me_path: me.path.clone(), me_name: me.name.clone(),
                 wanted: Some(build_id.clone()),
             })
         );
@@ -586,7 +595,7 @@ mod tests {
         assert_eq!(
             node_admin_not_ready_held(&me, &log, Some((build_id.clone(), 1))).await,
             Some(NodeAdminNotReady::BehindFloor {
-                me: me.clone(),
+                me_path: me.path.clone(), me_name: me.name.clone(),
                 build_id: build_id.clone(),
                 held: 0,
                 floor: 1,

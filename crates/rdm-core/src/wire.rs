@@ -11,7 +11,7 @@
 //! read) carries each member as a [`ProjectionEntry`]: its digest, then the status the primary holds.
 
 use crate::runtime::{RuntimeFact, RuntimeLocator, RuntimeProvider};
-use crate::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeLoad, NodeState, GossipStats, PathName};
+use crate::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeLoad, NodeState, GossipStats};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -35,7 +35,9 @@ struct WireNode {
     mesh: String,
     r#type: String,
     node_id: NodeId,
-    name: PathName,
+    path: String,
+    /// The name, beside its path.
+    name: String,
     endpoint_id: EndpointId,
     transport_addr: std::net::SocketAddr,
     incarnation: IncarnationId,
@@ -81,7 +83,7 @@ impl From<&MeshDigest> for WireDigest {
                 mesh: n.mesh.clone(),
                 r#type: n.r#type.clone(),
                 node_id: n.node_id.clone(),
-                name: n.name.clone(),
+                path: n.path.clone(), name: n.name.clone(),
                 endpoint_id: n.endpoint_id.clone(),
                 transport_addr: n.transport_addr,
                 incarnation: n.incarnation.clone(),
@@ -123,7 +125,7 @@ impl From<WireDigest> for MeshDigest {
             fabric_id: w.fabric_id,
             node: MeshNode { mesh: n.mesh, r#type: n.r#type.clone(),
                 node_id: n.node_id,
-                name: n.name,
+                path: n.path.clone(), name: n.name.clone(),
                 endpoint_id: n.endpoint_id,
                 transport_addr: n.transport_addr,
                 incarnation: n.incarnation,

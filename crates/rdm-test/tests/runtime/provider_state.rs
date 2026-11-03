@@ -43,7 +43,7 @@ async fn mesh_with_a_member(test: &str) -> (Estate, PathName, ExactRuntime) {
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let member = estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh1" && n.r#type == "node" && !n.is_primary).map(|n| n.name).min().expect("an rpc member that holds no primary role");
+    let member = estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh1" && n.r#type == "node" && !n.is_primary).map(|n| n.location()).min().expect("an rpc member that holds no primary role");
     let dir = estate.data_dir(&member).await;
     let rt = ExactRuntime::published(Path::new(&dir)).unwrap_or_else(|r| panic!("{member:?}: no exact runtime published in {dir}: {r:?}"));
     (estate, member, rt)
@@ -159,8 +159,8 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
     assert_eq!(fp.mesh, "mesh1", "the fabric-primary is mesh1's: {fp:?}");
     let mp = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
     let other = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.node_id != mp.node_id).cloned().unwrap_or_else(|| panic!("mesh2's other node-admin: {views:#?}"));
-    let fp_name = fp.name.clone();
-    let first = hold_until_recovered(&estate, &mp.name).await;
+    let fp_name = fp.location();
+    let first = hold_until_recovered(&estate, &mp.location()).await;
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
     // The second hold begins once the first recovery has ended complete at its runner, mesh2.node-admin.2:
     // the cell holds an admin between recoveries, never the runner of one still writing.
@@ -169,7 +169,7 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
         named(&estate.spans(), "rdm.node_admin.node.update.via-node-recovery").into_iter().any(|sp| attr(sp, "node_id") == first_id && attr(sp, "outcome") == "complete").then_some(())
     })
     .await;
-    let second = hold_until_recovered(&estate, &other.name).await;
+    let second = hold_until_recovered(&estate, &other.location()).await;
     // Its recovery's span closes once its runner has it complete: read before the estate stops.
     let second_id = second.node_id.clone();
     wait_for("the second recovery complete at the re-created mesh2.node-admin.1", crate::node_recovery_due(), || async {
@@ -219,7 +219,7 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
     // The delete written by mesh2's primary, and the held runtime left as it was: the second recovery's
     // trace, whose executor this cell does not kill.
     let written = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().find(|sp| attr(sp, "node_id") == second.node_id && attr(sp, "outcome") == "row-deleted").cloned().unwrap_or_else(|| panic!("{:?}: its Deleted row is written", second.path));
-    assert!(at_node(&written, &first.successor.name), "the Deleted row of {:?} is written by mesh2's primary: {written}", second.path);
+    assert!(at_node(&written, &first.successor.location()), "the Deleted row of {:?} is written by mesh2's primary: {written}", second.path);
     let left = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| attr(sp, "node_id") == second.node_id && attr(sp, "caller") == "terminate").cloned().expect("the second recovery's TerminateRuntime reads its runtime");
     println!("delete written by mesh2's primary: http://192.168.68.99:16687/trace/{}", s(&written["trace_id"]));
     println!("held runtime left os-stopped: http://192.168.68.99:16687/trace/{}", s(&left["trace_id"]));

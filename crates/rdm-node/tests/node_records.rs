@@ -534,7 +534,7 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
         fabric_id: FabricId::mint(),
         mesh: "mesh1".into(),
         r#type: "node".into(),
-        name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
+        path: "mesh1.node".into(), name: "2".into(),
         node_id: initial.birth.node_id.clone(),
         incarnation: initial.birth.incarnation_id.clone(),
         supersedes: None,

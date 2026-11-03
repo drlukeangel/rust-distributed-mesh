@@ -325,7 +325,7 @@ fn the_largest_mesh_deleted_fits_the_request_ceiling() {
 /// and gossip stats, a tag and a config entry, the optional fields it lacks absent.
 fn node_view() -> NodeView {
     NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
-        name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+        path: "mesh1.node".into(), name: "1".into(),
         r#type: "node".into(),
         mesh: "mesh1".into(),
         node_id: node(),

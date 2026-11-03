@@ -81,12 +81,12 @@ impl Caller {
             }
             self.admins.lock().unwrap().insert(n.node_id.to_string(), n.clone());
             let (Some(ep), Some(addr), Some(inc)) = (n.endpoint_id.as_deref(), n.transport_addr, n.incarnation_id.clone()) else { continue };
-            self.resolver.insert(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
+            self.resolver.insert(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type, node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
         }
     }
 
     fn location(&self, node_id: &str) -> PathName {
-        self.admins.lock().unwrap().get(node_id).expect("observed admin ID").name.clone()
+        self.admins.lock().unwrap().get(node_id).expect("observed admin ID").location()
     }
 
     fn nodes(&self, carrier: &BuildCarrier) -> Nodes {
@@ -151,7 +151,7 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
 /// The node of `mesh2` that holds no role: executed by `mesh2`'s own primary with no preceding
 /// role move, so its stop is one attempt (`accepted.attempt`).
 async fn secondary_node(estate: &Estate) -> PathName {
-    estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary).map(|n| n.name).min().expect("a node of mesh2 holding no primary role")
+    estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary).map(|n| n.location()).min().expect("a node of mesh2 holding no primary role")
 }
 
 /// CONTRACT (acceptance 1): `node.delete` over `0x20` is one call. The stream is `Started`, a frame
@@ -196,7 +196,7 @@ async fn a_delete_over_the_build_family_is_one_call_that_pushes_every_step_frame
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["attempt"]) == accepted.attempt.to_string())
         .expect("the fabric-primary's dispatch");
-    assert!(at_node(dispatch, &fabric_primary.name), "dispatch is emitted by the fabric primary: {dispatch}");
+    assert!(at_node(dispatch, &fabric_primary.location()), "dispatch is emitted by the fabric primary: {dispatch}");
     assert_eq!(s(&dispatch["attributes"]["executor"]), executor_birth.to_string());
     assert_eq!(dispatch["trace_id"], reconcile["trace_id"], "the run is in the call's trace");
     assert!(spans_named(&spans, "rdm.node_admin.build.resolve.via-call").is_empty(), "nothing read a Build to learn a step");
@@ -417,15 +417,15 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     let views = estate.node_views().await;
     let executor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 primary").clone();
     let next_executor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.node_id != executor.node_id).expect("other mesh2 admin").clone();
-    let subject_id = views.iter().find(|n| n.name == node).expect("subject").node_id.clone();
-    let door = Door::at(&estate, &executor.name).await;
+    let subject_id = views.iter().find(|n| n.location() == node).expect("subject").node_id.clone();
+    let door = Door::at(&estate, &executor.location()).await;
     door.arm("lost", json!({"kind": "receipt", "step": "StartNode", "operation": "node.start", "node": rdm_core::OperationSubject::Node(subject_id.clone())})).await;
     let mut stream = caller.nodes(&carrier).start(&node).await.expect("the fabric-primary accepts the start");
     let accepted = stream.accepted().cloned().expect("the call opened a Build");
     let held = door.wait_held("lost").await;
     assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.as_str(), "{held}");
     assert_eq!(held["hit"]["attempt"], json!(accepted.attempt), "the executor is held in the attempt the start was accepted at: {held}");
-    estate.kill_node(&executor.name).await;
+    estate.kill_node(&executor.location()).await;
     let frames = frames_of(&mut stream).await;
     assert_eq!(frames.last(), Some(&Frame::Complete), "the caller's stream carries the successor's frames to the end: {frames:?}");
     let seen = events(&frames);
@@ -491,11 +491,11 @@ async fn suspended_executor_withholding(test: &str, withhold: bool) -> Suspended
     let executor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 primary").clone();
     let successor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.node_id != executor.node_id).expect("other mesh2 admin").clone();
     let fabric_primary = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary").clone();
-    let subject_id = views.iter().find(|n| n.name == node).expect("stopped subject").node_id.clone();
+    let subject_id = views.iter().find(|n| n.location() == node).expect("stopped subject").node_id.clone();
     let node_id = executor.node_id.to_string();
-    let data_dir = estate.data_dir(&executor.name).await;
+    let data_dir = estate.data_dir(&executor.location()).await;
     let rt = rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&data_dir)).unwrap_or_else(|r| panic!("{node_id}: no exact runtime published in {data_dir}: {r:?}"));
-    let door = Door::at(&estate, &executor.name).await;
+    let door = Door::at(&estate, &executor.location()).await;
     if withhold {
         door.arm("unpublished", json!({"kind": "announcement", "announcement": "aggregate", "channel": "any"})).await;
     }
@@ -566,8 +566,8 @@ async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_i
     let test = "an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_its_mesh_recovered_leaving_the_runtime_stopped";
     let Suspended { mut estate, carrier, accepted, mut stream, rt, node_id, executor, successor, fabric_primary, data_dir, ticks, .. } = suspended_executor(test).await;
     started_to_the_end(&mut stream, "the os-stopped executor's attempt is claimed by the next").await;
-    let recovered = re_created(&estate, &executor.name, &node_id).await;
-    assert_ne!(estate.data_dir(&executor.name).await, data_dir, "a newly allocated data dir, never the suspended runtime's");
+    let recovered = re_created(&estate, &executor.location(), &node_id).await;
+    assert_ne!(estate.data_dir(&executor.location()).await, data_dir, "a newly allocated data dir, never the suspended runtime's");
     assert_eq!(rdm_test::process_faults::proc_state(rt.pid), Some('T'), "the suspended runtime is sent nothing: still stopped");
     assert_eq!(rdm_test::process_faults::cpu_ticks(rt.pid), ticks, "the suspended runtime used no CPU");
     // The cell's own cleanup: the suspended runtime the recovery left is no estate's.
@@ -584,13 +584,13 @@ async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_i
     assert_eq!(attr(&inspected, "executor"), birth_of(&executor).to_string(), "{inspected}");
     let claim = of_build("rdm.node_admin.build.update.via-claim-decision")
         .into_iter()
-        .find(|sp| at_node(sp, &fabric_primary.name) && attr(sp, "outcome") == "won" && attr(sp, "attempt").parse::<u32>().ok() > Some(accepted.attempt))
+        .find(|sp| at_node(sp, &fabric_primary.location()) && attr(sp, "outcome") == "won" && attr(sp, "attempt").parse::<u32>().ok() > Some(accepted.attempt))
         .expect("the next attempt is claimed");
     assert_eq!(attr(&claim, "executor"), birth_of(&successor).to_string(), "the next attempt is the other node-admin of mesh2's: {claim}");
     assert!(claim["start_unix_nano"].as_u64() > inspected["start_unix_nano"].as_u64(), "the claim follows the proof");
     // The mesh: the fabric-primary's investigation of the unheard mesh-primary finds it os-stopped, and the
     // recovery it opens is admitted, never refused behind the held attempt.
-    let investigations: Vec<Value> = spans_named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(|sp| at_node(sp, &fabric_primary.name) && attr(sp, "suspect_node_id") == node_id).cloned().collect();
+    let investigations: Vec<Value> = spans_named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(|sp| at_node(sp, &fabric_primary.location()) && attr(sp, "suspect_node_id") == node_id).cloned().collect();
     assert!(!investigations.is_empty() && investigations.iter().all(|sp| attr(sp, "finding") == "os-stopped"), "the fabric-primary's investigation finds the suspended mesh-primary os-stopped: {investigations:#?}");
     let recoveries: Vec<Value> = spans_named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == node_id).cloned().collect();
     // A submit while an attempt holds the mesh answers BuildInProgress (node-recovery.md step 1); the
@@ -604,7 +604,7 @@ async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_i
     assert_eq!(investigations.len(), 1, "the mesh is recovered within one investigation: {investigations:#?}");
     let at_delete = spans_named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| attr(sp, "node_id") == node_id && attr(sp, "caller") == "terminate").cloned().expect("the recovery's TerminateRuntime reads the exact runtime at its instant");
     assert_eq!(attr(&at_delete, "verdict"), "os-stopped", "{at_delete}");
-    let signalled: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.reject.via-lost-executor").into_iter().filter(|sp| at_node(sp, &executor.name)).collect();
+    let signalled: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.reject.via-lost-executor").into_iter().filter(|sp| at_node(sp, &executor.location())).collect();
     assert!(signalled.is_empty(), "the recovery stops no runtime of the suspended birth: {signalled:#?}");
     println!("recovered {node_id}: {} -> {}", node_id, s(&recovered["node_id"]));
     println!("executor lost: http://192.168.68.99:16687/trace/{}", s(&lost["trace_id"]));
@@ -645,12 +645,12 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_r
     // after the next attempt's claim in which the recovery runs. Then at once the resume and the
     // suspended executor's release, and the recovery goes on once the resumed run of the superseded
     // attempt has ended (its last frame written to a stream no fabric-primary reads).
-    let recovering = Door::at(&estate, &successor.name).await;
+    let recovering = Door::at(&estate, &successor.location()).await;
     recovering.arm("recovery", json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete", "node": rdm_core::OperationSubject::Node(executor.node_id.clone())})).await;
     let cut = recovering.wait_held("recovery").await;
     let (claim, recovery) = wait_for("the next attempt and the suspended birth's recovery claimed", crate::node_recovery_due(), || async {
         let spans = estate.spans();
-        let won = |attempt: &str| spans_named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().find(|sp| attr(sp, "build_id") == build && at_node(sp, &fabric_primary.name) && attr(sp, "outcome") == "won" && attr(sp, "attempt") == attempt).cloned();
+        let won = |attempt: &str| spans_named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().find(|sp| attr(sp, "build_id") == build && at_node(sp, &fabric_primary.location()) && attr(sp, "outcome") == "won" && attr(sp, "attempt") == attempt).cloned();
         let recovery = spans_named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| attr(sp, "node_id") == node_id && attr(sp, "outcome") == "admitted").cloned()?;
         let next = won(&(superseded + 1).to_string())?;
         won(&attr(&recovery, "attempt")).map(|_| (next, recovery))
@@ -661,7 +661,7 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_r
     let resumed = rt.apply(rdm_test::process_faults::Fault::Continue).expect("the suspended runtime is resumed");
     assert_ne!(resumed.state_after, Some('T'), "{resumed:?}");
     door.release("held").await;
-    let at_resume = estate.node_value_opt(&executor.name).await;
+    let at_resume = estate.node_value_opt(&executor.location()).await;
     assert!(at_resume.as_ref().is_none_or(|n| s(&n["node_id"]) == node_id || n["status"] != "ready"), "the resume falls while the recovery still runs: {at_resume:?}");
     assert_eq!(attr(&claim, "executor"), birth_of(&successor).to_string(), "{claim}");
     wait_for("the resumed run of the superseded attempt ended", crate::node_recovery_due(), || async {
@@ -672,11 +672,11 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_r
     println!("resumed after the next attempt {} and the recovery attempt {} were claimed", attr(&claim, "attempt"), attr(&recovery, "attempt"));
 
     started_to_the_end(&mut stream, "the next attempt's start").await;
-    let recovered = re_created(&estate, &executor.name, &node_id).await;
+    let recovered = re_created(&estate, &executor.location(), &node_id).await;
     // The resumed birth is a deleted birth: its mesh-primary reports it and the fabric-primary
     // terminates its runtime.
     wait_for("the resumed birth's runtime ended", crate::node_recovery_due() * 2, || async { rt.check().is_err().then_some(()) }).await;
-    let held = estate.node_value(&executor.name).await;
+    let held = estate.node_value(&executor.location()).await;
     assert_eq!((s(&held["node_id"]), s(&held["status"])), (s(&recovered["node_id"]), "ready".to_string()), "the re-created birth holds its (path, name): {held}");
     assert_eq!(estate.node_value(&node).await["status"], "ready", "the started node stands");
     // The journal: nothing of the superseded attempt from its executor.
@@ -890,7 +890,7 @@ async fn a_planned_handover_mid_build_ends_the_outer_stream_with_the_new_fabric_
     assert!(handover_calls >= 1, "the role moved by the fabric-primary handover, op 0x21");
     let yielded: Vec<_> = spans_named(&spans, "rdm.node_admin.build.reject.via-fabric-primary-changed").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
     assert!(!yielded.is_empty(), "the old fabric-primary's dispatch after its role moved was refused, RoleYielded in its span");
-    assert!(yielded.iter().all(|sp| at_node(sp, &old_primary.name)), "{yielded:?}");
+    assert!(yielded.iter().all(|sp| at_node(sp, &rdm_core::PathName { path: old_primary.path.clone(), name: old_primary.name.clone() })), "{yielded:?}");
     let installed: Vec<_> = spans_named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && at_node(sp, &caller.location(new_role.as_str())) && s(&sp["attributes"]["outcome"]) == "held").collect();
     assert_eq!(installed.len(), 1, "the new fabric-primary installed the election's result once: {installed:?}");
     let installed_at = installed[0]["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
@@ -932,7 +932,7 @@ impl Caller {
                             self.resolver.remove_gone(&old);
                             self.admins.lock().unwrap().remove(&dead_id);
                         }
-                        self.resolver.insert(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
+                        self.resolver.insert(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
                         self.admins.lock().unwrap().insert(n.node_id.to_string(), n.clone());
                         // The restored node's own view names it fabric-primary once it installed the roles.
                         let node_id = n.node_id.to_string();
@@ -1286,7 +1286,7 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
         let before = estate.node_value(&node).await;
         let subject_id: rdm_core::NodeId = s(&before["node_id"]).parse().expect("subject ID");
         let executor = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
-        let door = Door::at(&estate, &executor.name).await;
+        let door = Door::at(&estate, &executor.location()).await;
         door.arm("closure", json!({"kind": "receipt", "step": cut, "operation": "node.delete", "node": rdm_core::OperationSubject::Node(subject_id.clone())})).await;
         let mut stream = caller.nodes(&carrier).delete(&node).await.expect("the Build accepts the delete");
         let accepted = stream.accepted().cloned().expect("the call opened a Build");
@@ -1302,7 +1302,7 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
         wait_for("the held executor exported the progress record before it is killed", Duration::from_secs(30), || async {
             named(&estate.spans(), "rdm.node_admin.node.update.via-connections-deleting").into_iter().find(|s| s["attributes"]["node_id"] == subject_id.as_str()).cloned()
         }).await;
-        estate.kill_node(&executor.name).await;
+        estate.kill_node(&executor.location()).await;
         let frames = frames_of(&mut stream).await;
         assert_eq!(frames.last(), Some(&Frame::Complete), "the successor settles the closure at {cut}: {frames:?}");
         let receipts = carrier.build(&accepted.build_id).await.expect("Build receipts");
@@ -1343,7 +1343,7 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
 async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_deleted() {
     let test = "an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_deleted";
     let Suspended { mut estate, mut stream, door, rt, node_id, executor, successor, fabric_primary, .. } = suspended_executor(test).await;
-    let recovering = Door::at(&estate, &successor.name).await;
+    let recovering = Door::at(&estate, &successor.location()).await;
     recovering.arm("recovery", json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete", "node": rdm_core::OperationSubject::Node(executor.node_id.clone())})).await;
 
     let _cut = recovering.wait_held("recovery").await;
@@ -1355,9 +1355,9 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
     recovering.release("recovery").await;
 
     started_to_the_end(&mut stream, "the next attempt completes the held start").await;
-    let recovered = re_created(&estate, &executor.name, &node_id).await;
+    let recovered = re_created(&estate, &executor.location(), &node_id).await;
     wait_for("the resumed birth's runtime ended", crate::node_recovery_due() * 2, || async { rt.check().is_err().then_some(()) }).await;
-    let held = estate.node_value(&executor.name).await;
+    let held = estate.node_value(&executor.location()).await;
     assert_eq!((s(&held["node_id"]), s(&held["status"])), (s(&recovered["node_id"]), "ready".to_string()), "the re-created birth holds its (path, name): {held}");
     // The decision ends once its terminate report is answered: owed while an attempt holds the mesh
     // (the recovery that re-created the birth), so it is waited for, never cut by the estate's stop.
@@ -1389,7 +1389,7 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
         .find(|sp| attr(sp, "node_id") == node_id && attr(sp, "outcome") == "opened")
         .cloned()
         .unwrap_or_else(|| panic!("expected via-returned-reported outcome opened for {node_id}"));
-    assert_eq!((attr(&reported, "returned_path"), attr(&reported, "returned_name")), (executor.name.path.clone(), executor.name.name.clone()), "{reported}");
+    assert_eq!((attr(&reported, "returned_path"), attr(&reported, "returned_name")), (executor.path.clone(), executor.name.clone()), "{reported}");
     let terminated = spans_named(&spans, "rdm.node_admin.build.update.via-terminate-returned")
         .into_iter()
         .find(|sp| attr(sp, "node_id") == node_id)

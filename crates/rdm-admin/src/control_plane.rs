@@ -26,8 +26,10 @@ pub struct ControlPlane {
     pub builds: Arc<dyn BuildStateAdapter>,
     /// The Fabric identity as this admin holds it (`crate::accepted`).
     pub accepted: Arc<AcceptedStore>,
-    /// This admin's path and name: topology is accepted only while it is the fabric-primary.
-    pub me: PathName,
+    /// This admin's path: topology is accepted only while it is the fabric-primary.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
     /// Why the view lacks a name right now: what the digest view, the removed set and the
@@ -109,6 +111,11 @@ pub struct ControlPlane {
 }
 
 impl ControlPlane {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
+}
+
+impl ControlPlane {
     /// A control plane for the admin `me` over its Build state, its accepted-Build store and an
     /// initial `topology`, stamping with `time`: the rafka-time its process adopted. A control
     /// plane is never built without one, because every Build and attempt it opens is
@@ -117,7 +124,7 @@ impl ControlPlane {
         Self {
             builds,
             accepted,
-            me,
+            me_path: me.path.clone(), me_name: me.name.clone(),
             topology: Arc::new(RwLock::new(topology)),
             build_submitted: Arc::new(Notify::new()),
             resize: std::sync::OnceLock::new(),
@@ -175,7 +182,7 @@ impl ControlPlane {
         if let Some(held) = self.builds.held_name() {
             return held;
         }
-        self.topology.read().await.held_name_of(&self.me, None)
+        self.topology.read().await.held_name_of(&self.me(), None)
     }
 
     /// Only the current fabric-primary changes topology or opens attempts.
@@ -291,7 +298,7 @@ impl ControlPlane {
                         outer.in_scope(|| reject_span(route, &reject));
                         return Err(Refusal::Reject(reject));
                     }
-                    let rows = self.node_rows.get().ok_or_else(|| Refusal::Unavailable(format!("path={} name={}: no nodes.storage is open yet to read what each node's row records", self.me.path, self.me.name)))?;
+                    let rows = self.node_rows.get().ok_or_else(|| Refusal::Unavailable(format!("path={} name={}: no nodes.storage is open yet to read what each node's row records", self.me_path, self.me_name)))?;
                     crate::accepted::recorded_executables(&**rows, &current.topology).await.map_err(Refusal::Unavailable)?
                 }
                 _ => crate::accepted::Recorded::new(),
@@ -316,11 +323,11 @@ impl ControlPlane {
             // ([`crate::build::delete_admits`]). A birth the view marks Dead with neither fact is refused
             // `node-not-live` by name: silence never says the runtime exited (Q219).
             let mut exited_pin: Option<(PathName, crate::build::PinnedBirth)> = None;
-            if let TopologyChange::RemoveNode { node } = &change {
+            if let TopologyChange::RemoveNode { path: node_path, name: node_name } = &change { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
                 if let Some(candidate) = collect {
                     let exact = observed.node(node).is_some_and(|n| n.node_id == candidate.node_id && n.incarnation_id.as_ref() == Some(&candidate.incarnation) && n.stopped);
                     if !exact {
-                        let reject = BuildReject::NodeNotStopped { node: node.clone(), found: "the admitted removal location no longer names the scanned stopped birth".into() };
+                        let reject = BuildReject::NodeNotStopped { path: node.path.clone(), name: node.name.clone(), found: "the admitted removal location no longer names the scanned stopped birth".into() };
                         outer.in_scope(|| reject_span(route, &reject));
                         return Err(Refusal::Reject(reject));
                     }
@@ -376,8 +383,8 @@ impl ControlPlane {
             let mut pinned = Vec::new();
             for n in crate::accepted::surplus_births(&topology, &observed) {
                 match crate::build::PinnedBirth::of(n) {
-                    Some(birth) => pinned.push((n.name.clone(), birth)),
-                    None => return Err(not_live(&outer, route, &n.name, n.status, "the node holds no incarnation id to pin its delete to")),
+                    Some(birth) => pinned.push((n.location(), birth)),
+                    None => return Err(not_live(&outer, route, &n.location(), n.status, "the node holds no incarnation id to pin its delete to")),
                 }
             }
             // The birth gate 5 admitted on its exited verdict is pinned too, whatever the view marks it.
@@ -389,7 +396,7 @@ impl ControlPlane {
             topology.pinned = pinned;
             // A peer mesh held unheard is held as a mesh (R-D1): its births under a silence mark are planned
             // as they stand, and gate 6 below reads what the request changes there.
-            let held: std::collections::BTreeSet<String> = topology.meshes.keys().filter(|m| observed.node(&self.me).is_none_or(|own| **m != own.mesh) && self.mesh_unheard.get().and_then(|f| f(m)).is_some()).cloned().collect();
+            let held: std::collections::BTreeSet<String> = topology.meshes.keys().filter(|m| observed.node(&self.me()).is_none_or(|own| **m != own.mesh) && self.mesh_unheard.get().and_then(|f| f(m)).is_some()).cloned().collect();
             let operations = crate::accepted::plan_holding(&topology, &observed, &held).operations;
             // A Build whose plan holds the fabric delete, the whole plan, is exempt from the
             // build-in-progress refusal, R-BI7 and R-PC1: it interrupts the Build in progress, and its own
@@ -426,9 +433,9 @@ impl ControlPlane {
             if let Some(reject) = operations.iter().chain(replacements.iter()).find_map(|op| {
                 let n = op.node()?;
                 let mesh = op.mesh()?;
-                if observed.node(&self.me).is_some_and(|own| own.mesh == mesh) { return None; }
+                if observed.node(&self.me()).is_some_and(|own| own.mesh == mesh) { return None; }
                 let unheard_ms = self.mesh_unheard.get().and_then(|f| f(mesh))?;
-                Some(BuildReject::UnheardMesh { node: n.clone(), mesh: mesh.to_string(), unheard_ms })
+                Some(BuildReject::UnheardMesh { path: n.path.clone(), name: n.name.clone(), mesh: mesh.to_string(), unheard_ms })
             }) {
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
@@ -437,12 +444,12 @@ impl ControlPlane {
             // take its role is refused before it exists: node.primary.update has no successor (R-MT1, Q7).
             if let Some(reject) = operations.iter().find_map(|op| {
                 let (node, action) = match op {
-                    crate::build::BuildOperation::DeleteLiveNode { node, .. } => (node, "delete"),
-                    crate::build::BuildOperation::DeleteConnections { node, .. } => (node, "node.connection.delete"),
-                    crate::build::BuildOperation::StopNode { node, .. } => (node, "stop"),
+                    crate::build::BuildOperation::DeleteLiveNode { .. } => (op.node().expect("a node operation names its node"), "delete"),
+                    crate::build::BuildOperation::DeleteConnections { .. } => (op.node().expect("a node operation names its node"), "node.connection.delete"),
+                    crate::build::BuildOperation::StopNode { .. } => (op.node().expect("a node operation names its node"), "stop"),
                     _ => return None,
                 };
-                last_admin(node, action, &observed, observed.node(&self.me).map(|n| n.mesh.as_str()).unwrap_or_default())
+                last_admin(&node, action, &observed, observed.node(&self.me()).map(|n| n.mesh.as_str()).unwrap_or_default())
             }) {
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
@@ -562,10 +569,10 @@ impl ControlPlane {
             let births = crate::accepted::step_births(&steps, pinned).map_err(Refusal::Reject)?;
             for (step, (_, mesh, _)) in steps.iter().zip(&births) {
                 if let Some(held) = holding(&current, Some(mesh)) { return Err(Refusal::BuildInProgress(held)); }
-                let node = step.node();
-                if t.node(&self.me).is_none_or(|own| own.mesh != *mesh) {
+                let node = step.location();
+                if t.node(&self.me()).is_none_or(|own| own.mesh != *mesh) {
                     if let Some(unheard_ms) = self.mesh_unheard.get().and_then(|f| f(mesh)) {
-                        let reject = BuildReject::UnheardMesh { node: node.clone(), mesh: mesh.clone(), unheard_ms };
+                        let reject = BuildReject::UnheardMesh { path: node.path.clone(), name: node.name.clone(), mesh: mesh.clone(), unheard_ms };
                         outer.in_scope(|| reject_span(route, &reject));
                         return Err(Refusal::Reject(reject));
                     }
@@ -578,7 +585,7 @@ impl ControlPlane {
                     rdm_core::build::Step::DeleteConnections { .. } => Some("node.connection.delete"),
                     _ => None,
                 };
-                if let Some(reject) = step_action.and_then(|a| last_admin(node, a, &t, t.node(&self.me).map(|n| n.mesh.as_str()).unwrap_or_default())) {
+                if let Some(reject) = step_action.and_then(|a| last_admin(&node, a, &t, t.node(&self.me()).map(|n| n.mesh.as_str()).unwrap_or_default())) {
                     outer.in_scope(|| reject_span(route, &reject));
                     return Err(Refusal::Reject(reject));
                 }
@@ -605,7 +612,7 @@ impl ControlPlane {
             self.apply_atlas(&mut t).await?;
             // build.md §4.4, "A node stands at the path": none stands there, refused by name on its span.
             let Some(n) = self.atlas_row(&path, &t).await? else {
-                let reject = BuildReject::UnknownNode { node: path.clone(), step: None };
+                let reject = BuildReject::UnknownNode { path: path.path.clone(), name: path.name.clone(), step: None };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             };
@@ -621,7 +628,7 @@ impl ControlPlane {
                 && !current.topology.meshes.contains_key(&mesh)
                 && t.meshes.iter().any(|m| m.name == mesh && m.status == crate::model::ScopeStatus::Dead);
             if !(predecessor || deleted_mesh) {
-                let reject = BuildReject::UnknownNode { node: path.clone(), step: None };
+                let reject = BuildReject::UnknownNode { path: path.path.clone(), name: path.name.clone(), step: None };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
@@ -639,16 +646,16 @@ impl ControlPlane {
                 }
                 // A node of a peer mesh this fabric-primary holds unheard is not its to delete: the mesh's
                 // own primary, once heard again, reconciles it (R-D1).
-                if mesh != t.node(&self.me).map(|n| n.mesh.as_str()).unwrap_or_default() {
+                if mesh != t.node(&self.me()).map(|n| n.mesh.as_str()).unwrap_or_default() {
                     if let Some(unheard_ms) = self.mesh_unheard.get().and_then(|f| f(&mesh)) {
-                        let reject = BuildReject::UnheardMesh { node: path.clone(), mesh: mesh.clone(), unheard_ms };
+                        let reject = BuildReject::UnheardMesh { path: path.path.clone(), name: path.name.clone(), mesh: mesh.clone(), unheard_ms };
                         outer.in_scope(|| reject_span(route, &reject));
                         return Err(Refusal::Reject(reject));
                     }
                 }
                 // A primary's role moves by node.primary.update to another node-admin of its mesh;
                 // with none, the update has no other node of its type and the delete is refused (R-MT1).
-                if let Some(reject) = last_admin(&path, ActionKind::Delete.name(), &t, t.node(&self.me).map(|n| n.mesh.as_str()).unwrap_or_default()) {
+                if let Some(reject) = last_admin(&path, ActionKind::Delete.name(), &t, t.node(&self.me()).map(|n| n.mesh.as_str()).unwrap_or_default()) {
                     outer.in_scope(|| reject_span(route, &reject));
                     return Err(Refusal::Reject(reject));
                 }
@@ -707,9 +714,9 @@ impl ControlPlane {
         let mesh_primary = t.node_type_primary(&n.mesh, rdm_core::NODE_ADMIN).is_some_and(|p| p.node_id == n.node_id);
         let above = if mesh_primary { t.fabric_primary().map(|fp| fp.node_id.clone()) } else { t.node_type_primary(&n.mesh, rdm_core::NODE_ADMIN).map(|p| p.node_id.clone()) };
         if above.is_none() || above != me {
-            return Err(refuse("receiver-not-primary", format!("node {node_id} at path {:?}, name {:?} is commanded by {}, the {} above it", n.name.path, n.name.name, above.map(|a| a.to_string()).unwrap_or_else(|| "no primary in this view".into()), if mesh_primary { "fabric-primary" } else { "mesh-primary" })));
+            return Err(refuse("receiver-not-primary", format!("node {node_id} at path {:?}, name {:?} is commanded by {}, the {} above it", n.path, n.name, above.map(|a| a.to_string()).unwrap_or_else(|| "no primary in this view".into()), if mesh_primary { "fabric-primary" } else { "mesh-primary" })));
         }
-        let path = n.name.clone();
+        let path = n.location();
         let refused_state = match kind {
             ActionKind::Start if !n.stopped => Some("a start needs a stopped node"),
             ActionKind::Stop if !n.live => Some("a stop needs a live node"),
@@ -746,7 +753,7 @@ impl ControlPlane {
         let finding = match (self.investigation.get(), n.incarnation.clone()) {
             (Some(probe), Some(incarnation)) => {
                 let birth = observed.births().find(|b| b.node_id == n.node_id && b.incarnation_id.as_ref() == Some(&incarnation)).cloned().unwrap_or_else(|| {
-                    let mut b = crate::model::Node::allocated(n.name.clone(), n.mesh.clone(), &n.r#type);
+                    let mut b = crate::model::Node::allocated(n.location(), n.mesh.clone(), &n.r#type);
                     b.node_id = n.node_id.clone();
                     b.incarnation_id = Some(incarnation.clone());
                     b
@@ -758,9 +765,10 @@ impl ControlPlane {
         let admitted = crate::build::delete_admits(n.stopped, n.live, heard_dead, finding.as_ref());
         let verdict = finding.as_ref().map(|f| f.name()).unwrap_or("none-held");
         let detail = finding.as_ref().map(|f| f.detail()).unwrap_or_default();
-        outer.in_scope(|| tracing::info!(node_path = %n.name.path, node_name = %n.name.name, node_id = %n.node_id, verdict, detail = %detail, admitted = admitted.map(|a| a.name()).unwrap_or("none"), "gate 5: the birth is neither stopped nor heard live, so node investigation of its exact birth decides the delete"));
+        outer.in_scope(|| tracing::info!(node_path = %n.path, node_name = %n.name, node_id = %n.node_id, verdict, detail = %detail, admitted = admitted.map(|a| a.name()).unwrap_or("none"), "gate 5: the birth is neither stopped nor heard live, so node investigation of its exact birth decides the delete"));
         admitted
     }
+
 
     /// Whether `path` names a birth the accepted topology never names there, deleted by the next attempt
     /// of the accepted Build: a node a rename moved off its accepted entry (its record's provenance names
@@ -779,6 +787,7 @@ impl ControlPlane {
         let left = current.as_ref().is_some_and(|c| n.entry_left(&c.topology).is_some());
         Ok(left || t.meshes.iter().any(|m| m.name == n.mesh && m.status == crate::model::ScopeStatus::Dead))
     }
+
 
     /// A finished Build leaves history. The current Build, and a Build still reconciling, stay.
     pub async fn forget_build(&self, id: &BuildId) -> Result<(), Refusal> {
@@ -848,7 +857,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology, own_mesh: &str) -> Op
         }
         let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
         let refusal = crate::election::commanded_node_type_successor(&nodes, &crate::election::Incumbency::default(), target).err()?;
-        return Some(BuildReject::NoSecondary { node: node.clone(), mesh: target.mesh.clone(), action: action.to_string(), refusal });
+        return Some(BuildReject::NoSecondary { path: node.path.clone(), name: node.name.clone(), mesh: target.mesh.clone(), action: action.to_string(), refusal });
     }
     let fabric_role = t.fabric_primary().is_some_and(|fp| fp.node_id == target.node_id);
     let mesh_role = t.node_type_primary(&target.mesh, "node-admin").is_some_and(|p| p.node_id == target.node_id);
@@ -871,7 +880,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology, own_mesh: &str) -> Op
         moving
     };
     let refusal = crate::election::commanded_successor_in(t, &crate::election::Incumbency::default(), target, moving).err()?;
-    Some(BuildReject::LastAdmin { node: node.clone(), mesh: target.mesh.clone(), action: action.to_string(), refusal })
+    Some(BuildReject::LastAdmin { path: node.path.clone(), name: node.name.clone(), mesh: target.mesh.clone(), action: action.to_string(), refusal })
 }
 
 /// The first executable a complete-topology request names that cannot launch, refused by name before
@@ -898,11 +907,11 @@ async fn named_executable_refusal(current: &crate::accepted::FabricTopology, nex
         if provider == crate::model::ProviderKind::Container && !executable_dirs.iter().any(|d| binding.executable.starts_with(d)) {
             let named = executable_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(",");
             let detail = format!("{} is outside every directory {} names ({named:?}): a containerized admin mounts only those, so no launch could read it", binding.executable.display(), rdm_core::launch::ENV_EXECUTABLE_DIRS);
-            refused_unread = Some(BuildReject::ExecutableRefused { node: path.clone(), detail });
+            refused_unread = Some(BuildReject::ExecutableRefused { path: path.path.clone(), name: path.name.clone(), detail });
             break;
         }
         if let Err(detail) = crate::admin::runner::binding_fits(binding, &spec.r#type, provider) {
-            refused_unread = Some(BuildReject::ExecutableRefused { node: path.clone(), detail });
+            refused_unread = Some(BuildReject::ExecutableRefused { path: path.path.clone(), name: path.name.clone(), detail });
             break;
         }
         to_hash.push((path, binding));
@@ -920,7 +929,7 @@ async fn named_executable_refusal(current: &crate::accepted::FabricTopology, nex
         futures_util::future::join_all(files.iter().map(|(file, (b, ids))| async move { (*file, crate::admin::runner::hash_executable(b, &ids.join(","), "request").await) })).await.into_iter().collect();
     to_hash
         .iter()
-        .find_map(|(path, b)| hashed.get(&(b.executable.as_path(), b.sha256.as_str())).and_then(|r| r.clone().err()).map(|detail| BuildReject::ExecutableRefused { node: (*path).clone(), detail }))
+        .find_map(|(path, b)| hashed.get(&(b.executable.as_path(), b.sha256.as_str())).and_then(|r| r.clone().err()).map(|detail| BuildReject::ExecutableRefused { path: path.path.clone(), name: path.name.clone(), detail }))
         .or(refused_unread)
 }
 
@@ -929,7 +938,7 @@ async fn named_executable_refusal(current: &crate::accepted::FabricTopology, nex
 /// among them), before the request is compiled.
 fn with_type_defaults(current: &crate::accepted::FabricTopology, change: &mut TopologyChange, declared: &[rdm_core::NodeType]) {
     if let TopologyChange::Reconcile { nodes, .. } = change {
-        for spec in nodes.iter_mut().filter(|s| s.executable.is_none() && !current.contains(&s.path)) {
+        for spec in nodes.iter_mut().filter(|s| s.executable.is_none() && !current.contains(&s.location())) {
             spec.executable = rdm_core::NodeType::of(declared, &spec.r#type).and_then(|t| t.executable.clone());
         }
     }
@@ -942,7 +951,7 @@ fn created_of_unknown_type(current: &crate::accepted::FabricTopology, next: &cra
         .values()
         .flat_map(|m| m.spec_by_path.iter())
         .find(|(path, spec)| !current.contains(path) && rdm_core::NodeType::undeclared(declared, &spec.r#type).is_some())
-        .map(|(path, spec)| BuildReject::UnknownType { node: path.clone(), r#type: spec.r#type.clone() })
+        .map(|(path, spec)| BuildReject::UnknownType { path: path.path.clone(), name: path.name.clone(), r#type: spec.r#type.clone() })
 }
 
 /// The first path `next` creates that names no executable (proposal executable-bindings-at-create.md
@@ -953,7 +962,7 @@ fn created_without_executable(current: &crate::accepted::FabricTopology, next: &
         .values()
         .flat_map(|m| m.spec_by_path.iter())
         .find(|(path, spec)| !current.contains(path) && spec.executable.is_none())
-        .map(|(path, _)| BuildReject::ExecutableMissing { node: path.clone() })
+        .map(|(path, _)| BuildReject::ExecutableMissing { path: path.path.clone(), name: path.name.clone()})
 }
 
 /// The stop/start/delete refusal `node-not-live`, spanned beside the request with the node, the
@@ -961,7 +970,7 @@ fn created_without_executable(current: &crate::accepted::FabricTopology, next: &
 /// (`rdm.node_admin.node.reject.via-not-live`).
 fn not_live(outer: &tracing::Span, route: &'static str, path: &PathName, status: crate::model::NodeStatus, reason: &'static str) -> Refusal {
     let held = serde_json::to_value(status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| format!("{status:?}"));
-    let reject = BuildReject::NodeNotLive { node: path.clone() };
+    let reject = BuildReject::NodeNotLive { path: path.path.clone(), name: path.name.clone()};
     outer.in_scope(|| {
         tracing::info_span!("rdm.node_admin.node.reject.via-not-live", route, node_path = %path.path, node_name = %path.name, status = %held, reason, detail = %reject)
             .in_scope(|| tracing::info!(%reject, status = %held, reason, "build refused: the node is not live"))
@@ -1153,9 +1162,9 @@ mod tests {
             ],
             nodes: vec![node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, true), node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", true, false), node(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", false, false), node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true, false), node(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", true, false)],
         };
-        let stop = |path: PathName| crate::build::BuildOperation::StopNode { mesh: t.node(&path).unwrap().mesh.clone(), r#type: t.node(&path).unwrap().r#type.clone(), node: path.clone(), node_id: t.node(&path).unwrap().node_id.clone(), from_incarnation: t.node(&path).unwrap().incarnation_id.clone().unwrap() };
+        let stop = |path: PathName| crate::build::BuildOperation::StopNode { mesh: t.node(&path).unwrap().mesh.clone(), r#type: t.node(&path).unwrap().r#type.clone(), path: path.path.clone(), name: path.name.clone(), node_id: t.node(&path).unwrap().node_id.clone(), from_incarnation: t.node(&path).unwrap().incarnation_id.clone().unwrap() };
         let primary_stop = stop(PathName::new("mesh1.node", "1").unwrap());
-        assert_eq!(crate::executor::role_move(&primary_stop, &t).map(|m| m.primary.name.clone()), Some(PathName::new("mesh1.node", "1").unwrap()), "the rpc role moves before its primary's stop");
+        assert_eq!(crate::executor::role_move(&primary_stop, &t).map(|m| m.primary.location()), Some(PathName::new("mesh1.node", "1").unwrap()), "the rpc role moves before its primary's stop");
         assert_eq!(crate::executor::executor_for(&primary_stop, &t), None, "no admin executes the primary's stop until its role moved");
         let other = stop(PathName::new("mesh1.node", "2").unwrap());
         assert_eq!(crate::executor::role_move(&other, &t), None, "a node that holds no primary role moves none");
@@ -1167,7 +1176,7 @@ mod tests {
                 None => panic!("{action} of mesh2's sole node is refused by name"),
             }
         }
-        let delete_sole = crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh2".into(), r#type: "node".into(), node: PathName::new("mesh2.node", "1").unwrap(), exited: None, birth: None };
+        let delete_sole = crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh2".into(), r#type: "node".into(), path: "mesh2.node".into(), name: "1".into(), exited: None, birth: None };
         assert!(last_admin(&PathName::new("mesh2.node", "1").unwrap(), "delete", &t, "mesh1").is_none(), "deleting the sole member of a non-admin node type skips node.primary.update");
         assert_eq!(crate::executor::role_move(&delete_sole, &t), None, "deleting the sole member of a non-admin node type moves no role");
         // R5 (Luke 2026-10-24, arm (a); node-primary-update.md "No-successor cases": "the delete of a
@@ -1175,7 +1184,7 @@ mod tests {
         // at the same `(path, name)`"): the replace's Delete step and the node.delete route of a
         // type's only node skip the update as a removal does, refused `no-secondary` at no step.
         assert!(last_admin(&PathName::new("mesh2.node", "1").unwrap(), "delete", &t, "mesh1").is_none(), "the delete of a type's only node skips node.primary.update: {:?}", last_admin(&PathName::new("mesh2.node", "1").unwrap(), "delete", &t, "mesh1"));
-        let delete_step = crate::build::BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: Some(0), mesh: "mesh2".into(), r#type: "node".into(), step: rdm_core::build::Step::Delete { node: PathName::new("mesh2.node", "1").unwrap() }, birth: None, entry: None };
+        let delete_step = crate::build::BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: Some(0), mesh: "mesh2".into(), r#type: "node".into(), step: rdm_core::build::Step::Delete { path: "mesh2.node".into(), name: "1".into()}, birth: None, entry: None };
         assert_eq!(crate::executor::role_move(&delete_step, &t), None, "the Build's delete of a type's only node moves no primary");
     }
 
@@ -1211,8 +1220,8 @@ mod tests {
         // its mesh's records, pre-checks its successor over its own view and refuses by name
         // (node-primary-update.md step 2; D64). The fabric-primary decides nothing for it from its projection.
         assert!(last_admin(&PathName::new("mesh1.node-admin", "1").unwrap(), "stop", &t, "mesh2").is_none(), "the stop of another mesh's primary is that primary's own pre-check");
-        assert!(crate::executor::role_move(&crate::build::BuildOperation::StopNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node: only.clone(), node_id: t.node(&only).unwrap().node_id.clone(), from_incarnation: t.node(&only).unwrap().incarnation_id.clone().unwrap() }, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
-        assert_eq!(crate::executor::role_move(&crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node: only, exited: None, birth: None }, &t), None, "the delete of mesh1's only node skips the role move");
+        assert!(crate::executor::role_move(&crate::build::BuildOperation::StopNode { mesh: "mesh1".into(), r#type: "node-admin".into(), path: only.path.clone(), name: only.name.clone(), node_id: t.node(&only).unwrap().node_id.clone(), from_incarnation: t.node(&only).unwrap().incarnation_id.clone().unwrap() }, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
+        assert_eq!(crate::executor::role_move(&crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh1".into(), r#type: "node-admin".into(), path: only.path.clone(), name: only.name.clone(), exited: None, birth: None }, &t), None, "the delete of mesh1's only node skips the role move");
         assert_eq!(refusal(PathName::new("mesh2.node-admin", "1").unwrap(), "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
     }
 
@@ -1240,7 +1249,7 @@ mod tests {
         for action in ["delete"] {
             assert!(last_admin(&fp, action, &t, "mesh2").is_none(), "{action}: mesh1's Ready primary takes the fabric-primary role: {:?}", last_admin(&fp, action, &t, "mesh2"));
         }
-        for n in t.nodes.iter_mut().filter(|n| n.name == PathName::new("mesh1.node-admin", "1").unwrap()) {
+        for n in t.nodes.iter_mut().filter(|n| n.location() == PathName::new("mesh1.node-admin", "1").unwrap()) {
             n.status = NodeStatus::Pending;
         }
         for action in ["delete"] {
@@ -1250,6 +1259,7 @@ mod tests {
             }
         }
     }
+
 
     /// CONTRACT (proposal executable-bindings-at-create.md §2: "the fabric-primary refuses a missing file or a
     /// wrong sha by name at acceptance"; rule 4, the launch hashes again): every executable a complete-topology
@@ -1274,7 +1284,7 @@ mod tests {
             let mut next = current.clone();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            let mut spec = current.meshes["mesh1"].spec_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: r#type.to_string(), path: p.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() });
+            let mut spec = current.meshes["mesh1"].spec_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: r#type.to_string(), path: p.path.clone(), name: p.name.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() });
             spec.executable = Some(b);
             m.spec_by_path.insert(p, spec);
             next
@@ -1283,7 +1293,7 @@ mod tests {
         let good = bind("node");
         assert_eq!(named_executable_refusal(&current, &with(PathName::new("mesh1.node", "2").unwrap(), "node", good.clone()), &rows, ProviderKind::Process, &[]).await, None, "a hash-true file of the path's kind");
         let refused = |r: Option<BuildReject>| match r {
-            Some(BuildReject::ExecutableRefused { node, detail }) => (node, detail),
+            Some(BuildReject::ExecutableRefused { path, name, detail }) => (PathName { path, name }, detail),
             other => panic!("refused executable-refused: {other:?}"),
         };
         let missing = rdm_core::binding::Binding { executable: dir.join("absent"), ..good.clone() };
@@ -1297,7 +1307,7 @@ mod tests {
         let gone = rdm_core::binding::Binding { executable: dir.join("gone"), ..admin.clone() };
         let recorded: crate::accepted::Recorded = [(PathName::new("mesh1.node-admin", "1").unwrap(), crate::accepted::RecordedRow { mesh: "mesh1".into(), r#type: "node-admin".into(), config: None, tags: None, storage_persistence: None, node_id: crate::model::NodeId::mint(), sha256: Some(gone.sha256.clone()) })].into();
         assert_eq!(named_executable_refusal(&current, &with(PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", gone), &recorded, ProviderKind::Process, &[]).await, None);
-        assert_eq!(BuildReject::ExecutableRefused { node: PathName::new("root", "x").unwrap(), detail: "y".into() }.reason(), "executable-refused");
+        assert_eq!(BuildReject::ExecutableRefused { path: "root".into(), name: "x".into(), detail: "y".into() }.reason(), "executable-refused");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1308,7 +1318,7 @@ mod tests {
         let m = next.meshes.get_mut("mesh1").unwrap();
         for (p, r#type, b) in created {
             m.nodes.insert(p.clone());
-            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: r#type.to_string(), path: p.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: Some(b.clone()), tags: Default::default(), config: Default::default() });
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: r#type.to_string(), path: p.path.clone(), name: p.name.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: Some(b.clone()), tags: Default::default(), config: Default::default() });
         }
         (current, next)
     }
@@ -1346,7 +1356,7 @@ mod tests {
         // Each type's launch id is still checked: the shared file bound for the node-admin at a broker path.
         let (current, next) = creating(&[(PathName::new("mesh1.broker", "1").unwrap(), &("broker".to_string()), as_kind("broker")), (PathName::new("mesh1.gateway", "1").unwrap(), &("gateway".to_string()), as_kind("node-admin"))]);
         match named_executable_refusal(&current, &next, &crate::accepted::Recorded::new(), ProviderKind::Process, &[]).await {
-            Some(BuildReject::ExecutableRefused { node, detail }) => assert_eq!(node, PathName::new("mesh1.gateway", "1").unwrap(), "{detail}"),
+            Some(BuildReject::ExecutableRefused { path: node_path, name: node_name, detail }) => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; assert_eq!(*node, PathName::new("mesh1.gateway", "1").unwrap(), "{detail}") }
             other => panic!("refused executable-refused at mesh1.gateway.1: {other:?}"),
         }
         eprintln!("span rdm.node_admin.deployment.resolve.via-executable-hash trace_id={} {:?}", hashes[0].trace_id, hashes[0].attributes);
@@ -1396,7 +1406,7 @@ mod tests {
             let (current, next) = creating(&created);
             assert_eq!(next.meshes["mesh1"].spec_by_path.iter().find(|(_, spec)| !rdm_core::is_node_admin(&spec.r#type)).map(|(location, _)| location.clone()), Some(PathName::new("mesh1.broker", "1").unwrap()), "the topology's order");
             match named_executable_refusal(&current, &next, &rows, ProviderKind::Process, &[]).await {
-                Some(BuildReject::ExecutableRefused { node, detail }) => assert_eq!(node, first, "{what}: {detail}"),
+                Some(BuildReject::ExecutableRefused { path: node_path, name: node_name, detail }) => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; assert_eq!(*node, first, "{what}: {detail}") }
                 other => panic!("{what}: refused executable-refused: {other:?}"),
             }
         }
@@ -1431,7 +1441,7 @@ mod tests {
             let p: PathName = PathName::new("mesh1.node", "1").unwrap();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node".into(), path: p, storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: Some(b), tags: Default::default(), config: Default::default() });
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node".into(), path: p.path.clone(), name: p.name.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: Some(b), tags: Default::default(), config: Default::default() });
             next
         };
         let rows = crate::accepted::Recorded::new();
@@ -1440,8 +1450,8 @@ mod tests {
         let out = bind(&outside, image);
         for (configured, what) in [(dirs.clone(), "outside every configured directory"), (Vec::new(), "none configured")] {
             match named_executable_refusal(&current, &with(out.clone()), &rows, ProviderKind::Container, &configured).await {
-                Some(BuildReject::ExecutableRefused { node, detail }) => {
-                    assert_eq!(node, PathName::new("mesh1.node", "1").unwrap(), "{what}: {detail}");
+                Some(BuildReject::ExecutableRefused { path: node_path, name: node_name, detail }) => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
+                    assert_eq!(*node, PathName::new("mesh1.node", "1").unwrap(), "{what}: {detail}");
                     assert!(detail.contains("RDM_EXECUTABLE_DIRS") && detail.contains(&out.executable.display().to_string()), "{what}: {detail}");
                 }
                 other => panic!("{what}: refused executable-refused: {other:?}"),
@@ -1468,11 +1478,11 @@ mod tests {
         let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])))].into() };
         let observed = crate::topology::Topology { fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![] };
         let grown = crate::accepted::compile(&current, &crate::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }, &observed).unwrap();
-        assert_eq!(created_without_executable(&current, &grown), Some(BuildReject::ExecutableMissing { node: PathName::new("mesh1.node", "2").unwrap() }));
+        assert_eq!(created_without_executable(&current, &grown), Some(BuildReject::ExecutableMissing { path: "mesh1.node".into(), name: "2".into()}));
         assert_eq!(created_without_executable(&current, &current), None, "held paths naming none are history");
         let mut named = grown.clone();
         named.meshes.get_mut("mesh1").unwrap().spec_by_path.get_mut(&PathName::new("mesh1.node", "2").unwrap()).unwrap().executable = Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/x/rpc".into(), sha256: "0".repeat(64), image: None });
         assert_eq!(created_without_executable(&current, &named), None);
-        assert_eq!(BuildReject::ExecutableMissing { node: PathName::new("root", "x").unwrap() }.reason(), "executable-missing");
+        assert_eq!(BuildReject::ExecutableMissing { path: "root".into(), name: "x".into()}.reason(), "executable-missing");
     }
 }

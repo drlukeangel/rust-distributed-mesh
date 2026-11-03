@@ -57,7 +57,7 @@ fn names(meshes: &[(&str, u32, u32)]) -> BTreeSet<PathName> {
 
 /// location -> incarnation
 fn births(nodes: &[rdm_client::NodeView]) -> BTreeMap<PathName, String> {
-    nodes.iter().map(|n| (n.name.clone(), n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default())).collect()
+    nodes.iter().map(|n| (n.location(), n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default())).collect()
 }
 
 /// The Build that reconciles the fabric to `mesh2` with `r2` nodes beside `mesh1`.
@@ -87,7 +87,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
     // mesh2's members are grown by mesh2's admin primary (the lowest NodeId of its admins).
     let mesh2_primary = before.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.node_id.clone()).unwrap();
     let mesh1_primary_id = estate.mesh_view("mesh1").await.primary_admin.expect("mesh1 roles a primary admin");
-    let mesh1_primary = before.iter().find(|n| n.node_id == mesh1_primary_id).map(|n| n.name.clone()).expect("mesh1's primary admin is settled");
+    let mesh1_primary = before.iter().find(|n| n.node_id == mesh1_primary_id).map(|n| n.location()).expect("mesh1's primary admin is settled");
     let mesh1_admin_ids: BTreeSet<String> = before.iter().filter(|n| n.mesh == "mesh1" && n.r#type == "node-admin").map(|n| n.node_id.to_string()).collect();
 
     // B: grow mesh2. Once its first attempt is claimed, lose mesh2's node-admins. Its births run one
@@ -104,7 +104,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
     let kept: BTreeSet<PathName> = (1..=3).map(|i| Estate::path("mesh2.node", &i.to_string())).collect();
     // A runtime's data dir is named by its node id: every birth B launched is mesh2's, so a runtime
     // whose id is neither mesh1's nor a kept member's is lost.
-    let survivors: BTreeSet<String> = before.iter().filter(|n| n.mesh == "mesh1" || kept.contains(&n.name)).map(|n| n.node_id.to_string()).collect();
+    let survivors: BTreeSet<String> = before.iter().filter(|n| n.mesh == "mesh1" || kept.contains(&n.location())).map(|n| n.node_id.to_string()).collect();
     estate.fabric_ready();
     for (dir, pid) in estate.live_runtimes() {
         let id = dir.file_name().unwrap().to_string_lossy().to_string();
@@ -127,7 +127,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
     assert_eq!(mesh2.id.as_ref().map(|i| i.to_string()), Some(mesh2_id.clone()), "mesh2 keeps its MeshId: {mesh2:#?}");
     // ...in mesh2's created admins too: they carry its identity.
     for admin in after.iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node-admin") {
-        let own = rdm_test::typed::one_mesh(&Meshes::new(estate.carrier_at(&admin.name).await), "mesh2").await.unwrap_or_else(|e| panic!("mesh.get [name: mesh2] at {:?}: {e}", admin.name)).unwrap_or_else(|| panic!("{:?} holds mesh2", admin.name));
+        let own = rdm_test::typed::one_mesh(&Meshes::new(estate.carrier_at(&admin.location()).await), "mesh2").await.unwrap_or_else(|e| panic!("mesh.get [name: mesh2] at {:?}: {e}", admin.name)).unwrap_or_else(|| panic!("{:?} holds mesh2", admin.name));
         assert_eq!(own.id.as_ref().map(|i| i.to_string()), Some(mesh2_id.clone()), "{:?} serves mesh2 under its own identity: {own:#?}", admin.name);
     }
     let (old, new) = (births(&before), births(&after));

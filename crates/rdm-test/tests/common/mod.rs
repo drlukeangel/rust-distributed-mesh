@@ -422,7 +422,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     };
 
     let created = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node_name)), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, node: node_name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node_name)), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: node_name.path.clone(), name: node_name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await;
     let created = match created {
         Ok(c) => c,
@@ -470,7 +470,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     // Every step has exactly one Complete receipt, in pipeline order.
     let view = builds.read_build(&build_id).await.unwrap();
     let receipts: Vec<_> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, &r.operation, r.attempt)).collect();
-    let operation = rdm_core::OperationId::location("node.create", &created.node.name);
+    let operation = rdm_core::OperationId::location("node.create", &created.node.location());
     let want: Vec<_> = CreateStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, &operation, 1)).collect();
     assert_eq!(receipts, want);
 
@@ -608,7 +608,7 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
                 None
             }
             N::NodeStarted => {
-                if let Some((digest_view, (held, _))) = digest_view.and_then(|b| b.get(node_id.as_str()).map(|h| (b, h))) { digest_view.started(node_id, incarnation, &held.node.name, &held.node.mesh); }
+                if let Some((digest_view, (held, _))) = digest_view.and_then(|b| b.get(node_id.as_str()).map(|h| (b, h))) { digest_view.started(node_id, incarnation, &held.node.location(), &held.node.mesh); }
                 Some(if joined { R::Started } else { R::AlreadyApplied })
             }
             N::NodeStopped => {

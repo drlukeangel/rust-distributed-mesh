@@ -71,7 +71,7 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
 /// and the tags and config its record carries (Q203: config is never gossiped).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>, config: BTreeMap<String, String>) -> NodeView {
     NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
-        name: n.name.clone(),
+        path: n.path.clone(), name: n.name.clone(),
         r#type: n.r#type.clone(),
         mesh: n.mesh.clone(),
         node_id: n.node_id.clone(),
@@ -203,16 +203,16 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
         // A birth the view no longer holds at a planned pair: its mesh's records,
         // a Deleted one included (its claim released, the pair claims nothing).
         for (mesh, paths) in planned {
-            let unheld: Vec<&PathName> = paths.iter().filter(|p| !view.births().any(|n| &n.name == *p)).collect();
+            let unheld: Vec<&PathName> = paths.iter().filter(|p| !view.births().any(|n| &n.location() == *p)).collect();
             if unheld.is_empty() {
                 continue;
             }
-            for r in c.lifecycle_rows(mesh).await?.into_iter().filter(|r| unheld.contains(&&r.name)) {
+            for r in c.lifecycle_rows(mesh).await?.into_iter().filter(|r| unheld.contains(&&r.location())) {
                 let Some((incarnation, unreadable)) = r.births.iter().rev().find_map(|b| Some((b.incarnation_id.clone(), b.data_dir_unreadable.clone()?))) else { continue };
-                if out.iter().any(|v| v.node_id == r.node_id || v.name == r.name) {
+                if out.iter().any(|v| v.node_id == r.node_id || v.location() == r.location()) {
                     continue;
                 }
-                let mut n = Node::allocated(r.name.clone(), r.mesh.clone(), &r.r#type);
+                let mut n = Node::allocated(r.location(), r.mesh.clone(), &r.r#type);
                 n.node_id = r.node_id.clone();
                 n.incarnation_id = Some(incarnation);
                 n.provider = Some(view.fabric.provider);
@@ -237,7 +237,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             out.push(own_row_view(view, atlas, &row, predecessor.as_ref(), None));
         }
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.sort_by(|a, b| a.location().cmp(&b.location()));
     Ok(out)
 }
 
@@ -253,7 +253,7 @@ pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRo
             return record_view(&n, None, None, Some(row), predecessor, own);
         }
     }
-    let mut n = Node::allocated(row.name.clone(), row.mesh.clone(), &row.r#type);
+    let mut n = Node::allocated(row.location(), row.mesh.clone(), &row.r#type);
     n.node_id = row.node_id.clone();
     n.status = row.status;
     n.provider = Some(view.fabric.provider);
@@ -558,7 +558,7 @@ mod tests {
             let rpc_pred_path = rpc_path.renamed().unwrap();
             let mut rpc_pred = Node::allocated(rpc_pred_path.clone(), "mesh1", "node");
             rpc_pred.node_id = rpc_pred_id.clone();
-            rpc_pred.renamed_from = Some(rpc_path.clone());
+            rpc_pred.renamed_from = Some(rpc_path.name.clone());
             rpc_pred.incarnation_id = Some(rpc_pred_inc.clone());
             rpc_pred.status = ModelNodeStatus::Ready;
 

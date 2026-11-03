@@ -102,7 +102,7 @@ fn burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest() {
         // The fabric primary's runtime: its published fact, or (the self-adopted bootstrap admin
         // publishes none) the OS's own record of the process this estate started.
         let fp_row = views.iter().find(|n| n.node_id.as_str() == fp).expect("fabric primary row");
-        let protected = match ExactRuntime::published(std::path::Path::new(&estate.data_dir(&fp_row.name).await)) {
+        let protected = match ExactRuntime::published(std::path::Path::new(&estate.data_dir(&fp_row.location()).await)) {
             Ok(r) => r,
             Err(_) => {
                 let pid = estate.bootstrap_pid().expect("the bootstrap admin runs");
@@ -110,7 +110,7 @@ fn burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest() {
             }
         };
         let (a, b, spared) = (published(&estate, &rpc("1")).await, published(&estate, &rpc("2")).await, published(&estate, &rpc("3")).await);
-        let births: Vec<_> = [rpc("1"), rpc("2")].iter().map(|n| { let row = views.iter().find(|x| x.name == *n).unwrap(); (row.node_id.clone(), row.incarnation_id.clone()) }).collect();
+        let births: Vec<_> = [rpc("1"), rpc("2")].iter().map(|n| { let row = views.iter().find(|x| x.location() == *n).unwrap(); (row.node_id.clone(), row.incarnation_id.clone()) }).collect();
         let fabric_ready = estate.fabric_ready();
         let done = tokio::task::spawn_blocking({
             let (targets, protected) = (vec![a.clone(), b.clone()], vec![protected.clone()]);
@@ -170,7 +170,7 @@ fn partition_subset_cuts_a_node_set_from_the_rest_until_healed() {
         let views = estate.node_views().await;
         let nodes = Estate::values(&views);
         let fp = advertised_fabric_primaries(&nodes);
-        let ids: Vec<NodeId> = [rpc("1"), rpc("2")].iter().map(|n| views.iter().find(|x| x.name == *n).unwrap().node_id.clone()).collect();
+        let ids: Vec<NodeId> = [rpc("1"), rpc("2")].iter().map(|n| views.iter().find(|x| x.location() == *n).unwrap().node_id.clone()).collect();
         assert_eq!(PartitionSubset::start(&nodes, &fp, &fp).err(), Some(LinkRefusal::Protected { node_id: fp[0].clone() }), "the fabric primary is never a target");
         let cut = match PartitionSubset::start(&nodes, &ids.iter().map(ToString::to_string).collect::<Vec<_>>(), &fp) {
             Ok(c) => c,
@@ -205,7 +205,7 @@ fn link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth() {
         let nodes = Estate::values(&views);
         let fp = advertised_fabric_primaries(&nodes);
         let victim = rpc("1");
-        let before = views.iter().find(|n| n.name == victim).unwrap().clone();
+        let before = views.iter().find(|n| n.location() == victim).unwrap().clone();
         let victim_id = before.node_id.to_string();
         let rest: Vec<String> = views.iter().filter(|n| n.node_id != before.node_id).map(|n| n.node_id.to_string()).collect();
         let out = tokio::task::spawn_blocking({
@@ -244,7 +244,7 @@ fn firewall_inbound_deafens_one_node_until_healed() {
         let nodes = Estate::values(&views);
         let fp = advertised_fabric_primaries(&nodes);
         let victim = rpc("2");
-        let id = views.iter().find(|n| n.name == victim).unwrap().node_id.clone();
+        let id = views.iter().find(|n| n.location() == victim).unwrap().node_id.clone();
         let drop_in = match FirewallInbound::start(&nodes, id.as_str(), &fp) {
             Ok(f) => f,
             Err(why) => {

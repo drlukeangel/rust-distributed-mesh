@@ -145,7 +145,7 @@ impl OperationRunner for RecordedRuns {
     ) -> Result<(), rdm_admin::executor::RunEnd> {
         self.ran.lock().unwrap().push(op.key());
         match op {
-            BuildOperation::CreateNode { node, .. } => {
+            BuildOperation::CreateNode { path: node_path, name: node_name, .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
                 let topology =
                     self.builds.read_build(build).await.map_err(|e| e.to_string())?.topology;
                 let sha =
@@ -162,7 +162,7 @@ impl OperationRunner for RecordedRuns {
                     },
                 );
             }
-            BuildOperation::DeleteNode { node, .. } | BuildOperation::DeleteLiveNode { node, .. } => {
+            BuildOperation::DeleteNode { path: node_path, name: node_name, .. } | BuildOperation::DeleteLiveNode { path: node_path, name: node_name, .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
                 self.recorded.lock().unwrap().remove(node);
             }
             _ => {}
@@ -239,11 +239,11 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
         ] {
             let path = p;
             let n = t.node(&path).unwrap();
-            let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+            let mut row = rdm_admin::storage::NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
             row.executable = Some(recorded_binding(&n.r#type, sha));
             store.write_record(&row).await.unwrap();
             recorded.insert(
-                n.name.clone(),
+                n.location(),
                 RecordedRow { mesh: n.mesh.clone(), r#type: n.r#type.clone(),
                     config: None,
                     tags: None,
@@ -283,8 +283,8 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
             )
             .await;
         match missing_res {
-            Err(Refusal::Reject(BuildReject::ExecutableMissing { node })) => {
-                assert_eq!(node, rdm_core::PathName::new("mesh1.gateway", "1").unwrap());
+            Err(Refusal::Reject(BuildReject::ExecutableMissing { path: node_path, name: node_name })) => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
+                assert_eq!(*node, rdm_core::PathName::new("mesh1.gateway", "1").unwrap());
             }
             other => panic!("expected ExecutableMissing for mesh1.gateway.1, got {other:?}"),
         }
@@ -297,7 +297,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
         let mut wrong_sha_specs = base_specs.clone();
         let rpc_idx = wrong_sha_specs
             .iter()
-            .position(|s| s.path == PathName::new("mesh1.node", "1").unwrap())
+            .position(|s| s.location() == PathName::new("mesh1.node", "1").unwrap())
             .unwrap();
         let mut bad_binding = crate::test_executable("node");
         bad_binding.sha256 =
@@ -314,8 +314,8 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
             )
             .await;
         match wrong_sha_res {
-            Err(Refusal::Reject(BuildReject::ExecutableRefused { node, detail })) => {
-                assert_eq!(node, rdm_core::PathName::new("mesh1.node", "1").unwrap());
+            Err(Refusal::Reject(BuildReject::ExecutableRefused { path: node_path, name: node_name, detail })) => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
+                assert_eq!(*node, rdm_core::PathName::new("mesh1.node", "1").unwrap());
                 assert!(
                     detail.contains("hashes to") && detail.contains("the binding expects"),
                     "refusal detail must report hash mismatch: {detail}"
@@ -364,13 +364,13 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
         let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let fp_id = t.node(&me).unwrap().node_id.clone();
         let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             topology: topology.clone(),
             builds: builds.clone(),
             door: Arc::new(ClaimDoor {
                 incarnation: executor.incarnation.clone(),
                 node_id: fp_id,
-                me,
+                me_path: me.path.clone(), me_name: me.name.clone(),
                 topology,
                 builds: builds.clone(),
                 contexts: Arc::new(AttemptContexts::in_memory()),

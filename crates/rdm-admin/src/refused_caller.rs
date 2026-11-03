@@ -163,7 +163,7 @@ impl RefusedCallers {
             let stores = (self.stores)().ok_or_else(|| "this admin's node records are not open".to_string())?;
             let reader = stores.reader();
             let Some(caller) = reader.row(node_id).await? else { return Ok((None, None)) };
-            let at_path = reader.row_at(&caller.name).await?;
+            let at_path = reader.row_at(&caller.location()).await?;
             Ok::<_, String>((Some(caller), at_path))
         };
         let (caller, at_path) = match read.await {
@@ -178,7 +178,7 @@ impl RefusedCallers {
         if let Some(path) = own.path() {
             span.record("subject_path", path.path.as_str()).record("subject_name", path.name.as_str());
         }
-        let Some(path) = own.path().cloned() else {
+        let Some(path) = own.path() else {
             span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", "no record of the caller stands: it has no recorded path and name to decide on");
             return Err((own, "nothing-done".into()));
         };
@@ -252,7 +252,7 @@ mod tests {
         let written: Arc<crate::node_rows::WrittenRows> = Default::default();
         atlas.scope([admin.mesh.clone()].into());
         let recovery = crate::admin::RecoverySubmitter {
-            me: admin.name.clone(),
+            me_path: admin.path.clone(), me_name: admin.name.clone(),
             me_id: admin.node_id.clone(),
             topology: topology.clone(),
             digest_view: Default::default(),
@@ -311,7 +311,7 @@ mod tests {
             command_frame_seam: None,
             operation_effects: Default::default(),
             stopped: Default::default(),
-            me: admin.name.clone(),
+            me: admin.location(),
             node_id: admin.node_id.clone(),
             fabric_id,
             topology: topology.clone(),
@@ -383,8 +383,8 @@ mod tests {
         // The node records: the admin's live, the caller's deleted.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
-            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
+            let mut r = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
+            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
@@ -443,29 +443,29 @@ mod tests {
         // The node records: the admin's and the re-created birth's live, the caller's deleted.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&recreated, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
-            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
+            let mut r = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
+            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
         // The join door, the caller's deployment held: its mesh-primary commanded it back before the delete.
         let joins = Arc::new(crate::join::Joins::default());
         let deployed = crate::join::Deployed { mesh: caller.mesh.clone(), r#type: caller.r#type.clone(),
-            name: caller.name.clone(),
+            path: caller.path.clone(), name: caller.name.clone(),
             node_id: caller.node_id.clone(),
             incarnation: caller_inc.clone(),
             supersedes: None,
             endpoint_id: crate::model::EndpointId("caller-endpoint".into()),
             runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(),
             data_dir: "/data/mesh1.node.2".into(),
-            last_accepted_name: Some(caller.name.clone()),
+            last_accepted_name: Some(caller.location()),
             held: true,
             listeners: Vec::new(),
         };
         let _commanded = joins.expect(deployed.clone());
         let door = crate::join::JoinDoor {
             nodes: Some((rows.clone(), writer_holding(&rows, &admin.mesh).await)),
-            me: admin.name.clone(),
+            me_path: admin.path.clone(), me_name: admin.name.clone(),
             joins,
             answer: Arc::new(|| Box::pin(async { Err("the cell admits no join".to_string()) })),
             types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
@@ -485,7 +485,7 @@ mod tests {
             fabric_id,
             node: rdm_core::MeshNode { mesh: caller.mesh.clone(), r#type: caller.r#type.clone(),
                 node_id: caller.node_id.clone(),
-                name: caller.name.clone(),
+                path: caller.path.clone(), name: caller.name.clone(),
                 endpoint_id: deployed.endpoint_id.clone(),
                 transport_addr: "127.0.0.1:34567".parse().unwrap(),
                 incarnation: caller_inc.clone(),
@@ -550,29 +550,29 @@ mod tests {
         // The node records: the admin's live, the caller's deleted, and no re-created birth yet.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
-            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
+            let mut r = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
+            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
         // The join door, the caller's deployment held: its mesh-primary commanded it back before the delete.
         let joins = Arc::new(crate::join::Joins::default());
         let deployed = crate::join::Deployed { mesh: caller.mesh.clone(), r#type: caller.r#type.clone(),
-            name: caller.name.clone(),
+            path: caller.path.clone(), name: caller.name.clone(),
             node_id: caller.node_id.clone(),
             incarnation: caller_inc.clone(),
             supersedes: None,
             endpoint_id: crate::model::EndpointId("caller-endpoint".into()),
             runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(),
             data_dir: "/data/mesh1.node.2".into(),
-            last_accepted_name: Some(caller.name.clone()),
+            last_accepted_name: Some(caller.location()),
             held: true,
             listeners: Vec::new(),
         };
         let _commanded = joins.expect(deployed.clone());
         let door = crate::join::JoinDoor {
             nodes: Some((rows.clone(), writer_holding(&rows, &admin.mesh).await)),
-            me: admin.name.clone(),
+            me_path: admin.path.clone(), me_name: admin.name.clone(),
             joins,
             answer: Arc::new(|| Box::pin(async { Err("the cell admits no join".to_string()) })),
             types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
@@ -592,7 +592,7 @@ mod tests {
             fabric_id,
             node: rdm_core::MeshNode { mesh: caller.mesh.clone(), r#type: caller.r#type.clone(),
                 node_id: caller.node_id.clone(),
-                name: caller.name.clone(),
+                path: caller.path.clone(), name: caller.name.clone(),
                 endpoint_id: deployed.endpoint_id.clone(),
                 transport_addr: "127.0.0.1:34567".parse().unwrap(),
                 incarnation: caller_inc.clone(),
@@ -668,8 +668,8 @@ mod tests {
         // The node records of mesh2: the admin's and the caller's, both live.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for n in [&admin, &caller] {
-            let mut r = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
-            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
+            let mut r = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
+            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
         // The fabric-primary: its door answers fabric.atlas.get from its atlas, which holds the caller's
@@ -677,7 +677,7 @@ mod tests {
         let fp_key = iroh::SecretKey::generate();
         let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let fp_addr = fp_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let root = AtlasView { nodes: vec![AtlasNodeView { name: caller.name.clone(), node_id: caller.node_id.clone(), incarnation_id: Some(caller_inc.clone()), status: rdm_core::views::NodeStatus::Pending, stopped: false, accepted: None, observed: None }] };
+        let root = AtlasView { nodes: vec![AtlasNodeView { path: caller.path.clone(), name: caller.name.clone(), node_id: caller.node_id.clone(), incarnation_id: Some(caller_inc.clone()), status: rdm_core::views::NodeStatus::Pending, stopped: false, accepted: None, observed: None }] };
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = asked.clone();
         let server = rdm_transport::ServerBuilder::new()
@@ -697,7 +697,7 @@ mod tests {
             .unwrap();
         let _router = iroh::protocol::Router::builder(fp_ep).accept(rdm_transport::ALPN, server).spawn();
         let resolver = Arc::new(rdm_transport::StaticResolver::new());
-        resolver.insert(rdm_transport::ResolvedNode { mesh: fp.mesh.clone(), r#type: fp.r#type.clone(), node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
+        resolver.insert(rdm_transport::ResolvedNode { mesh: fp.mesh.clone(), r#type: fp.r#type.clone(), node_id: fp.node_id.clone(), path: fp.path.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
         // The fabric-primary record names it, as the process's topology feed names it (Q313).
         resolver.set_primary(None, Some(fp.node_id.clone()));
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -737,5 +737,6 @@ mod tests {
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1, "the root was read once");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
 
 }

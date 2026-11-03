@@ -113,19 +113,19 @@ impl Loopback {
             .unwrap()
             .entry(executor.clone())
             .or_insert_with(|| {
-                let me = self.topology.try_read().expect("fixture topology is unlocked while opening a door").own(&executor.node_id).expect("fixture executor is listed").name.clone();
+                let me = self.topology.try_read().expect("fixture topology is unlocked while opening a door").own(&executor.node_id).expect("fixture executor is listed").location();
                 if let Some(own) = self.own.lock().unwrap().get(&executor.node_id).cloned() {
                     let runs = Arc::new(AttemptRuns::default());
                     let framed: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(own.clone(), runs.clone()));
                     let topology = self.views.lock().unwrap().get(&executor.node_id).cloned().unwrap_or_else(|| self.topology.clone());
                     let runner = Arc::new(OwnReceipts { inner: self.runner.clone(), builds: framed.clone() });
                     let exec = Arc::new(BuildExecutor { executor: executor.clone(), builds: framed.clone(), topology, runner });
-                    return Arc::new(RunDoor { me: me.clone(), builds: framed, exec, runs, local: own, gate: rdm_admin::stop_gate::StopGate::new() });
+                    return Arc::new(RunDoor { me_path: me.path.clone(), me_name: me.name.clone(), builds: framed, exec, runs, local: own, gate: rdm_admin::stop_gate::StopGate::new() });
                 }
                 let runs = Arc::new(AttemptRuns::default());
                 let builds: Arc<dyn BuildStateAdapter> = if self.framed.lock().unwrap().contains(&executor.node_id) { Arc::new(FramedBuilds::new(self.builds.clone(), runs.clone())) } else { self.builds.clone() };
                 let exec = Arc::new(BuildExecutor { executor: executor.clone(), builds: builds.clone(), topology: self.views.lock().unwrap().get(&executor.node_id).cloned().unwrap_or_else(|| self.topology.clone()), runner: self.runner.clone() });
-                Arc::new(RunDoor { me: me.clone(), builds, exec, runs, local: self.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() })
+                Arc::new(RunDoor { me_path: me.path.clone(), me_name: me.name.clone(), builds, exec, runs, local: self.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() })
             })
             .clone()
     }

@@ -53,14 +53,14 @@ fn launch_by(root: &Running, name: PathName, dir: &std::path::Path, store: &std:
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         r#type: "node-admin".into(),
-        name,
+        path: name.path.clone(), name: name.name.clone(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -75,7 +75,7 @@ fn launch_by(root: &Running, name: PathName, dir: &std::path::Path, store: &std:
 fn deployed(launch: &Launch, held: Option<&PathName>) -> Deployed {
     let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
     Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        name: launch.name.clone(),
+        path: launch.path.clone(), name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
         supersedes: None,
@@ -157,7 +157,7 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         until_ready("mesh1.node-admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
         let first = tokio::time::timeout(DECLARED, async {
             loop {
-                let held = own_declarations(&spans, &launch.name);
+                let held = own_declarations(&spans, &launch.location());
                 if !held.is_empty() {
                     return held;
                 }
@@ -169,7 +169,7 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         assert_eq!(first.iter().map(|f| f["to_node_id"].clone()).collect::<Vec<_>>(), vec![root_id.clone()], "to its mesh's primary: {first:#?}");
 
         assert!(matches!(call(&root, &launch, &command(&launch, false)).await, StatusReply::Stopped { .. }), "the launched admin stops");
-        let _ = root.runner.joins.expect(deployed(&launch, Some(&launch.name)));
+        let _ = root.runner.joins.expect(deployed(&launch, Some(&launch.location())));
         assert_eq!(call(&root, &launch, &command(&launch, true)).await, StatusReply::Started, "the launched admin starts after its stop");
         until_ready("mesh1.node-admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
         tokio::time::timeout(DECLARED, spans.recorded("rdm.node_admin.node.update.via-command-frame", |f| f.get("node_id").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("frame").map(String::as_str) == Some("node-started"))).await.expect("the mesh-primary records NodeStarted on the open command stream");
@@ -177,7 +177,7 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         assert_eq!(door.declared.lock().unwrap().node(&launch.node_id, &launch.incarnation), Some(rdm_core::status::NodeState::Ready));
         let started = tokio::time::timeout(DECLARED, async {
             loop {
-                let held: Vec<_> = own_declarations(&spans, &launch.name).into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready")) && f.get("operation").map(String::as_str) == Some("node.start")).collect();
+                let held: Vec<_> = own_declarations(&spans, &launch.location()).into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready")) && f.get("operation").map(String::as_str) == Some("node.start")).collect();
                 if !held.is_empty() {
                     return held;
                 }
@@ -189,7 +189,7 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         assert_eq!(started.len(), 1, "the start's Ready is declared once: {started:#?}");
         assert_eq!(started[0]["to_node_id"], root_id, "to its mesh's primary: {started:#?}");
         assert!(matches!(started[0]["outcome"].as_str(), "applied" | "already-applied"), "frame and declaration apply once: the declaration is applied or answered already applied: {started:#?}");
-        let first_again: Vec<_> = own_declarations(&spans, &launch.name).into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready")) && f.get("operation").is_none()).collect();
+        let first_again: Vec<_> = own_declarations(&spans, &launch.location()).into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready")) && f.get("operation").is_none()).collect();
         assert_eq!(first_again, first, "the first start's declaration stands beside it: {first_again:#?}");
 
         admin.leave().await;

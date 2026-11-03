@@ -99,7 +99,7 @@ fn desired(t: &Topology) -> FabricTopology {
 }
 
 async fn executor(cp: &ControlPlane) -> rdm_core::framing::Birth {
-    cp.topology.read().await.node(&cp.me).unwrap().birth().unwrap()
+    cp.topology.read().await.node(&cp.me()).unwrap().birth().unwrap()
 }
 
 /// The Build `id`'s current attempt claimed and converged.
@@ -116,14 +116,14 @@ async fn settle(builds: &MemoryBuildStateAdapter, id: &BuildId, executor_birth: 
 fn replace_steps(b: &(PathName, NodeId, IncarnationId)) -> AttemptAction {
     use rdm_core::build::Step;
     let node = b.0.clone();
-    AttemptAction::Steps { rename_intents: [(3, rdm_admin::accepted::RenameIntent::Replacement { original: node.clone() })].into(),
+    AttemptAction::Steps { rename_intents: [(3, rdm_admin::accepted::RenameIntent::Replacement { original_path: node.path.clone(), original_name: node.name.clone()})].into(),
         steps: vec![
-            Step::DeleteConnections { node: node.clone() },
-            Step::LeaveMesh { node: node.clone() },
-            Step::Update { node: node.clone(), name: node.renamed().unwrap() },
-            Step::Stop { node: node.renamed().unwrap() },
-            Step::Create { mesh: "mesh1".into(), r#type: "node".into(), node: node.clone(), executable: None },
-            Step::Delete { node: node.renamed().unwrap() },
+            Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()},
+            Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()},
+            Step::Update { path: node.path.clone(), name: node.name.clone(), new_path: node.path.clone(), new_name: node.renamed().unwrap().name },
+            Step::Stop { path: node.renamed().unwrap().path, name: node.renamed().unwrap().name},
+            Step::Create { mesh: "mesh1".into(), r#type: "node".into(), path: node.path.clone(), name: node.name.clone(), executable: None },
+            Step::Delete { path: node.renamed().unwrap().path, name: node.renamed().unwrap().name},
         ],
         pinned: vec![(node, rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node".into(), node_id: b.1.clone(), incarnation: b.2.clone() })],
     }
@@ -131,7 +131,7 @@ fn replace_steps(b: &(PathName, NodeId, IncarnationId)) -> AttemptAction {
 
 fn birth(t: &Topology, p: &PathName) -> (PathName, NodeId, IncarnationId) {
     let n = t.node(p).unwrap();
-    (n.name.clone(), n.node_id.clone(), n.incarnation_id.clone().unwrap())
+    (n.location(), n.node_id.clone(), n.incarnation_id.clone().unwrap())
 }
 
 /// A stop (`stop` true) or start of the exact birth, as its mesh-primary records it on the node record:
@@ -168,11 +168,11 @@ async fn a_node_stopped_past_the_ttl_is_collected_by_one_ordinary_delete_build()
     period(&cp, &builds, &young, true, now(&cp)).await;
 
     let swept = cp.sweep_stopped(Some(TTL)).await;
-    let Swept::Submitted { node, build_id } = swept else { panic!("one node.delete Build is accepted for the expired stopped node: {swept:?}") };
-    assert_eq!(node, old.0);
+    let Swept::Submitted { path: node_path, name: node_name, build_id } = swept else { panic!("one node.delete Build is accepted for the expired stopped node: {swept:?}") }; let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
+    assert_eq!(*node, old.0);
     assert_ne!(build_id, b0, "a new topology Build, never an attempt of the settled one");
     let p = builds.read_build(&build_id).await.unwrap();
-    assert_eq!(p.submitted_change, Some(TopologyChange::RemoveNode { node: old.0.clone() }), "the ordinary node.delete Build");
+    assert_eq!(p.submitted_change, Some(TopologyChange::RemoveNode { path: old.0.path.clone(), name: old.0.name.clone()}), "the ordinary node.delete Build");
     assert!(!p.topology.contains(&old.0) && p.topology.contains(&young.0), "only the expired node leaves the topology: {:?}", p.topology);
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(build_id.clone()), "the current build_id names the delete");
 
@@ -223,11 +223,11 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     period(&cp, &builds, &old, true, 1).await;
     period(&cp, &builds, &other, true, 2).await;
     let candidates: Vec<_> = cp.scan_stopped(TTL, now(&cp)).await.into_iter().filter_map(|v| if let Verdict::Expired(c) = v { Some(c) } else { None }).collect();
-    assert_eq!(candidates.iter().map(|c| c.node.clone()).collect::<Vec<_>>(), vec![stopped(), young()], "both are stopped past the ttl at the scan");
+    assert_eq!(candidates.iter().map(|c| c.location()).collect::<Vec<_>>(), vec![stopped(), young()], "both are stopped past the ttl at the scan");
 
     // After the scan: mesh1.node.1 is started.
     period(&cp, &builds, &old, false, now(&cp)).await;
-    cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == old.0).for_each(|n| {
+    cp.topology.write().await.nodes.iter_mut().filter(|n| n.location() == old.0).for_each(|n| {
         n.stopped = false;
         n.status = NodeStatus::Ready;
     });
@@ -276,7 +276,7 @@ async fn a_stopped_birth_an_open_replace_build_references_is_skipped() {
     ]).await;
 
     let verdicts = cp.scan_stopped(TTL, now(&cp)).await;
-    assert!(verdicts.contains(&Verdict::Referenced { node: old.0.clone(), build_id: b0.clone() }), "{verdicts:?}");
+    assert!(verdicts.contains(&Verdict::Referenced { path: old.0.path.clone(), name: old.0.name.clone(), build_id: b0.clone() }), "{verdicts:?}");
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0));
     let skipped = spans.spans("rdm.node_admin.node.reject.via-open-build-reference");
@@ -305,8 +305,8 @@ async fn an_earlier_stop_before_a_later_start_does_not_count() {
     period(&cp, &builds, &b, false, long_ago + 1).await;
 
     let verdicts = cp.scan_stopped(TTL, now(&cp)).await;
-    assert!(verdicts.contains(&Verdict::Young { node: a.0.clone(), stopped_at_ms: latest }), "{verdicts:?}");
-    assert!(verdicts.iter().any(|v| matches!(v, Verdict::NotRecorded { node, .. } if *node == b.0)), "{verdicts:?}");
+    assert!(verdicts.contains(&Verdict::Young { path: a.0.path.clone(), name: a.0.name.clone(), stopped_at_ms: latest }), "{verdicts:?}");
+    assert!(verdicts.iter().any(|v| matches!(v, Verdict::NotRecorded { path, name, .. } if *path == b.0.path && *name == b.0.name)), "{verdicts:?}");
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0));
     assert!(spans.spans("rdm.node_admin.node.reject.via-no-recorded-stop").iter().any(|(_, x)| (x["node_path"].as_str(), x["node_name"].as_str()) == (young().path.as_str(), young().name.as_str())));
@@ -326,18 +326,18 @@ async fn a_candidate_refused_build_in_progress_is_collected_on_a_later_sweep() {
     period(&cp, &builds, &b, true, 2).await;
     let other = cp.submit("build.create", crate::named_request(&cp, TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }).await).await.expect("a topology change is accepted").build_id;
 
-    assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::BuildInProgress { node: a.0.clone(), current_build_id: other.clone() });
+    assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::BuildInProgress { path: a.0.path.clone(), name: a.0.name.clone(), current_build_id: other.clone() });
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(other.clone()));
     settle(&builds, &other, &executor(&cp).await).await;
     let first = match cp.sweep_stopped(Some(TTL)).await {
-        Swept::Submitted { node, build_id } if node == a.0 => build_id,
+        Swept::Submitted { path, name, build_id } if *path == a.0.path && *name == a.0.name => build_id,
         s => panic!("the next sweep collects the first candidate: {s:?}"),
     };
     // One topology Build at a time: the second candidate waits for the delete to settle.
-    assert!(matches!(cp.sweep_stopped(Some(TTL)).await, Swept::BuildInProgress { ref node, ref current_build_id } if *node == b.0 && *current_build_id == first));
+    assert!(matches!(cp.sweep_stopped(Some(TTL)).await, Swept::BuildInProgress { ref path, ref name, ref current_build_id } if *path == b.0.path && *name == b.0.name && *current_build_id == first));
     settle(&builds, &first, &executor(&cp).await).await;
-    cp.topology.write().await.nodes.retain(|n| n.name != a.0);
-    assert!(matches!(cp.sweep_stopped(Some(TTL)).await, Swept::Submitted { ref node, .. } if *node == b.0));
+    cp.topology.write().await.nodes.retain(|n| n.location() != a.0);
+    assert!(matches!(cp.sweep_stopped(Some(TTL)).await, Swept::Submitted { ref path, ref name, .. } if *path == b.0.path && *name == b.0.name));
 }
 
 /// CONTRACT (§6.9 Who: "On a fabric-primary handover the successor sweeps from the same durable
@@ -357,7 +357,7 @@ async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
     // The handover: mesh1.node-admin.2 holds the role and the same Build log.
     let mut moved = t.clone();
     for n in moved.nodes.iter_mut() {
-        n.is_fabric_primary = n.name == rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
+        n.is_fabric_primary = n.location() == rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         if n.r#type == "node-admin" {
             n.is_primary = n.is_fabric_primary;
         }
@@ -374,8 +374,8 @@ async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
     }
 
     let verdicts = successor.scan_stopped(TTL, now(&successor)).await;
-    assert!(verdicts.iter().any(|v| matches!(v, Verdict::Expired(c) if c.node == old.0 && c.stopped_at_ms == stopped_at)), "the successor ages the node from the same recorded stop: {verdicts:?}");
-    assert!(matches!(successor.sweep_stopped(Some(TTL)).await, Swept::Submitted { ref node, .. } if *node == old.0));
+    assert!(verdicts.iter().any(|v| matches!(v, Verdict::Expired(c) if c.location() == old.0 && c.stopped_at_ms == stopped_at)), "the successor ages the node from the same recorded stop: {verdicts:?}");
+    assert!(matches!(successor.sweep_stopped(Some(TTL)).await, Swept::Submitted { ref path, ref name, .. } if *path == old.0.path && *name == old.0.name));
     assert_eq!(first.sweep_stopped(Some(TTL)).await, Swept::NotFabricPrimary);
 }
 

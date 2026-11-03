@@ -35,14 +35,18 @@ pub enum NodeAdminNotReady {
     /// Build the entry reply named is not held. `wanted` is that Build, until its facts arrive.
     NoCurrentBuild {
         /// This admin.
-        me: PathName,
+        me_path: String,
+        /// This node's name, beside its path.
+        me_name: String,
         /// The Build the entry reply named (the answering admin's current Build), when one was.
         wanted: Option<BuildId>,
     },
     /// The entry reply named `build_id` and this admin's Build log cannot read it.
     UnreadableBuild {
         /// This admin.
-        me: PathName,
+        me_path: String,
+        /// This node's name, beside its path.
+        me_name: String,
         /// The Build the entry reply named.
         build_id: BuildId,
         /// Why the Build log cannot read it.
@@ -52,14 +56,18 @@ pub enum NodeAdminNotReady {
     /// for a store that holds none. No request recovers it.
     BuildStoreUnreadable {
         /// This admin.
-        me: PathName,
+        me_path: String,
+        /// This node's name, beside its path.
+        me_name: String,
         /// Why the store could not be read.
         error: String,
     },
     /// The local Build holds attempt `held`; the admin that served the entry held `floor`.
     BehindFloor {
         /// This admin.
-        me: PathName,
+        me_path: String,
+        /// This node's name, beside its path.
+        me_name: String,
         /// The Build.
         build_id: BuildId,
         /// The attempt the local Build holds.
@@ -72,13 +80,13 @@ pub enum NodeAdminNotReady {
 impl std::fmt::Display for NodeAdminNotReady {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoCurrentBuild { me, wanted: None } => write!(f, "{me:?}: holds no current Build (no Build in its builds store is in progress or completed; not fetched from an existing authority)"),
-            Self::NoCurrentBuild { me, wanted: Some(id) } => write!(f, "{me:?}: holds no facts of Build {id}, the current Build of the admin that served its entry"),
-            Self::UnreadableBuild { me, build_id, error } => write!(f, "{me:?}: its entry named Build {build_id} and this admin's Build log cannot read it: {error}"),
-            Self::BuildStoreUnreadable { me, error } => write!(f, "{me:?}: its builds store cannot be read for the current Build: {error}"),
-            Self::BehindFloor { me, build_id, held, floor } => write!(
+            Self::NoCurrentBuild { me_path, me_name, wanted: None } => write!(f, "path {me_path:?}, name {me_name:?}: holds no current Build (no Build in its builds store is in progress or completed; not fetched from an existing authority)"),
+            Self::NoCurrentBuild { me_path, me_name, wanted: Some(id) } => write!(f, "path {me_path:?}, name {me_name:?}: holds no facts of Build {id}, the current Build of the admin that served its entry"),
+            Self::UnreadableBuild { me_path, me_name, build_id, error } => write!(f, "path {me_path:?}, name {me_name:?}: its entry named Build {build_id} and this admin's Build log cannot read it: {error}"),
+            Self::BuildStoreUnreadable { me_path, me_name, error } => write!(f, "path {me_path:?}, name {me_name:?}: its builds store cannot be read for the current Build: {error}"),
+            Self::BehindFloor { me_path, me_name, build_id, held, floor } => write!(
                 f,
-                "{me:?}: holds attempt {held} of Build {build_id}; the admin that served its entry held attempt {floor} (its opens, claims and receipts are still arriving)"
+                "path {me_path:?}, name {me_name:?}: holds attempt {held} of Build {build_id}; the admin that served its entry held attempt {floor} (its opens, claims and receipts are still arriving)"
             ),
         }
     }
@@ -155,7 +163,9 @@ enum End {
 
 /// What the Build-floor check drives: at most one outstanding request, per-target backoff.
 pub struct FetchBuild {
-    me: PathName,
+    me_path: String,
+    /// This node's name, beside its path.
+    me_name: String,
     /// The Build storage the read is made of (Q292).
     store: Arc<dyn BuildStateAdapter>,
     local: Arc<dyn LocalBuildLog>,
@@ -170,9 +180,14 @@ pub struct FetchBuild {
 }
 
 impl FetchBuild {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
+}
+
+impl FetchBuild {
     /// A fetch_build for the admin `me` over the Build storage `store` it reads and its local Build log.
     pub fn new(me: PathName, store: Arc<dyn BuildStateAdapter>, local: Arc<dyn LocalBuildLog>) -> Self {
-        Self { me, store, local, store_key: NodeId::mint(), in_flight: None, backoff: BTreeMap::new(), judging: None, ended: Arc::default() }
+        Self { me_path: me.path.clone(), me_name: me.name.clone(), store, local, store_key: NodeId::mint(), in_flight: None, backoff: BTreeMap::new(), judging: None, ended: Arc::default() }
     }
 
     /// One floor check's turn. `blocker` is what the check just found, `None` when no control fact
@@ -258,7 +273,7 @@ impl FetchBuild {
         if !self.backoff.get(&self.store_key).is_none_or(|b| b.open(now)) {
             return;
         }
-        let (store, local, me, kind, ended, key) = (self.store.clone(), self.local.clone(), self.me.clone(), blocker.kind(), self.ended.clone(), self.store_key.clone());
+        let (store, local, me, kind, ended, key) = (self.store.clone(), self.local.clone(), self.me(), blocker.kind(), self.ended.clone(), self.store_key.clone());
         // The read is a step of the turn that started it: it runs under that turn's span and dispatcher.
         let parent = tracing::Span::current();
         self.in_flight = Some(tokio::spawn(
@@ -323,21 +338,21 @@ mod tests {
         let bid = BuildId::parse("cq2tyb03krac").unwrap();
 
         let no_current = NodeAdminNotReady::NoCurrentBuild {
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             wanted: None,
         };
         assert_eq!(no_current.kind(), "no-current-build");
         assert_eq!(no_current.need(), Need::CurrentBuild);
 
         let wanted = NodeAdminNotReady::NoCurrentBuild {
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             wanted: Some(bid.clone()),
         };
         assert_eq!(wanted.kind(), "no-current-build-wanted");
         assert_eq!(wanted.need(), Need::BuildFacts(bid.clone()));
 
         let unreadable = NodeAdminNotReady::UnreadableBuild {
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             build_id: bid.clone(),
             error: "corrupt".into(),
         };
@@ -345,7 +360,7 @@ mod tests {
         assert_eq!(unreadable.need(), Need::BuildFacts(bid.clone()));
 
         let behind = NodeAdminNotReady::BehindFloor {
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             build_id: bid.clone(),
             held: 1,
             floor: 3,
@@ -354,7 +369,7 @@ mod tests {
         assert_eq!(behind.need(), Need::BuildFacts(bid));
 
         let store_unreadable = NodeAdminNotReady::BuildStoreUnreadable {
-            me,
+            me_path: me.path.clone(), me_name: me.name.clone(),
             error: "io".into(),
         };
         assert_eq!(store_unreadable.kind(), "build-store-unreadable");

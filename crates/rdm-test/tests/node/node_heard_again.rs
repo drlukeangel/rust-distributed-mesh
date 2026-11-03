@@ -75,17 +75,17 @@ fn same_birth(span: &Value, node: &NodeView) -> bool {
 }
 
 fn same_location(span: &Value, node: &NodeView) -> bool {
-    span["attributes"]["node_path"] == node.name.path && span["attributes"]["node_name"] == node.name.name
+    span["attributes"]["node_path"] == node.path && span["attributes"]["node_name"] == node.name
 }
 
 /// Hold `node`'s exact runtime past the floor, then release it; the instant of the release.
 async fn hold_past_the_floor_then_release(estate: &Estate, node: &NodeView, floor: Duration) -> u64 {
     let before = estate.node_view_by_id(&node.node_id).await;
     assert_eq!(before.status, NodeStatus::Ready, "{node:?} is ready before the hold: {before:?}");
-    let rt = ExactRuntime::published(Path::new(&estate.data_dir(&node.name).await)).expect("the node's published runtime");
+    let rt = ExactRuntime::published(Path::new(&estate.data_dir(&node.location()).await)).expect("the node's published runtime");
     let hung = rt.hang().expect("the hang is acknowledged by the OS");
     estate
-        .until_node(&node.name, &format!("{node:?} is marked unheard in the view"), floor * 3 + Duration::from_secs(30), |n| {
+        .until_node(&node.location(), &format!("{node:?} is marked unheard in the view"), floor * 3 + Duration::from_secs(30), |n| {
             n.filter(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)).cloned()
         })
         .await;
@@ -102,7 +102,7 @@ async fn hold_past_the_floor_then_release(estate: &Estate, node: &NodeView, floo
     })
     .await;
     let back = estate
-        .until_node(&node.name, &format!("{node:?} is ready again as the same birth"), floor * 8 + Duration::from_secs(60), |n| {
+        .until_node(&node.location(), &format!("{node:?} is ready again as the same birth"), floor * 8 + Duration::from_secs(60), |n| {
             n.filter(|n| n.status == NodeStatus::Ready && n.node_id == before.node_id && n.incarnation_id == before.incarnation_id).cloned()
         })
         .await;
@@ -274,9 +274,9 @@ async fn a_birth_stopped_and_started_by_builds_and_held_later_is_still_commanded
     let floor = rdm_transport::topology::staleness_floor();
     let node = &estate.node_view(&PathName::new("mesh1.node", "2").unwrap()).await;
     let before = estate.node_view_by_id(&node.node_id).await;
-    estate.stop_then_start(&node.name).await;
+    estate.stop_then_start(&node.location()).await;
     let restarted = estate
-        .until_node(&node.name, &format!("{node:?} is ready again after its stop and start"), Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned())
+        .until_node(&node.location(), &format!("{node:?} is ready again after its stop and start"), Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned())
         .await;
     assert_eq!((&restarted.node_id, &restarted.incarnation_id), (&before.node_id, &before.incarnation_id), "a stop then a start keep the node.id and the incarnation");
     tokio::time::sleep(floor).await;

@@ -887,7 +887,7 @@ mod tests {
         d.pending.lock().unwrap().remove(&Key::OwnState(INC.into(), NodeState::Ready));
         d.done.lock().unwrap().insert(Key::OwnState(INC.into(), NodeState::Ready), ("applied".into(), mesh1_primary.node_id.clone(), mesh1_primary.incarnation_id.clone()));
         let moved = view(1, 1);
-        let moved = Topology { nodes: moved.nodes.into_iter().map(|mut n| { if n.name == mesh1_primary.name { n.incarnation_id = mesh1_primary.incarnation_id.clone(); } n }).collect(), ..moved };
+        let moved = Topology { nodes: moved.nodes.into_iter().map(|mut n| { if n.location() == mesh1_primary.location() { n.incarnation_id = mesh1_primary.incarnation_id.clone(); } n }).collect(), ..moved };
         d.reowe_moved(&me, "mesh1", &moved);
         assert!(d.pending.lock().unwrap().is_empty(), "the fabric-primary role moved, its own mesh's primary did not: nothing is owed again");
     }
@@ -1017,9 +1017,9 @@ mod tests {
         let me_id = id_of(2);
         let mut v = view(1, 3);
         let own = v.nodes.iter_mut().find(|n| n.node_id == me_id).unwrap();
-        own.name = me.renamed().unwrap();
-        own.renamed_from = Some(me.clone());
-        assert_eq!(own.name, me.renamed().unwrap());
+        { let at = me.renamed().unwrap(); own.path = at.path; own.name = at.name; }
+        own.renamed_from = Some(me.name.clone());
+        assert_eq!(own.location(), me.renamed().unwrap());
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
         owed_from_view(&d, &me.renamed().unwrap(), &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, false, None, |_| 0, &v, &ids);
@@ -1127,7 +1127,7 @@ mod tests {
     fn a_re_born_admin_whose_view_names_its_superseded_birth_primary_owes_nothing_as_primary() {
         let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let mut v = view(1, 1);
-        let deleted = v.nodes.iter_mut().find(|n| n.name == me).unwrap();
+        let deleted = v.nodes.iter_mut().find(|n| n.location() == me).unwrap();
         deleted.status = NodeStatus::ConnectionsDeleting;
         let deleted = deleted.clone();
         let mut re_born = node(PathName::new("mesh1.node-admin", "1").unwrap(), NodeId::mint(), "mesh1", false, false);

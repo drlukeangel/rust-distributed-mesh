@@ -31,7 +31,7 @@ fn op(operation: &str) -> LifecycleOp {
         operation: rdm_core::OperationId::new(operation, rdm_core::OperationSubject::Birth { node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap() }),
         node_id: NodeId::parse("0123456789ab").unwrap(),
         incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(),
-        name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+        path: "mesh1.node".into(), name: "1".into(),
         event_at_rafka_ms: 300,
         traceparent: None,
         tracestate: None,

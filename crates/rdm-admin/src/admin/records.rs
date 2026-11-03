@@ -437,13 +437,15 @@ pub struct ServingDoor {
     /// Whether the Status door is filled.
     pub(crate) status_door_filled: Box<dyn Fn() -> bool + Send + Sync>,
     /// The name this admin booted under, for the span.
-    pub(crate) boot_name: PathName,
+    pub(crate) boot_path: String,
+    /// The boot name, beside its path.
+    pub(crate) boot_name: String,
 }
 
 impl ServingDoor {
     /// The door over the router's gate `ready` for the birth `birth`, booted as `boot_name`.
     pub fn new(ready: Arc<std::sync::atomic::AtomicBool>, birth: (NodeId, IncarnationId), status_door_filled: Box<dyn Fn() -> bool + Send + Sync>, boot_name: PathName) -> Self {
-        Self { ready, birth, status_door_filled, boot_name }
+        Self { ready, birth, status_door_filled, boot_path: boot_name.path.clone(), boot_name: boot_name.name.clone()}
     }
 
     /// Open the door if it is closed, the authority is filled and `view` holds this admin's exact birth.
@@ -453,7 +455,7 @@ impl ServingDoor {
         }
         if let Some(own) = view.births().find(|n| n.node_id == self.birth.0 && n.incarnation_id.as_ref() == Some(&self.birth.1)) {
             self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
-            tracing::info_span!("rdm.node_admin.node.serve.via-view-holds-birth", node_path = %own.name.path, node_name = %own.name.name, node_id = %self.birth.0, incarnation_id = %self.birth.1.as_str(), held_path = %own.name.path, held_name = %own.name.name, boot_path = %self.boot_name.path, boot_name = %self.boot_name.name)
+            tracing::info_span!("rdm.node_admin.node.serve.via-view-holds-birth", node_path = %own.path, node_name = %own.name, node_id = %self.birth.0, incarnation_id = %self.birth.1.as_str(), held_path = %own.path, held_name = %own.name, boot_path = %self.boot_path, boot_name = %self.boot_name)
                 .in_scope(|| tracing::info!("the Status authority is filled and this admin's view holds its exact birth: the Node RPC router serves"));
         }
     }
@@ -488,10 +490,10 @@ impl Records {
     /// writer yet, and the Join is answered with the seed held. `Ok(true)` seeded, `Ok(false)` held.
     pub async fn seed_at_arrival_or_hold(&self, d: &rdm_core::MeshDigest) -> Result<bool, String> {
         let rows = self.rows.get().ok_or_else(|| "this admin holds no node-row writer".to_string())?;
-        if rows.writes_now(&d.node.mesh, &d.node.name).await {
+        if rows.writes_now(&d.node.mesh, &d.node.location()).await {
             rows.seed_at_arrival(d).await.map(|_| true)
         } else {
-            tracing::info_span!("rdm.node_admin.node.create.via-arrival-seed-held", node_path = %rows.me().path, node_name = %rows.me().name, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id)
+            tracing::info_span!("rdm.node_admin.node.create.via-arrival-seed-held", node_path = %rows.me().path, node_name = %rows.me().name, subject_path = %d.node.path, subject_name = %d.node.name, node_id = %d.node.node_id)
                 .in_scope(|| tracing::info!("no writer of the mesh's rows yet: the arrival seed is held until this admin takes the role"));
             self.held_arrival_seeds.lock().unwrap().push(d.clone());
             Ok(false)
@@ -503,10 +505,10 @@ impl Records {
         let held: Vec<_> = std::mem::take(&mut *self.held_arrival_seeds.lock().unwrap());
         for d in held {
             match self.seed_at_arrival(&d).await {
-                Ok(()) => tracing::info_span!("rdm.node_admin.node.create.via-arrival-seed-written", subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id)
+                Ok(()) => tracing::info_span!("rdm.node_admin.node.create.via-arrival-seed-written", subject_path = %d.node.path, subject_name = %d.node.name, node_id = %d.node.node_id)
                     .in_scope(|| tracing::info!("an arrival seed held before the role is written")),
                 Err(why) => {
-                    tracing::info_span!("rdm.node_admin.node.reject.via-arrival-seed-held", subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, detail = %why)
+                    tracing::info_span!("rdm.node_admin.node.reject.via-arrival-seed-held", subject_path = %d.node.path, subject_name = %d.node.name, node_id = %d.node.node_id, detail = %why)
                         .in_scope(|| tracing::info!("the held arrival seed is still refused: kept"));
                     self.held_arrival_seeds.lock().unwrap().push(d);
                 }
@@ -695,7 +697,7 @@ impl Records {
             let before = nodes.len();
             nodes.retain(|_, n| !(n.node_id == op.node_id && n.incarnation_id.as_ref() == Some(&op.incarnation)));
             if nodes.len() < before {
-                tracing::info_span!("rdm.node_admin.topology.remove.via-node-deleted", observer_node_id = %holder, subject_path = %op.name.path, subject_name = %op.name.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject)
+                tracing::info_span!("rdm.node_admin.topology.remove.via-node-deleted", observer_node_id = %holder, subject_path = %op.path, subject_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject)
                     .in_scope(|| tracing::info!("the deleted birth's record leaves this admin's records"));
             }
         }
@@ -753,7 +755,7 @@ impl Records {
         let held = topology.write().await;
         let t = project(&reads);
         for (node_id, incarnation, published, name) in reads.rows.moved() {
-            let listed = |v: &Topology| v.births().any(|n| &n.node_id == node_id && n.incarnation_id.as_ref() == Some(incarnation) && &n.name == name);
+            let listed = |v: &Topology| v.births().any(|n| &n.node_id == node_id && n.incarnation_id.as_ref() == Some(incarnation) && &n.location() == name);
             if listed(&t) && !listed(&held) {
                 tracing::info_span!("rdm.node_admin.topology.update.via-row-name", node_path = %me.path, node_name = %me.name, subject_path = %name.path, subject_name = %name.name, published_path = %published.path, published_name = %published.name, node_id = %node_id, incarnation_id = %incarnation.as_str())
                     .in_scope(|| tracing::info!("the view lists a birth that does not publish at the name its row holds"));
@@ -777,7 +779,7 @@ impl Records {
             // A renamed predecessor this view now names the predecessor name `<name>-old` at the same path (its row's name; its digest still
             // says `<path>`): one span as it enters.
             for old in t.predecessors().filter(|o| !held.predecessors().any(|h| h.node_id == o.node_id && h.incarnation_id == o.incarnation_id)) {
-                tracing::info_span!("rdm.node_admin.topology.update.via-predecessor-held", node_path = %old.name.path, node_name = %old.name.name, node_id = %old.node_id, status = ?old.status)
+                tracing::info_span!("rdm.node_admin.topology.update.via-predecessor-held", node_path = %old.path, node_name = %old.name, node_id = %old.node_id, status = ?old.status)
                     .in_scope(|| tracing::info!("the view holds the renamed predecessor at its unchanged path"));
             }
             // The births the fabric-primary's view holds for the first time: their rows are written
@@ -805,8 +807,8 @@ impl TopologySink for Records {
     fn publish(&self, node: Node) {
         // A publication writes no record: a mesh's members' addresses are its primary's to write
         // (`MeshRowsWriter`, the writer ladder).
-        self.removed.lock().unwrap().remove(&(node.name.clone(), node.incarnation_id.clone()));
-        self.nodes.lock().unwrap().insert(node.name.clone(), node);
+        self.removed.lock().unwrap().remove(&(node.location(), node.incarnation_id.clone()));
+        self.nodes.lock().unwrap().insert(node.location(), node);
         self.inputs_moved();
     }
     fn remove(&self, name: &PathName) {

@@ -111,7 +111,7 @@ pub async fn start(server: rdm_transport::NodeRpcServer, key: SecretKey, name: r
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let resolved = ResolvedNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: b.0, name, endpoint_id: key.public(), transport_addr: addr, incarnation: b.1 };
+    let resolved = ResolvedNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: b.0, path: name.path.clone(), name: name.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: b.1 };
     Node { router, key, resolved }
 }
 
@@ -204,7 +204,7 @@ pub async fn rig_with(connections: Option<Arc<dyn CarrierConnections>>, carrier_
         key: carrier_key.clone(),
         resolved: ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: carrier_birth.0,
-            name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
+            path: "mesh1.node".into(), name: "2".into(),
             endpoint_id: carrier_key.public(),
             transport_addr: carrier_addr,
             incarnation: carrier_birth.1,

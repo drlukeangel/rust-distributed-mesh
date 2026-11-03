@@ -9,10 +9,10 @@ use rdm_core::PathName;
 /// deleted, its mesh left, renamed `<name>-old` live, then stopped as `<name>-old`.
 pub fn predecessor_steps(node: &PathName) -> Result<Vec<Step>, rdm_core::path::PathNameError> {
     Ok(vec![
-        Step::DeleteConnections { node: node.clone() },
-        Step::LeaveMesh { node: node.clone() },
-        Step::Update { node: node.clone(), name: node.renamed()? },
-        Step::Stop { node: node.renamed()? },
+        Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()},
+        Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()},
+        Step::Update { path: node.path.clone(), name: node.name.clone(), new_path: node.path.clone(), new_name: node.renamed()?.name },
+        Step::Stop { path: node.path.clone(), name: node.renamed()?.name },
     ])
 }
 
@@ -22,7 +22,7 @@ pub fn predecessor_steps(node: &PathName) -> Result<Vec<Step>, rdm_core::path::P
 /// its predecessor (a name ending `-old` does not), so its later delete or start is a predecessor's.
 pub fn replace_keeping_predecessor(node: &PathName, mesh: &str, r#type: &str) -> Result<Vec<Step>, rdm_core::path::PathNameError> {
     let mut steps = predecessor_steps(node)?;
-    steps.push(Step::Create { mesh: mesh.into(), r#type: r#type.to_string(), node: node.clone(), executable: None });
+    steps.push(Step::Create { mesh: mesh.into(), r#type: r#type.to_string(), path: node.path.clone(), name: node.name.clone(), executable: None });
     Ok(steps)
 }
 
@@ -30,7 +30,7 @@ pub fn replace_keeping_predecessor(node: &PathName, mesh: &str, r#type: &str) ->
 /// [`replace_keeping_predecessor`], then `node[1].delete` at `<name>-old`.
 pub fn replace(node: &PathName, mesh: &str, r#type: &str) -> Result<Vec<Step>, rdm_core::path::PathNameError> {
     let mut steps = replace_keeping_predecessor(node, mesh, r#type)?;
-    steps.push(Step::Delete { node: node.renamed()? });
+    steps.push(Step::Delete { path: node.path.clone(), name: node.renamed()?.name });
     Ok(steps)
 }
 
@@ -41,14 +41,14 @@ pub fn replace(node: &PathName, mesh: &str, r#type: &str) -> Result<Vec<Step>, r
 pub fn rollback(node: &PathName) -> Result<Vec<Step>, rdm_core::path::PathNameError> {
     let old = node.renamed()?;
     Ok(vec![
-        Step::DeleteConnections { node: node.clone() },
-        Step::LeaveMesh { node: node.clone() },
-        Step::Delete { node: node.clone() },
-        Step::Start { node: old.clone() },
-        Step::DeleteConnections { node: old.clone() },
-        Step::LeaveMesh { node: old.clone() },
-        Step::Update { node: old, name: node.clone() },
-        Step::Stop { node: node.clone() },
-        Step::Start { node: node.clone() },
+        Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()},
+        Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()},
+        Step::Delete { path: node.path.clone(), name: node.name.clone()},
+        Step::Start { path: old.path.clone(), name: old.name.clone()},
+        Step::DeleteConnections { path: old.path.clone(), name: old.name.clone()},
+        Step::LeaveMesh { path: old.path.clone(), name: old.name.clone()},
+        Step::Update { path: old.path.clone(), name: old.name.clone(), new_path: node.path.clone(), new_name: node.name.clone() },
+        Step::Stop { path: node.path.clone(), name: node.name.clone()},
+        Step::Start { path: node.path.clone(), name: node.name.clone()},
     ])
 }

@@ -133,8 +133,8 @@ impl PrimaryCommandDoor {
         // `All`'s alone.
         if !start && named.is_none() {
             let op = match kind {
-                ActionKind::DeleteConnections => crate::build::BuildOperation::DeleteConnections { r#type: pin.r#type.clone(), mesh: pin.mesh.clone(), node: path.clone(), node_id: pin.node_id.clone(), from_incarnation: pin.incarnation.clone() },
-                _ => crate::build::BuildOperation::StopNode { r#type: pin.r#type.clone(), mesh: pin.mesh.clone(), node: path.clone(), node_id: pin.node_id.clone(), from_incarnation: pin.incarnation.clone() },
+                ActionKind::DeleteConnections => crate::build::BuildOperation::DeleteConnections { r#type: pin.r#type.clone(), mesh: pin.mesh.clone(), path: path.path.clone(), name: path.name.clone(), node_id: pin.node_id.clone(), from_incarnation: pin.incarnation.clone() },
+                _ => crate::build::BuildOperation::StopNode { r#type: pin.r#type.clone(), mesh: pin.mesh.clone(), path: path.path.clone(), name: path.name.clone(), node_id: pin.node_id.clone(), from_incarnation: pin.incarnation.clone() },
             };
             let view = self.runner.topology.read().await.clone();
             if let Some(m) = crate::executor::role_move(&op, &view) {

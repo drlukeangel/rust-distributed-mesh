@@ -105,20 +105,20 @@ impl MeshRowsWriter {
                     if mesh_id.is_some() {
                         r.mesh_id = mesh_id.clone();
                     }
-                    let b = r.birth_mut(&d.node.incarnation, &d.node.name);
+                    let b = r.birth_mut(&d.node.incarnation, &d.node.location());
                     b.is_primary = d.is_primary;
                     b.is_fabric_primary = d.is_fabric_primary;
                     *r != before
                 })
                 .await;
             match written {
-                Ok(Some(true)) => tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "written")
+                Ok(Some(true)) => tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.path, subject_name = %d.node.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "written")
                     .in_scope(|| tracing::info!("the node's record is put whole, the primaries the view holds recorded on it")),
                 Ok(Some(false)) => {}
                 Ok(None) => owed = true,
                 Err(e) => {
                     owed = true;
-                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "owed", error = %e)
+                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.path, subject_name = %d.node.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "owed", error = %e)
                         .in_scope(|| tracing::info!("the store did not acknowledge the node's record: it is owed and written again under the one backoff rule"));
                 }
             }

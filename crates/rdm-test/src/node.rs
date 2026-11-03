@@ -305,7 +305,7 @@ fn rafka_time_knob(
     boot: &tracing::Span,
 ) -> Option<Box<dyn FnOnce() + Send>> {
     let root = launch.data_dir.parent()?.to_path_buf();
-    let (name, rafka_time, boot) = (launch.name.clone(), rafka_time.clone(), boot.clone());
+    let (name, rafka_time, boot) = (launch.location(), rafka_time.clone(), boot.clone());
     Some(Box::new(move || {
         crate::apply_rafka_time_knob(&root, &name, &rafka_time, &boot);
     }))

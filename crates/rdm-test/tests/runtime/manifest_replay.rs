@@ -287,8 +287,8 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
 
     let by_type = |kind: &str| set.bindings.iter().find(|b| b.launch_id == kind).unwrap().clone();
     let views = estate.node_views().await;
-    let expect_for = |node: &PathName| by_type(&(views.iter().find(|n| &n.name == node).expect("fixture node").r#type));
-    let broker_id = views.iter().find(|n| n.name == PathName::new("mesh1.broker", "1").unwrap()).expect("fixture broker").node_id.clone();
+    let expect_for = |node: &PathName| by_type(&(views.iter().find(|n| &n.location() == node).expect("fixture node").r#type));
+    let broker_id = views.iter().find(|n| n.location() == PathName::new("mesh1.broker", "1").unwrap()).expect("fixture broker").node_id.clone();
     let broker_target = format!("exact:{broker_id}");
     let mut launches = Vec::new();
     for node in &names {
@@ -403,7 +403,7 @@ fn source() -> Source {
 /// A manifest as the scenario runner writes it, with synthetic typed outcomes.
 fn synthetic_manifest() -> ReplayManifest {
     let scenario = Scenario::parse(REPLAY_SCENARIO).unwrap();
-    let outcome = |step: &str, action: &str, target: PathName, key: Option<u64>, result: Value| StepOutcome { step: step.into(), action: action.into(), target, key, outcome: "Reply".into(), result };
+    let outcome = |step: &str, action: &str, target: PathName, key: Option<u64>, result: Value| StepOutcome { step: step.into(), action: action.into(), path: target.path.clone(), name: target.name.clone(), key, outcome: "Reply".into(), result };
     ReplayManifest {
         schema_version: SCHEMA_VERSION,
         owner: rdm_test::replay::EvidenceOwner { product: "mesh".into(), feature: "i143-2776".into(), subfeature: "replay".into(), rung: "SN".into(), provider: "process".into(), test: "synthetic".into() },

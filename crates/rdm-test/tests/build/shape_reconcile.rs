@@ -106,11 +106,11 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
         }
     }
     let bootstrap_location = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-    let created: Vec<_> = views.iter().filter(|n| n.name != bootstrap_location).collect();
+    let created: Vec<_> = views.iter().filter(|n| n.location() != bootstrap_location).collect();
     for node in created {
         let step = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
-            .find(|s| s["attributes"]["node_path"] == node.name.path && s["attributes"]["node_name"] == node.name.name && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["build_id"] == build_id.as_str())
+            .find(|s| s["attributes"]["node_path"] == node.path && s["attributes"]["node_name"] == node.name && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["build_id"] == build_id.as_str())
             .unwrap_or_else(|| panic!("{shape}: no DeployRuntime step for {node:?}"))
             .clone();
         assert!(reconciles.iter().any(|r| descends_from(&spans, &step, r)), "{shape}: {node:?}'s DeployRuntime runs under a reconcile of the Build");

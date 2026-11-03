@@ -168,7 +168,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
     estate.reconcile_shape("fabric1", &shape).await;
     // mesh2's primary is named by its node id on the frames it authors and on its own spans.
-    let mesh2_admin: String = estate.settled_views(&shape).await.into_iter().find(|n| n.name == rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).expect("mesh2.node-admin.1 is settled").node_id.to_string();
+    let mesh2_admin: String = estate.settled_views(&shape).await.into_iter().find(|n| n.location() == rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).expect("mesh2.node-admin.1 is settled").node_id.to_string();
     let mesh2_admin = mesh2_admin.as_str();
 
     // The change's frames: mesh2's status, authored by mesh2's admin, on the backbone.

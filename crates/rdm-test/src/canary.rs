@@ -38,7 +38,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
 
     // 2. Select the `node` type primary (lowest node_id) and Put{key=41, value="before-restart"} by ExactNode.
-    let (node_type_primary, before) = estate.until_view("`node` type primary", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node" && n.is_primary).map(|n| (n.name.clone(), serde_json::to_value(n).unwrap()))).await; let node_name = &node_type_primary;
+    let (node_type_primary, before) = estate.until_view("`node` type primary", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node" && n.is_primary).map(|n| (n.location(), serde_json::to_value(n).unwrap()))).await; let node_name = &node_type_primary;
     let node_id = before["node_id"].as_str().expect("node_id").to_string();
     let exact = format!("exact:{node_id}");
     let put = estate.probe(&["put", "--target", &exact, "--key", "41", "--value", "before-restart"]);
@@ -113,7 +113,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let fabric_after = estate.fabric_view().await;
     assert_eq!(fabric_after.meshes[0].admin_api_base.as_deref(), Some(control_before.as_str()));
 
-    assert_eq!(estate.node_views().await.iter().filter(|n| n.name == node).count(), 1, "the path holds exactly one birth");
+    assert_eq!(estate.node_views().await.iter().filter(|n| n.location() == node).count(), 1, "the path holds exactly one birth");
 
     // 11. OTLP evidence: the primary's node command -> its steps -> the node's own span, linked by
     // ParentSpanId, for the stop and for the start. A span is exported once it ends, by each process's

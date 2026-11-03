@@ -434,7 +434,7 @@ mod tests {
             operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
             node_id: crate::model::NodeId::mint(),
             incarnation: crate::model::IncarnationId::mint(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             event_at_rafka_ms: 4_242,
             traceparent: None,
             tracestate: None,
@@ -453,7 +453,7 @@ mod tests {
         let (messages, refused) = encode_chunks(vec![stop.clone()]);
         assert!(refused.is_empty(), "{refused:?}");
         assert_eq!(BuildMessage::from_bytes(&messages[0]).unwrap().facts, vec![stop]);
-        let (_, refused) = encode_chunks(vec![BuildFact::Step(receipt(&rdm_core::OperationId::location("node.create", &op.name)))]);
+        let (_, refused) = encode_chunks(vec![BuildFact::Step(receipt(&rdm_core::OperationId::location("node.create", &op.location())))]);
         assert_eq!(refused.len(), 1, "another operation's Complete commits no output");
     }
 
@@ -496,7 +496,7 @@ mod tests {
             attempt: 2,
             reason: crate::build_state::AttemptReason::Steps,
             action: Some(crate::accepted::AttemptAction::Steps { rename_intents: Default::default(),
-                steps: vec![Step::DeleteConnections { node: node.clone() }, Step::LeaveMesh { node: node.clone() }, Step::Update { node: node.clone(), name: node.renamed().unwrap() }, Step::Stop { node: node.renamed().unwrap() }, Step::Create { mesh: "mesh1".to_owned(), r#type: "node".into(), node: node.clone(), executable: None }, Step::Delete { node: node.renamed().unwrap() }],
+                steps: vec![Step::DeleteConnections { path: node.path.clone(), name: node.name.clone()}, Step::LeaveMesh { path: node.path.clone(), name: node.name.clone()}, Step::Update { path: node.path.clone(), name: node.name.clone(), new_path: node.path.clone(), new_name: node.renamed().unwrap().name }, Step::Stop { path: node.path.clone(), name: node.renamed().unwrap().name }, Step::Create { mesh: "mesh1".to_owned(), r#type: "node".into(), path: node.path.clone(), name: node.name.clone(), executable: None }, Step::Delete { path: node.path.clone(), name: node.renamed().unwrap().name }],
                 pinned: vec![(node.clone(), pin)],
             }),
             opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),

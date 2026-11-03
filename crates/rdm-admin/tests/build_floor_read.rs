@@ -117,7 +117,7 @@ async fn a_primary_taking_its_role_reads_the_storages_current_build_once() {
     assert_eq!(taking.log.current_build().await.unwrap().into_build_id(), None, "the primary holds no Build before the read");
     let mut h = read_of(&taking, store.clone());
     assert!(!h.absorbed().await, "nothing is taken before a read is made");
-    let read = NodeAdminNotReady::NoCurrentBuild { me: taking.name.clone(), wanted: None };
+    let read = NodeAdminNotReady::NoCurrentBuild { me_path: taking.name.path.clone(), me_name: taking.name.name.clone(), wanted: None };
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         if h.absorbed().await {

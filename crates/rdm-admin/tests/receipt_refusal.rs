@@ -28,7 +28,7 @@ impl DeploymentProvider for Running {
         "i143-3051-refusal".into()
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-        Err(DeployError::Spawn { node: spec.node.clone(), reason: "this cell births nothing".into() })
+        Err(DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: "this cell births nothing".into() })
     }
     async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
@@ -183,7 +183,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
@@ -363,7 +363,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),

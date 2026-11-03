@@ -57,14 +57,14 @@ fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::path::Path, st
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         r#type: "node-admin".into(),
-        name,
+        path: name.path.clone(), name: name.name.clone(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -79,7 +79,7 @@ fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::path::Path, st
 fn deployed(launch: &Launch) -> Deployed {
     let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
     Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        name: launch.name.clone(),
+        path: launch.path.clone(), name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
         supersedes: None,
@@ -244,7 +244,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
             );
         }
         let top_up = spans_named(&spans, "rdm.mesh.entry.update.via-top-up", topped).remove(0);
-        let root_at = root_digest.node.name.clone();
+        let root_at = root_digest.node.location();
         let field = |k: &str| top_up.get(k).cloned().unwrap_or_default();
         assert_eq!(
             (field("mesh_primary_path"), field("mesh_primary_name"), field("served_by_path"), field("served_by_name"), field("still_desynced")),

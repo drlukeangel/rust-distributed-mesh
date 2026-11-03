@@ -115,7 +115,7 @@ async fn node_get_answers_data_dir_facts_from_the_records_at_their_path_name() {
     let storage = Arc::new(MemoryNodesStorage::default());
     let status: &MemoryNodesStorage = &storage;
     let rows = rdm_admin::node_rows::NodeRows::new(
-        admin.name.clone(),
+        admin.location(),
         admin.node_id.clone(),
         Arc::new(tokio::sync::RwLock::new(view.clone())),
         storage.clone(),
@@ -133,7 +133,7 @@ async fn node_get_answers_data_dir_facts_from_the_records_at_their_path_name() {
     status.write_record(&exited).await.unwrap();
     rows.deleted_unreached(&exited_node, &rdm_core::OperationId::node("node.delete", &exited_id)).await.unwrap();
     // The recovery names the exited birth by its admitted provenance, never by the location.
-    let recovery = rdm_admin::storage::Allocation { predecessor: Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }), build_id: Some(rdm_core::BuildId::mint()), operation: rdm_core::OperationId::location("node.create", &recovered.name), incarnation: recovered.incarnation_id.clone().unwrap(), deployment_id: rdm_admin::model::DeploymentId::mint() };
+    let recovery = rdm_admin::storage::Allocation { predecessor: Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }), build_id: Some(rdm_core::BuildId::mint()), operation: rdm_core::OperationId::location("node.create", &recovered.location()), incarnation: recovered.incarnation_id.clone().unwrap(), deployment_id: rdm_admin::model::DeploymentId::mint() };
     let claimed = rows.create_row(&path("mesh1.node", "2"), "mesh1", "node", &recovered.node_id, &recovery.operation, Some(&recovery), None, rdm_admin::node_rows::RowFor::Recovery).await.unwrap();
     match claimed {
         rdm_admin::node_rows::RowCreated::Written { row, seeded_from } => {
@@ -175,7 +175,7 @@ async fn node_get_answers_data_dir_facts_from_the_records_at_their_path_name() {
     unreadable.birth_mut(&held_birth, &path("mesh1.node", "3")).data_dir_unreadable = None;
     status.write_record(&unreadable).await.unwrap();
     let cleared = answer(&view, status, &planned, Filter::new().eq("mesh", ["mesh1"])).await;
-    assert!(cleared.iter().all(|n| n.name != path("mesh1.node", "3")), "a cleared unreadable fact is answered no more: {cleared:#?}");
+    assert!(cleared.iter().all(|n| n.location() != path("mesh1.node", "3")), "a cleared unreadable fact is answered no more: {cleared:#?}");
 }
 
 /// CONTRACT (Q167 R-RD2, R-RD3; node-rpc-envelope.md node.get): over a fabric of two meshes holding
@@ -206,12 +206,12 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
         (&broker, &["silver"][..], &[("zone", "eu-1"), ("rack", "7")][..]),
         (&gw2, &["gold"][..], &[("rack", "7")][..]),
     ] {
-        let row = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+        let row = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
         status.write_record(&row).await.unwrap();
         own(&n.node_id, config.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), tags.iter().map(|t| t.to_string()).collect()).await;
     }
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
-    let names = |nodes: Vec<rdm_core::views::NodeView>| nodes.into_iter().map(|n| n.name.clone()).collect::<Vec<_>>();
+    let names = |nodes: Vec<rdm_core::views::NodeView>| nodes.into_iter().map(|n| n.location()).collect::<Vec<_>>();
     let get = |f: Filter| {
         let (view, status, planned) = (&view, &status, &planned);
         async move { names(answer(view, status, planned, f).await) }
@@ -260,12 +260,12 @@ async fn a_retained_predecessors_labels_stay_at_its_own_id_and_the_current_pair_
     };
     let rabbit: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
     let status = MemoryNodesStorage::default();
-    status.write_record(&NodeRow::new(admin.name.clone(), admin.mesh.clone(), &admin.r#type, admin.node_id.clone(), NodeStatus::Ready)).await.unwrap();
+    status.write_record(&NodeRow::new(admin.location(), admin.mesh.clone(), &admin.r#type, admin.node_id.clone(), NodeStatus::Ready)).await.unwrap();
     own(&admin.node_id, BTreeMap::new(), Default::default()).await;
-    status.write_record(&NodeRow::new(successor.name.clone(), successor.mesh.clone(), &successor.r#type, successor.node_id.clone(), NodeStatus::Ready)).await.unwrap();
+    status.write_record(&NodeRow::new(successor.location(), successor.mesh.clone(), &successor.r#type, successor.node_id.clone(), NodeStatus::Ready)).await.unwrap();
     own(&successor.node_id, BTreeMap::new(), rabbit.clone()).await;
     own(&predecessor.node_id, BTreeMap::new(), rabbit.clone()).await;
-    let mut p = NodeRow::new(predecessor.name.clone(), predecessor.mesh.clone(), &predecessor.r#type, predecessor.node_id.clone(), NodeStatus::Ready);
+    let mut p = NodeRow::new(predecessor.location(), predecessor.mesh.clone(), &predecessor.r#type, predecessor.node_id.clone(), NodeStatus::Ready);
     p.inherited_by = Some(successor.node_id.clone());
     status.write_record(&p).await.unwrap();
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
@@ -300,7 +300,7 @@ async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atla
         command_frame_seam: None,
         operation_effects: Default::default(),
         stopped: Default::default(),
-        me: me.name.clone(),
+        me: me.location(),
         node_id: me.node_id.clone(),
         fabric_id: view.fabric.id.clone(),
         topology: Arc::new(tokio::sync::RwLock::new(view)),
@@ -357,8 +357,8 @@ async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
     let records = Arc::new(MemoryNodesStorage::default());
     let expiries = [(&admin, 9_000_000u64), (&gw, 7_000_000u64)];
     for (n, expires_at) in expiries {
-        let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
-        row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name).cert = Some(rdm_admin::storage::CertDates { issued_at: 1_000_000, expires_at, issuer_expires_at: 20_000_000, renew_at: expires_at - 1_000 });
+        let mut row = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+        row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location()).cert = Some(rdm_admin::storage::CertDates { issued_at: 1_000_000, expires_at, issuer_expires_at: 20_000_000, renew_at: expires_at - 1_000 });
         records.write_record(&row).await.unwrap();
     }
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
@@ -376,7 +376,7 @@ async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
 
     match fp.read_rows(&get(rdm_core::filter::Entity::Nodes, Filter::new().eq("mesh", ["mesh1"]))).await {
         Ok(rdm_core::read::Rows::Nodes(nodes)) => {
-            assert_eq!(nodes.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), [path("mesh1.gateway", "1"), path("mesh1.node-admin", "1")], "in path order: {nodes:#?}");
+            assert_eq!(nodes.iter().map(|n| n.location()).collect::<Vec<_>>(), [path("mesh1.gateway", "1"), path("mesh1.node-admin", "1")], "in path order: {nodes:#?}");
             assert_eq!(nodes[0].cert.as_ref().map(|c| c.expires_at), Some(7_000_000), "the cert is the node's record's");
         }
         other => panic!("node.get answers from the nodes' records, not {other:?}"),
@@ -418,16 +418,16 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
     for n in [&admin, &rpc, &peer] {
         own(&n.node_id, BTreeMap::new(), Default::default()).await;
     }
-    let mut row = NodeRow::new(rpc.name.clone(), rpc.mesh.clone(), &rpc.r#type, rpc.node_id.clone(), NodeStatus::Ready);
-    row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.name).declared.insert(rdm_core::status::NodeState::Ready);
+    let mut row = NodeRow::new(rpc.location(), rpc.mesh.clone(), &rpc.r#type, rpc.node_id.clone(), NodeStatus::Ready);
+    row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.location()).declared.insert(rdm_core::status::NodeState::Ready);
     records.write_record(&row).await.unwrap();
     // mesh2's record as its current writer holds it.
-    let mut peer_row = NodeRow::new(peer.name.clone(), peer.mesh.clone(), &peer.r#type, peer.node_id.clone(), NodeStatus::Pending);
-    peer_row.birth_mut(peer.incarnation_id.as_ref().unwrap(), &peer.name);
+    let mut peer_row = NodeRow::new(peer.location(), peer.mesh.clone(), &peer.r#type, peer.node_id.clone(), NodeStatus::Pending);
+    peer_row.birth_mut(peer.incarnation_id.as_ref().unwrap(), &peer.location());
     records.write_record(&peer_row).await.unwrap();
     use rdm_core::views::NodeStatus as Read;
     assert_eq!(status_of(&view, &records, &rpc.node_id).await, (Read::Ready, false), "a stop the node has not acknowledged moves its row nowhere: ready");
-    let ready: Vec<PathName> = answer(&view, &records, &Ok(BTreeMap::new()), Filter::new().eq("status", ["ready"])).await.into_iter().map(|n| n.name.clone()).collect();
+    let ready: Vec<PathName> = answer(&view, &records, &Ok(BTreeMap::new()), Filter::new().eq("status", ["ready"])).await.into_iter().map(|n| n.location()).collect();
     assert_eq!(ready, [path("mesh1.node", "1"), path("mesh1.node-admin", "1")], "[status: ready] matches the birth whose stop is unacknowledged, never mesh2's pending record");
     // Another mesh's record is read under its current writer as every record is (query.md §1): the
     // state it took answers, never the view's.
@@ -451,7 +451,7 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
     // the view holds pending-reconnect reads it whatever its row says, and a silence mark its row still
     // carries is not the answer once the view hears the birth.
     row.status = NodeStatus::Ready;
-    row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.name).silence = Some(NodeStatus::PendingReconnect);
+    row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.location()).silence = Some(NodeStatus::PendingReconnect);
     records.write_record(&row).await.unwrap();
     let mut silent = view.clone();
     silent.nodes.iter_mut().filter(|n| n.node_id == rpc.node_id).for_each(|n| n.status = NodeStatus::PendingReconnect);
@@ -490,13 +490,13 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         n.is_primary = primary;
         n.endpoint_id = Some(EndpointId(format!("key-{}", n.node_id)));
         n.transport_addr = Some(format!("127.0.0.1:{}", 21_000 + i).parse().unwrap());
-        let row = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
+        let row = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
         records.write_record(&row).await.unwrap();
         own(&n.node_id, BTreeMap::from([("zone".to_string(), "eu-1".to_string())]), ["gold".to_string()].into()).await;
         let d = MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric.clone(),
-            node: MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone().unwrap(), transport_addr: n.transport_addr.unwrap(), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            node: MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone().unwrap(), transport_addr: n.transport_addr.unwrap(), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: if ready { MemberStatus::Ready } else { MemberStatus::Pending },
             node_state: Default::default(),
             admin_api_base: None,
@@ -512,7 +512,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         };
         assert!(gateway.digest_view.record(d.clone()), "{name:?}'s heartbeat is held");
         if ready && n.mesh == "mesh1" {
-            assert!(gateway.digest_view.started(&d.node.node_id, &d.node.incarnation, &d.node.name, &d.node.mesh), "{name:?}'s node.started, as its mesh-primary's projection carries it");
+            assert!(gateway.digest_view.started(&d.node.node_id, &d.node.incarnation, &d.node.location(), &d.node.mesh), "{name:?}'s node.started, as its mesh-primary's projection carries it");
         }
         nodes.push(n);
     }
@@ -521,7 +521,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }, Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready }],
         nodes,
     };
-    let local = |f: &Filter| gateway.nodes_get(f).map(|ds| ds.into_iter().map(|d| d.node.name).collect::<Vec<_>>());
+    let local = |f: &Filter| gateway.nodes_get(f).map(|ds| ds.into_iter().map(|d| d.node.location()).collect::<Vec<_>>());
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
     for f in [
         Filter::new().eq("type", ["node"]).eq("status", ["ready"]),
@@ -530,7 +530,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         Filter::new().eq("mesh", ["mesh2"]).eq("type", ["broker"]),
         Filter::new(),
     ] {
-        let atlas: Vec<PathName> = answer(&view, &records, &planned, f.clone()).await.into_iter().map(|n| n.name.clone()).collect();
+        let atlas: Vec<PathName> = answer(&view, &records, &planned, f.clone()).await.into_iter().map(|n| n.location()).collect();
         assert_eq!(local(&f), Ok(atlas.clone()), "{f:?}: the topology the gateway holds answers what the atlas answers");
         assert!(!atlas.is_empty(), "{f:?} matches a node");
     }
@@ -568,8 +568,8 @@ async fn a_node_with_no_property_record_is_listed_unavailable_and_no_property_pa
     };
     let records = MemoryNodesStorage::default();
     for n in [&admin, &owned, &bare] {
-        let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
-        row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
+        let mut row = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+        row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
         records.write_record(&row).await.unwrap();
     }
     // The admin and mesh1.node.1 wrote their own property records; mesh1.node.2 has not yet.

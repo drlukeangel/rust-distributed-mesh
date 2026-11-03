@@ -131,7 +131,7 @@ fn replied(l: &Value) -> bool {
 /// Every isolated container as the Docker daemon holds it.
 fn inspect_all(silenced: &Silenced) -> BTreeMap<PathName, Inspected> {
     let by_id = silenced.inspect().expect("the exact containers can be inspected");
-    silenced.members.iter().filter_map(|m| by_id.get(&m.id).map(|i| (m.node.clone(), i.clone()))).collect()
+    silenced.members.iter().filter_map(|m| by_id.get(&m.id).map(|i| (m.location(), i.clone()))).collect()
 }
 
 /// The fixed part of a read taken while the silence holds.
@@ -164,7 +164,7 @@ async fn nodes_at(estate: &Estate, admin: &PathName) -> Option<Vec<Value>> {
 /// Read an isolated admin through its own network namespace. The host's UDP leg stays
 /// cut; this probe binds the held container address and calls the exact held birth locally.
 async fn local_nodes_at(before: &[Value], silenced: &Silenced, name: &PathName) -> Option<Vec<Value>> {
-    let Some(member) = silenced.members.iter().find(|m| m.node == *name) else {
+    let Some(member) = silenced.members.iter().find(|m| m.location() == *name) else {
         return None;
     };
     let view: NodeView = serde_json::from_value(node_in(before, name)?.clone()).ok()?;
@@ -702,7 +702,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     );
     let (last, last_rules) = last_provider.expect("the last exact provider and filter reads complete");
     let held_at_last_read = last_rules.values().all(|r| r.contains(&format!("-A INPUT -j {}", container_faults::SILENCE_CHAIN)) && r.contains(&format!("-A OUTPUT -j {}", container_faults::SILENCE_CHAIN))) && last.values().all(|i| i.networks.contains(&network));
-    ev.fault = Some(FaultAck { held: after_cut.values().all(|i| i.networks.contains(&network)) && rules_at_cut.values().all(|r| r.contains(container_faults::SILENCE_CHAIN)), names: Some(json!(silenced.members.iter().map(|u| json!({"node": u.node, "container": u.id})).collect::<Vec<_>>())), held_at_last_read });
+    ev.fault = Some(FaultAck { held: after_cut.values().all(|i| i.networks.contains(&network)) && rules_at_cut.values().all(|r| r.contains(container_faults::SILENCE_CHAIN)), names: Some(json!(silenced.members.iter().map(|u| json!({"node": u.location(), "container": u.id})).collect::<Vec<_>>())), held_at_last_read });
     let reached = silence.iter().any(|r| replied(&r["legs"]["direct"]) || replied(&r["legs"]["via_peer"]));
     let heard_ready = silence.iter().any(|r| r["view"].as_array().unwrap().iter().any(|v| v["status"] == "ready"));
     ev.progress = Some(Progress { reads: reads.clone(), complete_while_held: heard_ready || reached });
@@ -774,7 +774,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     rec.check(
         "every isolated container ran throughout: same init, same start, no restart, no exit",
         silenced.members.iter().all(|u| {
-            let (a, b) = (&after_cut[&u.node], &after_heal[&u.node]);
+            let (a, b) = (&after_cut[&u.location()], &after_heal[&u.location()]);
             a.running && b.running && a.pid == b.pid && a.started_at == b.started_at && b.restart_count == 0 && b.exit_code == 0 && !b.oom_killed
         }),
         format!("{after_heal:?}"),

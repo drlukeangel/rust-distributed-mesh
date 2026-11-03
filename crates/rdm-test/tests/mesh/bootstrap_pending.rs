@@ -82,14 +82,14 @@ async fn pending_contract(cell: &str) {
     let nodes = estate.settled_views(&[mesh("mesh1"), mesh("mesh2")]).await;
     let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2 elects a primary");
     let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).cloned().expect("one fabric primary");
-    let bootstrap2 = nodes.iter().find(|n| n.name == Estate::path("mesh2.node-admin", "1")).cloned().expect("mesh2's bootstrap admin");
-    let of = |sp: &Value, n: &NodeView| rdm_test::estate::of_node(sp, &n.name, n.node_id.as_str());
+    let bootstrap2 = nodes.iter().find(|n| n.location() == Estate::path("mesh2.node-admin", "1")).cloned().expect("mesh2's bootstrap admin");
+    let of = |sp: &Value, n: &NodeView| rdm_test::estate::of_node(sp, &n.location(), n.node_id.as_str());
     // The provider every mesh2 member actually ran on, from the view (and, on containers, its
     // immutable container id).
     let provider = estate.owner.provider.clone();
     let mut mesh2_runtimes: Vec<Value> = Vec::new();
     for n in nodes.iter().filter(|n| n.mesh == "mesh2" && n.r#type != "node-admin") {
-        mesh2_runtimes.push(json!({"node": n.name, "provider": n.provider, "container": estate.container_of(&n.name).await}));
+        mesh2_runtimes.push(json!({"node": n.name, "provider": n.provider, "container": estate.container_of(&n.location()).await}));
     }
     for r in &mesh2_runtimes {
         assert_eq!(r["provider"], provider.as_str(), "{r}");
@@ -110,7 +110,7 @@ async fn pending_contract(cell: &str) {
     let applied: Vec<&Value> = handoffs.iter().filter(|h| h["attributes"]["outcome"] == "applied").collect();
     assert_eq!(applied.len(), 1, "one Pending applied at mesh2's bootstrap admin: {handoffs:?}");
     let handoff = applied[0];
-    assert!(rdm_test::estate::names_location(handoff, "target", &bootstrap2.name), "{handoff}");
+    assert!(rdm_test::estate::names_location(handoff, "target", &bootstrap2.location()), "{handoff}");
     assert!(end(&joined) <= start(handoff), "the target hydrated ({}) before Pending was handed to it ({})", end(&joined), start(handoff));
     // Decided at the target through its status door, not as an election.
     let decided: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declaration")
@@ -192,7 +192,7 @@ async fn pending_contract(cell: &str) {
 fn bootstrap_admin_not_fabric_primary(settled: &[NodeView]) -> PathName {
     [Estate::path("mesh2.node-admin", "1"), Estate::path("mesh3.node-admin", "1")]
         .into_iter()
-        .find(|a| settled.iter().any(|n| n.name == *a && !n.is_fabric_primary))
+        .find(|a| settled.iter().any(|n| n.location() == *a && !n.is_fabric_primary))
         .expect("at most one admin holds the primary role, so one of the two bootstrap admins is off it")
 }
 
@@ -229,7 +229,7 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
     estate.stop_then_start(&target).await;
     let restart_build = String::new();
     let after = estate.settled_views(&shape).await;
-    let after = after.iter().find(|n| n.name == target).cloned().expect("the restarted admin in the view");
+    let after = after.iter().find(|n| n.location() == target).cloned().expect("the restarted admin in the view");
     let mesh_name = after.mesh.clone();
     estate.stop().await;
     let spans = estate.spans();
@@ -284,12 +284,12 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     let before = estate.settled_views(&shape).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let fabric_primary_view = before.iter().find(|n| n.is_fabric_primary).cloned().expect("one fabric primary");
-    let fabric_primary = fabric_primary_view.name.clone();
+    let fabric_primary = fabric_primary_view.location();
     // The lost mesh is a sole-admin mesh that does not hold the fabric-primary role.
     let lost_admin = bootstrap_admin_not_fabric_primary(&before);
-    let lost = before.iter().find(|n| n.name == lost_admin).map(|n| n.mesh.clone()).expect("the lost admin's mesh");
+    let lost = before.iter().find(|n| n.location() == lost_admin).map(|n| n.mesh.clone()).expect("the lost admin's mesh");
     let mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
-    let admin_before = before.iter().find(|n| n.name == lost_admin).cloned().unwrap();
+    let admin_before = before.iter().find(|n| n.location() == lost_admin).cloned().unwrap();
     let attempt_before = u64::from(estate.carrier().await.build(&built.build_id).await.expect("build.get [id] of the accepted Build").attempt);
     estate.enter(&fabric_primary).await;
 

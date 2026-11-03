@@ -179,7 +179,7 @@ mod tests {
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
             rdm_core::meta::NodeSpec {
                 mesh: mesh.to_owned(), r#type: r#type.to_string(),
-                path: p.clone(),
+                path: p.path.clone(), name: p.name.clone(),
                 storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral,
                 executable: Some(rdm_core::binding::Binding {
                     launch_id: r#type.into(),
@@ -279,13 +279,13 @@ mod tests {
             "mesh2.node.1 is not the first node-admin of mesh2"
         );
         let create_m2_admin = BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh2".into(),
-            node: m2_admin_path,
+            path: m2_admin_path.path.clone(), name: m2_admin_path.name.clone(),
             over: None,
             executable: None,
             entry: None,
         };
         let create_m2_rpc = BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh2".into(),
-            node: m2_rpc_path,
+            path: m2_rpc_path.path.clone(), name: m2_rpc_path.name.clone(),
             over: None,
             executable: None,
             entry: None,
@@ -528,7 +528,7 @@ mod tests {
                 fabric_id: fabric_id.clone(),
                 mesh: "mesh2".into(),
                 r#type: "node-admin".into(),
-                name: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
+                path: "mesh2.node-admin".into(), name: "1".into(),
                 node_id: NodeId::mint(),
                 incarnation: IncarnationId::mint(),
                 supersedes: None,
@@ -603,7 +603,7 @@ mod tests {
                 command_frame_seam: None,
                 operation_effects: Default::default(),
                 stopped: Default::default(),
-                me: m2_node.name.clone(),
+                me: m2_node.location(),
                 node_id: m2_node.node_id.clone(),
                 fabric_id: fabric_id.clone(),
                 topology: top.clone(),
@@ -659,7 +659,7 @@ mod tests {
             crate::admin::runner::apply_mesh_state(
                 &client,
                 &resolver,
-                &fp_node.name,
+                &fp_node.location(),
                 &fp_node.node_id,
                 &top,
                 "mesh2",

@@ -140,7 +140,7 @@ async fn delete_followed(estate: &Estate, stream: BuildStream, admin: &PathName)
                 let views = estate.node_views_at(admin).await.unwrap_or_default();
                 if let Some(fp) = estate.fabric_view_at(admin).await.and_then(|v| v.fabric_primary) {
                     // The fabric-primary's node.get first: a birth recovery re-created is learnt from a view that lists it.
-                    if let Some(at) = views.iter().find(|n| n.node_id == fp).map(|n| n.name.clone()) {
+                    if let Some(at) = views.iter().find(|n| n.node_id == fp).map(|n| n.location()) {
                         if estate.node_views_at(&at).await.is_some() {
                             if let Ok(again) = estate.carrier_at(&at).await.reattach(&id).await {
                                 *seen.lock().unwrap() = Some((at, fp.to_string()));
@@ -154,7 +154,7 @@ async fn delete_followed(estate: &Estate, stream: BuildStream, admin: &PathName)
                     // its node id is the row its node.get lists at its name, else, its meshes deleted and no row
                     // listed, the node the reattachment by its name reached.
                     let reached = estate.peers().await.node_at(admin);
-                    let own = views.iter().find(|n| n.name == *admin).map(|n| n.node_id.clone()).or(reached)
+                    let own = views.iter().find(|n| n.location() == *admin).map(|n| n.node_id.clone()).or(reached)
                         .unwrap_or_else(|| panic!("{admin:?} answered the reattachment of Build {id}, and neither its node.get nor the reattachment names its node id"))
                         .to_string();
                     *seen.lock().unwrap() = Some((admin.clone(), own));

@@ -51,7 +51,7 @@ impl AdminRunner {
     /// stopped, as the view projects a digest (the leave's records, [`crate::mesh_delete::roster_records`]).
     fn held_record(&self, b: &RosterBirth) -> Option<Node> {
         let d = self.digest_view.get(&b.node_id).map(|(d, _)| d).or_else(|| self.digest_view.stopped_digests().into_iter().find(|d| d.node.node_id.as_str() == b.node_id)).filter(|d| d.node.incarnation.as_str() == b.incarnation_id)?;
-        let mut n = Node::allocated(d.node.name.clone(), d.node.mesh.clone(), &d.node.r#type);
+        let mut n = Node::allocated(d.node.location(), d.node.mesh.clone(), &d.node.r#type);
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -376,7 +376,7 @@ impl AdminRunner {
         // created for the mesh is claimed: the claim's writer is the fabric-primary only while the
         // mesh has no primary (R11: the predecessor's delete first).
         self.refresh_view().await;
-        let held: Vec<PathName> = view.nodes.iter().map(|n| n.name.clone()).collect();
+        let held: Vec<PathName> = view.nodes.iter().map(|n| n.location()).collect();
         let path = crate::mesh_delete::leaving_mesh_admin_path(mesh, &adm.roster, &held)?;
         let (node_path, node_name) = (&path.path, &path.name);
         let span = tracing::info_span!("rdm.node_admin.node.create.via-leaving-mesh", mesh = %mesh, mesh_id = %key.mesh_id, node_path = %path.path, node_name = %path.name, build_id = %build_id.log(), attempt, operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.recipe_step, predecessor = %format!("{} {}", lost.node_id, lost.incarnation_id), outcome = tracing::field::Empty);
@@ -413,7 +413,7 @@ impl AdminRunner {
         let hand_off = self.mesh_state_hook(mesh, state)?;
         let template = self.with_issuing_material(self.template_bound(path, mesh, "node-admin", executable, "row").await?, mesh).await?;
         let held_runtimes = self.held_runtimes().await;
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(path)), mesh: mesh.to_string(), r#type: "node-admin".into(), build_id: Some(build_id.clone()), attempt, node: path.clone(), spec: self.listeners.spec_for("node-admin"), data_dir: None, held_runtimes, entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(path)), mesh: mesh.to_string(), r#type: "node-admin".into(), build_id: Some(build_id.clone()), attempt, path: path.path.clone(), name: path.name.clone(), spec: self.listeners.spec_for("node-admin"), data_dir: None, held_runtimes, entry: None };
         let created = self.pipeline(&template).create_with(&req, Some(hand_off), None).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(created.node.node_id.clone(), (created.node, created.handle));
@@ -461,7 +461,7 @@ impl AdminRunner {
             if !exited {
                 let record = lost.record()?;
                 match crate::node_investigation::birth_runtime(&self.digest_view, Some(&**store), &record).await {
-                    Ok(b) => row = Some(crate::storage::RuntimeRow { r#type: record.r#type.clone(), mesh: record.mesh.clone(), node_id: record.node_id.clone(), name: record.name.clone(), incarnation_id: b.incarnation, runtime: b.fact, data_dir: b.data_dir }),
+                    Ok(b) => row = Some(crate::storage::RuntimeRow { r#type: record.r#type.clone(), mesh: record.mesh.clone(), node_id: record.node_id.clone(), path: record.path.clone(), name: record.name.clone(), incarnation_id: b.incarnation, runtime: b.fact, data_dir: b.data_dir }),
                     Err(why) => {
                         let step = crate::deployment::pipeline::DeleteStep::TerminateRuntime.name();
                         let reason = format!(
@@ -637,13 +637,13 @@ impl AdminRunner {
             Ok(Some(found)) => found,
             Ok(None) => return,
             Err(e) => {
-                tracing::info_span!("rdm.node_admin.mesh.reject.via-mesh-left", node_path = %me.path, node_name = %me.name, subject_path = %op.name.path, subject_name = %op.name.name, node_id = %op.node_id, reason = %format!("the mesh.delete completion index could not be read: {e}"))
+                tracing::info_span!("rdm.node_admin.mesh.reject.via-mesh-left", node_path = %me.path, node_name = %me.name, subject_path = %op.path, subject_name = %op.name, node_id = %op.node_id, reason = %format!("the mesh.delete completion index could not be read: {e}"))
                     .in_scope(|| tracing::info!("mesh-left is not decided: the index of mesh.delete completions could not be read"));
                 return;
             }
         };
         let (build_id, attempt, operation) = found;
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-final-birth-deleted", node_path = %me.path, node_name = %me.name, subject_path = %op.name.path, subject_name = %op.name.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %build_id.log(), attempt, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, deleted_by = %op.operation.action, deleted_by_subject = ?op.operation.subject, deleted_by_step = ?op.operation.recipe_step, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-final-birth-deleted", node_path = %me.path, node_name = %me.name, subject_path = %op.path, subject_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %build_id.log(), attempt, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, deleted_by = %op.operation.action, deleted_by_subject = ?op.operation.subject, deleted_by_step = ?op.operation.recipe_step, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         let result = self.mesh_left_in(op, &build_id, attempt, &operation).instrument(span.clone()).await;
         match &result {
             Ok(outcome) => {
@@ -887,7 +887,7 @@ impl AdminRunner {
     /// exact birth, under the mesh.delete's Build and attempt. The provider's terminal receipt is the
     /// member's roster receipt.
     async fn shutdown_one(&self, key: &MeshDeleteKey, n: &Node) -> Result<TerminalReceipt, String> {
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-shutdown-member", node_path = %n.name.path, node_name = %n.name.name, node_id = %n.node_id, operation = %key.operation.action, operation_subject = ?key.operation.subject, build_id = %key.build_id.log(), attempt = key.attempt, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-shutdown-member", node_path = %n.path, node_name = %n.name, node_id = %n.node_id, operation = %key.operation.action, operation_subject = ?key.operation.subject, build_id = %key.build_id.log(), attempt = key.attempt, outcome = tracing::field::Empty);
         let result = async {
             // A member whose delete already holds its TerminateRuntime receipt runs on from its receipts
             // when its runtime is no longer resolved here (no digest, no runtime row), as an unreached
@@ -1167,7 +1167,7 @@ mod tests {
         let adapter = Arc::new(MemoryBuildStateAdapter::new());
         let handover = Arc::new(crate::fabric_handover::HandoverDoor {
             fabric: "fab".into(),
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             node_id: node_id.clone(),
             incarnation: incarnation.clone(),
             topology: topology.clone(),
@@ -1182,7 +1182,7 @@ mod tests {
             project_view: Arc::new(|| Box::pin(async {})),
             finish_writes: Arc::new(|| Box::pin(async {})),
             looker: crate::primary_watch::Looker {
-                me: me.clone(),
+                me_path: me.path.clone(), me_name: me.name.clone(),
                 me_id: node_id.clone(),
                 topology_view: topology_view.clone(),
                 client: node_rpc.client.clone(),
@@ -1198,7 +1198,7 @@ mod tests {
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(),
-                name: me.clone(),
+                path: me.path.clone(), name: me.name.clone(),
                 node_id: node_id.clone(),
                 incarnation: incarnation.clone(),
             },
@@ -1266,14 +1266,14 @@ mod tests {
             fabric_id: fabric_id.clone(),
             fabric_provider: ProviderKind::Process,
             digest_view: topology_view.digest_view.clone(),
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             node_id: node_id.clone(),
             endpoint: Some(ep.clone()),
             node_rpc,
             lifecycle_events: Arc::new(GossipLifecycle {
                 topology_view,
                 backbone,
-                me: me.clone(),
+                me_path: me.path.clone(), me_name: me.name.clone(),
                 mesh_deleter: Arc::default(),
                 project: None,
                 status_door: Arc::default(),
@@ -1348,7 +1348,7 @@ mod tests {
         //    primary's `TerminateRuntime` receipt is present on its `node.delete` Build.
         let del_op = rdm_core::OperationId::node("node.delete", &final_id);
         let term = TerminalReceipt {
-            node: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
+            path: "mesh2.node-admin".into(), name: "1".into(),
             node_id: final_id.to_string(),
             incarnation_id: final_inc.to_string(),
             runtime: Some(final_runtime),
@@ -1376,7 +1376,7 @@ mod tests {
             operation: del_op,
             node_id: final_id,
             incarnation: final_inc,
-            name: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
+            path: "mesh2.node-admin".into(), name: "1".into(),
             event_at_rafka_ms: 5_000_000,
             traceparent: None,
             tracestate: None,

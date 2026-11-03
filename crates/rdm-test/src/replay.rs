@@ -68,13 +68,20 @@ pub struct StepOutcome {
     pub step: String,
     /// `put`, `cas`, `delete`, `get` or `restart_node`.
     pub action: String,
-    pub target: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     pub key: Option<u64>,
     /// The call's outcome (`Reply`, ...), or `Restarted` for a fault.
     pub outcome: String,
     /// The typed result the scenario asserts on (`swapped`, `found`, `value`), or the restart's
     /// facts (`same_node_id`, `same_incarnation`).
     pub result: Value,
+}
+
+impl StepOutcome {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// The replay manifest.
@@ -190,7 +197,7 @@ impl ReplayManifest {
 
     /// The ordered actions of the run, without outcomes: what a replay must repeat exactly.
     pub fn actions(&self) -> Vec<(String, String, PathName, Option<u64>)> {
-        self.outcomes.iter().map(|o| (o.step.clone(), o.action.clone(), o.target.clone(), o.key)).collect()
+        self.outcomes.iter().map(|o| (o.step.clone(), o.action.clone(), o.location(), o.key)).collect()
     }
 }
 

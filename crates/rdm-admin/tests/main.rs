@@ -166,7 +166,7 @@ pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, change: 
         .flat_map(|m| m.spec_by_path.values())
         .map(|s| {
             let mut s = s.clone();
-            if !current.topology.contains(&s.path) && s.executable.is_none() {
+            if !current.topology.contains(&s.location()) && s.executable.is_none() {
                 s.executable = Some(test_executable(&s.r#type));
             }
             s
@@ -189,9 +189,9 @@ pub async fn records_of_views(views: &[&rdm_admin::topology::Topology]) -> std::
     let rows = std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
     let mut seen = std::collections::BTreeSet::new();
     for n in views.iter().flat_map(|t| t.nodes.iter()).filter(|n| seen.insert(n.node_id.clone())) {
-        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), rdm_admin::model::NodeStatus::Ready);
+        let mut row = rdm_admin::storage::NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), rdm_admin::model::NodeStatus::Ready);
         if let Some(incarnation) = &n.incarnation_id {
-            row.birth_mut(incarnation, &n.name);
+            row.birth_mut(incarnation, &n.location());
         }
         // A later view's other birth at a path an earlier one claimed (a re-created node) keeps its
         // record beside that claim: put, not claimed.

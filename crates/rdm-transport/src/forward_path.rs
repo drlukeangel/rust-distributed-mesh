@@ -348,7 +348,7 @@ mod tests {
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: id.clone(),
-                name: rdm_core::PathName::new("mesh1.node", ordinal.to_string()).unwrap(),
+                path: "mesh1.node".into(), name: (ordinal.to_string()).to_string(),
                 endpoint_id: EndpointId(format!("key{ordinal}")),
                 transport_addr: format!("127.0.0.1:{}", 41_000 + ordinal).parse().unwrap(),
                 incarnation: birth.clone(),

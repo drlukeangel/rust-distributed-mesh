@@ -61,7 +61,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
             fabric_id: fabric,
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: born.clone(),
+            path: born.path.clone(), name: born.name.clone(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -86,7 +86,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
             digests.changed().await.unwrap();
         }
         let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
         // Step 1: every connection deleted, then off its mesh.
@@ -108,7 +108,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         assert_eq!(published(), seq_at_leave, "the node published nothing from its leave to its stop");
 
         // The authority holds the birth under its row's name, and its held stopped digest names it too.
-        admin.put_row(NodeRow { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), replacement_from: None, initial_properties: None, topology_storage_provider: None, name: taken.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None });
+        admin.put_row(NodeRow { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), replacement_from: None, initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None });
         admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
 
         assert_eq!(call(&admin, &target, &start).await, StatusReply::Started, "the start presents the name the node holds");
@@ -116,11 +116,11 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.digest_seq <= seq_at_leave || d.status != MemberStatus::Ready) {
             let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
             if d.digest_seq > seq_at_leave {
-                assert_eq!(d.node.name, taken, "every digest after the start's join names the name the node holds");
+                assert_eq!(d.node.location(), taken, "every digest after the start's join names the name the node holds");
             }
             digests.changed().await.unwrap();
         }
-        assert_eq!(digest_view.get(launch.node_id.as_str()).unwrap().0.node.name, taken, "the started node publishes the name it holds");
+        assert_eq!(digest_view.get(launch.node_id.as_str()).unwrap().0.node.location(), taken, "the started node publishes the name it holds");
         // Its apply published nothing; its stop and start name the name it holds (R12).
         let applies: Vec<(String, String, String)> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.update.via-apply-node-name").map(|(_, _, f)| (f["to_path"].clone(), f["to_name"].clone(), f["digest"].clone())).collect();
         assert_eq!(applies, vec![(taken.path.clone(), taken.name.clone(), "off-mesh".to_string())], "the apply off its mesh publishes nothing");

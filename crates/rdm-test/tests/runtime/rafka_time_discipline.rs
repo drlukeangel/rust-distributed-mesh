@@ -74,7 +74,7 @@ async fn a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats() {
     let nodes = estate.settles_to_named(&names(), Duration::from_secs(30)).await;
     let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 has a primary").node_id.to_string();
     let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).expect("one fabric primary").node_id.to_string();
-    let id_at = |path: &str, name: &str| nodes.iter().find(|n| n.name.path == path && n.name.name == name).expect("the named fixture node exists").node_id.to_string();
+    let id_at = |path: &str, name: &str| nodes.iter().find(|n| n.path == path && n.name == name).expect("the named fixture node exists").node_id.to_string();
     let (slow_id, ahead_id, skewed_id) = (id_at("mesh2.node", "1"), id_at("mesh1.node", "1"), id_at("mesh2.node", "2"));
 
     // The ahead node is told, by its mesh primary's stamps, that it is ahead; the slow node is stepped.

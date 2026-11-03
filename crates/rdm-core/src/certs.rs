@@ -12,7 +12,7 @@
 //! new birth never holds its predecessor's cert). Validity is judged on the clock the caller hands
 //! in (rafka-time), with one skew allowance past each expiry.
 
-use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
+use crate::model::{EndpointId, IncarnationId, NodeId};
 pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use ed25519_dalek::{Signer, Verifier};
 use serde::{Deserialize, Serialize};
@@ -35,12 +35,19 @@ pub struct BirthIdentity {
     pub node_id: NodeId,
     /// The birth's incarnation.
     pub incarnation: IncarnationId,
-    /// The birth's `(path, name)`.
-    pub name: PathName,
+    /// The birth's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The birth's mesh name.
     pub mesh: String,
     /// The birth's fabric endpoint key.
     pub endpoint_key: EndpointId,
+}
+
+impl BirthIdentity {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// Why an issuance did not produce a cert.
@@ -215,8 +222,10 @@ impl IssuingKey {
 /// The signed payload of a member cert: the exact birth it is issued to, and its expiry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeCert {
-    /// The birth's `(path, name)`.
-    pub name: PathName,
+    /// The birth's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The birth's mesh.
     pub mesh: String,
     /// The birth's node id.
@@ -230,6 +239,11 @@ pub struct NodeCert {
     pub issued_ms: u64,
     /// When the cert expires, rafka-time ms.
     pub expiry_ms: u64,
+}
+
+impl NodeCert {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// A [`NodeCert`] signed by its mesh's issuing key, carrying the whole chain (the issuing cert).
@@ -316,7 +330,7 @@ pub fn issue(issuer: &IssuingKey, birth: &BirthIdentity, issued_ms: u64, expiry_
     if expiry_ms > issuer.expiry_ms() {
         return Err(CertError::MemberOutlivesIssuer);
     }
-    let cert = NodeCert { name: birth.name.clone(), mesh: birth.mesh.clone(), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), endpoint: birth.endpoint_key.clone(), issued_ms, expiry_ms };
+    let cert = NodeCert { path: birth.path.clone(), name: birth.name.clone(), mesh: birth.mesh.clone(), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), endpoint: birth.endpoint_key.clone(), issued_ms, expiry_ms };
     let sig = issuer.secret.sign(&cert_bytes(&cert));
     Ok(SignedCert { cert, sig, issuer: issuer.cert.clone() })
 }
@@ -511,6 +525,7 @@ pub fn renew_point(of: &[&[u8]], issued_at_ms: u64, expires_at_ms: u64, renew_at
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PathName;
 
     fn root() -> SigningKey {
         SigningKey::from_bytes(&[7u8; 32])
@@ -531,7 +546,7 @@ mod tests {
     }
 
     fn birth(name: PathName, mesh: &str) -> BirthIdentity {
-        BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: mesh.into(), name, endpoint_key: EndpointId("k".into()) }
+        BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: mesh.into(), path: name.path.clone(), name: name.name.clone(), endpoint_key: EndpointId("k".into()) }
     }
 
     /// The member cert of `name`, `ttl_secs` from `now_ms`.
@@ -638,7 +653,7 @@ mod tests {
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::IssuerMeshMismatch));
 
         let mut signed = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 3600, 1000).expect("issue");
-        signed.cert.name = crate::PathName::new("mesh2.broker", "1").unwrap();
+        { let at = crate::PathName::new("mesh2.broker", "1").unwrap(); signed.cert.path = at.path; signed.cert.name = at.name; }
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::BadSignature), "the name remains covered by the signature");
     }
 
@@ -711,7 +726,7 @@ mod tests {
         let issuer = sample_issuer(&root_key);
         let b = birth(PathName::new("mesh1.broker", "1").unwrap(), "mesh1");
         let signed = issue(&issuer, &b, 1_000, 3_601_000).expect("issue");
-        assert_eq!((&signed.cert.name, &signed.cert.mesh, &signed.cert.node_id, &signed.cert.incarnation, &signed.cert.endpoint), (&b.name, &b.mesh, &b.node_id, &b.incarnation, &b.endpoint_key));
+        assert_eq!((&signed.cert.location(), &signed.cert.mesh, &signed.cert.node_id, &signed.cert.incarnation, &signed.cert.endpoint), (&b.location(), &b.mesh, &b.node_id, &b.incarnation, &b.endpoint_key));
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Ok(()));
     }
 

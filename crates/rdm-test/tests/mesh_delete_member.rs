@@ -77,7 +77,7 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
             timeouts: Timeouts::default(),
         };
         let first = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(publish_build(&builds, add_node()).await), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(publish_build(&builds, add_node()).await), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
 

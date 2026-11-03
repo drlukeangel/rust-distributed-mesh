@@ -173,7 +173,7 @@ mod process {
             std::fs::create_dir_all(&dir).unwrap();
             let provider = ProcessDeploymentProvider::new();
             let spec = ResolvedNodeLaunch { mesh: "mesh1".to_owned(), r#type: "node".into(), secrets: Default::default(), withhold: Vec::new(),
-                node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+                path: "mesh1.node".into(), name: "1".into(),
                 deployment_id: DeploymentId::mint(),
                 executable: executable.into(),
                 args: args.iter().map(|a| a.to_string()).collect(),

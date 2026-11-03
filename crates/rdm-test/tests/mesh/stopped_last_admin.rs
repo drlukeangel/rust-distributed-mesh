@@ -85,7 +85,7 @@ async fn delete_mesh1(test: &str) -> Deleted {
     let before = estate.settled_views(&both).await;
     let mut pids: Vec<(NodeId, u64)> = Vec::new();
     for n in before.iter().filter(|n| n.mesh == "mesh1") {
-        let name = &n.name;
+        let name = &n.location();
         let pid = match estate.bootstrap_pid() {
             Some(p) if *name == PathName::new("mesh1.node-admin", "1").unwrap() => u64::from(p),
             _ => estate.pid_of(name).await,
@@ -96,7 +96,7 @@ async fn delete_mesh1(test: &str) -> Deleted {
     // ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Control moves to mesh2 before mesh1 goes.
-    let mesh2_admin = before.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.status == NodeStatus::Ready).map(|n| n.name.clone()).expect("a ready mesh2 admin");
+    let mesh2_admin = before.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.status == NodeStatus::Ready).map(|n| n.location()).expect("a ready mesh2 admin");
     estate.enter(&mesh2_admin).await;
     let b = estate.reconcile_shape("fabric1", &[mesh("mesh2")]).await.build_id.to_string();
     // mesh.deleted leaves mesh1's last admin alive; its end is its own node.delete.
@@ -106,7 +106,7 @@ async fn delete_mesh1(test: &str) -> Deleted {
             (mesh1.len() == 1 && mesh1[0].status == NodeStatus::Ready).then(|| vec![mesh1[0].clone()])
         })
         .await;
-    let last = left[0].name.clone();
+    let last = left[0].location();
     let last_id = left[0].node_id.clone();
     let last_incarnation = left[0].incarnation_id.clone().expect("the ready last admin has an incarnation");
     estate.enter_fabric_primary().await;
@@ -118,7 +118,7 @@ async fn delete_mesh1(test: &str) -> Deleted {
     }
     // A peer mesh's ordinary node holds the deleted birth Gone, from its executor's NodeDeleted.
     let query = format!("exact:{last_id}");
-    let peer = before.iter().find(|n| n.name == PathName::new("mesh2.node", "1").unwrap()).expect("fixture peer");
+    let peer = before.iter().find(|n| n.location() == PathName::new("mesh2.node", "1").unwrap()).expect("fixture peer");
     let target = format!("exact:{}", peer.node_id);
     let resolution = wait_for(&format!("mesh2.node.1 holds {last:?} Gone"), Duration::from_secs(30), || async {
         let r = estate.probe(&["resolve", "--target", &target, "--query", &query]);

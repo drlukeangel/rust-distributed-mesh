@@ -146,7 +146,7 @@ async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_b
     let current = r.builds.current().await.unwrap().expect("the seeded Build is current");
     let drift = AttemptOpened { mesh: Some("mesh1".into()), build_id: current.build_id.clone(), attempt: 1, reason: AttemptReason::Requested, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, context: None };
     r.builds.open_attempt(&drift).await.expect("mesh1's drift lane opens its attempt 1");
-    let out = r.cp.submit("gates-delete-held", TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.node", "1").unwrap() }).await;
+    let out = r.cp.submit("gates-delete-held", TopologyChange::RemoveNode { path: "mesh1.node".into(), name: "1".into()}).await;
     match &out {
         Err(Refusal::BuildInProgress(held)) => assert_eq!(held.mesh.as_deref(), Some("mesh1"), "the refusal names the held mesh"),
         _ => panic!("the delete is refused build-in-progress naming mesh1 before its state is read, not {}", reason(&out)),
@@ -161,7 +161,7 @@ async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_b
 async fn a_step_on_no_node_is_refused_unknown_before_the_heard_gate() {
     let r = rig(view(NodeStatus::Ready)).await;
     let _ = r.cp.mesh_unheard.set(Arc::new(|m: &str| (m == "mesh2").then_some(40_000)));
-    let steps = vec![rdm_core::build::Step::Stop { node: rdm_core::PathName::new("mesh2.node", "9").unwrap() }];
+    let steps = vec![rdm_core::build::Step::Stop { path: "mesh2.node".into(), name: "9".into()}];
     let span = tracing::info_span!("gates-steps");
     let out = r.cp.open_steps_in(span, "gates-steps-unknown", steps).await;
     assert!(matches!(&out, Err(Refusal::Reject(BuildReject::UnknownNode { step: Some(1), .. }))), "the steps are refused unknown-node, naming the step, before the heard gate (Q223), not {}", reason(&out));
@@ -182,7 +182,7 @@ async fn an_attempt_taken_refusal_writes_no_attempt_context() {
     r.contexts.put_attempt_context(&current.build_id, None, n, &theirs).await.unwrap();
     r.builds.armed.store(true, Ordering::SeqCst);
     let span = tracing::info_span!("gates-attempt-taken");
-    let out = r.cp.open_steps_in(span, "gates-attempt-taken", vec![rdm_core::build::Step::Stop { node: rdm_core::PathName::new("mesh1.node", "1").unwrap() }]).await;
+    let out = r.cp.open_steps_in(span, "gates-attempt-taken", vec![rdm_core::build::Step::Stop { path: "mesh1.node".into(), name: "1".into() }]).await;
     assert!(matches!(&out, Err(Refusal::AttemptTaken(_))), "the stop is refused attempt-taken, not {}", reason(&out));
     let held = r.contexts.attempt_context(&current.build_id, None, n).await.unwrap();
     assert_eq!(held, Some(theirs), "nothing is written by the refused stop: attempt {n}'s context is the racer's");
@@ -272,7 +272,7 @@ async fn a_claim_the_moment_the_open_lands_takes_the_opening_requests_context() 
     let previous = rdm_core::context::CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), tracestate: None, baggage: None };
     contexts.put(&current.build_id, current.attempt, &previous).await.unwrap();
     let opened = cp
-        .open_steps_in(tracing::info_span!("gates-claimed-in-the-open"), "gates-claimed-in-the-open", vec![rdm_core::build::Step::Stop { node: rdm_core::PathName::new("mesh1.node", "1").unwrap() }])
+        .open_steps_in(tracing::info_span!("gates-claimed-in-the-open"), "gates-claimed-in-the-open", vec![rdm_core::build::Step::Stop { path: "mesh1.node".into(), name: "1".into() }])
         .await
         .expect("the stop is admitted");
     assert_eq!(opened.attempt, current.attempt + 1);
@@ -302,7 +302,7 @@ impl rdm_admin::path_investigation::PathProbe for Investigation {
 async fn dead_rig(t: Topology) -> Rig {
     let r = rig(t).await;
     let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-    r.cp.topology.write().await.nodes.iter_mut().find(|n| n.name == path).unwrap().status = NodeStatus::Dead;
+    r.cp.topology.write().await.nodes.iter_mut().find(|n| n.location() == path).unwrap().status = NodeStatus::Dead;
     r
 }
 
@@ -312,7 +312,7 @@ fn birth_of(t: &Topology, path: &PathName) -> (NodeId, IncarnationId) {
 }
 
 async fn delete_of(r: &Rig, path: &PathName) -> Result<rdm_admin::control_plane::Opened, Refusal> {
-    r.cp.submit("gates-delete", TopologyChange::RemoveNode { node: path.clone() }).await
+    r.cp.submit("gates-delete", TopologyChange::RemoveNode { path: path.path.clone(), name: path.name.clone()}).await
 }
 
 /// CONTRACT (build.md §4.4 gate 5: "a delete a stopped one, one whose exit is proven, or a live one";

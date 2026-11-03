@@ -324,12 +324,19 @@ pub(crate) struct AdoptionReceipt {
 
 /// The Day-0 adoption of this process, one receipt and span per step.
 pub struct CurrentRuntimeAdoption {
-    node: PathName,
+    path: String,
+    /// The name, beside its path.
+    name: String,
     data_dir: PathBuf,
     span: tracing::Span,
     receipts: Vec<AdoptionReceipt>,
     /// Set by `AdoptCurrentRuntime`; `begin` returns only once it is.
     fact: Option<RuntimeFact>,
+}
+
+impl CurrentRuntimeAdoption {
+    /// The `(path, name)` lookup index key of path and name.
+    fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 impl CurrentRuntimeAdoption {
@@ -358,7 +365,7 @@ impl CurrentRuntimeAdoption {
             node_path = %node.path, node_name = %node.name,
             attempt = 1u32,
         );
-        let mut a = Self { node: node.clone(), data_dir: data_dir.to_path_buf(), span, receipts: Vec::new(), fact: None };
+        let mut a = Self { path: node.path.clone(), name: node.name.clone(), data_dir: data_dir.to_path_buf(), span, receipts: Vec::new(), fact: None };
         a.fact = a.step(AdoptStep::AdoptCurrentRuntime, |n| {
             match &container_domain {
                 Some(d) => RuntimeFact::of_this_container(&deployment_id.as_str(), d),
@@ -415,7 +422,7 @@ impl CurrentRuntimeAdoption {
             step = step.name(),
             build_id = "",
             provider = ?crate::model::ProviderKind::Process,
-            node_path = %self.node.path, node_name = %self.node.name,
+            node_path = %self.path, node_name = %self.name,
             attempt = 1u32,
             outcome = tracing::field::Empty,
             code = tracing::field::Empty,
@@ -423,7 +430,7 @@ impl CurrentRuntimeAdoption {
             elapsed_ms = tracing::field::Empty,
         );
         let started = Instant::now();
-        let mut r = span.in_scope(|| work(&self.node));
+        let mut r = span.in_scope(|| work(&self.location()));
         self.receipts.push(match &r {
             Ok((_, ev)) => AdoptionReceipt { step: step.name().into(), outcome: StepOutcome::Complete, output: serde_json::to_value(ev).ok() },
             Err(reason) => AdoptionReceipt { step: step.name().into(), outcome: StepOutcome::failed(reason.clone()), output: None },
@@ -432,7 +439,7 @@ impl CurrentRuntimeAdoption {
         // written fails its step: a lost one would read later as a step never completed.
         let file = self.data_dir.join(ADOPTION_RECEIPTS);
         if let Err(e) = serde_json::to_vec_pretty(&self.receipts).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&file, b).map_err(|e| e.to_string())) {
-            let unwritten = format!("path {:?}, name {:?}: the receipt of {} cannot be written: {}: {e}", &self.node.path, &self.node.name, step.name(), file.display());
+            let unwritten = format!("path {:?}, name {:?}: the receipt of {} cannot be written: {}: {e}", &self.path, &self.name, step.name(), file.display());
             r = Err(match r {
                 Ok(_) => unwritten,
                 Err(failed) => format!("{failed}; {unwritten}"),
@@ -710,8 +717,10 @@ pub enum Completion {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TerminalReceipt {
-    /// The node's `(path, name)`.
-    pub node: PathName,
+    /// The node's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The logical node.
     pub node_id: String,
     /// The exact birth.
@@ -732,6 +741,11 @@ pub struct TerminalReceipt {
     /// topic's wire, after `verdict`.
     #[serde(default)]
     pub data_dir: Option<String>,
+}
+
+impl TerminalReceipt {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// An exact runtime by fingerprint.
@@ -917,7 +931,9 @@ pub struct CreateRequest {
     /// The attempt (meaningless with no Build).
     pub attempt: u32,
     /// The node to create.
-    pub node: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The endpoint plan of the node's kind.
     pub spec: &'static TypeSpec,
     /// The data dir the create's spec names (node-recovery.md sequence step 4: node recovery's
@@ -930,6 +946,11 @@ pub struct CreateRequest {
     /// The path's entry in the accepted Build the fabric-primary put on the create
     /// ([`crate::build::EntrySpec`]): a plain create's row takes its tags and config at its first write.
     pub entry: Option<crate::build::EntrySpec>,
+}
+
+impl CreateRequest {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// Work the executor does at the birth between its mesh join and its Ready: the fabric primary's
@@ -1491,14 +1512,15 @@ impl DeploymentPipeline<'_> {
 
     pub(crate) fn create_with_row_for<'a>(&'a self, req: &'a CreateRequest, row_for: crate::node_rows::RowFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'a>>) -> futures_util::future::BoxFuture<'a, Result<Created, PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("create", req.build_id.as_ref(), &req.node, req.attempt);
+        let span = self.pipeline_span("create", req.build_id.as_ref(), &req.location(), req.attempt);
         // Boxed where it is made: the create's steps are one large state machine, and every caller (a
         // step, a recovery, a drive) holds only the box on its worker's stack.
         Box::pin(self.create_steps(req, row_for, pre_node_ready, before_launch).instrument(span))
     }
 
     async fn create_steps(&self, req: &CreateRequest, row_for: crate::node_rows::RowFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
-        let mut run = self.begin(req.build_id.as_ref(), req.attempt, &req.node, req.operation.clone()).await?;
+        let location = req.location();
+        let mut run = self.begin(req.build_id.as_ref(), req.attempt, &location, req.operation.clone()).await?;
         let mut created = self.create_to_ready(&mut run, req, row_for, pre_node_ready, before_launch).await?;
         created.node.status = NodeStatus::Ready;
         self.step(&mut run, CreateStep::Complete.name(), async {
@@ -1529,11 +1551,11 @@ impl DeploymentPipeline<'_> {
             // delete retains (build.md §1, Q179): the teardown's roster, read from the node rows, holds
             // the birth, and its node.delete ends the runtime this create launched.
             if let Some(delete) = self.interrupting_delete(req.build_id.as_ref()).await {
-                tracing::info_span!("rdm.node_admin.node.update.via-row-kept", node_path = %req.node.path, node_name = %req.node.name, subject_id = %node_id, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, delete_build_id = %delete.log(), failed_step = e.step, "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.node.update.via-row-kept", node_path = %req.path, node_name = %req.name, subject_id = %node_id, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, delete_build_id = %delete.log(), failed_step = e.step, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("the create failed under a fabric.delete: its row stays for the teardown, which deletes the birth it launched"));
                 return r;
             }
-            rows.withdraw(&req.node, node_id, &operation, &format!("the create failed at {}: {}", e.step, e.reason)).await;
+            rows.withdraw(&req.location(), node_id, &operation, &format!("the create failed at {}: {}", e.step, e.reason)).await;
         }
         r
     }
@@ -1548,7 +1570,7 @@ impl DeploymentPipeline<'_> {
     async fn withdraw_earlier(&self, run: &Run<'_>, req: &CreateRequest, why: &str) {
         let (Some(rows), Some(Some(earlier))) = (self.sink.node_rows(), run.done.get(CreateStep::AllocateIdentity.name())) else { return };
         if let Ok(earlier) = serde_json::from_value::<Identity>(earlier.clone()) {
-            rows.withdraw(&req.node, &earlier.node_id, &run.operation, why).await;
+            rows.withdraw(&req.location(), &earlier.node_id, &run.operation, why).await;
         }
     }
 
@@ -1560,7 +1582,7 @@ impl DeploymentPipeline<'_> {
         use tracing::Instrument;
         let span = tracing::info_span!(
             "rdm.node_admin.deployment.reject.via-lost-executor",
-            node_path = %req.node.path, node_name = %req.node.name,
+            node_path = %req.path, node_name = %req.name,
             build_id = %build_span(req.build_id.as_ref()),
             attempt = req.attempt,
             step = CreateStep::DeployRuntime.name(),
@@ -1572,7 +1594,7 @@ impl DeploymentPipeline<'_> {
             .terminate(stranded, TerminationMode::Graceful { grace: self.timeouts.stop_grace }, super::deadline::Deadline::stop(self.timeouts.stop_grace))
             .instrument(span)
             .await
-            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("path {:?}, name {:?}: the earlier attempt's runtime was launched by another executor and never joined; stopping it failed: {e}", &req.node.path, &req.node.name) , code: rdm_core::outcome::Code::FailedPrecondition })
+            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("path {:?}, name {:?}: the earlier attempt's runtime was launched by another executor and never joined; stopping it failed: {e}", &req.path, &req.name) , code: rdm_core::outcome::Code::FailedPrecondition })
     }
 
     /// The identity an earlier run of this operation wrote `req.node`'s row with, for a run that holds
@@ -1596,16 +1618,16 @@ impl DeploymentPipeline<'_> {
     async fn row_allocation(&self, run: &Run<'_>, req: &CreateRequest, rows: &crate::node_rows::NodeRows) -> Result<Option<Identity>, PipelineError> {
         use tracing::Instrument;
         let step = CreateStep::AllocateIdentity.name();
-        let (written, read) = rows.allocation_at(&req.node, req.build_id.as_ref(), &run.operation).await.map_err(|reason| PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })?;
+        let (written, read) = rows.allocation_at(&req.location(), req.build_id.as_ref(), &run.operation).await.map_err(|reason| PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })?;
         let Some((node_id, a)) = written else { return Ok(None) };
         let identity = Identity { node_id, incarnation: a.incarnation, supersedes: None, deployment_id: a.deployment_id };
         let data_dir = req.data_dir.clone().unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &identity.node_id));
         // `find` reads the launch's name, data dir and deployment; the birth's address is bound only once
         // its identity is decided.
-        let spec = ResolvedNodeLaunch { mesh: req.mesh.clone().to_owned(), r#type: req.r#type.clone(), secrets: Default::default(), withhold: Vec::new(), node: req.node.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: SocketAddr::from(([0, 0, 0, 0], 0)), listeners: vec![] };
+        let spec = ResolvedNodeLaunch { mesh: req.mesh.clone().to_owned(), r#type: req.r#type.clone(), secrets: Default::default(), withhold: Vec::new(), path: req.path.clone(), name: req.name.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: SocketAddr::from(([0, 0, 0, 0], 0)), listeners: vec![] };
         let span = tracing::info_span!(
             "rdm.node_admin.node.resolve.via-row-allocation",
-            node_path = %req.node.path, node_name = %req.node.name,
+            node_path = %req.path, node_name = %req.name,
             build_id = %build_span(req.build_id.as_ref()),
             attempt = req.attempt,
             operation = %run.operation.action, operation_subject = ?run.operation.subject,
@@ -1625,7 +1647,7 @@ impl DeploymentPipeline<'_> {
             Ok(Found::Exited(_)) => {
                 span.record("outcome", "launched-exited");
                 span.in_scope(|| tracing::info!("the row names a birth this operation allocated whose deployment the provider proves was launched and has exited: the birth is decided afresh"));
-                rows.withdraw(&req.node, &identity.node_id, &run.operation, "the birth its row names was launched by a lost executor and has exited: a fresh birth is created at the name").await;
+                rows.withdraw(&req.location(), &identity.node_id, &run.operation, "the birth its row names was launched by a lost executor and has exited: a fresh birth is created at the name").await;
                 Ok(None)
             }
             Ok(Found::NeverLaunched) => {
@@ -1636,7 +1658,7 @@ impl DeploymentPipeline<'_> {
             Ok(Found::Running(_)) if self.observer.joined(&identity.node_id, &identity.incarnation).await.is_some() => {
                 let reason = format!(
                     "path {:?}, name {:?}: the row of operation {:?} (Build {}) names the birth {} at deployment {}, whose runtime runs and has joined fabric membership; this run holds none of that create's receipts past its row, so the birth is neither stopped, withdrawn nor decided afresh",
-                    &req.node.path, &req.node.name, run.operation, build_log(req.build_id.as_ref()), identity.node_id, identity.deployment_id
+                    &req.path, &req.name, run.operation, build_log(req.build_id.as_ref()), identity.node_id, identity.deployment_id
                 );
                 span.record("outcome", "launched-and-joined").record("detail", reason.as_str());
                 Err(PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })
@@ -1645,13 +1667,13 @@ impl DeploymentPipeline<'_> {
                 span.record("outcome", "launched-by-lost-executor");
                 span.in_scope(|| tracing::info!("the row names a birth this operation allocated whose runtime the lost executor launched: it is stopped and the birth decided afresh"));
                 self.stop_lost_launch(req, &stranded, None).instrument(span.clone()).await?;
-                rows.withdraw(&req.node, &identity.node_id, &run.operation, "the birth its row names was launched by a lost executor and never joined this one: a fresh birth is created at the name").await;
+                rows.withdraw(&req.location(), &identity.node_id, &run.operation, "the birth its row names was launched by a lost executor and never joined this one: a fresh birth is created at the name").await;
                 Ok(None)
             }
             Err(e) => {
                 let reason = format!(
                     "path {:?}, name {:?}: the row of operation {:?} (Build {}) names the birth {} at deployment {}, and the provider could not prove whether a runtime of that deployment exists, so the birth is neither continued nor decided afresh: {e}",
-                    &req.node.path, &req.node.name, run.operation, build_log(req.build_id.as_ref()), identity.node_id, identity.deployment_id
+                    &req.path, &req.name, run.operation, build_log(req.build_id.as_ref()), identity.node_id, identity.deployment_id
                 );
                 span.record("outcome", "unproven").record("detail", reason.as_str());
                 Err(PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })
@@ -1684,7 +1706,7 @@ impl DeploymentPipeline<'_> {
                 None => false,
             };
             if !alive {
-                tracing::info!(node_path = %req.node.path, node_name = %req.node.name, "the earlier attempt's runtime is gone: a fresh birth");
+                tracing::info!(node_path = %req.path, node_name = %req.name, "the earlier attempt's runtime is gone: a fresh birth");
                 self.withdraw_earlier(run, req, "the earlier attempt's runtime is gone: a fresh birth is created at the name").await;
                 run.done.clear();
             } else if recorded_by_another(&run, CreateStep::DeployRuntime) && !run.done.contains_key(CreateStep::WaitForMeshJoin.name()) {
@@ -1718,9 +1740,9 @@ impl DeploymentPipeline<'_> {
         // one this admin publishes for the birth.
         let bind_ip = self
             .provider
-            .bind_ip(&req.node, &id.deployment_id, super::deadline::Deadline::step())
+            .bind_ip(&req.location(), &id.deployment_id, super::deadline::Deadline::step())
             .await
-            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("path {:?}, name {:?}: no address to bind: {e}", &req.node.path, &req.node.name) , code: rdm_core::outcome::Code::FailedPrecondition })?;
+            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("path {:?}, name {:?}: no address to bind: {e}", &req.path, &req.name) , code: rdm_core::outcome::Code::FailedPrecondition })?;
         let bind_addr = SocketAddr::new(bind_ip, 0);
         let bind_listeners: Vec<(String, SocketAddr)> = req.spec.listeners.iter().map(|n| (n.to_string(), bind_addr)).collect();
         let inherits = req.data_dir.is_some();
@@ -1769,21 +1791,22 @@ impl DeploymentPipeline<'_> {
                 // node record's, which its claim inherits.
                 let storage_persistence = match &req.build_id {
                     Some(build_id) => {
-                        let held = self.builds.read_build(build_id).await.map_err(|e| format!("path {:?}, name {:?}: the accepted Build {} could not be read for the node's create spec; nothing is launched: {e}", &req.node.path, &req.node.name, build_id))?;
-                        held.topology.node_spec(&req.node).map(|s| s.storage_persistence)
+                        let held = self.builds.read_build(build_id).await.map_err(|e| format!("path {:?}, name {:?}: the accepted Build {} could not be read for the node's create spec; nothing is launched: {e}", &req.path, &req.name, build_id))?;
+                        held.topology.node_spec(&req.location()).map(|s| s.storage_persistence)
                     }
                     None => None,
                 };
                 done_awaits.push("entry-spec");
+
                 // A replace's successor takes its entry's config and tags, never its predecessor's (Q305).
                 let (tags, config) = match (of, &req.entry) {
                     (crate::node_rows::RowFor::Create | crate::node_rows::RowFor::Successor | crate::node_rows::RowFor::Replacement, Some(e)) => (e.tags.clone(), e.config.clone()),
                     _ => Default::default(),
                 };
                 step_span.record("awaiting", "create-row");
-                rows.create_row_with_spec(&req.node, &req.mesh, &req.r#type, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), &tags, &config, storage_persistence, of)
+                rows.create_row_with_spec(&req.location(), &req.mesh, &req.r#type, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), &tags, &config, storage_persistence, of)
                     .await
-                    .map_err(|e| format!("path {:?}, name {:?}: the birth {}'s record was refused at the name; nothing is launched: {e}", &req.node.path, &req.node.name, id.node_id))?;
+                    .map_err(|e| format!("path {:?}, name {:?}: the birth {}'s record was refused at the name; nothing is launched: {e}", &req.path, &req.name, id.node_id))?;
                 done_awaits.push("create-row");
                 step_span.record("awaited", done_awaits.join(",").as_str());
                 *writing = Some(id.node_id.clone());
@@ -1820,8 +1843,8 @@ impl DeploymentPipeline<'_> {
         let initial_properties = if let Some(rows) = &rows {
             let row = rows.written().known_row(&**rows.storage(), &id.node_id).await
                 .map_err(|reason| PipelineError { step: CreateStep::PrepareStorage.name(), reason, code: rdm_core::outcome::Code::FailedPrecondition })?
-                .ok_or_else(|| PipelineError { step: CreateStep::PrepareStorage.name(), reason: format!("path {:?}, name {:?}: exact row {} has no initial properties; nothing is launched", &req.node.path, &req.node.name, id.node_id), code: rdm_core::outcome::Code::FailedPrecondition })?;
-            row.initial_properties.ok_or_else(|| PipelineError { step: CreateStep::PrepareStorage.name(), reason: format!("path {:?}, name {:?}: exact row {} has no launch snapshot", &req.node.path, &req.node.name, id.node_id), code: rdm_core::outcome::Code::FailedPrecondition })?
+                .ok_or_else(|| PipelineError { step: CreateStep::PrepareStorage.name(), reason: format!("path {:?}, name {:?}: exact row {} has no initial properties; nothing is launched", &req.path, &req.name, id.node_id), code: rdm_core::outcome::Code::FailedPrecondition })?;
+            row.initial_properties.ok_or_else(|| PipelineError { step: CreateStep::PrepareStorage.name(), reason: format!("path {:?}, name {:?}: exact row {} has no launch snapshot", &req.path, &req.name, id.node_id), code: rdm_core::outcome::Code::FailedPrecondition })?
         } else {
             req.entry.as_ref().map(|entry| rdm_core::launch::InitialProperties { config: entry.config.clone(), tags: entry.tags.clone() }).unwrap_or_default()
         };
@@ -1834,7 +1857,7 @@ impl DeploymentPipeline<'_> {
             fabric_id: self.template.fabric_id.clone(),
             mesh: req.mesh.clone(),
             r#type: req.r#type.clone(),
-            name: req.node.clone(),
+            path: req.path.clone(), name: req.name.clone(),
             node_id: id.node_id.clone(),
             incarnation: id.incarnation.clone(),
             supersedes: None,
@@ -1867,7 +1890,7 @@ impl DeploymentPipeline<'_> {
                 env.entry(k.clone()).or_insert_with(|| v.clone());
             }
             ResolvedNodeLaunch { mesh: req.mesh.clone().to_owned(), r#type: req.r#type.clone(), secrets: self.template.declared.set_on(&req.r#type), withhold: self.template.declared.names(),
-                node: req.node.clone(),
+                path: req.path.clone(), name: req.name.clone(),
                 deployment_id: id.deployment_id.clone(),
                 executable: self.template.executable.clone(),
                 args: vec![],
@@ -1906,7 +1929,7 @@ impl DeploymentPipeline<'_> {
         let _forget = Forget(self.joins, id.node_id.clone(), build_log(req.build_id.as_ref()), req.attempt);
         let reported = match handle.fact() {
             Some(runtime) => Some(self.joins.expect(Deployed { mesh: req.mesh.clone(), r#type: req.r#type.clone(),
-                name: req.node.clone(),
+                path: req.path.clone(), name: req.name.clone(),
                 node_id: id.node_id.clone(),
                 incarnation: id.incarnation.clone(),
                 supersedes: None,
@@ -1927,16 +1950,16 @@ impl DeploymentPipeline<'_> {
             fact.clone().ok_or_else(|| {
                 format!(
                     "path {:?}, name {:?} (deployment {}): the provider's handle names no exact runtime (a pid needs its start token, a container its immutable id)",
-                    &req.node.path, &req.node.name, id.deployment_id
+                    &req.path, &req.name, id.deployment_id
                 )
             })
         };
         self.step(run, CreateStep::RegisterExactRuntimeHandle.name(), async {
             let f = exact()?;
             if f.deployment_id != id.deployment_id.as_str() {
-                return Err(format!("path {:?}, name {:?}: the handle realises deployment {}, not {}", &req.node.path, &req.node.name, f.deployment_id, id.deployment_id));
+                return Err(format!("path {:?}, name {:?}: the handle realises deployment {}, not {}", &req.path, &req.name, f.deployment_id, id.deployment_id));
             }
-            f.validate().map_err(|e| format!("path {:?}, name {:?}: {e}", &req.node.path, &req.node.name))?;
+            f.validate().map_err(|e| format!("path {:?}, name {:?}: {e}", &req.path, &req.name))?;
             Ok(RuntimeEvidence::of(&f))
         })
         .await?;
@@ -1946,7 +1969,7 @@ impl DeploymentPipeline<'_> {
             if f.control_domain != domain {
                 return Err(format!(
                     "path {:?}, name {:?}: its runtime is in control domain {} (fingerprint), not this provider's {}",
-                    &req.node.path, &req.node.name,
+                    &req.path, &req.name,
                     f.domain_fingerprint(),
                     rdm_core::runtime::fingerprint(&domain)
                 ));
@@ -1958,24 +1981,24 @@ impl DeploymentPipeline<'_> {
             let f = exact()?;
             let (written, dir) = (f.clone(), data_dir.clone());
             // Written and read back on the blocking pool (`blocking::blocking_io`).
-            let back = crate::blocking::blocking_io(move || written.write_record(&dir).map(|()| RuntimeFact::read_record(&dir))).await.map_err(|e| format!("path {:?}, name {:?}: {e}", &req.node.path, &req.node.name))?;
+            let back = crate::blocking::blocking_io(move || written.write_record(&dir).map(|()| RuntimeFact::read_record(&dir))).await.map_err(|e| format!("path {:?}, name {:?}: {e}", &req.path, &req.name))?;
             match back {
                 Some(Ok(back)) if back == f => Ok(RuntimeEvidence::of(&f)),
-                Some(Ok(_)) => Err(format!("path {:?}, name {:?}: {} reads back another runtime", &req.node.path, &req.node.name, data_dir.display())),
-                Some(Err(e)) => Err(format!("path {:?}, name {:?}: {e}", &req.node.path, &req.node.name)),
-                None => Err(format!("path {:?}, name {:?}: {} holds no runtime record after it was written", &req.node.path, &req.node.name, data_dir.display())),
+                Some(Ok(_)) => Err(format!("path {:?}, name {:?}: {} reads back another runtime", &req.path, &req.name, data_dir.display())),
+                Some(Err(e)) => Err(format!("path {:?}, name {:?}: {e}", &req.path, &req.name)),
+                None => Err(format!("path {:?}, name {:?}: {} holds no runtime record after it was written", &req.path, &req.name, data_dir.display())),
             }
         })
         .await?;
         let fact = exact().map_err(|reason| PipelineError { step: CreateStep::MakeRuntimeFactAvailableToBirth.name(), reason , code: rdm_core::outcome::Code::FailedPrecondition })?;
         let bound: Bound = self
             .step_with(run, CreateStep::WaitForBind.name(), async {
-                let mut reported = reported.ok_or_else(|| format!("path {:?}, name {:?}: the handle names no exact runtime to verify a join against", &req.node.path, &req.node.name))?;
+                let mut reported = reported.ok_or_else(|| format!("path {:?}, name {:?}: the handle names no exact runtime to verify a join against", &req.path, &req.name))?;
                 let until = Instant::now() + self.timeouts.bind;
                 let wait = super::deadline::Deadline::after(self.timeouts.bind);
                 loop {
                     if let Some(d) = reported.borrow().clone() {
-                        return Bound::of(&d).map_err(|e| StepFailure::from(format!("path {:?}, name {:?}: {e}", &req.node.path, &req.node.name)));
+                        return Bound::of(&d).map_err(|e| StepFailure::from(format!("path {:?}, name {:?}: {e}", &req.path, &req.name)));
                     }
                     if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle, super::deadline::Deadline::step().within(Some(wait))).await {
                         let detail = self.provider.failure_detail(&handle, &data_dir, super::deadline::Deadline::step()).await;
@@ -1983,13 +2006,13 @@ impl DeploymentPipeline<'_> {
                     }
                     let left = until.saturating_duration_since(Instant::now());
                     if left.is_zero() {
-                        return Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!("path {:?}, name {:?} did not report where it bound (JoinNode) within {:?}", &req.node.path, &req.node.name, self.timeouts.bind)));
+                        return Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!("path {:?}, name {:?} did not report where it bound (JoinNode) within {:?}", &req.path, &req.name, self.timeouts.bind)));
                     }
                     let _ = tokio::time::timeout(left.min(Duration::from_millis(100)), reported.changed()).await;
                 }
             })
             .await?;
-        let mut node = Node::allocated(req.node.clone(), req.mesh.clone(), &req.r#type);
+        let mut node = Node::allocated(req.location(), req.mesh.clone(), &req.r#type);
         node.node_id = id.node_id.clone();
         node.endpoint_id = Some(endpoint_id);
         node.incarnation_id = Some(id.incarnation.clone());
@@ -2026,7 +2049,7 @@ impl DeploymentPipeline<'_> {
         // or, this process having restarted since, the one kept durable at admission.
         let published = Publication { runtime: Some(fact.clone()), data_dir: node.data_dir.clone() };
         self.step_with(run, CreateStep::WaitForMeshJoin.name(), async {
-            let mut admitted = admitted.ok_or_else(|| format!("path {:?}, name {:?}: the handle names no exact runtime to verify a join against", &req.node.path, &req.node.name))?;
+            let mut admitted = admitted.ok_or_else(|| format!("path {:?}, name {:?}: the handle names no exact runtime to verify a join against", &req.path, &req.name))?;
             let until = Instant::now() + self.timeouts.join;
             loop {
                 let held = admitted.borrow().clone().map(|r| r.digest).filter(|d| d.node.node_id == id.node_id && d.node.incarnation == id.incarnation).map(|d| Publication { runtime: d.node.runtime.clone(), data_dir: d.data_dir.clone() });
@@ -2034,7 +2057,7 @@ impl DeploymentPipeline<'_> {
                 // admitted birth's runtime row, kept durable at admission (`Joins::keep_admitted`).
                 let reported = match held {
                     Some(p) => Some(p),
-                    None => self.joins.durable_report(&id.node_id, &id.incarnation).await.map_err(|e| StepFailure::from(format!("path {:?}, name {:?}: {e}", &req.node.path, &req.node.name)))?.map(|row| Publication { runtime: Some(row.runtime), data_dir: row.data_dir }),
+                    None => self.joins.durable_report(&id.node_id, &id.incarnation).await.map_err(|e| StepFailure::from(format!("path {:?}, name {:?}: {e}", &req.path, &req.name)))?.map(|row| Publication { runtime: Some(row.runtime), data_dir: row.data_dir }),
                 };
                 if let Some(reported) = reported {
                     if reported == published {
@@ -2042,7 +2065,7 @@ impl DeploymentPipeline<'_> {
                     }
                     return Err(StepFailure::coded(rdm_core::outcome::Code::FailedPrecondition, format!(
                         "path {:?}, name {:?} incarnation {} reported runtime {} with data dir {:?}, not the runtime {} made available with data dir {:?}",
-                        &req.node.path, &req.node.name,
+                        &req.path, &req.name,
                         id.incarnation,
                         reported.runtime.as_ref().map_or_else(|| "none".to_string(), |f| f.locator_fingerprint()),
                         reported.data_dir,
@@ -2057,7 +2080,7 @@ impl DeploymentPipeline<'_> {
                 }
                 let left = until.saturating_duration_since(Instant::now());
                 if left.is_zero() {
-                    return Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!("no validated report of path {:?}, name {:?} incarnation {} is held within {:?}", &req.node.path, &req.node.name, id.incarnation, self.timeouts.join)));
+                    return Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!("no validated report of path {:?}, name {:?} incarnation {} is held within {:?}", &req.path, &req.name, id.incarnation, self.timeouts.join)));
                 }
                 let _ = tokio::time::timeout(left.min(Duration::from_millis(100)), admitted.changed()).await;
             }
@@ -2071,7 +2094,7 @@ impl DeploymentPipeline<'_> {
                 let receipts = self.builds.read_build(run_build).await.map_err(|e| format!("reading {run_build}'s receipts before Ready: {e}"))?.steps;
                 let missing = ready_prerequisites_missing(&receipts, run_build, &self.builds.receipt_mesh(), &run_operation, run_attempt);
                 if !missing.is_empty() {
-                    return Err(format!("path {:?}, name {:?} cannot be Ready: no Complete receipt for {}", &req.node.path, &req.node.name, missing.join(", ")).into());
+                    return Err(format!("path {:?}, name {:?} cannot be Ready: no Complete receipt for {}", &req.path, &req.name, missing.join(", ")).into());
                 }
             }
             let until = Instant::now() + self.timeouts.ready;
@@ -2105,9 +2128,9 @@ impl DeploymentPipeline<'_> {
     /// stops it and nothing is deleted.
     pub fn delete_connections<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("node.connection.delete", req.build_id.as_ref(), &req.node.name, req.attempt);
+        let span = self.pipeline_span("node.connection.delete", req.build_id.as_ref(), &req.node.location(), req.attempt);
         Box::pin(async move {
-            let name = &req.node.name;
+            let name = &req.node.location();
             let mut run = self.begin(req.build_id.as_ref(), req.attempt, name, req.operation.clone()).await?;
             let node = req.node.clone();
             let ctx = CommandContext { build_id: build_log(run.build_id), attempt: run.attempt, operation: run.operation.clone() };
@@ -2134,9 +2157,9 @@ impl DeploymentPipeline<'_> {
     /// runtime exit is asked and no departure is published.
     pub fn stop<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("stop", req.build_id.as_ref(), &req.node.name, req.attempt);
+        let span = self.pipeline_span("stop", req.build_id.as_ref(), &req.node.location(), req.attempt);
         Box::pin(async move {
-            let name = &req.node.name;
+            let name = &req.node.location();
             let mut run = self.begin(req.build_id.as_ref(), req.attempt, name, req.operation.clone()).await?;
             let mut node = req.node.clone();
             self.stop_steps_with(&mut run, &mut node, &req.handle, RequiredCompletion::Stopped, StopEnd::Stop { publish_stopped: true }).await?;
@@ -2155,9 +2178,9 @@ impl DeploymentPipeline<'_> {
     /// birth, whose reply is `Started` once it rejoined, then the wait for it to report ready.
     pub fn start<'a>(&'a self, req: &'a StartRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("start", req.build_id.as_ref(), &req.node.name, req.attempt);
+        let span = self.pipeline_span("start", req.build_id.as_ref(), &req.node.location(), req.attempt);
         Box::pin(async move {
-            let name = &req.node.name;
+            let name = &req.node.location();
             let mut run = self.begin(req.build_id.as_ref(), req.attempt, name, req.operation.clone()).await?;
             let mut node = req.node.clone();
             self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
@@ -2243,9 +2266,9 @@ impl DeploymentPipeline<'_> {
     /// digest does (`<path>`), by its exact `(node.id, incarnation)`.
     pub fn delete_stopped<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("delete", req.build_id.as_ref(), &req.node.name, req.attempt);
+        let span = self.pipeline_span("delete", req.build_id.as_ref(), &req.node.location(), req.attempt);
         Box::pin(async move {
-            let name = &req.node.name;
+            let name = &req.node.location();
             let mut run = self.begin(req.build_id.as_ref(), req.attempt, name, req.operation.clone()).await?;
             let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: DeleteStep::NodeDeleting.name(), reason: format!("path {name_path:?}, name {name_name:?} has no known birth", name_path = &name.path, name_name = &name.name) , code: rdm_core::outcome::Code::FailedPrecondition })?;
             let op = LifecycleOp { r#type: req.node.r#type.clone(), mesh: req.node.mesh.clone(),
@@ -2254,7 +2277,7 @@ impl DeploymentPipeline<'_> {
                 operation: run.operation.clone(),
                 node_id: req.node.node_id.clone(),
                 incarnation: birth,
-                name: name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
                 event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
                 traceparent: None,
                 tracestate: None,
@@ -2276,9 +2299,9 @@ impl DeploymentPipeline<'_> {
     /// departure and Deleted row stand: nothing else is written.
     pub fn terminate_returned<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("terminate", req.build_id.as_ref(), &req.node.name, req.attempt);
+        let span = self.pipeline_span("terminate", req.build_id.as_ref(), &req.node.location(), req.attempt);
         Box::pin(async move {
-            let name = &req.node.name;
+            let name = &req.node.location();
             let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: DeleteStep::TerminateRuntime.name(), reason: format!("path {name_path:?}, name {name_name:?} has no known birth", name_path = &name.path, name_name = &name.name), code: rdm_core::outcome::Code::FailedPrecondition })?;
             let mut run = self.begin(req.build_id.as_ref(), req.attempt, name, req.operation.clone()).await?;
             let receipt = self.terminate_step_when(&mut run, &req.node, &req.handle, Terminate::Unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?;
@@ -2292,7 +2315,7 @@ impl DeploymentPipeline<'_> {
     /// the birth's runtime, the proof its NodeDeleted was published from.
     pub fn delete_node<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("delete", req.build_id.as_ref(), &req.node.name, req.attempt);
+        let span = self.pipeline_span("delete", req.build_id.as_ref(), &req.node.location(), req.attempt);
         Box::pin(self.delete_steps(req, Terminate::Unreached).instrument(span))
     }
 
@@ -2302,7 +2325,7 @@ impl DeploymentPipeline<'_> {
     /// node-runtime-inspect.md "What follows"), never left as node recovery leaves it.
     pub fn delete_explicit<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("delete", req.build_id.as_ref(), &req.node.name, req.attempt);
+        let span = self.pipeline_span("delete", req.build_id.as_ref(), &req.node.location(), req.attempt);
         Box::pin(self.delete_steps(req, Terminate::Explicit).instrument(span))
     }
 
@@ -2310,12 +2333,12 @@ impl DeploymentPipeline<'_> {
     /// Q148): the unreached delete, its runtime read and never terminated.
     pub fn delete_from_backbone<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("delete", req.build_id.as_ref(), &req.node.name, req.attempt);
+        let span = self.pipeline_span("delete", req.build_id.as_ref(), &req.node.location(), req.attempt);
         Box::pin(self.delete_steps(req, Terminate::Backbone).instrument(span))
     }
 
     async fn delete_steps(&self, req: &DeleteRequest, unreached: Terminate) -> Result<TerminalReceipt, PipelineError> {
-        let name = &req.node.name;
+        let name = &req.node.location();
         let mut run = self.begin(req.build_id.as_ref(), req.attempt, name, req.operation.clone()).await?;
         let mut node = req.node.clone();
         let handle = &req.handle;
@@ -2328,7 +2351,7 @@ impl DeploymentPipeline<'_> {
             operation: run.operation.clone(),
             node_id: node.node_id.clone(),
             incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: DeleteStep::NodeDeleting.name(), reason: format!("path {name_path:?}, name {name_name:?} has no known birth", name_path = &name.path, name_name = &name.name) , code: rdm_core::outcome::Code::FailedPrecondition })?,
-            name: name.clone(),
+            path: name.path.clone(), name: name.name.clone(),
             event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
             traceparent: None,
             tracestate: None,
@@ -2419,9 +2442,9 @@ impl DeploymentPipeline<'_> {
     /// is [`Self::delete_node`]: the provider's `Exited` before node.deleted.
     pub fn delete_own<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("delete", req.build_id.as_ref(), &req.node.name, req.attempt);
+        let span = self.pipeline_span("delete", req.build_id.as_ref(), &req.node.location(), req.attempt);
         Box::pin(async move {
-            let name = &req.node.name;
+            let name = &req.node.location();
             let mut run = self.begin(req.build_id.as_ref(), req.attempt, name, req.operation.clone()).await?;
             let mut node = req.node.clone();
             let op = LifecycleOp { r#type: req.node.r#type.clone(), mesh: node.mesh.clone(),
@@ -2430,7 +2453,7 @@ impl DeploymentPipeline<'_> {
                 operation: run.operation.clone(),
                 node_id: node.node_id.clone(),
                 incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: DeleteStep::NodeDeleting.name(), reason: format!("path {name_path:?}, name {name_name:?} has no known birth", name_path = &name.path, name_name = &name.name), code: rdm_core::outcome::Code::FailedPrecondition })?,
-                name: name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
                 event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
                 traceparent: None,
                 tracestate: None,
@@ -2470,7 +2493,7 @@ impl DeploymentPipeline<'_> {
             operation: ctx.operation.clone(),
             node_id: node.node_id.clone(),
             incarnation: node.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", node.node_id))?,
-            name: node.name.clone(),
+            path: node.path.clone(), name: node.name.clone(),
             event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
             traceparent: None,
             tracestate: None,
@@ -2599,7 +2622,7 @@ impl DeploymentPipeline<'_> {
     /// runtime the provider reads `Running` at the step's instant, and on any other read terminates
     /// nothing and waits for nothing (node-recovery.md step 3); the receipt names what it read.
     async fn terminate_step_when(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle, when: Terminate, mut mode: TerminationMode) -> Result<TerminalReceipt, PipelineError> {
-        let name = node.name.clone();
+        let name = node.location();
         self.step_with(run, DeleteStep::TerminateRuntime.name(), async {
             // One deadline for the step's inspection, terminate and re-inspection (Q304): a graceful
             // stop's grace is inside it, and it never resets within the step.
@@ -2609,7 +2632,7 @@ impl DeploymentPipeline<'_> {
             };
             let receipt = |exit_code: Option<i32>, verdict: Option<&str>| -> Result<TerminalReceipt, StepFailure> {
                 Ok(TerminalReceipt {
-                    node: name.clone(),
+                    path: name.path.clone(), name: name.name.clone(),
                     node_id: node.node_id.to_string(),
                     incarnation_id: node.incarnation_id.as_ref().map(|i| i.to_string()).ok_or_else(|| format!("path {name_path:?}, name {name_name:?} has no known birth: the receipt names no birth", name_path = &name.path, name_name = &name.name))?,
                     runtime: handle.fact().as_ref().map(RuntimeIdentity::of),
@@ -2725,7 +2748,7 @@ impl DeploymentPipeline<'_> {
         };
         let reason = if status == DeploymentStatus::Unknown { "the provider cannot read the exact runtime's state" } else { "" };
         let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
-        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.template.executor(), handle = ?handle, caller, verdict, exit_code, reason).in_scope(|| tracing::info!("{why}"));
+        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.template.executor(), handle = ?handle, caller, verdict, exit_code, reason).in_scope(|| tracing::info!("{why}"));
         status
     }
 
@@ -2746,7 +2769,7 @@ impl DeploymentPipeline<'_> {
             "rdm.node_admin.node.delete.via-os-stopped",
             build_id = %build_span(run.build_id),
             attempt = run.attempt,
-            node_path = %node.name.path, node_name = %node.name.name,
+            node_path = %node.path, node_name = %node.name,
             node_id = %node.node_id,
             incarnation_id = %incarnation,
             skipped = "StopNode AwaitNodeLeft",
@@ -2757,7 +2780,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// The directory of `node`'s birth as it is now: the data dir its record names, else the
-    /// root's `<path>-<node_id>`.
+    /// root's `<node_id>`.
     pub(crate) fn birth_dir(&self, node: &Node) -> PathBuf {
         node.data_dir.as_deref().map(PathBuf::from).unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &node.node_id))
     }
@@ -2847,7 +2870,7 @@ mod tests {
     #[test]
     fn terminal_receipt_keeps_path_and_name_separate() {
         let receipt = TerminalReceipt {
-            node: PathName::new("arbitrary.location", "worker-old").unwrap(),
+            path: "arbitrary.location".into(), name: "worker-old".into(),
             node_id: NodeId::mint().to_string(), incarnation_id: IncarnationId::mint().to_string(),
             runtime: None, exit_code: Some(0), verdict: Some("exited".into()), data_dir: None,
         };
@@ -2961,7 +2984,7 @@ mod tests {
             "process:cell".into()
         }
         async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, super::super::provider::DeployError> {
-            Err(super::super::provider::DeployError::Spawn { node: spec.node.clone(), reason: "this provider only answers inspections".into() })
+            Err(super::super::provider::DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: "this provider only answers inspections".into() })
         }
         async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), super::super::provider::DeployError> {
             self.terminated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3007,7 +3030,7 @@ mod tests {
             fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root,
@@ -3063,7 +3086,7 @@ mod tests {
             "process:cell".into()
         }
         async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, super::super::provider::DeployError> {
-            Err(super::super::provider::DeployError::Spawn { node: spec.node.clone(), reason: "this provider only answers inspections".into() })
+            Err(super::super::provider::DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: "this provider only answers inspections".into() })
         }
         async fn terminate(&self, _: &DeploymentHandle, mode: TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), super::super::provider::DeployError> {
             self.terminated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3318,7 +3341,7 @@ mod tests {
         }
         async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, super::super::provider::DeployError> {
             self.envs.lock().unwrap().push(spec.env.clone());
-            Err(super::super::provider::DeployError::Spawn { node: spec.node.clone(), reason: "this cell launches nothing".into() })
+            Err(super::super::provider::DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: "this cell launches nothing".into() })
         }
         async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), super::super::provider::DeployError> {
             Ok(())
@@ -3350,7 +3373,7 @@ mod tests {
         builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: rdm_core::framing::Birth { node_id: template.launcher.node_id.clone(), incarnation: template.launcher.incarnation.clone() } }).await.unwrap();
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let create = |node: PathName| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &node), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, node, spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let create = |node: PathName| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &node), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: node.path.clone(), name: node.name.clone(), spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let _ = pipeline.create(&create(PathName::new("mesh1.node", "1").unwrap())).await.map(|_| ()).expect_err("the provider launches nothing");
         template.roots.replace(vec![a, b]);
         let _ = pipeline.create(&create(PathName::new("mesh1.node", "2").unwrap())).await.map(|_| ()).expect_err("the provider launches nothing");
@@ -3386,7 +3409,7 @@ mod tests {
             rdm_core::runtime::process_control_domain().expect("this process has a control domain")
         }
         async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, super::super::provider::DeployError> {
-            let refused = |reason: String| super::super::provider::DeployError::Spawn { node: spec.node.clone(), reason };
+            let refused = |reason: String| super::super::provider::DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason };
             let fact = RuntimeFact::of_this_process(&spec.deployment_id.to_string()).map_err(refused)?;
             let (pid, start) = match fact.locator {
                 rdm_core::RuntimeLocator::Process { pid, start } => (pid, start),
@@ -3400,7 +3423,7 @@ mod tests {
                 fabric_id: rdm_core::FabricId::mint(),
                 node: rdm_core::MeshNode { mesh: spec.mesh.clone(), r#type: spec.r#type.clone(),
                     node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?).map_err(|e| refused(e.to_string()))?,
-                    name: spec.node.clone(),
+                    path: spec.path.clone(), name: spec.name.clone(),
                     endpoint_id: EndpointId(key.public().to_string()),
                     transport_addr: "127.0.0.1:34567".parse().unwrap(),
                     incarnation: IncarnationId::parse(&env(rdm_core::launch::ENV_INCARNATION)?).map_err(|e| refused(e.to_string()))?,
@@ -3464,7 +3487,7 @@ mod tests {
         builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: rdm_core::framing::Birth { node_id: template.launcher.node_id.clone(), incarnation: template.launcher.incarnation.clone() } }).await.unwrap();
         let timeouts = Timeouts { join: Duration::from_millis(1500), ready: Duration::from_millis(300), ..Timeouts::default() };
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let err = pipeline.create(&req).await.map(|_| ()).expect_err("nothing answers Ready: the create ends at WaitForNodeReady");
         let steps: Vec<(String, StepOutcome)> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| (r.step, r.outcome)).collect();
         assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "WaitForMeshJoin completes from the accepted report with no digest in any view: {err}; receipts {steps:?}");

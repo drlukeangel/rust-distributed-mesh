@@ -82,7 +82,7 @@ pub(crate) fn missing_members(planned: &[PathName], me: &crate::model::NodeId, c
             }
             continue;
         }
-        let matches = |d: &&MeshDigest| birth.as_ref().map_or(&d.node.name == path, |b| d.node.node_id == b.node_id && d.node.incarnation == b.incarnation);
+        let matches = |d: &&MeshDigest| birth.as_ref().map_or(&d.node.location() == path, |b| d.node.node_id == b.node_id && d.node.incarnation == b.incarnation);
         let live = |d: &&MeshDigest| matches(d) && !deleted(d.node.node_id.as_str());
         let here: Vec<&MeshDigest> = heard.iter().filter(live).collect();
         if birth.is_some() && here.iter().any(|d| d.status == MemberStatus::Ready) {
@@ -154,7 +154,7 @@ mod tests {
             fabric_id: FabricId::mint(),
             node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: crate::model::NodeId::mint(),
-                name: p.clone(),
+                path: p.path.clone(), name: p.name.clone(),
                 endpoint_id: crate::model::EndpointId(String::new()),
                 transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
                 incarnation: IncarnationId::mint(),
@@ -187,7 +187,7 @@ mod tests {
         let no_stop = |_: &PathName| false;
         let resolve = |at: &PathName| {
             if at == &a1 { return Some(me.clone()); }
-            [&ready, &pending, &before_opening].into_iter().find(|d| &d.node.name == at)
+            [&ready, &pending, &before_opening].into_iter().find(|d| &d.node.location() == at)
                 .map(|d| Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() })
         };
         let subject = |d: &MeshDigest| MissingSubject::Node(d.node.node_id.clone());

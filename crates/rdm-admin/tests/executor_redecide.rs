@@ -143,7 +143,7 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rdm_core::Runtime
         fabric_id: rdm_core::FabricId::parse(&env("RDM_FABRIC_ID")).unwrap(),
         node: rdm_core::MeshNode { mesh: spec.mesh.clone(), r#type: spec.r#type.clone(),
             node_id: NodeId::parse(&env("RDM_NODE_ID")).unwrap(),
-            name: rdm_core::PathName::new(env("RDM_NODE_PATH"), env("RDM_NODE_NAME")).unwrap(),
+            path: (env("RDM_NODE_PATH")).to_string(), name: (env("RDM_NODE_NAME")).to_string(),
             endpoint_id: rdm_core::EndpointId(key.public().to_string()),
             transport_addr: "127.0.0.1:34567".parse().unwrap(),
             incarnation: IncarnationId::parse(&env("RDM_INCARNATION_ID")).unwrap(),
@@ -273,7 +273,7 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![(key.into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.to_path_buf(),
             store_dir: data_root.to_path_buf(),
@@ -317,7 +317,7 @@ async fn accepted_build(builds: &MemoryBuildStateAdapter) -> BuildId {
 }
 
 fn request(build_id: &BuildId, attempt: u32, node: &PathName) -> CreateRequest {
-    CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node)), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt, node: node.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None }
+    CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node)), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt, path: node.path.clone(), name: node.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None }
 }
 
 /// Attempt 1 by `lost`, killed at `dies`.

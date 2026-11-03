@@ -55,7 +55,7 @@ async fn a_mesh_primarys_spent_call_marks_the_birth_and_its_tick_investigates_it
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let path = PathName::new("mesh1.node", "1").unwrap();
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
-    let node = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
+    let node = mesh.iter().find(|n| n.location() == path).cloned().expect("node.get lists the node");
     let primary = mesh.iter().find(|n| n.is_primary && rdm_core::is_node_admin(&n.r#type)).cloned().expect("node.get names mesh1's primary");
     let node_id = node.node_id.to_string();
 

@@ -27,7 +27,7 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
             fabric_id: fabric.clone(),
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -55,7 +55,7 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
         assert!(admin.config_updates.lock().unwrap().is_empty(), "own properties never travel to the mesh-primary");
         assert_eq!(running.topology_view.config(), Some(config.clone()));
         let addr = running.topology_view.endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the node's address");
-        admin.observer.resolver.insert(rdm_transport::ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), incarnation: launch.incarnation.clone(), transport_addr: addr });
+        admin.observer.resolver.insert(rdm_transport::ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type, node_id: launch.node_id.clone(), path: launch.path.clone(), name: launch.name.clone(), endpoint_id: key.public(), incarnation: launch.incarnation.clone(), transport_addr: addr });
         let target = rdm_transport::NodeTarget::ExactNode(launch.node_id.clone());
         let caller: BTreeMap<String, String> = [("source".into(), "caller".into())].into();
         let apply = StatusRequest::ApplyNodeConfig { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), config: caller.clone() };
@@ -178,7 +178,7 @@ async fn a_lone_fabric_primary_keeps_its_own_config_across_its_restart() {
     assert_eq!(restarted, fp, "the start on the data dir is at its own row's (path, name)");
     estate.enter(&restarted).await;
     let after = rdm_test::estate::wait_for("the restarted fabric-primary is ready at its (path, name)", Duration::from_secs(120), || async {
-        estate.node_views().await.into_iter().find(|n| n.name == fp && n.node_id != before.node_id && n.status == rdm_client::NodeStatus::Ready)
+        estate.node_views().await.into_iter().find(|n| n.location() == fp && n.node_id != before.node_id && n.status == rdm_client::NodeStatus::Ready)
     })
     .await;
     estate.artifact("lone-fabric-primary-restart.json", &serde_json::json!({"before": before, "config": config, "after": after}));

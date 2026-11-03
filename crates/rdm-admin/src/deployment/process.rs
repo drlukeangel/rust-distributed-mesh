@@ -404,7 +404,7 @@ fn spawn_gated(_: &mut std::process::Command, _: impl FnOnce(u32) -> Result<(), 
 
 /// [`ProcessDeploymentProvider::spawn`] on the blocking pool: the launch's pid and start token.
 fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<HashMap<u32, Launched>>>, exits: &std::sync::Arc<tokio::sync::watch::Sender<u64>>, failpoints: &Failpoints) -> Result<(u32, Option<u64>), DeployError> {
-    let err = |reason: String| DeployError::Spawn { node: spec.node.clone(), reason };
+    let err = |reason: String| DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason };
     std::fs::create_dir_all(&spec.data_dir).map_err(|e| err(format!("data dir {}: {e}", spec.data_dir.display())))?;
     let log = |name: &str| {
         std::fs::OpenOptions::new()
@@ -499,7 +499,7 @@ enum OnDisk {
 /// never launched.
 fn find_on_disk(spec: &ResolvedNodeLaunch) -> Result<OnDisk, DeployError> {
     let path = spec.data_dir.join(DEPLOYMENT_FILE);
-    let named = |reason: String| DeployError::Spawn { node: spec.node.clone(), reason: format!("{}: {reason}", path.display()) };
+    let named = |reason: String| DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: format!("{}: {reason}", path.display()) };
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(OnDisk::NeverLaunched),
@@ -870,7 +870,7 @@ mod tests {
 
     fn launch(dir: &std::path::Path) -> ResolvedNodeLaunch {
         ResolvedNodeLaunch { mesh: "mesh1".to_owned(), r#type: "node".into(), secrets: Default::default(), withhold: Vec::new(),
-            node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             deployment_id: DeploymentId::mint(),
             executable: "/bin/sleep".into(),
             args: vec!["30".into()],

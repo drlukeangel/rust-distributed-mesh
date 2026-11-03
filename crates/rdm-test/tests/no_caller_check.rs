@@ -52,7 +52,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
             fabric_id: fabric,
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -79,7 +79,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         let (born, _) = digest_view.get(launch.node_id.as_str()).unwrap();
         let resolved = ResolvedNode { mesh: born.node.mesh.clone(), r#type: born.node.r#type,
             node_id: born.node.node_id.clone(),
-            name: born.node.name.clone(),
+            path: born.node.path.clone(), name: born.node.name.clone(),
             endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
             incarnation: born.node.incarnation.clone(),
             transport_addr: born.node.transport_addr,

@@ -5,14 +5,14 @@ use rdm_core::connections::{resolve, CarrierPolicy, ConnectionEnd, ConnectionKin
 use rdm_core::reconnect::{
     deterministic_jitter, due, first_failure, next_failure, owed_direct_restored, reconnect_backoff, reconnect_plan, DIRECT_RESTORED,
 };
-use rdm_core::{IncarnationId, NodeId, PathName};
+use rdm_core::{IncarnationId, NodeId};
 
 fn rpc() -> CarrierPolicy {
     CarrierPolicy::Proxy { carrier_type: "node".into() }
 }
 
 fn end(ordinal: u32, incarnation: &str) -> ConnectionEnd {
-    ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), name: PathName::numbered("mesh1", "node", ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(incarnation)).unwrap()) }
+    ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), path: format!("{}.{}", "mesh1", "node"), name: (ordinal).to_string(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(incarnation)).unwrap()) }
 }
 
 fn held_for(own: &ConnectionEnd) -> ConnectionsHeld {

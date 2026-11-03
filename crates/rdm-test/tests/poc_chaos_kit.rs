@@ -112,7 +112,7 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
     // Either admin may execute: arm the same cut on both doors.
     let mut doors = Vec::new();
     for n in estate.node_views().await.iter().filter(|n| n.r#type == "node-admin") {
-        doors.push(Door::at(&estate, &n.name).await);
+        doors.push(Door::at(&estate, &n.location()).await);
     }
     let id = "poc:deploy-runtime";
     let spec = json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "node": rdm_core::OperationSubject::Location(rdm_core::PathName::new("mesh1.node", "1").unwrap())});
@@ -164,12 +164,12 @@ async fn poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric() 
     let want: std::collections::BTreeSet<PathName> = [PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node-admin", "2").unwrap(), PathName::new("mesh1.node", "1").unwrap()].into();
     let before = estate.settles_to_named(&want, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let primary = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).unwrap();
+    let primary = before.iter().find(|n| n.is_fabric_primary).map(|n| n.location()).unwrap();
     let primary_dir = if primary == PathName::new("mesh1.node-admin", "1").unwrap() { estate.bootstrap_data_dir("mesh1") } else { PathBuf::from(estate.data_dir(&primary).await) };
     let rpc_id = estate.node_view(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await.node_id;
     let mut admin_pids = Vec::new();
-    for admin in before.iter().filter(|n| n.r#type == "node-admin" && n.name != PathName::new("mesh1.node-admin", "1").unwrap()) {
-        admin_pids.push(estate.pid_of(&admin.name).await);
+    for admin in before.iter().filter(|n| n.r#type == "node-admin" && n.location() != PathName::new("mesh1.node-admin", "1").unwrap()) {
+        admin_pids.push(estate.pid_of(&admin.location()).await);
     }
     for pid in admin_pids {
         estate.kill_pid(pid as u32);

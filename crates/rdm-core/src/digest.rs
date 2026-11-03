@@ -1,7 +1,6 @@
 //! What a node publishes about itself on the fabric's topology topic.
 
 use crate::ids::{EndpointId, FabricId, IncarnationId, NodeId, MeshId};
-use crate::path::PathName;
 use crate::runtime::RuntimeFact;
 use serde::{Deserialize, Serialize};
 
@@ -14,8 +13,10 @@ pub struct MeshNode {
     pub r#type: String,
     /// The node's minted id.
     pub node_id: NodeId,
-    /// The node's `(path, name)`.
-    pub name: PathName,
+    /// The node's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The node's fabric endpoint id.
     pub endpoint_id: EndpointId,
     /// The one address of the birth's Iroh endpoint.
@@ -27,6 +28,11 @@ pub struct MeshNode {
     /// This birth's exact runtime (`runtime`): immutable for the incarnation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimeFact>,
+}
+
+impl MeshNode {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// A member's status: set by its mesh-primary alone (states.md "Who sets each state") and carried to
@@ -196,7 +202,7 @@ mod tests {
     fn a_birth_round_trips_as_json_for_gossip() {
         let a = MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::mint(),
-            name: crate::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:7000".parse().unwrap(),
             incarnation: IncarnationId::mint(),

@@ -85,8 +85,10 @@ pub struct SigningCertDates {
 pub struct BirthFacts {
     /// The birth.
     pub incarnation_id: IncarnationId,
-    /// The `(path, name)` the birth held when its first fact was written.
-    pub name: PathName,
+    /// The path the birth held when its first fact was written.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The states the birth declared and its authority applied in its current cycle.
     #[serde(default)]
     pub declared: BTreeSet<NodeState>,
@@ -127,9 +129,14 @@ pub struct BirthFacts {
 }
 
 impl BirthFacts {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
+}
+
+impl BirthFacts {
     /// A birth that holds no fact yet.
     pub fn new(incarnation_id: IncarnationId, name: PathName) -> Self {
-        Self { incarnation_id, name, declared: BTreeSet::new(), operations: Vec::new(), silence: None, data_dir_lost: None, data_dir_unreadable: None, cert: None, signing_cert: None, is_primary: None, is_fabric_primary: None, stopped_at_rafka_ms: None }
+        Self { incarnation_id, path: name.path.clone(), name: name.name.clone(), declared: BTreeSet::new(), operations: Vec::new(), silence: None, data_dir_lost: None, data_dir_unreadable: None, cert: None, signing_cert: None, is_primary: None, is_fabric_primary: None, stopped_at_rafka_ms: None }
     }
 
     /// The greatest state declared in the birth's current cycle.
@@ -172,14 +179,21 @@ pub struct RuntimeRow {
     pub r#type: String,
     /// The node's minted id.
     pub node_id: NodeId,
-    /// The node's `(path, name)`.
-    pub name: PathName,
+    /// The node's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The incarnation of the birth.
     pub incarnation_id: IncarnationId,
     /// The runtime the birth ran in.
     pub runtime: rdm_core::RuntimeFact,
     /// The data dir the birth reported: where its process runtime records an exit code.
     pub data_dir: Option<String>,
+}
+
+impl RuntimeRow {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 impl RuntimeRow {
@@ -203,8 +217,10 @@ pub struct NodeRow {
     pub mesh: String,
     /// The explicitly declared type.
     pub r#type: String,
-    /// The node's `(path, name)`.
-    pub name: PathName,
+    /// The node's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The node that held the name when the row was written.
     pub node_id: NodeId,
     /// The node's status: `Deleted` once its runtime exit is proven.
@@ -223,13 +239,13 @@ pub struct NodeRow {
     /// It includes application knowledge from the same read as recovered config and tags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_properties: Option<rdm_core::launch::InitialProperties>,
-    /// The `(path, name)` a rename moved this row from (proposal node-properties-own-commands.md §2.1
-    /// "Claim and move"), written by the put at the new key. While the key it names still holds this
+    /// The name a rename moved this row from, at its unchanged path (node-name-update.md "Check and
+    /// move": `renamed_from: <old name>`), written by the put at the new key. While the key it names still holds this
     /// row's node, the release of that key is pending and the writer that meets the row releases it
     /// (`rdm_admin::node_rows::finish_release`); once that key no longer holds the node it says nothing,
     /// so it is never cleared. A row no rename wrote carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub renamed_from: Option<PathName>,
+    pub renamed_from: Option<String>,
     /// The original pair of this exact subject retained by a replacement. Independent of the
     /// most recent claim release; cleared only when the replacement rolls back to this pair.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -285,6 +301,11 @@ pub struct NodeRow {
     pub writer: Option<BirthRef>,
 }
 
+impl NodeRow {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
+}
+
 /// The application types a birth declared at join, on the node's own part of its record (Q333).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppTypes {
@@ -318,7 +339,7 @@ pub struct Allocation {
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
     pub fn new(name: PathName, mesh: impl Into<String>, r#type: &str, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { name, mesh: mesh.into(), r#type: r#type.to_string(), node_id, status, allocated: None, initial_properties: None, renamed_from: None, replacement_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, topology_storage_provider: None, writer: None }
+        Self { path: name.path.clone(), name: name.name.clone(), mesh: mesh.into(), r#type: r#type.to_string(), node_id, status, allocated: None, initial_properties: None, renamed_from: None, replacement_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, topology_storage_provider: None, writer: None }
     }
 
     /// Write `to` as the node's status, set by its mesh-primary at the transition states.md "Who sets
@@ -374,12 +395,12 @@ impl NodeRow {
 
     /// The node's path (`<mesh>.<kind>`), separate from its name within that path.
     pub fn path(&self) -> String {
-        self.name.path()
+        self.path.clone()
     }
 
     /// The node's name within its path (an ordinary name, or `<name>-old` for an explicitly replaced predecessor).
     pub fn node_name(&self) -> String {
-        self.name.name()
+        self.name.clone()
     }
 
     /// The facts of the birth `incarnation_id`, if the record keeps them.
@@ -465,7 +486,7 @@ impl NodeRowsStorage for FileNodeRows {
     }
     async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError> {
         let rows = self.records.latest_of(RECORD_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect::<Result<Vec<NodeRow>, _>>()?;
-        Ok(rows.into_iter().filter(|r| r.name == *name).collect())
+        Ok(rows.into_iter().filter(|r| r.location() == *name).collect())
     }
 }
 
@@ -569,7 +590,7 @@ impl NodesStorage for MemoryNodesStorage {
         Ok(self.properties.lock().unwrap().get(node_id).cloned())
     }
     async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError> {
-        Ok(self.records.lock().unwrap().values().filter(|r| r.name == *name).cloned().collect())
+        Ok(self.records.lock().unwrap().values().filter(|r| r.location() == *name).cloned().collect())
     }
 }
 

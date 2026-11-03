@@ -262,8 +262,10 @@ pub enum Probe {
     },
     /// A storage change's move about to be carried to its node.
     StorageStep {
-        /// The commanded node's separate path and name.
-        node: rdm_core::PathName,
+        /// The commanded node's separate path.
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The change.
         change_id: String,
     },
@@ -274,8 +276,10 @@ pub enum Probe {
     },
     /// A create about to act on its target's verdict on the unreached birth at a path.
     PathTarget {
-        /// The path's separate path and name.
-        node: rdm_core::PathName,
+        /// The path's separate path.
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The unreached birth's node id.
         node_id: rdm_core::NodeId,
     },
@@ -302,9 +306,9 @@ impl CutSpec {
             },
             (CutSpec::ProviderUnproven { pids }, Probe::ProviderInspect { pid }) => pid.is_some_and(|p| pids.contains(&p)),
             (CutSpec::DriftPass { node }, Probe::DriftPass { node: n }) => node_is(node, n),
-            (CutSpec::StorageStep { node }, Probe::StorageStep { node: n, .. }) => node.as_ref().is_none_or(|wanted| wanted == n),
+            (CutSpec::StorageStep { node }, Probe::StorageStep { path, name, .. }) => node.as_ref().is_none_or(|wanted| wanted.path == *path && wanted.name == *name),
             (CutSpec::StorageSwitch, Probe::StorageSwitch { .. }) => true,
-            (CutSpec::PathTarget { node }, Probe::PathTarget { node: n, .. }) => node.as_ref().is_none_or(|wanted| wanted == n),
+            (CutSpec::PathTarget { node }, Probe::PathTarget { path, name, .. }) => node.as_ref().is_none_or(|wanted| wanted.path == *path && wanted.name == *name),
             _ => false,
         }
     }
@@ -326,9 +330,9 @@ impl Probe {
             Probe::Declaration { node_id, node, state } => Hit::Declaration { node_id: node_id.clone(), node: node.clone(), state: state.clone() },
             Probe::ProviderInspect { pid } => Hit::ProviderInspect { pid: *pid },
             Probe::DriftPass { node } => Hit::DriftPass { node: node.clone() },
-            Probe::StorageStep { node, change_id } => Hit::StorageStep { node: node.clone(), change_id: change_id.clone() },
+            Probe::StorageStep { path, name, change_id } => Hit::StorageStep { path: path.clone(), name: name.clone(), change_id: change_id.clone() },
             Probe::StorageSwitch { change_id } => Hit::StorageSwitch { change_id: change_id.clone() },
-            Probe::PathTarget { node, node_id } => Hit::PathTarget { node: node.clone(), node_id: node_id.clone() },
+            Probe::PathTarget { path, name, node_id } => Hit::PathTarget { path: path.clone(), name: name.clone(), node_id: node_id.clone() },
         }
     }
 }
@@ -744,7 +748,7 @@ struct FaultedTarget(Arc<AdminFaults>);
 #[async_trait]
 impl rdm_admin::wiring::TargetSeam for FaultedTarget {
     async fn before_target_act(&self, path: &rdm_core::PathName, node_id: &rdm_core::NodeId) {
-        self.0.hold(Probe::PathTarget { node: path.clone(), node_id: node_id.clone() }).await;
+        self.0.hold(Probe::PathTarget { path: path.path.clone(), name: path.name.clone(), node_id: node_id.clone() }).await;
     }
 }
 
@@ -757,7 +761,7 @@ impl rdm_admin::wiring::CommandFrameSeam for FaultedCommandFrame {
     }
 
     fn hold_storage_step(&self, node: &rdm_core::PathName, change_id: &rdm_core::ChangeId) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
-        let probe = Probe::StorageStep { node: node.clone(), change_id: change_id.to_string() };
+        let probe = Probe::StorageStep { path: node.path.clone(), name: node.name.clone(), change_id: change_id.to_string() };
         let (id, release) = self.0.hold_at_cut(&probe)?;
         let faults = self.0.clone();
         Some(Box::pin(async move { faults.wait_release(&id, &probe, release).await }))

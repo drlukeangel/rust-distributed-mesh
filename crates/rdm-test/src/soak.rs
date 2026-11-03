@@ -314,7 +314,9 @@ pub struct Progress {
 
 #[derive(Debug, Clone)]
 struct OpMeta {
-    target_path: PathName,
+    path: String,
+    /// The name, beside its path.
+    name: String,
     target_id: String,
     key: u64,
     /// The trace of the probe invocation that carried the operation, from the `traceparent` it printed.
@@ -323,6 +325,11 @@ struct OpMeta {
     via: Option<String>,
     /// The route the probe printed for the call (`direct`, `via-peer`, ...).
     route: Option<String>,
+}
+
+impl OpMeta {
+    /// The `(path, name)` lookup index key of path and name.
+    fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 #[derive(Default)]
@@ -355,7 +362,9 @@ struct Shared {
 
 /// One testkit-store operation of a stream.
 struct Call {
-    target_path: PathName,
+    path: String,
+    /// The name, beside its path.
+    name: String,
     target_id: String,
     kind: &'static str,
     key: u64,
@@ -379,7 +388,7 @@ async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &MeshNode, call: Cal
         }
         let id = b.ledger.issue(TESTKIT_STORE_OP, call.target_id.clone(), mutation);
         debug_assert_eq!(id.0 as usize, b.meta.len());
-        b.meta.push(OpMeta { target_path: call.target_path.clone(), target_id: call.target_id.clone(), key: call.key, trace_id: None, via: call.via.clone(), route: None });
+        b.meta.push(OpMeta { path: call.path.clone(), name: call.name.clone(), target_id: call.target_id.clone(), key: call.key, trace_id: None, via: call.via.clone(), route: None });
         id
     };
     let target = format!("exact:{}", call.target_id);
@@ -447,12 +456,12 @@ async fn traffic(shared: Arc<Shared>, probe: ProbeHandle, seed: u64) {
         let carriers: Vec<&String> = view.gateways.iter().filter(|g| **g != id).collect();
         let via = (!carriers.is_empty() && rng.below(4) == 0).then(|| carriers[rng.below(carriers.len() as u64) as usize].clone());
         let call = match pick {
-            0..=4 => Call { target_path: path, target_id: id, kind: "put", key, value: Some(value), expected: None, via },
+            0..=4 => Call { path: path.path.clone(), name: path.name.clone(), target_id: id, kind: "put", key, value: Some(value), expected: None, via },
             5..=6 => {
                 let expected = shared.op_view.lock().unwrap().last.get(&(id.clone(), key)).cloned();
-                Call { target_path: path, target_id: id, kind: "cas", key, value: Some(value), expected, via }
+                Call { path: path.path.clone(), name: path.name.clone(), target_id: id, kind: "cas", key, value: Some(value), expected, via }
             }
-            _ => Call { target_path: path, target_id: id, kind: "get", key, value: None, expected: None, via },
+            _ => Call { path: path.path.clone(), name: path.name.clone(), target_id: id, kind: "get", key, value: None, expected: None, via },
         };
         issue(&shared, &probe, &admin, call).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -462,12 +471,19 @@ async fn traffic(shared: Arc<Shared>, probe: ProbeHandle, seed: u64) {
 /// A live node-admin as the entry admin's view names it: its `path/name pair`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Admin {
-    name: PathName,
+    path: String,
+    /// The name, beside its path.
+    name: String,
     node_id: rdm_core::NodeId,
 }
 
 impl Admin {
-    fn path(&self) -> PathName { self.name.clone() }
+    /// The `(path, name)` lookup index key of path and name.
+    fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
+}
+
+impl Admin {
+    fn path(&self) -> PathName { self.location() }
 }
 
 fn location(n: &Value) -> PathName {
@@ -476,7 +492,7 @@ fn location(n: &Value) -> PathName {
 
 /// The node-admin's explicit identity and descriptive location.
 fn admin_of(n: &Value) -> Option<Admin> {
-    Some(Admin { name: serde_json::from_value(n["name"].clone()).ok()?, node_id: serde_json::from_value(n["node_id"].clone()).ok()? })
+    Some(Admin { path: n["path"].as_str()?.to_string(), name: n["name"].as_str()?.to_string(), node_id: serde_json::from_value(n["node_id"].clone()).ok()? })
 }
 
 /// Every live admin, from the entry admin's view.
@@ -505,8 +521,8 @@ async fn relocate_control(estate: &mut Estate, known: &[Admin]) -> Option<Admin>
         if let Some(f) = fabric_at(estate, c).await {
             if let Some(primary) = f.fabric_primary.as_ref() {
                 if let Some(target) = known.iter().find(|a| &a.node_id == primary) {
-                    if estate.fabric_view_at(&target.name).await.is_some() {
-                        estate.enter(&target.name).await;
+                    if estate.fabric_view_at(&target.location()).await.is_some() {
+                        estate.enter(&target.location()).await;
                         return Some(target.clone());
                     }
                 }
@@ -852,7 +868,7 @@ fn acted_on(before: &Value, after: &Value, location: &PathName, birth: &(String,
                     } else if action["action"] == "recipe" {
                         let (steps, targets) = recipe_targets(action);
                         let position = op.recipe_step.expect("create has its original admitted step position");
-                        assert!(position > 0 && matches!(steps.get(position as usize - 1), Some(rdm_core::build::Step::Create { node, .. }) if node == at), "create differs from its admitted step");
+                        assert!(position > 0 && matches!(steps.get(position as usize - 1), Some(step @ rdm_core::build::Step::Create { .. }) if step.location() == *at), "create differs from its admitted step");
                         let intents: BTreeMap<u32, Value> = serde_json::from_value(action["rename_intents"].clone()).expect("admitted rename intents");
                         intents.range(..position).rev().find_map(|(rename, intent)| {
                             if intent["Replacement"]["original"] != serde_json::json!(at) { return None; }
@@ -1135,7 +1151,7 @@ impl Driver {
             if n["is_fabric_primary"] == true {
                 return Some(format!("{what}: {p:?} is the fabric-primary; it leaves only by a hand-off Build"));
             }
-            if p == &self.estate.entry_birth().name && n["type"] == "node-admin" && self.estate.bootstrap_pid().is_some() {
+            if *p == self.estate.entry_birth().location() && n["type"] == "node-admin" && self.estate.bootstrap_pid().is_some() {
                 return Some(format!("{what}: {p:?} is the harness's control address (the bootstrap node-admin)"));
             }
             None
@@ -1317,7 +1333,7 @@ impl Driver {
                     .operations()
                     .iter()
                     .zip(b.meta.iter())
-                    .map(|(o, m)| json!({"op_seq": o.id.0, "target": m.target_path, "target_node_id": m.target_id, "key": m.key, "trace_id": m.trace_id, "via": m.via, "route": m.route, "intent": o.mutation.as_ref().map(|i| json!({"key": i.key, "value": String::from_utf8_lossy(&i.value)})), "classification": o.classification}))
+                    .map(|(o, m)| json!({"op_seq": o.id.0, "target": m.location(), "target_node_id": m.target_id, "key": m.key, "trace_id": m.trace_id, "via": m.via, "route": m.route, "intent": o.mutation.as_ref().map(|i| json!({"key": i.key, "value": String::from_utf8_lossy(&i.value)})), "classification": o.classification}))
                     .collect()
             },
         };
@@ -1342,7 +1358,7 @@ impl Driver {
         let mut out = Vec::new();
         for (i, m) in b.meta.iter().enumerate() {
             if detail.contains(&format!("op#{i} ")) || detail.contains(&format!("op#{i}\n")) || detail.ends_with(&format!("op#{i}")) {
-                out.push(m.target_path.clone());
+                out.push(m.location());
             }
         }
         out
@@ -1486,9 +1502,9 @@ impl Driver {
                 let probe = self.estate.probe_handle();
                 let admin = self.shared.view.lock().unwrap().admin.clone().unwrap_or_else(|| self.estate.entry_birth());
                 let call = match op {
-                    StoreOp::Put { value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "put", key, value: Some(value.clone()), expected: None, via: None },
-                    StoreOp::Cas { expected, value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "cas", key, value: Some(value.clone()), expected: Some(expected.clone()), via: None },
-                    StoreOp::Delete { .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "delete", key, value: None, expected: None, via: None },
+                    StoreOp::Put { value, .. } => Call { path: target.path.clone(), name: target.name.clone(), target_id: s(&n["node_id"]), kind: "put", key, value: Some(value.clone()), expected: None, via: None },
+                    StoreOp::Cas { expected, value, .. } => Call { path: target.path.clone(), name: target.name.clone(), target_id: s(&n["node_id"]), kind: "cas", key, value: Some(value.clone()), expected: Some(expected.clone()), via: None },
+                    StoreOp::Delete { .. } => Call { path: target.path.clone(), name: target.name.clone(), target_id: s(&n["node_id"]), kind: "delete", key, value: None, expected: None, via: None },
                 };
                 issue(&self.shared, &probe, &admin, call).await;
                 return Ok(());
@@ -1788,7 +1804,7 @@ impl Driver {
         let true_offline = coin && !container && !holds_mesh_primary;
         // Control never waits on the held node's own control API: a held admin answers nothing.
         let held_name = Some(location(n));
-        self.known.retain(|a| Some(&a.name) != held_name.as_ref());
+        self.known.retain(|a| Some(&a.location()) != held_name.as_ref());
         if held_name.as_ref() == Some(&self.estate.admin) {
             if let Some(other) = self.known.first().map(Admin::path) {
                 self.estate.enter(&other).await;

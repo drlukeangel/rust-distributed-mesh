@@ -85,7 +85,7 @@ impl DeploymentProvider for LeaveTestProvider {
 
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         Err(DeployError::Spawn {
-            node: spec.node.clone(),
+            path: spec.path.clone(), name: spec.name.clone(),
             reason: "this cell tests node.mesh.leave, not spawn".into(),
         })
     }
@@ -236,7 +236,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         resolver.apply(
             ResolvedNode { r#type: "node".into(), mesh: "mesh1".into(),
                 node_id: peer_id.clone(),
-                name: peer_name.clone(),
+                path: peer_name.path.clone(), name: peer_name.name.clone(),
                 endpoint_id: peer_key.public(),
                 transport_addr: peer_addr,
                 incarnation: peer_incarnation.clone(),
@@ -248,7 +248,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = Arc::new(ConnectionsWriter::new(
             ConnectionEnd { r#type: "node".into(), mesh: "mesh1".into(),
-                name: node_name.clone(),
+                path: node_name.path.clone(), name: node_name.name.clone(),
                 node_id: node_id.clone(),
                 incarnation: Some(incarnation.clone()),
             },
@@ -295,7 +295,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             fabric_id: fabric_id.clone(),
             node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: node_id.clone(),
-                name: node_name.clone(),
+                path: node_name.path.clone(), name: node_name.name.clone(),
                 endpoint_id: EndpointId(node_key.public().to_string()),
                 incarnation: incarnation.clone(),
                 supersedes: None,
@@ -383,7 +383,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             executable: std::env::current_exe().unwrap(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher {
-                mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
+                mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(),
                 node_id: executor.node_id.clone(),
                 incarnation: executor.incarnation.clone(),
             },
@@ -544,7 +544,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         peer_to_left_resolver.apply(
             ResolvedNode { r#type: "node".into(), mesh: "mesh1".into(),
                 node_id: node_id.clone(),
-                name: node_name.clone(),
+                path: node_name.path.clone(), name: node_name.name.clone(),
                 endpoint_id: node_key.public(),
                 transport_addr: node_addr,
                 incarnation: incarnation.clone(),
@@ -668,7 +668,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             .unwrap();
         let mut admin_digest = digest_base.clone();
         admin_digest.node.node_id = admin_id.clone();
-        admin_digest.node.name = admin_name.clone();
+        { let at = admin_name.clone(); admin_digest.node.path = at.path; admin_digest.node.name = at.name; }
         admin_digest.node.incarnation = admin_inc.clone();
         let admin_self = Arc::new(
             NodeSelf::new(admin_id.clone(), admin_inc.clone(), admin_name.clone(), "node-admin".to_string(), admin_server, admin_client, admin_resolver, admin_top, Arc::new(move |_| admin_digest.clone()), Arc::new(|| MemberStatus::Ready), None, Duration::from_secs(1))

@@ -52,7 +52,7 @@ pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model:
                 .or_else(|| digest_view.projected_at(n.node_id.as_str(), now))
                 .filter(|(d, unheard)| Some(&d.node.incarnation) == n.incarnation_id.as_ref() && *unheard >= floor)
                 .map(|(_, unheard)| now_ms.saturating_sub((unheard - floor).as_millis() as u64));
-            SilentNode { node_id: n.node_id.to_string(), path: n.name.clone(), incarnation: n.incarnation_id.clone(), marked_at_ms }
+            SilentNode { node_id: n.node_id.to_string(), path: n.location(), incarnation: n.incarnation_id.clone(), marked_at_ms }
         })
         .collect()
 }
@@ -127,7 +127,7 @@ pub(crate) fn mark_spent(marks: &UnreachableMarks, digest_view: Option<&rdm_tran
     };
     tracing::info_span!(
         "rdm.node_admin.node.update.via-call-failed",
-        node_path = %node.name.path, node_name = %node.name.name,
+        node_path = %node.path, node_name = %node.name,
         node_id = %node.node_id,
         incarnation_id = %incarnation.as_str(),
         sender = from,
@@ -212,7 +212,7 @@ pub(crate) fn end_spent_mark(marks: &UnreachableMarks, receiver: &rdm_transport:
     let Some(mark) = ended else { return false };
     tracing::info_span!(
         "rdm.node_admin.node.update.via-call-answered",
-        node_path = %receiver.name.path, node_name = %receiver.name.name,
+        node_path = %receiver.path, node_name = %receiver.name,
         node_id = %receiver.node_id,
         incarnation_id = %receiver.incarnation.as_str(),
         marked_at_ms = mark.at_ms,
@@ -569,7 +569,7 @@ pub async fn tickle_with<C: TickleCalls + ?Sized>(node: &crate::model::Node, vie
             other => span.record("failure", other.name().as_str()),
         };
     };
-    let span = tracing::info_span!("rdm.node.tickle.resolve.via-direct", caller = %caller, node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, incarnation = %incarnation.as_str(), deadline_ms, leads = %leads_named, answer = tracing::field::Empty, failure = tracing::field::Empty, "otel.kind" = "internal");
+    let span = tracing::info_span!("rdm.node.tickle.resolve.via-direct", caller = %caller, node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation = %incarnation.as_str(), deadline_ms, leads = %leads_named, answer = tracing::field::Empty, failure = tracing::field::Empty, "otel.kind" = "internal");
     let direct = calls.direct(node, &probe).instrument(span.clone()).await;
     said(&span, &direct);
     if let ProbeEnd::Reply(answer) = &direct {
@@ -593,7 +593,7 @@ pub async fn tickle_with<C: TickleCalls + ?Sized>(node: &crate::model::Node, vie
         .enumerate()
         .map(|(i, carrier)| async move {
             let lead = leads.iter().any(|l| l.node_id == carrier.node_id);
-            let span = tracing::info_span!("rdm.node.tickle.resolve.via-peer", caller = %caller, node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, carrier = %carrier.node_id, lead, answer = tracing::field::Empty, failure = tracing::field::Empty, "otel.kind" = "internal");
+            let span = tracing::info_span!("rdm.node.tickle.resolve.via-peer", caller = %caller, node_path = %node.path, node_name = %node.name, node_id = %node.node_id, carrier = %carrier.node_id, lead, answer = tracing::field::Empty, failure = tracing::field::Empty, "otel.kind" = "internal");
             let end = calls.via_peer(carrier, node, probe).instrument(span.clone()).await;
             said(&span, &end);
             (i, carrier.node_id.clone(), end, span)
@@ -615,7 +615,7 @@ pub async fn tickle_with<C: TickleCalls + ?Sized>(node: &crate::model::Node, vie
     let asked = peers.iter().map(|p| p.carrier.as_str()).collect::<Vec<_>>().join(",");
     // The ladder's result when none of its probes carried the answer; the caller records what it
     // does next on it (`Unreached::next`), and it ends with the result.
-    let span = tracing::info_span!("rdm.node.tickle.returns-unknown.via-unreached", caller = %caller, node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, incarnation = %incarnation.as_str(), direct = %direct.name(), carriers = %asked, leads = %leads_named, next = tracing::field::Empty, "otel.kind" = "internal");
+    let span = tracing::info_span!("rdm.node.tickle.returns-unknown.via-unreached", caller = %caller, node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation = %incarnation.as_str(), direct = %direct.name(), carriers = %asked, leads = %leads_named, next = tracing::field::Empty, "otel.kind" = "internal");
     span.in_scope(|| tracing::info!("nobody reached the birth within the ladder: unreached, never death"));
     Ok(Tickle::Unreached(Unreached { direct, peers, span }))
 }
@@ -962,14 +962,14 @@ pub(crate) async fn put_silence_status(store: &dyn crate::storage::NodesStorage,
     let word = silence_word(status);
     let Some(incarnation_id) = node.incarnation_id.clone() else {
         let why = format!("{} holds no incarnation: no birth to keep its silence mark on", node.node_id);
-        tracing::info_span!("rdm.node_admin.node.reject.via-no-birth", node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, status = word, store = "nodes.storage", error = %why)
+        tracing::info_span!("rdm.node_admin.node.reject.via-no-birth", node_path = %node.path, node_name = %node.name, node_id = %node.node_id, status = word, store = "nodes.storage", error = %why)
             .in_scope(|| tracing::info!("the node's silence status names no birth: nothing is written"));
         return Err(why);
     };
-    let base = crate::storage::NodeRow::new(node.name.clone(), node.mesh.clone(), &node.r#type, node.node_id.clone(), node.status);
-    let marked = written.update(store, &node.node_id, Some(base), |r| r.birth_mut(&incarnation_id, &node.name).silence = status).await;
+    let base = crate::storage::NodeRow::new(node.location(), node.mesh.clone(), &node.r#type, node.node_id.clone(), node.status);
+    let marked = written.update(store, &node.node_id, Some(base), |r| r.birth_mut(&incarnation_id, &node.location()).silence = status).await;
     if let Err(e) = marked {
-        tracing::info_span!("rdm.node_admin.node.reject.via-nodes-storage", node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, incarnation_id = %incarnation_id.as_str(), status = word, store = "nodes.storage", error = %e)
+        tracing::info_span!("rdm.node_admin.node.reject.via-nodes-storage", node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation_id = %incarnation_id.as_str(), status = word, store = "nodes.storage", error = %e)
             .in_scope(|| tracing::info!("nodes.storage refused the birth's silence mark"));
         return Err(format!("the record of {} with its silence mark at {} ({word}): {e}", node.node_id, incarnation_id.as_str()));
     }
@@ -1478,8 +1478,8 @@ pub(crate) mod tests {
             }
 
             async fn via_peer(&self, carrier: &Node, _node: &Node, _probe: &StatusRequest) -> ProbeEnd {
-                self.asked.lock().unwrap().push(carrier.name.clone());
-                match self.peers.iter().find(|(c, _)| *c == carrier.name.clone()) {
+                self.asked.lock().unwrap().push(carrier.location());
+                match self.peers.iter().find(|(c, _)| *c == carrier.location()) {
                     Some((_, p)) => self.run(p).await,
                     None => ProbeEnd::Other { end: "NotSent", detail: "not sent: NoActiveRoute".into() },
                 }
@@ -1491,7 +1491,7 @@ pub(crate) mod tests {
             }
 
             async fn leads(&self, view: &crate::topology::Topology, _node: &Node) -> Result<Vec<Node>, String> {
-                Ok(self.leads.iter().filter_map(|l| view.members().find(|n| n.name == *l).cloned()).collect())
+                Ok(self.leads.iter().filter_map(|l| view.members().find(|n| n.location() == *l).cloned()).collect())
             }
         }
 
@@ -1815,7 +1815,7 @@ pub(crate) mod tests {
         let floor = std::time::Duration::from_secs(3);
         let digest = |name: crate::model::PathName, mesh: &str, r#type: &str| MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: crate::model::NodeId::mint(), name, endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
+            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: crate::model::NodeId::mint(), path: name.path.clone(), name: name.name.clone(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
             status: MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
@@ -1828,7 +1828,7 @@ pub(crate) mod tests {
             data_dir: None, is_primary: None, is_fabric_primary: None
         };
         let node_of = |d: &MeshDigest| {
-            let mut n = crate::model::Node::allocated(d.node.name.clone(), d.node.mesh.clone(), &d.node.r#type);
+            let mut n = crate::model::Node::allocated(d.node.location(), d.node.mesh.clone(), &d.node.r#type);
             n.node_id = d.node.node_id.clone();
             n.incarnation_id = Some(d.node.incarnation.clone());
             n
@@ -2066,8 +2066,8 @@ pub(crate) mod tests {
         let written = crate::node_rows::WrittenRows::default();
         let inc = held.incarnation_id.clone().unwrap();
         // The record as its writer holds it: the birth's declared state is on it.
-        let mut row = crate::storage::NodeRow::new(held.name.clone(), "mesh1".to_owned(), "node", held.node_id.clone(), NodeStatus::Ready);
-        row.birth_mut(&inc, &held.name).declared.insert(rdm_core::status::NodeState::Ready);
+        let mut row = crate::storage::NodeRow::new(held.location(), "mesh1".to_owned(), "node", held.node_id.clone(), NodeStatus::Ready);
+        row.birth_mut(&inc, &held.location()).declared.insert(rdm_core::status::NodeState::Ready);
         written.hold(&row);
 
         assert_eq!(put_silence_status(&store, &written, &held, Some(NodeStatus::Dead)).await, Ok(true), "the silence mark is written");

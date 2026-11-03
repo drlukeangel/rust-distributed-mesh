@@ -118,7 +118,7 @@ impl TopologyDoor {
         let me = (self.own)();
         let span = tracing::info_span!(
             "rdm.mesh.topology.serve.via-read",
-            node_path = %me.node.name.path, node_name = %me.node.name.name,
+            node_path = %me.node.path, node_name = %me.node.name,
             requested = mesh.as_deref().unwrap_or("*"),
             meshes = tracing::field::Empty,
             snapshots = tracing::field::Empty,
@@ -567,7 +567,7 @@ fn refusal_of(r: TopologyReply) -> TopologyFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshId, MeshNode, NodeId, PathName};
+    use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshId, MeshNode, NodeId};
     use std::collections::HashSet;
     use std::net::SocketAddr;
 
@@ -605,7 +605,7 @@ mod tests {
             fabric_id,
             node: MeshNode { mesh: "mesh1".to_string(), r#type: "node-admin".into(),
                 node_id: NodeId::mint(),
-                name: PathName::numbered("mesh1", "node-admin", 1),
+                path: format!("{}.{}", "mesh1", "node-admin"), name: (1).to_string(),
                 endpoint_id: EndpointId(ep.id().to_string()),
                 transport_addr: "127.0.0.1:9000".parse().unwrap(),
                 incarnation: IncarnationId::mint(),

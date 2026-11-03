@@ -116,7 +116,7 @@ pub fn fabric_recovery_target<'a>(nodes: &[Node], inc: &'a Incumbency) -> Option
 /// path and name `at`, the one the workflow re-creates. `None` when the mesh has no such admin: the backbone
 /// arm, run on node investigation's verdict (Q335). The executor takes no primary role.
 pub fn fabric_recovery_executor<'a>(nodes: &'a [Node], inc: &Incumbency, target: &Primary, at: Option<&PathName>) -> Option<&'a Node> {
-    let members: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == target.mesh && rdm_core::is_node_admin(&n.r#type) && n.node_id != target.node_id && Some(&n.name) != at).map(|(i, _)| i).collect();
+    let members: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == target.mesh && rdm_core::is_node_admin(&n.r#type) && n.node_id != target.node_id && Some(&n.location()) != at).map(|(i, _)| i).collect();
     lowest_ready(nodes, &members, inc).map(|i| &nodes[i])
 }
 
@@ -233,11 +233,11 @@ pub fn fabric_successor_after(nodes: &[Node], inc: &Incumbency, lost: &rdm_core:
 pub fn named_fabric_successor(nodes: &[Node], inc: &Incumbency, primary: &Node, named: &PathName) -> Result<Node, String> {
     // The named successor may be in the primary's own mesh (Q89: the hand-back to the node at the lost
     // fabric-primary's path and name): a Ready node-admin there is the one the row makes primary.
-    let named_mesh = nodes.iter().find(|n| n.name == *named).map(|n| n.mesh.as_str());
+    let named_mesh = nodes.iter().find(|n| n.location() == *named).map(|n| n.mesh.as_str());
     let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| named_mesh == Some(primary.mesh.as_str()) || n.mesh != primary.mesh).cloned().collect();
     let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), node_type_primaries: inc.node_type_primaries.clone(), lost: inc.lost.clone() };
     resolve_with(&mut hypothetical, &vacated);
-    match hypothetical.into_iter().find(|n| n.name == *named) {
+    match hypothetical.into_iter().find(|n| n.location() == *named) {
         Some(n) if rdm_core::is_node_admin(&n.r#type) && n.status == NodeStatus::Ready => Ok(n),
         Some(n) => Err(format!("cannot hand the fabric-primary role to path {:?}, name {:?}: {}'s view holds it {:?}", named.path, named.name, primary.node_id, n.status)),
         None => Err(format!("cannot hand the fabric-primary role to path {:?}, name {:?}: {}'s view holds no such node-admin", named.path, named.name, primary.node_id)),
@@ -344,7 +344,7 @@ struct PrimaryBirth {
 
 impl PrimaryBirth {
     fn of(n: &Node) -> Self {
-        Self { node_id: n.node_id.clone(), path: n.name.path.clone(), name: n.name.name.clone(), mesh: n.mesh.clone() }
+        Self { node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), mesh: n.mesh.clone() }
     }
 }
 
@@ -504,11 +504,11 @@ mod tests {
     }
 
     fn primaries(nodes: &[Node]) -> Vec<PathName> {
-        nodes.iter().filter(|n| n.is_primary).map(|n| n.name.clone()).collect()
+        nodes.iter().filter(|n| n.is_primary).map(|n| n.location()).collect()
     }
 
     fn fabric(nodes: &[Node]) -> Vec<PathName> {
-        nodes.iter().filter(|n| n.is_fabric_primary).map(|n| n.name.clone()).collect()
+        nodes.iter().filter(|n| n.is_fabric_primary).map(|n| n.location()).collect()
     }
 
     /// CONTRACT: a replaced predecessor (the predecessor name `<name>-old` at the same path) holds no role and is no candidate, even when its
@@ -521,7 +521,7 @@ mod tests {
         admin.is_primary = true;
         admin.is_fabric_primary = true;
         let log = ElectionLog::new(admin.node_id.clone());
-        admin.name = PathName::new("unrelated.place", "south").unwrap();
+        { let at = PathName::new("unrelated.place", "south").unwrap(); admin.path = at.path; admin.name = at.name; }
         let replacement = node(original, "other-mesh", "node-admin", "100000000002", true);
         let topology = Topology {
             fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "f".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
@@ -532,7 +532,7 @@ mod tests {
         let held = log.last_mesh.lock().unwrap();
         let held = held.as_ref().unwrap().as_ref().unwrap();
         assert_eq!(held.node_id, admin.node_id);
-        assert_eq!((&held.path, &held.name), (&admin.name.path, &admin.name.name));
+        assert_eq!((&held.path, &held.name), (&admin.path, &admin.name));
         let absent = ElectionLog::new(id("100000000003"));
         absent.observe(&topology);
         assert!(absent.last_mesh.lock().unwrap().is_none());
@@ -542,7 +542,7 @@ mod tests {
     fn a_renamed_predecessor_is_never_a_candidate_or_a_primary() {
         let mut old = node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "000000000001", true);
         old.renamed_from = Some(old.name.clone());
-        old.name = old.name.renamed().unwrap();
+        { let at = old.location().renamed().unwrap(); old.path = at.path; old.name = at.name; }
         let successor = node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "000000000009", true);
         let view = crate::topology::Topology {
             fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "f".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
@@ -695,11 +695,11 @@ mod tests {
     }
 
     fn fabric_name(nodes: &[Node]) -> Option<PathName> {
-        nodes.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone())
+        nodes.iter().find(|n| n.is_fabric_primary).map(|n| n.location())
     }
 
     fn mesh_primary(nodes: &[Node], mesh: &str) -> Option<PathName> {
-        nodes.iter().find(|n| n.is_primary && n.mesh == mesh && rdm_core::is_node_admin(&n.r#type)).map(|n| n.name.clone())
+        nodes.iter().find(|n| n.is_primary && n.mesh == mesh && rdm_core::is_node_admin(&n.r#type)).map(|n| n.location())
     }
 
     use NodeStatus::{ConnectionsDeleting, Leaving, Pending, PendingReconnect, Ready as Ready};
@@ -823,7 +823,7 @@ mod tests {
         lose(&mut gone, "500000000000", "a1");
         resolve_with(&mut nodes, &gone);
         check(&nodes, "known gone");
-        nodes.retain(|n| n.name.clone() != PathName::new("mesh1.node-admin", "1").unwrap());
+        nodes.retain(|n| n.location() != PathName::new("mesh1.node-admin", "1").unwrap());
         resolve_with(&mut nodes, &gone);
         check(&nodes, "deleted from the view");
     }
@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn the_node_the_workflow_restores_is_both_primaries_by_its_record() {
         let (mut inc, mut nodes) = recovering();
-        nodes.retain(|n| n.name.clone() != PathName::new("mesh1.node-admin", "1").unwrap());
+        nodes.retain(|n| n.location() != PathName::new("mesh1.node-admin", "1").unwrap());
         nodes.push(born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "900000000000", "a9", Ready));
         let restored = primary("mesh1", "900000000000", "a9", 2);
         inc.fabric = Some(restored.clone());
@@ -856,14 +856,14 @@ mod tests {
         let at: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let target = fabric_recovery_target(&nodes, &inc).cloned().expect("the fabric-primary is unheard");
         assert_eq!(target.node_id, id("500000000000"));
-        assert_eq!(fabric_recovery_executor(&nodes, &inc, &target, Some(&at)).map(|n| n.name.clone()), Some(PathName::new("mesh1.node-admin", "2").unwrap()), "a Pending admin is no candidate");
+        assert_eq!(fabric_recovery_executor(&nodes, &inc, &target, Some(&at)).map(|n| n.location()), Some(PathName::new("mesh1.node-admin", "2").unwrap()), "a Pending admin is no candidate");
         // The node re-created at the target's path and name, Ready with a lower id, is the target, never the executor.
         nodes.push(born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "200000000000", "a9", Ready));
-        assert_eq!(fabric_recovery_executor(&nodes, &inc, &target, Some(&at)).map(|n| n.name.clone()), Some(PathName::new("mesh1.node-admin", "2").unwrap()));
-        nodes.retain(|n| n.mesh != "mesh1" || !rdm_core::is_node_admin(&n.r#type) || n.name == at);
+        assert_eq!(fabric_recovery_executor(&nodes, &inc, &target, Some(&at)).map(|n| n.location()), Some(PathName::new("mesh1.node-admin", "2").unwrap()));
+        nodes.retain(|n| n.mesh != "mesh1" || !rdm_core::is_node_admin(&n.r#type) || n.location() == at);
         assert_eq!(fabric_recovery_executor(&nodes, &inc, &target, Some(&at)), None, "no admin of the mesh: the backbone arm");
         let mut heard = nodes.clone();
-        heard.retain(|n| n.name != at);
+        heard.retain(|n| n.location() != at);
         heard.push(born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "500000000000", "a1", Ready));
         assert_eq!(fabric_recovery_target(&heard, &inc), None, "a heard fabric-primary is restored by nothing");
     }
@@ -900,7 +900,7 @@ mod tests {
                 born(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", "200000000000", "b2", Ready),
                 born(PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", "700000000000", "c1", Ready),
             ];
-            let successor = fabric_successor_excluding(&nodes, &inc, "mesh1").map(|n| n.name.clone());
+            let successor = fabric_successor_excluding(&nodes, &inc, "mesh1").map(|n| n.location());
             assert_eq!(successor, Some(PathName::new("mesh3.node-admin", "1").unwrap()), "the lowest Ready mesh primary outside mesh1, its roles held ({status:?})");
         }
     }
@@ -936,7 +936,7 @@ mod tests {
     // ---- Every node type keeps a primary record (proposal Part B1, R-MT1: "same for NA as it is for node"). ----
 
     fn rpc_primary(nodes: &[Node], mesh: &str) -> Option<PathName> {
-        nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.r#type == "node").map(|n| n.name.clone())
+        nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.r#type == "node").map(|n| n.location())
     }
 
     fn with_rpc_primary(record: Primary) -> Incumbency {

@@ -286,7 +286,7 @@ impl Row for NodeView {
 /// [`GOSSIPED`] properties only; every other property is absent from it.
 impl Row for MeshDigest {
     fn value(&self, property: &str) -> Value {
-        let name = &self.node.name;
+        let name = &self.node.location();
         match property {
             "id" => Value::One(self.node.node_id.to_string()),
             "incarnation" => Value::One(self.node.incarnation.as_str().to_string()),
@@ -532,7 +532,7 @@ mod tests {
 
     fn names(rows: &[NodeView], f: &Filter) -> Vec<crate::PathName> {
         assert_eq!(f.refusal(Entity::Nodes), None, "{f:?}");
-        rows.iter().filter(|r| f.matches(*r)).map(|r| r.name.clone()).collect()
+        rows.iter().filter(|r| f.matches(*r)).map(|r| r.location()).collect()
     }
 
     /// CONTRACT (Q306; query.md): a pair whose property is written `!<property>` matches a row whose
@@ -620,7 +620,7 @@ mod tests {
             fabric_id: crate::FabricId::mint(),
             node: crate::MeshNode { mesh: mesh.into(), r#type: r#type.into(),
                 node_id: NodeId::mint(),
-                name,
+                path: name.path.clone(), name: name.name.clone(),
                 endpoint_id: crate::EndpointId("test-endpoint".into()),
                 transport_addr: "127.0.0.1:20001".parse().unwrap(),
                 incarnation: crate::IncarnationId::mint(),
@@ -658,7 +658,7 @@ mod tests {
         let held = [ready.clone(), pending.clone(), admin.clone()];
         let local = |f: &Filter| -> Vec<crate::PathName> {
             assert_eq!(f.local_refusal(), None, "{f:?}");
-            held.iter().filter(|d| f.matches(*d)).map(|d| d.node.name.clone()).collect()
+            held.iter().filter(|d| f.matches(*d)).map(|d| d.node.location()).collect()
         };
         assert_eq!(local(&Filter::new().eq("type", ["broker"]).eq("status", ["ready"])), [crate::PathName::new("mesh1.broker", "1").unwrap()]);
         assert_eq!(local(&Filter::new().eq("mesh", ["mesh1"]).eq("is_primary", ["true"])), [crate::PathName::new("mesh1.node-admin", "1").unwrap()]);

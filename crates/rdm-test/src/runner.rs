@@ -189,7 +189,7 @@ pub async fn run_replayable(
             }
             if let Some((verb, end)) = refused {
                 failures.push(Failure { step: step.clone(), reason: format!("{verb} {node:?}: {end}") });
-                outcomes.push(StepOutcome { step, action: "restart_node".into(), target: node.clone(), key: None, outcome: format!("Refused({})", end.outcome()), result: Value::Null });
+                outcomes.push(StepOutcome { step, action: "restart_node".into(), path: node.path.clone(), name: node.name.clone(), key: None, outcome: format!("Refused({})", end.outcome()), result: Value::Null });
                 continue;
             }
             let after = estate
@@ -201,7 +201,7 @@ pub async fn run_replayable(
             outcomes.push(StepOutcome {
                 step,
                 action: "restart_node".into(),
-                target: node.clone(),
+                path: node.path.clone(), name: node.name.clone(),
                 key: None,
                 outcome: "Restarted".into(),
                 result: json!({ "same_node_id": after["node_id"] == before["node_id"], "same_incarnation": after["incarnation_id"] == before["incarnation_id"] }),
@@ -226,7 +226,7 @@ pub async fn run_replayable(
             failures.push(Failure { step: step.clone(), reason: out.to_string() });
         }
         let (outcome, result) = semantic(&out);
-        outcomes.push(StepOutcome { step, action: action.into(), target: target.clone(), key: Some(key), outcome, result });
+        outcomes.push(StepOutcome { step, action: action.into(), path: target.path.clone(), name: target.name.clone(), key: Some(key), outcome, result });
     }
     for (i, a) in sc.assert.iter().enumerate() {
         let Assertion::Get { target, key, equals, absent } = a;
@@ -242,7 +242,7 @@ pub async fn run_replayable(
             failures.push(Failure { step: step.clone(), reason: out.to_string() });
         }
         let (outcome, result) = semantic(&out);
-        outcomes.push(StepOutcome { step, action: "get".into(), target: target.clone(), key: Some(*key), outcome, result });
+        outcomes.push(StepOutcome { step, action: "get".into(), path: target.path.clone(), name: target.name.clone(), key: Some(*key), outcome, result });
     }
     // The final proof state: every (target, key) the scenario touches, read once more.
     let mut touched: std::collections::BTreeSet<(PathName, u64)> = std::collections::BTreeSet::new();

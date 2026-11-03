@@ -78,7 +78,7 @@ pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: O
         fabric_id: fabric,
         mesh: "mesh1".into(),
         r#type: "node".into(),
-        name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+        path: "mesh1.node".into(), name: "1".into(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -145,7 +145,7 @@ pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: O
     let (born, _) = digest_view.get(launch.node_id.as_str()).unwrap();
     commander.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), r#type: born.node.r#type,
         node_id: born.node.node_id.clone(),
-        name: born.node.name.clone(),
+        path: born.node.path.clone(), name: born.node.name.clone(),
         endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
         incarnation: born.node.incarnation.clone(),
         transport_addr: born.node.transport_addr,
@@ -181,7 +181,7 @@ fn a_stopped_node_whose_heartbeat_view_lacks_its_commander_starts_and_joins_it_t
         assert!(running.topology_view.digest_view.get(commander_id.as_str()).is_none(), "the node's heartbeat view came to hold the commander before its start: the cell proves nothing");
 
         // The commander deployed this birth and awaits its join, as the admin that commands its start.
-        commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+        commander.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
         let started = call(&commander, &target, &start).await;
         assert_eq!(started, StatusReply::Started, "the node starts after its stop, joining the admin that commanded it through the call");
         tokio::time::timeout(NEVER, async {
@@ -230,7 +230,7 @@ fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_join
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped: {left:?}");
         assert!(running.topology_view.digest_view.get(commander_id.as_str()).is_none(), "the node's heartbeat view holds the commander: the cell proves nothing");
-        commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+        commander.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
         let started = call(&commander, &target, &start).await;
         assert_eq!(started, StatusReply::Started, "the node starts after its stop, joining the admin that commanded it through the call, with no record of it");
         tokio::time::timeout(NEVER, async {
@@ -280,7 +280,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
         let (born, _) = primary.observer.topology_view.digest_view.get(node_id.as_str()).unwrap();
         lost.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), r#type: born.node.r#type,
             node_id: born.node.node_id.clone(),
-            name: born.node.name.clone(),
+            path: born.node.path.clone(), name: born.node.name.clone(),
             endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
             incarnation: born.node.incarnation.clone(),
             transport_addr: born.node.transport_addr,
@@ -311,7 +311,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
             };
 
             // The successor commands the start while the first is under way.
-            successor.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+            successor.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
             let started = call(&successor, &target, &start(3)).await;
             assert_eq!(started, StatusReply::Started, "the successor's start is answered Started: the start joined the successor over the successor's own call");
             tokio::time::timeout(NEVER, async {
@@ -363,8 +363,8 @@ fn a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call() {
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped: {left:?}");
         let held = running.topology_view.projected_member_at(&commander.seed.0).expect("the projection carries the commander");
-        running.node_rpc.resolver.depart(&commander_id, &held.node.incarnation, &held.node.name);
-        commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+        running.node_rpc.resolver.depart(&commander_id, &held.node.incarnation, &held.node.location());
+        commander.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
         let started = call(&commander, &target, &start).await;
         assert_eq!(started, StatusReply::Started, "the start joins the commander over its call, whatever the resolver holds of it");
         let _ = std::fs::remove_dir_all(&dir);
@@ -396,7 +396,7 @@ fn a_hook_blocked_on_its_primarys_word_runs_again_when_a_commander_no_record_nam
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "f4te7echyh6f".into(), attempt: 2, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         assert!(matches!(call(&commander, &target, &stop).await, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped");
-        commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+        commander.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
         // After this start the hook waits on its authority's word.
         pre_node_ready.set_mode(Mode::Fixed(HookOutcome::Blocked { reason: "waits for its authority to address it".into(), retry_on: RetryOn::PrimaryAddressed }));
         assert_eq!(call(&commander, &target, &start).await, StatusReply::Started, "the start joins the commander over its call; its hook runs on, blocked");
@@ -454,7 +454,7 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
         let (born, _) = primary.observer.topology_view.digest_view.get(node_id.as_str()).unwrap();
         lost.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), r#type: born.node.r#type,
             node_id: born.node.node_id.clone(),
-            name: born.node.name.clone(),
+            path: born.node.path.clone(), name: born.node.name.clone(),
             endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
             incarnation: born.node.incarnation.clone(),
             transport_addr: born.node.transport_addr,
@@ -467,7 +467,7 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
         // The lost commander's start joins it, then holds in its hook until the commander is gone.
         let (hook_started, hook_resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
         pre_node_ready.set_mode(Mode::Pause { started: hook_started.clone(), resume: hook_resume.clone(), outcome: HookOutcome::Ok });
-        lost.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+        lost.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
         // The lost commander's own call breaks with its endpoint: what it ends in is not this cell's.
         let first_req = match start(2) {
             StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } => rdm_core::node_command::NodeCommandRequest::StartNode { node_id, incarnation, operation },
@@ -478,7 +478,7 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
             tokio::time::timeout(NEVER, hook_started.notified()).await.expect("the lost commander's start never reached its hook: its join was not answered");
             lost.observer.client.endpoint().close().await;
             // The later commander commands the start while it is under way; its hook then passes.
-            successor.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+            successor.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
             let later = async { call(&successor, &target, &start(3)).await };
             let release = async {
                 tokio::time::sleep(Duration::from_millis(300)).await;

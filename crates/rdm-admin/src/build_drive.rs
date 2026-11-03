@@ -169,19 +169,19 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
     let key = op.key();
     match op {
         BuildOperation::ShutdownMesh { mesh, .. } => vec![PrecedingUpdate { run, mesh: mesh.clone(), operation: update_operation(PrimaryRole::FabricPrimary, &key), primary: None }],
-        BuildOperation::DeleteLiveNode { node, exited: None, .. }
-        | BuildOperation::DeleteConnections { node, .. }
-        | BuildOperation::StopNode { node, .. }
-        | BuildOperation::Step { step: Step::Stop { node } | Step::Delete { node } | Step::DeleteConnections { node }, .. }
+        BuildOperation::DeleteLiveNode { exited: None, .. }
+        | BuildOperation::DeleteConnections { .. }
+        | BuildOperation::StopNode { .. }
+        | BuildOperation::Step { step: Step::Stop { .. } | Step::Delete { .. } | Step::DeleteConnections { .. }, .. }
             if op.r#type().as_deref().is_some_and(rdm_core::is_node_admin) =>
         {
             [PrimaryRole::MeshPrimary, PrimaryRole::FabricPrimary].into_iter().map(|role| PrecedingUpdate { run, mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(role, &key), primary: op.subject() }).collect()
         }
         // Any other node type's primary, commanded by its mesh-primary (node-primary-update.md, "Commander").
-        BuildOperation::DeleteLiveNode { node, exited: None, .. }
-        | BuildOperation::DeleteConnections { node, .. }
-        | BuildOperation::StopNode { node, .. }
-        | BuildOperation::Step { step: Step::Stop { node } | Step::Delete { node } | Step::DeleteConnections { node }, .. } => {
+        BuildOperation::DeleteLiveNode { exited: None, .. }
+        | BuildOperation::DeleteConnections { .. }
+        | BuildOperation::StopNode { .. }
+        | BuildOperation::Step { step: Step::Stop { .. } | Step::Delete { .. } | Step::DeleteConnections { .. }, .. } => {
             vec![PrecedingUpdate { run, mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(PrimaryRole::of_type(&op.r#type().expect("a node operation has a type")), &key), primary: op.subject() }]
         }
         _ => Vec::new(),
@@ -811,8 +811,10 @@ fn ended_state(t: &BuildReply) -> crate::wiring::BuildEndedState {
 pub struct DriveEnv {
     /// This process's explicit owning mesh.
     pub me_mesh: String,
-    /// This admin's `(path, name)`.
-    pub me: PathName,
+    /// This admin's path.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
     /// The Build state.
@@ -833,6 +835,11 @@ pub struct DriveEnv {
     /// so each of its passes is a turn begun at the gate's wait point, and a stop's quiesce waits for
     /// the pass in progress.
     pub turns: crate::stop_gate::StopGate,
+}
+
+impl DriveEnv {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
 /// The drives this admin holds, by Build.
@@ -1099,7 +1106,7 @@ impl DriveEnv {
         if let Some(held) = self.builds.held_name() {
             return held;
         }
-        self.topology.read().await.held_name_of(&self.me, Some(&self.door.node_id))
+        self.topology.read().await.held_name_of(&self.me(), Some(&self.door.node_id))
     }
 
     /// Drive `drive`'s Build until it ends, stalls or loses the role.
@@ -1145,7 +1152,7 @@ impl DriveEnv {
         // another birth at the same path and name (a successor, a deleted birth) is not this admin.
         let (held, role) = {
             let t = self.topology.read().await;
-            (t.is_fabric_primary(&self.door.node_id), t.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone())))
+            (t.is_fabric_primary(&self.door.node_id), t.fabric_primary().map(|n| (n.location(), n.node_id.clone())))
         };
         if !held {
             // Past the target the installed result names this birth, none, or a birth proven gone
@@ -1978,7 +1985,7 @@ impl DriveEnv {
         let mut by: std::collections::BTreeMap<String, (rdm_core::NodeId, Vec<BuildOperation>)> = Default::default();
         let mut kept: HashSet<String> = HashSet::new();
         for op in left(drive, p, t) {
-            let Some(node) = op.node().cloned() else { continue };
+            let Some(node) = op.node() else { continue };
             let Some(mesh) = op.mesh().map(str::to_owned) else { continue };
             let to = crate::executor::executor_for(&op, t);
             match to {
@@ -2435,6 +2442,7 @@ pub fn describe(r: &BuildReply) -> String {
         other => other.name().to_string(),
     }
 }
+
 
 #[cfg(test)]
 mod tests {

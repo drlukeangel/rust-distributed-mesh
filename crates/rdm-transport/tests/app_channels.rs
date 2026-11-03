@@ -507,7 +507,7 @@ fn member_digest(n: &Member) -> rdm_core::MeshDigest {
         fabric_id: n.topology_view.fabric_id().clone(),
         node: rdm_core::MeshNode { mesh: n.topology_view.mesh_name().to_owned(), r#type: n.r#type.clone(),
             node_id: n.author.node_id.clone(),
-            name: n.name.clone(),
+            path: n.path.clone(), name: n.name.clone(),
             endpoint_id: rdm_core::EndpointId(n.endpoint_id().to_string()),
             transport_addr: n.bound_addr(),
             incarnation: n.author.incarnation.clone(),

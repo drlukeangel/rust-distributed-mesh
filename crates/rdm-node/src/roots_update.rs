@@ -90,7 +90,7 @@ mod tests {
             let name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
             let conn_store = Arc::new(MemoryConnectionsStorage::default());
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
-            let own_end = ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), name: name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) };
+            let own_end = ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), path: name.path.clone(), name: name.name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) };
             let writer = Arc::new(ConnectionsWriter::new(own_end, conn_store, held));
             let resolver = Arc::new(LiveNodeResolver::default());
 
@@ -101,7 +101,7 @@ mod tests {
 
             let old_ca = CaKey::mint(&old, 3600, 1_000);
             let old_issuer = IssuingKey::mint(&old_ca, "mesh1", 1_000, 2_000_000).unwrap();
-            let birth = BirthIdentity { node_id: node_id.clone(), incarnation: incarnation.clone(), name: name.clone(), mesh: "mesh1".into(), endpoint_key: ep_id };
+            let birth = BirthIdentity { node_id: node_id.clone(), incarnation: incarnation.clone(), path: name.path.clone(), name: name.name.clone(), mesh: "mesh1".into(), endpoint_key: ep_id };
             let old_cert = cert_to_bytes(&issue(&old_issuer, &birth, 1_000, 900_000).unwrap());
 
             let (registry, _handlers) = ConnectionsRegistry::new(endpoint, resolver, writer, &[], old_cert).unwrap();

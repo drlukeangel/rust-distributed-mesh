@@ -37,8 +37,10 @@ use tracing::Instrument as _;
 
 /// What an admin answers a Build call from.
 pub struct BuildDoor {
-    /// This admin's `(path, name)`.
-    pub me: PathName,
+    /// This admin's path.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// The control plane: the Build state, the Fabric identity and the cores that accept a change.
     pub control: Arc<ControlPlane>,
     /// The drives this admin holds.
@@ -52,6 +54,11 @@ pub struct BuildDoor {
     pub primaries: PrimaryView,
     /// This admin's exact birth (with `env.door.node_id`): what the primary view is read against.
     pub incarnation: IncarnationId,
+}
+
+impl BuildDoor {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
 /// The door a running admin fills once it holds a view.
@@ -114,7 +121,7 @@ impl BuildDoor {
             BuildChange::RemoveNode { node } => {
                 match cp.of_deleted_mesh(node).await {
                     Ok(true) => cp.open_delete_in(node_span(node), "build.create", node.clone()).await,
-                    Ok(false) => topology(TopologyChange::RemoveNode { node: node.clone() }).await,
+                    Ok(false) => topology(TopologyChange::RemoveNode { path: node.path.clone(), name: node.name.clone()}).await,
                     Err(e) => Err(e),
                 }
             }
@@ -149,7 +156,7 @@ impl BuildDoor {
     /// Only the fabric-primary accepts a Build call; any other admin names the one it sees.
     async fn not_fabric_primary(&self) -> Option<BuildReply> {
         // Decided by the node id this admin was born with (its claim door's), never by path and name.
-        let role = self.control.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
+        let role = self.control.topology.read().await.fabric_primary().map(|n| (n.location(), n.node_id.clone()));
         match role {
             Some((_, id)) if id == self.env.door.node_id => None,
             other => Some(rdm_core::reply::build::not_fabric_primary(other.map(|(_, id)| id))),
@@ -461,7 +468,7 @@ fn receipt_chunks(p: &crate::build_state::BuildProjection) -> (u32, Vec<Vec<Step
 /// always one chunk at least.
 fn topology_chunks(p: &crate::build_state::BuildProjection) -> Vec<Vec<rdm_core::meta::NodeSpec>> {
     let mut specs: Vec<&rdm_core::meta::NodeSpec> = p.topology.meshes.values().flat_map(|m| m.spec_by_path.values()).collect();
-    specs.sort_by(|a, b| a.path.cmp(&b.path));
+    specs.sort_by(|a, b| a.location().cmp(&b.location()));
     let mut chunks: Vec<Vec<rdm_core::meta::NodeSpec>> = vec![Vec::new()];
     let mut size = 0usize;
     for spec in specs {
@@ -674,7 +681,7 @@ pub(crate) async fn with_entries(builds: &dyn crate::build_state::BuildStateAdap
     let entry_of = |node: &PathName| held.topology.node_spec(node).map(crate::build::EntrySpec::of);
     for op in &mut plan.operations {
         match op {
-            BuildOperation::CreateNode { node, entry, .. } | BuildOperation::UpdateConfig { node, entry, .. } | BuildOperation::Step { step: rdm_core::build::Step::Create { node, .. }, entry, .. } => *entry = entry_of(node),
+            BuildOperation::CreateNode { path: node_path, name: node_name, entry, .. } | BuildOperation::UpdateConfig { path: node_path, name: node_name, entry, .. } | BuildOperation::Step { step: rdm_core::build::Step::Create { path: node_path, name: node_name, .. }, entry, .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; *entry = entry_of(node) }
             _ => {}
         }
     }
@@ -683,14 +690,21 @@ pub(crate) async fn with_entries(builds: &dyn crate::build_state::BuildStateAdap
 
 /// Calls the executor `executor` names: in process when that is this admin, over Node RPC otherwise.
 pub struct RpcDispatcher {
-    /// This admin's `(path, name)`.
-    pub me: PathName,
+    /// This admin's path.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// This admin's own executor door.
     pub local: Arc<RunDoor>,
     /// The client a call to another admin is made through.
     pub client: Arc<NodeRpcClient>,
     /// The observed topology: `executor`'s node id is taken from it.
     pub topology: Arc<RwLock<Topology>>,
+}
+
+impl RpcDispatcher {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
 /// The bound on connecting to an executor and writing its request. The reply has none: a run lasts
@@ -700,9 +714,9 @@ pub const DISPATCH_SEND: Duration = Duration::from_secs(10);
 #[async_trait::async_trait]
 impl Dispatcher for RpcDispatcher {
     fn hold(&self, me: &PathName, build_id: &BuildId, attempt: u32) -> Option<crate::build_run::HeldRun> {
-        let is_me = *me == self.me
+        let is_me = *me == self.me()
             || self.local.builds.held_name().as_ref() == Some(me)
-            || self.topology.try_read().ok().is_some_and(|t| t.held_name_of(&self.me, None) == *me);
+            || self.topology.try_read().ok().is_some_and(|t| t.held_name_of(&self.me(), None) == *me);
         is_me.then(|| self.local.hold(build_id, attempt)).flatten()
     }
     async fn dispatch(
@@ -967,7 +981,7 @@ mod tests {
 
         let stop_only = RunPlan {
             operations: vec![BuildOperation::StopNode { r#type: "node".into(), mesh: "mesh1".into(),
-                node: node_path.clone(),
+                path: node_path.path.clone(), name: node_path.name.clone(),
                 node_id: NodeId::mint(),
                 from_incarnation: IncarnationId::mint(),
             }],
@@ -997,13 +1011,13 @@ mod tests {
         let plan_with_create = RunPlan {
             operations: vec![
                 BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(),
-                    node: node_path.clone(),
+                    path: node_path.path.clone(), name: node_path.name.clone(),
                     over: None,
                     executable: None,
                     entry: None,
                 },
                 BuildOperation::UpdateConfig { node_id: crate::model::NodeId::mint(), r#type: "node".into(), mesh: "mesh1".into(),
-                    node: node_path.clone(),
+                    path: node_path.path.clone(), name: node_path.name.clone(),
                     entry: None,
                 },
             ],

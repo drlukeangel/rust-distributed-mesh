@@ -29,7 +29,7 @@ impl DeploymentProvider for Running {
     }
     async fn spawn(&self, launch: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         // A node.connection.delete or a stop launches nothing: refused here so the cell's assertion names it.
-        Err(DeployError::Spawn { node: launch.node.clone(), reason: "this cell launches nothing".into() })
+        Err(DeployError::Spawn { path: launch.path.clone(), name: launch.name.clone(), reason: "this cell launches nothing".into() })
     }
     async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Err(DeployError::Terminate { deployment: h.deployment_id.to_string(), reason: "this cell terminates nothing".into() })
@@ -109,7 +109,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-node-admin".into(),
             seeds: vec![("executorkey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), name: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), path: "mesh2.node-admin".into(), name: "1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: std::env::temp_dir().join(format!("role-transfer-step-{}", NodeId::mint())),
             store_dir: std::env::temp_dir().join(format!("role-transfer-step-{}", NodeId::mint())),

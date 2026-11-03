@@ -17,8 +17,10 @@ pub struct MemberAddr(iroh::EndpointAddr);
 
 /// A joined member of one mesh's topology view (see the module docs).
 pub struct Member {
-    /// Separate descriptive path and name; the publisher uses its minted node ID.
-    pub name: rdm_core::PathName,
+    /// Separate descriptive path; the publisher uses its minted node ID.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// Explicit declared node type.
     pub r#type: String,
     /// Its topology view: the mesh channel joined and its declared app types held.
@@ -28,6 +30,11 @@ pub struct Member {
     endpoint: iroh::Endpoint,
     gossip: iroh_gossip::net::Gossip,
     _router: Router,
+}
+
+impl Member {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 impl Member {
@@ -47,7 +54,7 @@ impl Member {
             .await
             .unwrap_or_else(|e| panic!("{name:?}: the member does not join mesh {mesh_name} ({mesh}): {e}"));
         topology_view.set_author(&author, None);
-        Member { name, r#type: r#type.to_string(), topology_view, author, endpoint, gossip, _router: router }
+        Member { path: name.path.clone(), name: name.name.clone(), r#type: r#type.to_string(), topology_view, author, endpoint, gossip, _router: router }
     }
 
     /// Where this member is reached: its endpoint and the loopback address it bound.

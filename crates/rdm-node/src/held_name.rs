@@ -15,31 +15,38 @@ type Held = Arc<dyn Fn() -> PathName + Send + Sync>;
 /// The name this birth holds now: its topology view's once bound, its launch's before.
 #[derive(Clone)]
 pub struct HeldName {
-    birth: PathName,
+    path: String,
+    /// The name, beside its path.
+    name: String,
     held: Arc<OnceLock<Held>>,
+}
+
+impl HeldName {
+    /// The `(path, name)` lookup index key of path and name.
+    fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 impl HeldName {
     /// The name of a birth launched as `birth`, read from `birth` until [`Self::follow`] binds it.
     pub fn of_birth(birth: PathName) -> Self {
-        Self { birth, held: Arc::new(OnceLock::new()) }
+        Self { path: birth.path.clone(), name: birth.name.clone(), held: Arc::new(OnceLock::new()) }
     }
 
     /// Read the name from `held` (the topology view's held name) from now on. Bound once, when the node
     /// joins; a second binding is refused by name.
     pub fn follow(&self, held: impl Fn() -> PathName + Send + Sync + 'static) -> Result<(), String> {
-        self.held.set(Arc::new(held)).map_err(|_| format!("path {:?}, name {:?}: this birth already reads its name from its topology view", self.birth.path, self.birth.name))
+        self.held.set(Arc::new(held)).map_err(|_| format!("path {:?}, name {:?}: this birth already reads its name from its topology view", self.path, self.name))
     }
 
     /// The name this birth holds now.
     pub fn now(&self) -> PathName {
-        self.held.get().map_or_else(|| self.birth.clone(), |held| held())
+        self.held.get().map_or_else(|| self.location(), |held| held())
     }
 }
 
 impl std::fmt::Debug for HeldName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HeldName").field("birth", &self.birth).field("now", &self.now()).finish()
+        f.debug_struct("HeldName").field("birth", &self.location()).field("now", &self.now()).finish()
     }
 }
 

@@ -1,7 +1,6 @@
 //! End-to-end cell for `build-admission-gates` (`docs/architecture/build.md:321`).
 
 use rdm_client::{BuildFrame, BuildStream, CallEnd, FabricDesired, MeshDesired, Nodes};
-use rdm_core::{PathName};
 use rdm_test::estate::{named, Estate, Owner};
 use std::time::Duration;
 

@@ -32,7 +32,7 @@ async fn a_launched_process_sees_the_launch_contract_its_spec_names_and_never_it
     let dir = std::env::temp_dir().join(format!("rafka-launch-env-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let spec = ResolvedNodeLaunch { mesh: "mesh2".to_owned(), r#type: "node-admin".into(), secrets: Default::default(), withhold: Vec::new(),
-        node: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
+        path: "mesh2.node-admin".into(), name: "1".into(),
         deployment_id: DeploymentId::mint(),
         executable: "/bin/sh".into(),
         args: vec!["-c".into(), "env > \"$0\"".into(), dir.join("env.out").display().to_string()],
@@ -74,7 +74,7 @@ async fn a_launched_process_never_inherits_a_declared_name_and_sees_the_declared
     let spec = ResolvedNodeLaunch { mesh: "mesh1".to_owned(), r#type: "broker".into(),
         secrets: BTreeMap::from([("APP_DECLARED_KEY".to_string(), rdm_core::launch::SecretHex::of_value("the value RDM holds"))]),
         withhold: vec!["APP_DECLARED_KEY".into(), "APP_DECLARED_OTHER".into()],
-        node: rdm_core::PathName::new("mesh1.broker", "1").unwrap(),
+        path: "mesh1.broker".into(), name: "1".into(),
         deployment_id: DeploymentId::mint(),
         executable: "/bin/sh".into(),
         args: vec!["-c".into(), "env > \"$0\"".into(), dir.join("env.out").display().to_string()],

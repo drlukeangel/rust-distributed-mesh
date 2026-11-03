@@ -12,7 +12,7 @@ use rdm_core::connections::{
     carrier_order, resolve_for_carriers,
 };
 use rdm_core::reconnect::first_failure_for;
-use rdm_core::{ConnectionId, IncarnationId, NodeId, PathName};
+use rdm_core::{ConnectionId, IncarnationId, NodeId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -91,8 +91,10 @@ pub struct Birth {
     pub mesh: String,
     /// The explicitly declared type.
     pub r#type: String,
-    /// The birth's `(path, name)`.
-    pub name: PathName,
+    /// The birth's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The birth's logical node id.
     pub node_id: NodeId,
     /// The birth's process incarnation.
@@ -100,10 +102,15 @@ pub struct Birth {
 }
 
 impl Birth {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
+}
+
+impl Birth {
     /// Convert this birth to a [`ConnectionEnd`].
     pub fn to_end(&self) -> ConnectionEnd {
         ConnectionEnd { mesh: self.mesh.clone(), r#type: self.r#type.clone(),
-            name: self.name.clone(),
+            path: self.path.clone(), name: self.name.clone(),
             node_id: self.node_id.clone(),
             incarnation: Some(self.incarnation.clone()),
         }
@@ -369,8 +376,8 @@ impl MemoryConnectionsSink {
         tracing::info_span!(
             "rdm.node_admin.connection.update.via-observed",
             entry = %row.id,
-            source_path = %row.source.name.path, source_name = %row.source.name.name,
-            destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
+            source_path = %row.source.path, source_name = %row.source.name,
+            destination_path = %row.destination.path, destination_name = %row.destination.name,
             carrier = %row.carrier.as_ref().map(|c| c.node_id.to_string()).unwrap_or_default(),
             kind = match row.kind {
                 CoreKind::Direct => "direct",
@@ -730,9 +737,9 @@ impl ConnectionsRegistry {
         if !still_active_route {
             tracing::info_span!(
                 "rdm.node.connection.delete.via-tunnel-ended",
-                source_path = %row.source.name.path, source_name = %row.source.name.name,
+                source_path = %row.source.path, source_name = %row.source.name,
                 carrier = %row.carrier.as_ref().map(|c| c.node_id.to_string()).unwrap_or_default(),
-                destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
+                destination_path = %row.destination.path, destination_name = %row.destination.name,
                 alpn = %String::from_utf8_lossy(&row.alpn),
                 entry = %row.id,
             )
@@ -1056,9 +1063,9 @@ impl AlpnProtocolHandler {
         let presented_at = admit::presented_expiry(&cert);
         let tunnel_span = tracing::info_span!(
             "rdm.node.connection.create.via-tunnel",
-            source_path = %origin.name.path, source_name = %origin.name.name,
-            carrier_path = %own_now.name.path, carrier_name = %own_now.name.name,
-            destination_path = %destination.name.path, destination_name = %destination.name.name,
+            source_path = %origin.path, source_name = %origin.name,
+            carrier_path = %own_now.path, carrier_name = %own_now.name,
+            destination_path = %destination.path, destination_name = %destination.name,
             alpn = %alpn_str,
             entry = %id,
             cert_expires_at = presented_at,
@@ -1509,7 +1516,7 @@ impl Dialer {
                     return Err(ConnectError::NoActiveRoute { direct: None });
                 };
                 let carrier_birth = Birth { mesh: carrier_end.mesh.clone(), r#type: carrier_end.r#type.clone(),
-                    name: carrier_end.name.clone(),
+                    path: carrier_end.path.clone(), name: carrier_end.name.clone(),
                     node_id: carrier_end.node_id.clone(),
                     incarnation: carrier_inc,
                 };
@@ -1538,14 +1545,14 @@ impl Dialer {
                     &destination.incarnation,
                     self.alpn.proxy,
                     &self.alpn.carriers,
-                    live.iter().map(|n| (n.node_id.clone(), n.name.clone(), n.mesh.clone(), n.r#type.clone())),
+                    live.iter().map(|n| (n.node_id.clone(), n.location(), n.mesh.clone(), n.r#type.clone())),
                 );
                 if order.is_empty() {
                     return Err(ConnectError::NotSent { reason });
                 }
                 for node_id in order {
                     let Some(node) = live.iter().find(|n| n.node_id == node_id) else { continue };
-                    let carrier_birth = Birth { mesh: node.mesh.clone(), r#type: node.r#type.clone(), name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
+                    let carrier_birth = Birth { mesh: node.mesh.clone(), r#type: node.r#type.clone(), path: node.path.clone(), name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
                     match self
                         .open_tunnel(&own, &carrier_birth, destination, None, Some(begun), &caller_span, trace.clone())
                         .await
@@ -1765,9 +1772,9 @@ impl Dialer {
         let tunnel_span = caller_span.in_scope(|| {
             tracing::info_span!(
                 "rdm.node.connection.create.via-tunnel",
-                source_path = %own.name.path, source_name = %own.name.name,
-                carrier_path = %carrier.name.path, carrier_name = %carrier.name.name,
-                destination_path = %destination.name.path, destination_name = %destination.name.name,
+                source_path = %own.path, source_name = %own.name,
+                carrier_path = %carrier.path, carrier_name = %carrier.name,
+                destination_path = %destination.path, destination_name = %destination.name,
                 alpn = %alpn_str,
                 entry = tracing::field::Empty,
                 kind = tracing::field::Empty,
@@ -2083,7 +2090,7 @@ async fn dial_root(
     let span = tracing::info_span!(
         parent: None,
         "rdm.node.connection.create.via-dial",
-        destination_path = %to.name.path, destination_name = %to.name.name,
+        destination_path = %to.path, destination_name = %to.name,
         alpn = %String::from_utf8_lossy(alpn),
         cert_expires_at = cert_expires_at,
         outcome = tracing::field::Empty,
@@ -2647,17 +2654,17 @@ mod tests {
         // 3. MemoryConnectionsSink records Proxy Connected, settles it with a Disconnected row when Direct Connected lands,
         // and owed_drop disconnects only open routes.
         let src_birth = Birth { mesh: "mesh1".into(), r#type: "gateway".into(),
-            name: PathName::numbered("mesh1", "gateway", 1),
+            path: format!("{}.{}", "mesh1", "gateway"), name: (1).to_string(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
         let carrier_birth = Birth { mesh: "mesh1".into(), r#type: "gateway".into(),
-            name: PathName::numbered("mesh1", "gateway", 2),
+            path: format!("{}.{}", "mesh1", "gateway"), name: (2).to_string(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
         let dst_birth = Birth { mesh: "mesh1".into(), r#type: "broker".into(),
-            name: PathName::numbered("mesh1", "broker", 1),
+            path: format!("{}.{}", "mesh1", "broker"), name: (1).to_string(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
@@ -2709,7 +2716,7 @@ mod tests {
 
         // Even if the node renames its birth, owed_drop on the still-open direct_row uses the source the pair landed with.
         let renamed_birth = Birth { mesh: "mesh1".into(), r#type: "gateway".into(),
-            name: PathName::numbered("mesh1", "gateway", 9),
+            path: format!("{}.{}", "mesh1", "gateway"), name: (9).to_string(),
             node_id: src_birth.node_id.clone(),
             incarnation: src_birth.incarnation.clone(),
         };

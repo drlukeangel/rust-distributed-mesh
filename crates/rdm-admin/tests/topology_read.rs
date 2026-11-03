@@ -20,7 +20,7 @@ fn member_of(fabric: &FabricId, mesh: &str, r#type: &str, ordinal: u32) -> MeshD
         fabric_id: fabric.clone(),
         node: MeshNode { mesh: mesh.to_string(), r#type: r#type.to_string(),
             node_id: NodeId::mint(),
-            name: rdm_core::PathName::new(format!("{mesh}.{}", r#type), ordinal.to_string()).unwrap(),
+            path: format!("{mesh}.{}", r#type), name: (ordinal.to_string()).to_string(),
             endpoint_id: EndpointId(format!("key-{mesh}-{}-{ordinal}-{}", r#type, "x".repeat(40))),
             transport_addr: format!("127.0.0.1:{}", 20000 + ordinal).parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -69,7 +69,7 @@ async fn node(fabric: &FabricId, mesh: &str, name: rdm_core::PathName, r#type: &
         .expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let resolved = ResolvedNode { mesh: mesh.into(), r#type: r#type.to_string(), node_id, name, endpoint_id: ep.id(), transport_addr: addr, incarnation };
+    let resolved = ResolvedNode { mesh: mesh.into(), r#type: r#type.to_string(), node_id, path: name.path.clone(), name: name.name.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation };
     Node { ep, topology_view, client, resolver, slot, gossip, resolved, time, _router: router }
 }
 
@@ -206,7 +206,7 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
     let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     assert_eq!(read.meshes, 2);
     let names = |mesh: &str| -> Vec<rdm_core::PathName> {
-        let mut v: Vec<rdm_core::PathName> = read.installed.iter().find(|m| m.mesh == mesh).unwrap().members.iter().map(|d| d.node.name.clone()).collect();
+        let mut v: Vec<rdm_core::PathName> = read.installed.iter().find(|m| m.mesh == mesh).unwrap().members.iter().map(|d| d.node.location()).collect();
         v.sort();
         v
     };
@@ -335,7 +335,7 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
         .build(ServedBirth { node_id: lid.to_string(), incarnation: linc.to_string() })
         .unwrap();
     let _router = Router::builder(lossy_ep.clone()).accept(rdm_transport::ALPN, lossy).spawn();
-    let lossy_node = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: lid.clone(), name: rdm_core::PathName::new("mesh1.node", "9").unwrap(), endpoint_id: lossy_ep.id(), transport_addr: lossy_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(), incarnation: linc };
+    let lossy_node = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: lid.clone(), path: "mesh1.node".into(), name: "9".into(), endpoint_id: lossy_ep.id(), transport_addr: lossy_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(), incarnation: linc };
     server.resolver.insert(lossy_node);
     let read = get_topology(&server.client, &NodeTarget::ExactNode(lid), "mesh1", &server.topology_view, None, None).await.unwrap();
     assert_eq!(*sent.lock().unwrap(), 1);
@@ -502,7 +502,7 @@ fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overla
             operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh3.node", "2").unwrap()),
             node_id: deleting.node.node_id.clone(),
             incarnation: deleting.node.incarnation.clone(),
-            name: deleting.node.name.clone(),
+            path: deleting.node.path.clone(), name: deleting.node.name.clone(),
             event_at_rafka_ms: 1,
             traceparent: None,
             tracestate: None,
@@ -542,7 +542,7 @@ fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
             operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh3.node", "2").unwrap()),
             node_id: stopped.node.node_id.clone(),
             incarnation: stopped.node.incarnation.clone(),
-            name: stopped.node.name.clone(),
+            path: stopped.node.path.clone(), name: stopped.node.name.clone(),
             event_at_rafka_ms: 1,
             traceparent: None,
             tracestate: None,
@@ -557,7 +557,7 @@ fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
         assert!(caller.topology_view.digest_view.get(stopped.node.node_id.as_str()).is_none(), "the reader never held the stopped node's digest");
         assert_eq!(caller.topology_view.digest_view.stopped_unheard(), vec![op]);
         let view = rdm_admin::admin::project("fabric1", &fabric, rdm_admin::model::ProviderKind::Process, &caller.topology_view.digest_view, &rdm_admin::admin::Records::default());
-        let n = view.node(&stopped.node.name).expect("the stopped node is listed");
+        let n = view.node(&stopped.node.location()).expect("the stopped node is listed");
         assert_eq!((n.status, n.stopped, n.routable), (rdm_admin::model::NodeStatus::Leaving, true, false));
         server.ep.close().await;
         caller.ep.close().await;
@@ -565,7 +565,7 @@ fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
 }
 
 fn stored_of(d: &MeshDigest) -> rdm_core::topology::StoredNode {
-    rdm_core::topology::StoredNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.clone(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr }
+    rdm_core::topology::StoredNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(), node_id: d.node.node_id.clone(), name: d.node.location(), endpoint_id: d.node.endpoint_id.clone(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr }
 }
 
 /// `n` serves the births `rows` as its stored map.

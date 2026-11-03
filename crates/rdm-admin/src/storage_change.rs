@@ -776,7 +776,7 @@ impl StorageChanges {
         // Moved: this admin writes rows again, on the decided provider.
         door.commands.release_rows();
         let topology = door.topology.clone();
-        let paths: Vec<PathName> = topology.read().await.births().filter(|n| n.mesh == mesh && n.node_id != self.node_id && n.status != crate::model::NodeStatus::Deleted).map(|n| n.name.clone()).collect();
+        let paths: Vec<PathName> = topology.read().await.births().filter(|n| n.mesh == mesh && n.node_id != self.node_id && n.status != crate::model::NodeStatus::Deleted).map(|n| n.location()).collect();
         let ends = futures_util::future::join_all(paths.iter().map(|p| self.move_until(&door, &topology, &change.change_id, &mesh, p, &provider))).await;
         let recreated = ends.iter().filter(|e| **e == PathEnd::Recreated).count();
         door.commands.unblock();

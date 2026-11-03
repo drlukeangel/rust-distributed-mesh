@@ -26,8 +26,15 @@ pub struct LiveMesh {
     pub resolver: Arc<StaticResolver>,
     /// The commands this admin side sent and awaits a completion call for.
     pub commands: Arc<rdm_admin::node_commands::CommandView>,
-    /// The fixture admin's own path and name, its launcher's.
-    pub location: rdm_core::PathName,
+    /// The fixture admin's own path, its launcher's.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
+}
+
+impl LiveMesh {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 impl LiveMesh {
@@ -35,7 +42,7 @@ impl LiveMesh {
         let endpoint_id = node.endpoint_id.as_ref().ok_or("no fabric id")?.0.parse::<iroh::PublicKey>().map_err(|e| e.to_string())?;
         self.resolver.insert(ResolvedNode { mesh: node.mesh.clone(), r#type: node.r#type.clone(),
             node_id: node.node_id.clone(),
-            name: node.name.clone(),
+            path: node.path.clone(), name: node.name.clone(),
             endpoint_id,
             incarnation: node.incarnation_id.clone().ok_or("no incarnation")?,
             transport_addr: node.transport_addr.ok_or("no transport address")?,
@@ -99,7 +106,7 @@ impl NodeObserver for LiveMesh {
             // Use the real mesh-primary frame owner and its carrier; the fixture supplies its held view
             // and stores.
             let birth = self.client.delivery().me().clone();
-            let mut me = Node::allocated(self.location.clone(), self.topology_view.mesh_name(), "node-admin");
+            let mut me = Node::allocated(self.location(), self.topology_view.mesh_name(), "node-admin");
             me.node_id = birth.node_id.clone();
             me.incarnation_id = Some(birth.incarnation.clone());
             me.is_primary = true;
@@ -107,7 +114,7 @@ impl NodeObserver for LiveMesh {
             let door = rdm_admin::status_rpc::StatusDoor {
                 certs: None,
                 app_channels: None,
-                me: me.name.clone(), node_id: me.node_id.clone(), fabric_id: fabric_id.clone(),
+                me: me.location(), node_id: me.node_id.clone(), fabric_id: fabric_id.clone(),
                 declaration_seam: None, command_frame_seam: None, operation_effects: Default::default(), stopped: Default::default(),
                 topology: Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {
                     fabric: rdm_admin::model::Fabric { id: fabric_id, name: "fabric1".into(), status: rdm_admin::model::ScopeStatus::Ready, provider: rdm_admin::model::ProviderKind::Process },
@@ -301,7 +308,7 @@ impl AdminSide {
     /// Register the birth `launch` describes, as this admin deployed it, before the node starts:
     /// the node's own `JoinNode` is then verified against it. `key` is the node's fabric key.
     pub fn deployed(&self, launch: &rdm_core::launch::Launch, key: &SecretKey) {
-        self.register(launch, key, launch.name.clone(), None, false);
+        self.register(launch, key, launch.location(), None, false);
     }
 
     /// [`Self::deployed`] of a birth this admin side already holds: its row now names `name`, and
@@ -313,7 +320,7 @@ impl AdminSide {
     fn register(&self, launch: &rdm_core::launch::Launch, key: &SecretKey, name: rdm_core::PathName, last_accepted: Option<rdm_core::PathName>, held: bool) {
         let runtime = rdm_core::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).expect("the birth's runtime record is written");
         let _ = self.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-            name,
+            path: name.path.clone(), name: name.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
             supersedes: launch.supersedes.clone(),
@@ -452,7 +459,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let door = {
         let learner = topology_view.clone();
         Arc::new(rdm_admin::join::JoinDoor { nodes: Some((nodes_storage.clone(), rows.clone())), types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
-            me: name.clone(),
+            me_path: name.path.clone(), me_name: name.name.clone(),
             joins: joins.clone(),
             answer: Arc::new({
                 let (rafka_time, served_by) = (rafka_time.clone(), admin_node_id.clone());
@@ -543,7 +550,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
                         };
                         use rdm_core::MemberStatus as M;
                         match state {
-                            NodeState::Ready => digest_view.started(node_id, incarnation, &subject.name, &subject.mesh),
+                            NodeState::Ready => digest_view.started(node_id, incarnation, &subject.location(), &subject.mesh),
                             NodeState::Pending => digest_view.reported(node_id, incarnation, M::Pending),
                             NodeState::ConnectionsDeleting => digest_view.reported(node_id, incarnation, M::ConnectionsDeleting),
                             NodeState::Stopped => digest_view.reported(node_id, incarnation, M::Leaving),
@@ -573,7 +580,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
         fabric_id: fabric.clone(),
         node: rdm_core::digest::MeshNode { mesh: "mesh1".into(), r#type: "node-admin".into(),
             node_id: admin_node_id.clone(),
-            name: name.clone(),
+            path: name.path.clone(), name: name.name.clone(),
             endpoint_id: rdm_core::EndpointId(admin_ep.id().to_string()),
             transport_addr: addr,
             incarnation: admin_incarnation.clone(),
@@ -627,12 +634,12 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.reported(own_digest_slot.get().expect("the admin digest is set before a read is served"))), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
-        observer: LiveMesh { topology_view, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, location: name.clone() },
+        observer: LiveMesh { topology_view, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, path: name.path.clone(), name: name.name.clone()},
         seed: (admin_ep.id().to_string(), addr),
         fabric: fabric.clone(),
         joins,
         nodes_storage,
-        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: name.clone(), node_id: admin_node_id, incarnation: admin_incarnation },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: name.path.clone(), name: name.name.clone(), node_id: admin_node_id, incarnation: admin_incarnation },
         config_updates,
         rows,
         digest: digest_cell,

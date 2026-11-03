@@ -14,7 +14,7 @@ fn path(r#type: &str, ordinal: u32) -> PathName {
 }
 
 fn end(r#type: &str, ordinal: u32, incarnation: Option<&str>) -> ConnectionEnd {
-    ConnectionEnd { mesh: "mesh1".into(), r#type: r#type.to_string(), name: path(r#type, ordinal), node_id: NodeId::mint(), incarnation: incarnation.map(|i| IncarnationId::parse(&rdm_core::fixture_crockford60(i)).unwrap()) }
+    ConnectionEnd { mesh: "mesh1".into(), r#type: r#type.to_string(), path: path(r#type, ordinal).path, name: path(r#type, ordinal).name, node_id: NodeId::mint(), incarnation: incarnation.map(|i| IncarnationId::parse(&rdm_core::fixture_crockford60(i)).unwrap()) }
 }
 
 fn direct(source: ConnectionEnd, destination: ConnectionEnd, state: ConnectionState, at: u64) -> NodeConnection {
@@ -148,7 +148,7 @@ fn an_incomplete_projection_answers_a_direct_dial_it_cannot_vouch_for() {
 fn members(held: &mut ConnectionsHeld, ends: &[&ConnectionEnd]) -> Arc<StaticIncarnations> {
     let m = Arc::new(StaticIncarnations::default());
     for e in ends {
-        m.set(e.node_id.clone(), e.name.clone(), e.incarnation.clone().unwrap());
+        m.set(e.node_id.clone(), e.location(), e.incarnation.clone().unwrap());
     }
     held.set_topology_view(m.clone());
     m
@@ -162,7 +162,7 @@ fn a_stale_destination_incarnation_is_superseded() {
     held.apply(p.clone()).unwrap();
     assert_eq!(proxy_invalid(&held, &p), None, "the topology view holds the birth the Proxy recorded");
     // The destination restarts: the topology view now holds process d2 at its path.
-    m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
+    m.set(dest.node_id.clone(), dest.location(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
     let r = resolve(&held, &own.node_id, &dest.node_id, rpc());
     assert_eq!(r.route, EffectiveRoute::Direct { known: false });
@@ -175,7 +175,7 @@ fn a_stale_carrier_incarnation_is_superseded() {
     let m = members(&mut held, &[&carrier, &dest]);
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
-    m.set(carrier.node_id.clone(), carrier.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("c2")).unwrap());
+    m.set(carrier.node_id.clone(), carrier.location(), IncarnationId::parse(&rdm_core::fixture_crockford60("c2")).unwrap());
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_CARRIER_SUPERSEDED));
 }
 
@@ -207,7 +207,7 @@ fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: true });
     assert_eq!(held.active_directs_to(&dest.node_id).unwrap().len(), 2);
-    m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
+    m.set(dest.node_id.clone(), dest.location(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "the fact names d1, the topology view holds d2");
     assert!(held.active_directs_to(&dest.node_id).unwrap().is_empty(), "no connection names the current destination");
 }
@@ -224,11 +224,11 @@ fn a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call
     let m = members(&mut held, &[&carrier, &dest]);
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 20)).unwrap();
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute, "the series of the current birth owns the retry");
-    m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
+    m.set(dest.node_id.clone(), dest.location(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "the Failed fact names d1, the topology view holds d2");
-    m.set(dest.node_id.clone(), dest.name.clone(), dest.incarnation.clone().unwrap());
+    m.set(dest.node_id.clone(), dest.location(), dest.incarnation.clone().unwrap());
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::NoActiveRoute);
-    m.depart(dest.node_id.clone(), dest.name.clone());
+    m.depart(dest.node_id.clone(), dest.location());
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false }, "the node the Failed fact names left its path");
 }
 
@@ -242,7 +242,7 @@ fn a_direct_fact_and_a_proxy_naming_a_deleted_destination_are_not_current() {
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
     assert_eq!(held.active_len(), 2);
-    m.depart(dest.node_id.clone(), dest.name.clone());
+    m.depart(dest.node_id.clone(), dest.location());
     assert_eq!(held.active_len(), 0, "no Direct fact names a current destination");
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).route, EffectiveRoute::Direct { known: false });
@@ -263,9 +263,9 @@ fn a_proxy_naming_a_deleted_destination_birth_is_handed_back_at_the_next_resolve
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
     let successor = end("node", 3, Some("d2"));
-    m.set(successor.node_id.clone(), successor.name.clone(), successor.incarnation.clone().unwrap());
+    m.set(successor.node_id.clone(), successor.location(), successor.incarnation.clone().unwrap());
     assert!(resolve(&held, &own.node_id, &successor.node_id, rpc()).delete.is_empty(), "the Proxy's births are current: nothing is handed back");
-    m.depart(dest.node_id.clone(), dest.name.clone());
+    m.depart(dest.node_id.clone(), dest.location());
     let r = resolve(&held, &own.node_id, &successor.node_id, rpc());
     assert_eq!(r.route, EffectiveRoute::Direct { known: false }, "the successor is routed on its own, never over the old birth's Proxy");
     assert_eq!(r.delete, vec![(p, INVALID_DESTINATION_SUPERSEDED)], "the old birth's Proxy is handed back for delete, by name");
@@ -348,7 +348,7 @@ fn rename_preserves_routes_and_pair_reuse_keeps_births_independent() {
     let (mut held, mut own, mut carrier, mut dest) = estate();
     let topology = Arc::new(StaticIncarnations::default());
     for endpoint in [&own, &carrier, &dest] {
-        topology.set(endpoint.node_id.clone(), endpoint.name.clone(), endpoint.incarnation.clone().unwrap());
+        topology.set(endpoint.node_id.clone(), endpoint.location(), endpoint.incarnation.clone().unwrap());
     }
     held.set_topology_view(topology.clone());
     let failed = direct(own.clone(), dest.clone(), ConnectionState::Failed, 20);
@@ -356,12 +356,12 @@ fn rename_preserves_routes_and_pair_reuse_keeps_births_independent() {
     let carried = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(carried.clone()).unwrap();
     let original_index = carried.index();
-    own.name = own.name.with_name("source-renamed").unwrap();
-    carrier.name = carrier.name.with_name("carrier-renamed").unwrap();
+    { let at = own.location().with_name("source-renamed").unwrap(); own.path = at.path; own.name = at.name; }
+    { let at = carrier.location().with_name("carrier-renamed").unwrap(); carrier.path = at.path; carrier.name = at.name; }
     let successor = ConnectionEnd { node_id: NodeId::mint(), ..dest.clone() };
-    dest.name = dest.name.renamed().unwrap();
+    { let at = dest.location().renamed().unwrap(); dest.path = at.path; dest.name = at.name; }
     for endpoint in [&own, &carrier, &dest, &successor] {
-        topology.set(endpoint.node_id.clone(), endpoint.name.clone(), endpoint.incarnation.clone().unwrap());
+        topology.set(endpoint.node_id.clone(), endpoint.location(), endpoint.incarnation.clone().unwrap());
     }
     held.set_own_source(own.node_id.clone());
     let renamed = proxy(own.clone(), carrier.clone(), dest.clone(), 40);
@@ -378,6 +378,6 @@ fn rename_preserves_routes_and_pair_reuse_keeps_births_independent() {
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, CarrierPolicy::NoProxy).route, EffectiveRoute::NoActiveRoute);
     held.apply(renamed).unwrap();
     assert_eq!(held.own_active_proxies().len(), 1);
-    topology.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::mint());
+    topology.set(dest.node_id.clone(), dest.location(), IncarnationId::mint());
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, rpc()).delete.first().map(|(_, reason)| *reason), Some(INVALID_DESTINATION_SUPERSEDED));
 }

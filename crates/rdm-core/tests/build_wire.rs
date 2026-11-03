@@ -29,13 +29,13 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
             BuildRequest::Create {
                 submit: BuildSubmit::Change(BuildChange::Steps {
                     steps: vec![
-                        Step::DeleteConnections { node: rdm_core::PathName::new("m.node", "1").unwrap() },
-                        Step::LeaveMesh { node: rdm_core::PathName::new("m.node", "1").unwrap() },
-                        Step::Update { node: rdm_core::PathName::new("m.node", "1").unwrap(), name: rdm_core::PathName::new("m.node", "1-old").unwrap() },
-                        Step::Stop { node: rdm_core::PathName::new("m.node", "1-old").unwrap() },
-                        Step::Create { mesh: "m".into(), r#type: "node".into(), node: rdm_core::PathName::new("m.node", "1").unwrap(), executable: None },
-                        Step::Start { node: rdm_core::PathName::new("m.node", "1-old").unwrap() },
-                        Step::Delete { node: rdm_core::PathName::new("m.node", "1-old").unwrap() },
+                        Step::DeleteConnections { path: "m.node".into(), name: "1".into()},
+                        Step::LeaveMesh { path: "m.node".into(), name: "1".into()},
+                        Step::Update { path: "m.node".into(), name: "1".into(), new_path: "m.node".into(), new_name: "1-old".into()},
+                        Step::Stop { path: "m.node".into(), name: "1-old".into()},
+                        Step::Create { mesh: "m".into(), r#type: "node".into(), path: "m.node".into(), name: "1".into(), executable: None },
+                        Step::Start { path: "m.node".into(), name: "1-old".into()},
+                        Step::Delete { path: "m.node".into(), name: "1-old".into()},
                     ],
                 }),
             },
@@ -53,14 +53,14 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
                     based_on: rdm_core::BuildId::parse("0123456789ab").unwrap(),
                     nodes: vec![
                         rdm_core::meta::NodeSpec {
-                            path: rdm_core::PathName::new("m.node-admin", "1").unwrap(), mesh: "m".into(), r#type: "node-admin".into(),
+                            path: "m.node-admin".into(), name: "1".into(), mesh: "m".into(), r#type: "node-admin".into(),
                             storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
                             
                             executable: Some(rdm_core::binding::Binding { launch_id: "node-admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
                             tags: ["t".to_string()].into(),
                             config: Default::default(),
                         },
-                        rdm_core::meta::NodeSpec { path: rdm_core::PathName::new("m.node", "1").unwrap(), mesh: "m".into(), r#type: "node".into(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
+                        rdm_core::meta::NodeSpec { path: "m.node".into(), name: "1".into(), mesh: "m".into(), r#type: "node".into(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
                     ],
                 }),
             },
@@ -438,7 +438,7 @@ fn a_create_spec_carries_explicit_ownership_and_the_complete_config_map() {
         ("m.node.1", "06 6d2e6e6f64650131 01 6d 04 6e6f6465 00 00 00 00"),
     ];
     let admin = rdm_core::meta::NodeSpec {
-        path: rdm_core::PathName::new("m.node-admin", "1").unwrap(), mesh: "m".into(), r#type: "node-admin".into(),
+        path: "m.node-admin".into(), name: "1".into(), mesh: "m".into(), r#type: "node-admin".into(),
         storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
         
         executable: Some(rdm_core::binding::Binding { launch_id: "node-admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),

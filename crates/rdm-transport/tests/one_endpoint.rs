@@ -50,7 +50,7 @@ async fn process(key: &SecretKey) -> Process {
         .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone()).accept(rdm_transport::ALPN, server.clone()).accept(iroh_gossip::ALPN, gossip).spawn();
-    let resolved = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id, name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
+    let resolved = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id, path: "mesh1.node".into(), name: "1".into(), endpoint_id: key.public(), transport_addr: addr, incarnation };
     Process { _router: router, endpoint, _server: server, resolved, dispatched }
 }
 

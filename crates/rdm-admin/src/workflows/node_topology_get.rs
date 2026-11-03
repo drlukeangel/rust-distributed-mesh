@@ -106,7 +106,7 @@ mod tests {
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".to_string(), r#type: "node-admin".into(),
                     node_id: server_node_id.clone(),
-                    name: PathName::numbered("mesh1", "node-admin", 1),
+                    path: format!("{}.{}", "mesh1", "node-admin"), name: (1).to_string(),
                     endpoint_id: EndpointId(server_ep.id().to_string()),
                     transport_addr: server_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("ipv4"),
                     incarnation: server_inc.clone(),
@@ -183,7 +183,7 @@ mod tests {
                     }
                     let view = NodeView {
                         properties: Default::default(),
-                        name,
+                        path: name.path.clone(), name: name.name.clone(),
                         r#type: "node".into(),
                         mesh: "mesh1".to_string(),
                         node_id,
@@ -263,7 +263,7 @@ mod tests {
             let server_addr = server_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("ipv4");
             resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(),
                 node_id: server_node_id.clone(),
-                name: PathName::numbered("mesh1", "node-admin", 1),
+                path: format!("{}.{}", "mesh1", "node-admin"), name: (1).to_string(),
                 endpoint_id: server_ep.id(),
                 transport_addr: server_addr,
                 incarnation: server_inc.clone(),

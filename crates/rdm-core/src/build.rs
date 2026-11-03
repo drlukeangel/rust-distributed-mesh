@@ -179,8 +179,10 @@ pub enum Step {
     ///
     /// Position 0 on the wire.
     Create {
-        /// The `(path, name)` the node is created at.
-        node: PathName,
+        /// The path the node is created at.
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The owning mesh, independent of the path/name.
         mesh: String,
         /// The node's type, which the explicit executable serves.
@@ -199,7 +201,9 @@ pub enum Step {
     /// Position 1 on the wire.
     Stop {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// node.update of the node at `node`: its `(path, name)` becomes `name` (lifecycles/node-name-update.md, under the
     /// rename precondition: the node is live, its `node.connections.deleted` of an `All` and then its
@@ -208,23 +212,31 @@ pub enum Step {
     /// Position 2 on the wire.
     Update {
         /// The node.
-        node: PathName,
-        /// The `(path, name)` it takes.
-        name: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
+        /// The path it takes.
+        new_path: String,
+        /// The name, beside its path.
+        new_name: String,
     },
     /// node.start of the stopped node at `node`: the same process rejoins under the name its row holds.
     ///
     /// Position 3 on the wire.
     Start {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// node.delete of the node at `node`: its identity and name are released, its storage kept.
     ///
     /// Position 4 on the wire.
     Delete {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// node.connection.delete `{ scope: All }` of the live node at `node`
     /// (lifecycles/node-connections-delete.md): every connection it holds is closed; it keeps running
@@ -233,7 +245,9 @@ pub enum Step {
     /// Position 5 on the wire.
     DeleteConnections {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// node.mesh.leave of the live node at `node`, once its connections are deleted
     /// (lifecycles/node-mesh-leave.md): it leaves its mesh (and the backbone, a node-admin) and its Node
@@ -242,15 +256,17 @@ pub enum Step {
     /// Position 6 on the wire.
     LeaveMesh {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
 }
 
 impl Step {
-    /// The `(path, name)` the step acts on when it runs.
-    pub fn node(&self) -> &PathName {
+    /// The `(path, name)` lookup index key of the node the step acts on when it runs.
+    pub fn location(&self) -> PathName {
         match self {
-            Self::Create { node, .. } | Self::Stop { node } | Self::Update { node, .. } | Self::Start { node } | Self::Delete { node } | Self::DeleteConnections { node } | Self::LeaveMesh { node } => node,
+            Self::Create { path, name, .. } | Self::Stop { path, name } | Self::Update { path, name, .. } | Self::Start { path, name } | Self::Delete { path, name } | Self::DeleteConnections { path, name } | Self::LeaveMesh { path, name } => PathName { path: path.clone(), name: name.clone() },
         }
     }
 }
@@ -1026,33 +1042,33 @@ mod tests {
             image: None,
         };
         let steps = vec![
-            Step::DeleteConnections { node: name.clone() },
-            Step::LeaveMesh { node: name.clone() },
+            Step::DeleteConnections { path: name.path.clone(), name: name.name.clone()},
+            Step::LeaveMesh { path: name.path.clone(), name: name.name.clone()},
             Step::Update {
-                node: name.clone(),
-                name: old_name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
+                new_path: old_name.path.clone(), new_name: old_name.name.clone(),
             },
             Step::Stop {
-                node: old_name.clone(),
+                path: old_name.path.clone(), name: old_name.name.clone(),
             },
             Step::Create { mesh: "mesh1".into(), r#type: "node".into(),
-                node: name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
                 executable: Some(binding),
             },
             Step::Start {
-                node: old_name.clone(),
+                path: old_name.path.clone(), name: old_name.name.clone(),
             },
             Step::Delete {
-                node: old_name.clone(),
+                path: old_name.path.clone(), name: old_name.name.clone(),
             },
         ];
-        assert_eq!(steps[0].node(), &name);
-        assert_eq!(steps[1].node(), &name);
-        assert_eq!(steps[2].node(), &name);
-        assert_eq!(steps[3].node(), &old_name);
-        assert_eq!(steps[4].node(), &name);
-        assert_eq!(steps[5].node(), &old_name);
-        assert_eq!(steps[6].node(), &old_name);
+        assert_eq!(steps[0].location(), name);
+        assert_eq!(steps[1].location(), name);
+        assert_eq!(steps[2].location(), name);
+        assert_eq!(steps[3].location(), old_name);
+        assert_eq!(steps[4].location(), name);
+        assert_eq!(steps[5].location(), old_name);
+        assert_eq!(steps[6].location(), old_name);
 
         let req = BuildRequest::Create {
             submit: BuildSubmit::Change(BuildChange::Steps {
@@ -1094,8 +1110,10 @@ mod tests {
 pub enum StepTargetError {
     /// No preceding create or admission pin supplies this target.
     Unknown {
-        /// Separate path and name of the target.
-        node: PathName,
+        /// Separate path of the target.
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// Original one-based step position.
         step: u32,
     },
@@ -1114,24 +1132,25 @@ pub fn step_targets<T: Clone>(steps: &[Step], mut at: std::collections::BTreeMap
     let mut out = Vec::with_capacity(steps.len());
     for (index, step) in steps.iter().enumerate() {
         let position = index as u32 + 1;
-        let unknown = || StepTargetError::Unknown { node: step.node().clone(), step: position };
+        let node = step.location();
+        let unknown = || StepTargetError::Unknown { path: node.path.clone(), name: node.name.clone(), step: position };
         let target = match step {
-            Step::Create { node, mesh, r#type, .. } => {
-                let target = created(node, mesh, r#type);
+            Step::Create { mesh, r#type, .. } => {
+                let target = created(&node, mesh, r#type);
                 at.insert(node.clone(), target.clone());
                 target
             }
-            Step::Update { node, name } => {
-                if node.path != name.path {
+            Step::Update { new_path, new_name, .. } => {
+                if node.path != *new_path {
                     return Err(StepTargetError::InvalidRename { step: position, detail: "a node's path is immutable".into() });
                 }
-                PathName::new(&name.path, &name.name).map_err(|error| StepTargetError::InvalidRename { step: position, detail: error.to_string() })?;
-                let target = at.remove(node).ok_or_else(unknown)?;
-                at.insert(name.clone(), target.clone());
+                let name = PathName::new(new_path, new_name).map_err(|error| StepTargetError::InvalidRename { step: position, detail: error.to_string() })?;
+                let target = at.remove(&node).ok_or_else(unknown)?;
+                at.insert(name, target.clone());
                 target
             }
-            Step::Delete { node } => at.remove(node).ok_or_else(unknown)?,
-            Step::Stop { node } | Step::Start { node } | Step::DeleteConnections { node } | Step::LeaveMesh { node } => at.get(node).cloned().ok_or_else(unknown)?,
+            Step::Delete { .. } => at.remove(&node).ok_or_else(unknown)?,
+            Step::Stop { .. } | Step::Start { .. } | Step::DeleteConnections { .. } | Step::LeaveMesh { .. } => at.get(&node).cloned().ok_or_else(unknown)?,
         };
         out.push(target);
     }

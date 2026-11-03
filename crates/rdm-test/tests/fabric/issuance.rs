@@ -92,7 +92,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     // Every node holds a cert for exactly its birth, verifying to its issuer and the issuer to the root.
     let issued = named(&spans, "rdm.node_admin.cert.create.via-join");
     for location in [PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh2.node", "1").unwrap()] {
-        let view = views.iter().find(|v| v.name == location).expect("the node is in the view");
+        let view = views.iter().find(|v| v.location() == location).expect("the node is in the view");
         let node = &view.node_id;
         let held = held_by(&spans, node);
         // The process holds a cert its birth was issued at a join.
@@ -132,7 +132,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
         certs::decode_issuing_cert(&s(&sp["attributes"]["issuing_cert"])).unwrap_or_else(|e| panic!("{node} was launched with no issuing cert: {e}: {sp}"))
     };
     for location in [("mesh1.node-admin", "2"), ("mesh2.node-admin", "1"), ("mesh2.node-admin", "2")].map(|(path, name)| PathName::new(path, name).unwrap()) {
-        let view = views.iter().find(|v| v.name == location).expect("launched admin");
+        let view = views.iter().find(|v| v.location() == location).expect("launched admin");
         let node = &view.node_id;
         let mesh = &view.mesh;
         let issuing = issuing_of(node);
@@ -155,8 +155,8 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
 
     estate.artifact("trace-ids.json", &json!({
         "node_id": before.node_id,
-        "path": before.name.path,
-        "name": before.name.name,
+        "path": before.path,
+        "name": before.name,
         "issuances": issued.iter().filter(|sp| sp["attributes"]["node_id"] == before.node_id.as_str()).map(|sp| json!({"trace_id": sp["trace_id"], "span_id": sp["span_id"], "incarnation_id": sp["attributes"]["incarnation_id"], "issued_at_rafka_ms": sp["attributes"]["issued_at_rafka_ms"]})).collect::<Vec<_>>(),
         "mesh2 mesh-birth issuance": {"trace_id": minted[0]["trace_id"], "span_id": minted[0]["span_id"]},
     }));

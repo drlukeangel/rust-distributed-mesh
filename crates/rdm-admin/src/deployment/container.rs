@@ -616,7 +616,7 @@ impl ContainerDeploymentProvider {
     /// read.
     async fn find_by_name(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<Found, DeployError> {
         let name = container_name(spec);
-        let named = |reason: String| DeployError::Spawn { node: spec.node.clone(), reason: format!("finding container {name}: {reason}") };
+        let named = |reason: String| DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: format!("finding container {name}: {reason}") };
         let deployment = spec.deployment_id.to_string();
         let on = On { deployment: Some(deployment.as_str()), ..On::default() };
         let state = match self.docker_text(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}} {{.Id}}", &name], deadline, on).await {
@@ -641,7 +641,7 @@ impl ContainerDeploymentProvider {
                     Ok(_) => return Err(named(format!("the created container {id} is still there after its removal, so nothing is launched"))),
                     Err(e) => return Err(e.into_deploy(|r| named(format!("the created container {id} was removed, but its absence could not be read, so nothing is launched: {r}")))),
                 }
-                tracing::info_span!("rdm.node_admin.deployment.remove.via-created-container", node_path = %spec.node.path, node_name = %spec.node.name, deployment_id = %spec.deployment_id, container = id)
+                tracing::info_span!("rdm.node_admin.deployment.remove.via-created-container", node_path = %spec.path, node_name = %spec.name, deployment_id = %spec.deployment_id, container = id)
                     .in_scope(|| tracing::info!("a container Docker created and never started is removed by its exact id and read absent before the launch record decides"));
                 return self.by_launch_record(spec).await.map_err(named);
             }
@@ -721,7 +721,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     }
 
     async fn spawn(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-        let err = |reason: String| DeployError::Spawn { node: spec.node.clone(), reason };
+        let err = |reason: String| DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason };
         let ip = spec.transport.ip();
         if let Some((n, a)) = spec.listeners.iter().find(|(_, a)| a.ip() != ip) {
             return Err(err(format!("listener {n} is assigned {a}, but one container has one address ({ip})")));
@@ -748,9 +748,9 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             "--label".into(),
             format!("rafka.fabric={}", self.fabric),
             "--label".into(),
-            format!("rafka.node.path={}", spec.node.path),
+            format!("rafka.node.path={}", spec.path),
             "--label".into(),
-            format!("rafka.node.name={}", spec.node.name),
+            format!("rafka.node.name={}", spec.name),
             "--label".into(),
             format!("rafka.node.kind={}", spec.r#type),
             "--network".into(),
@@ -945,7 +945,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     /// the daemon (no lock held across it); a daemon that cannot answer by the deadline, or a network
     /// with no address left, is an error naming it.
     async fn bind_ip(&self, node: &crate::model::PathName, birth: &crate::model::DeploymentId, deadline: super::deadline::Deadline) -> Result<IpAddr, DeployError> {
-        let err = |reason: String| DeployError::Spawn { node: node.clone(), reason };
+        let err = |reason: String| DeployError::Spawn { path: node.path.clone(), name: node.name.clone(), reason };
         if let Some(ip) = self.ips.lock().unwrap().held.get(birth) {
             return Ok(*ip);
         }
@@ -1204,7 +1204,7 @@ mod tests {
         let spec = ResolvedNodeLaunch { mesh: "mesh1".to_owned(), r#type: "node-admin".into(),
             secrets: std::collections::BTreeMap::from([("APP_KEY".to_string(), rdm_core::launch::SecretHex::of_value("app,value=with\nnewline")), ("APP_EMPTY".to_string(), rdm_core::launch::SecretHex::of_value(""))]),
             withhold: vec!["APP_KEY".into(), "APP_EMPTY".into()],
-            node: rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(),
+            path: "mesh1.node-admin".into(), name: "2".into(),
             deployment_id: crate::model::DeploymentId::mint(),
             executable: "/bin/true".into(),
             args: vec![],
@@ -1299,7 +1299,7 @@ esac
             ResolvedNodeLaunch { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 secrets: Default::default(),
                 withhold: Vec::new(),
-                node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+                path: "mesh1.node".into(), name: "1".into(),
                 deployment_id: crate::model::DeploymentId::mint(),
                 executable: "/bin/true".into(),
                 args: vec![],

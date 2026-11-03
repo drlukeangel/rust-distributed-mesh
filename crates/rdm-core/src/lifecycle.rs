@@ -8,7 +8,6 @@
 //! repeated or doubly-sourced copy once, by its key.
 
 use crate::ids::{FabricId, IncarnationId, NodeId};
-use crate::path::PathName;
 use serde::{Deserialize, Serialize};
 
 /// One lifecycle operation on one exact birth, as its events name it.
@@ -30,8 +29,10 @@ pub struct LifecycleOp {
     pub node_id: NodeId,
     /// The incarnation of the birth.
     pub incarnation: IncarnationId,
-    /// The node's separate path and name fields.
-    pub name: PathName,
+    /// The node's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The subject owning mesh, independent of the path/name spelling.
     pub mesh: String,
     /// When the event happened, in Rafka-time; evidence only, never liveness or order. One expiry
@@ -57,16 +58,19 @@ impl LifecycleOp {
     /// The `attempt` of an operation that belongs to no Build: the field keeps its position with this
     /// constant (D44; removal debt D17 removes it with a gossip change of its own).
     pub const NO_ATTEMPT: u32 = 0;
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 impl PartialEq for LifecycleOp {
     fn eq(&self, other: &Self) -> bool {
-        let Self { build_id, attempt, operation, node_id, incarnation, name, r#type, mesh, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;
+        let Self { build_id, attempt, operation, node_id, incarnation, path, name, r#type, mesh, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;
         *build_id == other.build_id
             && *attempt == other.attempt
             && *operation == other.operation
             && *node_id == other.node_id
             && *incarnation == other.incarnation
+            && *path == other.path
             && *name == other.name
             && *r#type == other.r#type
             && *mesh == other.mesh
@@ -135,7 +139,7 @@ mod tests {
             operation: crate::OperationId::location("node.delete", &crate::PathName::new("mesh2.node", "2").unwrap()),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
-            name: crate::PathName::new("mesh2.node", "2").unwrap(),
+            path: "mesh2.node".into(), name: "2".into(),
             event_at_rafka_ms: 7,
             traceparent: None,
             tracestate: None,

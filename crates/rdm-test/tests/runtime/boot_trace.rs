@@ -40,7 +40,7 @@ async fn a_birth_is_one_trace_of_its_boot_steps_and_its_heartbeat_is_marked() {
     // `node_name`, a node's own span by its id.
     let node = |path: &str, name: &str| {
         let location = rdm_core::PathName::new(path, name).unwrap();
-        let id = views.iter().find(|v| v.name == location).unwrap_or_else(|| panic!("{location:?} is in the settled view: {views:?}")).node_id.to_string();
+        let id = views.iter().find(|v| v.location() == location).unwrap_or_else(|| panic!("{location:?} is in the settled view: {views:?}")).node_id.to_string();
         (location, id)
     };
     let (admin, rpc) = (node("mesh1.node-admin", "1"), node("mesh1.node", "1"));

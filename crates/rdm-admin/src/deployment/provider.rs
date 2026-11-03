@@ -84,7 +84,7 @@ impl FabricPolicy {
 // deletes one runtime from an already-resolved launch; it decides nothing.
 // ---------------------------------------------------------------------------
 
-use crate::model::{DeploymentId, PathName};
+use crate::model::DeploymentId;
 use rdm_core::{RuntimeFact, RuntimeLocator, RuntimeProvider};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -97,7 +97,9 @@ pub struct ResolvedNodeLaunch {
     /// The explicitly declared node type, independent of its pair spelling.
     pub r#type: String,
     /// The node to run.
-    pub node: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The deployment the runtime belongs to.
     pub deployment_id: DeploymentId,
     /// The executable to run.
@@ -120,6 +122,11 @@ pub struct ResolvedNodeLaunch {
     pub transport: std::net::SocketAddr,
     /// The non-Iroh listeners the runtime must bind, by name.
     pub listeners: Vec<(String, std::net::SocketAddr)>,
+}
+
+impl ResolvedNodeLaunch {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// What a provider knows of one exact launch ([`DeploymentProvider::find`]): three distinct facts,
@@ -400,8 +407,10 @@ pub enum DeploymentStatus {
 pub enum DeployError {
     /// The runtime could not be started.
     Spawn {
-        /// The separate path and name of the launch whose spawn failed.
-        node: PathName,
+        /// The separate path of the launch whose spawn failed.
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// Why it failed.
         reason: String,
     },
@@ -439,7 +448,7 @@ pub enum DeployError {
 impl std::fmt::Display for DeployError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Spawn { node, reason } => write!(f, "deploying path {:?}, name {:?} failed: {reason}", node.path, node.name),
+            Self::Spawn { path, name, reason } => write!(f, "deploying path {:?}, name {:?} failed: {reason}", path, name),
             Self::Terminate { deployment, reason } => write!(f, "terminating deployment {deployment} failed: {reason}"),
             Self::Deadline { operation, deployment, elapsed, bound, mutation } => write!(
                 f,
@@ -592,7 +601,7 @@ mod tests {
             format!("remote:{}", self.0)
         }
         async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-            Err(DeployError::Spawn { node: spec.node.clone(), reason: "not in this test".into() })
+            Err(DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: "not in this test".into() })
         }
         async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
@@ -627,7 +636,7 @@ mod tests {
     async fn the_held_runtimes_hand_off_is_held_runtimes_1_and_another_format_is_refused_by_name() {
         let dir = crate::test_support::tempdir("held-runtimes");
         assert_eq!(held_runtimes_in(&dir).await.unwrap(), Vec::new(), "a data dir with no hand-off holds no rows");
-        let rows = vec![crate::storage::RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(), node_id: crate::model::NodeId::mint(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), incarnation_id: crate::model::IncarnationId::mint(), runtime: fact("process:host-a"), data_dir: Some("/data/mesh1.node.1".into()) }];
+        let rows = vec![crate::storage::RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(), node_id: crate::model::NodeId::mint(), path: "mesh1.node".into(), name: "1".into(), incarnation_id: crate::model::IncarnationId::mint(), runtime: fact("process:host-a"), data_dir: Some("/data/mesh1.node.1".into()) }];
         write_held_runtimes(&dir, &rows).await.unwrap();
         let written: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(HELD_RUNTIMES_FILE)).unwrap()).unwrap();
         assert_eq!(written, serde_json::json!({ "format": "held-runtimes/1", "rows": serde_json::to_value(&rows).unwrap() }), "the hand-off's shape");

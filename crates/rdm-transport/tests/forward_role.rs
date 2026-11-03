@@ -22,7 +22,7 @@ fn member(ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq: u64, statu
         fabric_id: fabric(),
         node: MeshNode { mesh: "mesh2".into(), r#type: "node".into(),
             node_id: node_id.clone(),
-            name: rdm_core::PathName::new("mesh2.node", ordinal.to_string()).unwrap(),
+            path: "mesh2.node".into(), name: (ordinal.to_string()).to_string(),
             endpoint_id: EndpointId(format!("key{ordinal}")),
             transport_addr: format!("127.0.0.1:{}", 41_000 + ordinal).parse().unwrap(),
             incarnation: birth.clone(),

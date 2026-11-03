@@ -137,14 +137,14 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             fabric_id,
             mesh: "mesh1".into(),
             r#type: "node-admin".into(),
-            name: rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(),
+            path: "mesh1.node-admin".into(), name: "2".into(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
             seeds: vec![(key_of(&root_digest), root_digest.node.transport_addr)],
-            launcher: Some(Launcher { mesh: root_digest.node.mesh.clone(), name: root_digest.node.name.clone(), node_id: root_digest.node.node_id.clone(), incarnation: root_digest.node.incarnation.clone() }),
+            launcher: Some(Launcher { mesh: root_digest.node.mesh.clone(), path: root_digest.node.path.clone(), name: root_digest.node.name.clone(), node_id: root_digest.node.node_id.clone(), incarnation: root_digest.node.incarnation.clone() }),
             data_dir: joiner_dir.clone(),
             store_dir: root_dir.clone(),
             mesh_id: Some(root_mesh_id),
@@ -155,7 +155,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         };
         let runtime = rdm_core::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
         let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-            name: launch.name.clone(),
+            path: launch.path.clone(), name: launch.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
             supersedes: None,
@@ -189,7 +189,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         // Blocked { node_id, incarnation, reason, retry_on }, and the executor's `ready_blocker` names it.
         let PreNodeReadyState::Blocked { reason: hook_reason, .. } = blocked.clone() else { unreachable!() };
         let joiner_digest = joiner.digest.lock().unwrap().clone();
-        let mut subject = rdm_admin::model::Node::allocated(joiner_digest.node.name.clone(), joiner_digest.node.mesh.clone(), &joiner_digest.node.r#type);
+        let mut subject = rdm_admin::model::Node::allocated(joiner_digest.node.location(), joiner_digest.node.mesh.clone(), &joiner_digest.node.r#type);
         subject.node_id = joiner_digest.node.node_id.clone();
         subject.incarnation_id = Some(joiner_digest.node.incarnation.clone());
         let observer = rdm_admin::admin::TopologyObserver {

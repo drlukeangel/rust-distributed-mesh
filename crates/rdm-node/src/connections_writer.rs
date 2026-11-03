@@ -128,7 +128,7 @@ fn local_now_ms() -> u64 {
 }
 
 fn end_of(node: &ResolvedNode) -> ConnectionEnd {
-    ConnectionEnd { mesh: node.mesh.clone(), r#type: node.r#type.clone(), name: node.name.clone(), node_id: node.node_id.clone(), incarnation: Some(node.incarnation.clone()) }
+    ConnectionEnd { mesh: node.mesh.clone(), r#type: node.r#type.clone(), path: node.path.clone(), name: node.name.clone(), node_id: node.node_id.clone(), incarnation: Some(node.incarnation.clone()) }
 }
 
 /// This node's open routes in `held`: its own latest Direct entries that are `connected`, then its
@@ -139,11 +139,18 @@ pub struct HeldConnections {
     /// The globally unique ID of the node whose connections were read.
     pub node_id: rdm_core::NodeId,
     /// The name the node holds, and writes its rows under.
-    pub name: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// Whether its held set is complete.
     pub complete: bool,
     /// Its own latest Direct entries that are `connected` and its own active Proxy entries.
     pub routes: Vec<NodeConnection>,
+}
+
+impl HeldConnections {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 fn open_routes(held: &ConnectionsHeld) -> Vec<NodeConnection> {
@@ -229,8 +236,8 @@ impl ConnectionsWriter {
     /// This node, as the source every row it writes now names: the name it holds, its node id and
     /// its process birth.
     pub fn own(&self) -> ConnectionEnd {
-        let name = self.inner.held_name.get().map_or_else(|| self.inner.own.name.clone(), |held| held());
-        ConnectionEnd { name, ..self.inner.own.clone() }
+        let name = self.inner.held_name.get().map_or_else(|| self.inner.own.location(), |held| held());
+        ConnectionEnd { path: name.path.clone(), name: name.name.clone(), ..self.inner.own.clone() }
     }
 
     /// Snapshot the current descriptive name. The held route projection stays keyed by
@@ -315,7 +322,7 @@ impl ConnectionsWriter {
     pub async fn held_connections(&self) -> HeldConnections {
         let own = self.own_now();
         let held = self.inner.held.lock().unwrap();
-        HeldConnections { node_id: own.node_id, name: own.name, complete: held.is_complete(), routes: open_routes(&held) }
+        HeldConnections { node_id: own.node_id, path: own.path.clone(), name: own.name.clone(), complete: held.is_complete(), routes: open_routes(&held) }
     }
 
     /// The connections this node has open now (R-CR1; Q169), whatever their rows: each Direct the
@@ -336,7 +343,7 @@ impl ConnectionsWriter {
         if let Some(registry) = registry {
             live.extend(registry.open_rows());
         }
-        live.sort_by_key(|r| (r.kind == ConnectionKind::Proxy, r.destination.name.clone(), r.alpn.clone()));
+        live.sort_by_key(|r| (r.kind == ConnectionKind::Proxy, r.destination.location(), r.alpn.clone()));
         let mut seen = std::collections::HashSet::new();
         live.retain(|r| seen.insert(r.id.clone()));
         live
@@ -411,8 +418,8 @@ impl ConnectionsWriter {
                 parent: span,
                 "rdm.node_admin.connection.reject.via-refused-write",
                 entry = %row.id,
-                source_id = %row.source.node_id, source_path = %row.source.name.path, source_name = %row.source.name.name,
-                destination_id = %row.destination.node_id, destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
+                source_id = %row.source.node_id, source_path = %row.source.path, source_name = %row.source.name,
+                destination_id = %row.destination.node_id, destination_path = %row.destination.path, destination_name = %row.destination.name,
                 destination_node_id = %row.destination.node_id,
                 kind = kind_name(row.kind),
                 state = state_name(row.state),
@@ -478,8 +485,8 @@ impl ConnectionsWriter {
             let span = tracing::info_span!(
                 "rdm.node_admin.connection.delete.via-direct-restored",
                 entry = %row.id,
-                source_id = %row.source.node_id, source_path = %row.source.name.path, source_name = %row.source.name.name,
-                destination_id = %row.destination.node_id, destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
+                source_id = %row.source.node_id, source_path = %row.source.path, source_name = %row.source.name,
+                destination_id = %row.destination.node_id, destination_path = %row.destination.path, destination_name = %row.destination.name,
                 carrier = %row.carrier.as_ref().map(|c| c.node_id.to_string()).unwrap_or_default(),
                 kind = kind_name(row.kind),
                 state = state_name(row.state),
@@ -585,8 +592,8 @@ impl ConnectionsWriter {
                     parent: &parent,
                     "rdm.node_admin.connection.update.via-observed",
                     entry = %row.id,
-                    source_id = %row.source.node_id, source_path = %row.source.name.path, source_name = %row.source.name.name,
-                    destination_id = %row.destination.node_id, destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
+                    source_id = %row.source.node_id, source_path = %row.source.path, source_name = %row.source.name,
+                    destination_id = %row.destination.node_id, destination_path = %row.destination.path, destination_name = %row.destination.name,
                     carrier = %row.carrier.as_ref().map(|c| c.node_id.to_string()).unwrap_or_default(),
                     peer = %peer,
                     kind = kind_name(row.kind),
@@ -602,8 +609,8 @@ impl ConnectionsWriter {
                 Origin::Drop { closed_entry, reason } => tracing::info_span!(
                     parent: &parent,
                     "rdm.node_admin.connection.update.via-connection-delete",
-                    source_id = %row.source.node_id, source_path = %row.source.name.path, source_name = %row.source.name.name,
-                    destination_id = %row.destination.node_id, destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
+                    source_id = %row.source.node_id, source_path = %row.source.path, source_name = %row.source.name,
+                    destination_id = %row.destination.node_id, destination_path = %row.destination.path, destination_name = %row.destination.name,
                     carrier = %row.carrier.as_ref().map(|c| c.node_id.to_string()).unwrap_or_default(),
                     kind = kind_name(row.kind),
                     state = state_name(row.state),
@@ -740,7 +747,7 @@ impl rdm_transport::connections::ConnectionsSink for ConnectionsWriter {
     fn own_birth(&self) -> rdm_transport::connections::Birth {
         let own = self.own();
         rdm_transport::connections::Birth { mesh: own.mesh.clone(), r#type: own.r#type.clone(),
-            name: own.name,
+            path: own.path.clone(), name: own.name.clone(),
             node_id: own.node_id,
             incarnation: own.incarnation.unwrap_or_else(IncarnationId::mint),
         }
@@ -777,7 +784,7 @@ mod tests {
     #[tokio::test]
     async fn opened_to_direct_closed_latest_direct_for_reconnect_state_and_runtime_handle_track_live_and_held_facts() {
         let own = ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             node_id: NodeId::mint(),
             incarnation: Some(IncarnationId::mint()),
         };
@@ -794,7 +801,7 @@ mod tests {
         let peer_key = secret.public();
         let peer_inc = IncarnationId::mint();
         let peer_node = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(),
-            name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
+            path: "mesh1.node".into(), name: "2".into(),
             node_id: NodeId::mint(),
             incarnation: peer_inc.clone(),
             endpoint_id: peer_key,

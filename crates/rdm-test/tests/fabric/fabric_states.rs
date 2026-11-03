@@ -115,7 +115,7 @@ async fn role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_n
     let old = nodes.iter().find(|n| n.mesh != fp.mesh && n.is_primary && n.r#type == "node-admin").expect("another mesh's primary admin");
     let heir = nodes.iter().find(|n| n.mesh == old.mesh && n.r#type == "node-admin" && n.node_id != old.node_id).expect("another admin in the lost mesh");
     let heir_id = heir.node_id.as_str();
-    estate.kill_node(&old.name).await;
+    estate.kill_node(&old.location()).await;
     let roles: Vec<_> = nodes.iter().filter(|n| n.mesh == old.mesh && matches!(n.r#type.as_str(), "broker" | "gateway" | "compute")).map(|n| n.node_id.to_string()).collect();
     // A role node's re-declaration to the new mesh-primary is a call it makes: no object reports it, and the
     // span the node records is the only place the fact lives. Both source and destination are IDs.
@@ -335,7 +335,7 @@ async fn every_build_sends_one_started_then_one_ended_and_a_resizes_ending_follo
             held.into_values()
                 .flat_map(|m| m.into_values())
                 .map(|mut spec| {
-                    if spec.path == node {
+                    if spec.location() == node {
                         spec.config = zone.clone();
                     }
                     spec
@@ -534,7 +534,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     assert_eq!((s(&written["attributes"]["node"]), s(&written["attributes"]["previous_build_id"])), (fp_id.clone(), first.clone()), "the fabric-primary wrote the growth Build after the Day-0 Build: {written}");
     assert!(accepted.iter().all(|sp| sp["attributes"]["node"] == fp_id), "only the fabric-primary writes a Build: {:?}", accepted.iter().map(|sp| (&sp["attributes"]["node"], &sp["attributes"]["via"])).collect::<Vec<_>>());
 
-    let opened = named(&spans, "rdm.mesh.node.create.via-connections-opened").into_iter().find(|sp| sp["attributes"]["node_path"] == source.name.path && sp["attributes"]["node_name"] == source.name.name).expect("mesh2.node.1 opened its connections store");
+    let opened = named(&spans, "rdm.mesh.node.create.via-connections-opened").into_iter().find(|sp| sp["attributes"]["node_path"] == source.path && sp["attributes"]["node_name"] == source.name).expect("mesh2.node.1 opened its connections store");
     assert_eq!(opened["attributes"]["writes_to"], "store-root", "a node writes to the store root: {opened}");
     let (first_root, _) = change_of(&spans, &first);
     estate.record_trace_url(&s(&first_root["trace_id"]));

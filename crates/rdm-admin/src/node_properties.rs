@@ -39,7 +39,7 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
         if first.is_fabric_primary(me_id) && !first.is_mesh_primary(&subject.mesh, me_id) {
             let span = tracing::info_span!(
                 "rdm.node_admin.node.update.via-fabric-primary",
-                node_path = %me.path, node_name = %me.name, subject_path = %subject.name.path, subject_name = %subject.name.name, node_id = %node_id, op = req.op(),
+                node_path = %me.path, node_name = %me.name, subject_path = %subject.path, subject_name = %subject.name, node_id = %node_id, op = req.op(),
                 mesh_primary = tracing::field::Empty, route = tracing::field::Empty, sends = tracing::field::Empty,
                 outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
             );
@@ -135,7 +135,7 @@ async fn write(_me: &PathName, me_id: &NodeId, view: &Topology, _storage: &dyn N
         span.record("detail", format!("{me_id}: node {node_id} holds no birth in this admin's view; its tags cannot be written").as_str());
         return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
     };
-    span.record("subject_path", subject.name.path.as_str()).record("subject_name", subject.name.name.as_str());
+    span.record("subject_path", subject.path.as_str()).record("subject_name", subject.name.as_str());
     // The writer of the row is the mesh-primary of the node's mesh, and no other admin (R-OW1).
     if !view.is_mesh_primary(&subject.mesh, me_id) {
         let held_by = view.node_type_primary(&subject.mesh, "node-admin").map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
@@ -235,7 +235,7 @@ mod tests {
             labels: set(&[".hidden"]),
         };
         assert!(matches!(
-            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &bad_req).await,
+            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &bad_req).await,
             StatusReply::RejectedTags { .. }
         ));
 
@@ -246,11 +246,11 @@ mod tests {
             labels: set(&["gold", "ssd"]),
         };
         assert!(matches!(
-            tags(&admin2.name, &admin2.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await,
+            tags(&admin2.location(), &admin2.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await,
             StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }
         ));
 
-        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await, StatusReply::NotReady { .. }));
+        assert!(matches!(tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await, StatusReply::NotReady { .. }));
         assert!(storage.node(&admin1.node_id).await.unwrap().is_none());
         use crate::storage::NodesStorage as _;
         let records = Arc::new(crate::storage::MemoryNodesStorage::default());
@@ -262,7 +262,7 @@ mod tests {
 
         // 3. Create {"gold", "ssd"} persists both labels in node-owned properties.
         assert_eq!(
-            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await,
+            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await,
             StatusReply::TagsCreated {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),
@@ -277,7 +277,7 @@ mod tests {
             labels: set(&["gold"]),
         };
         assert_eq!(
-            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &dup_req).await,
+            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &dup_req).await,
             StatusReply::TagsCreated {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),
@@ -292,7 +292,7 @@ mod tests {
             scope: TagScope::Labels(set(&["gold", "missing"])),
         };
         assert_eq!(
-            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &del_req).await,
+            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &del_req).await,
             StatusReply::TagsDeleted {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),
@@ -305,10 +305,10 @@ mod tests {
             node_id: admin1.node_id.clone(), incarnation: admin1.incarnation_id.clone().unwrap(),
             labels: (0..32).map(|i| format!("tag-{i}")).collect(),
         };
-        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &too_many).await, StatusReply::RejectedTags { .. }));
+        assert!(matches!(tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &too_many).await, StatusReply::RejectedTags { .. }));
         assert_eq!(records.properties(&admin1.node_id).await.unwrap().unwrap().tags, set(&["ssd"]));
         let stale = StatusRequest::CreateTags { node_id: admin1.node_id.clone(), incarnation: IncarnationId::mint(), labels: set(&["stale"]) };
-        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
+        assert!(matches!(tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
 
         // 6. Delete All clears the remaining tags.
         let del_all = StatusRequest::DeleteTags {
@@ -317,7 +317,7 @@ mod tests {
             scope: TagScope::All,
         };
         assert_eq!(
-            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &del_all).await,
+            tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &del_all).await,
             StatusReply::TagsDeleted {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),

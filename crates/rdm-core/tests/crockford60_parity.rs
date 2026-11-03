@@ -47,7 +47,7 @@ fn a_topology_digest_carries_its_product_ids_exactly() {
         fabric_id: fabric_id.clone(),
         node: rdm_core::MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: node_id.clone(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             endpoint_id: rdm_core::EndpointId("key".into()),
             transport_addr: "127.0.0.1:41000".parse().unwrap(),
             incarnation: rdm_core::IncarnationId::mint(),

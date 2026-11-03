@@ -205,10 +205,10 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 2)];
     estate.reconcile_shape("fabric1", &shape).await;
     let nodes = estate.settled_views(&shape).await;
-    let member_id = nodes.iter().find(|n| n.name == member_at()).map(|n| n.node_id.to_string()).expect("the member's settled view");
+    let member_id = nodes.iter().find(|n| n.location() == member_at()).map(|n| n.node_id.to_string()).expect("the member's settled view");
     // A node's own spans and a join's `served_by` name a node by its id; an admin's read by its path and name.
     let (mesh1_primary_at, mesh2_admin_at) = (rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), rdm_core::PathName::new("mesh2.node-admin", "1").unwrap());
-    let id_at = |at: &rdm_core::PathName| nodes.iter().find(|n| &n.name == at).map(|n| n.node_id.to_string()).unwrap_or_else(|| panic!("{at:?} in the settled view"));
+    let id_at = |at: &rdm_core::PathName| nodes.iter().find(|n| &n.location() == at).map(|n| n.node_id.to_string()).unwrap_or_else(|| panic!("{at:?} in the settled view"));
     let (primary_id, mesh2_admin_id) = (id_at(&mesh1_primary_at), id_at(&mesh2_admin_at));
     let fabric_view = estate.fabric_view().await;
     let fabric = fabric_view.id.clone();
@@ -222,7 +222,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let held: PathName = nodes
         .iter()
         .find(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary)
-        .map(|n| n.name.clone())
+        .map(|n| n.location())
         .unwrap_or_else(|| panic!("mesh2 holds a node that is not its rpc primary: {nodes:?}"));
     let held = &held;
     let mut hold = Held { rt: rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&estate.data_dir(held).await)).unwrap_or_else(|r| panic!("{held:?}: no exact runtime published: {r:?}")), hung: None };
@@ -252,7 +252,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
             _ => None,
         })
         .unwrap();
-    let mesh2_admin = nodes.iter().find(|n| n.name == PathName::new("mesh2.node-admin", "1").unwrap()).map(|n| n.node_id.clone()).expect("mesh2.node-admin.1 in the settled views");
+    let mesh2_admin = nodes.iter().find(|n| n.location() == PathName::new("mesh2.node-admin", "1").unwrap()).map(|n| n.node_id.clone()).expect("mesh2.node-admin.1 in the settled views");
     assert_eq!(publisher.node_id, mesh2_admin, "the version belongs to the source Mesh's primary");
     let stripped_full_bytes: usize = {
         // The chunks of the newest forwarded full of mesh2 (one snapshot).
@@ -307,7 +307,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         .forwarded_fulls_of("mesh2")
         .iter()
         .find_map(|x| match x.frame.data() {
-            Frame::MeshTopology { digests, .. } => digests.iter().find(|d| d.node.name == Estate::path("mesh2.node", "1")).cloned(),
+            Frame::MeshTopology { digests, .. } => digests.iter().find(|d| d.node.location() == Estate::path("mesh2.node", "1")).cloned(),
             _ => None,
         })
         .expect("mesh2.node.1 is in the forwarded full");
@@ -401,7 +401,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // what it holds when the member came up as its neighbour.
     let spans = estate.spans();
     assert!(spans_of(&spans, "rdm.mesh.topology.update.via-gap", &member_id, cut_at).is_empty(), "the full the primary replays on a heal repaired the member: no gap");
-    let member_peer = nodes.iter().find(|n| n.name == member_at()).and_then(|n| n.endpoint_id.clone()).unwrap();
+    let member_peer = nodes.iter().find(|n| n.location() == member_at()).and_then(|n| n.endpoint_id.clone()).unwrap();
     // The primary's replay row is in the primary's evidence file, appended by its export thread:
     // it lands after the member's install row that the wait above read, not with it (at `5a220a6a`
     // the replay, 2 ms before the install, was read once and was not there yet). Waited for, as

@@ -480,13 +480,13 @@ impl Run {
     async fn member_door(&self, mesh: &str) -> Door {
         let nodes = self.estate.node_views().await;
         let primary = nodes.iter().find(|n| n.r#type == "node-admin" && n.mesh == mesh && n.is_primary).unwrap_or_else(|| panic!("{mesh} has an admin primary: {nodes:?}"));
-        self.door_of(&primary.name).await
+        self.door_of(&primary.location()).await
     }
 
     async fn fabric_door(&self) -> Door {
         let nodes = self.estate.node_views().await;
         let primary = nodes.iter().find(|n| n.is_fabric_primary).unwrap_or_else(|| panic!("the fabric has a primary: {nodes:?}"));
-        self.door_of(&primary.name).await
+        self.door_of(&primary.location()).await
     }
 
     /// The workflow's stream to its `Complete`, and then Build `id` complete in the log of the admin the
@@ -524,7 +524,7 @@ impl Run {
     }
 
     async fn names(&self) -> Vec<PathName> {
-        self.estate.node_views().await.iter().map(|n| n.name.clone()).collect()
+        self.estate.node_views().await.iter().map(|n| n.location()).collect()
     }
 
     /// `node` once the admin the estate asks lists it ready.
@@ -544,7 +544,7 @@ impl Run {
         let mut stream = self.spawn(r#type).await;
         self.complete(&mut stream).await;
         self.estate
-            .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.name) && n.status == NodeStatus::Ready).map(|n| n.name.clone()))
+            .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.location()) && n.status == NodeStatus::Ready).map(|n| n.location()))
             .await
     }
 
@@ -595,10 +595,10 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let mut ev = Evidence::new(family, id);
     let nodes_before = run.estate.node_values().await;
     let (roles_before, roles_detail_before) = primaries(&nodes_before);
-    let admin_view = |nodes: &[Value]| nodes.iter().find(|n| location(n) == door.name).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
+    let admin_view = |nodes: &[Value]| nodes.iter().find(|n| location(n) == door.location()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), admin_view(&nodes_before));
     let current_before = run.fabric_build_id().await;
-    let pid_before = run.admin_pid(&door.name).await;
+    let pid_before = run.admin_pid(&door.location()).await;
     let may_move = matches!(trigger, Trigger::CreateMesh(_));
 
     // Arm: the injector's own success, which proves nothing alone.
@@ -618,7 +618,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
             (stream.build_id().to_string(), Triggered::Build(stream))
         }
         Trigger::SpawnRequest => {
-            let nodes = Nodes::new(run.estate.carrier_at(&door.name).await);
+            let nodes = Nodes::new(run.estate.carrier_at(&door.location()).await);
             let (based_on, request) = run.estate.create_node_request("mesh1", "node").await;
             let task = tokio::spawn(async move { nodes.create_named(based_on, request).await });
             (String::new(), Triggered::Request(task))
@@ -663,7 +663,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let nodes_during = run.estate.node_values().await;
     let (roles_during, roles_detail_during) = primaries(&nodes_during);
     let (fp_during, inc_during) = (fabric_primary(&nodes_during), admin_view(&nodes_during));
-    let held_pid = run.admin_pid(&door.name).await;
+    let held_pid = run.admin_pid(&door.location()).await;
     let alive = held_pid.and_then(proc_state).is_some_and(|c| c != 'Z');
     let replaced = pid_before != held_pid || inc_before != inc_during || attempts[0] != attempts[1];
     let during_marker_attempt = attempts[1];
@@ -758,7 +758,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
     let exec = run.fabric_door().await;
     let nodes_before = run.estate.node_values().await;
     let (roles_before, detail_before) = primaries(&nodes_before);
-    let (fp_before, inc_before) = (fabric_primary(&nodes_before), nodes_before.iter().find(|n| location(n) == exec.name).map(|n| s(&n["incarnation_id"])).unwrap_or_default());
+    let (fp_before, inc_before) = (fabric_primary(&nodes_before), nodes_before.iter().find(|n| location(n) == exec.location()).map(|n| s(&n["incarnation_id"])).unwrap_or_default());
     let current_before = run.fabric_build_id().await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
     ev.primitive = Some(Primitive { armed: true, ack: ack.clone() });
@@ -794,7 +794,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
     let nodes_during = run.estate.node_values().await;
     let (roles_during, detail_during) = primaries(&nodes_during);
     let alive = run.admin_pid(admin).await.and_then(proc_state).is_some_and(|c| c != 'Z');
-    let inc_during = nodes_during.iter().find(|n| location(n) == exec.name).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
+    let inc_during = nodes_during.iter().find(|n| location(n) == exec.location()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let fp_during = fabric_primary(&nodes_during);
 
     let rel = door.release(id).await;
@@ -811,7 +811,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
         fabric_primary: [fp_before.clone(), fp_during, fabric_primary(&nodes_after)],
         fabric_home: fp_before,
         primary_may_move: true,
-        incarnation: [inc_before.clone(), inc_during.clone(), nodes_after.iter().find(|n| location(n) == exec.name).map(|n| s(&n["incarnation_id"])).unwrap_or_default()],
+        incarnation: [inc_before.clone(), inc_during.clone(), nodes_after.iter().find(|n| location(n) == exec.location()).map(|n| s(&n["incarnation_id"])).unwrap_or_default()],
         attempts,
         exact_runtime_alive: alive,
         replaced_during: inc_before != inc_during || attempts[0] != attempts[1],

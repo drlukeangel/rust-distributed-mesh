@@ -11,7 +11,7 @@ use crate::accepted::{AttemptAction, TopologyChange};
 use crate::build::{BuildId, BuildReject};
 use crate::build_state::BuildState;
 use crate::control_plane::Refusal;
-use crate::model::{IncarnationId, NodeId, PathName};
+use crate::model::{IncarnationId, NodeId};
 use std::time::Duration;
 
 /// The variable that sets the stopped-node ttl (`docs/architecture/node-identity-and-state.md` §6.9).
@@ -66,38 +66,50 @@ pub enum Verdict {
     /// Stopped, not yet longer than the ttl.
     Young {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// When its current stopped period began.
         stopped_at_ms: u64,
     },
     /// An open Build references the birth.
     Referenced {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The open Build.
         build_id: BuildId,
     },
     /// The accepted Build no longer names the node: its delete is under way.
     Deleting {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// The view holds no birth (incarnation) for the stopped node: there is no birth to age.
     NoIncarnation {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// The node record holds no stop for the birth's current stopped period.
     NotRecorded {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// Why.
         reason: String,
     },
     /// The birth's node record cannot be read.
     UnreadableRecord {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The read failure.
         reason: String,
     },
@@ -105,13 +117,17 @@ pub enum Verdict {
     /// topology to hold the node against, so nothing is decided for it.
     NoCurrentBuild {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// The Build log (or its active Builds) cannot be read: neither the age nor the open-Build
     /// reference can be decided.
     UnreadableBuildLog {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The read failure.
         reason: String,
     },
@@ -120,14 +136,21 @@ pub enum Verdict {
 /// One stopped birth the scan selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
-    /// The node's `(path, name)`.
-    pub node: PathName,
+    /// The node's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The logical node.
     pub node_id: NodeId,
     /// The stopped birth.
     pub incarnation: IncarnationId,
     /// When its current stopped period began (its node record's `stopped_at_rafka_ms`).
     pub stopped_at_ms: u64,
+}
+
+impl Candidate {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// What one sweep did.
@@ -142,21 +165,27 @@ pub enum Swept {
     /// One node.delete Build was accepted for `node`.
     Submitted {
         /// The node collected.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The node.delete Build.
         build_id: BuildId,
     },
     /// Another Build is in flight: the candidate is seen again next sweep.
     BuildInProgress {
         /// The candidate.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The Build in flight.
         current_build_id: BuildId,
     },
     /// The delete's admission refused the candidate by name.
     Refused {
         /// The candidate.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// Why.
         reason: String,
     },
@@ -224,47 +253,47 @@ impl crate::control_plane::ControlPlane {
             },
         };
         let mut stopped: Vec<&crate::model::Node> = view.members().filter(|n| n.stopped).collect();
-        stopped.sort_by(|a, b| a.name.cmp(&b.name));
+        stopped.sort_by(|a, b| a.location().cmp(&b.location()));
         let mut out = Vec::new();
         for n in stopped {
-            let node = n.name.clone();
+            let node = n.location();
             let Some(incarnation) = n.incarnation_id.clone() else {
-                out.push(Verdict::NoIncarnation { node });
+                out.push(Verdict::NoIncarnation { path: node.path.clone(), name: node.name.clone()});
                 continue;
             };
             match &desired {
                 Err(reason) => {
-                    out.push(Verdict::UnreadableBuildLog { node, reason: reason.clone() });
+                    out.push(Verdict::UnreadableBuildLog { path: node.path.clone(), name: node.name.clone(), reason: reason.clone() });
                     continue;
                 }
                 Ok(None) => {
-                    out.push(Verdict::NoCurrentBuild { node });
+                    out.push(Verdict::NoCurrentBuild { path: node.path.clone(), name: node.name.clone()});
                     continue;
                 }
                 Ok(Some(t)) if !t.contains(&node) => {
-                    out.push(Verdict::Deleting { node });
+                    out.push(Verdict::Deleting { path: node.path.clone(), name: node.name.clone()});
                     continue;
                 }
                 Ok(Some(_)) => {}
             }
             match self.open_reference(&n.node_id, &incarnation).await {
                 Ok(Some(build_id)) => {
-                    out.push(Verdict::Referenced { node, build_id });
+                    out.push(Verdict::Referenced { path: node.path.clone(), name: node.name.clone(), build_id });
                     continue;
                 }
                 Ok(None) => {}
                 Err(reason) => {
-                    out.push(Verdict::UnreadableBuildLog { node, reason });
+                    out.push(Verdict::UnreadableBuildLog { path: node.path.clone(), name: node.name.clone(), reason });
                     continue;
                 }
             }
             match self.stop_age(&n.node_id, &incarnation).await {
                 Age::StoppedAt(stopped_at_ms) if now_ms.saturating_sub(stopped_at_ms) > ttl.as_millis() as u64 => {
-                    out.push(Verdict::Expired(Candidate { node, node_id: n.node_id.clone(), incarnation, stopped_at_ms }))
+                    out.push(Verdict::Expired(Candidate { path: node.path.clone(), name: node.name.clone(), node_id: n.node_id.clone(), incarnation, stopped_at_ms }))
                 }
-                Age::StoppedAt(stopped_at_ms) => out.push(Verdict::Young { node, stopped_at_ms }),
-                Age::NotRecorded(reason) => out.push(Verdict::NotRecorded { node, reason }),
-                Age::Unreadable(reason) => out.push(Verdict::UnreadableRecord { node, reason }),
+                Age::StoppedAt(stopped_at_ms) => out.push(Verdict::Young { path: node.path.clone(), name: node.name.clone(), stopped_at_ms }),
+                Age::NotRecorded(reason) => out.push(Verdict::NotRecorded { path: node.path.clone(), name: node.name.clone(), reason }),
+                Age::Unreadable(reason) => out.push(Verdict::UnreadableRecord { path: node.path.clone(), name: node.name.clone(), reason }),
             }
         }
         out
@@ -288,28 +317,28 @@ impl crate::control_plane::ControlPlane {
                     first.get_or_insert(c);
                 }
                 Verdict::Young { .. } => {}
-                Verdict::Referenced { node, build_id } => tracing::info_span!("rdm.node_admin.node.reject.via-open-build-reference", node_path = %node.path, node_name = %node.name, build_id = %build_id.log(), ttl = ttl_ms)
+                Verdict::Referenced { path, name, build_id } => tracing::info_span!("rdm.node_admin.node.reject.via-open-build-reference", node_path = %path, node_name = %name, build_id = %build_id.log(), ttl = ttl_ms)
                     .in_scope(|| tracing::info!("the stopped birth is referenced by an open Build: it is not collected")),
-                Verdict::Deleting { node } => tracing::info_span!("rdm.node_admin.node.reject.via-delete-under-way", node_path = %node.path, node_name = %node.name, ttl = ttl_ms)
+                Verdict::Deleting { path, name } => tracing::info_span!("rdm.node_admin.node.reject.via-delete-under-way", node_path = %path, node_name = %name, ttl = ttl_ms)
                     .in_scope(|| tracing::info!("the accepted Build no longer names the stopped node: its delete is under way, not submitted again")),
-                Verdict::NoIncarnation { node } => tracing::info_span!("rdm.node_admin.node.reject.via-no-incarnation", node_path = %node.path, node_name = %node.name, ttl = ttl_ms)
+                Verdict::NoIncarnation { path, name } => tracing::info_span!("rdm.node_admin.node.reject.via-no-incarnation", node_path = %path, node_name = %name, ttl = ttl_ms)
                     .in_scope(|| tracing::info!("the view holds no birth for the stopped node: there is no birth to age, skipped")),
-                Verdict::NotRecorded { node, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-no-recorded-stop", node_path = %node.path, node_name = %node.name, reason = %reason, ttl = ttl_ms)
+                Verdict::NotRecorded { path, name, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-no-recorded-stop", node_path = %path, node_name = %name, reason = %reason, ttl = ttl_ms)
                     .in_scope(|| tracing::info!(%reason, "the node record holds no stop of the birth's current stopped period: skipped, never treated as expired")),
-                Verdict::UnreadableRecord { node, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-unreadable-node-record", node_path = %node.path, node_name = %node.name, reason = %reason, ttl = ttl_ms)
+                Verdict::UnreadableRecord { path, name, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-unreadable-node-record", node_path = %path, node_name = %name, reason = %reason, ttl = ttl_ms)
                     .in_scope(|| tracing::info!(%reason, "the birth's node record cannot be read: skipped, never treated as expired")),
-                Verdict::NoCurrentBuild { node } => tracing::info_span!("rdm.node_admin.node.reject.via-no-current-build", node_path = %node.path, node_name = %node.name, ttl = ttl_ms)
+                Verdict::NoCurrentBuild { path, name } => tracing::info_span!("rdm.node_admin.node.reject.via-no-current-build", node_path = %path, node_name = %name, ttl = ttl_ms)
                     .in_scope(|| tracing::info!("no Build in the builds store is in progress or completed: there is no accepted topology to hold the stopped node against, skipped")),
-                Verdict::UnreadableBuildLog { node, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-unreadable-build-log", node_path = %node.path, node_name = %node.name, reason = %reason, ttl = ttl_ms)
+                Verdict::UnreadableBuildLog { path, name, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-unreadable-build-log", node_path = %path, node_name = %name, reason = %reason, ttl = ttl_ms)
                     .in_scope(|| tracing::info!(%reason, "the Build log cannot be read: the birth's age is not decided, skipped")),
             }
         }
         let Some(c) = first else { return Swept::Nothing };
         match self.collect_stopped(&c, ttl).await {
-            Ok(o) => Swept::Submitted { node: c.node, build_id: o.build_id },
-            Err(Refusal::BuildInProgress(held)) => Swept::BuildInProgress { node: c.node, current_build_id: held.current_build_id },
-            Err(Refusal::Reject(r)) => Swept::Refused { node: c.node, reason: r.to_string() },
-            Err(other) => Swept::Refused { node: c.node, reason: format!("{other:?}") },
+            Ok(o) => Swept::Submitted { path: c.path.clone(), name: c.name.clone(), build_id: o.build_id },
+            Err(Refusal::BuildInProgress(held)) => Swept::BuildInProgress { path: c.path.clone(), name: c.name.clone(), current_build_id: held.current_build_id },
+            Err(Refusal::Reject(r)) => Swept::Refused { path: c.path.clone(), name: c.name.clone(), reason: r.to_string() },
+            Err(other) => Swept::Refused { path: c.path.clone(), name: c.name.clone(), reason: format!("{other:?}") },
         }
     }
 
@@ -319,19 +348,19 @@ impl crate::control_plane::ControlPlane {
     pub async fn collect_stopped(&self, candidate: &Candidate, ttl: Duration) -> Result<crate::control_plane::Opened, Refusal> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.delete.via-stopped-ttl",
-            node_path = %candidate.node.path, node_name = %candidate.node.name,
+            node_path = %candidate.path, node_name = %candidate.name,
             stopped_at = candidate.stopped_at_ms,
             ttl = ttl.as_millis() as u64,
             build_id = tracing::field::Empty,
             previous_build_id = tracing::field::Empty,
         );
-        self.submit_checked(span, "stopped-ttl", TopologyChange::RemoveNode { node: candidate.node.clone() }, Some(candidate)).await
+        self.submit_checked(span, "stopped-ttl", TopologyChange::RemoveNode { path: candidate.path.clone(), name: candidate.name.clone()}, Some(candidate)).await
     }
 
     /// The recheck at the delete's admission: the view still holds the candidate's exact birth
     /// stopped, no open Build references it, and its current stopped period is the one the scan aged.
     pub(crate) async fn recheck_stopped(&self, c: &Candidate) -> Result<(), BuildReject> {
-        let not_stopped = |found: String| BuildReject::NodeNotStopped { node: c.node.clone(), found };
+        let not_stopped = |found: String| BuildReject::NodeNotStopped { path: c.path.clone(), name: c.name.clone(), found };
         let view = self.view().await;
         let n = view.own(&c.node_id).ok_or_else(|| not_stopped("the view holds no node with this ID".into()))?;
         if n.node_id != c.node_id || n.incarnation_id.as_ref() != Some(&c.incarnation) {
@@ -341,7 +370,7 @@ impl crate::control_plane::ControlPlane {
             return Err(not_stopped(format!("it is {:?} and not stopped: started since the scan", n.status)));
         }
         match self.open_reference(&c.node_id, &c.incarnation).await {
-            Ok(Some(build_id)) => return Err(BuildReject::ReferencedByOpenBuild { node: c.node.clone(), build_id: build_id.to_string() }),
+            Ok(Some(build_id)) => return Err(BuildReject::ReferencedByOpenBuild { path: c.path.clone(), name: c.name.clone(), build_id: build_id.to_string() }),
             Ok(None) => {}
             Err(e) => return Err(not_stopped(e)),
         }
@@ -355,6 +384,7 @@ impl crate::control_plane::ControlPlane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     // CONTRACT (`docs/architecture/node-identity-and-state.md` §6.9 — "Setting: `stopped_node_ttl`
     // (`RDM_STOPPED_NODE_TTL`), read by the fabric-primary only. Blank means forever: no sweep, a
@@ -372,5 +402,6 @@ mod tests {
         assert_eq!(ttl_from_env(Some("1h")), Ok(Some(Duration::from_secs(3600))));
         assert!(ttl_from_env(Some("0ms")).is_err());
         assert!(ttl_from_env(Some("10d")).is_err());
+
     }
 }

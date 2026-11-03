@@ -268,8 +268,10 @@ pub struct NodeSelf {
     pub node_id: NodeId,
     /// This birth's incarnation.
     pub incarnation: IncarnationId,
-    /// This birth's `(path, name)` at its birth; the name it holds is [`Self::held_name`].
-    pub name: PathName,
+    /// This birth's path at its birth; the name it holds is [`Self::held_name`].
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// This birth's Node RPC server: it refuses new calls while connections-deleting and counts the work in flight.
     pub server: NodeRpcServer,
     /// The process's one Node RPC client.
@@ -323,6 +325,11 @@ pub struct NodeSelf {
 }
 
 impl NodeSelf {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
+}
+
+impl NodeSelf {
     /// A node surface over its parts.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -340,14 +347,14 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         topology_view.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, None);
-        Self { r#type, node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
+        Self { r#type, node_id, incarnation, path: name.path.clone(), name: name.name.clone(), server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
     /// `ApplyNodeName`, or from its join answer), else its birth's (R12). Every span, refusal and
     /// frame of this surface names it.
     pub fn held_name(&self) -> PathName {
-        self.topology_view.held_name(&self.name)
+        self.topology_view.held_name(&self.location())
     }
 
     /// This surface, publishing its state hooks on `backbone` as well as its mesh channel.
@@ -415,7 +422,7 @@ impl NodeSelf {
         if signed.cert.node_id != self.node_id || signed.cert.incarnation != self.incarnation {
             return refuse(format!(
                 "the cert names {:?} ({} {}), not this birth {me:?} ({} {})",
-                signed.cert.name,
+                signed.cert.location(),
                 signed.cert.node_id,
                 signed.cert.incarnation.as_str(),
                 self.node_id,
@@ -588,7 +595,7 @@ impl NodeSelf {
                             "rdm.node_admin.connection.delete.via-connection-delete",
                             node = %self.node_id,
                             entry = %route.id,
-                            destination_path = %route.destination.name.path, destination_name = %route.destination.name.name,
+                            destination_path = %route.destination.path, destination_name = %route.destination.name,
                             peer = %c.key.peer.fmt_short(),
                             incarnation_id = %c.key.birth(),
                             connection = c.connection,
@@ -865,7 +872,8 @@ impl NodeSelf {
         }
         let progress = Arc::new(tokio::sync::Mutex::new(frames));
         let (build_id, attempt) = run.unwrap_or((LifecycleOp::NO_BUILD, LifecycleOp::NO_ATTEMPT));
-        let op = LifecycleOp { r#type: self.r#type.clone(), mesh: self.topology_view.mesh_name().to_string(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.held_name(), build_id: build_id.into(), attempt, operation: operation.clone(), event_at_rafka_ms: self.topology_view.clock().now_rafka_ms(), traceparent: None, tracestate: None };
+        let held = self.held_name();
+        let op = LifecycleOp { r#type: self.r#type.clone(), mesh: self.topology_view.mesh_name().to_string(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), path: held.path, name: held.name, build_id: build_id.into(), attempt, operation: operation.clone(), event_at_rafka_ms: self.topology_view.clock().now_rafka_ms(), traceparent: None, tracestate: None };
         let result = if stopping {
             self.stop(commander.cloned(), spare, op, tracing::Span::current(), Some(progress)).await
         } else {
@@ -1780,7 +1788,7 @@ mod tests {
                 fabric_id,
                 node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),
-                    name: name.clone(),
+                    path: name.path.clone(), name: name.name.clone(),
                     endpoint_id: ep_id.clone(),
                     transport_addr: "127.0.0.1:41000".parse().unwrap(),
                     incarnation: incarnation.clone(),
@@ -1835,7 +1843,7 @@ mod tests {
                 &BirthIdentity {
                     node_id: node_id.clone(),
                     incarnation: incarnation.clone(),
-                    name: name.clone(),
+                    path: name.path.clone(), name: name.name.clone(),
                     mesh: "mesh1".into(),
                     endpoint_key: ep_id.clone(),
                 },
@@ -1853,7 +1861,7 @@ mod tests {
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
             let own_end = ConnectionEnd {
                 mesh: "mesh1".into(), r#type: "node".into(),
-                name: name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
                 node_id: node_id.clone(),
                 incarnation: Some(incarnation.clone()),
             };
@@ -1867,7 +1875,7 @@ mod tests {
                 &BirthIdentity {
                     node_id: NodeId::mint(),
                     incarnation: incarnation.clone(),
-                    name,
+                    path: name.path.clone(), name: name.name.clone(),
                     mesh: "mesh1".into(),
                     endpoint_key: ep_id,
                 },
@@ -2001,7 +2009,7 @@ mod tests {
                 fabric_id,
                 node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),
-                    name: name.clone(),
+                    path: name.path.clone(), name: name.name.clone(),
                     endpoint_id: ep_id,
                     transport_addr: "127.0.0.1:41001".parse().unwrap(),
                     incarnation: incarnation.clone(),
@@ -2050,7 +2058,7 @@ mod tests {
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
             let own_end = ConnectionEnd {
                 mesh: "mesh1".into(), r#type: "node".into(),
-                name: name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
                 node_id: node_id.clone(),
                 incarnation: Some(incarnation.clone()),
             };
@@ -2067,7 +2075,7 @@ mod tests {
                 connections_answer(
                     &HeldConnections {
                         node_id: node_id.clone(),
-                        name: name.clone(),
+                        path: name.path.clone(), name: name.name.clone(),
                         complete: true,
                         routes: Vec::new(),
                     },

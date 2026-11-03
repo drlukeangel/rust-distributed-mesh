@@ -503,7 +503,7 @@ async fn data_plane(estate: &Estate, meshes: &[String], rpcs: u32, rows: &mut Ro
     let nodes = estate.node_views().await;
     let rpc_id = |mesh: &str, name: u32| {
         let location = rdm_core::PathName::new(format!("{mesh}.node"), name.to_string()).unwrap();
-        nodes.iter().find(|n| n.name == location).expect("RPC fixture").node_id.to_string()
+        nodes.iter().find(|n| n.location() == location).expect("RPC fixture").node_id.to_string()
     };
     let mut tasks = Vec::new();
     for m in meshes {
@@ -807,8 +807,8 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     let admins: Vec<rdm_core::PathName> = meshes.iter().flat_map(|m| (1..=p.admins).map(move |i| rdm_core::PathName::new(format!("{m}.node-admin"), i.to_string()).unwrap())).collect();
     let subject: rdm_core::PathName = rdm_core::PathName::new(format!("{}.node", meshes[0]), "1").unwrap();
     let views = estate.node_views().await;
-    let admin_ids: Vec<_> = admins.iter().map(|location| views.iter().find(|n| &n.name == location).expect("admin fixture").node_id.clone()).collect();
-    let member = views.iter().find(|n| n.name == subject).expect("RPC fixture");
+    let admin_ids: Vec<_> = admins.iter().map(|location| views.iter().find(|n| &n.location() == location).expect("admin fixture").node_id.clone()).collect();
+    let member = views.iter().find(|n| n.location() == subject).expect("RPC fixture");
     let member = rdm_core::framing::Birth { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().expect("launched RPC") };
     // With evidence the sample is read from the spans: the mesh-primary's write of the status to the last
     // node-admin applying it to its own topology; without, from the call's Complete to every node-admin's

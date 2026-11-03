@@ -75,7 +75,7 @@ async fn two_mesh_estate(test: &str, env: &[(&str, &str)]) -> (Estate, Vec<NodeV
 
 /// Each node's birth: `(path, name)` → (node id, incarnation).
 fn births(views: &[NodeView]) -> BTreeMap<PathName, (String, Option<String>)> {
-    views.iter().map(|v| (v.name.clone(), (v.node_id.to_string(), v.incarnation_id.as_ref().map(|i| i.as_str().to_string())))).collect()
+    views.iter().map(|v| (v.location(), (v.node_id.to_string(), v.incarnation_id.as_ref().map(|i| i.as_str().to_string())))).collect()
 }
 
 /// The file provider's fabric root of `estate`, and the testkit target's root of the same fabric.
@@ -147,7 +147,7 @@ async fn a_customer_reads_each_nodes_topology_provider() {
     estate.artifact("fabric.json", &json!(fabric));
     estate.artifact("views.json", &json!(Estate::values(&views)));
     fabric_names(&fabric, FILE, &[]);
-    assert_eq!(views.iter().map(|v| v.name.clone()).collect::<BTreeSet<_>>(), two_mesh_names(), "the view holds both meshes' nodes");
+    assert_eq!(views.iter().map(|v| v.location()).collect::<BTreeSet<_>>(), two_mesh_names(), "the view holds both meshes' nodes");
     nodes_write(&views, FILE);
     for v in &views {
         let persistence = serde_json::to_value(&v.storage_persistence).unwrap();
@@ -351,7 +351,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     // the fabric-primary (node-config-update.md step 1), which sends it down to mesh2's mesh-primary;
     // admitted there, and issued only once it is unblocked (storage.md §2 step 1).
     let blocked = blocked_at(&estate, &change_id, "mesh2").await;
-    let subject = views.iter().find(|v| v.name == role()).cloned().expect("mesh2.node.1");
+    let subject = views.iter().find(|v| v.location() == role()).cloned().expect("mesh2.node.1");
     let fabric_primary = views.iter().find(|v| v.is_fabric_primary).cloned().expect("the fabric-primary");
     let told: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(subject.node_id.clone()), node_id: subject.node_id.clone(), incarnation: subject.incarnation_id.clone().expect("a live birth") };
@@ -375,7 +375,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     // The update and the Build's own config of the node are a serial order of the two
     // (node-config-update.md): whichever was written last on its own property record is the config
     // the node carries (the node writes its own record, build.md: never a lifecycle row's copy).
-    let subject_after = after.iter().find(|v| v.name == path).cloned().expect("mesh2.node.1 after the change");
+    let subject_after = after.iter().find(|v| v.location() == path).cloned().expect("mesh2.node.1 after the change");
     let last_record: Value = rdm_admin::store_log::read_record(&target_root.join(rdm_admin::store_root::NODES_FILE), "node-properties", Some(subject_after.node_id.as_str()))
         .expect("mesh2.node.1's property record is on the new provider");
     let record_config: BTreeMap<String, String> = serde_json::from_value(last_record["record"]["config"].clone()).expect("a property record carries its whole config map");
@@ -455,7 +455,7 @@ fn thaw(rt: &ExactRuntime) {
 /// replied `blocked`, before its copy, until [`Door::release`] of `"switch"`.
 async fn hold_switch(estate: &Estate) -> rdm_test::faults::Door {
     let fp = estate.node_views().await.into_iter().find(|n| n.is_fabric_primary).expect("fabric primary");
-    let door = rdm_test::faults::Door::at(estate, &fp.name).await;
+    let door = rdm_test::faults::Door::at(estate, &fp.location()).await;
     door.arm("switch", json!({"kind": "storage-switch"})).await;
     door
 }
@@ -694,7 +694,7 @@ async fn a_restart_without_a_launcher_writes_the_provider_its_own_row_names() {
     estate.enter(&restarted).await;
     let views = estate.settles_to_named(&names, SETTLE).await;
     estate.artifact("views.json", &json!(Estate::values(&views)));
-    let admin = views.iter().find(|v| v.name == bootstrap()).expect("the restarted node-admin");
+    let admin = views.iter().find(|v| v.location() == bootstrap()).expect("the restarted node-admin");
     let new_id = admin.node_id.to_string();
     assert_ne!(new_id, old_id, "a new birth over the data dir");
     assert_eq!(admin.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET), "the start with no launcher writes the provider its own row names: {admin:?}");
@@ -952,7 +952,7 @@ async fn a_connection_event_during_a_change_lands_once_after_the_unblock() {
     hold.release("switch").await;
     ended(&estate, &run).await;
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
-    nodes_write(&[estate.node_view(&source_view.name).await], TOPOLOGY_STORAGE_TARGET);
+    nodes_write(&[estate.node_view(&source_view.location()).await], TOPOLOGY_STORAGE_TARGET);
     // The estate's stop deletes every connection: the events it causes are not the change's.
     let stopped_ns = now_ns();
     estate.stop().await;
@@ -1220,7 +1220,7 @@ async fn node_gets(estate: &Estate, views: &[NodeView]) -> BTreeMap<PathName, (S
         let mut got = nodes.get(&rdm_client::Filter::new().eq("id", [v.node_id.to_string()])).await.unwrap_or_else(|e| panic!("node.get [id: {}] ({:?}) is answered: {e}", v.node_id, v.name));
         assert_eq!(got.len(), 1, "node.get [id: {}] ({:?}) answers the one node: {got:?}", v.node_id, v.name);
         let got = got.remove(0);
-        out.insert(got.name.clone(), (got.node_id.to_string(), got.incarnation_id.as_ref().map(|i| i.as_str().to_string()), got.status));
+        out.insert(got.location(), (got.node_id.to_string(), got.incarnation_id.as_ref().map(|i| i.as_str().to_string()), got.status));
     }
     out
 }
@@ -1357,7 +1357,7 @@ async fn a_previous_provider_remains_unchanged_after_cutover() {
     estate.reconcile(&grown()).await;
     let mut names = two_mesh_names();
     names.insert(grown_location());
-    let grown_id = estate.settles_to_named(&names, SETTLE).await.into_iter().find(|v| v.name == grown_location()).expect("the grown node").node_id.to_string();
+    let grown_id = estate.settles_to_named(&names, SETTLE).await.into_iter().find(|v| v.location() == grown_location()).expect("the grown node").node_id.to_string();
     let peer_id = node_id_of(&estate, &PathName::new("mesh1.node-admin", "2").unwrap()).await;
     let entry = connection_event(&estate, &grown_id, &peer_id).await;
     assert!(!lines_naming(&target_root, &grown_id).is_empty() && lines_naming(&file_root, &grown_id).is_empty(), "the grown node's records are on {TOPOLOGY_STORAGE_TARGET} and none on {FILE}");
@@ -1402,7 +1402,7 @@ async fn returns_to_a_previous_provider(test: &str, provider: &str) {
     estate.reconcile(&grown()).await;
     let mut names = two_mesh_names();
     names.insert(grown_location());
-    let grown_view = estate.settles_to_named(&names, SETTLE).await.into_iter().find(|v| v.name == grown_location()).expect("the grown node");
+    let grown_view = estate.settles_to_named(&names, SETTLE).await.into_iter().find(|v| v.location() == grown_location()).expect("the grown node");
     let grown_id = grown_view.node_id.to_string();
     assert_eq!(grown_view.topology_storage_provider.as_deref(), Some(FILE), "the grown node writes {FILE}: {grown_view:?}");
     assert!(!lines_naming(&file_root, &grown_id).is_empty() && lines_naming(&target_root, &grown_id).is_empty(), "the grown node's records are on {FILE} and none on {TOPOLOGY_STORAGE_TARGET}");

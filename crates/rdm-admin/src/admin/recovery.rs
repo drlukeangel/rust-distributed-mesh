@@ -6,8 +6,10 @@ use super::*;
 /// (node-recovery.md "Detection and proof" step 3, sequence step 1).
 #[derive(Clone)]
 pub(crate) struct RecoverySubmitter {
-    /// This mesh primary's `(path, name)`: the submitter.
-    pub me: PathName,
+    /// This mesh primary's path: the submitter.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// Globally unique identity of the submitting admin.
     pub me_id: NodeId,
     pub topology: Arc<RwLock<Topology>>,
@@ -41,6 +43,11 @@ pub(crate) struct RecoverySubmitter {
     /// Where a verdict that opens a re-create is written as its `rdm.node.investigated` event, and the
     /// application's `on_node_investigated`, sent from that write (Q312).
     pub investigated: crate::node_investigation::NodeInvestigatedWriter,
+}
+
+impl RecoverySubmitter {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
 /// The next submit owed to one birth whose submits ended without the recovery: the one backoff rule
@@ -86,7 +93,7 @@ impl RecoverySubmitter {
     /// The name this admin currently holds in its topology digest view, or its boot name before its
     /// birth is in the view.
     pub(crate) fn held_name(&self) -> PathName {
-        self.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.digest_view.held_path_name().unwrap_or_else(|| self.me())
     }
 
     /// Resolve `node`'s inherited `data_dir` when known (`R-FM2`): from `node.data_dir`, its digest in
@@ -133,7 +140,7 @@ impl RecoverySubmitter {
             let incarnation = n.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
             tracing::info_span!(
                 "rdm.node_admin.build.reject.via-removal-announced",
-                node_path = %n.name.path, node_name = %n.name.name,
+                node_path = %n.path, node_name = %n.name,
                 node_id = %n.node_id,
                 incarnation_id = %incarnation,
                 submitter = %self.me_id,
@@ -169,7 +176,7 @@ impl RecoverySubmitter {
                         let _ = self.written.update_birth(&*self.nodes_storage, n, &inc, |b| b.data_dir_lost = Some(lost)).await;
                         tracing::info_span!(
                             "rdm.node_admin.node.update.via-data-dir-lost",
-                            node_path = %n.name.path, node_name = %n.name.name,
+                            node_path = %n.path, node_name = %n.name,
                             node_id = %n.node_id,
                             incarnation_id = %inc.as_str(),
                             path = %dir.display(),
@@ -367,7 +374,7 @@ impl RecoverySubmitter {
         let _ = self.written.update_birth(&*self.nodes_storage, n, inc, |b| b.data_dir_unreadable = None).await;
         tracing::info_span!(
             "rdm.node_admin.node.resolve.via-data-dir-repaired",
-            node_path = %n.name.path, node_name = %n.name.name,
+            node_path = %n.path, node_name = %n.name,
             node_id = %n.node_id,
             incarnation_id = %inc.as_str(),
             path = %unreadable.path,
@@ -399,7 +406,7 @@ impl RecoverySubmitter {
         // birth is its end. Refused naming the delete before anything is read or written.
         if let Some((delete, _)) = crate::build_state::fabric_delete_in_force(&*self.builds).await.map_err(|e| format!("{}: the Build store could not be read for an in-force fabric.delete: {e}", self.me_id))? {
             span.in_scope(|| {
-                tracing::info_span!("rdm.node_admin.build.reject.via-fabric-delete-in-force", route, build_id = %delete.build_id.log(), node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str())
+                tracing::info_span!("rdm.node_admin.build.reject.via-fabric-delete-in-force", route, build_id = %delete.build_id.log(), node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str())
                     .in_scope(|| tracing::info!("a fabric.delete is in force: nothing is recovered and nothing is re-created"))
             });
             return Ok(RecoveryEnd::Failed { reason: format!("fabric.delete {} is in force: nothing is recovered and nothing is re-created", delete.build_id) });
@@ -409,7 +416,7 @@ impl RecoverySubmitter {
         self.digest_view.hold_recovering(&node.node_id, incarnation);
         let _turn = runner.node_work(&node.node_id).await;
         let from = crate::build::ExitedBirth { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-        match runner.recover(&node.name, &from, route == "fabric-recovery-backbone").await {
+        match runner.recover(&node.location(), &from, route == "fabric-recovery-backbone").await {
             Ok(()) => Ok(RecoveryEnd::Complete),
             Err(end) => Ok(RecoveryEnd::Failed { reason: end.reason().to_string() }),
         }
@@ -432,7 +439,7 @@ pub(crate) fn settled(span: &tracing::Span, end: Result<RecoveryEnd, String>) ->
 pub(crate) fn submit_span(me: &NodeId, node: &Node, incarnation: &IncarnationId, verdict: &str) -> tracing::Span {
     tracing::info_span!(
         "rdm.node_admin.node.update.via-node-recovery",
-        node_path = %node.name.path, node_name = %node.name.name,
+        node_path = %node.path, node_name = %node.name,
         node_id = %node.node_id,
         incarnation_id = %incarnation.as_str(),
         submitter = %me,
@@ -519,8 +526,8 @@ pub(crate) fn runtime_rows_read(reader: &PathName, mesh: Option<&str>, read: Res
 pub fn durable_births(view: &Topology, durable: &[crate::storage::RuntimeRow], planned: &dyn Fn(&PathName) -> bool, deleted: &dyn Fn(&str) -> bool) -> Vec<Node> {
     let mut births: Vec<Node> = Vec::new();
     for row in durable {
-        if view.node(&row.name).is_none() && !births.iter().any(|n| n.name == row.name) && planned(&row.name) && !deleted(row.node_id.as_str()) {
-            let mut n = Node::allocated(row.name.clone(), row.mesh.clone(), &row.r#type);
+        if view.node(&row.location()).is_none() && !births.iter().any(|n| n.location() == row.location()) && planned(&row.location()) && !deleted(row.node_id.as_str()) {
+            let mut n = Node::allocated(row.location(), row.mesh.clone(), &row.r#type);
             n.node_id = row.node_id.clone();
             n.incarnation_id = Some(row.incarnation_id.clone());
             n.status = NodeStatus::PendingReconnect;
@@ -607,7 +614,7 @@ impl RecoverySubmitter {
     /// fabric-primary, which terminates its runtime ([`Self::report_terminate`], Q207).
     pub(crate) async fn superseded_births(&self, view: &Topology, mesh: &str) -> Vec<rdm_core::LifecycleOp> {
         // The mesh-primary's own repair, never a Build or part of one (Q342).
-        superseded_births(&self.me, view, mesh, &*self.nodes_storage, &self.written, rdm_core::LifecycleOp::NO_BUILD).await
+        superseded_births(&self.me(), view, mesh, &*self.nodes_storage, &self.written, rdm_core::LifecycleOp::NO_BUILD).await
     }
 }
 
@@ -616,7 +623,7 @@ impl RecoverySubmitter {
 pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str, storage: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, build_id: &str) -> Vec<rdm_core::LifecycleOp> {
     let mut at: BTreeMap<PathName, Vec<&Node>> = BTreeMap::new();
     for n in view.members().filter(|n| n.mesh == mesh && n.status != NodeStatus::Deleted && n.incarnation_id.is_some()) {
-        at.entry(n.name.clone()).or_default().push(n);
+        at.entry(n.location()).or_default().push(n);
     }
     let mut ops = Vec::new();
     for (path, births) in at.into_iter().filter(|(_, b)| b.len() > 1) {
@@ -635,7 +642,7 @@ pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str
                 Ok(_) => {
                     span.record("outcome", "row-deleted");
                     span.in_scope(|| tracing::info!("a second birth at the same path and name, made across a cut, is superseded: its row is written deleted"));
-                    ops.push(rdm_core::LifecycleOp { r#type: b.r#type.clone(), mesh: mesh.to_string(), build_id: build_id.to_string(), attempt: 0, operation: rdm_core::OperationId::node("node.delete", &b.node_id), node_id: b.node_id.clone(), incarnation, name: path.clone(), event_at_rafka_ms: local_now_ms(), traceparent: None, tracestate: None });
+                    ops.push(rdm_core::LifecycleOp { r#type: b.r#type.clone(), mesh: mesh.to_string(), build_id: build_id.to_string(), attempt: 0, operation: rdm_core::OperationId::node("node.delete", &b.node_id), node_id: b.node_id.clone(), incarnation, path: path.path.clone(), name: path.name.clone(), event_at_rafka_ms: local_now_ms(), traceparent: None, tracestate: None });
                 }
                 Err(e) => {
                     span.record("outcome", "row-refused");
@@ -708,19 +715,19 @@ mod superseded_tests {
         let written = crate::node_rows::WrittenRows::default();
         let (first, second, alone) = (birth(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), birth(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), birth(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"));
         for n in [&first, &alone] {
-            crate::node_rows::write_record(&storage, &NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status)).await.unwrap().unwrap();
+            crate::node_rows::write_record(&storage, &NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status)).await.unwrap().unwrap();
         }
         // The second birth's create was refused at the name the first birth's record holds: its own record
         // stands Withdrawn, and the view holds both births.
-        storage.put_node(&NodeRow::new(second.name.clone(), second.mesh.clone(), &second.r#type, second.node_id.clone(), NodeStatus::Withdrawn)).await.unwrap();
+        storage.put_node(&NodeRow::new(second.location(), second.mesh.clone(), &second.r#type, second.node_id.clone(), NodeStatus::Withdrawn)).await.unwrap();
         let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         let ops = superseded_births(&me, &view(vec![first.clone(), second.clone(), alone.clone()]), "mesh1", &storage, &written, "b1").await;
         assert_eq!(ops.iter().map(|o| (o.node_id.clone(), o.operation.clone())).collect::<Vec<_>>(), vec![(second.node_id.clone(), rdm_core::OperationId::node("node.delete", &second.node_id))], "only the second birth is answered");
         assert_eq!(storage.node(&second.node_id).await.unwrap().unwrap().status, NodeStatus::Deleted, "the second birth's row is written deleted");
         assert_eq!(storage.node(&first.node_id).await.unwrap().unwrap().status, NodeStatus::Ready, "the record's birth stands");
-        assert_eq!(crate::node_rows::record_at(&storage, &first.name).await.unwrap().map(|r| r.node_id), Some(first.node_id.clone()), "the name stays the first birth's");
+        assert_eq!(crate::node_rows::record_at(&storage, &first.location()).await.unwrap().map(|r| r.node_id), Some(first.node_id.clone()), "the name stays the first birth's");
         let (one, other, holder) = (birth(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), birth(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), birth(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"));
-        storage.put_node(&NodeRow::new(holder.name.clone(), holder.mesh.clone(), &holder.r#type, holder.node_id.clone(), holder.status)).await.unwrap();
+        storage.put_node(&NodeRow::new(holder.location(), holder.mesh.clone(), &holder.r#type, holder.node_id.clone(), holder.status)).await.unwrap();
         assert!(superseded_births(&me, &view(vec![one, other]), "mesh1", &storage, &written, "b1").await.is_empty(), "a path whose live record names neither birth answers nothing");
     }
 }

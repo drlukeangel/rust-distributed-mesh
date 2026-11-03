@@ -114,11 +114,11 @@ impl Live {
     /// The path's holder after `gone` left it: another live node heard at the
     /// same path, if any. A holder is kept only while it is live and still at `path`.
     fn rehold(&mut self, path: &PathName) {
-        if self.by_path.get(path).and_then(|id| self.nodes.get(id)).is_some_and(|n| &n.name == path && !self.is_stopped(n)) {
+        if self.by_path.get(path).and_then(|id| self.nodes.get(id)).is_some_and(|n| &n.location() == path && !self.is_stopped(n)) {
             return;
         }
         self.by_path.remove(path);
-        let mut at: Vec<&NodeId> = self.nodes.values().filter(|n| &n.name == path && !self.is_stopped(n)).map(|n| &n.node_id).collect();
+        let mut at: Vec<&NodeId> = self.nodes.values().filter(|n| &n.location() == path && !self.is_stopped(n)).map(|n| &n.node_id).collect();
         at.sort();
         if let Some(id) = at.first() {
             self.by_path.insert(path.clone(), (*id).clone());
@@ -169,7 +169,7 @@ impl LiveNodeResolver {
             None => Applied::Joined,
             Some(held) if held.endpoint_id != birth.endpoint_id => return Applied::Refused(Refusal::TransportChanged { node_id: id }),
             Some(held) if held.incarnation == birth.incarnation => {
-                if held.transport_addr == birth.transport_addr && held.name == birth.name && !started {
+                if held.transport_addr == birth.transport_addr && held.location() == birth.location() && !started {
                     return Applied::Unchanged;
                 }
                 Applied::Updated
@@ -185,8 +185,8 @@ impl LiveNodeResolver {
             live.exited.remove(&(id.clone(), old.clone()));
         }
         // A birth that took another name (`ApplyNodeName`, R12) gives up the one it held.
-        let gave_up = live.nodes.get(&id).map(|held| held.name.clone()).filter(|held| *held != birth.name);
-        let path = birth.name.clone();
+        let gave_up = live.nodes.get(&id).map(|held| held.location()).filter(|held| *held != birth.location());
+        let path = birth.location();
         live.nodes.insert(id.clone(), birth);
         live.by_path.entry(path.clone()).or_insert(id);
         live.rehold(&path);
@@ -216,7 +216,7 @@ impl LiveNodeResolver {
         live.deleted.insert(node_id.clone(), now);
         live.stopped.retain(|(n, _)| n != node_id);
         live.superseded.entry(node_id.clone()).or_default().insert(incarnation.clone());
-        let held_path = live.nodes.remove(node_id).map(|n| n.name);
+        let held_path = live.nodes.remove(node_id).map(|n| n.location());
         for p in held_path.iter().chain(std::iter::once(path)) {
             if live.by_path.get(p) == Some(node_id) {
                 live.by_path.remove(p);
@@ -238,7 +238,7 @@ impl LiveNodeResolver {
     /// process holds another birth of the node, none, or the birth is stopped already.
     pub fn stop(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
         let mut live = self.live.write().unwrap();
-        let Some(path) = live.nodes.get(node_id).filter(|n| &n.incarnation == incarnation).map(|n| n.name.clone()) else { return false };
+        let Some(path) = live.nodes.get(node_id).filter(|n| &n.incarnation == incarnation).map(|n| n.location()) else { return false };
         if !live.stopped.insert((node_id.clone(), incarnation.clone())) {
             return false;
         }
@@ -343,7 +343,7 @@ mod tests {
     fn birth(path: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> ResolvedNode {
         ResolvedNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: NodeId::mint(),
-            name: path,
+            path: path.path.clone(), name: path.name.clone(),
             endpoint_id: key(),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -389,9 +389,9 @@ mod tests {
         let a = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 7000);
         r.apply(a.clone(), None);
         assert!(exact(&r, &a).is_ok(), "the resolver holds no lifecycle: nothing but a departure removes a node");
-        assert_eq!(r.depart(&a.node_id, &a.incarnation, &a.name), Applied::Deleted);
+        assert_eq!(r.depart(&a.node_id, &a.incarnation, &a.location()), Applied::Deleted);
         assert_eq!(exact(&r, &a), Err(ResolveFailure::Gone));
-        assert_eq!(r.resolve(&NodeTarget::CurrentPath(a.name.clone())), Err(ResolveFailure::Unknown));
+        assert_eq!(r.resolve(&NodeTarget::CurrentPath(a.location())), Err(ResolveFailure::Unknown));
         assert!(matches!(r.apply(restart(&a, 7001), Some(&a.incarnation)), Applied::Refused(Refusal::Deleted { .. })), "a deleted node never returns");
         assert_eq!(exact(&r, &birth(rdm_core::PathName::new("mesh1.node", "9").unwrap(), "mesh1", "node", 7003)), Err(ResolveFailure::Unknown), "never seen");
     }
@@ -407,7 +407,7 @@ mod tests {
         let b = restart(&a, 7001);
         r.apply(b.clone(), Some(&a.incarnation));
         assert_eq!(r.birth(&a.node_id), Birth::Current(b.incarnation.clone()), "a restart is the next birth of the same node");
-        r.depart(&a.node_id, &b.incarnation, &a.name);
+        r.depart(&a.node_id, &b.incarnation, &a.location());
         assert_eq!(r.birth(&a.node_id), Birth::Deleted);
         let other = birth(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 7002);
         let replacement = birth(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 7003);
@@ -422,10 +422,10 @@ mod tests {
         let new = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 7001);
         r.apply(old.clone(), None);
         r.apply(new.clone(), None);
-        let path = NodeTarget::CurrentPath(old.name.clone());
+        let path = NodeTarget::CurrentPath(old.location());
         assert_eq!(r.resolve(&path).unwrap().node_id, old.node_id, "two live nodes at a path: the holder stays until it departs");
         assert!(exact(&r, &new).is_ok());
-        r.depart(&old.node_id, &old.incarnation, &old.name);
+        r.depart(&old.node_id, &old.incarnation, &old.location());
         assert_eq!(exact(&r, &old), Err(ResolveFailure::Gone));
         assert_eq!(r.resolve(&path).unwrap().node_id, new.node_id);
     }
@@ -439,7 +439,7 @@ mod tests {
         let r = LiveNodeResolver::default();
         let old = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 7000);
         r.apply(old.clone(), None);
-        let path = NodeTarget::CurrentPath(old.name.clone());
+        let path = NodeTarget::CurrentPath(old.location());
         assert!(r.stop(&old.node_id, &old.incarnation));
         assert!(!r.stop(&old.node_id, &old.incarnation), "stopped once");
         assert_eq!(r.resolve(&path), Err(ResolveFailure::Unknown), "a stopped birth holds no path");
@@ -458,7 +458,7 @@ mod tests {
     fn a_departure_heard_before_the_birth_still_holds() {
         let r = LiveNodeResolver::default();
         let old = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 7000);
-        r.depart(&old.node_id, &old.incarnation, &old.name);
+        r.depart(&old.node_id, &old.incarnation, &old.location());
         assert!(matches!(r.apply(old.clone(), None), Applied::Refused(Refusal::Deleted { .. })));
         assert_eq!(exact(&r, &old), Err(ResolveFailure::Gone));
     }
@@ -469,7 +469,7 @@ mod tests {
         let a = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 7000);
         r.apply(a.clone(), None);
         let t0 = Instant::now();
-        r.depart_at(&a.node_id, &a.incarnation, &a.name, t0);
+        r.depart_at(&a.node_id, &a.incarnation, &a.location(), t0);
         assert_eq!(r.resolve_at(&NodeTarget::ExactNode(a.node_id.clone()), t0), Err(ResolveFailure::Gone));
         let after = t0 + Duration::from_millis(50);
         assert_eq!(r.resolve_at(&NodeTarget::ExactNode(a.node_id.clone()), after), Err(ResolveFailure::Unknown), "Gone is what this process holds now, not an archive");
@@ -489,12 +489,12 @@ mod tests {
         assert_eq!(r.apply(born.clone(), None), Applied::Joined);
         let mut rx = r.changes().unwrap();
         rx.borrow_and_update();
-        let renamed = ResolvedNode { name: taken.clone(), ..born.clone() };
+        let renamed = ResolvedNode { path: taken.path.clone(), name: taken.name.clone(), ..born.clone() };
         assert_eq!(r.apply(renamed.clone(), None), Applied::Updated, "the held birth took another name");
         assert!(rx.has_changed().unwrap(), "the name moved");
-        assert_eq!(exact(&r, &born).map(|n| n.name), Ok(taken.clone()));
+        assert_eq!(exact(&r, &born).map(|n| n.location()), Ok(taken.clone()));
         assert_eq!(r.resolve(&NodeTarget::CurrentPath(taken.clone())).map(|n| n.node_id), Ok(born.node_id.clone()));
-        assert!(r.resolve(&NodeTarget::CurrentPath(born.name.clone())).is_err(), "nobody holds the name the birth gave up");
+        assert!(r.resolve(&NodeTarget::CurrentPath(born.location())).is_err(), "nobody holds the name the birth gave up");
         rx.borrow_and_update();
         assert_eq!(r.apply(renamed, None), Applied::Unchanged);
         assert!(!rx.has_changed().unwrap(), "nothing moved");
@@ -513,7 +513,7 @@ mod tests {
         r.apply(restart(&a, 7001), Some(&a.incarnation));
         assert!(rx.has_changed().unwrap(), "the birth moved");
         rx.borrow_and_update();
-        r.depart(&a.node_id, &a.incarnation, &a.name);
+        r.depart(&a.node_id, &a.incarnation, &a.location());
         assert!(rx.has_changed().unwrap());
     }
 }

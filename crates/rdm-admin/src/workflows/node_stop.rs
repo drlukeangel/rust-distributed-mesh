@@ -141,7 +141,7 @@ mod tests {
             let conn_store = Arc::new(MemoryConnectionsStorage::default());
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
             let own_end = ConnectionEnd { r#type: "node".into(), mesh: "mesh1".into(),
-                name: name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
                 node_id: node_id.clone(),
                 incarnation: Some(incarnation.clone()),
             };
@@ -153,7 +153,7 @@ mod tests {
                 fabric_id,
                 node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                     node_id: node_id.clone(),
-                    name: name.clone(),
+                    path: name.path.clone(), name: name.name.clone(),
                     endpoint_id: ep_id,
                     transport_addr: node_addr,
                     incarnation: incarnation.clone(),

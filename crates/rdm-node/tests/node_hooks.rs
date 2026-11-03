@@ -115,7 +115,7 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(ResolvedNode { r#type: "node".into(), mesh: "mesh1".to_owned(),
             node_id: server_id.clone(),
-            name: server_name.clone(),
+            path: server_name.path.clone(), name: server_name.name.clone(),
             endpoint_id: server_key.public(),
             transport_addr: server_addr,
             incarnation: server_inc.clone(),
@@ -146,7 +146,7 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
                 NodeReadyCtx {
                     start_kind: StartKind::FirstStart,
                     birth: Birth {
-                        name: server_name.clone(),
+                        path: server_name.path.clone(), name: server_name.name.clone(),
                         node_id: server_id.clone(),
                         incarnation: server_inc.clone(),
                         fabric_id: fabric_id.clone(),
@@ -206,7 +206,7 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
             fabric_id,
             node: MeshNode { mesh: "mesh1".to_string(), r#type: "node".into(),
                 node_id: target_node_id,
-                name: PathName::numbered("mesh1", "node", 2),
+                path: format!("{}.{}", "mesh1", "node"), name: (2).to_string(),
                 endpoint_id: EndpointId(SecretKey::generate().public().to_string()),
                 transport_addr: "127.0.0.1:42000".parse().unwrap(),
                 incarnation: IncarnationId::mint(),
@@ -408,14 +408,14 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(ResolvedNode { r#type: "node".into(), mesh: "mesh1".to_owned(),
             node_id: node_id.clone(),
-            name: node_name.clone(),
+            path: node_name.path.clone(), name: node_name.name.clone(),
             endpoint_id: node_key.public(),
             transport_addr: node_addr,
             incarnation: node_inc.clone(),
         });
         resolver.insert(ResolvedNode { r#type: "node".into(), mesh: "mesh1".to_owned(),
             node_id: peer_id,
-            name: peer_name,
+            path: peer_name.path.clone(), name: peer_name.name.clone(),
             endpoint_id: peer_key.public(),
             transport_addr: peer_addr,
             incarnation: peer_inc,
@@ -447,7 +447,7 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
                 NodeReadyCtx {
                     start_kind: StartKind::FirstStart,
                     birth: Birth {
-                        name: node_name,
+                        path: node_name.path.clone(), name: node_name.name.clone(),
                         node_id: node_id.clone(),
                         incarnation: node_inc,
                         fabric_id,
@@ -575,7 +575,7 @@ fn a_spent_call_calls_on_call_failed_once_with_both_births_and_its_reason_and_an
         gone_ep.close().await;
         let gone = ResolvedNode { r#type: "node".into(), mesh: "mesh1".to_owned(),
             node_id: NodeId::mint(),
-            name: PathName::numbered("mesh1", "node", 2),
+            path: format!("{}.{}", "mesh1", "node"), name: (2).to_string(),
             endpoint_id: gone_key.public(),
             transport_addr: gone_addr,
             incarnation: IncarnationId::mint(),
@@ -583,7 +583,7 @@ fn a_spent_call_calls_on_call_failed_once_with_both_births_and_its_reason_and_an
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(ResolvedNode { r#type: "node".into(), mesh: "mesh1".to_owned(),
             node_id: live_id.clone(),
-            name: PathName::numbered("mesh1", "node", 1),
+            path: format!("{}.{}", "mesh1", "node"), name: (1).to_string(),
             endpoint_id: live_key.public(),
             transport_addr: live_addr,
             incarnation: live_inc.clone(),
@@ -591,11 +591,11 @@ fn a_spent_call_calls_on_call_failed_once_with_both_births_and_its_reason_and_an
         resolver.insert(gone.clone());
 
         // The calling node: its hook registered as every node's is, through its NodeHooks.
-        let sender = CallFailedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: PathName::numbered("mesh1", "gateway", 1) };
+        let sender = CallFailedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), path: format!("{}.{}", "mesh1", "gateway"), name: (1).to_string()};
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let hook = Arc::new(RecordCallFailed { told: Mutex::new(Vec::new()), tx });
         let hooks = NodeHooks::none().with_on_call_failed(hook.clone());
-        let observer = hooks.call_failed_observer(sender.node_id.clone(), sender.incarnation.clone(), HeldName::of_birth(sender.name.clone())).expect("on_call_failed is registered");
+        let observer = hooks.call_failed_observer(sender.node_id.clone(), sender.incarnation.clone(), HeldName::of_birth(sender.location())).expect("on_call_failed is registered");
         let caller_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().expect("addr")).await.expect("bind caller ep");
         let client = NodeRpcClient::new(caller_ep.clone(), resolver).with_call_failed_observer(observer);
 
@@ -624,7 +624,7 @@ fn a_spent_call_calls_on_call_failed_once_with_both_births_and_its_reason_and_an
 
     let ctx = &told[0];
     assert_eq!(ctx.sender, sender, "this node's birth");
-    assert_eq!(ctx.receiver, Some(CallFailedBirth { node_id: gone.node_id.clone(), incarnation: gone.incarnation.clone(), name: gone.name.clone() }), "the birth the call was addressed to");
+    assert_eq!(ctx.receiver, Some(CallFailedBirth { node_id: gone.node_id.clone(), incarnation: gone.incarnation.clone(), path: gone.path.clone(), name: gone.name.clone()}), "the birth the call was addressed to");
     let spans = capture.spans().expect("captured spans");
     let _ = std::fs::remove_dir_all(&dir);
     let notices: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-on-call-failed").collect();

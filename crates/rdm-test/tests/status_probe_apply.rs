@@ -60,7 +60,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
             timeouts: Timeouts::default(),
         };
         let created = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .expect("the node is born");
         let node = created.node.clone();
@@ -68,7 +68,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         let endpoint_id = node.endpoint_id.as_ref().expect("endpoint id").0.parse::<iroh::PublicKey>().unwrap();
         observer.resolver.insert(ResolvedNode { mesh: node.mesh.clone(), r#type: node.r#type,
             node_id: node.node_id.clone(),
-            name: node.name.clone(),
+            path: node.path.clone(), name: node.name.clone(),
             endpoint_id,
             incarnation: incarnation.clone(),
             transport_addr: node.transport_addr.expect("transport address"),

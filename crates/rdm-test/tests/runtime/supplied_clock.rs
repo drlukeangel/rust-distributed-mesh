@@ -191,7 +191,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     assert!(!mesh_topology_published.is_empty() && mesh_topology_published.iter().all(|skew| *skew < 5_000), "published_at_rafka_ms is Rafka-time from the composed clock: skews {mesh_topology_published:?}");
 
     // The adversary: the very birth, an OLDER sequence, a stamp a year ahead, saying Leaving.
-    let held_before = estate.node_view(&target.name).await;
+    let held_before = estate.node_view(&target.location()).await;
     assert_eq!(held_before.status, NodeStatus::Ready);
     let last = before.last().unwrap().1.clone();
     let mut forged = last.clone();
@@ -205,7 +205,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     observer.broadcast(&Frame::Digest { digest: forged.clone() }).await;
     // Well past the silence window (3 s) and many heartbeats (500 ms): the live heartbeats are the control.
     tokio::time::sleep(Duration::from_secs(9)).await;
-    let held_after = estate.node_view(&target.name).await;
+    let held_after = estate.node_view(&target.location()).await;
     assert_eq!(held_after.status, NodeStatus::Ready, "the older heartbeat stamped ahead did not move the member, and its live heartbeats kept it heard past the silence window: {held_after:?}");
     assert_eq!((&held_after.node_id, &held_after.incarnation_id), (&held_before.node_id, &held_before.incarnation_id), "the same birth");
     let live_after: Vec<(Seen, MeshDigest)> = observer.heartbeats_of(node_id).into_iter().filter(|h| h.0.heard_at_ms > forged_at_ms && h.1.node_state == NodeState::Alive).collect();

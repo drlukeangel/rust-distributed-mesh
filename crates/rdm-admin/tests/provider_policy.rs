@@ -37,7 +37,7 @@ async fn first_admin(spawn_type: Option<&str>) -> (Arc<MemoryBuildStateAdapter>,
 /// What `fabric.get` answers at the admin `cp` serves (answered from its view by
 /// `views::fabric_answer`), as the JSON the view serializes to.
 async fn fabric_get(cp: &ControlPlane) -> Value {
-    match rdm_admin::views::fabric_answer(&cp.me, &*cp.topology.read().await, None, &rdm_core::filter::Filter::new()) {
+    match rdm_admin::views::fabric_answer(&cp.me(), &*cp.topology.read().await, None, &rdm_core::filter::Filter::new()) {
         StatusReply::Fabrics { fabrics } if fabrics.len() == 1 => serde_json::to_value(&fabrics[0]).expect("a view serializes"),
         other => panic!("fabric.get answered {other:?}"),
     }

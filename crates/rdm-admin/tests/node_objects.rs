@@ -223,16 +223,16 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     crate::bind_store(&control, records.clone(), &*control.topology.read().await).await;
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
-    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() });
+    let run = Arc::new(RunDoor { me_path: me.path.clone(), me_name: me.name.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() });
     let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), records));
     let _ = rig.sink.1.set(rows.clone());
     let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
-        me: me.clone(),
+        me_path: me.path.clone(), me_name: me.name.clone(),
         topology: control.topology.clone(),
         builds: rig.builds.clone(),
         door: Arc::new(ClaimDoor {
             incarnation: executor_birth.incarnation.clone(),
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             node_id: control
                 .topology
                 .read()
@@ -254,7 +254,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         notices: rig.told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
+    Arc::new(BuildDoor { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
 }
 
 /// The Build door of `mesh1.node-admin.2`, a node-admin of the fabric that does not hold the fabric-primary
@@ -268,17 +268,17 @@ async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
     let control = Arc::new(crate::control_plane(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join: Duration::from_millis(300) });
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
-    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() });
+    let run = Arc::new(RunDoor { me_path: me.path.clone(), me_name: me.name.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() });
     let node_id = control.topology.read().await.node(&me).expect("the admin is in the view").node_id.clone();
     let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(me.clone(), node_id.clone(), control.topology.clone(), Arc::new(rdm_admin::storage::MemoryNodesStorage::default())));
     let _ = rig.sink.1.set(rows);
     let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
-        me: me.clone(),
+        me_path: me.path.clone(), me_name: me.name.clone(),
         topology: control.topology.clone(),
         builds: rig.builds.clone(),
         door: Arc::new(ClaimDoor {
             incarnation: executor_birth.incarnation.clone(),
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             node_id,
             topology: control.topology.clone(),
             builds: rig.builds.clone(),
@@ -293,7 +293,7 @@ async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         notices: rig.told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
+    Arc::new(BuildDoor { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
 }
 
 /// The fabric-primary's Build door over a Build log of its own: the executor writes its step
@@ -309,16 +309,16 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
     let control = Arc::new(crate::control_plane(fp.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
-    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() });
+    let run = Arc::new(RunDoor { me_path: me.path.clone(), me_name: me.name.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() });
     let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rdm_admin::storage::MemoryNodesStorage::default())));
     let _ = rig.sink.1.set(rows);
     let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
-        me: me.clone(),
+        me_path: me.path.clone(), me_name: me.name.clone(),
         topology: control.topology.clone(),
         builds: fp.clone(),
         door: Arc::new(ClaimDoor {
             incarnation: executor_birth.incarnation.clone(),
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             node_id: control
                 .topology
                 .read()
@@ -340,7 +340,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         notices: rig.told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
+    Arc::new(BuildDoor { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
 }
 
 /// The one executor of the fixture is the fabric-primary itself.
@@ -363,7 +363,7 @@ struct RigRunner {
 impl OperationRunner for RigRunner {
     async fn run(&self, build_id: &BuildId, _lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
         match op {
-            BuildOperation::CreateNode { node, over: None, .. } => self.rig.pipeline_create(build_id, attempt, node, self.join).await.map_err(Into::into),
+            BuildOperation::CreateNode { path: node_path, name: node_name, over: None, .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; self.rig.pipeline_create(build_id, attempt, node, self.join).await.map_err(Into::into) },
             other => Err(format!("the fixture creates nodes only, not {other:?}").into()),
         }
     }
@@ -391,9 +391,9 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     // answers is followed once and ends at the door again.
     let fabric_primary = door.control.topology.read().await.fabric_primary().map(|n| n.node_id.clone()).filter(|id| *id != node_id);
     if let Some(fp) = fabric_primary {
-        resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: fp, name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: incarnation.clone() });
+        resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: fp, path: "mesh1.node-admin".into(), name: "1".into(), endpoint_id: key.public(), transport_addr: addr, incarnation: incarnation.clone() });
     }
-    resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id, name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation });
+    resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id, path: "mesh1.node-admin".into(), name: "1".into(), endpoint_id: key.public(), transport_addr: addr, incarnation });
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = Arc::new(NodeRpcClient::new(caller, resolver).with_caller_system("rdm"));
     Served { router, carrier: BuildCarrier::new(client, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()), door }
@@ -434,7 +434,7 @@ impl Rig {
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/node-objects".into(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -463,7 +463,7 @@ impl Rig {
             template: &self.template,
             timeouts: Timeouts { bind: join, join, ..Timeouts::default() },
         };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", name), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build.clone()), attempt, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", name), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build.clone()), attempt, path: name.path.clone(), name: name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
@@ -488,7 +488,7 @@ impl Rig {
                 let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
                 let digest = MeshDigest { held_hash: Default::default(),
                     fabric_id: FabricId::mint(),
-                    node: MeshNode { mesh: view.topology.node_spec(&name).unwrap().mesh.clone(), r#type: view.topology.node_spec(&name).unwrap().r#type.clone(), node_id, name: name.clone(), endpoint_id, transport_addr: "127.0.0.1:34567".parse().unwrap(), incarnation, supersedes: None, runtime: Some(runtime.clone()) },
+                    node: MeshNode { mesh: view.topology.node_spec(&name).unwrap().mesh.clone(), r#type: view.topology.node_spec(&name).unwrap().r#type.clone(), node_id, path: name.path.clone(), name: name.name.clone(), endpoint_id, transport_addr: "127.0.0.1:34567".parse().unwrap(), incarnation, supersedes: None, runtime: Some(runtime.clone()) },
                     status: MemberStatus::Pending,
                     node_state: Default::default(),
                     admin_api_base: None,
@@ -922,7 +922,7 @@ fn a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothi
         let rig = Arc::new(Rig::new());
         let door = door(&rig, Duration::from_secs(30)).await;
         let b0 = rig.builds.current_build().await.unwrap().into_build_id().unwrap();
-        let executor_birth = door.control.topology.read().await.node(&door.me).unwrap().birth().unwrap();
+        let executor_birth = door.control.topology.read().await.node(&door.me()).unwrap().birth().unwrap();
         let claim = |attempt: u32| BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: executor_birth.clone() };
         rig.builds.claim_attempt(&claim(1)).await.unwrap();
         rig.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
@@ -938,7 +938,7 @@ fn a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothi
             .unwrap();
         let read = rig.builds.read_build(&b0).await.unwrap();
         let e = &door.env;
-        let env = Arc::new(DriveEnv { me_mesh: e.me_mesh.clone(), me: e.me.clone(), topology: e.topology.clone(), builds: Arc::new(ReadBeforeTheVerdict { inner: rig.builds.clone(), current: before }), door: e.door.clone(), dispatcher: e.dispatcher.clone(), gate: e.gate.clone(), departure: e.departure.clone(), verdicts: e.verdicts.clone(), notices: e.notices.clone(), turns: e.turns.clone() });
+        let env = Arc::new(DriveEnv { me_mesh: e.me_mesh.clone(), me_path: e.me_path.clone(), me_name: e.me_name.clone(), topology: e.topology.clone(), builds: Arc::new(ReadBeforeTheVerdict { inner: rig.builds.clone(), current: before }), door: e.door.clone(), dispatcher: e.dispatcher.clone(), gate: e.gate.clone(), departure: e.departure.clone(), verdicts: e.verdicts.clone(), notices: e.notices.clone(), turns: e.turns.clone() });
         let drives = Arc::new(Drives::default());
         let ensured = rdm_admin::build_op::ensure_active(&drives, &env).await.len();
         let held = drives.get(&b0).is_some();
@@ -957,6 +957,7 @@ fn a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothi
     assert!(told.iter().any(|s| s["attributes"]["build_id"] == b0.log().to_string().as_str() && s["attributes"]["attempt"] == "2" && s["attributes"]["state"] == "Failed"), "the tick names the Build it read failed: {told:?}");
     eprintln!("span rdm.node_admin.build.reject.via-not-in-progress-when-read {}", told[0]);
 }
+
 
 /// CONTRACT (R-ON8): a fabric-primary that took the role after a Build ended holds no frame of it.
 /// Its re-submit is `AlreadyApplied` and the frames are read from the executor of the last attempt
@@ -980,7 +981,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         // The same Build log and executor under a fabric-primary that never drove this Build.
-        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), primaries: before.primaries.clone(), incarnation: before.incarnation.clone() });
+        let after = Arc::new(BuildDoor { me_path: before.me_path.clone(), me_name: before.me_name.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), primaries: before.primaries.clone(), incarnation: before.incarnation.clone() });
         let successor = serve(after).await;
         let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
@@ -1032,7 +1033,7 @@ fn a_build_sends_started_at_its_first_claim_then_ended_and_a_successor_that_adop
         let after_replay = rig.told.settled(2).await;
         assert_eq!(after_replay.len(), 2, "a replayed or re-read terminal sends no second notice: {after_replay:?}");
         // The same Build log under a fabric-primary that never drove this Build: it adopts it Complete.
-        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), primaries: before.primaries.clone(), incarnation: before.incarnation.clone() });
+        let after = Arc::new(BuildDoor { me_path: before.me_path.clone(), me_name: before.me_name.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), primaries: before.primaries.clone(), incarnation: before.incarnation.clone() });
         let successor = serve(after).await;
         let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();

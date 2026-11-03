@@ -124,7 +124,7 @@ mod tests {
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
                 node_id: node_id.clone(),
-                name: name,
+                path: name.path.clone(), name: name.name.clone(),
                 endpoint_id: EndpointId("key".into()),
                 transport_addr: "127.0.0.1:41000".parse().unwrap(),
                 incarnation: incarnation.clone(),

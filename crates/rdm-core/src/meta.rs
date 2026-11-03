@@ -14,8 +14,10 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeSpec {
-    /// The node's `(path, name)`.
-    pub path: PathName,
+    /// The node's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The owning mesh, independent of the path/name pair.
     pub mesh: String,
     /// The node's type (`node`, `node-admin`, or a type the Fabric declares), independent of the
@@ -42,6 +44,11 @@ pub struct NodeSpec {
     /// before the field decodes with none.
     #[serde(default)]
     pub config: BTreeMap<String, String>,
+}
+
+impl NodeSpec {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// What survives a topology-preserving runtime loss or restart, and the declared disposition of
@@ -244,7 +251,7 @@ impl NodeSpec {
     /// ([`StoragePersistence::of_type`]), with no executable, tag or config. Ingress-only: once a Build
     /// is accepted its spec is explicit and nothing re-derives it.
     pub fn default_for(path: PathName, mesh: impl Into<String>, r#type: &str) -> Self {
-        Self { path, mesh: mesh.into(), r#type: r#type.to_string(), storage_persistence: StoragePersistence::of_type(r#type), executable: None, tags: BTreeSet::new(), config: BTreeMap::new() }
+        Self { path: path.path.clone(), name: path.name.clone(), mesh: mesh.into(), r#type: r#type.to_string(), storage_persistence: StoragePersistence::of_type(r#type), executable: None, tags: BTreeSet::new(), config: BTreeMap::new() }
     }
 }
 

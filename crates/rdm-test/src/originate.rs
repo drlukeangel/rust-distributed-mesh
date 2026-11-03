@@ -170,10 +170,17 @@ pub enum OriginateRequest {
 pub struct AnsweredBy {
     /// The answering node's id.
     pub node_id: String,
-    /// The answering node's separate path and name.
-    pub node: PathName,
+    /// The answering node's separate path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The answering node's incarnation id.
     pub incarnation_id: String,
+}
+
+impl AnsweredBy {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// An originate door answer.
@@ -460,7 +467,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
     b.serve::<Originate, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: OriginateRequest| {
         // The node answers and routes under the name it holds at this call (R12).
         let own: PathName = seams.name.now();
-        let by = AnsweredBy { node_id: node_id.clone(), node: own.clone(), incarnation_id: incarnation_id.clone() };
+        let by = AnsweredBy { node_id: node_id.clone(), path: own.path.clone(), name: own.name.clone(), incarnation_id: incarnation_id.clone() };
         let seams = seams.clone();
         let launch_node_id = launch_node_id.clone();
         let policy = policy.clone();
@@ -536,7 +543,7 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &rdm_core::NodeId, destinatio
         OriginateStoreOp::Get { key } => TestkitStoreRequest::Get { key },
         OriginateStoreOp::Put { key, value } => TestkitStoreRequest::Put { key, value },
     };
-    let call = seams.client.call_resolved::<TestkitStore>(resolution, own, &target.name, &target.node_id, &req, &CallOptions::default()).await;
+    let call = seams.client.call_resolved::<TestkitStore>(resolution, own, &target.location(), &target.node_id, &req, &CallOptions::default()).await;
     // Each Proxy the resolution found invalid is deleted by this source, as the caller of the seam;
     // the reply names the first, the one toward this destination when it was among them.
     let deleted = call.delete.first().map(|(_, why)| why.to_string());
@@ -585,7 +592,7 @@ async fn stream(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::NodeId, 
     let Some(dialer) = seams.data_plane.get() else {
         return failed("no-data-plane-alpn: this node registered no data-plane ALPN".into());
     };
-    let birth = rdm_transport::connections::Birth { mesh: target.mesh.clone(), r#type: target.r#type.clone(), name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
+    let birth = rdm_transport::connections::Birth { mesh: target.mesh.clone(), r#type: target.r#type.clone(), path: target.path.clone(), name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
     let conn = match dialer.open(&birth).await {
         Ok(c) => c,
         Err(e) => return failed(format!("open: {e:?}")),
@@ -607,7 +614,7 @@ async fn stream(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::NodeId, 
     let peer = conn.peer();
     OriginateReply::Streamed {
         by: by.clone(),
-        peer: AnsweredBy { node_id: peer.node_id.to_string(), node: peer.name.clone(), incarnation_id: peer.incarnation.to_string() },
+        peer: AnsweredBy { node_id: peer.node_id.to_string(), path: peer.path.clone(), name: peer.name.clone(), incarnation_id: peer.incarnation.to_string() },
         kind: match conn.kind() { rdm_transport::connections::ConnectionKind::Direct => "direct".into(), rdm_transport::connections::ConnectionKind::Proxy { via } => format!("proxy via {}", via.node_id) },
         connection_id: conn.id().to_string(),
         answered,
@@ -628,7 +635,7 @@ async fn throughput(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::Node
     let Some(dialer) = seams.data_plane.get() else {
         return failed("no-data-plane-alpn: this node registered no data-plane ALPN".into());
     };
-    let birth = rdm_transport::connections::Birth { mesh: target.mesh.clone(), r#type: target.r#type.clone(), name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
+    let birth = rdm_transport::connections::Birth { mesh: target.mesh.clone(), r#type: target.r#type.clone(), path: target.path.clone(), name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
     let opened = std::time::Instant::now();
     let conn = match dialer.open(&birth).await {
         Ok(c) => c,
@@ -691,7 +698,7 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::No
         seams.connections.direct_failed(&dest, "testkit seed: the direct dial ended NotSent");
     }
     seams.connections.observations_landed().await;
-    let end = |n: &rdm_transport::ResolvedNode| ConnectionEnd { mesh: n.mesh.clone(), r#type: n.r#type.clone(), name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
+    let end = |n: &rdm_transport::ResolvedNode| ConnectionEnd { mesh: n.mesh.clone(), r#type: n.r#type.clone(), path: n.path.clone(), name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let row = NodeConnection {
         id: rdm_core::ConnectionId::mint(),
         source: seams.connections.own(),
@@ -767,7 +774,7 @@ mod tests {
     #[test]
     fn originate_keeps_every_variant_on_its_pinned_bytes() {
         let s = || "r".to_string();
-        let by = || AnsweredBy { node_id: "i".into(), node: PathName::new("p", "n").unwrap(), incarnation_id: "c".into() };
+        let by = || AnsweredBy { node_id: "i".into(), path: "p".into(), name: "n".into(), incarnation_id: "c".into() };
         let requests = [
             (OriginateRequest::Call { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), op: OriginateStoreOp::Put { key: vec![1], value: vec![2] } }, "000c6464646464646464646464640101010102"),
             (OriginateRequest::ArmFault { refuse_index: 1, refuse_history: 2, pass_history: 3 }, "01010203"),
@@ -814,7 +821,7 @@ mod tests {
     use rdm_core::{IncarnationId, NodeId};
 
     fn end(r#type: &str, ordinal: u32, inc: &str) -> ConnectionEnd {
-        ConnectionEnd { mesh: "mesh1".into(), r#type: r#type.to_string(), name: PathName::numbered("mesh1", r#type, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap()) }
+        ConnectionEnd { mesh: "mesh1".into(), r#type: r#type.to_string(), path: format!("{}.{}", "mesh1", r#type), name: (ordinal).to_string(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap()) }
     }
 
     fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {

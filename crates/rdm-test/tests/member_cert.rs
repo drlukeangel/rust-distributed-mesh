@@ -23,7 +23,7 @@ fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide, incarn
         fabric_id: fabric.clone(),
         mesh: "mesh1".into(),
         r#type: "node".into(),
-        name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+        path: "mesh1.node".into(), name: "1".into(),
         node_id,
         incarnation,
         supersedes,
@@ -148,7 +148,7 @@ fn the_member_cert_is_in_the_pre_node_ready_context_and_equals_the_handles() {
         let seen = pre_node_ready.member_certs.lock().unwrap().clone();
         assert_eq!(seen.len(), 1, "the hook ran once");
         assert_eq!(seen[0].as_deref(), Some(running.member_cert.as_slice()), "the hook's context carries the handle's bytes");
-        assert_eq!(certs::cert_from_bytes(&running.member_cert).unwrap().cert.name, rdm_core::PathName::new("mesh1.node", "1").unwrap());
+        assert_eq!(certs::cert_from_bytes(&running.member_cert).unwrap().cert.location(), rdm_core::PathName::new("mesh1.node", "1").unwrap());
 
         running.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -188,7 +188,7 @@ fn a_mesh_primary_configured_with_no_certs_admits_the_birth_with_an_empty_cert_a
 async fn alpn_birth(admin: &AdminSide, fabric: &FabricId, name: rdm_core::PathName, roots: Vec<rdm_core::certs::VerifyingKey>, alpn: &rdm_transport::connections::Alpn) -> (rdm_node::node::RunningNode, std::path::PathBuf) {
     let dir = birth_dir("member-cert-roots");
     let key = node::load_or_mint_key(&dir).unwrap();
-    let launch = Launch { name, roots, ..launch_in(&dir, fabric, admin, IncarnationId::mint(), None, NodeId::mint()) };
+    let launch = Launch { path: name.path.clone(), name: name.name.clone(), roots, ..launch_in(&dir, fabric, admin, IncarnationId::mint(), None, NodeId::mint()) };
     admin.deployed(&launch, &key);
     let running = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], std::slice::from_ref(alpn))
         .await
@@ -197,7 +197,7 @@ async fn alpn_birth(admin: &AdminSide, fabric: &FabricId, name: rdm_core::PathNa
 }
 
 fn birth_of(n: &rdm_node::node::RunningNode) -> rdm_transport::connections::Birth {
-    rdm_transport::connections::Birth { mesh: n.digest.node.mesh.clone(), r#type: n.digest.node.r#type.clone(), name: n.digest.node.name.clone(), node_id: n.digest.node.node_id.clone(), incarnation: n.digest.node.incarnation.clone() }
+    rdm_transport::connections::Birth { mesh: n.digest.node.mesh.clone(), r#type: n.digest.node.r#type.clone(), path: n.digest.node.path.clone(), name: n.digest.node.name.clone(), node_id: n.digest.node.node_id.clone(), incarnation: n.digest.node.incarnation.clone() }
 }
 
 // @feature: node-lifecycle
@@ -233,7 +233,7 @@ fn a_node_admits_on_the_root_set_its_launch_carries() {
         let other = rdm_core::certs::mint_key();
         let issuer = IssuingKey::mint(&CaKey::mint(&other, certs::CA_CERT_TTL_SECS, PRIMARY_REFERENCE_MS), "mesh1", PRIMARY_REFERENCE_MS, PRIMARY_REFERENCE_MS + certs::ISSUING_CERT_TTL_SECS * 1000).expect("within the CA's life");
         let own = certs::cert_from_bytes(&dialer.member_cert).unwrap().cert;
-        let birth = certs::BirthIdentity { node_id: own.node_id, incarnation: own.incarnation, mesh: own.mesh, name: own.name, endpoint_key: own.endpoint };
+        let birth = certs::BirthIdentity { node_id: own.node_id, incarnation: own.incarnation, mesh: own.mesh, path: own.path.clone(), name: own.name, endpoint_key: own.endpoint };
         let foreign = certs::issue(&issuer, &birth, PRIMARY_REFERENCE_MS, PRIMARY_REFERENCE_MS + 3_600_000).unwrap();
         dialing.set_member_cert(certs::cert_to_bytes(&foreign));
         match dialing.probe_direct(&birth_of(&acceptor), &alpn.name).await {

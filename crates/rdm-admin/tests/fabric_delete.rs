@@ -155,7 +155,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
     for n in records {
         // The record a create wrote: the node's row and its birth.
         let mut row = NodeRow { replacement_from: None, r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
-                name: n.name.clone(),
+                path: n.path.clone(), name: n.name.clone(),
                 node_id: n.node_id.clone(),
                 status: NodeStatus::Ready,
                 allocated: None,
@@ -169,15 +169,15 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                
             };
         if let Some(incarnation) = &n.incarnation_id {
-            row.birth_mut(incarnation, &n.name);
+            row.birth_mut(incarnation, &n.location());
         }
         storage.write_record(&row).await.unwrap();
-        assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+        assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::location("node.create", &n.location()), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
         let h = handle(50_000);
         storage
             .put_runtime(&RuntimeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(),
                 node_id: n.node_id.clone(),
-                name: n.name.clone(),
+                path: n.path.clone(), name: n.name.clone(),
                 incarnation_id: n.incarnation_id.clone().unwrap(),
                 runtime: h.fact().unwrap(),
                 data_dir: None,
@@ -225,8 +225,8 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     }
     let declared = Mutex::new(Declared::default());
     let nodes_storage = Arc::new(MemoryNodesStorage::default());
-    let rows_m1 = Arc::new(NodeRows::new(m1_a1.name.clone(), m1_a1.node_id.clone(), observed.clone(), nodes_storage.clone()));
-    let rows_m2 = Arc::new(NodeRows::new(m2_a1.name.clone(), m2_a1.node_id.clone(), observed.clone(), nodes_storage.clone()));
+    let rows_m1 = Arc::new(NodeRows::new(m1_a1.location(), m1_a1.node_id.clone(), observed.clone(), nodes_storage.clone()));
+    let rows_m2 = Arc::new(NodeRows::new(m2_a1.location(), m2_a1.node_id.clone(), observed.clone(), nodes_storage.clone()));
     rows_written(&nodes_storage, &rows_m1, &[m1_a1.clone(), m1_r1.clone()]).await;
     rows_written(&nodes_storage, &rows_m2, &[m2_a1.clone(), m2_r1.clone()]).await;
 
@@ -236,7 +236,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial.clone(), &m1_a1.birth().unwrap(), "mesh1").await.unwrap();
-    let mut cp = crate::control_plane(builds.clone(), accepted, m1_a1.name.clone(), observed.read().await.clone(), crate::adopted_time());
+    let mut cp = crate::control_plane(builds.clone(), accepted, m1_a1.location(), observed.read().await.clone(), crate::adopted_time());
     cp.topology = observed.clone();
     // The fabric-primary's door reads the node records its writers wrote (boot.rs: one nodes store),
     // never a birth from the gossip view (Q197).
@@ -265,7 +265,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         fabric_id: fabric_id.clone(),
         executable: "/nonexistent/testkit-node".into(),
         seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
-        launcher: rdm_core::launch::Launcher { mesh: m1_a1.mesh.clone(), name: m1_a1.name.clone(), node_id: m1_a1.node_id.clone(), incarnation: m1_a1.incarnation_id.clone().unwrap() },
+        launcher: rdm_core::launch::Launcher { mesh: m1_a1.mesh.clone(), path: m1_a1.path.clone(), name: m1_a1.name.clone(), node_id: m1_a1.node_id.clone(), incarnation: m1_a1.incarnation_id.clone().unwrap() },
         env: BTreeMap::new(),
         data_root: data_root.clone(),
         store_dir: data_root.clone(),
@@ -310,7 +310,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     assert_eq!(
         after_m2_deleted,
         vec![
-            BuildOperation::DeleteLiveNode { r#type: m2_a1.r#type.clone(), mesh: m2_a1.mesh.clone(), node: m2_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m2_a1) },
+            BuildOperation::DeleteLiveNode { r#type: m2_a1.r#type.clone(), mesh: m2_a1.mesh.clone(), path: m2_a1.path.clone(), name: m2_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m2_a1) },
             BuildOperation::ShutdownMesh { mesh: "mesh1".into(), mesh_id: id1.clone() },
             BuildOperation::DeleteFabric { fabric_id: fabric_id.clone() },
         ],
@@ -405,18 +405,18 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let proj = builds.read_build(&build_id).await.unwrap();
     assert!(plan_for_build(&proj, &*observed.read().await).operations.is_empty(), "fabric.delete Build has no operations left at fabric.deleted");
     assert!(!fleet.terminated.lock().unwrap().contains(&m1_a1.node_id), "fabric-primary is still alive at fabric.deleted");
-    assert_eq!(nodes_storage.record_at(&m1_a1.name).await.unwrap().unwrap().status, NodeStatus::Ready, "fabric-primary's node row is still live at fabric.deleted");
+    assert_eq!(nodes_storage.record_at(&m1_a1.location()).await.unwrap().unwrap().status, NodeStatus::Ready, "fabric-primary's node row is still live at fabric.deleted");
 
     // Step 4: a separate call from outside the fabric runs `node.delete` of the fabric-primary.
-    assert!(cp.of_deleted_mesh(&m1_a1.name).await.unwrap(), "the fabric-primary's mesh is deleted after fabric.deleted");
+    assert!(cp.of_deleted_mesh(&m1_a1.location()).await.unwrap(), "the fabric-primary's mesh is deleted after fabric.deleted");
     let fp_delete = cp
-        .open_delete_in(tracing::info_span!("cell.fp-delete"), "build.create", m1_a1.name.clone())
+        .open_delete_in(tracing::info_span!("cell.fp-delete"), "build.create", m1_a1.location())
         .await
         .expect("the separate node.delete of the fabric-primary is admitted");
     assert_eq!(fp_delete.attempt, 2);
     let proj2 = builds.read_build(&build_id).await.unwrap();
     let fp_ops = plan_for_build(&proj2, &*observed.read().await).operations;
-    assert_eq!(fp_ops, vec![BuildOperation::DeleteLiveNode { r#type: m1_a1.r#type.clone(), mesh: m1_a1.mesh.clone(), node: m1_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m1_a1) }], "attempt 2 plans only the fabric-primary's own node.delete");
+    assert_eq!(fp_ops, vec![BuildOperation::DeleteLiveNode { r#type: m1_a1.r#type.clone(), mesh: m1_a1.mesh.clone(), path: m1_a1.path.clone(), name: m1_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m1_a1) }], "attempt 2 plans only the fabric-primary's own node.delete");
     assert_eq!(role_move(&fp_ops[0], &*observed.read().await), None, "the last node of the last mesh moves no role on its separate node.delete");
     assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.node_id.clone()), "the fabric-primary executes its own final node.delete");
 
@@ -488,16 +488,16 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             nodes: vec![fp.clone(), m2_a1.clone(), m2_r1.clone()],
         }));
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
-        let rows_fp = Arc::new(NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), nodes_storage.clone()));
+        let rows_fp = Arc::new(NodeRows::new(fp.location(), fp.node_id.clone(), view.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_fp, &m2_nodes).await;
         for (n, h) in [(&m2_a1, &handles[&m2_a1.node_id]), (&m2_r1, &handles[&m2_r1.node_id])] {
-            nodes_storage.put_runtime(&RuntimeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(), node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
+            nodes_storage.put_runtime(&RuntimeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
         }
         let mesh_storage = MemoryMeshStorage::default();
         rdm_admin::storage::write_mesh(&mesh_storage, None, &rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), state: MeshState::Pending }).await.unwrap().unwrap();
         // The fabric-primary's records.
         let records = Records::default();
-        records.set_status(nodes_storage.clone(), Arc::new(MemoryMeshStorage::default()), Arc::new(MemoryFabricStorage::new()), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
+        records.set_status(nodes_storage.clone(), Arc::new(MemoryMeshStorage::default()), Arc::new(MemoryFabricStorage::new()), "mesh1".into(), fp.location(), fp.node_id.clone());
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
@@ -506,7 +506,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             .unwrap();
         let op_m2 = operation(&id2);
         let key_m2 = MeshDeleteKey { mesh_id: id2.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m2.clone() };
-        let held_paths: Vec<PathName> = view.read().await.nodes.iter().map(|n| n.name.clone()).collect();
+        let held_paths: Vec<PathName> = view.read().await.nodes.iter().map(|n| n.location()).collect();
         // Each exited birth's node.delete as a crashed target, the fabric-primary its executor: the
         // ordinary workflow on the exited-verdict row, its NodeDeleted writing the row through rows_fp.
         let joins = Joins::default();
@@ -516,7 +516,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             fabric_id: fabric_id.clone(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: fp.mesh.clone(), name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: fp.mesh.clone(), path: fp.path.clone(), name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -585,16 +585,16 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             nodes: vec![fp.clone(), m2_a1.clone(), m2_r1.clone()],
         }));
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
-        let rows_fp = Arc::new(NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), nodes_storage.clone()));
+        let rows_fp = Arc::new(NodeRows::new(fp.location(), fp.node_id.clone(), view.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_fp, &m2_nodes).await;
         for (n, h) in [(&m2_a1, &handles[&m2_a1.node_id]), (&m2_r1, &handles[&m2_r1.node_id])] {
-            nodes_storage.put_runtime(&RuntimeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(), node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
+            nodes_storage.put_runtime(&RuntimeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
         }
         let mesh_storage = MemoryMeshStorage::default();
         rdm_admin::storage::write_mesh(&mesh_storage, None, &rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), state: MeshState::Pending }).await.unwrap().unwrap();
         let declared = Mutex::new(Declared::default());
         let records = Records::default();
-        records.set_status(nodes_storage.clone(), Arc::new(MemoryMeshStorage::default()), Arc::new(MemoryFabricStorage::new()), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
+        records.set_status(nodes_storage.clone(), Arc::new(MemoryMeshStorage::default()), Arc::new(MemoryFabricStorage::new()), "mesh1".into(), fp.location(), fp.node_id.clone());
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
@@ -603,7 +603,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             .unwrap();
         let op_m2 = operation(&id2);
         let key_m2 = MeshDeleteKey { mesh_id: id2.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m2.clone() };
-        let held_paths: Vec<PathName> = view.read().await.nodes.iter().map(|n| n.name.clone()).collect();
+        let held_paths: Vec<PathName> = view.read().await.nodes.iter().map(|n| n.location()).collect();
         let joins = Joins::default();
         let view_sink = View::default();
         view_sink.writes_through(rows_fp.clone());
@@ -611,7 +611,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             fabric_id: fabric_id.clone(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: fp.mesh.clone(), name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: fp.mesh.clone(), path: fp.path.clone(), name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -653,7 +653,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let me_a2 = RosterBirth::of(&m2_a2).unwrap();
         view.write().await.nodes.retain(|n| n.name != m2_a1.name);
         view.write().await.nodes.push(m2_a2.clone());
-        let rows_a2 = Arc::new(NodeRows::new(m2_a2.name.clone(), m2_a2.node_id.clone(), view.clone(), nodes_storage.clone()));
+        let rows_a2 = Arc::new(NodeRows::new(m2_a2.location(), m2_a2.node_id.clone(), view.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_a2, std::slice::from_ref(&m2_a2)).await;
 
         amend_roster(&builds, &key_m2, fp.node_id.as_str(), &RosterAmended { predecessor: predecessor.clone(), final_primary: me_a2.clone(), final_runtime: rt_a2.clone() })
@@ -674,7 +674,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             fabric_id: fabric_id.clone(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: m2_a2.mesh.clone(), name: m2_a2.name.clone(), node_id: m2_a2.node_id.clone(), incarnation: m2_a2.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: m2_a2.mesh.clone(), path: m2_a2.path.clone(), name: m2_a2.name.clone(), node_id: m2_a2.node_id.clone(), incarnation: m2_a2.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -800,13 +800,13 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         }
         let declared = Mutex::new(Declared::default());
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
-        let rows_fp = Arc::new(NodeRows::new(fp.name.clone(), fp.node_id.clone(), observed.clone(), nodes_storage.clone()));
+        let rows_fp = Arc::new(NodeRows::new(fp.location(), fp.node_id.clone(), observed.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_fp, &all_nodes).await;
         for (n, h) in handles.iter().map(|(k, h)| (all_nodes.iter().find(|n| n.node_id == *k).unwrap(), h)) {
             nodes_storage
                 .put_runtime(&RuntimeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(),
                     node_id: n.node_id.clone(),
-                    name: n.name.clone(),
+                    path: n.path.clone(), name: n.name.clone(),
                     incarnation_id: n.incarnation_id.clone().unwrap(),
                     runtime: h.fact().unwrap(),
                     data_dir: None,
@@ -820,16 +820,17 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             Arc::new(MemoryMeshStorage::default()),
             fabric_storage.clone(),
             "mesh1".into(),
-            fp.name.clone(),
+            fp.location(),
             fp.node_id.clone(),
         );
 
         let builds = Arc::new(MemoryBuildStateAdapter::new());
         let initial = FabricTopology::of_observed(&*observed.read().await);
         let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial, &fp.birth().unwrap(), "mesh1").await.unwrap();
-        let mut cp = crate::control_plane(builds.clone(), accepted, fp.name.clone(), observed.read().await.clone(), crate::adopted_time());
+        let mut cp = crate::control_plane(builds.clone(), accepted, fp.location(), observed.read().await.clone(), crate::adopted_time());
         cp.topology = observed.clone();
         crate::bind_store(&cp, nodes_storage.clone(), &*observed.read().await).await;
+
 
         // Caller & Driver: typed caller submits DeleteFabric; the fabric-primary drives it as one Build.
         let opened = cp.submit("POST /api/build", TopologyChange::DeleteFabric).await.expect("DeleteFabric is accepted as one Build");
@@ -845,6 +846,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .await
             .unwrap();
 
+
         let joins = Joins::default();
         let view_sink = View::default();
         view_sink.writes_through(rows_fp.clone());
@@ -854,7 +856,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher {
-                mesh: fp.mesh.clone(), name: fp.name.clone(),
+                mesh: fp.mesh.clone(), path: fp.path.clone(), name: fp.name.clone(),
                 node_id: fp.node_id.clone(),
                 incarnation: fp.incarnation_id.clone().unwrap(),
             },
@@ -888,7 +890,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             operation: op_m3.clone(),
         };
         let m3_nodes = vec![m3_a1.clone(), m3_r1.clone()];
-        let held_paths: Vec<PathName> = observed.read().await.nodes.iter().map(|n| n.name.clone()).collect();
+        let held_paths: Vec<PathName> = observed.read().await.nodes.iter().map(|n| n.location()).collect();
         let empty_runtime_store = MemoryNodesStorage::default();
         let unproven_err = unanswered_mesh_delete(
             &*builds,
@@ -910,7 +912,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             unproven_err.contains(&op_m3.action) && unproven_err.contains(m3_a1.node_id.as_str()),
             "failure names step and node: {unproven_err}"
         );
-        assert_eq!(nodes_storage.record_at(&m3_a1.name).await.unwrap().unwrap().status, NodeStatus::Ready);
+        assert_eq!(nodes_storage.record_at(&m3_a1.location()).await.unwrap().unwrap().status, NodeStatus::Ready);
 
         // Fault 1 (`mesh3` fully crashed): every member of `mesh3` is proven exited by the provider.
         // `unanswered_mesh_delete` deletes each member in-process without creating a `node-admin`,
@@ -1016,7 +1018,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let me_a2 = RosterBirth::of(&m2_a2).unwrap();
         observed.write().await.nodes.retain(|n| n.name != m2_a1.name);
         observed.write().await.nodes.push(m2_a2.clone());
-        let rows_a2 = Arc::new(NodeRows::new(m2_a2.name.clone(), m2_a2.node_id.clone(), observed.clone(), nodes_storage.clone()));
+        let rows_a2 = Arc::new(NodeRows::new(m2_a2.location(), m2_a2.node_id.clone(), observed.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_a2, std::slice::from_ref(&m2_a2)).await;
 
         amend_roster(
@@ -1146,6 +1148,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         record_completion(&*builds, &key_m1, fp.node_id.as_str(), &manifest_m1).await.unwrap();
         assert_eq!(owner_resume(&builds.read_build(&build_id).await.unwrap().steps, &op_m1), Ok(OwnerResume::Deleted(manifest_m1.clone())));
 
+
         complete_fabric_delete(&*builds, &build_id, 1, &fabric_id, fp.node_id.as_str())
             .await
             .expect("complete_fabric_delete records fabric.deleted");
@@ -1153,7 +1156,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .await
             .expect("replayed complete_fabric_delete on resume is idempotent");
         assert_eq!(
-            nodes_storage.record_at(&fp.name).await.unwrap().unwrap().status,
+            nodes_storage.record_at(&fp.location()).await.unwrap().unwrap().status,
             NodeStatus::Ready,
             "fabric-primary remains alive after fabric.deleted"
         );

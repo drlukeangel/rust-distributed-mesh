@@ -318,7 +318,7 @@ impl Prepared {
             let own = rdm_admin::storage::NodeRecord { mesh: "mesh1".into(),
                 node_id: node_id.clone(),
                 fabric_id: fabric_id.clone(),
-                name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
+                path: "mesh1.node-admin".into(), name: "1".into(),
                 mesh_id: mesh_id.clone(),
                 incarnation_id: incarnation.clone(),
                 endpoint_id: EndpointId(key.public().to_string()),
@@ -334,7 +334,7 @@ impl Prepared {
             nodes
                 .put_runtime(&rdm_admin::storage::RuntimeRow { r#type: "node-admin".into(), mesh: own.mesh.clone(),
                     node_id: node_id.clone(),
-                    name: own.name.clone(),
+                    path: own.path.clone(), name: own.name.clone(),
                     incarnation_id: incarnation.clone(),
                     runtime,
                     data_dir: Some(data_dir.display().to_string()),
@@ -342,9 +342,9 @@ impl Prepared {
                 .await
                 .unwrap();
             // The birth's row at its path.name, as its mesh's writer left it: the name is held by this node.id.
-            let birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), own.name.clone());
+            let birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), own.location());
             let row = rdm_admin::storage::NodeRow { replacement_from: None, r#type: "node-admin".into(), mesh: own.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
-                name: own.name.clone(),
+                path: own.path.clone(), name: own.name.clone(),
                 node_id: node_id.clone(),
                 status: rdm_admin::model::NodeStatus::Ready,
                 allocated: None,
@@ -378,7 +378,7 @@ impl Prepared {
                     endpoint_id: Some(EndpointId(iroh::SecretKey::generate().public().to_string())), transport_addr: Some(unanswered_addr()), listeners: Vec::new(), app_types: None, held: Default::default(),
                 }).await.unwrap();
                 let row = rdm_admin::storage::NodeRow { mesh: "mesh1".to_owned(), r#type: (*r#type).to_string(), replacement_from: None, initial_properties: None, topology_storage_provider: None, writer: None,
-                    name: location.clone(),
+                    path: location.path.clone(), name: location.name.clone(),
                     node_id: node_id.clone(),
                     status: rdm_admin::model::NodeStatus::Ready,
                     allocated: None,

@@ -12,7 +12,7 @@ use rdm_test::test_app;
 async fn main() {
     rdm_admin::entry::run_on("faulted-node-admin", test_app::topology_storage_providers, |cfg| {
         // The separate path and name of this admin: the launch's, an adoption launch's given name, or the Day-0 admin's first.
-        let name = cfg.launch.as_ref().map(|l| l.name.clone()).or_else(|| cfg.adopt.clone()).unwrap_or_else(|| PathName::numbered(&cfg.mesh, "node-admin", 1));
+        let name = cfg.launch.as_ref().map(|l| l.location()).or_else(|| cfg.adopt.clone()).unwrap_or_else(|| PathName::numbered(&cfg.mesh, "node-admin", 1));
         // The directory that holds every node's data dir of this fabric: where its boot cuts are listed.
         let root = cfg.data_dir.parent().map(std::path::Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());
         let faults = AdminFaults::new(cfg.node_id.clone());

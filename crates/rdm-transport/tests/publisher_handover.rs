@@ -36,7 +36,7 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> Mesh
         fabric_id: fabric(),
         node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
-            name,
+            path: name.path.clone(), name: name.name.clone(),
             endpoint_id: EndpointId(format!("key-{node_id}")),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -90,7 +90,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 }
 
 fn op_of(d: &MeshDigest, operation: &str) -> LifecycleOp {
-    LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "81ey2zm6h456".into(), attempt: 1, operation: rdm_core::OperationId::new(operation, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+    LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "81ey2zm6h456".into(), attempt: 1, operation: rdm_core::OperationId::new(operation, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
 }
 
 fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {

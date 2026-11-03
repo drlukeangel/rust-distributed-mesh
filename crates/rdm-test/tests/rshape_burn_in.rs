@@ -4819,7 +4819,7 @@ impl Drop for Cut {
         if let Cut::Container(c) = self {
             if let Err(e) = c.lift() {
                 if !std::thread::panicking() {
-                    panic!("the container cut of {:?} could not be lifted: {e}", c.members.iter().map(|m| &m.node).collect::<Vec<_>>());
+                    panic!("the container cut of {:?} could not be lifted: {e}", c.members.iter().map(|m| m.location()).collect::<Vec<_>>());
                 }
             }
         }
@@ -5839,7 +5839,7 @@ async fn control_run(cell: &str, shape: Shape) {
         let mut status_frames = 0usize;
         for (_, fr) in &seen {
             match fr {
-                Frame::Digest { digest } => digests.entry((digest.node.name.clone(), digest.node.incarnation.to_string())).or_default().push(digest.digest_seq),
+                Frame::Digest { digest } => digests.entry((digest.node.location(), digest.node.incarnation.to_string())).or_default().push(digest.digest_seq),
                 Frame::MeshTopology { publisher, topology_version, .. } => members_versions.entry(format!("{publisher:?}")).or_default().push(*topology_version),
                 Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => status_frames += 1,
                 _ => {}

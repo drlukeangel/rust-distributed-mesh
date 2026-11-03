@@ -18,7 +18,7 @@ fn digest() -> rdm_core::MeshDigest {
         fabric_id: FabricId::mint(),
         node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::mint(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:34567".parse().unwrap(),
             incarnation: IncarnationId::mint(),

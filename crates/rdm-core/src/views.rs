@@ -137,8 +137,10 @@ pub struct DataDirUnreadable {
 /// One node as the answering node-admin's view holds it (`node.get`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeView {
-    /// The node's `(path, name)`.
-    pub name: PathName,
+    /// The node's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The node's type.
     pub r#type: String,
     /// The name of the mesh the node belongs to.
@@ -232,6 +234,11 @@ pub struct NodeView {
     pub properties: PropertyRecord,
 }
 
+impl NodeView {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
+}
+
 /// Whether `node.get` read a node's own property record (Q318).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PropertyRecord {
@@ -278,12 +285,12 @@ pub enum Renewals {
 impl NodeView {
     /// The node's path (`<mesh>.<kind>`), separate from its name within that path.
     pub fn path(&self) -> String {
-        self.name.path()
+        self.path.clone()
     }
 
     /// The node's name within its path (an ordinary name, or `<name>-old` for an explicitly replaced predecessor).
     pub fn node_name(&self) -> String {
-        self.name.name()
+        self.name.clone()
     }
 }
 
@@ -391,8 +398,10 @@ impl AtlasView {
 /// One node of the [`AtlasView`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AtlasNodeView {
-    /// The node's `(path, name)`.
-    pub name: PathName,
+    /// The node's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The minted id of the birth the node row names current.
     pub node_id: NodeId,
     /// The incarnation of that birth, once the row records one.
@@ -407,6 +416,11 @@ pub struct AtlasNodeView {
     /// Context only: the status the answering admin's gossip view holds for the same birth, when it
     /// holds it. Never read by acceptance.
     pub observed: Option<NodeStatus>,
+}
+
+impl AtlasNodeView {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// One connection fact a node holds (`node.connection.get`).

@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(after_admin.incarnation_id, admin_node.incarnation_id);
         assert_eq!(after_admin.endpoint_id, admin_node.endpoint_id);
         assert_eq!(after_admin.transport_addr, admin_node.transport_addr);
-        assert_eq!(after_admin.name, admin_node.name);
+        assert_eq!(after_admin.location(), admin_node.location());
         let encoded_reply = Status::encode_reply(&apply_reply).expect("encode Status reply");
         let committed = PreCommit::begin(Status::OP).commit(RequestFinished::after_clean_finish(1, 1, true).unwrap());
         let outcome = committed.reply::<Status>(&encoded_reply);

@@ -29,7 +29,7 @@ pub fn birth_of_line(line: &str) -> Option<Result<MeshNode, String>> {
 pub fn birth_of_view(n: &NodeView) -> Option<MeshNode> {
     Some(MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(),
         node_id: n.node_id.clone(),
-        name: n.name.clone(),
+        path: n.path.clone(), name: n.name.clone(),
         endpoint_id: rdm_core::EndpointId(n.endpoint_id.clone().filter(|e| !e.is_empty())?),
         transport_addr: n.transport_addr?,
         incarnation: n.incarnation_id.clone()?,
@@ -78,7 +78,7 @@ impl Peers {
         for n in views {
             self.hold(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(),
                 node_id: n.node_id.clone(),
-                name: n.name.clone(),
+                path: n.path.clone(), name: n.name.clone(),
                 endpoint_id: n.endpoint_id.as_deref().expect("a ready node carries its endpoint").parse().expect("an iroh key"),
                 incarnation: n.incarnation_id.clone().expect("a ready node carries its incarnation"),
                 transport_addr: n.transport_addr.expect("a ready node carries its address"),
@@ -113,7 +113,7 @@ impl Peers {
                 continue;
             }
             let (Some(endpoint), Some(incarnation), Some(addr)) = (n.endpoint_id.as_deref().and_then(|e| e.parse().ok()), n.incarnation_id.clone(), n.transport_addr) else { continue };
-            self.hold(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: endpoint, incarnation, transport_addr: addr });
+            self.hold(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: endpoint, incarnation, transport_addr: addr });
         }
     }
 
@@ -121,7 +121,7 @@ impl Peers {
     /// its `(path, name)` held before; a birth whose endpoint is no Iroh key is refused by name.
     pub fn learn_birth(&self, birth: &MeshNode) -> Result<(), String> {
         let endpoint_id = birth.endpoint_id.0.parse().map_err(|e| format!("node {} names the endpoint {:?}, no Iroh key: {e}", birth.node_id, birth.endpoint_id.0))?;
-        self.hold(ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id, incarnation: birth.incarnation.clone(), transport_addr: birth.transport_addr });
+        self.hold(ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node_id: birth.node_id.clone(), path: birth.path.clone(), name: birth.name.clone(), endpoint_id, incarnation: birth.incarnation.clone(), transport_addr: birth.transport_addr });
         Ok(())
     }
 

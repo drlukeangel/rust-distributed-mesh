@@ -303,11 +303,12 @@ pub fn unreachable_of(cause: &rdm_core::outcome::NotSentReason) -> Option<Unreac
     Some(Unreachable { reason, detail: format!("{cause:?}") })
 }
 
+
 /// The completion of the command `ctx` names for `node`, received or not: the span every completion
 /// a step reads writes, whether a wait received it or the command's own reply carried it (a stop's
 /// `Stopped`, node-stop.md).
 pub fn completion_span(node: &Node, cmd: NodeCommand, ctx: &CommandContext, received: bool) {
-    tracing::info_span!("rdm.node_admin.node.update.via-completion-awaited", node_path = %node.name.path, node_name = %node.name.name, completion = cmd.completion(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, attempt = ctx.attempt, received = received, "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.node.update.via-completion-awaited", node_path = %node.path, node_name = %node.name, completion = cmd.completion(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, attempt = ctx.attempt, received = received, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the completion was awaited"));
 }
 

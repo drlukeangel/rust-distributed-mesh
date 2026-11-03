@@ -58,7 +58,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
                 fabric_id: fabric.clone(),
                 mesh: "mesh1".into(),
                 r#type: "node".into(),
-                name: name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
                 node_id: NodeId::mint(),
                 incarnation: IncarnationId::mint(),
                 supersedes: None,
@@ -126,7 +126,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         cut_seams.connections.observations_landed().await;
         let before = kept_log(&store, &fabric, &cut.node_id);
         for dest in [&admin.launcher.node_id, &peer.node_id] {
-            assert!(before.iter().any(|e| e.source.name == born && &e.destination.node_id == dest), "the node holds a route to {dest}: {before:#?}");
+            assert!(before.iter().any(|e| e.source.location() == born && &e.destination.node_id == dest), "the node holds a route to {dest}: {before:#?}");
         }
 
         // The open entries, as the node holds them (what node.connection.get returns).
@@ -144,7 +144,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         assert!(pooled_to_peer(), "the node pools a connection to its peer before the cut");
 
         let (d, _) = digest_view.get(cut.node_id.as_str()).unwrap();
-        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let target = NodeTarget::ExactNode(cut.node_id.clone());
         let call = |req: StatusRequest| {
@@ -175,7 +175,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         let log = kept_log(&store, &fabric, &cut.node_id);
         let drop = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.node_id == peer.node_id);
         expect(
-            drop.is_some_and(|e| e.state == ConnectionState::Disconnected && e.source.name == born && e.id != to_peer.id && e.reason.as_deref() == Some("node.connection.delete")),
+            drop.is_some_and(|e| e.state == ConnectionState::Disconnected && e.source.location() == born && e.id != to_peer.id && e.reason.as_deref() == Some("node.connection.delete")),
             format!("the latest entry for the peer route is its drop, written under {born:?} with its own id and the cut's reason: {drop:?}"),
         );
         let admin_now = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.node_id == admin.launcher.node_id);
@@ -227,7 +227,7 @@ fn an_all_whose_drops_cannot_land_answers_at_once_and_closes_every_live_connecti
             fabric_id: fabric.clone(),
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: born.clone(),
+            path: born.path.clone(), name: born.name.clone(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -271,7 +271,7 @@ fn an_all_whose_drops_cannot_land_answers_at_once_and_closes_every_live_connecti
         // From here its connections store refuses every write.
         seams.fault.arm(u32::MAX, u32::MAX, 0);
         let (d, _) = digest_view.get(cut.node_id.as_str()).unwrap();
-        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(cut.node_id.clone());
         let began = std::time::Instant::now();
         let deleted = crate::common::node_command_completion(&admin.observer.client, &target, &NodeCommandRequest::DeleteConnections { node_id: cut.node_id.clone(), incarnation: cut.incarnation.clone(), scope: ConnectionScope::All }).await;

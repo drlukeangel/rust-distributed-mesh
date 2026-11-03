@@ -95,7 +95,7 @@ async fn serve(held: Vec<NodeView>, ending: Ending) -> Served {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation });
+    resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: node_id.clone(), path: "mesh1.node-admin".into(), name: "1".into(), endpoint_id: ep.id(), transport_addr: addr, incarnation });
     let client = Arc::new(NodeRpcClient::new(caller.clone(), resolver));
     Served { client, target: NodeTarget::ExactNode(node_id), _router: router, _caller: caller }
 }
@@ -227,7 +227,7 @@ async fn serve_connections(node_id: &NodeId, complete: bool, held: Vec<Connectio
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() });
+    resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "1".into(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() });
     let client = Arc::new(NodeRpcClient::new(caller.clone(), resolver));
     let target = NodeTarget::ExactNode(node_id.clone());
     let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };

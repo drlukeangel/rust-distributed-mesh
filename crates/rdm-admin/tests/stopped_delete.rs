@@ -33,7 +33,7 @@ impl DeploymentProvider for Exits {
         "i143-3072-delete".into()
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-        Err(DeployError::Spawn { node: spec.node.clone(), reason: "this cell births nothing".into() })
+        Err(DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: "this cell births nothing".into() })
     }
     async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         self.terminated.lock().unwrap().push(h.deployment_id.to_string());
@@ -118,7 +118,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/stopped-delete".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3072-delete-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3072-delete-store-{}", NodeId::mint())),
@@ -185,7 +185,7 @@ impl DeploymentProvider for StopStepFaultProvider {
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         Err(DeployError::Spawn {
-            node: spec.node.clone(),
+            path: spec.path.clone(), name: spec.name.clone(),
             reason: "stop deploys nothing".into(),
         })
     }
@@ -321,7 +321,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
             executable: "/nonexistent/node-stop-chaos".into(),
             seeds: vec![("adminkey".into(), "127.0.0.1:41002".parse().unwrap())],
             launcher: rdm_core::launch::Launcher {
-                mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
+                mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(),
                 node_id: executor.node_id.clone(),
                 incarnation: executor.incarnation.clone(),
             },

@@ -24,7 +24,7 @@ fn launch(dir: &Path, fabric: &FabricId, name: PathName, admin: &rdm_test::rig::
         fabric_id: fabric.clone(),
         mesh: "mesh1".into(),
         r#type: "gateway".into(),
-        name,
+        path: name.path.clone(), name: name.name.clone(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -189,7 +189,7 @@ async fn a_nodes_row_is_read_from_the_nodes_storage_by_another_node_process_with
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     let views = estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
-    let id_at = |name: &str| views.iter().find(|v| v.name == PathName::new("mesh1.node", name).unwrap()).unwrap_or_else(|| panic!("mesh1.node.{name} is settled: {views:?}")).node_id.to_string();
+    let id_at = |name: &str| views.iter().find(|v| v.location() == PathName::new("mesh1.node", name).unwrap()).unwrap_or_else(|| panic!("mesh1.node.{name} is settled: {views:?}")).node_id.to_string();
     let (reader, read_id) = (id_at("1"), id_at("2"));
 
     // Every primary is gone: the fabric's one node-admin is killed.

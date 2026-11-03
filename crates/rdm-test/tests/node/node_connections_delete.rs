@@ -171,7 +171,7 @@ async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command
     let me = primary.node_id.to_string();
     // The one connections-delete call, streamed: its completion is the door's `ConnectionsDeleted`.
     let completed = |scope: rdm_core::status::ConnectionScope| {
-        let (nodes, name) = (&nodes, primary.name.clone());
+        let (nodes, name) = (&nodes, primary.location());
         async move {
             let mut stream = nodes.delete_connections(&name, &scope).await.unwrap_or_else(|e| panic!("node.connection.delete of {name:?} refused: {e}"));
             let frames = Estate::frames_of(&mut stream).await;
@@ -195,7 +195,7 @@ async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command
     for (scope, by, how) in [("connections", &primary, "in-process"), ("all", &successor, "dialled")] {
         let carried = named(&spans, "rdm.node_admin.connection.delete.via-mesh-primary")
             .into_iter()
-            .find(|sp| sp["attributes"]["node_path"] == by.name.path && sp["attributes"]["node_name"] == by.name.name && s(&sp["attributes"]["subject_id"]) == me && s(&sp["attributes"]["scope"]) == scope)
+            .find(|sp| sp["attributes"]["node_path"] == by.path && sp["attributes"]["node_name"] == by.name && s(&sp["attributes"]["subject_id"]) == me && s(&sp["attributes"]["scope"]) == scope)
             .cloned()
             .unwrap_or_else(|| panic!("{:?} carries {me}'s {scope} node.connection.delete", by.name));
         assert_eq!((s(&carried["attributes"]["carried"]).as_str(), s(&carried["attributes"]["outcome"]).as_str()), (how, "connections-deleted"), "{carried}");

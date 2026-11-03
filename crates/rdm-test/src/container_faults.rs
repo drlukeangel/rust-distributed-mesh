@@ -57,7 +57,9 @@ pub fn network_of(estate: &impl ContainerEstate) -> String {
 #[derive(Debug, Clone, Serialize)]
 pub struct Unplugged {
     /// The node's separate path/name fields.
-    pub node: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The Docker id of the container.
     pub id: String,
     /// The container's address on the Fabric network.
@@ -66,13 +68,18 @@ pub struct Unplugged {
     pub network: String,
 }
 
+impl Unplugged {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
+}
+
 /// Disconnect the running container of `node` from its Fabric's network.
 pub async fn unplug(estate: &impl ContainerEstate, node: &PathName) -> Result<Unplugged, String> {
     let id = estate.container_of(node).await.ok_or_else(|| format!("{node:?}: no running container of fabric {}", estate.fabric_id()))?;
     let network = network_of(estate);
     let ip = address_of(estate, &id).map_err(|e| format!("{node:?}: {e}"))?;
     docker(&["network", "disconnect", "-f", &network, &id])?;
-    Ok(Unplugged { node: node.clone(), id, ip, network })
+    Ok(Unplugged { path: node.path.clone(), name: node.name.clone(), id, ip, network })
 }
 
 /// Reconnect an unplugged container at the address it held.
@@ -207,11 +214,18 @@ impl Drop for NamespaceTool {
 #[derive(Debug, Clone, Serialize)]
 pub struct Member {
     /// The node's separate path/name fields.
-    pub node: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The Docker id of the container.
     pub id: String,
     /// The container's address on the Fabric network.
     pub ip: String,
+}
+
+impl Member {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// A mesh's containers silenced against everything outside the set: each keeps its interface, its
@@ -254,7 +268,7 @@ pub async fn prepare_silence(estate: &impl ContainerEstate, nodes: &[PathName], 
     let mut members = Vec::new();
     for n in nodes {
         let id = estate.container_of(n).await.ok_or_else(|| format!("{n:?}: no running container of fabric {}", estate.fabric_id()))?;
-        members.push(Member { node: n.clone(), ip: address_of(estate, &id)?, id });
+        members.push(Member { path: n.path.clone(), name: n.name.clone(), ip: address_of(estate, &id)?, id });
     }
     // The rest of the estate as the daemon lists it running. One that exits before its address is
     // read (a superseded birth's runtime being terminated) holds no address and hears no one: no rule.
@@ -262,7 +276,7 @@ pub async fn prepare_silence(estate: &impl ContainerEstate, nodes: &[PathName], 
     let mut unheard = Vec::new();
     for (n, id) in estate.live_containers().into_iter().filter(|(n, _)| !nodes.contains(n)) {
         if let Some(ip) = running_address(&network, &id)? {
-            unheard.push(Member { node: n, ip, id });
+            unheard.push(Member { path: n.path.clone(), name: n.name.clone(), ip, id });
         }
     }
     with_tools(Silenced { network, gateway, members, unheard, host_cut: true, tools: Default::default() })
@@ -278,7 +292,7 @@ pub async fn cut(estate: &impl ContainerEstate, a: &[PathName], b: &[PathName]) 
     for (side, nodes) in sides.iter_mut().zip([a, b]) {
         for n in nodes {
             let id = estate.container_of(n).await.ok_or_else(|| format!("{n:?}: no running container of fabric {}", estate.fabric_id()))?;
-            side.push(Member { node: n.clone(), ip: address_of(estate, &id)?, id });
+            side.push(Member { path: n.path.clone(), name: n.name.clone(), ip: address_of(estate, &id)?, id });
         }
     }
     let [members, unheard] = sides;
@@ -308,15 +322,15 @@ fn on_members<T: Send>(members: &[Member], action: impl Fn(&Member) -> T + Sync)
 
 impl Silenced {
     fn command(&self, member: &Member, command: &str) -> Result<String, String> {
-        self.tools.get(&member.id).ok_or_else(|| format!("{:?}: no prepared namespace tool", member.node))?
-            .lock().map_err(|_| format!("{:?}: the namespace tool ended while held", member.node))?
-            .command(command).map_err(|e| format!("{:?}: {e}", member.node))
+        self.tools.get(&member.id).ok_or_else(|| format!("{:?}: no prepared namespace tool", member.location()))?
+            .lock().map_err(|_| format!("{:?}: the namespace tool ended while held", member.location()))?
+            .command(command).map_err(|e| format!("{:?}: {e}", member.location()))
     }
 
     /// Install each independent namespace's filter concurrently; restore successes on failure.
     pub fn install(&self) -> Result<(), String> {
         let results = on_members(&self.members, |m| self.command(m, "install"));
-        let failed: Vec<_> = self.members.iter().zip(&results).filter_map(|(m, r)| r.as_ref().err().map(|e| format!("{:?}: {e}", m.node))).collect();
+        let failed: Vec<_> = self.members.iter().zip(&results).filter_map(|(m, r)| r.as_ref().err().map(|e| format!("{:?}: {e}", m.location()))).collect();
         if failed.is_empty() { return Ok(()); }
         let applied: Vec<_> = self.members.iter().zip(&results).filter(|(_, r)| r.is_ok()).map(|(m, _)| m.clone()).collect();
         let back: Vec<_> = on_members(&applied, |m| self.command(m, "lift")).into_iter().filter_map(Result::err).collect();
@@ -331,7 +345,7 @@ impl Silenced {
         let rows: Vec<serde_json::Value> = serde_json::from_str(&raw).map_err(|e| format!("docker inspect the silenced containers: {e}"))?;
         self.members.iter().map(|member| {
             let row = rows.iter().find(|row| row["Id"] == member.id)
-                .ok_or_else(|| format!("{:?}: the daemon holds no exact container {}", member.node, member.id))?;
+                .ok_or_else(|| format!("{:?}: the daemon holds no exact container {}", member.location(), member.id))?;
             Ok((member.id.clone(), inspected(row)))
         }).collect()
     }
@@ -364,7 +378,7 @@ impl Silenced {
     /// ports outside its cut).
     pub fn lift(&self) -> Result<(), String> {
         let gone = |m: &Member| docker(&["inspect", "-f", "{{.State.Running}}", &m.id]).map_or(true, |running| running.trim() != "true");
-        let failed: Vec<String> = on_members(&self.members, |m| self.command(m, "lift").err().filter(|_| !gone(m)).map(|e| format!("{:?}: {e}", m.node))).into_iter().flatten().collect();
+        let failed: Vec<String> = on_members(&self.members, |m| self.command(m, "lift").err().filter(|_| !gone(m)).map(|e| format!("{:?}: {e}", m.location()))).into_iter().flatten().collect();
         if failed.is_empty() {
             Ok(())
         } else {
@@ -504,10 +518,14 @@ pub enum Refusal {
     WrongNode {
         /// The id.
         id: String,
-        /// The published.
-        published: PathName,
-        /// The observed.
-        observed: PathName,
+        /// The published path.
+        published_path: String,
+        /// The published name, beside its path.
+        published_name: String,
+        /// The observed path.
+        observed_path: String,
+        /// The observed name, beside its path.
+        observed_name: String,
     },
     /// The container at this id started at another time: it is another run of the container now.
     NotThisContainer {
@@ -571,11 +589,18 @@ pub struct ExactContainer {
     /// The Fabric label the container carried.
     pub fabric_id: String,
     /// The node's separate path/name fields.
-    pub node: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// When the container started.
     pub started_at: String,
     /// The process id.
     pub pid: u64,
+}
+
+impl ExactContainer {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 impl ExactContainer {
@@ -584,7 +609,7 @@ impl ExactContainer {
         let id = estate.container_of(node).await.ok_or_else(|| Refusal::NoSuchContainer { id: format!("{node:?} of fabric {}", estate.fabric_id()) })?;
         let i = inspect(&id).map_err(|reason| Refusal::Unreadable { id: id.clone(), reason })?;
         let (fabric_id, node) = labels_of(&id).map_err(|reason| Refusal::Unreadable { id: id.clone(), reason })?;
-        Ok(Self { id, fabric_id, node, started_at: i.started_at, pid: i.pid })
+        Ok(Self { id, fabric_id, path: node.path.clone(), name: node.name.clone(), started_at: i.started_at, pid: i.pid })
     }
 
     /// The same container under another start time: what a restarted container looks like.
@@ -594,7 +619,7 @@ impl ExactContainer {
 
     /// The same id under another node label.
     pub fn with_node(&self, node: &PathName) -> Self {
-        Self { node: node.clone(), ..self.clone() }
+        Self { path: node.path.clone(), name: node.name.clone(), ..self.clone() }
     }
 
     /// The same id under another Fabric label.
@@ -613,8 +638,8 @@ impl ExactContainer {
         if fabric != self.fabric_id {
             return Err(Refusal::WrongFabric { id: self.id.clone(), published: self.fabric_id.clone(), observed: fabric });
         }
-        if node != self.node {
-            return Err(Refusal::WrongNode { id: self.id.clone(), published: self.node.clone(), observed: node });
+        if node != self.location() {
+            return Err(Refusal::WrongNode { id: self.id.clone(), published_path: self.path.clone(), published_name: self.name.clone(), observed_path: node.path.clone(), observed_name: node.name.clone() });
         }
         if i.started_at != self.started_at {
             return Err(Refusal::NotThisContainer { id: self.id.clone(), published_started_at: self.started_at.clone(), observed_started_at: i.started_at });
@@ -631,7 +656,7 @@ impl ExactContainer {
             "rdm.testkit.fault.update.via-container-command",
             fault = fault.name(),
             container = %self.id,
-            node_path = %self.node.path, node_name = %self.node.name,
+            node_path = %self.path, node_name = %self.name,
             fabric = %self.fabric_id,
             started_at = %self.started_at,
             outcome = tracing::field::Empty,
@@ -697,7 +722,7 @@ mod tests {
         let mut unheard = Vec::new();
         for (i, (node, read)) in listed.iter().enumerate() {
             if let Some(ip) = running_address_in(net, &i.to_string(), read).expect("a listed container's read") {
-                unheard.push(Member { node: node.clone(), id: i.to_string(), ip });
+                unheard.push(Member { path: node.path.clone(), name: node.name.clone(), id: i.to_string(), ip });
             }
         }
         let silenced = Silenced { network: net.into(), gateway: "10.231.0.1".into(), members: Vec::new(), unheard, host_cut: true, tools: Default::default() };

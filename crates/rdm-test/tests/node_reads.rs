@@ -119,7 +119,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         })
         .await
         .expect("the admin's view never held it ready and primary of its mesh and of the fabric, with its record ready");
-        let admin = ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type, node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
+        let admin = ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type, node_id: me.node.node_id.clone(), path: me.node.path.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
         let carrier = BuildCarrier::at_node(client.clone(), me.node.node_id.clone());
         let nodes = Nodes::new(carrier.clone());
@@ -288,7 +288,7 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
         })
         .await
         .expect("the admin's view never held it ready in both roles under a ready fabric");
-        let admin = ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type, node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
+        let admin = ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type, node_id: me.node.node_id.clone(), path: me.node.path.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
         let carrier = BuildCarrier::at_node(client.clone(), me.node.node_id.clone());
         let nodes = Nodes::new(carrier);
@@ -429,7 +429,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
             fabric_id: fabric.clone(),
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: name.clone(),
+            path: name.path.clone(), name: name.name.clone(),
             node_id,
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -468,7 +468,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         seams.connections.observations_landed().await;
 
         let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-        let rpc = ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr };
+        let rpc = ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr };
         let (client, _endpoint) = caller(&[rpc]).await;
         let reads = Connections::new(BuildCarrier::at_node(client.clone(), launch.node_id.clone()));
         let birth = ExactBirth { target: NodeTarget::ExactNode(launch.node_id.clone()), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() };
@@ -537,7 +537,7 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
             .unwrap_or_else(|e| panic!("mesh1.node-admin.2 starts: {e}"));
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         let (fp, other) = (root.digest.lock().unwrap().node.clone(), admin.digest.lock().unwrap().node.clone());
-        let resolved = |n: &rdm_core::MeshNode| ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.0.parse().unwrap(), incarnation: n.incarnation.clone(), transport_addr: n.transport_addr };
+        let resolved = |n: &rdm_core::MeshNode| ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.0.parse().unwrap(), incarnation: n.incarnation.clone(), transport_addr: n.transport_addr };
         let (client, _endpoint) = caller(&[resolved(&fp), resolved(&other)]).await;
         // The caller enters at mesh1.node-admin.2, an admin that is not the fabric-primary.
         let builds = rdm_client::Builds::new(BuildCarrier::at_node(client.clone(), other.node_id.clone()));
@@ -575,19 +575,19 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
         };
         for served in &serves {
             let outcome = served.get("outcome").map(String::as_str).unwrap_or_default();
-            if actor_is(served, &fp.name) {
+            if actor_is(served, &fp.location()) {
                 assert!(outcome == "end" || outcome == "rejected-filter", "the fabric-primary's serve ends the read: {served:?}");
-            } else if actor_is(served, &other.name) {
+            } else if actor_is(served, &other.location()) {
                 assert_eq!(outcome, "not-fabric-primary", "the other admin serves no Build read: {served:?}");
             } else {
                 panic!("unexpected build.get actor: {served:?}");
             }
         }
-        assert_eq!(serves.iter().filter(|served| actor_is(served, &fp.name)).count(), 5, "the fabric-primary served each of the five reads: {serves:#?}");
+        assert_eq!(serves.iter().filter(|served| actor_is(served, &fp.location())).count(), 5, "the fabric-primary served each of the five reads: {serves:#?}");
         let refused: Vec<_> = spans_of(&spans, "rdm.node_admin.build.reject.via-not-fabric-primary").into_iter()
             .filter(|fields| fields.get("route").map(String::as_str) == Some("build.get")).collect();
         assert!(!refused.is_empty(), "the entry admin redirected build.get");
-        assert!(refused.iter().all(|fields| actor_is(fields, &other.name) && fields.get("fabric_primary").map(String::as_str) == Some(fp.node_id.as_str())), "each refusal names the fabric-primary's ID: {refused:#?}");
+        assert!(refused.iter().all(|fields| actor_is(fields, &other.location()) && fields.get("fabric_primary").map(String::as_str) == Some(fp.node_id.as_str())), "each refusal names the fabric-primary's ID: {refused:#?}");
 
         admin.leave().await;
         root.leave().await;

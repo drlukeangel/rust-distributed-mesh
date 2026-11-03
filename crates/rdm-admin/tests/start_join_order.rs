@@ -31,7 +31,7 @@ impl DeploymentProvider for Running {
         "start-join-order".into()
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-        Err(DeployError::Spawn { node: spec.node.clone(), reason: "a start deploys nothing".into() })
+        Err(DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: "a start deploys nothing".into() })
     }
     async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         self.terminated.lock().unwrap().push(h.deployment_id.to_string());
@@ -157,7 +157,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/start-order".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: executor_birth.node_id.clone(), incarnation: executor_birth.incarnation.clone() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: executor_birth.node_id.clone(), incarnation: executor_birth.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-s52-start-order-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-s52-start-order-store-{}", NodeId::mint())),
@@ -170,7 +170,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(4242), start: Some(1), container: None, domain: Some("i143-s52-start-order".into()) };
     let runtime = handle.fact().expect("the handle names its exact runtime");
     let deployed = rdm_admin::join::Deployed { mesh: node.mesh.clone(), r#type: node.r#type.clone(),
-        name: name.clone(),
+        path: name.path.clone(), name: name.name.clone(),
         node_id: node.node_id.clone(),
         incarnation: incarnation.clone(),
         supersedes: None,
@@ -183,7 +183,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     };
     let digest = rdm_core::MeshDigest { held_hash: Default::default(),
         fabric_id: template.fabric_id.clone(),
-        node: rdm_core::MeshNode { mesh: node.mesh.clone(), r#type: node.r#type.clone(), node_id: node.node_id.clone(), name: name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
+        node: rdm_core::MeshNode { mesh: node.mesh.clone(), r#type: node.r#type.clone(), node_id: node.node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
         status: rdm_core::MemberStatus::Pending,
         node_state: Default::default(),
         admin_api_base: None,
@@ -307,7 +307,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
             fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/start-fault".into(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: executor_birth.node_id.clone(), incarnation: executor_birth.incarnation.clone() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: executor_birth.node_id.clone(), incarnation: executor_birth.incarnation.clone() },
             env: Default::default(),
             data_root: std::env::temp_dir().join(format!("start-fault-{}", NodeId::mint())),
             store_dir: std::env::temp_dir().join(format!("start-fault-store-{}", NodeId::mint())),
@@ -327,7 +327,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
         };
         let runtime = handle.fact().expect("exact runtime");
         let deployed = rdm_admin::join::Deployed { mesh: node.mesh.clone(), r#type: node.r#type.clone(),
-            name: name.clone(),
+            path: name.path.clone(), name: name.name.clone(),
             node_id: node.node_id.clone(),
             incarnation: incarnation.clone(),
             supersedes: None,

@@ -81,7 +81,7 @@ impl DurableNode {
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let resolved = ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(),
             node_id: birth.node_id.clone(),
-            name: birth.name.clone(),
+            path: birth.path.clone(), name: birth.name.clone(),
             endpoint_id: key.public(),
             transport_addr: addr,
             incarnation: birth.incarnation.clone(),
@@ -128,7 +128,7 @@ impl DurableNode {
 
     async fn bind_fresh(dir: &std::path::Path, name: rdm_core::PathName, mesh: &str, r#type: &str, alpns: &[Alpn]) -> Self {
         let birth = Birth { mesh: mesh.to_owned(), r#type: r#type.to_string(),
-            name,
+            path: name.path.clone(), name: name.name.clone(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
@@ -261,7 +261,7 @@ async fn a_restarted_source_holds_no_proxy_and_proves_its_carrier_again() {
     let dir = temp_data_dir("13b");
     let alpns = [proxy_alpn(ALPN_A)];
     let gw1_first_birth = Birth { mesh: "mesh1".into(), r#type: "gateway".into(),
-        name: rdm_core::PathName::new("mesh1.gateway", "1").unwrap(),
+        path: "mesh1.gateway".into(), name: "1".into(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
     };
@@ -288,7 +288,7 @@ async fn a_restarted_source_holds_no_proxy_and_proves_its_carrier_again() {
     };
 
     let gw1_restarted_birth = Birth { mesh: gw1_first_birth.mesh.clone(), r#type: gw1_first_birth.r#type.clone(),
-        name: gw1_first_birth.name.clone(),
+        path: gw1_first_birth.path.clone(), name: gw1_first_birth.name.clone(),
         node_id: gw1_first_birth.node_id.clone(),
         incarnation: IncarnationId::mint(),
     };
@@ -336,7 +336,7 @@ async fn a_restarted_source_holds_no_reconnect_obligation_and_reads_no_failed_ro
     let dir = temp_data_dir("13c");
     let alpns = [proxy_alpn(ALPN_A)];
     let gw1_birth_1 = Birth { mesh: "mesh1".into(), r#type: "gateway".into(),
-        name: rdm_core::PathName::new("mesh1.gateway", "1").unwrap(),
+        path: "mesh1.gateway".into(), name: "1".into(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
     };
@@ -419,8 +419,8 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
     let direct_failures: Vec<_> = history
         .iter()
         .filter(|r| {
-            r.source.name == gw1.birth.name
-                && r.destination.name == brk2.birth.name
+            r.source.location() == gw1.birth.location()
+                && r.destination.location() == brk2.birth.location()
                 && r.alpn == ALPN_A
                 && r.kind == CoreConnectionKind::Direct
                 && r.state == ConnectionState::Failed
@@ -439,8 +439,8 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
     let pair_index: Vec<_> = index
         .iter()
         .filter(|r| {
-            r.source.name == gw1.birth.name
-                && r.destination.name == brk2.birth.name
+            r.source.location() == gw1.birth.location()
+                && r.destination.location() == brk2.birth.location()
                 && r.alpn == ALPN_A
         })
         .collect();
@@ -773,7 +773,7 @@ async fn a_refused_dial_starts_a_series_a_refused_attempt_continues_and_an_admit
     gw.writer.observations_landed().await;
     let obs = obligations(&gw.writer);
     assert_eq!(obs.len(), 1, "the refused dial starts the source's series: {obs:?}");
-    assert_eq!((obs[0].destination.name.clone(), obs[0].alpn.as_slice(), obs[0].recovery.attempt_ordinal), (brk.birth.name.clone(), ALPN_A, 1));
+    assert_eq!((obs[0].destination.location(), obs[0].alpn.as_slice(), obs[0].recovery.attempt_ordinal), (brk.birth.location(), ALPN_A, 1));
 
     let dial = registry_recovery_dial(&gw.registry, None);
     run_due_at(&gw.writer, &dial, obs[0].due_ms).await;

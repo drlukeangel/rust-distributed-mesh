@@ -18,8 +18,15 @@ use std::time::Duration;
 /// One faulted admin's fault door, reached over Node RPC by the admin's separate path/name pair.
 #[derive(Clone)]
 pub struct Door {
-    pub name: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     peers: Arc<Peers>,
+}
+
+impl Door {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 impl Door {
@@ -27,7 +34,7 @@ impl Door {
     /// until it is ready (node-rpc-envelope.md, "Node RPC readiness gate"), and an admin the estate did not
     /// start is dialled from the views the estate reads, so until then each turn reads them again.
     pub async fn at(estate: &Estate, name: &PathName) -> Door {
-        let door = Door { name: name.clone(), peers: estate.peers().await };
+        let door = Door { path: name.path.clone(), name: name.name.clone(), peers: estate.peers().await };
         wait_for_observed(&format!("{name:?}'s fault door answers over Node RPC"), Duration::from_secs(60), || async {
             match door.ask(&FaultRequest::State).await {
                 Ok(FaultReply::State(_)) => Ok(()),
@@ -42,7 +49,7 @@ impl Door {
     }
 
     async fn ask(&self, req: &FaultRequest) -> Result<FaultReply, String> {
-        let carrier = self.peers.carrier_at(self.name.clone());
+        let carrier = self.peers.carrier_at(self.location());
         fault_door::ask(carrier.client(), carrier.target(), req).await
     }
 

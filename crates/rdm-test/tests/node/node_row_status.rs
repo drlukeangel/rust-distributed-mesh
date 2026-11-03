@@ -75,7 +75,7 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
 
     // The node that is not its type's primary: a primary is stopped only after node.primary.update.
     let subject = views.iter().find(|v| v.r#type == "node" && !v.is_primary).unwrap_or_else(|| panic!("mesh1 holds a node that is not its type's primary: {views:?}"));
-    let (path, node_id): (PathName, String) = (subject.name.clone(), subject.node_id.to_string());
+    let (path, node_id): (PathName, String) = (subject.location(), subject.node_id.to_string());
     let nodes = estate.nodes_obj().await;
 
     for (call, then) in [("node.connection.delete", "connections-deleted"), ("node.stop", "stopped"), ("node.start", "ready"), ("node.delete", "deleted")] {

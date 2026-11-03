@@ -179,7 +179,7 @@ async fn process(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Process 
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(endpoint).accept(rdm_transport::ALPN, server.clone()).spawn();
-    let resolved = ResolvedNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id, name, endpoint_id: key.public(), transport_addr: addr, incarnation };
+    let resolved = ResolvedNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id, path: name.path.clone(), name: name.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation };
     Process { _router: router, server, resolved, seen }
 }
 
@@ -448,7 +448,7 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
         .build(ServedBirth { node_id: cid.to_string(), incarnation: cinc.to_string() })
         .unwrap();
     let _carrier_router = Router::builder(carrier_ep).accept(rdm_transport::ALPN, carrier_server).spawn();
-    let carrier = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: cid, name: rdm_core::PathName::new("mesh1.node", "2").unwrap(), endpoint_id: carrier_key.public(), transport_addr: carrier_addr, incarnation: cinc };
+    let carrier = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: cid, path: "mesh1.node".into(), name: "2".into(), endpoint_id: carrier_key.public(), transport_addr: carrier_addr, incarnation: cinc };
 
     let (origin, _) = client(Some("rdm"), &[&carrier, &target.resolved]).await;
     let t = trace();

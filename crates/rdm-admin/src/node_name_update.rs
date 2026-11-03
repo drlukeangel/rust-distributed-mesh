@@ -74,7 +74,7 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
     }
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-fabric-primary",
-        node_path = %me.path, node_name = %me.name, subject_path = %subject.name.path, subject_name = %subject.name.name, node_id = %node_id, op = req.op(), requested_path = %name.path, requested_name = %name.name,
+        node_path = %me.path, node_name = %me.name, subject_path = %subject.path, subject_name = %subject.name, node_id = %node_id, op = req.op(), requested_path = %name.path, requested_name = %name.name,
         mesh_primary = tracing::field::Empty, atlas = tracing::field::Empty, route = tracing::field::Empty, sends = tracing::field::Empty,
         outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
@@ -193,7 +193,7 @@ async fn rename(
         span.record("detail", format!("{me_id}: node {node_id} is not in the mesh-primary's view; it cannot be renamed").as_str());
         return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
     };
-    span.record("from_path", held.name.path.as_str()).record("from_name", held.name.name.as_str());
+    span.record("from_path", held.path.as_str()).record("from_name", held.name.as_str());
     // 1. The exact birth.
     match held.incarnation_id.as_ref() {
         Some(h) if h != incarnation => return rdm_core::reply::stale(h.clone()),
@@ -235,7 +235,7 @@ async fn rename(
         Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &format!("{me_id}: {why}: the rename of {} is refused and nothing is written", held.node_id)),
     };
     // The key the node's row stands at now: the row's own, else the name the view holds.
-    let from = known.as_ref().map_or_else(|| held.name.clone(), |r| r.name.clone());
+    let from = known.as_ref().map_or_else(|| held.location(), |r| r.location());
     if from.path != to.path {
         return rdm_core::reply::status::bounded_rejected_name("a node's path is immutable; only its name may change, and nothing is claimed or written");
     }
@@ -246,11 +246,11 @@ async fn rename(
         let moved_row = crate::node_rows::move_row_with_intent(storage, door.written(), me, &held, &from, &to, intent).await;
         match moved_row {
             Ok(_) => {}
-            Err(RenameRefused::NameHeld(h)) => return rdm_core::reply::status::name_held(h.name, h.by),
+            Err(RenameRefused::NameHeld(h)) => return rdm_core::reply::status::name_held(h.location(), h.by),
             Err(RenameRefused::Unwritten(why)) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &why),
         }
         // The view reads the moved row: the birth is listed at the row's name from now on.
-        moved(held.name.clone(), node_id.clone(), incarnation.clone(), to.clone()).await;
+        moved(held.location(), node_id.clone(), incarnation.clone(), to.clone()).await;
     }
     let done = StatusReply::NameUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
     // The live birth takes the row's name. This admin itself takes it through its own name
@@ -378,10 +378,10 @@ mod tests {
         let stale_req = StatusRequest::UpdateName {
             node_id: subject.node_id.clone(),
             incarnation: IncarnationId::mint(),
-            name: subject.name.renamed().unwrap(),
+            name: subject.location().renamed().unwrap(),
         };
         assert_eq!(
-            update(&admin1.name, &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), true, &stale_req).await,
+            update(&admin1.location(), &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), true, &stale_req).await,
             StatusReply::RejectedStaleIncarnation { held: inc.clone() }
         );
 
@@ -389,10 +389,10 @@ mod tests {
         let valid_req = StatusRequest::UpdateName {
             node_id: subject.node_id.clone(),
             incarnation: inc.clone(),
-            name: subject.name.renamed().unwrap(),
+            name: subject.location().renamed().unwrap(),
         };
         assert!(matches!(
-            update(&admin2.name, &admin2.node_id, &view, &storage, doors(), Some(&clean_rec), true, &valid_req).await,
+            update(&admin2.location(), &admin2.node_id, &view, &storage, doors(), Some(&clean_rec), true, &valid_req).await,
             StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }
         ));
 
@@ -400,10 +400,10 @@ mod tests {
         let bad_name_req = StatusRequest::UpdateName {
             node_id: subject.node_id.clone(),
             incarnation: inc,
-            name: PathName { path: subject.name.path.clone(), name: "Bad_Name".into() },
+            name: PathName { path: subject.path.clone(), name: "Bad_Name".into() },
         };
         assert!(matches!(
-            update(&admin1.name, &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), true, &bad_name_req).await,
+            update(&admin1.location(), &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), true, &bad_name_req).await,
             StatusReply::RejectedName { .. }
         ));
     }

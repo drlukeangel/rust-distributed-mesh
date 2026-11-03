@@ -94,7 +94,7 @@ async fn a_started_admin_is_reached_by_the_birth_it_printed() {
     // A caller that holds nothing but the line.
     let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: birth.endpoint_id.0.parse().expect("the birth's endpoint is an iroh key"), transport_addr: birth.transport_addr, incarnation: birth.incarnation.clone() });
+    resolver.insert(ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node_id: birth.node_id.clone(), path: birth.path.clone(), name: birth.name.clone(), endpoint_id: birth.endpoint_id.0.parse().expect("the birth's endpoint is an iroh key"), transport_addr: birth.transport_addr, incarnation: birth.incarnation.clone() });
     let fabrics = Fabrics::new(BuildCarrier::at_node(Arc::new(NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm")), birth.node_id.clone()));
     let fabric = wait_for(&format!("{} answers fabric.get naming itself the fabric-primary", birth.node_id), Duration::from_secs(30), || async { rdm_test::typed::the_fabric(&fabrics).await.ok().filter(|f| f.fabric_primary.as_ref() == Some(&birth.node_id)) }).await;
     std::fs::write(artifacts.join("fabric.json"), serde_json::to_vec_pretty(&fabric).unwrap()).unwrap();
@@ -107,6 +107,6 @@ async fn a_started_admin_is_reached_by_the_birth_it_printed() {
     assert_eq!((boot["attributes"]["node_id"].as_str(), boot["attributes"]["incarnation_id"].as_str()), (Some(birth.node_id.to_string().as_str()), Some(birth.incarnation.as_str())), "the printed birth is the one the boot names: {birth:?}");
     let door = named(&spans, "rdm.node_admin.node.serve.via-view-holds-birth");
     let [door] = door.as_slice() else { panic!("the door opens once, found {}", door.len()) };
-    assert_eq!((door["attributes"]["node_id"].as_str(), door["attributes"]["incarnation_id"].as_str(), door["attributes"]["node_path"].as_str(), door["attributes"]["node_name"].as_str()), (Some(birth.node_id.as_str()), Some(birth.incarnation.as_str()), Some(birth.name.path.as_str()), Some(birth.name.name.as_str())), "the door opens for the printed birth: {birth:?}");
+    assert_eq!((door["attributes"]["node_id"].as_str(), door["attributes"]["incarnation_id"].as_str(), door["attributes"]["node_path"].as_str(), door["attributes"]["node_name"].as_str()), (Some(birth.node_id.as_str()), Some(birth.incarnation.as_str()), Some(birth.path.as_str()), Some(birth.name.as_str())), "the door opens for the printed birth: {birth:?}");
     std::fs::write(artifacts.join("trace-id.txt"), boot["trace_id"].as_str().unwrap_or_default()).unwrap();
 }

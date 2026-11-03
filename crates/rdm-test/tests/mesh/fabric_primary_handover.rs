@@ -205,7 +205,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
             wait_for(&format!("{who:?} holds mesh1 dead with {final_name:?} its only node"), Duration::from_secs(30), || async {
                 let dead = named(&estate.spans(), "rdm.mesh.topology.update.via-mesh-status").into_iter().any(|sp| on(sp, &ids, &who) && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "dead" && s(&sp["attributes"]["taken"]) == "true");
                 let held = estate.held_topology_at(&who).await?;
-                let mesh1: Vec<PathName> = held.members.iter().filter(|d| d.node.mesh == "mesh1").map(|d| d.node.name.clone()).collect();
+                let mesh1: Vec<PathName> = held.members.iter().filter(|d| d.node.mesh == "mesh1").map(|d| d.node.location()).collect();
                 (dead && mesh1 == [final_name.clone()]).then_some(())
             })
             .await;

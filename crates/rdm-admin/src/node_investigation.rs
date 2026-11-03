@@ -230,7 +230,7 @@ pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids
     let (fabric_id, mesh_id) = ids;
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-on-node-investigated",
-        node_path = %node.name.path, node_name = %node.name.name,
+        node_path = %node.path, node_name = %node.name,
         node_id = %node.node_id,
         incarnation_id = %incarnation.as_str(),
         mesh = %node.mesh,
@@ -245,7 +245,7 @@ pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids
         span.in_scope(|| tracing::info!("this admin holds no rafka-time: the verdict is not written and the notice is not sent"));
         return;
     };
-    let event = crate::events_storage::Event::node_investigated(&writer.events.source, time_ms, &node.node_id, incarnation, &node.name.path, &node.name.name, verdict.as_str(), next.as_str());
+    let event = crate::events_storage::Event::node_investigated(&writer.events.source, time_ms, &node.node_id, incarnation, &node.path, &node.name, verdict.as_str(), next.as_str());
     span.record("event_id", event.id.as_str());
     if let Err(e) = writer.events.events.append(&event).instrument(span.clone()).await {
         span.record("outcome", "event-not-written");
@@ -271,8 +271,8 @@ pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids
         mesh_id,
         node_id: node.node_id.clone(),
         incarnation: incarnation.clone(),
-        path: node.name.path.clone(),
-        name: node.name.name.clone(),
+        path: node.path.clone(),
+        name: node.name.clone(),
         verdict,
         next,
         context,
@@ -299,7 +299,7 @@ pub fn span_inspection(inspector: &str, node: &Node, outcome: &crate::deployment
     };
     let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
     let handle = handle.map(|h| format!("{h:?}")).unwrap_or_default();
-    tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %inspector, handle = %handle, verdict = crate::admin::verdict_name(outcome), exit_code, reason = %reason)
+    tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %inspector, handle = %handle, verdict = crate::admin::verdict_name(outcome), exit_code, reason = %reason)
         .in_scope(|| tracing::info!("{why}"));
 }
 
@@ -339,7 +339,7 @@ pub fn leads_of(rows: &[NodeConnection], view: &Topology, node: &Node, me: Optio
             leads.push(source.clone());
         }
     }
-    leads.sort_by_key(|l| l.name.clone());
+    leads.sort_by_key(|l| l.location());
     leads
 }
 
@@ -370,11 +370,11 @@ mod tests {
     }
 
     fn of(view: &Topology, name: rdm_core::PathName) -> Node {
-        view.members().find(|n| n.name == name).cloned().unwrap()
+        view.members().find(|n| n.location() == name).cloned().unwrap()
     }
 
     fn end(n: &Node) -> ConnectionEnd {
-        ConnectionEnd { mesh: n.mesh.clone(), r#type: n.r#type.clone(), name: n.name.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone() }
+        ConnectionEnd { mesh: n.mesh.clone(), r#type: n.r#type.clone(), path: n.path.clone(), name: n.name.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone() }
     }
 
     fn row(source: &Node, destination: &Node, kind: ConnectionKind, state: ConnectionState) -> NodeConnection {
@@ -414,7 +414,7 @@ mod tests {
             row(&me, &node, ConnectionKind::Direct, ConnectionState::Connected),
             row(&node, &node, ConnectionKind::Direct, ConnectionState::Connected),
         ];
-        let names = |v: Vec<Node>| v.into_iter().map(|n| n.name.clone()).collect::<Vec<_>>();
+        let names = |v: Vec<Node>| v.into_iter().map(|n| n.location()).collect::<Vec<_>>();
         assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), [rdm_core::PathName::new("mesh1.node", "2").unwrap(), rdm_core::PathName::new("mesh2.node", "1").unwrap()], "the active Direct sources in any mesh, once each, in path order");
         let mut view = view;
         view.nodes.iter_mut().find(|n| n.node_id == m1.node_id).unwrap().status = NodeStatus::PendingReconnect;
@@ -430,7 +430,7 @@ mod tests {
         rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation, supersedes: None, runtime },
+            node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation, supersedes: None, runtime },
             status: rdm_core::MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
@@ -464,7 +464,7 @@ mod tests {
         let empty = rdm_transport::topology::DigestView::default();
         let none = birth_runtime(&empty, Some(&nodes), &node).await.unwrap_err();
         assert!(none.contains("no digest of this exact birth") && none.contains("no runtime row"), "{none}");
-        nodes.put_runtime(&crate::storage::RuntimeRow { r#type: node.r#type.clone(), mesh: node.mesh.clone(), node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), runtime: fact(2), data_dir: Some("/data/from-the-row".into()) }).await.unwrap();
+        nodes.put_runtime(&crate::storage::RuntimeRow { r#type: node.r#type.clone(), mesh: node.mesh.clone(), node_id: node.node_id.clone(), path: node.path.clone(), name: node.name.clone(), incarnation_id: inc.clone(), runtime: fact(2), data_dir: Some("/data/from-the-row".into()) }).await.unwrap();
         let from_row = BirthRuntime { fact: fact(2), data_dir: Some("/data/from-the-row".into()), incarnation: inc.clone() };
         assert_eq!(birth_runtime(&empty, Some(&nodes), &node).await, Ok(from_row.clone()), "no digest: the durable row");
         for (held_digest, why) in [(digest(&node, IncarnationId::mint(), Some(fact(3))), "a digest of another birth"), (digest(&node, inc.clone(), None), "a digest with no runtime fact")] {

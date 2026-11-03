@@ -81,7 +81,7 @@ fn observed() -> Topology {
 async fn lose_a(topology: &RwLock<Topology>) {
     let mut t = topology.write().await;
     for n in t.nodes.iter_mut() {
-        match (n.name.path.as_str(), n.name.name.as_str()) {
+        match (n.path.as_str(), n.name.as_str()) {
             ("mesh1.node-admin", "1") => {
                 n.status = NodeStatus::PendingReconnect;
                 n.is_primary = false;
@@ -109,7 +109,7 @@ struct Runner {
 impl OperationRunner for Runner {
     async fn run(&self, _: &BuildId, _lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
         self.ran.lock().unwrap().push((attempt, op.clone()));
-        let BuildOperation::CreateNode { node: name, .. } = op else { return Err(format!("unexpected {op:?}").into()) };
+        let BuildOperation::CreateNode { path: name_path, name: name_name, .. } = op else { return Err(format!("unexpected {op:?}").into()) }; let name = &rdm_core::PathName { path: name_path.clone(), name: name_name.clone() };
         if self.die_at.as_ref() == Some(name) {
             self.died.notify_one();
             std::future::pending::<()>().await;
@@ -133,8 +133,8 @@ impl rdm_admin::build_drive::Gate for RowsGate {
             .iter()
             .filter(|n| n.status.is_live())
             .filter_map(|n| {
-                let entry = rdm_admin::accepted::target_executable(topology, &n.name)?;
-                Some((n.name.clone(), rdm_admin::accepted::RecordedRow { mesh: n.mesh.clone(), r#type: n.r#type.clone(), config: None, tags: None, storage_persistence: None, node_id: n.node_id.clone(), sha256: Some(entry.sha256.clone()) }))
+                let entry = rdm_admin::accepted::target_executable(topology, &n.location())?;
+                Some((n.location(), rdm_admin::accepted::RecordedRow { mesh: n.mesh.clone(), r#type: n.r#type.clone(), config: None, tags: None, storage_persistence: None, node_id: n.node_id.clone(), sha256: Some(entry.sha256.clone()) }))
             })
             .collect())
     }
@@ -144,12 +144,12 @@ impl rdm_admin::build_drive::Gate for RowsGate {
 /// `dispatch` reaches the executors that are still alive.
 fn drive_env(me: &PathName, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Arc<crate::loopback::Loopback>, exits: Arc<crate::loopback::Exits>, told: &crate::Told) -> Arc<DriveEnv> {
     Arc::new(DriveEnv { me_mesh: "mesh1".into(),
-        me: me.clone(),
+        me_path: me.path.clone(), me_name: me.name.clone(),
         topology: topology.clone(),
         builds: a.builds.clone(),
         door: Arc::new(rdm_admin::build_claim::ClaimDoor {
             incarnation: topology.try_read().unwrap().node(me).unwrap().incarnation_id.clone().unwrap(),
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             node_id: topology
                 .try_read()
                 .expect("the view is free")
@@ -318,17 +318,17 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     assert_eq!(
         *a_runner.ran.lock().unwrap(),
         vec![
-            (1, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.node", "2").unwrap(), over: None, executable: Some(crate::test_executable("node")), entry: None }),
-            (1, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.node", "3").unwrap(), over: None, executable: Some(crate::test_executable("node")), entry: None }),
+            (1, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "2".into(), over: None, executable: Some(crate::test_executable("node")), entry: None }),
+            (1, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "3".into(), over: None, executable: Some(crate::test_executable("node")), entry: None }),
         ]
     );
     assert_eq!(
         *b_runner.ran.lock().unwrap(),
         vec![
             // A's admin is lost too: its path is part of what is left.
-            (2, BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), over: None, executable: None, entry: None }),
+            (2, BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), over: None, executable: None, entry: None }),
             // The successor reads the Build from the store, where each entry keeps its executable (Q186).
-            (2, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.node", "3").unwrap(), over: None, executable: Some(crate::test_executable("node")), entry: None }),
+            (2, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "3".into(), over: None, executable: Some(crate::test_executable("node")), entry: None }),
         ],
         "mesh1.node.2 is never created twice"
     );

@@ -288,17 +288,17 @@ fn runtime_handles(records: &[Node], first_pid: u32) -> BTreeMap<NodeId, Deploym
 fn removed_birth_does_not_hide_a_new_incarnation_or_location_successor() {
     let original = node_at("mesh2.node", "north", "mesh2", "node");
     let mut renamed = original.clone();
-    renamed.name = PathName::new("mesh2.node", "north-old").unwrap();
+    { let at = PathName::new("mesh2.node", "north-old").unwrap(); renamed.path = at.path; renamed.name = at.name; }
     let successor = node_at("mesh2.node", "north", "mesh2", "node");
     let mut newer = original.clone();
     newer.incarnation_id = Some(IncarnationId::mint());
     let view = View::default();
     view.publish(renamed.clone());
-    view.remove_birth(&original.name, &original.node_id, original.incarnation_id.as_ref().unwrap());
+    view.remove_birth(&original.location(), &original.node_id, original.incarnation_id.as_ref().unwrap());
     assert!(view.holds(&[renamed]).is_empty());
     view.publish(newer.clone());
     view.publish(successor.clone());
-    view.remove_birth(&original.name, &original.node_id, original.incarnation_id.as_ref().unwrap());
+    view.remove_birth(&original.location(), &original.node_id, original.incarnation_id.as_ref().unwrap());
     let held = view.holds(&[original, successor.clone()]);
     assert_eq!(held.len(), 2);
     assert!(held.iter().any(|n| n.node_id == newer.node_id && n.incarnation_id == newer.incarnation_id));
@@ -328,7 +328,7 @@ async fn node_delete_receipts(builds: &dyn BuildStateAdapter, key: &MeshDeleteKe
     assert_eq!(terminal.node_id, subject.node_id);
     assert_eq!(terminal.incarnation_id, subject.incarnation_id);
     let operation = rdm_core::OperationId::node("node.delete", &subject_birth.node_id);
-    let op = LifecycleOp { mesh: subject.mesh.clone(), r#type: subject.r#type.clone(), build_id: key.build_id.to_string(), attempt: key.attempt, operation: operation.clone(), node_id: subject_birth.node_id, incarnation: subject_birth.incarnation, name: subject.node.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+    let op = LifecycleOp { mesh: subject.mesh.clone(), r#type: subject.r#type.clone(), build_id: key.build_id.to_string(), attempt: key.attempt, operation: operation.clone(), node_id: subject_birth.node_id, incarnation: subject_birth.incarnation, path: subject.node.path.clone(), name: subject.node.name.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
     for (step, output) in [("NodeDeleting", serde_json::to_value(&op).ok()), ("TerminateRuntime", serde_json::to_value(terminal).ok()), ("NodeDeleted", serde_json::to_value(&op).ok()), ("RemoveTopologyMembership", None), ("Complete", None)] {
         builds
             .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: key.build_id.clone(), attempt: key.attempt, operation: operation.clone(), step: step.into(), outcome: rdm_admin::build_state::StepOutcome::Complete, output, executor: Some(executor.clone()) })
@@ -356,8 +356,8 @@ fn writer_view(records: &[Node], primary: Option<&NodeId>, fabric_primary: Optio
 /// Every node's row in `storage` as its create left it (live, its config), held by `rows`.
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        storage.write_record(&NodeRow { replacement_from: None, r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
-        assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+        storage.write_record(&NodeRow { replacement_from: None, r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: n.path.clone(), name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
+        assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::location("node.create", &n.location()), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
     }
 }
 
@@ -393,7 +393,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     let final_id = final_admin.node_id.clone();
     let mut topology = writer_view(&records, None, None);
     topology.nodes.iter_mut().find(|n| n.node_id == final_id).unwrap().is_primary = true;
-    let rows = Arc::new(NodeRows::new(final_admin.name.clone(), final_id, Arc::new(RwLock::new(topology)), storage.clone()));
+    let rows = Arc::new(NodeRows::new(final_admin.location(), final_id, Arc::new(RwLock::new(topology)), storage.clone()));
     let view = View::with_rows(rows.clone());
 
     let (first, fp1, fp2, mp1, mp2, second, records2, trace_id) = cap.run(async {
@@ -412,7 +412,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), path: final_admin.path.clone(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -484,7 +484,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     // MeshLeft: with the final primary's own exit, the proof set covers every accepted birth.
     let mut all = manifest.clone();
     all.final_runtime = None;
-    all.receipts.push(TerminalReceipt { node: me.node.clone(), node_id: me.node_id.clone(), incarnation_id: me.incarnation_id.clone(), runtime: Some(final_runtime.clone()), exit_code: Some(0) , verdict: None, data_dir: None });
+    all.receipts.push(TerminalReceipt { path: me.node.path.clone(), name: me.node.name.clone(), node_id: me.node_id.clone(), incarnation_id: me.incarnation_id.clone(), runtime: Some(final_runtime.clone()), exit_code: Some(0) , verdict: None, data_dir: None });
     assert_eq!(first_mismatch(&all, &fp2, &me, true), None, "MeshLeft covers the whole accepted roster");
 
     // The trace: both attempts' tiers and the retained receipt, under the cell's one trace.
@@ -559,7 +559,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), path: final_admin.path.clone(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -650,7 +650,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: final_admin.mesh.clone(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: final_admin.mesh.clone(), path: final_admin.path.clone(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -691,7 +691,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
         // The final primary's own node.delete, a separate Build: the ordinary workflow, live target.
         let req = rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(last_record).node_id), build_id: Some(delete_build.clone()), attempt: 1, node: last_record.clone(), handle: handles[&final_admin.node_id].clone(), unreached: false };
         let mut fp_template = template.clone();
-        fp_template.launcher = rdm_core::launch::Launcher { mesh: fp.mesh.clone(), name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() };
+        fp_template.launcher = rdm_core::launch::Launcher { mesh: fp.mesh.clone(), path: fp.path.clone(), name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() };
         let fp_pipeline = DeploymentPipeline { template: &fp_template, ..pipeline };
         fp_pipeline.delete_node(&req).await.expect("the final primary's node.delete completes");
         let terminal: TerminalReceipt = builds
@@ -761,7 +761,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     let status = MemoryMeshStorage::default();
     let declared = Mutex::new(Declared::default());
     let view = Arc::new(RwLock::new(writer_view(std::slice::from_ref(&last), None, Some(fp.clone()))));
-    let rows = NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), storage.clone());
+    let rows = NodeRows::new(fp.location(), fp.node_id.clone(), view.clone(), storage.clone());
     let mesh_id = MeshId::mint();
     let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: BuildId::mint(), attempt: 1, operation: operation(&mesh_id) };
     let deleting = rdm_core::OperationId::node("node.delete", &last.node_id);
@@ -773,7 +773,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         // mesh had a primary.
         rows_written(&storage, &rows, std::slice::from_ref(&last)).await;
         // A live path `mesh2.node-admin`, name `1` holds its name: a second birth's claim is refused.
-        let second = rows.create_row(&last.name, &last.mesh.clone(), &last.r#type, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()), None, None, RowFor::Create).await;
+        let second = rows.create_row(&last.location(), &last.mesh.clone(), &last.r#type, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()), None, None, RowFor::Create).await;
         // In its role and live: the fabric-primary is not the writer of mesh2's rows.
         view.write().await.nodes.iter_mut().filter(|n| n.node_id == last.node_id).for_each(|n| n.is_primary = true);
         let live = rows.deleted(&last, &deleting).await;
@@ -783,13 +783,13 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
             n.stopped = true;
         });
         let stopped = rows.deleted(&last, &deleting).await;
-        let exited = rdm_admin::deployment::pipeline::TerminalReceipt { node: last.name.clone(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().to_string(), runtime: None, exit_code: Some(0) , verdict: None, data_dir: None };
+        let exited = rdm_admin::deployment::pipeline::TerminalReceipt { path: last.path.clone(), name: last.name.clone(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().to_string(), runtime: None, exit_code: Some(0) , verdict: None, data_dir: None };
         let after = mesh_left_rows(Some(&rows), &status, &Default::default(), &declared, fp.node_id.as_str(), &key, "mesh2", std::slice::from_ref(&exited)).await;
         let row = rdm_admin::storage::NodesStorage::node(storage.as_ref(), &last.node_id).await.unwrap();
         let statuses = status.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>();
         let dead_held = status.mesh(&mesh_id.clone()).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted);
         // mesh2 created again: its first admin's claim wins over the Deleted row.
-        let again = rows.create_row(&last.name, &last.mesh.clone(), &last.r#type, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()), None, None, RowFor::Create).await;
+        let again = rows.create_row(&last.location(), &last.mesh.clone(), &last.r#type, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()), None, None, RowFor::Create).await;
         (second, live, stopped, after, row, (statuses, dead_held), again, trace_id)
     });
     let (statuses, dead_held) = statuses;
@@ -816,11 +816,11 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         other => panic!("the recreated mesh's admin claims path `mesh2.node-admin`, name `1` over the Deleted row: {other:?}"),
     }
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
-    let deleted: Vec<String> = named("rdm.node_admin.node.delete.via-node-row").iter().filter(|s| s["attributes"]["subject_path"] == last.name.path && s["attributes"]["subject_name"] == last.name.name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
+    let deleted: Vec<String> = named("rdm.node_admin.node.delete.via-node-row").iter().filter(|s| s["attributes"]["subject_path"] == last.path && s["attributes"]["subject_name"] == last.name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(deleted, ["not-mesh-primary", "row-deleted"], "refused while the final primary is live and primary, written once it is stopped: {deleted:?}");
     let dead = named("rdm.node_admin.mesh.update.via-deleted-row");
     assert!(dead.iter().any(|s| s["attributes"]["mesh_id"] == mesh_id.as_str() && s["attributes"]["outcome"] == "applied" && s["attributes"]["writer"] == "acting-primary"), "no Dead row held: the fabric-primary writes Dead as acting primary: {dead:#?}");
-    let claims: Vec<String> = named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s["attributes"]["subject_path"] == last.name.path && s["attributes"]["subject_name"] == last.name.name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
+    let claims: Vec<String> = named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s["attributes"]["subject_path"] == last.path && s["attributes"]["subject_name"] == last.name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(claims, ["row-held-by-node", "name-held", "row-written"], "a plain create's claim names no seed: {claims:?}");
     eprintln!("trace {trace_id}: delete.via-node-row not-mesh-primary then row-deleted, mesh.update.via-deleted-row applied acting-primary, via-node-row claim row-seeded seeded_from={}", last.node_id);
 }
@@ -828,7 +828,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
 
 /// The exact Exited receipt the provider's inspection of `b`'s runtime `runtime` proves.
 fn exited(b: &RosterBirth, runtime: &RuntimeIdentity) -> TerminalReceipt {
-    TerminalReceipt { node: b.node.clone(), node_id: b.node_id.clone(), incarnation_id: b.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: Some(137) , verdict: None, data_dir: None }
+    TerminalReceipt { path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node_id.clone(), incarnation_id: b.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: Some(137) , verdict: None, data_dir: None }
 }
 
 fn step_facts(facts: &[BuildFact]) -> Vec<BuildStepReceipt> {
@@ -879,7 +879,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), path: final_admin.path.clone(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -891,7 +891,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let mut amended_template = template.clone();
-        amended_template.launcher = rdm_core::launch::Launcher { mesh: other_admin.mesh.clone(), name: other_admin.name.clone(), node_id: other_admin.node_id.clone(), incarnation: other_admin.incarnation_id.clone().unwrap() };
+        amended_template.launcher = rdm_core::launch::Launcher { mesh: other_admin.mesh.clone(), path: other_admin.path.clone(), name: other_admin.name.clone(), node_id: other_admin.node_id.clone(), incarnation: other_admin.incarnation_id.clone().unwrap() };
         let amended_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &amended_template, timeouts: Timeouts::default() };
         let shutdown = |attempt: u32| {
             let (pipeline, handles, calls, build_id) = (if attempt == 1 { &pipeline } else { &amended_pipeline }, &handles, &calls, &build_id);
@@ -948,7 +948,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             .unwrap();
         let last = records2.iter().find(|n| n.node_id == other_admin.node_id).cloned().unwrap();
         let mut fp_template = template.clone();
-        fp_template.launcher = rdm_core::launch::Launcher { mesh: "mesh1".into(), name: PathName::new("mesh1.node-admin", "1").unwrap(), node_id: fp_birth.node_id.clone(), incarnation: fp_birth.incarnation.clone() };
+        fp_template.launcher = rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: fp_birth.node_id.clone(), incarnation: fp_birth.incarnation.clone() };
         let fp_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &fp_template, timeouts: Timeouts::default() };
         let terminal = fp_pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(last).node_id), build_id: Some(delete_build), attempt: 1, node: last, handle: handles[&other_admin.node_id].clone(), unreached: false }).await.expect("the amended primary's node.delete proves its exit");
         let steps = builds.read_build(&build_id).await.unwrap().steps;
@@ -1039,7 +1039,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), path: final_admin.path.clone(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -1051,7 +1051,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
         };
         let lost_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &lost_published, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let mut amended_template = template.clone();
-        amended_template.launcher = rdm_core::launch::Launcher { mesh: other_admin.mesh.clone(), name: other_admin.name.clone(), node_id: other_admin.node_id.clone(), incarnation: other_admin.incarnation_id.clone().unwrap() };
+        amended_template.launcher = rdm_core::launch::Launcher { mesh: other_admin.mesh.clone(), path: other_admin.path.clone(), name: other_admin.name.clone(), node_id: other_admin.node_id.clone(), incarnation: other_admin.incarnation_id.clone().unwrap() };
         let amended_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &amended_published, builds: &builds, template: &amended_template, timeouts: Timeouts::default() };
         let shutdown_1 = |n: Node| {
             let (pipeline, handles, calls, build_id) = (&lost_pipeline, &handles, &calls, &build_id);
@@ -1119,7 +1119,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
     assert_eq!(names, BTreeSet::from([failing.node_id.to_string()]), "the amended primary publishes the NodeDeleted of the one delete it ran, never again rpc.2's (its node.delete's, once) and never the lost primary's (its own node.delete's, the fabric-primary's): {amended_ops:?}");
 
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
-    assert!(named("rdm.node_admin.deployment.update.via-step").iter().all(|s| !(s["attributes"]["node_path"] == exiting.name.path && s["attributes"]["node_name"] == exiting.name.name && s["attributes"]["attempt"] == "2")), "no step of rpc.2's delete runs in attempt 2");
+    assert!(named("rdm.node_admin.deployment.update.via-step").iter().all(|s| !(s["attributes"]["node_path"] == exiting.path && s["attributes"]["node_name"] == exiting.name && s["attributes"]["attempt"] == "2")), "no step of rpc.2's delete runs in attempt 2");
     let retained = named("rdm.node_admin.mesh.resolve.via-retained-receipts");
     assert!(retained.iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["retained"] == "2" && s["attributes"]["remaining"] == "1"), "attempt 2 keeps rpc.2's delete and the lost primary's exit, and runs rpc.1: {retained:?}");
     let tier = named("rdm.node_admin.mesh.update.via-leave-tier");
@@ -1430,7 +1430,7 @@ fn the_fabric_primary_reads_a_lost_primarys_runtime_from_its_durable_runtime_row
     let (lost, survivor) = (birth(&final_admin), birth(&other_admin));
     let (lost_runtime, survivor_runtime) = (RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeIdentity::of(&handles[&other_admin.node_id].fact().unwrap()));
     let lost_node = &final_admin;
-    let row = rdm_admin::storage::RuntimeRow { r#type: lost_node.r#type.clone(), mesh: lost_node.mesh.clone(), node_id: lost_node.node_id.clone(), name: lost_node.name.clone(), incarnation_id: lost_node.incarnation_id.clone().unwrap(), runtime: handles[&final_admin.node_id].fact().unwrap(), data_dir: None };
+    let row = rdm_admin::storage::RuntimeRow { r#type: lost_node.r#type.clone(), mesh: lost_node.mesh.clone(), node_id: lost_node.node_id.clone(), path: lost_node.path.clone(), name: lost_node.name.clone(), incarnation_id: lost_node.incarnation_id.clone().unwrap(), runtime: handles[&final_admin.node_id].fact().unwrap(), data_dir: None };
     let (without_row, with_row, before, after, steps_after, outer, trace_id) = cap.run(async {
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
@@ -1569,7 +1569,7 @@ fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row()
     let (without_row, with_row) = tokio::runtime::Runtime::new().unwrap().block_on(async {
         let nodes = MemoryNodesStorage::default();
         let without_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;
-        nodes.put_runtime(&RuntimeRow { r#type: lost.r#type.clone(), mesh: lost.mesh.clone(), node_id: lost.node_id.clone(), name: lost.name.clone(), incarnation_id: lost.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
+        nodes.put_runtime(&RuntimeRow { r#type: lost.r#type.clone(), mesh: lost.mesh.clone(), node_id: lost.node_id.clone(), path: lost.path.clone(), name: lost.name.clone(), incarnation_id: lost.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
         let with_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;
         (without_row, with_row)
     });
@@ -1662,10 +1662,10 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // Every member's row as its create left it. The created admin's writer holds the rows of the
         // births its view names; the stopped birth's row it never held.
         for n in &all {
-            storage.write_record(&NodeRow { replacement_from: None, r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
+            storage.write_record(&NodeRow { replacement_from: None, r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: n.path.clone(), name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
         }
         for n in &records {
-            assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+            assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::location("node.create", &n.location()), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
         }
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
@@ -1941,7 +1941,7 @@ fn a_delete_cut_after_its_terminate_runtime_receipt_is_finished_by_the_resumed_a
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), path: final_admin.path.clone(), name: final_admin.name.clone(), node_id: final_admin.node_id.clone(), incarnation: final_admin.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -2018,7 +2018,7 @@ fn a_delete_cut_after_its_terminate_runtime_receipt_is_finished_by_the_resumed_a
     assert_eq!(published(departures), want, "attempt 2's primary publishes the NodeDeleted of the deletes it ran, the cut member's and the other admin's, and never again the completed member's, its node.delete's under attempt 1");
 
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
-    let step = |node: &Node, step: &str, attempt: &str| named("rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["node_path"] == node.name.path && s["attributes"]["node_name"] == node.name.name && s["attributes"]["step"] == step && s["attributes"]["attempt"] == attempt).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+    let step = |node: &Node, step: &str, attempt: &str| named("rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["node_path"] == node.path && s["attributes"]["node_name"] == node.name && s["attributes"]["step"] == step && s["attributes"]["attempt"] == attempt).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
     assert_eq!(step(&failing, "TerminateRuntime", "2"), vec!["reused".to_string()], "attempt 2 reuses the receipted TerminateRuntime");
     assert_eq!(step(&failing, "NodeDeleted", "2"), vec!["complete".to_string()], "attempt 2 executes the NodeDeleted that has no receipt");
     let retained = named("rdm.node_admin.mesh.resolve.via-retained-receipts");
@@ -2192,7 +2192,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher {
-                mesh: "mesh2".to_owned(), name: final_admin.name.clone(),
+                mesh: "mesh2".to_owned(), path: final_admin.path.clone(), name: final_admin.name.clone(),
                 node_id: final_admin.node_id.clone(),
                 incarnation: final_admin.incarnation_id.clone().unwrap(),
             },
@@ -2237,7 +2237,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             timeouts: Timeouts::default(),
         };
         let mut resumed_template = template.clone();
-        resumed_template.launcher = rdm_core::launch::Launcher { mesh: other_admin.mesh.clone(), name: other_admin.name.clone(), node_id: other_admin.node_id.clone(), incarnation: other_admin.incarnation_id.clone().unwrap() };
+        resumed_template.launcher = rdm_core::launch::Launcher { mesh: other_admin.mesh.clone(), path: other_admin.path.clone(), name: other_admin.name.clone(), node_id: other_admin.node_id.clone(), incarnation: other_admin.incarnation_id.clone().unwrap() };
         let pipeline = DeploymentPipeline {
             provider: &fleet,
             joins: &joins,
@@ -2394,7 +2394,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .unwrap();
         let last = records2.iter().find(|n| n.node_id == other_admin.node_id).cloned().unwrap();
         let mut fp_template = template.clone();
-        fp_template.launcher = rdm_core::launch::Launcher { mesh: "mesh1".into(), name: PathName::new("mesh1.node-admin", "1").unwrap(), node_id: fp_birth.node_id.clone(), incarnation: fp_birth.incarnation.clone() };
+        fp_template.launcher = rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: fp_birth.node_id.clone(), incarnation: fp_birth.incarnation.clone() };
         let fp_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &fp_template, timeouts: Timeouts::default() };
         let terminal = fp_pipeline
             .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(last).node_id),
@@ -2529,7 +2529,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
     let survivor_node = records.iter().find(|n| n.node_id == other_admin.node_id).unwrap().clone();
     let row = rdm_admin::storage::RuntimeRow { r#type: lost_node.r#type.clone(), mesh: lost_node.mesh.clone(),
         node_id: lost_node.node_id.clone(),
-        name: lost_node.name.clone(),
+        path: lost_node.path.clone(), name: lost_node.name.clone(),
         incarnation_id: lost_node.incarnation_id.clone().unwrap(),
         runtime: handles[&final_admin.node_id].fact().unwrap(),
         data_dir: None,
@@ -2543,7 +2543,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         n
     };
     let writer_topo = Arc::new(RwLock::new(writer_view(&records, None, Some(fp.clone()))));
-    let rows = Arc::new(NodeRows::new(fp.name.clone(), fp.node_id.clone(), writer_topo.clone(), storage.clone()));
+    let rows = Arc::new(NodeRows::new(fp.location(), fp.node_id.clone(), writer_topo.clone(), storage.clone()));
     let view = View::with_rows(rows.clone());
 
     let out = cap.run(async {
@@ -2578,7 +2578,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher {
-                mesh: fp.mesh.clone(), name: fp.name.clone(),
+                mesh: fp.mesh.clone(), path: fp.path.clone(), name: fp.name.clone(),
                 node_id: fp.node_id.clone(),
                 incarnation: fp.incarnation_id.clone().unwrap(),
             },
@@ -2603,7 +2603,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         };
 
         let mut member_template = template.clone();
-        member_template.launcher = rdm_core::launch::Launcher { mesh: other_admin.mesh.clone(), name: other_admin.name.clone(), node_id: other_admin.node_id.clone(), incarnation: other_admin.incarnation_id.clone().unwrap() };
+        member_template.launcher = rdm_core::launch::Launcher { mesh: other_admin.mesh.clone(), path: other_admin.path.clone(), name: other_admin.name.clone(), node_id: other_admin.node_id.clone(), incarnation: other_admin.incarnation_id.clone().unwrap() };
         let member_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &member_template, timeouts: Timeouts::default() };
         let root = tracing::info_span!("cell.mesh-delete-observability", build_id = %build_id.log(), attempt = 1, operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.recipe_step, operation_occurrence = ?outer.occurrence);
         let outer_trace_id = trace_id(&root);
@@ -2827,7 +2827,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         assert!(
             on_trace(&trace_id, "rdm.node_admin.deployment.update.via-pipeline")
                 .iter()
-                .any(|s| s["attributes"]["pipeline"] == "delete" && s["attributes"]["node_path"] == member.name.path && s["attributes"]["node_name"] == member.name.name)
+                .any(|s| s["attributes"]["pipeline"] == "delete" && s["attributes"]["node_path"] == member.path && s["attributes"]["node_name"] == member.name)
                 && on_trace(&trace_id, "rdm.node_admin.node.delete.via-node-row")
                     .iter()
                     .any(|s| s["attributes"]["operation"] == member_op.action && s["attributes"]["operation_subject"] == format!("{:?}", member_op.subject) && s["attributes"]["node_id"] == member.node_id.as_str()),
@@ -2843,7 +2843,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
     assert!(
         on_trace(&delete_trace_id, "rdm.node_admin.deployment.update.via-pipeline")
             .iter()
-            .any(|s| s["attributes"]["pipeline"] == "delete" && s["attributes"]["node_path"] == other_admin.name.path && s["attributes"]["node_name"] == other_admin.name.name),
+            .any(|s| s["attributes"]["pipeline"] == "delete" && s["attributes"]["node_path"] == other_admin.path && s["attributes"]["node_name"] == other_admin.name),
         "mesh-primary delete runs node.delete with the fabric-primary as executor on its own Build and trace"
     );
     assert!(

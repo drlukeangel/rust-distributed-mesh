@@ -434,7 +434,7 @@ pub async fn start_on(
     let app_types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
     rdm_core::app_types::check(&app_types).map_err(|k| anyhow!("app type declaration: {k:?}"))?;
     rdm_transport::connections::validate_alpns(alpns).map_err(|e| anyhow!("{e}"))?;
-    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node_path = %launch.name.path, node_name = %launch.name.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), "type" = launch.r#type);
+    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node_path = %launch.path, node_name = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), "type" = launch.r#type);
     // Boxed: the boot is one large state machine, and its caller holds only the box.
     let started = crate::taskdump::watched("start", Box::pin(start_booted(launch, providers, rafka_time, node_hooks, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot))).await;
     if let Err(e) = &started {
@@ -461,9 +461,9 @@ async fn start_booted(
     let launcher = launch.launcher.as_ref().ok_or_else(|| anyhow!("{} was launched with no launcher: a node joins through the admin that deployed it and is refused without one", launch.node_id))?;
     let identity_exists = launch.data_dir.join("node-key").exists();
     let step = if identity_exists {
-        tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-identity-loaded", node_path = %launch.name.path, node_name = %launch.name.name)
+        tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-identity-loaded", node_path = %launch.path, node_name = %launch.name)
     } else {
-        tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-identity-minted", node_path = %launch.name.path, node_name = %launch.name.name)
+        tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-identity-minted", node_path = %launch.path, node_name = %launch.name)
     };
     let key = load_or_mint_key(&launch.data_dir)?;
     drop(step);
@@ -473,7 +473,7 @@ async fn start_booted(
     // This birth's exact runtime, as its provider recorded it: published with
     // the birth so any admin can manage it, whoever launched it.
     let dir = launch.data_dir.clone();
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-runtime-record", node_path = %launch.name.path, node_name = %launch.name.name);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-runtime-record", node_path = %launch.path, node_name = %launch.name);
     let runtime = crate::node_self::wait_for_own_record(&dir, Duration::from_secs(10)).await.map_err(|e| anyhow!("{e}"))?;
     drop(step);
     // The identity this process records its intentional exit under (a transport that stopped).
@@ -483,7 +483,7 @@ async fn start_booted(
         incarnation: launch.incarnation.to_string(),
     });
     // One endpoint, one socket for the process: Node RPC, gossip and every registered app Alpn share it by ALPN.
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-endpoint-bound", node_path = %launch.name.path, node_name = %launch.name.name, requested = %launch.bind_addr, bound = tracing::field::Empty, listeners = tracing::field::Empty);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-endpoint-bound", node_path = %launch.path, node_name = %launch.name, requested = %launch.bind_addr, bound = tracing::field::Empty, listeners = tracing::field::Empty);
     let alpn_names: Vec<Vec<u8>> = alpns.iter().map(|a| a.name.clone()).collect();
     let ep0 = rdm_transport::endpoint::bind_with_alpns(key.clone(), launch.bind_addr, &alpn_names)
         .await
@@ -505,7 +505,7 @@ async fn start_booted(
     // client observes of its pooled connections (connections.md sections 4.2, 9 and 10), each fact
     // appended to its connections storage (the file backend's lines of the fabric's store root, R14).
     // The storage fault the originate door arms (testkit only): the backend's storage, decorated.
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-connections-opened", node_path = %launch.name.path, node_name = %launch.name.name, writes_to = tracing::field::Empty);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-connections-opened", node_path = %launch.path, node_name = %launch.name, writes_to = tracing::field::Empty);
     // The topology storage provider this birth writes, the one its launch names (storage.md §2): one its
     // executable registers, else the start is refused by name. The node reaches it through its one
     // handle, never a store held from here, so a provider change moves every caller ("Each node moves
@@ -517,7 +517,7 @@ async fn start_booted(
     let node_rows = topology_storage.node_rows();
     let property_writer = crate::node_records::NodePropertyWriter::new(topology_storage.nodes(), { let handle = topology_storage.clone(); move || handle.provider() });
     let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
-        rdm_core::connections::ConnectionEnd { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
+        rdm_core::connections::ConnectionEnd { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), path: launch.path.clone(), name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
         decorate_storage(base_storage),
         Arc::new(std::sync::Mutex::new(rdm_core::connections::ConnectionsHeld::new())),
     ));
@@ -543,7 +543,7 @@ async fn start_booted(
     // and its clients and its server share the windows and the open invocations.
     let delivery = rdm_transport::Delivery::new(rdm_core::framing::Birth { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() });
     // The name this birth holds, read per call by every door that names it: its launch's until it joins.
-    let held_name = crate::held_name::HeldName::of_birth(launch.name.clone());
+    let held_name = crate::held_name::HeldName::of_birth(launch.location());
     // Each call of this node whose attempts are spent is told to its `on_call_failed`, when the app
     // registered one (fabric-node-hooks.md "on_call_failed"), from either of its clients.
     let call_failed = node_hooks.call_failed_observer(launch.node_id.clone(), launch.incarnation.clone(), held_name.clone());
@@ -558,7 +558,7 @@ async fn start_booted(
     // The data plane of RDM standalone: the originate door's own client, whose dials are the
     // connections this node originates for traffic, each a Direct entry of its log.
     let data_plane = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()).with_delivery(delivery.clone()).with_call_ends(call_ends.clone())));
-    let _ = call_ends.set(Arc::new(crate::spent_calls::ReportToPrimary::new(resolver.clone(), &client, launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone())));
+    let _ = call_ends.set(Arc::new(crate::spent_calls::ReportToPrimary::new(resolver.clone(), &client, launch.node_id.clone(), launch.incarnation.clone(), launch.location())));
     // The node's one connections reconciler (connections.md §9.4, §10): an owed Proxy delete
     // whose write was refused is attempted again while owed, and a recovery attempt an accept armed
     // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own
@@ -590,7 +590,7 @@ async fn start_booted(
     // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
     // included, is a typed NotReady before then.
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-built", node_path = %launch.name.path, node_name = %launch.name.name);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-built", node_path = %launch.path, node_name = %launch.name);
     // Every connection this node accepts from a live peer is a recovery trigger for its own dial
     // toward that birth, never a Direct entry (R-CN1).
     let server = serve_read(serve_node_command(serve_kick(register(crate::member_handover::serve_member(crate::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone()), subject.clone()), subject.clone())
@@ -600,10 +600,10 @@ async fn start_booted(
         .build(rdm_transport::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
         .map_err(|e| anyhow!("protocol catalog refused to build: {e:?}"))?;
     drop(step);
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-gossip-started", node_path = %launch.name.path, node_name = %launch.name.name);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-gossip-started", node_path = %launch.path, node_name = %launch.name);
     let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());
     drop(step);
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.add.via-alpn-registered", node_path = %launch.name.path, node_name = %launch.name.name, alpns = "node-rpc,gossip");
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.add.via-alpn-registered", node_path = %launch.path, node_name = %launch.name, alpns = "node-rpc,gossip");
     let mut router_builder = Router::builder(ep0.clone())
         .accept(rdm_transport::ALPN, server.clone())
         .accept(iroh_gossip::ALPN, g.clone());
@@ -612,7 +612,7 @@ async fn start_booted(
     }
     let routers = vec![router_builder.spawn()];
     drop(step);
-    tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-accept-loop-started", node_path = %launch.name.path, node_name = %launch.name.name).in_scope(|| tracing::info!("the router accepts node-rpc and gossip connections"));
+    tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-accept-loop-started", node_path = %launch.path, node_name = %launch.name).in_scope(|| tracing::info!("the router accepts node-rpc and gossip connections"));
     let seeds: Vec<EndpointAddr> = launch
         .seeds
         .iter()
@@ -624,7 +624,7 @@ async fn start_booted(
         fabric_id: launch.fabric_id.clone(),
         node: MeshNode { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
             node_id: launch.node_id.clone(),
-            name: launch.name.clone(),
+            path: launch.path.clone(), name: launch.name.clone(),
             endpoint_id: rdm_core::EndpointId(key.public().to_string()),
             incarnation: launch.incarnation.clone(),
             supersedes: launch.supersedes.clone(),
@@ -655,18 +655,18 @@ async fn start_booted(
             let seed = seed.ok_or_else(|| StartFailed { step: "node.join", reason: format!("{} names launcher {} but no seed to reach it at", launch_name, launcher.node_id) })?;
             let launcher_ref = rdm_transport::ResolvedNode { mesh: launcher.mesh.clone(), r#type: "node-admin".into(),
                 node_id: launcher.node_id.clone(),
-                name: launcher.name.clone(),
+                path: launcher.path.clone(), name: launcher.name.clone(),
                 endpoint_id: seed.id,
                 transport_addr: seed.ip_addrs().next().copied().ok_or_else(|| StartFailed { step: "node.join", reason: "the launching admin's seed names no address".into() })?,
                 incarnation: launcher.incarnation.clone(),
             };
             resolver.apply(launcher_ref, None);
-            Ok(crate::workflows::node_start::JoinTo::Launcher { target: rdm_transport::NodeTarget::ExactNode(launcher.node_id.clone()), endpoint: seed.id, name: launcher.name.clone() })
+            Ok(crate::workflows::node_start::JoinTo::Launcher { target: rdm_transport::NodeTarget::ExactNode(launcher.node_id.clone()), endpoint: seed.id, path: launcher.path.clone(), name: launcher.name.clone()})
         })
     };
     // What the start brought up, once it did: handed to the caller, or ended if the hook fails.
     let out: Arc<Mutex<Option<RunningNode>>> = Arc::default();
-    let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.clone(), path: launch.name.clone(), node_id: launch.node_id.clone(), client: client.clone(), rafka_time: rafka_time.clone() };
+    let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.clone(), birth_path: launch.path.clone(), birth_name: launch.name.clone(), node_id: launch.node_id.clone(), client: client.clone(), rafka_time: rafka_time.clone() };
     let joining = crate::workflows::node_start::Joining::AcceptingPrimary { label: launcher.node_id.to_string() };
     let join_digest = digest.clone();
     let join_types = app_types.clone();
@@ -688,11 +688,11 @@ async fn start_booted(
             // source from here on, and every door names the node by it, whatever name the join hands it
             // or an `ApplyNodeName` gives it.
             {
-                let (held, birth) = (topology_view.clone(), launch.name.clone());
+                let (held, birth) = (topology_view.clone(), launch.location());
                 connections.follow_held_name(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
-                let (held, birth) = (topology_view.clone(), launch.name.clone());
+                let (held, birth) = (topology_view.clone(), launch.location());
                 held_name.follow(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
-                let (held, birth) = (topology_view.clone(), launch.name.clone());
+                let (held, birth) = (topology_view.clone(), launch.location());
                 property_writer.named_by(move || Some(held.held_name(&birth)));
             }
             // The row's name and config the join answer handed are held before this node publishes
@@ -756,7 +756,7 @@ async fn start_booted(
                                     })
                                 };
                                 Arc::new(
-                                    crate::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), launch.r#type.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), topology_view.clone(), set_status, current, Some(declare), launch.connections_delete_deadline)
+                                    crate::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.location(), launch.r#type.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), topology_view.clone(), set_status, current, Some(declare), launch.connections_delete_deadline)
                                         .with_cancel(cancel.clone())
                                         .with_owed(owed_state.clone()),
                                 )
@@ -782,7 +782,7 @@ async fn start_booted(
                             let pre_node_ready_task_cell: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
                             own.set_session(Arc::new(NodeSession {
                                 r#type: launch.r#type.clone(),
-                                name: launch.name.clone(),
+                                path: launch.path.clone(), name: launch.name.clone(),
                                 node_id: launch.node_id.clone(),
                                 incarnation: launch.incarnation.clone(),
                                 fabric_id: launch.fabric_id.clone(),
@@ -804,7 +804,7 @@ async fn start_booted(
                                 pre_node_ready_task: pre_node_ready_task_cell.clone(),
                                 listeners: listener_addrs.clone(),
                             }));
-                            let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), &launch.r#type, launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
+                            let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.location(), &launch.r#type, launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
                             // The retained config and tags of this node ID are its own row as the hydration sync
                             // handed it (Q234), when that row carries the node's own part; else the launch
                             // snapshot. The start reads nothing from the store (Q227).
@@ -888,7 +888,7 @@ async fn start_booted(
                             };
                             let parts = crate::workflows::node_start::HookParts {
                                 birth: crate::node_hooks::Birth {
-                                    name: launch.name.clone(),
+                                    path: launch.path.clone(), name: launch.name.clone(),
                                     node_id: launch.node_id.clone(),
                                     incarnation: launch.incarnation.clone(),
                                     fabric_id: launch.fabric_id.clone(),
@@ -903,7 +903,7 @@ async fn start_booted(
                                 after: Box::new(RpcAfterHook {
                                     fabric_id: launch.fabric_id.clone(),
                                     node_id: launch.node_id.clone(),
-                                    name: launch.name.clone(),
+                                    path: launch.path.clone(), name: launch.name.clone(),
                                     becoming,
                                     // A step that fails ends the node by name from its start, as an unaccepted join does.
                                     ends: Some(out.clone()),
@@ -960,7 +960,9 @@ fn spawn_publisher(topology_view: &TopologyView, digest: &MeshDigest, status: &A
 /// (`node_self::Session`): the parts it was born with, kept for the rejoin.
 struct NodeSession {
     r#type: String,
-    name: rdm_core::PathName,
+    path: String,
+    /// The name, beside its path.
+    name: String,
     node_id: NodeId,
     incarnation: IncarnationId,
     fabric_id: rdm_core::FabricId,
@@ -986,6 +988,11 @@ struct NodeSession {
     /// The listeners this birth bound from its launch, each with its selected port: every join of
     /// the birth reports them (Q151).
     listeners: Vec<(String, std::net::SocketAddr)>,
+}
+
+impl NodeSession {
+    /// The `(path, name)` lookup index key of path and name.
+    fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 #[async_trait::async_trait]
@@ -1107,7 +1114,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
 
     fn starting(&self) -> crate::workflows::node_start::Starting {
         let s = self.session;
-        crate::workflows::node_start::Starting { root: self.root.clone(), name: self.name.clone(), path: s.name.clone(), node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
+        crate::workflows::node_start::Starting { root: self.root.clone(), name: self.name.clone(), birth_path: s.path.clone(), birth_name: s.name.clone(), node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
     }
 
     fn joining(&self) -> crate::workflows::node_start::Joining {
@@ -1130,7 +1137,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
     ) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
         let s = self.session;
         // From here on it is named by the name it installed from its join answer (`enter_channel`).
-        let me = s.topology_view.held_name(&s.name);
+        let me = s.topology_view.held_name(&s.location());
         // Back on its channel, this node reports NodeJoined: the start finishes on its direct calls and
         // the node is back in gossip whenever gossip gets there. Its mesh-primary recorded its Pending at
         // the accepted join report (node-mesh-join.md steps 9 and 10, Q97).
@@ -1157,7 +1164,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             operation: Some(self.operation.clone()),
         };
         Ok(crate::workflows::node_start::HookParts {
-            birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), r#type: s.r#type.clone() },
+            birth: crate::node_hooks::Birth { path: me.path.clone(), name: me.name.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), r#type: s.r#type.clone() },
             node_hooks: s.node_hooks.clone(),
             events: crate::node_hooks::Events::new(topology_view.digest_view.clone(), s.addressed.clone()),
             cancel: self.birth_cancel.take().expect("the hook's token is handed once"),
@@ -1166,7 +1173,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             after: Box::new(RpcAfterHook {
                 fabric_id: s.fabric_id.clone(),
                 node_id: s.node_id.clone(),
-                name: me.clone(),
+                path: me.path.clone(), name: me.name.clone(),
                 becoming,
                 ends: None,
                 knob: None,
@@ -1183,7 +1190,9 @@ struct RpcAfterHook {
     /// The birth's node id: the topology's members it reaches are every other node of its mesh.
     node_id: NodeId,
     /// The name the birth holds: its join answer's at a start after a stop (R-JN1).
-    name: rdm_core::PathName,
+    path: String,
+    /// The name, beside its path.
+    name: String,
     becoming: Becoming,
     /// What a step that fails inside the start ends: a first start's node (a start after a stop ends
     /// nothing; its process stays stopped's).
@@ -1991,7 +2000,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     // mesh (node-name-update.md Precondition). It is held first, so every later publish
                     // carries it; off its mesh it publishes nothing (node-mesh-leave.md), and its stop
                     // or its next join carries the name.
-                    let held = me.topology_view.reported(&me.digest).node.name;
+                    let held = me.topology_view.reported(&me.digest).node.location();
                     let asked = match rdm_core::PathName::new(name.path.clone(), name.name.clone()) {
                         Ok(n) => n,
                         Err(e) => {
@@ -2099,7 +2108,7 @@ mod primary_tests {
             let digest = MeshDigest {
                 held_hash: [0u8; 32],
                 fabric_id: fabric_id.clone(),
-                node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), name, endpoint_id: rdm_core::EndpointId(endpoint.secret_key().public().to_string()), transport_addr: "127.0.0.1:41002".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
+                node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: rdm_core::EndpointId(endpoint.secret_key().public().to_string()), transport_addr: "127.0.0.1:41002".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
                 status: MemberStatus::Pending,
                 node_state: Default::default(),
                 admin_api_base: None,

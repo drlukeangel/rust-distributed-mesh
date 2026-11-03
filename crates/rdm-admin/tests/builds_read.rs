@@ -69,7 +69,7 @@ async fn fabric_primary(log: Arc<dyn BuildStateAdapter>) -> (iroh::Endpoint, Res
         .expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    (ep.clone(), ResolvedNode { r#type: "node-admin".into(), mesh: "mesh1".into(), node_id, name: me, endpoint_id: ep.id(), transport_addr: addr, incarnation }, router)
+    (ep.clone(), ResolvedNode { r#type: "node-admin".into(), mesh: "mesh1".into(), node_id, path: me.path.clone(), name: me.name.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation }, router)
 }
 
 async fn caller(fp: &ResolvedNode) -> (Arc<NodeRpcClient>, iroh::Endpoint) {
@@ -109,7 +109,7 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
 
         let (ep, fp, _router) = fabric_primary(log.clone()).await;
         let (client, caller_ep) = caller(&fp).await;
-        let carrier = BuildCarrier::new(client.clone(), fp.name.clone());
+        let carrier = BuildCarrier::new(client.clone(), fp.location());
         let read = |f: Filter| {
             let carrier = carrier.clone();
             async move { tokio::time::timeout(Duration::from_secs(30), carrier.builds(&f)).await.unwrap_or_else(|_| panic!("build.get {f:?} answered nothing in 30 s")) }
@@ -150,7 +150,7 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
             other => panic!("an unknown property is refused by name, not {other:?}"),
         }
         let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(10)), ..Default::default() };
-        let refused = client.call_stream::<Build>(&NodeTarget::CurrentPath(fp.name.clone()), &BuildRequest::GetBuilds { filter: Filter::new().eq("zone", ["eu"]) }, &opts).await;
+        let refused = client.call_stream::<Build>(&NodeTarget::CurrentPath(fp.location()), &BuildRequest::GetBuilds { filter: Filter::new().eq("zone", ["eu"]) }, &opts).await;
         let first = match refused {
             Err((rdm_core::outcome::RpcOutcome::Reply(r), _)) => r.into_value(),
             Err((other, _)) => panic!("the refusal reached the caller: {other:?}"),
@@ -166,7 +166,7 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
         assert_eq!(<Build as rdm_core::protocol::NodeProtocol>::classify_reply(&BuildReply::RejectedFilter { reason: String::new() }).code(), rdm_core::outcome::Code::InvalidArgument);
 
         // On the wire: Started names the current Build, then data frames, then End alone closes it.
-        let (stream, _) = client.call_stream::<Build>(&NodeTarget::CurrentPath(fp.name.clone()), &BuildRequest::GetBuilds { filter: Filter::new() }, &opts).await.unwrap_or_else(|(o, _)| panic!("the read streamed: {o:?}"));
+        let (stream, _) = client.call_stream::<Build>(&NodeTarget::CurrentPath(fp.location()), &BuildRequest::GetBuilds { filter: Filter::new() }, &opts).await.unwrap_or_else(|(o, _)| panic!("the read streamed: {o:?}"));
         let mut stream = stream.read_only();
         let mut frames = Vec::new();
         while let Some(item) = stream.next().await {

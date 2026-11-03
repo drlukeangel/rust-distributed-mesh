@@ -38,7 +38,7 @@ async fn a_closed_ready_gate_refuses_ping_typed_and_an_open_gate_serves_it() {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let _router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolver = Arc::new(LiveNodeResolver::default());
-    resolver.apply(ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation }, None);
+    resolver.apply(ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "1".into(), endpoint_id: key.public(), transport_addr: addr, incarnation }, None);
     let client = NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver);
     let target = NodeTarget::ExactNode(node_id);
     let ping = || async { client.call::<Ping>(&target, &PingRequest::Ping { payload: b"p".to_vec() }, &CallOptions::default()).await.0 };

@@ -41,7 +41,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -58,7 +58,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
             declared: Default::default(),
         };
         let store = Arc::new(FileTestkitStore::open(&launch.data_dir).unwrap());
-        let server = testkit_store::serve(ServerBuilder::new(), store, &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))
+        let server = testkit_store::serve(ServerBuilder::new(), store, &launch, &rdm_test::held_name::HeldName::of_birth(launch.location()))
             .carry::<rdm_test::testkit_store::TestkitStore>()
             .build(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .unwrap();

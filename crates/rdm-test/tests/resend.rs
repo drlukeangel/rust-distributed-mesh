@@ -85,7 +85,7 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     // An rpc member holding no role: a node-type primary runs node.primary.update before its own stop
     // or delete (lifecycles/node-connections-delete.md step 0), which is not the member workflow here.
     let node = views.iter().filter(|n| n.r#type == "node" && !n.is_primary && !n.is_fabric_primary).min_by_key(|n| n.name.clone()).cloned().expect("an rpc member of mesh1 that holds no role");
-    let path: PathName = node.name.clone();
+    let path: PathName = node.location();
     let node_id = node.node_id.to_string();
     let incarnation = node.incarnation_id.clone().expect("the member's birth");
     let primary_id = primary.node_id.to_string();

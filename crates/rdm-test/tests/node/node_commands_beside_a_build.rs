@@ -128,13 +128,13 @@ async fn a_member_lost_while_a_build_is_held_is_recovered_before_the_build_ends(
     let held_before = carrier.build(held.build_id()).await.expect("build.get [id]");
 
     let node = PathName::new("mesh1.node", "1").unwrap();
-    let lost = estate.node_views().await.into_iter().find(|n| n.name == node).expect("node.get lists the member");
+    let lost = estate.node_views().await.into_iter().find(|n| n.location() == node).expect("node.get lists the member");
     estate.kill_node(&node).await;
     let due = crate::node_recovery_due();
     let deadline = tokio::time::Instant::now() + due;
     loop {
         let views = estate.node_views().await;
-        if views.iter().any(|n| n.name == node && n.node_id != lost.node_id && n.status == rdm_client::NodeStatus::Ready) {
+        if views.iter().any(|n| n.location() == node && n.node_id != lost.node_id && n.status == rdm_client::NodeStatus::Ready) {
             break;
         }
         assert!(tokio::time::Instant::now() < deadline, "the lost member was not re-created ready within {due:?} while the Build was held: {views:?}");

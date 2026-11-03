@@ -38,7 +38,7 @@ fn reserved(kind: Kind) {
         let (mesh_sender, _mesh_rx) = mesh_channel.split();
         let (backbone_sender, _backbone_rx) = backbone_channel.split();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
+        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: node_id.clone(), path: "mesh1.node-admin".into(), name: "2".into(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         receiver.digest_view.record(digest);
         assert!(receiver.digest_view.started(&node_id, &incarnation, &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1"));
         let primary = Primary { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
@@ -52,7 +52,7 @@ fn reserved(kind: Kind) {
         let births = receiver.digest_view.birth_changes();
         let overlays = receiver.digest_view.overlay_changes();
         let before = (*roles.borrow(), *births.borrow(), *overlays.borrow());
-        let op = LifecycleOp { r#type: "node-admin".into(), mesh: "mesh1".into(), build_id: "reserved-receive".into(), attempt: 1, operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()), node_id: node_id.clone(), incarnation: incarnation.clone(), name: rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let op = LifecycleOp { r#type: "node-admin".into(), mesh: "mesh1".into(), build_id: "reserved-receive".into(), attempt: 1, operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()), node_id: node_id.clone(), incarnation: incarnation.clone(), path: "mesh1.node-admin".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let unknown = iroh::SecretKey::generate().public();
         let frame = match kind {
             Kind::ConnectionsDeleting => Frame::NodeConnectionsDeleting { op, forwarded_by: None },

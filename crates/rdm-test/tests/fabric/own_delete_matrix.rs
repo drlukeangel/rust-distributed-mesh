@@ -75,7 +75,7 @@ async fn ready(test: &str, shape: &[(&str, u32, u32)]) -> (Estate, Vec<NodeView>
     let views = estate.settles_to(shape, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let fp: Vec<&NodeView> = views.iter().filter(|n| n.is_fabric_primary).collect();
-    assert!(fp.len() == 1 && fp[0].name == path("mesh1.node-admin", "1"), "mesh1.node-admin.1 is the fabric-primary: {fp:?}");
+    assert!(fp.len() == 1 && fp[0].location() == path("mesh1.node-admin", "1"), "mesh1.node-admin.1 is the fabric-primary: {fp:?}");
     (estate, views)
 }
 
@@ -252,7 +252,7 @@ async fn after_fabric_deleted_the_fabric_primarys_own_stop_and_connections_delet
 async fn an_ordinary_admins_delete_and_the_fabric_primarys_delete_with_a_successor_are_executed_by_another_admin_inside_the_bound() {
     let test = "an_ordinary_admins_delete_and_the_fabric_primarys_delete_with_a_successor_are_executed_by_another_admin_inside_the_bound";
     let (mut estate, views) = ready(test, &[("mesh1", 3, 1)]).await;
-    let mut admins: Vec<PathName> = views.iter().filter(|n| n.r#type == "node-admin" && !n.is_primary && !n.is_fabric_primary).map(|n| n.name.clone()).collect();
+    let mut admins: Vec<PathName> = views.iter().filter(|n| n.r#type == "node-admin" && !n.is_primary && !n.is_fabric_primary).map(|n| n.location()).collect();
     admins.sort();
     assert_eq!(admins.len(), 2, "two admins are no primary: {views:?}");
     let (ordinary, successor) = (admins[1].clone(), admins[0].clone());
@@ -294,9 +294,9 @@ async fn in_a_two_mesh_fabric_a_primarys_delete_with_no_successor_is_refused_by_
     let (mut estate, views) = ready(test, &[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     let nodes = estate.nodes_obj().await;
     let fp_refused = refused_by_name("node.delete of the fabric-primary, mesh1's only admin", "would-leave-mesh-without-admin", nodes.delete(&path("mesh1.node-admin", "1")).await);
-    let primary = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.name.clone()).expect("mesh2's primary");
-    let ordinary = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && !n.is_primary).map(|n| n.name.clone()).expect("mesh2's other admin");
-    let ordinary_id = views.iter().find(|n| n.name == ordinary).unwrap().node_id.clone();
+    let primary = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).expect("mesh2's primary");
+    let ordinary = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && !n.is_primary).map(|n| n.location()).expect("mesh2's other admin");
+    let ordinary_id = views.iter().find(|n| n.location() == ordinary).unwrap().node_id.clone();
     let pid = pid_of(&estate, &ordinary).await;
     let (_, replies) = deleted_inside_the_bound(&mut estate, &ordinary, &ordinary_id, pid).await;
     // node.deleted is mesh2's primary's; the fabric-primary's view drops the node once mesh2's
@@ -305,7 +305,7 @@ async fn in_a_two_mesh_fabric_a_primarys_delete_with_no_successor_is_refused_by_
     let mp_refused = refused_by_name("node.delete of mesh2's primary, its mesh's only admin", "would-leave-mesh-without-admin", estate.nodes_obj().await.delete(&primary).await);
     assert!(mp_refused.contains("mesh2"), "the refusal names mesh2: {mp_refused}");
     for now in estate.mesh_node_views("mesh2").await.iter().filter(|n| n.r#type == "node-admin") {
-        assert!(now.name == primary && now.is_primary && now.status == NodeStatus::Ready, "mesh2's primary stays mesh2's primary and runs: {now:?}");
+        assert!(now.location() == primary && now.is_primary && now.status == NodeStatus::Ready, "mesh2's primary stays mesh2's primary and runs: {now:?}");
     }
     estate.stop().await;
     estate.artifact("deletes.json", &json!({"fabric_primary_refused": fp_refused, "ordinary": replies, "mesh_primary_refused": mp_refused}));
@@ -338,13 +338,13 @@ async fn followed(estate: &mut Estate, what: &str, call: Result<rdm_client::Work
 /// admins), then node.stop then node.start of the fabric-primary it handed over to.
 async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, u32, u32)]) {
     let (mut estate, views) = ready(test, shape).await;
-    let successor = views.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node-admin" && !n.is_primary).map(|n| n.name.clone()).expect("mesh1's second admin");
-    let before = views.iter().find(|n| n.name == path("mesh1.node-admin", "1")).cloned().unwrap();
+    let successor = views.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node-admin" && !n.is_primary).map(|n| n.location()).expect("mesh1's second admin");
+    let before = views.iter().find(|n| n.location() == path("mesh1.node-admin", "1")).cloned().unwrap();
     let pid = pid_of(&estate, &path("mesh1.node-admin", "1")).await;
     estate.enter(&successor).await;
 
     let begun = tokio::time::Instant::now();
-    let stop = estate.nodes_obj().await.stop(&before.name).await;
+    let stop = estate.nodes_obj().await.stop(&before.location()).await;
     let stopped = followed(&mut estate, "node.stop of the fabric-primary", stop).await;
     let stop_took = begun.elapsed();
     assert!(stopped.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Stopped))) || matches!(stopped.last(), Some(Frame::FabricPrimaryMoved { .. })), "the stop answered stopped, or handed over first: {stopped:?}");
@@ -356,7 +356,7 @@ async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, 
     assert!(stopped_view.stopped && stopped_view.incarnation_id == before.incarnation_id, "the stopped fabric-primary is the same birth, stopped with its process live: {stopped_view:?}");
     assert!(running(pid), "a stop keeps the process: {pid} runs");
 
-    let started = Estate::workflow("node.start of the former fabric-primary", estate.nodes_obj().await.start(&before.name).await).await;
+    let started = Estate::workflow("node.start of the former fabric-primary", estate.nodes_obj().await.start(&before.location()).await).await;
     let back = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.node_id == before.node_id).expect("node.get lists the started admin");
     assert!(!back.stopped && back.node_id == before.node_id && back.incarnation_id == before.incarnation_id && back.status == NodeStatus::Ready, "the same birth runs again: {back:?}");
     assert!(running(pid), "the start rejoined the same process {pid}");
@@ -364,14 +364,14 @@ async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, 
     // node.stop then node.start of the fabric-primary it handed over to: it hands over first, and it is the
     // same node after.
     let primary = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.node_id == fp).expect("node.get lists the fabric-primary");
-    let other = if fp == before.node_id { successor.clone() } else { before.name.clone() };
+    let other = if fp == before.node_id { successor.clone() } else { before.location() };
     estate.enter(&other).await;
-    let stop = estate.nodes_obj().await.stop(&primary.name).await;
+    let stop = estate.nodes_obj().await.stop(&primary.location()).await;
     let restarted = followed(&mut estate, "node.stop of the fabric-primary", stop).await;
     let fabric = estate.fabric_view_at(&other).await.expect("the other admin answers fabric.get");
     let now = fabric.fabric_primary.clone().unwrap_or_else(|| panic!("a fabric-primary after the stop: {fabric:?}"));
     estate.enter_by_id(&now).await;
-    Estate::workflow("node.start of the second fabric-primary", estate.nodes_obj().await.start(&primary.name).await).await;
+    Estate::workflow("node.start of the second fabric-primary", estate.nodes_obj().await.start(&primary.location()).await).await;
     let after = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.node_id == fp).expect("node.get lists the started admin");
     assert!(after.node_id == primary.node_id && after.incarnation_id == primary.incarnation_id && after.status == NodeStatus::Ready, "the stopped and started fabric-primary is the same node, running: {after:?}");
     estate.stop().await;

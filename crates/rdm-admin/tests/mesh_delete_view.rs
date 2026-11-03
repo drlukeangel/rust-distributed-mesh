@@ -30,7 +30,7 @@ fn digest(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, r#type: &str,
         fabric_id: fabric.clone(),
         node: MeshNode { mesh: mesh.into(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
-            name,
+            path: name.path.clone(), name: name.name.clone(),
             endpoint_id: EndpointId(format!("key-{node_id}-{}", "x".repeat(40))),
             transport_addr: "127.0.0.1:20001".parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -91,7 +91,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         assert!(topology_view.digest_view.record(own.clone()) && topology_view.digest_view.record(last.clone()), "the view holds both admins");
         let digest_view = topology_view.digest_view.clone();
         let records = Records::default();
-        let me = own.node.name.clone();
+        let me = own.node.location();
         let rebuild = |reads: &ViewReads| project_with("fabric1", &fabric, ProviderKind::Process, &digest_view, &records, reads);
         let status_of = |t: &rdm_admin::topology::Topology| t.meshes.iter().find(|m| m.name == "mesh1").map(|m| m.status);
 
@@ -100,7 +100,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         records.install_read(&me, &view, &digest_view, &fabric, rebuild).await;
         let live_before = status_of(&*view.read().await);
         records.set_backbone(backbone.clone(), &*view.read().await);
-        let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me: me.clone(), mesh_deleter: Arc::new(std::sync::OnceLock::new()), project: None, status_door: Default::default() };
+        let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me_path: me.path.clone(), me_name: me.name.clone(), mesh_deleter: Arc::new(std::sync::OnceLock::new()), project: None, status_door: Default::default() };
 
         let root = tracing::info_span!("cell.mesh-delete-view", cell);
         let trace_id = trace_id(&root);
@@ -110,7 +110,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
             records.install_read(&me, &view, &digest_view, &fabric, rebuild).await;
             let after_receipt = status_of(&*view.read().await);
             // At once: the node.delete's stop of the last admin, from its matching stopped reply.
-            let stop = LifecycleOp { r#type: last.node.r#type.clone(), mesh: last.node.mesh.clone(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &last.node.node_id), node_id: last.node.node_id.clone(), incarnation: last.node.incarnation.clone(), name: last.node.name.clone(), event_at_rafka_ms: 1_000_100, traceparent: None, tracestate: None };
+            let stop = LifecycleOp { r#type: last.node.r#type.clone(), mesh: last.node.mesh.clone(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &last.node.node_id), node_id: last.node.node_id.clone(), incarnation: last.node.incarnation.clone(), path: last.node.path.clone(), name: last.node.name.clone(), event_at_rafka_ms: 1_000_100, traceparent: None, tracestate: None };
             lifecycle.stopped(&stop).await;
             after_receipt
         }

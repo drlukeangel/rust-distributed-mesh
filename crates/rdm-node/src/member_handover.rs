@@ -172,7 +172,9 @@ pub async fn call_successor(client: &NodeRpcClient, successor: &NodeId, entries:
 /// election of its own, Q129) and answers with its node.primary.updated. It writes no row: its
 /// mesh-primary records the change from the successor's digest (step 5).
 pub struct MemberDoor {
-    me: PathName,
+    me_path: String,
+    /// This node's name, beside its path.
+    me_name: String,
     r#type: String,
     node_id: NodeId,
     incarnation: IncarnationId,
@@ -187,14 +189,19 @@ pub struct MemberDoor {
 }
 
 impl MemberDoor {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
+}
+
+impl MemberDoor {
     /// The door of the birth `node_id`/`incarnation` at `me`, on its mesh channel `topology_view`, calling
     /// through `client`.
     pub fn new(me: PathName, r#type: &str, node_id: NodeId, incarnation: IncarnationId, topology_view: TopologyView, client: Arc<NodeRpcClient>) -> Self {
-        Self { me, r#type: r#type.to_string(), node_id, incarnation, topology_view, client, answered: Answered::default(), commanded: Answered::default(), serving: Default::default() }
+        Self { me_path: me.path.clone(), me_name: me.name.clone(), r#type: r#type.to_string(), node_id, incarnation, topology_view, client, answered: Answered::default(), commanded: Answered::default(), serving: Default::default() }
     }
 
     fn held_name(&self) -> PathName {
-        self.topology_view.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.topology_view.digest_view.held_path_name().unwrap_or_else(|| self.me())
     }
 
     fn me_birth(&self) -> Birth {

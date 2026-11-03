@@ -173,7 +173,7 @@ enum WireChange {
     ReconcileFabric { desired: WireFabricDesired },
     ReconcileMesh { desired: WireMeshDesired },
     AddNode { mesh: String, r#type: String },
-    RemoveNode { node: PathName },
+    RemoveNode { path: String, name: String },
     CreateMesh { desired: WireMeshDesired },
     RemoveMesh { mesh: String },
     DeleteFabric,
@@ -229,12 +229,12 @@ impl From<&TopologyChange> for WireChange {
             TopologyChange::ReconcileFabric { desired } => Self::ReconcileFabric { desired: desired.into() },
             TopologyChange::ReconcileMesh { desired } => Self::ReconcileMesh { desired: desired.into() },
             TopologyChange::AddNode { mesh, r#type } => Self::AddNode { mesh: mesh.clone(), r#type: r#type.clone() },
-            TopologyChange::RemoveNode { node } => Self::RemoveNode { node: node.clone() },
+            TopologyChange::RemoveNode { path, name } => Self::RemoveNode { path: path.clone(), name: name.clone() },
             TopologyChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             TopologyChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh: mesh.clone() },
             TopologyChange::DeleteFabric => Self::DeleteFabric,
             TopologyChange::Reserved {} => Self::Reserved7,
-            TopologyChange::Reconcile { based_on, nodes, .. } => Self::Reconcile { based_on: based_on.clone(), nodes: nodes.iter().map(|s| (s.path.clone(), s.into())).collect() },
+            TopologyChange::Reconcile { based_on, nodes, .. } => Self::Reconcile { based_on: based_on.clone(), nodes: nodes.iter().map(|s| (s.location(), s.into())).collect() },
         }
     }
 }
@@ -244,7 +244,7 @@ impl From<WireChange> for TopologyChange {
             WireChange::ReconcileFabric { desired } => Self::ReconcileFabric { desired: desired.into() },
             WireChange::ReconcileMesh { desired } => Self::ReconcileMesh { desired: desired.into() },
             WireChange::AddNode { mesh, r#type } => Self::AddNode { mesh, r#type },
-            WireChange::RemoveNode { node } => Self::RemoveNode { node },
+            WireChange::RemoveNode { path, name } => Self::RemoveNode { path, name },
             WireChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             WireChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh },
             WireChange::DeleteFabric => Self::DeleteFabric,
@@ -302,7 +302,7 @@ impl WireSpec {
             WireStorage::Ephemeral => StoragePersistence::Ephemeral,
             WireStorage::Persistent { disposition } => StoragePersistence::Persistent { disposition },
         };
-        NodeSpec { path, mesh: self.mesh, r#type: self.r#type.clone(), storage_persistence, executable: None, tags: Default::default(), config: Default::default() }
+        NodeSpec { path: path.path.clone(), name: path.name.clone(), mesh: self.mesh, r#type: self.r#type.clone(), storage_persistence, executable: None, tags: Default::default(), config: Default::default() }
     }
 }
 impl From<&MeshTopology> for WireMesh {
@@ -922,7 +922,7 @@ mod tests {
             operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
             node_id: crate::model::NodeId::mint(),
             incarnation: crate::model::IncarnationId::mint(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             event_at_rafka_ms: 4_242,
             traceparent: None,
             tracestate: None,

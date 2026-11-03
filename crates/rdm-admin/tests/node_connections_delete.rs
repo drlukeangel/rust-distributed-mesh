@@ -157,7 +157,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         subject_resolver.apply(
             ResolvedNode { r#type: "node".into(), mesh: "mesh1".to_owned(),
                 node_id: peer_id.clone(),
-                name: peer_name.clone(),
+                path: peer_name.path.clone(), name: peer_name.name.clone(),
                 endpoint_id: peer_key.public(),
                 transport_addr: peer_addr,
                 incarnation: peer_inc.clone(),
@@ -167,7 +167,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         subject_resolver.apply(
             ResolvedNode { r#type: "node-admin".into(), mesh: "mesh1".to_owned(),
                 node_id: admin_id.clone(),
-                name: admin_name.clone(),
+                path: admin_name.path.clone(), name: admin_name.name.clone(),
                 endpoint_id: admin_key.public(),
                 transport_addr: admin_addr,
                 incarnation: admin_inc.clone(),
@@ -179,7 +179,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let subject_held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let subject_writer = Arc::new(ConnectionsWriter::new(
             ConnectionEnd { r#type: "node".into(), mesh: "mesh1".to_owned(),
-                name: subject_name.clone(),
+                path: subject_name.path.clone(), name: subject_name.name.clone(),
                 node_id: subject_id.clone(),
                 incarnation: Some(subject_inc.clone()),
             },
@@ -251,7 +251,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             fabric_id: fabric_id.clone(),
             node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: subject_id.clone(),
-                name: subject_name.clone(),
+                path: subject_name.path.clone(), name: subject_name.name.clone(),
                 endpoint_id: EndpointId(subject_key.public().to_string()),
                 incarnation: subject_inc.clone(),
                 supersedes: None,
@@ -292,7 +292,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         admin_resolver.apply(
             ResolvedNode { r#type: "node".into(), mesh: "mesh1".to_owned(),
                 node_id: subject_id.clone(),
-                name: subject_name.clone(),
+                path: subject_name.path.clone(), name: subject_name.name.clone(),
                 endpoint_id: subject_key.public(),
                 transport_addr: subject_addr,
                 incarnation: subject_inc.clone(),

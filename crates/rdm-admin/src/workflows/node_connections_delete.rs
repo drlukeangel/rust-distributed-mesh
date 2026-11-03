@@ -95,7 +95,7 @@ mod tests {
             resolver.apply(
                 ResolvedNode { r#type: "node".into(), mesh: "mesh1".to_owned(),
                     node_id: peer_id.clone(),
-                    name: peer_name.clone(),
+                    path: peer_name.path.clone(), name: peer_name.name.clone(),
                     endpoint_id: peer_key.public(),
                     transport_addr: peer_addr,
                     incarnation: peer_incarnation.clone(),
@@ -107,7 +107,7 @@ mod tests {
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
             let writer = Arc::new(ConnectionsWriter::new(
                 ConnectionEnd { r#type: "node".into(), mesh: "mesh1".to_owned(),
-                    name: node_name.clone(),
+                    path: node_name.path.clone(), name: node_name.name.clone(),
                     node_id: node_id.clone(),
                     incarnation: Some(incarnation.clone()),
                 },
@@ -154,7 +154,7 @@ mod tests {
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                     node_id: node_id.clone(),
-                    name: node_name.clone(),
+                    path: node_name.path.clone(), name: node_name.name.clone(),
                     endpoint_id: EndpointId(node_key.public().to_string()),
                     incarnation: incarnation.clone(),
                     supersedes: None,

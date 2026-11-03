@@ -191,7 +191,7 @@ async fn rig(dir: &std::path::Path) -> Rig {
         fabric_id: FabricId::mint(),
         mesh: "mesh1".into(),
         r#type: "node".into(),
-        name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+        path: "mesh1.node".into(), name: "1".into(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -209,7 +209,7 @@ async fn rig(dir: &std::path::Path) -> Rig {
     };
     let store = Arc::new(FileTestkitStore::open(&launch.data_dir).expect("the store opens in its data dir"));
     let cuts = Arc::new(ApplyCuts::default());
-    let server = testkit_store::serve_with_cuts(ServerBuilder::new(), store.clone(), &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()), cuts.clone())
+    let server = testkit_store::serve_with_cuts(ServerBuilder::new(), store.clone(), &launch, &rdm_test::held_name::HeldName::of_birth(launch.location()), cuts.clone())
         .build(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
         .expect("the testkit store is built");
     let stats = server.stats();
@@ -217,7 +217,7 @@ async fn rig(dir: &std::path::Path) -> Rig {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
+    resolver.insert(ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), node_id: launch.node_id.clone(), path: launch.path.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
     let client = NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
     Rig { _router: router, store, cuts, stats, client, target: NodeTarget::ExactNode(launch.node_id.clone()), launch }
 }
@@ -232,7 +232,7 @@ impl Rig {
     fn at(&self, op: TestkitStoreOp) -> Provenance {
         Provenance {
             node_id: self.launch.node_id.to_string(),
-            node: self.launch.name.clone(),
+            path: self.launch.path.clone(), name: self.launch.name.clone(),
             mesh: self.launch.mesh.clone(),
             incarnation_id: self.launch.incarnation.to_string(),
             op,

@@ -195,10 +195,10 @@ mod tests {
                 (crate::launch::ENV_STORE_DIR.to_string(), "/tmp/store".to_string()),
             ]);
             let launch = crate::launch::Launch::from_env(|k| env.get(k).cloned()).expect("a launch naming the pair");
-            assert_eq!(launch.name, *pair, "the launch reads the pair from its two variables");
+            assert_eq!(launch.location(), *pair, "the launch reads the pair from its two variables");
             let written = launch.to_env();
             assert_eq!((written[crate::launch::ENV_NODE_PATH].as_str(), written[crate::launch::ENV_NODE_NAME].as_str()), (pair.path.as_str(), pair.name.as_str()), "the launch writes the two variables back unjoined");
-            assert_eq!(crate::launch::Launch::from_env(|k| written.get(k).cloned()).unwrap().name, *pair);
+            assert_eq!(crate::launch::Launch::from_env(|k| written.get(k).cloned()).unwrap().location(), *pair);
             // The replacement move keeps the path and changes only the name.
             let moved = pair.renamed().unwrap();
             assert_eq!((moved.path.as_str(), moved.name.clone()), (pair.path.as_str(), format!("{}-old", pair.name)), "the predecessor moves to <name>-old at the same path");

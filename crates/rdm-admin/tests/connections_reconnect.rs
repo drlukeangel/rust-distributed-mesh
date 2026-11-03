@@ -32,7 +32,7 @@ fn acceptance_dir(cell: &str) -> PathBuf {
 }
 
 fn end(name: rdm_core::PathName, mesh: &str, r#type: &str) -> ConnectionEnd {
-    ConnectionEnd { mesh: mesh.into(), r#type: r#type.to_string(), name, node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
+    ConnectionEnd { mesh: mesh.into(), r#type: r#type.to_string(), path: name.path.clone(), name: name.name.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
 }
 
 fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
@@ -64,7 +64,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
         let seeded = storage.history().await.unwrap().len();
         let destination = ResolvedNode { mesh: dest.mesh.clone(), r#type: dest.r#type.clone(),
             node_id: dest.node_id.clone(),
-            name: dest.name.clone(),
+            path: dest.path.clone(), name: dest.name.clone(),
             endpoint_id: iroh::SecretKey::generate().public(),
             transport_addr: "127.0.0.1:1".parse().unwrap(),
             incarnation: dest.incarnation.clone().unwrap(),

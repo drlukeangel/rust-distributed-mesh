@@ -123,7 +123,7 @@ pub async fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, carrier_cl
     let server = b.build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let resolved = ResolvedNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id, name, endpoint_id: key.public(), transport_addr: addr, incarnation };
+    let resolved = ResolvedNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id, path: name.path.clone(), name: name.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation };
     Node { _router: router, key, resolved, handled }
 }
 
@@ -190,11 +190,11 @@ pub async fn routed(rig: &Rig, target: &Node, route: RouteChoice, payload: &[u8]
 
 /// Connections fixtures, as the held projection records them.
 pub fn end(n: &Node) -> ConnectionEnd {
-    ConnectionEnd { mesh: n.resolved.mesh.clone(), r#type: n.resolved.r#type.clone(), name: n.resolved.name.clone(), node_id: n.resolved.node_id.clone(), incarnation: Some(n.resolved.incarnation.clone()) }
+    ConnectionEnd { mesh: n.resolved.mesh.clone(), r#type: n.resolved.r#type.clone(), path: n.resolved.path.clone(), name: n.resolved.name.clone(), node_id: n.resolved.node_id.clone(), incarnation: Some(n.resolved.incarnation.clone()) }
 }
 
 pub fn own_end(own: &PathName, mesh: &str, r#type: &str) -> ConnectionEnd {
-    ConnectionEnd { mesh: mesh.to_owned(), r#type: r#type.to_string(), name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
+    ConnectionEnd { mesh: mesh.to_owned(), r#type: r#type.to_string(), path: own.path.clone(), name: own.name.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
 }
 
 /// A connections fact at stamp `at`, in the shape the writer records it.

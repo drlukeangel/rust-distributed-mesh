@@ -101,14 +101,14 @@ fn launch_by(root: &Running, name: PathName, r#type: &str, dir: &std::path::Path
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         r#type: r#type.to_string(),
-        name,
+        path: name.path.clone(), name: name.name.clone(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners,
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -124,7 +124,7 @@ fn launch_by(root: &Running, name: PathName, r#type: &str, dir: &std::path::Path
 fn deployed(launch: &Launch, held: Option<&PathName>) -> Deployed {
     let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
     Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        name: launch.name.clone(),
+        path: launch.path.clone(), name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
         supersedes: None,
@@ -259,14 +259,14 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
 
         // The node-admin's stop and its start after the stop, commanded by the root over Node RPC.
         assert!(matches!(command(&root, &admin_launch, &stop(&admin_launch)).await, StatusReply::Stopped { .. }), "the launched admin stops");
-        let _ = root.runner.joins.expect(deployed(&admin_launch, Some(&admin_launch.name)));
+        let _ = root.runner.joins.expect(deployed(&admin_launch, Some(&admin_launch.location())));
         let started = tokio::time::timeout(WRONG, command(&root, &admin_launch, &start(&admin_launch))).await.expect("the admin's start answers");
         assert_eq!(started, StatusReply::Started, "the launched admin starts after its stop");
         until_ready("mesh1.node-admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
 
         // The node's stop and its start after the stop, commanded by the root over Node RPC.
         assert!(matches!(command(&root, &rpc_launch, &stop(&rpc_launch)).await, StatusReply::Stopped { .. }), "the node stops");
-        let _ = root.runner.joins.expect(deployed(&rpc_launch, Some(&rpc_launch.name)));
+        let _ = root.runner.joins.expect(deployed(&rpc_launch, Some(&rpc_launch.location())));
         let started = tokio::time::timeout(WRONG, command(&root, &rpc_launch, &start(&rpc_launch))).await.expect("the node's start answers");
         assert_eq!(started, StatusReply::Started, "the node starts after its stop");
 
@@ -427,7 +427,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
 
         // Its Build floor reports the no-pointer blocker and acts on it: the first read of it (or a
         // repeat of the entry, which must not happen) has ended.
-        let mine = |f: &std::collections::BTreeMap<String, String>| f.get("node_path") == Some(&admin_launch.name.path) && f.get("node_name") == Some(&admin_launch.name.name) && f.contains_key("outcome");
+        let mine = |f: &std::collections::BTreeMap<String, String>| f.get("node_path") == Some(&admin_launch.path) && f.get("node_name") == Some(&admin_launch.name) && f.contains_key("outcome");
         let read = spans.recorded(READ_COMMITTED, |f| mine(f) && f.get("blocker").map(String::as_str) == Some("no-current-build"));
         let repeated = spans.recorded(ENTRY_REPEAT, mine);
         tokio::time::timeout(WRONG, async {
@@ -451,7 +451,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
                 .filter(|(n, _, f)| n == READ_COMMITTED && mine(f) && f.get("blocker").map(String::as_str) == Some("no-current-build"))
                 .map(|(_, _, f)| f.get("outcome").cloned().unwrap_or_default())
                 .collect();
-            let repeats = all.values().filter(|(n, _, f)| n == ENTRY_REPEAT && f.get("node_path") == Some(&admin_launch.name.path) && f.get("node_name") == Some(&admin_launch.name.name)).count();
+            let repeats = all.values().filter(|(n, _, f)| n == ENTRY_REPEAT && f.get("node_path") == Some(&admin_launch.path) && f.get("node_name") == Some(&admin_launch.name)).count();
             (joins, reads, repeats)
         };
         assert_eq!(joins.len(), 1, "the authority serves exactly one JoinNode for mesh1.node-admin.2; the no-pointer blocker is read, never joined again; served joins by outcome: {joins:?}");

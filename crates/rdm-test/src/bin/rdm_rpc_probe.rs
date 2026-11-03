@@ -207,7 +207,7 @@ fn target(spec: &str) -> Result<NodeTarget, String> {
 async fn enter(admin: &MeshNode) -> Result<(Arc<NodeRpcClient>, Arc<StaticResolver>), String> {
     let endpoint_id = admin.endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| format!("--admin-birth names {:?} (node {}) at the endpoint {:?}, no Iroh key: {e}", admin.name, admin.node_id, admin.endpoint_id.0))?;
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { mesh: admin.mesh.clone(), r#type: admin.r#type.clone(), node_id: admin.node_id.clone(), name: admin.name.clone(), endpoint_id, transport_addr: admin.transport_addr, incarnation: admin.incarnation.clone() });
+    resolver.insert(ResolvedNode { mesh: admin.mesh.clone(), r#type: admin.r#type.clone(), node_id: admin.node_id.clone(), path: admin.path.clone(), name: admin.name.clone(), endpoint_id, transport_addr: admin.transport_addr, incarnation: admin.incarnation.clone() });
     let client = Arc::new(NodeRpcClient::new(bind_endpoint().await?, resolver.clone()).with_caller_system("rdm"));
     let read = async { resolved(&views_of(&client, &admin.node_id).await?) };
     match read.await {
@@ -252,13 +252,13 @@ fn resolved(views: &[NodeView]) -> Result<Vec<ResolvedNode>, String> {
             Some(v) => Some(v.parse::<iroh::PublicKey>().map_err(|e| format!("view node {} ({:?}): endpoint_id {v:?} does not parse: {e}", n.node_id, n.name))?),
         };
         match (endpoint_id, n.transport_addr, n.incarnation_id.clone()) {
-            (Some(endpoint_id), Some(transport_addr), Some(incarnation)) => out.push(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id, transport_addr, incarnation }),
+            (Some(endpoint_id), Some(transport_addr), Some(incarnation)) => out.push(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id, transport_addr, incarnation }),
             (endpoint_id, transport_addr, incarnation) => {
                 let absent: Vec<&str> = [(endpoint_id.is_none(), "endpoint_id"), (transport_addr.is_none(), "transport_addr"), (incarnation.is_none(), "incarnation_id")]
                     .into_iter()
                     .filter_map(|(is_absent, field)| is_absent.then_some(field))
                     .collect();
-                tracing::info!(node_id = %n.node_id, node_path = %n.name.path, node_name = %n.name.name, absent = absent.join(","), "the admin's view holds this node with no value yet for these fields: it cannot be dialled");
+                tracing::info!(node_id = %n.node_id, node_path = %n.path, node_name = %n.name, absent = absent.join(","), "the admin's view holds this node with no value yet for these fields: it cannot be dialled");
             }
         }
     }
@@ -300,7 +300,7 @@ fn reply(r: &TestkitStoreReply) -> Value {
     if let Some(at) = r.provenance() {
         let o = v.as_object_mut().unwrap();
         o.insert("executing_node".into(), json!(at.node_id));
-        o.insert("node".into(), json!(at.node));
+        o.insert("node".into(), json!(at.location()));
         o.insert("mesh".into(), json!(at.mesh));
         o.insert("incarnation_id".into(), json!(at.incarnation_id));
         o.insert("op".into(), json!(at.op.as_str()));
@@ -496,7 +496,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             Some(("exact", id)) => NodeId::parse(id).map_err(|e| format!("{what}: {e}")),
             Some(("path", p)) => {
                 let at = serde_json::from_str::<PathName>(p).map_err(|e| format!("{what} path {p:?}: {e}"))?;
-                let mut ids = held.iter().flatten().filter(|n| n.name == at).map(|n| n.node_id.clone());
+                let mut ids = held.iter().flatten().filter(|n| n.location() == at).map(|n| n.node_id.clone());
                 match (ids.next(), ids.next()) {
                     (Some(id), None) => Ok(id),
                     (None, _) => Err(format!("{what} path {p:?}: the entry admin's view holds no node there")),
@@ -551,27 +551,27 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     Ok(match &out {
         RpcOutcome::Reply(r) => match r.value() {
             OriginateReply::Called { by, destination_node_id, route, carrier, deleted, outcome, reply, pooled } => json!({
-                "outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "destination_node_id": destination_node_id, "route": route, "carrier": carrier,
+                "outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "destination_node_id": destination_node_id, "route": route, "carrier": carrier,
                 "deleted": deleted, "call_outcome": outcome, "reply": reply.as_ref().map(self::reply), "pooled": pooled,
             }),
-            OriginateReply::FaultArmed { by, refuse_index, refuse_history } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "fault": "armed", "refuse_index": refuse_index, "refuse_history": refuse_history}),
-            OriginateReply::FaultReleased { by, refused } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "fault": "released", "refused": refused}),
+            OriginateReply::FaultArmed { by, refuse_index, refuse_history } => json!({"outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "fault": "armed", "refuse_index": refuse_index, "refuse_history": refuse_history}),
+            OriginateReply::FaultReleased { by, refused } => json!({"outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "fault": "released", "refused": refused}),
             OriginateReply::Snapshot { by, own_active_proxies, own_latest_directs, active_len, active_directs, owed, fault_refused } => json!({
-                "outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "own_active_proxies": own_active_proxies, "own_latest_directs": own_latest_directs,
+                "outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "own_active_proxies": own_active_proxies, "own_latest_directs": own_latest_directs,
                 "active_len": active_len, "active_directs": active_directs, "owed": owed, "fault_refused": fault_refused,
             }),
-            OriginateReply::TransportStopMarked { by, reason } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "transport_stop_marked": reason}),
-            OriginateReply::Dialed { by, destination_node_id, outcome } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "dialed": outcome, "destination_node_id": destination_node_id}),
+            OriginateReply::TransportStopMarked { by, reason } => json!({"outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "transport_stop_marked": reason}),
+            OriginateReply::Dialed { by, destination_node_id, outcome } => json!({"outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "dialed": outcome, "destination_node_id": destination_node_id}),
             OriginateReply::Streamed { by, peer, kind, connection_id, answered } => json!({
-                "outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "streamed": true, "kind": kind, "connection_id": connection_id, "peer": peer.node, "peer_node_id": peer.node_id,
+                "outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "streamed": true, "kind": kind, "connection_id": connection_id, "peer": peer.location(), "peer_node_id": peer.node_id,
                 "peer_incarnation": peer.incarnation_id, "answered": String::from_utf8_lossy(answered),
             }),
-            OriginateReply::StreamFailed { by, reason } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "streamed": false, "reason": reason}),
-            OriginateReply::Measured { by, kind, open_us, streams_us, bytes } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "measured": true, "kind": kind, "open_us": open_us, "streams_us": streams_us, "bytes": bytes}),
-            OriginateReply::DirectBlocked { by, destination, blocked } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "direct_blocked": blocked, "destination": destination}),
-            OriginateReply::OwnConfigUpdated { by, outcome, config } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "own_config": outcome, "config": config}),
+            OriginateReply::StreamFailed { by, reason } => json!({"outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "streamed": false, "reason": reason}),
+            OriginateReply::Measured { by, kind, open_us, streams_us, bytes } => json!({"outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "measured": true, "kind": kind, "open_us": open_us, "streams_us": streams_us, "bytes": bytes}),
+            OriginateReply::DirectBlocked { by, destination, blocked } => json!({"outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "direct_blocked": blocked, "destination": destination}),
+            OriginateReply::OwnConfigUpdated { by, outcome, config } => json!({"outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "own_config": outcome, "config": config}),
             OriginateReply::ProxyRecorded { by, destination_node_id, destination_incarnation, carrier_node_id, carrier_incarnation, failed_attempts } => json!({
-                "outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "proxy_recorded": true, "destination_node_id": destination_node_id, "destination_incarnation": destination_incarnation,
+                "outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "proxy_recorded": true, "destination_node_id": destination_node_id, "destination_incarnation": destination_incarnation,
                 "carrier_node_id": carrier_node_id, "carrier_incarnation": carrier_incarnation, "failed_attempts": failed_attempts,
             }),
             other => json!({"outcome": "Reply", "refused": format!("{other:?}")}),
@@ -715,7 +715,7 @@ mod tests {
         NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
             r#type: r#type.to_string(),
             mesh: mesh.to_owned(),
-            name,
+            path: name.path.clone(), name: name.name.clone(),
             node_id: NodeId::mint(),
             endpoint_id: endpoint.map(str::to_string),
             incarnation_id: incarnation,

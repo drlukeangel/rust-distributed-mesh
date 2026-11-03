@@ -72,7 +72,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -89,7 +89,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             declared: Default::default(),
         };
         let store = Arc::new(FileTestkitStore::open(&launch.data_dir).unwrap());
-        let server = testkit_store::serve(ServerBuilder::new(), store, &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))
+        let server = testkit_store::serve(ServerBuilder::new(), store, &launch, &rdm_test::held_name::HeldName::of_birth(launch.location()))
             .carry::<rdm_test::testkit_store::TestkitStore>()
             .build(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .unwrap();
@@ -97,7 +97,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
         // A carrier: a node that serves Forward and makes one inner call to the target.
-        let target_record = rdm_transport::ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() };
+        let target_record = rdm_transport::ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type, node_id: launch.node_id.clone(), path: launch.path.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() };
         let carrier_key = SecretKey::generate();
         let (carrier_id, carrier_inc) = (NodeId::mint(), IncarnationId::mint());
         let carrier_resolver = Arc::new(rdm_transport::StaticResolver::new());

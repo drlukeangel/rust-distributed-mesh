@@ -65,7 +65,14 @@ pub struct ReportToPrimary {
     client: Arc<NodeRpcClient>,
     node_id: NodeId,
     incarnation: IncarnationId,
-    name: PathName,
+    path: String,
+    /// The name, beside its path.
+    name: String,
+}
+
+impl ReportToPrimary {
+    /// The `(path, name)` lookup index key of path and name.
+    fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 impl ReportToPrimary {
@@ -73,13 +80,13 @@ impl ReportToPrimary {
     /// pool and delivery shared, telling no spent call and no `on_call_failed`) to the primaries
     /// `resolver` names.
     pub fn new(resolver: Arc<LiveNodeResolver>, client: &NodeRpcClient, node_id: NodeId, incarnation: IncarnationId, name: PathName) -> Self {
-        Self { resolver, client: Arc::new(client.for_reports()), node_id, incarnation, name }
+        Self { resolver, client: Arc::new(client.for_reports()), node_id, incarnation, path: name.path.clone(), name: name.name.clone()}
     }
 
     /// This birth as a report names it: its `(path, name)` the one the resolver holds for it now (a
     /// renamed node reports under its current name), else the one it was launched at.
     pub fn sender(&self) -> ReportedBirth {
-        let name = self.resolver.resolve(&NodeTarget::ExactNode(self.node_id.clone())).ok().filter(|n| n.incarnation == self.incarnation).map_or_else(|| self.name.clone(), |n| n.name);
+        let name = self.resolver.resolve(&NodeTarget::ExactNode(self.node_id.clone())).ok().filter(|n| n.incarnation == self.incarnation).map_or_else(|| self.location(), |n| n.location());
         ReportedBirth { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name }
     }
 
@@ -109,7 +116,7 @@ impl ReportToPrimary {
             "rdm.mesh.node.update.via-call-failed-report",
             node_path = %sender.name.path, node_name = %sender.name.name,
             node_id = %sender.node_id,
-            receiver_path = %call.receiver.name.path, receiver_name = %call.receiver.name.name,
+            receiver_path = %call.receiver.path, receiver_name = %call.receiver.name,
             receiver_node_id = %call.receiver.node_id,
             receiver_incarnation = %call.receiver.incarnation.as_str(),
             reason = %call.reason,
@@ -142,7 +149,7 @@ impl ReportToPrimary {
         };
         tracing::Span::current().record("primary_above", primary.node_id.to_string().as_str());
         let target = NodeTarget::ExactNode(primary.node_id.clone());
-        let receiver = ReportedBirth { node_id: call.receiver.node_id.clone(), incarnation: call.receiver.incarnation.clone(), name: call.receiver.name.clone() };
+        let receiver = ReportedBirth { node_id: call.receiver.node_id.clone(), incarnation: call.receiver.incarnation.clone(), name: call.receiver.location() };
         let req = StatusRequest::report_call_failed(sender, receiver, &call.reason);
         let opts = CallOptions { resend: Resend::default(), ..CallOptions::default() };
         match self.client.call::<Status>(&target, &req, &opts).await.0 {

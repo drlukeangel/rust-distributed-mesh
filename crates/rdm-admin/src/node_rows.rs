@@ -47,8 +47,10 @@ use tokio::sync::RwLock;
 
 /// The writer of a mesh's node rows.
 pub struct NodeRows {
-    /// This admin's `(path, name)`, the name its spans and refusals carry.
-    me: PathName,
+    /// This admin's path, the name its spans and refusals carry.
+    me_path: String,
+    /// This node's name, beside its path.
+    me_name: String,
     /// The node id this admin was born with: it writes a mesh's rows only while its view names that
     /// birth the mesh's primary (never by path and name: a successor takes the path and name with a new
     /// node id).
@@ -73,6 +75,11 @@ pub struct NodeRows {
     /// storage before it writes any of them (storage-whole-records.md: the cache is filled whenever
     /// write ownership is acquired, never kept from before).
     to_fill: Mutex<Vec<String>>,
+}
+
+impl NodeRows {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
 /// The node records this admin writes, as it holds them (storage-whole-records.md, "The rule"): per
@@ -209,7 +216,7 @@ impl WrittenRows {
     /// at the name stands over the joiner's deleted record. A `Withdrawn` record names nothing (a
     /// withdrawn create).
     pub fn record_for_join(&self, path: &PathName, node_id: &NodeId) -> Option<NodeRow> {
-        let at: Vec<NodeRow> = self.rows.all().into_iter().filter(|r| r.name == *path && r.status != NodeStatus::Withdrawn).collect();
+        let at: Vec<NodeRow> = self.rows.all().into_iter().filter(|r| r.location() == *path && r.status != NodeStatus::Withdrawn).collect();
         let (live, deleted): (Vec<NodeRow>, Vec<NodeRow>) = at.into_iter().partition(|r| r.status != NodeStatus::Deleted);
         let own_first = |rows: &[NodeRow]| rows.iter().find(|r| r.node_id == *node_id).or_else(|| rows.first()).cloned();
         own_first(&live).or_else(|| own_first(&deleted))
@@ -285,8 +292,8 @@ impl WrittenRows {
     /// Apply `change` to the facts of `node`'s birth `incarnation` on its record, written whole: the
     /// record held, else one made of `node`.
     pub async fn update_birth<R>(&self, storage: &dyn NodesStorage, node: &Node, incarnation: &IncarnationId, change: impl FnOnce(&mut crate::storage::BirthFacts) -> R) -> Result<Option<R>, String> {
-        let base = NodeRow::new(node.name.clone(), node.mesh.clone(), &node.r#type, node.node_id.clone(), node.status);
-        self.update(storage, &node.node_id, Some(base), |r| change(r.birth_mut(incarnation, &node.name))).await
+        let base = NodeRow::new(node.location(), node.mesh.clone(), &node.r#type, node.node_id.clone(), node.status);
+        self.update(storage, &node.node_id, Some(base), |r| change(r.birth_mut(incarnation, &node.location()))).await
     }
 
     /// The one write of `row`, its node's lock held by the caller: the whole record written (it carries
@@ -298,7 +305,7 @@ impl WrittenRows {
         let row = &row;
         storage.put_node(row).await?;
         self.hold(row);
-        if previous.as_ref().is_none_or(|p| p.name != row.name || released_its_name(p) != released_its_name(row)) {
+        if previous.as_ref().is_none_or(|p| p.location() != row.location() || released_its_name(p) != released_its_name(row)) {
             self.names.send_modify(|v| *v += 1);
         }
         Ok(())
@@ -330,7 +337,7 @@ impl WrittenRows {
         };
         let Some(before) = held else { return Ok(None) };
         if new {
-            check_name(storage, Some(self), &before.name, node_id).await.map_err(|e| format!("nodes.storage did not answer the read of path {:?}, name {:?} for {node_id}: {e}", before.name.path, before.name.name))?.map_err(|held| format!("{held}"))?;
+            check_name(storage, Some(self), &before.location(), node_id).await.map_err(|e| format!("nodes.storage did not answer the read of path {:?}, name {:?} for {node_id}: {e}", before.path, before.name))?.map_err(|held| format!("{held}"))?;
         }
         let mut row = before.clone();
         let r = change(&mut row);
@@ -433,7 +440,7 @@ impl NodeRows {
     /// The writer of the admin `me`, born as `me_id`, deciding over its view `view`, writing to
     /// `storage`, its nodes store.
     pub fn new(me: PathName, me_id: NodeId, view: Arc<RwLock<Topology>>, storage: Arc<dyn NodesStorage>) -> Self {
-        Self { me, me_id, view, storage, configs: None, held: Mutex::new(BTreeMap::new()), written: Arc::new(WrittenRows::default()), fabric_recovery: None, to_fill: Mutex::new(Vec::new()) }
+        Self { me_path: me.path.clone(), me_name: me.name.clone(), me_id, view, storage, configs: None, held: Mutex::new(BTreeMap::new()), written: Arc::new(WrittenRows::default()), fabric_recovery: None, to_fill: Mutex::new(Vec::new()) }
     }
 
     /// Read fabric recovery through `read`: while this admin runs it, it writes the target mesh's rows its
@@ -468,12 +475,12 @@ impl NodeRows {
     /// This admin's currently held `(path, name)` in `t`, falling back to `self.me` before its birth
     /// is in the view.
     fn held_name_in(&self, t: &Topology) -> PathName {
-        t.own(&self.me_id).map(|n| n.name.clone()).unwrap_or_else(|| self.me.clone())
+        t.own(&self.me_id).map(|n| n.location()).unwrap_or_else(|| self.me())
     }
 
     /// This admin's currently held `(path, name)` if the view is readable without waiting, else `self.me`.
     fn held_name_now(&self) -> PathName {
-        self.view.try_read().ok().map(|t| self.held_name_in(&t)).unwrap_or_else(|| self.me.clone())
+        self.view.try_read().ok().map(|t| self.held_name_in(&t)).unwrap_or_else(|| self.me())
     }
 
     /// This admin's currently held `(path, name)` in its view.
@@ -521,7 +528,7 @@ impl NodeRows {
     /// [`Self::row_writer_in`] of `record`'s row over this admin's view as it is now, acting for a
     /// node-admin's row.
     async fn row_writer(&self, record: &Node) -> Result<PathName, RowRefused> {
-        self.row_writer_in(&*self.view.read().await, &record.name, &record.mesh, &record.node_id, rdm_core::is_node_admin(&record.r#type))
+        self.row_writer_in(&*self.view.read().await, &record.location(), &record.mesh, &record.node_id, rdm_core::is_node_admin(&record.r#type))
     }
 
     /// Whether this admin writes the `Deleted` row of the unreached birth `record` now, over its view as it
@@ -531,10 +538,6 @@ impl NodeRows {
         self.row_writer(record).await.is_ok()
     }
 
-    /// This admin's `(path, name)`.
-    pub fn me(&self) -> &PathName {
-        &self.me
-    }
 
     /// Whether this admin writes `mesh`'s rows now, over its view as it is now.
     pub async fn writes_now(&self, mesh: &str, subject: &PathName) -> bool {
@@ -628,10 +631,10 @@ impl NodeRows {
     pub async fn rename_row_with_intent(&self, record: &Node, to: &PathName, intent: &crate::accepted::RenameIntent) -> Result<NodeRow, RowRefused> {
         let me = self.writer_check(&record.mesh, to).await?;
         let known = self.written.known_row(&*self.storage, &record.node_id).await.map_err(|why| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: {why}", me_path = &me.path, me_name = &me.name)))?;
-        let from = known.as_ref().map_or_else(|| record.name.clone(), |r| r.name.clone());
+        let from = known.as_ref().map_or_else(|| record.location(), |r| r.location());
         match move_row_with_intent(&*self.storage, &self.written, &me, record, &from, to, intent).await {
             Ok((_, Some(written))) => Ok(written),
-            Ok((_, None)) => self.written.row_of(&record.node_id).filter(|r| r.name == *to).ok_or_else(|| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: no record of {} stands at path {to_path:?}, name {to_name:?}", record.node_id, me_path = &me.path, me_name = &me.name, to_path = &to.path, to_name = &to.name))),
+            Ok((_, None)) => self.written.row_of(&record.node_id).filter(|r| r.location() == *to).ok_or_else(|| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: no record of {} stands at path {to_path:?}, name {to_name:?}", record.node_id, me_path = &me.path, me_name = &me.name, to_path = &to.path, to_name = &to.name))),
             Err(RenameRefused::NameHeld(h)) => Err(RowRefused::NameHeld(h)),
             Err(RenameRefused::Unwritten(why)) => Err(RowRefused::Unwritten(why)),
         }
@@ -645,7 +648,7 @@ impl NodeRows {
     /// holds no row of this node at `name`. `Err` names the read that failed.
     pub async fn hold_row_of(&self, name: &PathName, node_id: &NodeId) -> Result<bool, String> {
         let row = self.storage.node(node_id).await.map_err(|e| format!("{}: the record of {node_id} could not be read at path {name_path:?}, name {name_name:?}: {e}", self.me_id, name_path = &name.path, name_name = &name.name))?;
-        match row.filter(|r| r.name == *name) {
+        match row.filter(|r| r.location() == *name) {
             Some(row) => {
                 self.written.hold(&row);
                 Ok(true)
@@ -712,14 +715,14 @@ impl NodeRows {
     /// own part of its record (Q333), never written here. One
     /// `rdm.node_admin.node.create.via-arrival-seed` span.
     pub async fn seed_at_arrival(&self, d: &rdm_core::MeshDigest) -> Result<(), String> {
-        let me = self.writer_check(&d.node.mesh, &d.node.name).await.map_err(|e| e.to_string())?;
+        let me = self.writer_check(&d.node.mesh, &d.node.location()).await.map_err(|e| e.to_string())?;
         let configs = self.configs.as_ref().and_then(|slot| slot.get());
         let _one = match configs { Some(door) => Some(door.one_at_a_time().await), None => None };
-        let seeded = match self.put_seeded(&me, &d.node.name, &d.node.mesh, &d.node.r#type, &d.node.node_id, crate::admin::node_status(d.status), &BTreeMap::new(), None, None, &std::collections::BTreeSet::new(), None, RowFor::Arrival, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
+        let seeded = match self.put_seeded(&me, &d.node.location(), &d.node.mesh, &d.node.r#type, &d.node.node_id, crate::admin::node_status(d.status), &BTreeMap::new(), None, None, &std::collections::BTreeSet::new(), None, RowFor::Arrival, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
             RowCreated::Written { .. } => "seeded",
             RowCreated::HeldByNode(_) => "held",
         };
-        tracing::info_span!("rdm.node_admin.node.create.via-arrival-seed", node_path = %d.node.name.path, node_name = %d.node.name.name, node_id = %d.node.node_id, incarnation = %d.node.incarnation, outcome = seeded).in_scope(|| tracing::info!("the arriving birth's row is seeded"));
+        tracing::info_span!("rdm.node_admin.node.create.via-arrival-seed", node_path = %d.node.path, node_name = %d.node.name, node_id = %d.node.node_id, incarnation = %d.node.incarnation, outcome = seeded).in_scope(|| tracing::info!("the arriving birth's row is seeded"));
         Ok(())
     }
 
@@ -732,11 +735,11 @@ impl NodeRows {
         let me = match self.row_writer(record).await {
             Ok(me) => me,
             Err(refused) => {
-                crate::status_rpc::row_status_refused_span(&self.held_name().await, &record.name, &record.node_id, incarnation, status, &refused);
+                crate::status_rpc::row_status_refused_span(&self.held_name().await, &record.location(), &record.node_id, incarnation, status, &refused);
                 return Err(refused);
             }
         };
-        let written = self.written.update_spanned(&*self.storage, &record.node_id, None, |r| r.set_status(incarnation, status), |written| crate::status_rpc::row_status_span(&me, &record.name, &record.node_id, incarnation, status, written)).await;
+        let written = self.written.update_spanned(&*self.storage, &record.node_id, None, |r| r.set_status(incarnation, status), |written| crate::status_rpc::row_status_span(&me, &record.location(), &record.node_id, incarnation, status, written)).await;
         written.map(|_| ()).map_err(|e| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: the {status:?} status of node {} is not written: {e}", record.node_id, me_path = &me.path, me_name = &me.name)))
     }
 
@@ -755,7 +758,7 @@ impl NodeRows {
     }
 
     async fn deleted_as(&self, record: &Node, operation: &rdm_core::OperationId, fabric_recovery: bool) -> Result<(), RowRefused> {
-        self.deleted_row(&record.name, &record.node_id, false, operation, fabric_recovery).await
+        self.deleted_row(&record.location(), &record.node_id, false, operation, fabric_recovery).await
     }
 
     /// The `Deleted` row of a birth the executor holds no record of any more (a mesh leave's
@@ -887,7 +890,7 @@ impl NodeRows {
             let span = tracing::info_span!(
                 "rdm.node_admin.node.create.via-node-row",
                 node_path = %me.path, node_name = %me.name,
-                subject_path = %birth.name.path, subject_name = %birth.name.name,
+                subject_path = %birth.path, subject_name = %birth.name,
                 node_id = %birth.node_id,
                 moment = "arrival",
                 awaiting = tracing::field::Empty,
@@ -915,7 +918,7 @@ impl NodeRows {
             Some(row) => RowCreated::HeldByNode(row),
             // A recovery's row precedes its birth's arrival (the create writes it before it launches),
             // so an arrival that finds no row of its node is never a recovery's: a plain create's seed.
-            None => self.put_seeded(me, &birth.name, &birth.mesh, &birth.r#type, &birth.node_id, birth.status, &BTreeMap::new(), None, None, &std::collections::BTreeSet::new(), None, RowFor::Arrival, span, "").await?,
+            None => self.put_seeded(me, &birth.location(), &birth.mesh, &birth.r#type, &birth.node_id, birth.status, &BTreeMap::new(), None, None, &std::collections::BTreeSet::new(), None, RowFor::Arrival, span, "").await?,
         };
         Ok(created)
     }
@@ -1003,7 +1006,7 @@ fn ignored_span(me: Option<&PathName>, read: &str, row: &NodeRow, writer: &crate
         "rdm.node_admin.node.reject.via-deleted-birth",
         node_path = tracing::field::Empty, node_name = tracing::field::Empty,
         read,
-        subject_path = %row.name.path, subject_name = %row.name.name,
+        subject_path = %row.path, subject_name = %row.name,
         node_id = %row.node_id,
         status = ?row.status,
         writer_node_id = %writer.node_id, writer_incarnation = %writer.incarnation_id,
@@ -1030,7 +1033,7 @@ pub async fn record_at(storage: &dyn NodesStorage, name: &PathName) -> Result<Op
 pub(crate) async fn predecessor_by_id(storage: &dyn NodesStorage, original: &PathName, birth: &crate::storage::BirthRef) -> Result<NodeRow, String> {
     let row = storage.node(&birth.node_id).await.map_err(|e| format!("predecessor node {} could not be read: {e}", birth.node_id))?
         .ok_or_else(|| format!("admitted predecessor node {} has no record", birth.node_id))?;
-    if row.name.path != original.path || (row.name != *original && row.replacement_from.as_ref() != Some(original))
+    if row.path != original.path || (row.location() != *original && row.replacement_from.as_ref() != Some(original))
         || row.newest_birth().is_none_or(|held| held.incarnation_id != birth.incarnation_id) {
         return Err(format!("predecessor node {} does not match the admitted birth and original location", birth.node_id));
     }
@@ -1079,7 +1082,7 @@ pub async fn write_record(storage: &dyn NodesStorage, row: &NodeRow) -> Result<R
     let written = WrittenRows::default();
     let _one = written.lock(&row.node_id).await;
     written.known_row(storage, &row.node_id).await?;
-    if let Err(held) = check_name(storage, Some(&written), &row.name, &row.node_id).await.map_err(|e| e.to_string())? {
+    if let Err(held) = check_name(storage, Some(&written), &row.location(), &row.node_id).await.map_err(|e| e.to_string())? {
         return Ok(Err(held));
     }
     written.put(storage, row).await.map_err(|e| e.to_string())?;
@@ -1098,7 +1101,7 @@ pub async fn check_name(storage: &dyn NodesStorage, written: Option<&WrittenRows
         None => read,
     };
     Ok(match rdm_node::pair_record::resolve(folded, name)? {
-        Some(held) if held.node_id != *node_id => Err(NameHeld { name: name.clone(), by: held.node_id }),
+        Some(held) if held.node_id != *node_id => Err(NameHeld { path: name.path.clone(), name: name.name.clone(), by: held.node_id }),
         _ => Ok(()),
     })
 }
@@ -1112,7 +1115,7 @@ pub async fn release_record(storage: &dyn NodesStorage, written: &WrittenRows, n
         Some(r) => Some(r),
         None => storage.node(node_id).await?,
     };
-    let Some(mut row) = held.filter(|r| r.name == *name && rdm_node::pair_record::holds_its_name(r)) else { return Ok(false) };
+    let Some(mut row) = held.filter(|r| r.location() == *name && rdm_node::pair_record::holds_its_name(r)) else { return Ok(false) };
     row.status = NodeStatus::Withdrawn;
     written.put(storage, &row).await?;
     written.forget(node_id);
@@ -1137,8 +1140,8 @@ pub async fn deleted_birth(storage: &dyn NodesStorage, name: &PathName, node_id:
     // Deleted): another node's live record holds the name its record still stands at (Q181). A node
     // whose record was renamed away (a replacement's predecessor) is not deleted by a record at the
     // name it left.
-    let Some(own) = own.filter(|r| r.name == *name) else { return Ok(None) };
-    Ok(storage.nodes(&own.mesh).await?.into_iter().find(|r| r.name == *name && r.node_id != *node_id && !released_its_name(r)).map(|by| format!("path {:?}, name {:?} (node {node_id}) is a deleted birth: node {} holds the name", name.path, name.name, by.node_id)))
+    let Some(own) = own.filter(|r| r.location() == *name) else { return Ok(None) };
+    Ok(storage.nodes(&own.mesh).await?.into_iter().find(|r| r.location() == *name && r.node_id != *node_id && !released_its_name(r)).map(|by| format!("path {:?}, name {:?} (node {node_id}) is a deleted birth: node {} holds the name", name.path, name.name, by.node_id)))
 }
 
 /// Why a `Deleted` record was not written.
@@ -1157,11 +1160,11 @@ pub async fn write_deleted(storage: &dyn NodesStorage, written: &WrittenRows, na
     let unwritten = |e: crate::storage_error::StorageError| DeletedRefused::Unwritten(e.to_string());
     let _one = written.lock(node_id).await;
     if let Some(by) = record_at(storage, name).await.map_err(unwritten)?.filter(|by| by.node_id != *node_id) {
-        return Err(DeletedRefused::NameHeld(NameHeld { name: name.clone(), by: by.node_id }));
+        return Err(DeletedRefused::NameHeld(NameHeld { path: name.path.clone(), name: name.name.clone(), by: by.node_id }));
     }
     let held = written.known_row(storage, node_id).await.map_err(DeletedRefused::Unwritten)?;
     let mut row = held.ok_or_else(|| DeletedRefused::Unwritten(format!("path {name_path:?}, name {name_name:?} ({node_id}): cannot delete an absent lifecycle record", name_path = &name.path, name_name = &name.name)))?;
-    row.name = name.clone();
+    { let at = name.clone(); row.path = at.path; row.name = at.name; }
     row.status = NodeStatus::Deleted;
     row.allocated = None;
     row.renamed_from = None;
@@ -1278,7 +1281,7 @@ async fn mark_retained(storage: &dyn NodesStorage, me: &PathName, written: &Writ
             let expected_birth = row.newest_birth().map(|birth| birth.incarnation_id.clone());
             written.update(storage, &node_id, None, |current| {
                 if current.mesh != mesh { return Err("retained predecessor belongs to another mesh writer".to_string()); }
-                if current.name.path != name.path || current.replacement_from.as_ref() != Some(name)
+                if current.path != name.path || current.replacement_from.as_ref() != Some(name)
                     || current.newest_birth().map(|birth| &birth.incarnation_id) != expected_birth.as_ref() {
                     return Err(format!("predecessor node {node_id} changed its admitted birth or replacement provenance before marking"));
                 }
@@ -1322,10 +1325,10 @@ async fn mark_retained(storage: &dyn NodesStorage, me: &PathName, written: &Writ
 ///
 /// Another node's live row at the name is `NameHeld` naming it, and nothing of this birth is written.
 pub async fn take_inherited_name(storage: &dyn NodesStorage, written: &WrittenRows, inherited: &crate::storage::NodeRecord, node_id: &NodeId) -> Result<RowCreated, RowRefused> {
-    let (me, name) = (&inherited.name, &inherited.name);
+    let (me, name) = (&inherited.location(), &inherited.location());
     let operation = rdm_core::OperationId::node("fabric-recovery", node_id);
     let held = storage.node(&inherited.node_id).await.map_err(|e| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: the record of the inherited birth {} could not be read: {e}", inherited.node_id, me_path = &me.path, me_name = &me.name)))?;
-    if let Some(p) = held.filter(|p| p.name == *name && p.status != NodeStatus::Deleted) {
+    if let Some(p) = held.filter(|p| p.location() == *name && p.status != NodeStatus::Deleted) {
         let span = tracing::info_span!(
             "rdm.node_admin.node.delete.via-node-row",
             node_path = %me.path, node_name = %me.name,
@@ -1456,7 +1459,7 @@ pub async fn move_row(storage: &dyn NodesStorage, written: &WrittenRows, me: &Pa
 
 /// Apply the intent fixed by Build admission through the shared rename writer.
 pub(crate) async fn move_row_with_intent(storage: &dyn NodesStorage, written: &WrittenRows, me: &PathName, record: &Node, from: &PathName, to: &PathName, intent: &crate::accepted::RenameIntent) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
-    if from.path != to.path || record.name.path != to.path {
+    if from.path != to.path || record.path != to.path {
         return Err(RenameRefused::Unwritten("a node's path is immutable; nothing is written".into()));
     }
     PathName::new(&to.path, &to.name).map_err(|error| RenameRefused::Unwritten(error.to_string()))?;
@@ -1468,21 +1471,21 @@ pub(crate) async fn move_row_with_intent(storage: &dyn NodesStorage, written: &W
     let _one = written.lock(node_id).await;
     let held = written.known_row(storage, node_id).await.map_err(|why| RenameRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: {why}", me_path = &me.path, me_name = &me.name)))?;
     if let Some(held) = held.as_ref() {
-        if held.name.path != to.path {
+        if held.path != to.path {
             return Err(RenameRefused::Unwritten("a node's stored path is immutable; nothing is written".into()));
         }
     }
-    if let Some(held) = held.as_ref().filter(|r| r.name == *to) {
+    if let Some(held) = held.as_ref().filter(|r| r.location() == *to) {
         // A move made before: its record stands at `to`.
         return Ok((Moved::AlreadyMoved, Some(held.clone())));
     }
     let provenance = intent.provenance(&held.as_ref().and_then(|r| r.replacement_from.clone()), from, to).map_err(RenameRefused::Unwritten)?;
     check_name(storage, Some(written), to, node_id).await.map_err(|e| RenameRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: nodes.storage did not answer the read of path {to_path:?}, name {to_name:?} for {node_id}: {e}", me_path = &me.path, me_name = &me.name, to_path = &to.path, to_name = &to.name)))?.map_err(RenameRefused::NameHeld)?;
     let mut row = held.unwrap_or_else(|| NodeRow::new(from.clone(), record.mesh.clone(), &record.r#type, node_id.clone(), record.status));
-    row.name = to.clone();
+    { let at = to.clone(); row.path = at.path; row.name = at.name; }
     row.allocated = None;
     row.replacement_from = provenance;
-    row.renamed_from = Some(from.clone());
+    row.renamed_from = Some(from.name.clone());
     row.inherited_by = None;
     written.put(storage, &row).await.map_err(|e| RenameRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: nodes.storage refused the record of {node_id} at path {to_path:?}, name {to_name:?}: {e}", me_path = &me.path, me_name = &me.name, to_path = &to.path, to_name = &to.name)))?;
     Ok((Moved::Renamed, Some(row)))
@@ -1532,7 +1535,7 @@ mod tests {
         let original = PathName::new("opaque.path", "north").unwrap();
         let mut predecessor = NodeRow::new(original.renamed().unwrap(), "previous-mesh", "gateway", NodeId::mint(), NodeStatus::Stopped);
         let incarnation = IncarnationId::mint();
-        predecessor.birth_mut(&incarnation, &predecessor.name.clone());
+        predecessor.birth_mut(&incarnation, &predecessor.location());
         predecessor.replacement_from = Some(original.clone());
         storage.put_node(&predecessor).await.unwrap();
         let birth = crate::storage::BirthRef { node_id: predecessor.node_id.clone(), incarnation_id: incarnation };
@@ -1550,13 +1553,13 @@ mod tests {
         let original = PathName::new("opaque.path", "north").unwrap();
         let mut stored = NodeRow::new(original.renamed().unwrap(), "mesh1", "gateway", NodeId::mint(), NodeStatus::Stopped);
         let incarnation = IncarnationId::mint();
-        stored.birth_mut(&incarnation, &stored.name.clone());
+        stored.birth_mut(&incarnation, &stored.location());
         stored.replacement_from = Some(original.clone());
         storage.put_node(&stored).await.unwrap();
         let pin = crate::storage::BirthRef { node_id: stored.node_id.clone(), incarnation_id: incarnation };
         let successor = NodeId::mint();
         let mut rollback = stored.clone();
-        rollback.name = original.clone();
+        { let at = original.clone(); rollback.path = at.path; rollback.name = at.name; }
         rollback.replacement_from = None;
         let mut another_successor = stored.clone();
         another_successor.inherited_by = Some(NodeId::mint());
@@ -1582,7 +1585,7 @@ mod tests {
                 let mut old = NodeRow::new(old_name, "mesh1", "node", NodeId::mint(), if retained { NodeStatus::Stopped } else { NodeStatus::Deleted });
                 old.executable = Some(rdm_core::binding::Binding { launch_id: "old-launch".into(), executable: "/old-executable".into(), sha256: "old-sha".into(), image: None });
                 old.storage_persistence = Some(rdm_core::meta::StoragePersistence::Ephemeral);
-                old.birth_mut(&IncarnationId::mint(), &old.name.clone());
+                old.birth_mut(&IncarnationId::mint(), &old.location());
                 if retained { old.replacement_from = Some(name.clone()); }
                 storage.put_node(&old).await.unwrap();
                 let id = NodeId::mint();
@@ -1620,7 +1623,7 @@ mod tests {
             old.executable = Some(rdm_core::binding::Binding { launch_id: "previous-launch".into(), executable: "/previous-executable".into(), sha256: "previous-sha".into(), image: None });
             old.storage_persistence = Some(rdm_core::meta::StoragePersistence::Ephemeral);
             let incarnation = IncarnationId::mint();
-            old.birth_mut(&incarnation, &old.name.clone());
+            old.birth_mut(&incarnation, &old.location());
             if retained { old.replacement_from = Some(name.clone()); }
             storage.put_node(&old).await.unwrap();
             let id = NodeId::mint();
@@ -1653,7 +1656,7 @@ mod tests {
         let written = WrittenRows::default();
         let name = PathName::new("independent.path", "member").unwrap();
         let unrelated = NodeRow::new(name.renamed().unwrap(), "another-mesh", "gateway", NodeId::mint(), NodeStatus::Ready);
-        check_name(&storage, None, &unrelated.name, &unrelated.node_id).await.unwrap().unwrap();
+        check_name(&storage, None, &unrelated.location(), &unrelated.node_id).await.unwrap().unwrap();
         written.put(&storage, &unrelated).await.unwrap();
         let successor = NodeId::mint();
         let created = seeded_put(&storage, &written, &name, &name, "mesh1", "node", &successor, NodeStatus::Pending, &BTreeMap::new(), None, None, None, &Default::default(), None, RowFor::Arrival, &tracing::Span::none(), "").await.unwrap();
@@ -1673,17 +1676,17 @@ mod tests {
         let row = NodeRow::new(location.clone(), record.mesh.clone(), &record.r#type, record.node_id.clone(), NodeStatus::Ready);
         written.put(&storage, &row).await.unwrap();
         let elsewhere = PathName::new("apps.west", "worker-old").unwrap();
-        assert!(matches!(move_row_with_intent(&storage, &written, &location, &record, &location, &elsewhere, &crate::accepted::RenameIntent::Replacement { original: location.clone() }).await, Err(RenameRefused::Unwritten(_))));
+        assert!(matches!(move_row_with_intent(&storage, &written, &location, &record, &location, &elsewhere, &crate::accepted::RenameIntent::Replacement { original_path: location.path.clone(), original_name: location.name.clone()}).await, Err(RenameRefused::Unwritten(_))));
         assert_eq!(record_at(&storage, &elsewhere).await.unwrap(), None);
-        assert_eq!(storage.node(&record.node_id).await.unwrap().unwrap().name, location);
+        assert_eq!(storage.node(&record.node_id).await.unwrap().unwrap().location(), location);
         // Even a stale caller whose two arguments agree cannot move the persisted path.
-        let stale = Node { name: elsewhere.clone(), ..record.clone() };
+        let stale = Node { path: elsewhere.path.clone(), name: elsewhere.name.clone(), ..record.clone() };
         assert!(matches!(move_row(&storage, &written, &location, &stale, &elsewhere, &elsewhere.with_name("another").unwrap()).await, Err(RenameRefused::Unwritten(_))));
         let renamed = location.renamed().unwrap();
         move_row(&storage, &written, &location, &record, &location, &renamed).await.unwrap();
         let after = storage.node(&record.node_id).await.unwrap().unwrap();
-        assert_eq!(after.name.path, location.path);
-        assert_eq!(after.name.name, "worker-old");
+        assert_eq!(after.path, location.path);
+        assert_eq!(after.name, "worker-old");
         assert_eq!(after.replacement_from, None);
     }
 
@@ -1697,7 +1700,7 @@ mod tests {
         let renamed = PathName::new(retained.path.clone(), "renamed").unwrap();
         let record = Node::allocated(original.clone(), "unrelated-mesh", "node");
         let mut row = NodeRow::new(retained.clone(), "unrelated-mesh", "node", record.node_id.clone(), NodeStatus::Ready);
-        row.renamed_from = Some(original.clone());
+        row.renamed_from = Some(original.name.clone());
         row.replacement_from = Some(original.clone());
         written.put(&storage, &row).await.unwrap();
         let me: PathName = rdm_core::PathName::new("elsewhere.node-admin", "writer").unwrap();
@@ -1705,8 +1708,8 @@ mod tests {
         assert_eq!(record_at(&storage, &original).await.unwrap(), None);
         let after = storage.node(&record.node_id).await.unwrap().unwrap();
         assert_eq!(after.replacement_from, Some(original.clone()));
-        assert_eq!(after.renamed_from, Some(retained));
-        move_row_with_intent(&storage, &written, &me, &record, &renamed, &original, &crate::accepted::RenameIntent::Rollback { original: original.clone() }).await.unwrap();
+        assert_eq!(after.renamed_from, Some(retained.name));
+        move_row_with_intent(&storage, &written, &me, &record, &renamed, &original, &crate::accepted::RenameIntent::Rollback { original_path: original.path.clone(), original_name: original.name.clone()}).await.unwrap();
         assert_eq!(storage.node(&record.node_id).await.unwrap().unwrap().replacement_from, None);
     }
 
@@ -1768,7 +1771,7 @@ mod tests {
 
     /// The status `n`'s row carries in `storage`.
     async fn status_of(storage: &MemoryNodesStorage, n: &Node) -> Option<NodeStatus> {
-        record_at(storage, &n.name).await.unwrap().map(|r| r.status)
+        record_at(storage, &n.location()).await.unwrap().map(|r| r.status)
     }
 
     /// CONTRACT: a node row's status is written only by its mesh's writer (node-identity-and-state.md
@@ -1792,11 +1795,11 @@ mod tests {
         let rpc = node(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", false, false);
         let storage = Arc::new(MemoryNodesStorage::default());
         for n in [&lost, &rpc] {
-            write_record(&*storage, &crate::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready)).await.unwrap().unwrap();
+            write_record(&*storage, &crate::storage::NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready)).await.unwrap().unwrap();
         }
         let shared = Arc::new(RwLock::new(view(vec![fp.clone(), lost.clone(), elected.clone(), rpc.clone()])));
-        let at_fp = NodeRows::new(fp.name.clone(), fp.node_id.clone(), shared.clone(), storage.clone());
-        let at_writer = NodeRows::new(elected.name.clone(), elected.node_id.clone(), shared.clone(), storage.clone());
+        let at_fp = NodeRows::new(fp.location(), fp.node_id.clone(), shared.clone(), storage.clone());
+        let at_writer = NodeRows::new(elected.location(), elected.node_id.clone(), shared.clone(), storage.clone());
         let root = tracing::info_span!("cell.row-status-writer");
         let _in_root = root.enter();
 
@@ -1818,8 +1821,8 @@ mod tests {
         // acting primary, and still no other row of mesh2, as its Deleted row's predicate says.
         {
             let mut t = shared.write().await;
-            t.nodes.retain(|n| n.name != elected.name);
-            t.nodes.iter_mut().filter(|n| n.name == lost.name).for_each(|n| n.is_primary = true);
+            t.nodes.retain(|n| n.location() != elected.location());
+            t.nodes.iter_mut().filter(|n| n.location() == lost.location()).for_each(|n| n.is_primary = true);
         }
         assert!(at_fp.writes_unreached(&lost).await);
         at_fp.status(&lost, &lost_inc, NodeStatus::Deleting).await.unwrap_or_else(|e| panic!("acting primary of mesh2: {e}"));
@@ -1839,7 +1842,7 @@ mod tests {
             s.attributes["outcome"].clone(),
         )).collect();
         let expected = [(&fp, &lost, "not-mesh-primary"), (&fp, &rpc, "not-mesh-primary"), (&elected, &rpc, "written"), (&fp, &lost, "written"), (&fp, &rpc, "not-mesh-primary")]
-            .map(|(a, b, outcome)| (a.name.clone(), b.name.clone(), outcome.to_string()));
+            .map(|(a, b, outcome)| (a.location(), b.location(), outcome.to_string()));
         assert_eq!(spans, expected, "via-row-status: separate executor and subject fields");
 
     }

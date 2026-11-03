@@ -957,7 +957,7 @@ mod tests {
         meshes.put_mesh(&mesh).await.unwrap();
         let row = NodeRow::new(rdm_core::PathName::new("meshafter.node", "7").unwrap(), "meshafter", "node", NodeId::mint(), crate::model::NodeStatus::Ready);
         nodes.put_node(&row).await.unwrap();
-        let runtime = RuntimeRow { r#type: "node".into(), mesh: "meshafter".into(), node_id: NodeId::mint(), name: rdm_core::PathName::new("meshafter.node", "8").unwrap(), incarnation_id: IncarnationId::mint(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-after")).unwrap(), data_dir: None };
+        let runtime = RuntimeRow { r#type: "node".into(), mesh: "meshafter".into(), node_id: NodeId::mint(), path: "meshafter.node".into(), name: "8".into(), incarnation_id: IncarnationId::mint(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-after")).unwrap(), data_dir: None };
         nodes.put_runtime(&runtime).await.unwrap();
         let build = crate::build_state::BuildAccepted {
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("after")).unwrap(),
@@ -968,8 +968,8 @@ mod tests {
         builds.publish_accepted(&build).await.unwrap();
         let fact = rdm_core::connections::NodeConnection {
             id: rdm_core::ConnectionId::mint(),
-            source: rdm_core::connections::ConnectionEnd { r#type: "node-admin".into(), mesh: "mesh1".into(), name: name.clone(), node_id: scope.node_id.clone(), incarnation: Some(scope.writer.clone()) },
-            destination: rdm_core::connections::ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), name: rdm_core::PathName::new("mesh1.node", "2").unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
+            source: rdm_core::connections::ConnectionEnd { r#type: "node-admin".into(), mesh: "mesh1".into(), path: name.path.clone(), name: name.name.clone(), node_id: scope.node_id.clone(), incarnation: Some(scope.writer.clone()) },
+            destination: rdm_core::connections::ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), path: "mesh1.node".into(), name: "2".into(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
             kind: rdm_core::connections::ConnectionKind::Direct,
             alpn: b"storage-provider/1".to_vec(),
             state: rdm_core::connections::ConnectionState::Connected,
@@ -986,7 +986,7 @@ mod tests {
         assert_eq!(fabric.fabric().await.unwrap().map(|f| f.name), Some("fabricafter".to_string()), "fabric.storage reads the new provider");
         assert_eq!(meshes.mesh_named("meshafter").await.unwrap(), Some(mesh.clone()), "mesh.storage reads the new provider");
         assert_eq!(nodes.node(&row.node_id).await.unwrap().map(|r| r.node_id), Some(row.node_id.clone()), "nodes.storage reads the new provider");
-        assert_eq!(crate::node_rows::record_at(&*nodes, &row.name).await.unwrap().map(|r| r.node_id), Some(row.node_id.clone()), "and the record at its path and name");
+        assert_eq!(crate::node_rows::record_at(&*nodes, &row.location()).await.unwrap().map(|r| r.node_id), Some(row.node_id.clone()), "and the record at its path and name");
         assert_eq!(nodes.runtime(&runtime.node_id, &runtime.incarnation_id).await.unwrap(), Some(runtime.clone()), "and its runtime rows");
         assert_eq!(builds.read_build(&build.build_id).await.unwrap().build_id, build.build_id, "the Build journal reads the new provider");
         assert!(seen.lock().unwrap().contains(&build.build_id), "the derivation installed before the change runs over the new journal's facts");
@@ -1093,7 +1093,7 @@ mod tests {
     async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(backend: &dyn StorageBackend, first: &StorageScope, re_born: &StorageScope, other: &StorageScope) {
         let runtime = crate::storage::RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(),
             node_id: NodeId::mint(),
-            name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
+            path: "mesh1.node".into(), name: "2".into(),
             incarnation_id: IncarnationId::mint(),
             runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(),
             data_dir: Some("/tmp/mesh1.node.2".into()),
@@ -1124,7 +1124,7 @@ mod tests {
         let own = crate::storage::NodeRecord { mesh: "mesh1".into(),
             node_id: NodeId::mint(),
             fabric_id: FabricId::mint(),
-            name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(),
+            path: "mesh1.node-admin".into(), name: "1".into(),
             mesh_id: crate::model::MeshId::mint(),
             incarnation_id: IncarnationId::mint(),
             endpoint_id: crate::model::EndpointId(iroh::SecretKey::generate().public().to_string()),

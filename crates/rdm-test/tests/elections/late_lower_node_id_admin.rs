@@ -60,7 +60,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // history: it is forgotten only once a later Build is current.
     let a = estate.reconcile_shape("fabric1", &[("mesh1", 1, 3)]).await.build_id;
     let nodes = estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
-    let incumbent = nodes.iter().find(|n| n.name == incumbent_admin).cloned().unwrap();
+    let incumbent = nodes.iter().find(|n| n.location() == incumbent_admin).cloned().unwrap();
     let a_births: Vec<_> = nodes.iter().filter(|n| n.r#type == "node").cloned().collect();
     let refused = estate.builds_obj().await.delete(&a).await;
     assert!(matches!(&refused, Err(CallEnd::Rejected { reason, .. }) if reason == "cannot-delete"), "the accepted Build is never history: {refused:?}");
@@ -77,7 +77,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
             late = Some(born);
             break;
         }
-        Estate::workflow(&format!("node.delete of {:?}", born.name), estate.nodes_obj().await.delete(&born.name).await).await;
+        Estate::workflow(&format!("node.delete of {:?}", born.name), estate.nodes_obj().await.delete(&born.location()).await).await;
         estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
     }
     let late = late.unwrap_or_else(|| {
@@ -87,7 +87,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
             share_below(&incumbent.node_id.to_string()) * 100.0
         )
     });
-    let late_name = late.name.clone();
+    let late_name = late.location();
 
     // A lower NodeId never displaces a living primary: the incumbent keeps every role, seen from
     // both admins, for several gossip intervals: what each admin holds itself (query.md §2), never
@@ -121,10 +121,10 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
 
     // It stops and starts one of A's births and deletes the other.
     let (restarted, deleted) = (a_births[0].clone(), a_births[1].clone());
-    estate.stop_then_start(&restarted.name).await;
-    let after = estate.until_node(&restarted.name, "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).cloned()).await;
+    estate.stop_then_start(&restarted.location()).await;
+    let after = estate.until_node(&restarted.location(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation_id), (&restarted.node_id, &restarted.incarnation_id), "stop/start keeps ID and incarnation");
-    Estate::workflow(&format!("node.delete of {:?}", deleted.name), estate.nodes_obj().await.delete(&deleted.name).await).await;
+    Estate::workflow(&format!("node.delete of {:?}", deleted.name), estate.nodes_obj().await.delete(&deleted.location()).await).await;
     estate
         .until_view("the deleted birth leaves the view", Duration::from_secs(30), |views| views.iter().all(|n| n.node_id != deleted.node_id || n.incarnation_id != deleted.incarnation_id).then_some(()))
         .await;

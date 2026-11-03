@@ -339,7 +339,7 @@ pub async fn run_test_node_with(
     let launch = launch_for(role.clone())?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
-        node_path = %launch.name.path, node_name = %launch.name.name,
+        node_path = %launch.path, node_name = %launch.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
         "type" = role.name(),
@@ -365,7 +365,7 @@ pub async fn run_test_node_with(
             () = crate::node::stop_requested() => {
                 boot.in_scope(|| tracing::info!("stopped by signal before the node booted"));
                 drop(boot);
-                tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.name.path, node_name = %launch.name.name, incarnation_id = %launch.incarnation, booted = false).in_scope(|| tracing::info!("stopping"));
+                tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.path, node_name = %launch.name, incarnation_id = %launch.incarnation, booted = false).in_scope(|| tracing::info!("stopping"));
                 return Ok(());
             }
         };
@@ -384,11 +384,11 @@ pub async fn run_test_node_with(
         why = running.pre_node_ready_failed() => Some(why),
     };
     if let Some(why) = ended {
-        tracing::info_span!("rdm.mesh.node.delete.via-pre-node-ready-failed", node_path = %launch.name.path, node_name = %launch.name.name, reason = %why).in_scope(|| tracing::error!("pre_node_ready failed; this node ends"));
+        tracing::info_span!("rdm.mesh.node.delete.via-pre-node-ready-failed", node_path = %launch.path, node_name = %launch.name, reason = %why).in_scope(|| tracing::error!("pre_node_ready failed; this node ends"));
         running.stop().await;
         return Err(anyhow::anyhow!("{:?} failed pre_node_ready: {why}", launch.name));
     }
-    tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.name.path, node_name = %launch.name.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
+    tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.path, node_name = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
     running.stop().await;
     Ok(())
 }

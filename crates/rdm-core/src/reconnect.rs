@@ -82,7 +82,7 @@ pub fn reconnect_plan(held: &ConnectionsHeld, current_incarnation: impl Fn(&Path
             let due_ms = next_due(row)?;
             let recovery = row.recovery?;
             let recorded = row.destination.incarnation.clone()?;
-            if current_incarnation(&row.destination.name).is_some_and(|now| now != recorded) {
+            if current_incarnation(&row.destination.location()).is_some_and(|now| now != recorded) {
                 return None;
             }
             Some(ReconnectItem { destination: row.destination.clone(), destination_incarnation: recorded, recovery, due_ms, failed: row.clone() })

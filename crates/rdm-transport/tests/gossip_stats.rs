@@ -18,7 +18,7 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, ep: &iroh::Endpoin
         fabric_id: FabricId::parse("fab000000001").unwrap(),
         node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: NodeId::mint(),
-            name,
+            path: name.path.clone(), name: name.name.clone(),
             endpoint_id: EndpointId(ep.id().to_string()),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),

@@ -96,7 +96,7 @@ async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
     tokio::time::timeout(WRONG, async {
         loop {
             let listed = nodes.get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.unwrap_or_else(|e| panic!("node.get [{node:?}]: {e}"));
-            if listed.iter().any(|n| &n.name == node && n.status == want) {
+            if listed.iter().any(|n| &n.location() == node && n.status == want) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -164,7 +164,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         })
         .await
         .expect("the admin's view never held it ready in both roles");
-        let admin = ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type, node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
+        let admin = ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type, node_id: me.node.node_id.clone(), path: me.node.path.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller's endpoint binds");
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(admin);
@@ -196,7 +196,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         let zone: std::collections::BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
         let current = Current::read(&carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
         let request = current.held(&executables).unwrap_or_else(|e| panic!("{e}")).into_values().flat_map(|m| m.into_values()).map(|mut s| {
-            if s.path == node {
+            if s.location() == node {
                 s.config = zone.clone();
             }
             s

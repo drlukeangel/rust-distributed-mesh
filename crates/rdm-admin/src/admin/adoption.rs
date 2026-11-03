@@ -130,18 +130,18 @@ pub async fn read(
         return Err(format!("{of}: the node rows on the store root {} record no fabric-primary: an adoption launch is at the lost fabric-primary's (path, name)", root.display()));
     };
     match &delete {
-        None if row.name != *name => {
-            return Err(format!("{of}: the node rows record fabric-primary node_id={} at path={} name={}; an adoption launch uses that location", row.node_id, row.name.path, row.name.name));
+        None if row.location() != *name => {
+            return Err(format!("{of}: the node rows record fabric-primary node_id={} at path={} name={}; an adoption launch uses that location", row.node_id, row.path, row.name));
         }
         None => {}
-        Some(d) if row.name == *name => {
+        Some(d) if row.location() == *name => {
             return Err(format!(
                 "{of}: fabric.delete {} is in force and the supplied location is the lost fabric-primary's location, which the delete removes: under a delete the adoption launch is created at a new path and name of the node-admin type in an existing, not-yet-deleted mesh (Q159)",
                 d.build_id
             ));
         }
         Some(d) => {
-            if let Some(held) = rows.iter().find(|r| r.name == *name && r.status != NodeStatus::Deleted) {
+            if let Some(held) = rows.iter().find(|r| r.location() == *name && r.status != NodeStatus::Deleted) {
                 return Err(format!("{of}: fabric.delete {} is in force and the supplied location is held by {}: the adoption launch under a delete is created at a new path and name (Q159)", d.build_id, held.node_id));
             }
         }
@@ -153,7 +153,7 @@ pub async fn read(
         mesh: row.mesh.clone(),
         node_id: row.node_id.clone(),
         fabric_id: fabric_id.clone(),
-        name: row.name.clone(),
+        path: row.path.clone(), name: row.name.clone(),
         mesh_id: row.mesh_id.clone().unwrap_or_else(|| mesh.mesh_id.clone()),
         incarnation_id: birth.incarnation_id.clone(),
         endpoint_id: own.and_then(|o| o.endpoint_id.clone()).unwrap_or_else(|| EndpointId(String::new())),
@@ -320,7 +320,7 @@ pub async fn check(c: &Claimed, answers: &dyn Answers) -> Result<Finding, Refuse
         tracing::Span::current().record("verdict", finding.name());
         if let Finding::Reached { .. } = finding {
             tracing::Span::current().record("answered", c.lost.node_id.as_str());
-            return Err(Refused { reason: format!("NameHeld: node_id={} incarnation={} path={} name={} answered node investigation", c.lost.node_id, c.lost.incarnation_id, c.lost.name.path, c.lost.name.name), answered: Some(c.lost.node_id.clone()) });
+            return Err(Refused { reason: format!("NameHeld: node_id={} incarnation={} path={} name={} answered node investigation", c.lost.node_id, c.lost.incarnation_id, c.lost.path, c.lost.name), answered: Some(c.lost.node_id.clone()) });
         }
         if let Some(refused) = admin_answered(&c.lost, answers).await {
             tracing::Span::current().record("answered", refused.answered.as_ref().map(|id| id.as_str()).unwrap_or(""));
@@ -346,7 +346,7 @@ pub async fn admin_answered(lost: &crate::storage::NodeRecord, answers: &dyn Ans
         Err(error) => return Some(Refused { reason: format!("the answering admins could not be determined: {error}"), answered: None }),
     };
     let first = answering.first()?.clone();
-    Some(Refused { reason: format!("NameHeld: answering node IDs {answering:?}; path={} name={} belongs to node_id={}", lost.name.path, lost.name.name, lost.node_id), answered: Some(first) })
+    Some(Refused { reason: format!("NameHeld: answering node IDs {answering:?}; path={} name={} belongs to node_id={}", lost.path, lost.name, lost.node_id), answered: Some(first) })
 }
 
 /// Why the checks refused the launch, and the admin that answered.
@@ -405,7 +405,7 @@ pub async fn take_new_name(me: &PathName, mesh: &str, me_id: &NodeId, nodes: &dy
 /// the lost birth's row written `Deleted`, then this node's claim of the path and name), recorded on the
 /// node records, never on a Build.
 pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows) -> Result<(), String> {
-    crate::node_rows::take_inherited_name(nodes, written, &c.lost, me_id).await.map(|_| ()).map_err(|e| format!("node_id={me_id} claims path={} name={} after lost node_id={}: {e}", c.lost.name.path, c.lost.name.name, c.lost.node_id))
+    crate::node_rows::take_inherited_name(nodes, written, &c.lost, me_id).await.map(|_| ()).map_err(|e| format!("node_id={me_id} claims path={} name={} after lost node_id={}: {e}", c.lost.path, c.lost.name, c.lost.node_id))
 }
 
 /// [`Answers`] over this process's Node RPC client: node investigation of the lost birth direct (no view
@@ -414,8 +414,10 @@ pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storag
 pub struct ProbeAnswers {
     /// This launch's explicit owning mesh.
     pub mesh: String,
-    /// This launch's path and name.
-    pub me: PathName,
+    /// This launch's path.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// This launch's node id.
     pub me_id: NodeId,
     /// The process's Node RPC client.
@@ -437,7 +439,7 @@ pub struct ProbeAnswers {
 impl ProbeAnswers {
     fn resolve(&self, node_id: &NodeId, name: &PathName, mesh: &str, r#type: &str, endpoint: &EndpointId, addr: SocketAddr, incarnation: &IncarnationId) -> bool {
         let Ok(endpoint_id) = endpoint.0.parse::<iroh::PublicKey>() else { return false };
-        self.resolver.apply(rdm_transport::ResolvedNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: node_id.clone(), name: name.clone(), endpoint_id, transport_addr: addr, incarnation: incarnation.clone() }, None);
+        self.resolver.apply(rdm_transport::ResolvedNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id, transport_addr: addr, incarnation: incarnation.clone() }, None);
         true
     }
 
@@ -449,7 +451,7 @@ impl ProbeAnswers {
 #[async_trait::async_trait]
 impl Answers for ProbeAnswers {
     async fn investigate(&self, lost: &crate::storage::NodeRecord) -> Finding {
-        let mut node = Node::allocated(lost.name.clone(), lost.mesh.clone(), "node-admin");
+        let mut node = Node::allocated(lost.location(), lost.mesh.clone(), "node-admin");
         node.node_id = lost.node_id.clone();
         node.incarnation_id = Some(lost.incarnation_id.clone());
         let view = Topology { fabric: self.fabric.clone(), meshes: Vec::new(), nodes: Vec::new() };
@@ -457,7 +459,7 @@ impl Answers for ProbeAnswers {
             let row = self.nodes.runtime(&lost.node_id, &lost.incarnation_id).await.ok().flatten();
             Finding::from(super::rows_writer::inspection_of(&*self.provider, &None, row.as_ref()).await)
         };
-        if !self.resolve(&lost.node_id, &lost.name, &lost.mesh, "node-admin", &lost.endpoint_id, lost.transport_addr, &lost.incarnation_id) {
+        if !self.resolve(&lost.node_id, &lost.location(), &lost.mesh, "node-admin", &lost.endpoint_id, lost.transport_addr, &lost.incarnation_id) {
             return inspect.await;
         }
         crate::node_investigation::investigate(&node, &view, &self.calls(), inspect).await
@@ -482,8 +484,8 @@ impl Answers for ProbeAnswers {
             let b = r.newest_birth()?;
             let own = crate::current_record::of_birth(owns.get(&r.node_id), &r.node_id, &b.incarnation_id)?;
             let (endpoint, addr) = (own.endpoint_id.clone()?, own.transport_addr?);
-            self.resolve(&r.node_id, &r.name, &r.mesh, &r.r#type, &endpoint, addr, &b.incarnation_id).then(|| {
-                let mut node = Node::allocated(r.name.clone(), r.mesh.clone(), &r.r#type);
+            self.resolve(&r.node_id, &r.location(), &r.mesh, &r.r#type, &endpoint, addr, &b.incarnation_id).then(|| {
+                let mut node = Node::allocated(r.location(), r.mesh.clone(), &r.r#type);
                 node.node_id = r.node_id.clone();
                 node.incarnation_id = Some(b.incarnation_id.clone());
                 let probe = rdm_core::status::StatusRequest::ProbeNodeState { node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone() };

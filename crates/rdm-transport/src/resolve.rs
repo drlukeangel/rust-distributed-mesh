@@ -47,13 +47,20 @@ pub struct ResolvedNode {
     /// The node's minted id.
     pub node_id: NodeId,
     /// The node's separate immutable path and mutable name.
-    pub name: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The node's Iroh public key.
     pub endpoint_id: iroh::PublicKey,
     /// The one address of the node's Iroh endpoint.
     pub transport_addr: std::net::SocketAddr,
     /// The incarnation of the node's current birth.
     pub incarnation: IncarnationId,
+}
+
+impl ResolvedNode {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// Answers where an exact target is now.
@@ -114,13 +121,13 @@ impl StaticResolver {
     /// Add or replace the node `n`, keyed by its id.
     pub fn insert(&self, n: ResolvedNode) {
         let mut state = self.state.write().unwrap();
-        if let Some(previous) = state.nodes.get(&n.node_id).map(|node| node.name.clone()) {
+        if let Some(previous) = state.nodes.get(&n.node_id).map(|node| node.location()) {
             if state.locations.get(&previous) == Some(&n.node_id) {
                 state.locations.remove(&previous);
             }
         }
         state.gone.remove(&n.node_id);
-        state.locations.insert(n.name.clone(), n.node_id.clone());
+        state.locations.insert(n.location(), n.node_id.clone());
         state.nodes.insert(n.node_id.clone(), n);
         drop(state);
         self.changed.send_modify(|v| *v += 1);
@@ -147,8 +154,8 @@ impl StaticResolver {
     pub fn remove_gone(&self, id: &NodeId) {
         let mut state = self.state.write().unwrap();
         if let Some(previous) = state.nodes.remove(id) {
-            if state.locations.get(&previous.name) == Some(id) {
-                state.locations.remove(&previous.name);
+            if state.locations.get(&previous.location()) == Some(id) {
+                state.locations.remove(&previous.location());
             }
         }
         state.gone.insert(id.clone());
@@ -199,7 +206,7 @@ mod tests {
         let retained = original.renamed().unwrap();
         let make = || ResolvedNode {
             mesh: "explicit-mesh".into(), r#type: "node".into(),
-            node_id: NodeId::mint(), name: original.clone(),
+            node_id: NodeId::mint(), path: original.path.clone(), name: original.name.clone(),
             endpoint_id: iroh::SecretKey::generate().public(),
             transport_addr: "127.0.0.1:1234".parse().unwrap(), incarnation: IncarnationId::mint(),
         };
@@ -209,7 +216,7 @@ mod tests {
         resolver.insert(successor.clone());
         assert_eq!(resolver.resolve(&NodeTarget::CurrentPath(original.clone())).unwrap(), successor);
         assert_eq!(resolver.resolve(&NodeTarget::ExactNode(predecessor.node_id.clone())).unwrap(), predecessor);
-        predecessor.name = retained.clone();
+        { let at = retained.clone(); predecessor.path = at.path; predecessor.name = at.name; }
         resolver.insert(predecessor.clone());
         assert_eq!(resolver.node_at(&original), Some(successor.node_id.clone()));
         assert_eq!(resolver.node_at(&retained), Some(predecessor.node_id.clone()));
@@ -221,7 +228,7 @@ mod tests {
 
         // The opposite learning order reaches the same mappings.
         let other = StaticResolver::new();
-        let initial = ResolvedNode { name: original.clone(), ..predecessor.clone() };
+        let initial = ResolvedNode { path: original.path.clone(), name: original.name.clone(), ..predecessor.clone() };
         other.insert(initial);
         other.insert(predecessor.clone());
         other.insert(successor.clone());
@@ -232,8 +239,8 @@ mod tests {
         assert_eq!(other.node_at(&original), Some(successor.node_id.clone()));
         assert_eq!(other.resolve(&NodeTarget::ExactNode(predecessor.node_id.clone())), Err(ResolveFailure::Gone));
 
-        let renamed = successor.name.with_name("renamed").unwrap();
-        resolver.insert(ResolvedNode { name: renamed.clone(), ..successor.clone() });
+        let renamed = successor.location().with_name("renamed").unwrap();
+        resolver.insert(ResolvedNode { path: renamed.path.clone(), name: renamed.name.clone(), ..successor.clone() });
         assert_eq!(resolver.node_at(&original), None);
         assert_eq!(resolver.node_at(&renamed), Some(successor.node_id));
     }

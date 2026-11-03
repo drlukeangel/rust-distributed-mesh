@@ -1284,10 +1284,10 @@ pub(crate) fn delete_step_birth(s: &BuildStepReceipt, step: &str) -> Option<(cra
     let matches_subject = match &s.operation.subject {
         Some(rdm_core::OperationSubject::Node(id)) => *id == op.node_id,
         Some(rdm_core::OperationSubject::Birth { node_id, incarnation }) => *node_id == op.node_id && *incarnation == op.incarnation,
-        Some(rdm_core::OperationSubject::Location(location)) => *location == op.name,
+        Some(rdm_core::OperationSubject::Location(location)) => *location == op.location(),
         _ => false,
     };
-    matches_subject.then_some((op.name, op.node_id, op.incarnation))
+    matches_subject.then_some((op.location(), op.node_id, op.incarnation))
 }
 
 /// Last completed or failed operation attempt before a new execution, in the same Build and lane.
@@ -2863,7 +2863,7 @@ mod tests {
             operation: rdm_core::OperationId::node("node.delete", &node_id),
             node_id,
             incarnation: rdm_core::IncarnationId::mint(),
-            name,
+            path: name.path.clone(), name: name.name.clone(),
             event_at_rafka_ms: 1,
             traceparent: None,
             tracestate: None,
@@ -3210,8 +3210,8 @@ mod tests {
         let current = j.current().await.unwrap().expect("the old Build is current");
         assert_eq!((current.build_id.clone(), current.state), (BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), BuildState::Complete));
         assert_eq!(current.topology, intent("b1").topology, "read as it is: every entry names none");
-        let admin = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node-admin".into(), path: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve }, executable: None, tags: Default::default(), config: Default::default() };
-        let mut rpc = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node".into(), path: rdm_core::PathName::new("mesh1.node", "1").unwrap(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
+        let admin = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node-admin".into(), path: "mesh1.node-admin".into(), name: "1".into(), storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve }, executable: None, tags: Default::default(), config: Default::default() };
+        let mut rpc = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node".into(), path: "mesh1.node".into(), name: "1".into(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
         rpc.executable = Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
         let change = crate::accepted::TopologyChange::Reconcile { based_on: current.build_id.clone(), nodes: vec![admin, rpc] };
         let observed = crate::topology::Topology {
@@ -3239,7 +3239,7 @@ mod tests {
         let rpc: crate::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let m = stored.topology.meshes.get_mut("mesh1").unwrap();
         m.nodes.insert(rpc.clone());
-        let mut spec = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node".into(), path: rpc.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
+        let mut spec = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node".into(), path: rpc.path.clone(), name: rpc.name.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
         spec.executable = Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
         m.set_spec(spec).unwrap();
         let writer = open_at(&dir).await.unwrap();
@@ -3376,6 +3376,7 @@ mod tests {
         assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b1")));
         assert!(!drivable(&s, &p("b2").await).await.unwrap(), "one Build in flight: not while the current one is in progress");
     }
+
 
     /// CONTRACT (Q28 A: "a mesh-audit ratchet for the store layout"; R-SR1, R-SR3): the store root's
     /// layout, byte for byte: a Build record is one line of `builds.jsonl` at `<build_id>/<key>`
@@ -3579,7 +3580,7 @@ mod tests {
     fn an_attempt_of_steps_keeps_the_journal_tags_written_before_the_rename() {
         let node: crate::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let mut steps = opened("b1", 2, AttemptReason::Steps);
-        steps.action = Some(crate::accepted::AttemptAction::Steps { rename_intents: Default::default(), steps: vec![rdm_core::build::Step::Stop { node }], pinned: vec![] });
+        steps.action = Some(crate::accepted::AttemptAction::Steps { rename_intents: Default::default(), steps: vec![rdm_core::build::Step::Stop { path: node.path.clone(), name: node.name.clone()}], pinned: vec![] });
         let line = serde_json::to_value(BuildFact::Opened(steps.clone())).unwrap();
         assert_eq!((line["reason"].as_str(), line["action"]["action"].as_str()), (Some("recipe"), Some("recipe")), "{line}");
         let old = line.to_string();

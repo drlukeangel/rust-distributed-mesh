@@ -57,7 +57,7 @@ impl HeardAgain {
         };
         // A command not sent is spanned too, with why: the flame of a birth left off its mesh reads it.
         if !outcome.starts_with("mesh-joined") && !outcome.starts_with("commanded") {
-            tracing::info_span!("rdm.node_admin.node.update.via-mesh-join-commanded", node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), sent = false, outcome = %outcome, "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.node.update.via-mesh-join-commanded", node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), sent = false, outcome = %outcome, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("a heard-again birth was looked at: node.mesh.join not sent"));
         }
         outcome
@@ -133,7 +133,7 @@ async fn command_mesh_join(
     let (build_id, attempt) = (rdm_core::LifecycleOp::NO_BUILD.to_string(), rdm_core::LifecycleOp::NO_ATTEMPT);
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-mesh-join-commanded",
-        node_path = %node.name.path, node_name = %node.name.name,
+        node_path = %node.path, node_name = %node.name,
         node_id = %node.node_id,
         incarnation_id = %incarnation.as_str(),
         build_id = %build_id,
@@ -203,7 +203,7 @@ async fn command_mesh_join(
         commanded().lock().unwrap().remove(&key);
     }
     span.record("outcome", outcome.as_str());
-    span.in_scope(|| tracing::info!(node_path = %node.name.path, node_name = %node.name.name, outcome = %outcome, "a birth heard again is commanded back through node.mesh.join"));
+    span.in_scope(|| tracing::info!(node_path = %node.path, node_name = %node.name, outcome = %outcome, "a birth heard again is commanded back through node.mesh.join"));
     outcome
 }
 

@@ -230,7 +230,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(ResolvedNode { r#type: "node-admin".into(), mesh: "mesh1".into(),
             node_id: node_id.clone(),
-            name: me.clone(),
+            path: me.path.clone(), name: me.name.clone(),
             endpoint_id: ep.id(),
             transport_addr: addr,
             incarnation,

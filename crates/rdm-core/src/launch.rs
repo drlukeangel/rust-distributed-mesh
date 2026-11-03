@@ -110,12 +110,19 @@ pub const DEFAULT_CONNECTIONS_DELETE_DEADLINE: Duration = Duration::from_millis(
 pub struct Launcher {
     /// The launching admin's mesh.
     pub mesh: String,
-    /// The launching node-admin's separate path and name fields.
-    pub name: PathName,
+    /// The launching node-admin's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The launching node-admin's node id.
     pub node_id: NodeId,
     /// The launching node-admin's incarnation.
     pub incarnation: IncarnationId,
+}
+
+impl Launcher {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// A secret carried in a launch's environment, as hex: its debug form names its length, never its value.
@@ -209,8 +216,10 @@ pub struct Launch {
     pub fabric: String,
     /// The fabric's minted id.
     pub fabric_id: FabricId,
-    /// The node's separate path and name fields.
-    pub name: PathName,
+    /// The node's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The node's minted id.
     pub node_id: NodeId,
     /// The id of this birth.
@@ -251,6 +260,11 @@ pub struct Launch {
     /// The declared secrets a node-admin is launched with in custody (`RDM_DECLARED_SECRETS`): every
     /// declaration whose value its launcher holds, with that value. Empty for every other birth.
     pub declared: Vec<(DeclaredSecret, SecretHex)>,
+}
+
+impl Launch {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// Lowercase hex of `bytes`.
@@ -419,8 +433,8 @@ impl Launch {
         let mut m = BTreeMap::new();
         m.insert(ENV_FABRIC.into(), self.fabric.clone());
         m.insert(ENV_FABRIC_ID.into(), self.fabric_id.to_string());
-        m.insert(ENV_NODE_PATH.into(), self.name.path.clone());
-        m.insert(ENV_NODE_NAME.into(), self.name.name.clone());
+        m.insert(ENV_NODE_PATH.into(), self.path.clone());
+        m.insert(ENV_NODE_NAME.into(), self.name.clone());
         m.insert(ENV_MESH.into(), self.mesh.clone());
         m.insert(ENV_NODE_TYPE.into(), self.r#type.clone());
         m.insert(ENV_NODE_PROPERTIES.into(), serde_json::to_string(&self.initial_properties).expect("string maps encode as JSON"));
@@ -461,12 +475,14 @@ impl Launch {
     /// malformed is refused by name.
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
         let req = |k: &str| get(k).filter(|v| !v.trim().is_empty()).ok_or_else(|| format!("{k} is required and must not be empty"));
+        let at = PathName::new(req(ENV_NODE_PATH)?, req(ENV_NODE_NAME)?).map_err(|e| format!("{ENV_NODE_PATH}/{ENV_NODE_NAME}: {e}"))?;
         Ok(Self {
             initial_properties: get(ENV_NODE_PROPERTIES).map(|v| serde_json::from_str(&v)
                 .map_err(|_| format!("{ENV_NODE_PROPERTIES} does not parse as initial properties"))).transpose()?.unwrap_or_default(),
             fabric: req(ENV_FABRIC)?,
             fabric_id: FabricId::parse(&req(ENV_FABRIC_ID)?).map_err(|e| format!("{ENV_FABRIC_ID}: {e}"))?,
-            name: PathName::new(req(ENV_NODE_PATH)?, req(ENV_NODE_NAME)?).map_err(|e| format!("{ENV_NODE_PATH}/{ENV_NODE_NAME}: {e}"))?,
+            path: at.path,
+            name: at.name,
             mesh: req(ENV_MESH)?,
             r#type: {
                 let given = req(ENV_NODE_TYPE)?;
@@ -588,13 +604,13 @@ mod tests {
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: crate::PathName::new("elsewhere.gateway", "north").unwrap(),
+            path: "elsewhere.gateway".into(), name: "north".into(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: Some(IncarnationId::mint()),
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
-            launcher: Some(Launcher { mesh: "mesh1".into(), name: crate::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }),
+            launcher: Some(Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }),
             seeds: vec![("abc".into(), "127.0.0.1:41000".parse().unwrap())],
             data_dir: "/tmp/x".into(),
             store_dir: "/tmp/store".into(),
@@ -685,7 +701,7 @@ mod tests {
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: crate::PathName::new("mesh1.node", "2").unwrap(),
+            path: "mesh1.node".into(), name: "2".into(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,

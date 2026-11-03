@@ -19,9 +19,16 @@ use std::sync::Arc;
 /// admin it starts at. `stale` is set when a read ended: the next call reads the views first.
 pub(crate) struct Wire {
     peers: Arc<Peers>,
-    entry: PathName,
+    path: String,
+    /// The name, beside its path.
+    name: String,
     entry_id: Option<rdm_core::NodeId>,
     stale: bool,
+}
+
+impl Wire {
+    /// The `(path, name)` lookup index key of path and name.
+    fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// A fabric shape of counts a cell asks for: [`Estate::submit`] expands it against the current topology
@@ -52,7 +59,7 @@ impl Estate {
     /// `Estate::admin` is a new handover.
     pub async fn carrier(&self) -> BuildCarrier {
         let mut wire = self.wire.lock().await;
-        if let Some(w) = wire.as_mut().filter(|w| w.entry == self.admin && w.entry_id.is_some()) {
+        if let Some(w) = wire.as_mut().filter(|w| w.location() == self.admin && w.entry_id.is_some()) {
             let id = w.entry_id.as_ref().unwrap();
             if w.stale {
                 // A node-admin that is not a primary forwards every read to its mesh-primary (query.md §1,
@@ -66,7 +73,7 @@ impl Estate {
             }
             return w.peers.carrier_for(id.clone());
         }
-        if wire.as_ref().is_none_or(|w| w.stale || w.entry != self.admin) {
+        if wire.as_ref().is_none_or(|w| w.stale || w.location() != self.admin) {
             // A handover after a read ended (`rehandover`) reads the views first: the entry admin may
             // hold a new birth.
             let (peers, after_an_ending) = match wire.take() {
@@ -74,17 +81,17 @@ impl Estate {
                 None => {
                     let birth = {
                         let printed = self.printed.lock().unwrap();
-                        printed.iter().find(|b| b.name == self.admin).or_else(|| printed.first()).cloned().expect("the handover starts from a printed exact birth")
+                        printed.iter().find(|b| b.location() == self.admin).or_else(|| printed.first()).cloned().expect("the handover starts from a printed exact birth")
                     };
                     let peers = Peers::at(&birth).await.unwrap_or_else(|e| panic!("the handover to {:?} ({}): {e}", birth.name, birth.node_id));
                     (Arc::new(peers), false)
                 },
             };
             self.reach_entry(&peers, after_an_ending).await;
-            *wire = Some(Wire { peers, entry: self.admin.clone(), entry_id: None, stale: false });
+            *wire = Some(Wire { peers, path: self.admin.path.clone(), name: self.admin.name.clone(), entry_id: None, stale: false });
         }
         let w = wire.as_ref().expect("the handover was made");
-        w.peers.carrier_at(w.entry.clone())
+        w.peers.carrier_at(w.location())
     }
 
     /// Make the node-admin `Estate::admin` reachable on `peers`. A birth an admin this estate started
@@ -97,7 +104,7 @@ impl Estate {
         if relearn {
             self.relearn(peers).await;
         }
-        if let Some(birth) = printed.iter().find(|birth| birth.name == self.admin) {
+        if let Some(birth) = printed.iter().find(|birth| birth.location() == self.admin) {
             self.await_door(peers, &self.admin, birth).await;
         }
     }
@@ -146,7 +153,7 @@ impl Estate {
         let mut births = self.births.lock().unwrap();
         for n in views.iter().filter(|n| rdm_core::is_node_admin(&n.r#type) && !matches!(n.status, NodeStatus::Dead | NodeStatus::Deleted)) {
             if let Some(birth) = birth_of_view(n) {
-                births.insert(n.name.clone(), birth);
+                births.insert(n.location(), birth);
             }
         }
     }
@@ -237,7 +244,7 @@ impl Estate {
     pub async fn enter(&mut self, admin: &PathName) {
         let peers = self.peers().await;
         let printed = self.learn_printed(&peers);
-        match printed.iter().rev().find(|birth| birth.name == *admin) {
+        match printed.iter().rev().find(|birth| birth.location() == *admin) {
             Some(birth) => self.await_door(&peers, admin, birth).await,
             // Its views are read and noted. An admin whose birth the estate already holds needs no answer:
             // after a loss its reads of other meshes are carried up to a fabric-primary that may not answer
@@ -252,7 +259,7 @@ impl Estate {
             self.births.lock().unwrap().remove(&self.admin);
         }
         self.admin = admin.clone();
-        *self.wire.lock().await = Some(Wire { peers, entry: admin.clone(), entry_id: None, stale: false });
+        *self.wire.lock().await = Some(Wire { peers, path: admin.path.clone(), name: admin.name.clone(), entry_id: None, stale: false });
     }
 
     /// Enter a known admin by globally unique node ID, resolving its separate location fields.
@@ -262,21 +269,21 @@ impl Estate {
         let views = Nodes::new(peers.carrier_for(admin.clone())).get(&rdm_client::Filter::new().eq("id", [admin.as_str()])).await.expect("the successor admin answers node.get directly");
         let node = views.iter().find(|node| &node.node_id == admin).expect("the successor's exact ID is listed");
         self.note(&peers, &views);
-        self.admin = node.name.clone();
-        *self.wire.lock().await = Some(Wire { peers, entry: node.name.clone(), entry_id: Some(admin.clone()), stale: false });
+        self.admin = node.location();
+        *self.wire.lock().await = Some(Wire { peers, path: node.path.clone(), name: node.name.clone(), entry_id: Some(admin.clone()), stale: false });
     }
 
     /// Point the typed objects at the fabric-primary the entry admin's `fabric.get` names.
     pub async fn enter_fabric_primary(&mut self) {
         let primary = self.fabric_view().await.fabric_primary.expect("fabric.get names the fabric-primary");
         let node = self.nodes_obj().await.get(&rdm_client::Filter::new().eq("id", [primary.as_str()])).await.expect("fabric-primary node is readable").into_iter().find(|n| n.node_id == primary).expect("fabric-primary node is listed");
-        self.enter(&node.name).await;
+        self.enter(&node.location()).await;
     }
 
     /// The admin the typed objects start at.
     pub async fn entry(&self) -> PathName {
         self.carrier().await;
-        self.wire.lock().await.as_ref().expect("the handover was made").entry.clone()
+        self.wire.lock().await.as_ref().expect("the handover was made").location()
     }
 
     /// Make the nodes of `views` reachable by the typed objects.
@@ -423,7 +430,7 @@ impl Estate {
             }
         };
         self.learn(&views).await;
-        views.into_iter().find(|n| n.name == path)
+        views.into_iter().find(|n| n.location() == path)
     }
 
     /// The exact node by its globally unique ID, independent of its current name.
@@ -479,7 +486,7 @@ impl Estate {
     /// mesh reads it.
     pub async fn settled_named(&self, names: &std::collections::BTreeSet<PathName>) -> Vec<NodeView> {
         let all = self.node_views().await;
-        let have: std::collections::BTreeSet<PathName> = all.iter().map(|n| n.name.clone()).collect();
+        let have: std::collections::BTreeSet<PathName> = all.iter().map(|n| n.location()).collect();
         assert!(&have == names && all.iter().all(|n| n.status == NodeStatus::Ready), "the view does not hold the nodes the Build completed: wanted {names:?}, the admin lists {:?}", all.iter().map(|n| format!("{:?}={:?}", n.name, n.status)).collect::<Vec<_>>());
         all
     }
@@ -490,7 +497,7 @@ impl Estate {
     /// naming the last view when it does not settle).
     pub async fn settles_to_named(&self, names: &std::collections::BTreeSet<PathName>, within: std::time::Duration) -> Vec<NodeView> {
         self.until_view(&format!("the view holds exactly {names:?}, every node ready"), within, |views| {
-            let have: std::collections::BTreeSet<PathName> = views.iter().map(|n| n.name.clone()).collect();
+            let have: std::collections::BTreeSet<PathName> = views.iter().map(|n| n.location()).collect();
             (&have == names && views.iter().all(|n| n.status == NodeStatus::Ready)).then(|| views.to_vec())
         })
         .await
@@ -607,7 +614,7 @@ impl Estate {
             let last = match self.nodes_obj().await.get(&rdm_client::Filter::new().eq("path", [&path.path]).eq("name", [&path.name])).await {
                 Ok(views) => {
                     self.learn(&views).await;
-                    let view = views.into_iter().find(|n| n.name == path);
+                    let view = views.into_iter().find(|n| n.location() == path);
                     if let Some(v) = check(view.as_ref()) {
                         return v;
                     }
@@ -663,10 +670,10 @@ impl Estate {
     pub async fn advertised_data_dir(&self, node: &PathName) -> Option<String> {
         let entry = self.entry().await;
         let mut admins = vec![entry.clone()];
-        admins.extend(self.node_views().await.into_iter().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.status == NodeStatus::Ready && n.name != entry).map(|n| n.name));
+        admins.extend(self.node_views().await.into_iter().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.status == NodeStatus::Ready && n.location() != entry).map(|n| n.location()));
         for admin in admins {
             let Some(views) = self.node_views_at(&admin).await else { continue };
-            if let Some(dir) = views.into_iter().find(|n| &n.name == node).and_then(|n| n.data_dir) {
+            if let Some(dir) = views.into_iter().find(|n| &n.location() == node).and_then(|n| n.data_dir) {
                 return Some(dir);
             }
         }
@@ -889,7 +896,7 @@ impl Estate {
         loop {
             let fp = self.fabric_view().await.fabric_primary;
             let held = match &fp {
-                Some(fp) => Nodes::new(self.peers().await.carrier_for(fp.clone())).get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.is_ok_and(|views| views.iter().any(|n| &n.name == node && n.stopped)),
+                Some(fp) => Nodes::new(self.peers().await.carrier_for(fp.clone())).get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.is_ok_and(|views| views.iter().any(|n| &n.location() == node && n.stopped)),
                 None => false,
             };
             if held {

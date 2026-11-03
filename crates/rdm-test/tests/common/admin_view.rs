@@ -23,7 +23,7 @@ pub fn node(name: PathName, mesh: &str, r#type: &str, node_id: &NodeId, endpoint
     NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         r#type: r#type.to_string(),
         mesh: mesh.to_owned(),
-        name,
+        path: name.path.clone(), name: name.name.clone(),
         node_id: node_id.clone(),
         endpoint_id: endpoint,
         incarnation_id: incarnation,
@@ -111,7 +111,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let birth = MeshNode { mesh: "mesh1".to_owned(), r#type: "node-admin".into(), node_id, name: admin_location(), endpoint_id: EndpointId(key.public().to_string()), transport_addr: addr, incarnation, supersedes: None, runtime: None };
+    let birth = MeshNode { mesh: "mesh1".to_owned(), r#type: "node-admin".into(), node_id, path: admin_location().path, name: admin_location().name, endpoint_id: EndpointId(key.public().to_string()), transport_addr: addr, incarnation, supersedes: None, runtime: None };
     AdminView { birth, seen, router }
 }
 

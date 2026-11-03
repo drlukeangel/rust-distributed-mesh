@@ -143,7 +143,7 @@ impl TopologyObserver {
         };
         tracing::info_span!(
             "rdm.node_admin.node.update.via-pending-reconnect",
-            node_path = %node.name.path, node_name = %node.name.name,
+            node_path = %node.path, node_name = %node.name,
             node_id = %node.node_id,
             incarnation_id = %incarnation.as_str(),
             reason = why.reason,
@@ -239,7 +239,7 @@ impl NodeObserver for TopologyObserver {
             let (admission, unreachable) = door.carry_lifecycle_reaching(node, cmd == crate::node_commands::NodeCommand::Start, ctx).await;
             if let Some(why) = &unreachable { self.mark_unreachable(node, cmd, ctx, why); }
             let detail = format!("{admission:?}");
-            tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node_path = %node.name.path, node_name = %node.name.name, command = cmd.operation_prefix(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal").in_scope(|| tracing::info!("the exact node's command stream ended"));
+            tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node_path = %node.path, node_name = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal").in_scope(|| tracing::info!("the exact node's command stream ended"));
             return admission;
         }
         // node.connection.delete { All } goes through this admin's own Status door, the birth's
@@ -353,7 +353,7 @@ impl crate::node_self::Session for AdminSession {
     async fn rejoin(&self, birth_cancel: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), crate::node_self::StartFailed> {
         // The name this admin holds (its row's, as its last join or apply handed it): what its join
         // presents and what it is named by until the join answer hands it the row's (R12).
-        let held = self.digest.lock().unwrap().node.name.clone();
+        let held = self.digest.lock().unwrap().node.location();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node_path = %held.path, node_name = %held.name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
         // A commanded node.mesh.join's first step (D57; Q335): the commanded admin, which its election
         // over the commander's record does not name, drops its primary role before it joins, commands
@@ -384,7 +384,7 @@ impl AdminSession {
                 let mut d = s.digest.lock().unwrap();
                 if let Some(n) = &joined.control.name {
                     s.topology_view.set_name(n.clone());
-                    d.node.name = n.clone();
+                    { let at = n.clone(); d.node.path = at.path; d.node.name = at.name; }
                 }
             }
             // The member cert this join was issued, as at every join (Q87).
@@ -457,8 +457,8 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
 
     fn starting(&self) -> crate::workflows::node_start::Starting {
         let s = self.session;
-        let held = s.digest.lock().unwrap().node.name.clone();
-        crate::workflows::node_start::Starting { root: self.root.clone(), name: held.name.clone(), path: held, node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
+        let held = s.digest.lock().unwrap().node.location();
+        crate::workflows::node_start::Starting { root: self.root.clone(), name: held.name.clone(), birth_path: held.path.clone(), birth_name: held.name.clone(), node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
     }
 
     fn joining(&self) -> crate::workflows::node_start::Joining {
@@ -476,7 +476,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
     async fn joined(&mut self, topology_view: &TopologyView, _: Option<&crate::workflows::node_start::JoinThrough>, joined: Option<&crate::wire::JoinAnswer>) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
         let s = self.session;
         // From here on it is named by the name it installed from its join answer (`enter_channel`).
-        let me = s.digest.lock().unwrap().node.name.clone();
+        let me = s.digest.lock().unwrap().node.location();
         // The Fabric record and the Build floor the join answered, recorded as at a first start.
         if let Some(joined) = joined {
             take_entry_control(joined, &s.accepted, &s.entry_floor, &s.wake, &s.topology_view.mesh_name(), &s.mesh_id).await;
@@ -497,24 +497,24 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         // Its tasks run again, from where they were held.
         s.gate.resume();
         let after = AdminAfterStopTail {
-            name: me.clone(),
+            path: me.path.clone(), name: me.name.clone(),
             node_id: s.node_id.clone(),
             fabric_id: s.fabric_id.clone(),
             digest: s.digest.clone(),
             wake: s.wake.clone(),
             root: self.root.clone(),
             floor: AdminFloor {
-                me: me.clone(),
+                me_path: me.path.clone(), me_name: me.name.clone(),
                 builds: s.builds.clone(),
                 floor: s.entry_floor.clone(),
                 fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.builds.clone(), s.local.clone()),
                 progress: None,
                 held: Some(s.local.clone()),
             },
-            leave: (self.operation.operation.action == "node.mesh.join").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), node_hooks: s.node_hooks.clone(), pre_node_ready_task: s.pre_node_ready_task.clone(), node_id: s.node_id.clone(), name: me.clone() }),
+            leave: (self.operation.operation.action == "node.mesh.join").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), node_hooks: s.node_hooks.clone(), pre_node_ready_task: s.pre_node_ready_task.clone(), node_id: s.node_id.clone(), path: me.path.clone(), name: me.name.clone()}),
         };
         Ok(crate::workflows::node_start::HookParts {
-            birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), r#type: "node-admin".into() },
+            birth: crate::node_hooks::Birth { path: me.path.clone(), name: me.name.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), r#type: "node-admin".into() },
             node_hooks: s.node_hooks.clone(),
             events: crate::node_hooks::Events::new(topology_view.digest_view.clone(), s.addressed.clone()),
             cancel: self.birth_cancel.take().expect("the hook's token is handed once"),
@@ -536,7 +536,9 @@ pub(crate) struct AdminLeave {
     node_hooks: crate::node_hooks::NodeHooks,
     pre_node_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     node_id: NodeId,
-    name: PathName,
+    path: String,
+    /// The name, beside its path.
+    name: String,
 }
 
 impl AdminLeave {
@@ -546,7 +548,7 @@ impl AdminLeave {
         }
         self.node_hooks.gate().close();
         crate::node_self::leave_channels(&self.topology_view, Some(&self.backbone), &self.node_id).await;
-        tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node_path = %self.name.path, node_name = %self.name.name, step, reason)
+        tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node_path = %self.path, node_name = %self.name, step, reason)
             .in_scope(|| tracing::info!("the commanded start stopped at a step after its hook: the admin leaves its channels for its authority's next command"));
     }
 }
@@ -554,7 +556,9 @@ impl AdminLeave {
 /// A node-admin's steps after its hook at a start after its stop.
 pub(crate) struct AdminAfterStopTail {
     /// The name the admin holds: its join answer's (R-JN1).
-    pub(crate) name: PathName,
+    pub(crate) path: String,
+    /// The name, beside its path.
+    pub(crate) name: String,
     /// Its node id: the topology's members it reaches are every other node of its mesh.
     pub(crate) node_id: NodeId,
     pub(crate) fabric_id: FabricId,
@@ -595,7 +599,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
             // The Ready names the birth that became ready, as the first start's does.
             let incarnation = d.node.incarnation.clone();
             self.wake.wake.poke();
-            tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node_path = %self.name.path, node_name = %self.name.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-topology").in_scope(|| tracing::info!("ready"));
+            tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node_path = %self.path, node_name = %self.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-topology").in_scope(|| tracing::info!("ready"));
         }
     }
 }
@@ -626,7 +630,9 @@ pub(crate) const FLOOR_CHECK: Duration = Duration::from_millis(100);
 /// admin's own holdings are below it, and completes when the check holds them, never on a received
 /// frame alone.
 pub(crate) struct AdminFloor {
-    pub(crate) me: PathName,
+    pub(crate) me_path: String,
+    /// This node's name, beside its path.
+    pub(crate) me_name: String,
     pub(crate) builds: Arc<dyn BuildStateAdapter>,
     pub(crate) floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>>,
     pub(crate) fetch_build: crate::fetch_build::FetchBuild,
@@ -639,6 +645,11 @@ pub(crate) struct AdminFloor {
 }
 
 impl AdminFloor {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub(crate) fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
+}
+
+impl AdminFloor {
     /// Resolves once this admin holds the Build facts its floor requires. Runs inside the floor step's
     /// span, so each read it starts is a child of it.
     pub(crate) async fn until_held(&mut self, step: &tracing::Span) {
@@ -648,8 +659,8 @@ impl AdminFloor {
         loop {
             let floor = self.floor.lock().unwrap().clone();
             let blocker = match &self.held {
-                Some(log) => crate::admin::reconcile::node_admin_not_ready_held(&self.me, &**log, floor).await,
-                None => node_admin_not_ready(&self.me, &*self.builds, floor).await,
+                Some(log) => crate::admin::reconcile::node_admin_not_ready_held(&self.me(), &**log, floor).await,
+                None => node_admin_not_ready(&self.me(), &*self.builds, floor).await,
             };
             self.fetch_build.tick(blocker.as_ref()).await;
             let Some(blocker) = blocker else { break };
@@ -694,7 +705,9 @@ impl StartProgress {
 
 /// A node-admin's steps after its hook at its first start (node.create).
 pub(crate) struct AdminFirstStart {
-    pub(crate) me: PathName,
+    pub(crate) me_path: String,
+    /// This node's name, beside its path.
+    pub(crate) me_name: String,
     pub(crate) me_id: NodeId,
     pub(crate) fabric_id: FabricId,
     pub(crate) mesh: String,
@@ -826,7 +839,9 @@ pub(crate) fn spawn_entry_sweep(
 /// What this admin answers an entry pull with.
 pub(crate) struct EntryState {
     pub(crate) node_id: NodeId,
-    pub(crate) name: PathName,
+    pub(crate) path: String,
+    /// The name, beside its path.
+    pub(crate) name: String,
     pub(crate) provider: ProviderKind,
     pub(crate) accepted: Arc<AcceptedStore>,
     pub(crate) builds: Arc<dyn BuildStateAdapter>,

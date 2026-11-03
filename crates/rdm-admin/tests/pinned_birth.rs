@@ -38,7 +38,7 @@ fn view() -> Topology {
 /// incarnation when `same_incarnation`.
 fn replaced(t: &Topology, path: &PathName, same_incarnation: bool) -> Topology {
     let mut t = t.clone();
-    let n = t.nodes.iter_mut().find(|n| &n.name == path).unwrap();
+    let n = t.nodes.iter_mut().find(|n| &n.location() == path).unwrap();
     n.node_id = NodeId::mint();
     if !same_incarnation {
         n.incarnation_id = Some(IncarnationId::mint());
@@ -79,7 +79,7 @@ async fn a_node_delete_build_carries_the_birth_it_was_accepted_on() {
     let t = view();
     let pinned = birth(&t, &PathName::new("mesh1.node", "2").unwrap());
     let (builds, cp) = control_plane(&t).await;
-    let opened = cp.submit("pinned-delete", TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.node", "2").unwrap() }).await.expect("the delete is accepted");
+    let opened = cp.submit("pinned-delete", TopologyChange::RemoveNode { path: "mesh1.node".into(), name: "2".into()}).await.expect("the delete is accepted");
     let build = builds.read_build(&opened.build_id).await.unwrap();
     let ops = plan_for_build(&build, &t).operations;
     let delete = ops.iter().find(|op| op.key() == rdm_core::OperationId::node("node.delete", &pinned.node_id)).unwrap_or_else(|| panic!("the delete is planned: {ops:?}"));
@@ -125,12 +125,12 @@ async fn the_check_hands_the_operation_only_the_pinned_birth() {
     // Renamed to `<name>-old` at the unchanged path and a successor at the path: the pinned birth is the renamed one.
     let mut renamed = replaced(&t, &PathName::new("mesh1.node", "1").unwrap(), false);
     let mut old = t.node(&path).unwrap().clone();
-    old.name = rdm_core::PathName::new("mesh1.node", "1-old").unwrap();
+    { let at = rdm_core::PathName::new("mesh1.node", "1-old").unwrap(); old.path = at.path; old.name = at.name; }
     renamed.nodes.push(old);
     let held = pinned.held_in(&renamed, &rdm_core::OperationId::node("node.stop", &pinned.node_id), &path).expect("the renamed pinned birth passes").expect("the view holds it");
     assert_eq!(PinnedBirth::of(&held), Some(pinned.clone()));
     let mut gone = t.clone();
-    gone.nodes.retain(|n| n.name != path);
+    gone.nodes.retain(|n| n.location() != path);
     assert_eq!(pinned.held_in(&gone, &rdm_core::OperationId::node("node.delete", &pinned.node_id), &path), Ok(None));
 }
 
@@ -174,9 +174,10 @@ struct PinnedRunner {
 #[async_trait::async_trait]
 impl rdm_admin::executor::OperationRunner for PinnedRunner {
     async fn run(&self, build: &rdm_admin::build::BuildId, _lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
-        let BuildOperation::StopNode { node, node_id, from_incarnation, .. } = op else {
+        let BuildOperation::StopNode { path, name, node_id, from_incarnation, .. } = op else {
             return Err(rdm_admin::executor::RunEnd::failed(format!("unexpected operation: {op:?}")));
         };
+        let node = &rdm_core::PathName { path: path.clone(), name: name.clone() };
         let pin = PinnedBirth { mesh: op.mesh().unwrap().to_owned(), r#type: op.r#type().unwrap(), node_id: node_id.clone(), incarnation: from_incarnation.clone() };
         let held = pin
             .held_in(&*self.topology.read().await, &op.key(), node)
@@ -207,4 +208,5 @@ impl rdm_admin::executor::OperationRunner for PinnedRunner {
         Ok(())
     }
 }
+
 

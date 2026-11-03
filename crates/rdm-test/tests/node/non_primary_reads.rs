@@ -28,7 +28,7 @@ fn ids(nodes: &[NodeView]) -> Vec<String> {
 }
 
 fn at_node(sp: &Value, node: &NodeView) -> bool {
-    attr(sp, "node_path") == node.name.path && attr(sp, "node_name") == node.name.name
+    attr(sp, "node_path") == node.path && attr(sp, "node_name") == node.name
 }
 
 fn labels(l: &[&str]) -> BTreeSet<String> {

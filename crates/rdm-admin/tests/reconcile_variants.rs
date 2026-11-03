@@ -117,7 +117,7 @@ impl Variant {
     /// The request, from the accepted topology's entries.
     fn request(self, held: &FabricTopology) -> Vec<NodeSpec> {
         let mut r: Vec<NodeSpec> = held.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
-        let at = |r: &mut Vec<NodeSpec>, p: &PathName| -> usize { r.iter().position(|s| &s.path == p).expect("the request lists the path") };
+        let at = |r: &mut Vec<NodeSpec>, p: &PathName| -> usize { r.iter().position(|s| &s.location() == p).expect("the request lists the path") };
         match self {
             Self::Day0AdminNamedOnItsRecordedExecutable => {
                 let i = at(&mut r, &path("mesh1.node-admin", "1"));
@@ -138,7 +138,7 @@ impl Variant {
                 s.executable = Some(crate::test_executable("node"));
                 r.push(s);
             }
-            Self::RemovedPath => r.retain(|s| s.path != path("mesh1.node", "1")),
+            Self::RemovedPath => r.retain(|s| s.location() != path("mesh1.node", "1")),
             Self::AnotherExecutable => {
                 let i = at(&mut r, &path("mesh1.node", "1"));
                 r[i].executable = Some(crate::test_executable("node"));
@@ -199,12 +199,12 @@ impl OperationRunner for Runs {
     async fn run(&self, build: &BuildId, _lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
         self.ran.lock().unwrap().push(op.key());
         match op {
-            BuildOperation::CreateNode { node, .. } => {
+            BuildOperation::CreateNode { path: node_path, name: node_name, .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
                 let topology = self.builds.read_build(build).await.map_err(|e| e.to_string())?.topology;
                 let sha = rdm_admin::accepted::target_executable(&topology, node).map(|b| b.sha256.clone());
                 self.recorded.lock().unwrap().insert(node.clone(), RecordedRow { mesh: op.mesh().unwrap().to_owned(), r#type: op.r#type().unwrap(), config: None, tags: None, storage_persistence: None, node_id: NodeId::mint(), sha256: sha });
             }
-            BuildOperation::DeleteNode { node, .. } | BuildOperation::DeleteLiveNode { node, .. } => {
+            BuildOperation::DeleteNode { path: node_path, name: node_name, .. } | BuildOperation::DeleteLiveNode { path: node_path, name: node_name, .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
                 self.recorded.lock().unwrap().remove(node);
             }
             _ => {}
@@ -267,10 +267,10 @@ async fn row(variant: Variant, timing: Timing) -> Row {
     let mut recorded = Recorded::new();
     for (p, name, sha) in ROWS {
         let n = t.node(&path(p, name)).expect("the view holds the node");
-        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+        let mut row = rdm_admin::storage::NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
         row.executable = Some(recorded_binding(&n.r#type, sha));
         store.write_record(&row).await.unwrap();
-        recorded.insert(n.name.clone(), RecordedRow { mesh: n.mesh.clone(), r#type: n.r#type.clone(), config: None, tags: None, storage_persistence: None, node_id: n.node_id.clone(), sha256: Some(sha.into()) });
+        recorded.insert(n.location(), RecordedRow { mesh: n.mesh.clone(), r#type: n.r#type.clone(), config: None, tags: None, storage_persistence: None, node_id: n.node_id.clone(), sha256: Some(sha.into()) });
     }
     let mut cp = crate::control_plane(builds.clone(), accepted.clone(), path("mesh1.node-admin", "1"), t.clone(), crate::adopted_time());
     cp.topology = topology.clone();
@@ -284,13 +284,13 @@ async fn row(variant: Variant, timing: Timing) -> Row {
     let me = path("mesh1.node-admin", "1");
     let fp_id = t.node(&me).unwrap().node_id.clone();
     let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
-        me: me.clone(),
+        me_path: me.path.clone(), me_name: me.name.clone(),
         topology: topology.clone(),
         builds: builds.clone(),
         door: Arc::new(ClaimDoor {
             incarnation: executor.incarnation.clone(),
             node_id: fp_id,
-            me,
+            me_path: me.path.clone(), me_name: me.name.clone(),
             topology,
             builds: builds.clone(),
             contexts: Arc::new(AttemptContexts::in_memory()),

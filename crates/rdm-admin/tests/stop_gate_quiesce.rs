@@ -150,7 +150,7 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
         tokio::time::timeout(NEVER, state.wait_for(|s| s.turns.contains_key("executor"))).await.expect("the executor began no turn on the submit's notification").unwrap();
 
         // Its mesh-admin's stop reaches it while that turn is in progress.
-        let root = tracing::info_span!("cell.stop-gate-quiesce", node = %own.node.node_id, node_path = %own.node.name.path, node_name = %own.node.name.name);
+        let root = tracing::info_span!("cell.stop-gate-quiesce", node = %own.node.node_id, node_path = %own.node.path, node_name = %own.node.name);
         let stop_trace = root.in_scope(rdm_transport::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context");
         let node_self = running.node_self();
         let commander = NodeId::mint();

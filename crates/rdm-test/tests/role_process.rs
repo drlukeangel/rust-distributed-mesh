@@ -45,7 +45,7 @@ async fn born_on(name: PathName, mesh: &str, r#type: &str, alpn: Option<rdm_tran
         fabric_id,
         mesh: mesh.into(),
         r#type: r#type.to_string(),
-        name,
+        path: name.path.clone(), name: name.name.clone(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -83,7 +83,7 @@ impl RoleProcess {
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(ResolvedNode { mesh: self.launch.mesh.clone(), r#type: self.launch.r#type.clone(),
             node_id: self.launch.node_id.clone(),
-            name: self.launch.name.clone(),
+            path: self.launch.path.clone(), name: self.launch.name.clone(),
             endpoint_id: self.key.public(),
             transport_addr: addr,
             incarnation: self.launch.incarnation.clone(),
@@ -141,7 +141,7 @@ async fn the_products_adapter_is_catalogued_and_unserved_on_the_node_rpc_alpn() 
 /// The birth `p` runs, as a peer's resolver holds it.
 fn birth_of(p: &RoleProcess) -> ResolvedNode {
     let addr = p.running.routers[0].endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    ResolvedNode { mesh: p.launch.mesh.clone(), r#type: p.launch.r#type.clone(), node_id: p.launch.node_id.clone(), name: p.launch.name.clone(), endpoint_id: p.key.public(), transport_addr: addr, incarnation: p.launch.incarnation.clone() }
+    ResolvedNode { mesh: p.launch.mesh.clone(), r#type: p.launch.r#type.clone(), node_id: p.launch.node_id.clone(), path: p.launch.path.clone(), name: p.launch.name.clone(), endpoint_id: p.key.public(), transport_addr: addr, incarnation: p.launch.incarnation.clone() }
 }
 
 // @feature: mesh-rpc
@@ -185,7 +185,7 @@ fn a_blocked_direct_node_rpc_dial_ends_not_sent_and_a_carrier_of_the_sources_mes
         assert_eq!(to_broker(&client), 1, "one pooled connection to the broker");
 
         // Blocked: the pooled connection is closed and a direct call ends NotSent Connection.
-        let blocked = block_direct_node_rpc(&source.running, &broker.launch.name);
+        let blocked = block_direct_node_rpc(&source.running, &broker.launch.location());
         assert_eq!(blocked, b, "the block keys the birth the source's view names at the broker's path");
         assert_eq!(to_broker(&client), 0, "the pooled connection to the blocked broker is closed");
         let (out, ev) = client.call::<BrokerData>(&target, &BrokerDataRequest::Read { key: "d0".into() }, &once).await;
@@ -206,7 +206,7 @@ fn a_blocked_direct_node_rpc_dial_ends_not_sent_and_a_carrier_of_the_sources_mes
         assert_eq!(out.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Appended { key: "r1".into(), offset: 1, served_by: served_by.clone() }), "the carried append executed exactly once: {out:?}");
 
         // Released: the direct call dials and is served.
-        unblock_direct_node_rpc(&source.running, &broker.launch.name);
+        unblock_direct_node_rpc(&source.running, &broker.launch.location());
         let (out, _) = client.call::<BrokerData>(&target, &BrokerDataRequest::Read { key: "r1".into() }, &once).await;
         assert_eq!(out.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Value { key: "r1".into(), value: Some(b"v".to_vec()), served_by }), "{out:?}");
         assert_eq!(to_broker(&client), 1, "the direct call dialled the broker again");
@@ -239,9 +239,9 @@ fn a_stopped_node_dials_no_recovery_attempt_after_its_stop() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let (dest, _dest_accepts) = born_on(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", Some(app_protocol())).await;
         let (source, _source_accepts) = born_on(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Some(app_protocol())).await;
-        let dst = dest.launch.name.clone();
+        let dst = dest.launch.location();
         let (src_s, dst_s) = (source.launch.node_id.to_string(), dest.launch.node_id.to_string());
-        let to = Birth { mesh: dest.launch.mesh.clone(), r#type: dest.launch.r#type, name: dst.clone(), node_id: dest.launch.node_id.clone(), incarnation: dest.launch.incarnation.clone() };
+        let to = Birth { mesh: dest.launch.mesh.clone(), r#type: dest.launch.r#type, path: dst.path.clone(), name: dst.name.clone(), node_id: dest.launch.node_id.clone(), incarnation: dest.launch.incarnation.clone() };
 
         // One blocked Direct dial: its Direct Failed lands and arms the series (connections.md §9.4).
         rdm_test::connection_faults::block_direct(&source.running, &dest.launch.node_id, APP_PROTOCOL);
@@ -333,7 +333,7 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
     gateway.running.node_rpc.resolver.apply(
         ResolvedNode { mesh: broker.launch.mesh.clone(), r#type: broker.launch.r#type,
             node_id: broker.launch.node_id.clone(),
-            name: broker.launch.name.clone(),
+            path: broker.launch.path.clone(), name: broker.launch.name.clone(),
             endpoint_id: broker.key.public(),
             transport_addr: addr,
             incarnation: broker.launch.incarnation.clone(),

@@ -101,8 +101,9 @@ async fn environs(estate: &Estate) -> Vec<(String, String, PathBuf, BTreeMap<Str
     let mut out = Vec::new();
     for n in estate.node_views().await {
         if n.node_id == bootstrap_id { continue; }
-        let pid = estate.pid_of(&n.name).await;
-        out.push((n.node_id.to_string(), n.r#type, PathBuf::from(estate.data_dir(&n.name).await), environ(n.node_id.as_str(), pid)));
+        let pid = estate.pid_of(&n.location()).await;
+        let at = n.location();
+        out.push((n.node_id.to_string(), n.r#type, PathBuf::from(estate.data_dir(&at).await), environ(n.node_id.as_str(), pid)));
     }
     out
 }
@@ -228,7 +229,7 @@ async fn a_launched_admins_create_sets_the_value_and_no_file_carries_it(test: &s
     let views = estate.node_views().await;
     let launching = views.iter().find(|n| n.node_id == by).expect("launcher ID in view");
     assert!(launching.mesh == "mesh2" && launching.r#type == "node-admin" && by != bootstrap_id, "the broker was launched by mesh2's launched admin: {launcher:?}");
-    let admin = environ(by.as_str(), estate.pid_of(&launching.name).await);
+    let admin = environ(by.as_str(), estate.pid_of(&launching.location()).await);
     assert_eq!(custody_of(&admin).as_deref(), Some(value.as_str()), "{by}, which ran the create, holds the custody document (permitted)");
     assert!(!admin.contains_key(DECLARED_SECRET), "{by} is not a named type: its process holds no {DECLARED_SECRET}");
     assert_eq!(broker.get(DECLARED_SECRET), Some(&value), "mesh2.broker.1 holds the declared value {by} launched it with");
@@ -236,7 +237,7 @@ async fn a_launched_admins_create_sets_the_value_and_no_file_carries_it(test: &s
     assert!(!compute.contains_key(DECLARED_SECRET) && !compute.contains_key(ENV_DECLARED_SECRETS), "mesh2.compute.1 is not a named type");
     let mut admin_dirs = vec![estate.bootstrap_data_dir("mesh1")];
     for n in views.iter().filter(|n| n.r#type == "node-admin" && n.node_id != bootstrap_id) {
-        admin_dirs.push(PathBuf::from(estate.data_dir(&n.name).await));
+        admin_dirs.push(PathBuf::from(estate.data_dir(&n.location()).await));
     }
     estate.stop().await;
     // Cell 5: the custody document kept beside each admin's data dir is the one permitted file; no
@@ -414,7 +415,7 @@ fn a_failing_child_leaves_no_trace_of_a_secret(test: &str, spawn_type: &'static 
             fabric_id,
             executable: script,
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: held_root.clone(),
             store_dir: store,
@@ -438,7 +439,7 @@ fn a_failing_child_leaves_no_trace_of_a_secret(test: &str, spawn_type: &'static 
             timeouts: Timeouts { bind: Duration::from_secs(20), ..Timeouts::default() },
         };
         let err = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap())), mesh: "mesh1".into(), r#type: "node-admin".into(), build_id: Some(build_id.clone()), attempt: 1, node: rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), spec: &rdm_admin::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap())), mesh: "mesh1".into(), r#type: "node-admin".into(), build_id: Some(build_id.clone()), attempt: 1, path: "mesh1.node-admin".into(), name: "2".into(), spec: &rdm_admin::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_err();
         let receipts: Vec<String> = builds

@@ -153,15 +153,15 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         assert_eq!(
             claim1().await,
             Err(RowRefused::NameHeld(NameHeld {
-                name: name1.clone(),
+                path: name1.path.clone(), name: name1.name.clone(),
                 by: pred1_id.clone(),
             }))
         );
 
         // 2. Rename predecessor node[1] to `mesh1.node.1-old` (step 2 of node-replace.md).
-        let renamed_row = rows.rename_row_with_intent(&pred1, &old1, &rdm_admin::accepted::RenameIntent::Replacement { original: name1.clone() }).await.expect("rename_row");
-        assert_eq!(renamed_row.name, old1);
-        assert_eq!(renamed_row.renamed_from, Some(name1.clone()));
+        let renamed_row = rows.rename_row_with_intent(&pred1, &old1, &rdm_admin::accepted::RenameIntent::Replacement { original_path: name1.path.clone(), original_name: name1.name.clone()}).await.expect("rename_row");
+        assert_eq!(renamed_row.location(), old1);
+        assert_eq!(renamed_row.renamed_from, Some(name1.name.clone()));
         assert_eq!(renamed_row.replacement_from, Some(name1.clone()), "the replacement intent retains the predecessor's original pair");
         assert!(
             record_at(&*store, &name1).await.unwrap().is_none(),

@@ -121,7 +121,7 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, R
         .await
         .unwrap();
     memory.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
-    let door = RunDoor { me: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), builds, exec, runs, local: memory.clone(), gate: gate.clone() };
+    let door = RunDoor { me_path: "mesh1.node-admin".into(), me_name: "1".into(), builds, exec, runs, local: memory.clone(), gate: gate.clone() };
     let plan = RunPlan { operations: vec![BuildOperation::CreateMesh { mesh: "mesh2".into(), mesh_id: MeshId::mint() }, BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }], hand_off_to: None };
     (door, gate, plan)
 }
@@ -279,11 +279,11 @@ async fn a_renamed_admin_runs_a_claimed_attempt_under_its_new_name() {
     let gate = StopGate::new();
     let runner = Arc::new(CallingOut { calls: calls.clone(), gate: gate.clone(), hold_first: false });
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: builds.clone(), topology: topology.clone(), runner });
-    let door = RunDoor { me: rdm_core::PathName::new("mesh1.node-admin", "9").unwrap(), builds, exec, runs, local: memory.clone(), gate };
+    let door = RunDoor { me_path: "mesh1.node-admin".into(), me_name: "9".into(), builds, exec, runs, local: memory.clone(), gate };
     let plan = RunPlan { operations: vec![BuildOperation::CreateMesh { mesh: "mesh2".into(), mesh_id: MeshId::mint() }, BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }], hand_off_to: None };
 
     // Only the name changes; attempt 1 remains claimed for the same exact birth.
-    topology.write().await.nodes[0].name = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
+    { let at = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(); topology.write().await.nodes[0].path = at.path; topology.write().await.nodes[0].name = at.name; }
     memory
         .publish_accepted(&BuildAccepted { build_id: build_id(), topology: FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
         .await

@@ -24,7 +24,7 @@ fn digest() -> rdm_core::MeshDigest {
         fabric_id: FabricId::mint(),
         node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::mint(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:34567".parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -61,7 +61,7 @@ fn requests_match_the_frozen_wire_schema() {
 /// The smallest own row: `m.node.1`, ready, one config key, every optional field absent.
 fn own_row() -> rdm_core::views::NodeView {
     rdm_core::views::NodeView {
-        name: rdm_core::PathName::new("m.node", "1").unwrap(),
+        path: "m.node".into(), name: "1".into(),
         r#type: "node".into(),
         mesh: "m".into(),
         node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(),
@@ -147,7 +147,7 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
         fabric_id: FabricId::parse("1123456789ab").unwrap(),
         node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::parse("0123456789ab").unwrap(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:80".parse().unwrap(),
             incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(),
@@ -187,7 +187,7 @@ fn a_snapshot_chunk_round_trips_with_its_digests_and_overlays() {
         operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.node", "2").unwrap()),
         node_id: rdm_core::NodeId::mint(),
         incarnation: IncarnationId::mint(),
-        name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
+        path: "mesh1.node".into(), name: "2".into(),
         event_at_rafka_ms: 5,
         traceparent: None,
         tracestate: None,

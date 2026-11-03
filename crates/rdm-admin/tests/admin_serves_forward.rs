@@ -35,7 +35,7 @@ fn served(b: &Birth) -> ServedBirth {
 }
 
 fn resolved(b: &Birth, name: rdm_core::PathName, mesh: &str, r#type: &str, addr: std::net::SocketAddr) -> ResolvedNode {
-    ResolvedNode { mesh: mesh.into(), r#type: r#type.to_string(), node_id: b.node_id.clone(), name, endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.incarnation.clone() }
+    ResolvedNode { mesh: mesh.into(), r#type: r#type.to_string(), node_id: b.node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.incarnation.clone() }
 }
 
 struct Rig {
@@ -79,7 +79,7 @@ async fn rig() -> Rig {
     let live = Arc::new(LiveNodeResolver::default());
     live.apply(target_resolved.clone(), None);
     let connections = Arc::new(ConnectionsWriter::new(
-        ConnectionEnd { mesh: admin.mesh.clone(), r#type: admin.r#type.clone(), name: admin.name.clone(), node_id: admin.node_id.clone(), incarnation: Some(admin.incarnation.clone()) },
+        ConnectionEnd { mesh: admin.mesh.clone(), r#type: admin.r#type.clone(), path: admin.path.clone(), name: admin.name.clone(), node_id: admin.node_id.clone(), incarnation: Some(admin.incarnation.clone()) },
         Arc::new(MemoryConnectionsStorage::default()),
         Arc::new(Mutex::new(ConnectionsHeld::new())),
     ));
@@ -156,8 +156,8 @@ async fn a_status_call_carried_to_a_dead_target_names_the_admins_lost_connection
     dead_resolved.endpoint_id = SecretKey::generate().public();
     r.admin_live.apply(dead_resolved.clone(), None);
     // The admin's own latest Direct fact toward it: Disconnected.
-    let own = ConnectionEnd { mesh: r.admin.mesh.clone(), r#type: r.admin.r#type.clone(), name: r.admin.name.clone(), node_id: r.admin.node_id.clone(), incarnation: Some(r.admin.incarnation.clone()) };
-    let destination = ConnectionEnd { mesh: dead_resolved.mesh.clone(), r#type: dead_resolved.r#type.clone(), name: dead_resolved.name.clone(), node_id: dead.node_id.clone(), incarnation: Some(dead.incarnation.clone()) };
+    let own = ConnectionEnd { mesh: r.admin.mesh.clone(), r#type: r.admin.r#type.clone(), path: r.admin.path.clone(), name: r.admin.name.clone(), node_id: r.admin.node_id.clone(), incarnation: Some(r.admin.incarnation.clone()) };
+    let destination = ConnectionEnd { mesh: dead_resolved.mesh.clone(), r#type: dead_resolved.r#type.clone(), path: dead_resolved.path.clone(), name: dead_resolved.name.clone(), node_id: dead.node_id.clone(), incarnation: Some(dead.incarnation.clone()) };
     r.admin_connections
         .record(NodeConnection { id: rdm_core::ConnectionId::mint(), source: own, destination, kind: ConnectionKind::Direct, alpn: rdm_core::connections::ALPN.to_vec(), state: ConnectionState::Disconnected, carrier: None, recovery: None, reason: Some("pooled connection broke".into()), logged_at_ms: 1 })
         .await

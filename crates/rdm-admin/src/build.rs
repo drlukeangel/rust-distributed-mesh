@@ -103,7 +103,9 @@ pub enum BuildOperation {
     /// Create a node at `node` (node-create.md).
     CreateNode {
         /// The node to create.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
@@ -129,7 +131,9 @@ pub enum BuildOperation {
     /// running (node-connections-delete.md).
     DeleteConnections {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
@@ -143,7 +147,9 @@ pub enum BuildOperation {
     /// reply and the provider's Exited proof. No implicit connections delete, no departure.
     StopNode {
         /// The node to stop.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
@@ -157,7 +163,9 @@ pub enum BuildOperation {
     /// whose reply is `Started` once the same process rejoined as itself, then the wait for ready.
     StartNode {
         /// The node to start.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
@@ -172,7 +180,9 @@ pub enum BuildOperation {
     /// naming the birth. Storage is kept. Its key is node.delete's one key, `node.delete:<path>`.
     DeleteNode {
         /// The stopped node's retained predecessor location.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
@@ -186,7 +196,9 @@ pub enum BuildOperation {
     #[serde(rename = "retire_node")] // rdm#88: stored tag
     DeleteLiveNode {
         /// The node to delete.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
@@ -250,7 +262,9 @@ pub enum BuildOperation {
         /// The globally unique node selected from the durable row during planning.
         node_id: NodeId,
         /// The accepted entry location, independent of the node's current name.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
@@ -266,7 +280,9 @@ pub enum BuildOperation {
         /// The globally unique node selected from the durable row during planning.
         node_id: NodeId,
         /// The accepted entry location, independent of the node's current name.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
@@ -280,7 +296,9 @@ pub enum BuildOperation {
         /// The globally unique node selected from the durable row during planning.
         node_id: NodeId,
         /// The accepted entry location, independent of the node's current name.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The explicitly declared mesh owning this operation.
         mesh: String,
         /// The admitted subject kind, independent of the current pair occupant.
@@ -310,11 +328,11 @@ impl BuildOperation {
     }
 
     /// The accepted path and name, when this operation carries location metadata.
-    pub fn node(&self) -> Option<&PathName> {
+    pub fn node(&self) -> Option<PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::DeleteLiveNode { node, .. } => Some(node),
-            Self::Step { step, .. } => Some(step.node()),
-            Self::UpdateConfig { node, .. } | Self::CreateTags { node, .. } | Self::DeleteTags { node, .. } => Some(node),
+            Self::CreateNode { path, name, .. } | Self::DeleteConnections { path, name, .. } | Self::StopNode { path, name, .. } | Self::StartNode { path, name, .. } | Self::DeleteNode { path, name, .. } | Self::DeleteLiveNode { path, name, .. } => Some(PathName { path: path.clone(), name: name.clone() }),
+            Self::Step { step, .. } => Some(step.location()),
+            Self::UpdateConfig { path, name, .. } | Self::CreateTags { path, name, .. } | Self::DeleteTags { path, name, .. } => Some(PathName { path: path.clone(), name: name.clone() }),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } => None,
         }
     }
@@ -349,9 +367,9 @@ impl BuildOperation {
 
     /// The node a create operation makes (`create-node`, or a Build's Create step); `None` for any
     /// other operation.
-    pub fn created_node(&self) -> Option<&PathName> {
+    pub fn created_node(&self) -> Option<PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::Step { step: rdm_core::build::Step::Create { node, .. }, .. } => Some(node),
+            Self::CreateNode { path, name, .. } | Self::Step { step: rdm_core::build::Step::Create { path, name, .. }, .. } => Some(PathName { path: path.clone(), name: name.clone() }),
             _ => None,
         }
     }
@@ -360,7 +378,7 @@ impl BuildOperation {
     pub fn key(&self) -> rdm_core::OperationId {
         match self {
             Self::CreateMesh { mesh_id, .. } => rdm_core::OperationId::new("create-mesh", rdm_core::OperationSubject::Mesh(mesh_id.clone())),
-            Self::CreateNode { node, .. } => rdm_core::OperationId::location("node.create", node),
+            Self::CreateNode { path, name, .. } => rdm_core::OperationId::location("node.create", &PathName { path: path.clone(), name: name.clone() }),
             Self::DeleteConnections { node_id, .. } => rdm_core::OperationId::node("node.connection.delete", node_id),
             Self::StopNode { node_id, .. } => rdm_core::OperationId::node("node.stop", node_id),
             Self::StartNode { node_id, .. } => rdm_core::OperationId::node("node.start", node_id),
@@ -368,7 +386,7 @@ impl BuildOperation {
             // node.delete has one key, whatever the node's name and whatever state the birth is
             // deleted from (a stopped birth's delete runs no stop steps, a live one's stops it first).
             Self::DeleteNode { node_id, .. } => rdm_core::OperationId::node("node.delete", node_id),
-            Self::DeleteLiveNode { node, birth, exited, .. } => birth.as_ref().map(|b| &b.node_id).or_else(|| exited.as_ref().map(|b| &b.node_id)).map_or_else(|| rdm_core::OperationId::location("node.delete", node), |id| rdm_core::OperationId::node("node.delete", id)),
+            Self::DeleteLiveNode { path, name, birth, exited, .. } => birth.as_ref().map(|b| &b.node_id).or_else(|| exited.as_ref().map(|b| &b.node_id)).map_or_else(|| rdm_core::OperationId::location("node.delete", &PathName { path: path.clone(), name: name.clone() }), |id| rdm_core::OperationId::node("node.delete", id)),
             Self::ShutdownMesh { mesh_id, .. } => rdm_core::OperationId::new("mesh.delete", rdm_core::OperationSubject::Mesh(mesh_id.clone())),
             Self::DeleteFabric { fabric_id } => rdm_core::OperationId::new("fabric.delete", rdm_core::OperationSubject::Fabric(fabric_id.clone())),
             Self::UpdateConfig { node_id, .. } => rdm_core::OperationId::node("node.config.update", node_id),
@@ -383,13 +401,13 @@ impl BuildOperation {
 pub fn step_key(step: &rdm_core::build::Step) -> rdm_core::OperationId {
     use rdm_core::build::Step as S;
     match step {
-        S::Create { node, .. } => rdm_core::OperationId::location("node.create", node),
-        S::Stop { node } => rdm_core::OperationId::location("node.stop", node),
-        S::Update { node, .. } => rdm_core::OperationId::location("node.update", node),
-        S::Start { node } => rdm_core::OperationId::location("node.start", node),
-        S::Delete { node } => rdm_core::OperationId::location("node.delete", node),
-        S::DeleteConnections { node } => rdm_core::OperationId::location("node.connection.delete", node),
-        S::LeaveMesh { node } => rdm_core::OperationId::location("node.mesh.leave", node),
+        S::Create { .. } => rdm_core::OperationId::location("node.create", &step.location()),
+        S::Stop { .. } => rdm_core::OperationId::location("node.stop", &step.location()),
+        S::Update { .. } => rdm_core::OperationId::location("node.update", &step.location()),
+        S::Start { .. } => rdm_core::OperationId::location("node.start", &step.location()),
+        S::Delete { .. } => rdm_core::OperationId::location("node.delete", &step.location()),
+        S::DeleteConnections { .. } => rdm_core::OperationId::location("node.connection.delete", &step.location()),
+        S::LeaveMesh { .. } => rdm_core::OperationId::location("node.mesh.leave", &step.location()),
     }
 }
 
@@ -429,11 +447,11 @@ impl PinnedBirth {
         // name it last published (node-replace.md steps 1-2). The same node id under another
         // incarnation, or another node id at the path, is another birth.
         let refused = |n: &crate::model::Node| {
-            let refusal = BirthReplaced { operation: operation.clone(), node: node.clone(), expected: self.clone(), observed: Self::of(n) };
+            let refusal = BirthReplaced { operation: operation.clone(), path: node.path.clone(), name: node.name.clone(), expected: self.clone(), observed: Self::of(n) };
             tracing::info_span!(
                 "rdm.node_admin.node.reject.via-birth-replaced",
                 operation = %refusal.operation.action, operation_subject = ?refusal.operation.subject,
-                node_path = %refusal.node.path, node_name = %refusal.node.name,
+                node_path = %refusal.path, node_name = %refusal.name,
                 node_id = %refusal.expected.node_id,
                 incarnation_id = %refusal.expected.incarnation.as_str(),
                 observed_node_id = %n.node_id,
@@ -513,8 +531,8 @@ pub fn delete_admits(stopped: bool, live: bool, heard_dead: bool, verdict: Optio
 /// birth, its runtime read from its row.
 pub fn step_delete(node: &PathName, birth: &PinnedBirth, held: Option<&crate::model::Node>) -> BuildOperation {
     match held.filter(|n| birth.is(n)) {
-        Some(n) if !n.stopped => BuildOperation::DeleteLiveNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node: node.clone(), exited: None, birth: Some(birth.clone()) },
-        _ => BuildOperation::DeleteNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node: node.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() },
+        Some(n) if !n.stopped => BuildOperation::DeleteLiveNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), path: node.path.clone(), name: node.name.clone(), exited: None, birth: Some(birth.clone()) },
+        _ => BuildOperation::DeleteNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), path: node.path.clone(), name: node.name.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() },
     }
 }
 
@@ -525,11 +543,18 @@ pub struct BirthReplaced {
     /// The operation's key.
     pub operation: rdm_core::OperationId,
     /// The path the operation acts on.
-    pub node: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The birth the gates pinned.
     pub expected: PinnedBirth,
     /// The birth the view holds instead, `None` when it holds one with no incarnation.
     pub observed: Option<PinnedBirth>,
+}
+
+impl BirthReplaced {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 impl BirthReplaced {
@@ -546,8 +571,8 @@ impl fmt::Display for BirthReplaced {
             f,
             "birth-replaced: operation {:?} acts on path {:?}, name {:?}, pinned to birth {} at incarnation {}, and this view holds {observed} there; nothing is done to it",
             self.operation,
-            self.node.path,
-            self.node.name,
+            self.path,
+            self.name,
             self.expected.node_id,
             self.expected.incarnation.as_str()
         )
@@ -575,11 +600,25 @@ pub struct BuildPlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeSpecConflict {
     /// The structured location used by the topology index.
-    pub location: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The structured location declared by the specification.
-    pub declared_location: PathName,
+    pub declared_path: String,
+    /// The declared name, beside its path.
+    pub declared_name: String,
     /// The mesh explicitly declared by the specification.
     pub declared_mesh: String,
+}
+
+impl NodeSpecConflict {
+    /// The `(path, name)` lookup index key of declared_path and declared_name.
+    pub fn declared_location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.declared_path.clone(), name: self.declared_name.clone() } }
+}
+
+impl NodeSpecConflict {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// A Build refused by name (`rdm.node_admin.build.reject.via-<reason>`).
@@ -624,7 +663,9 @@ pub enum BuildReject {
     /// Build creates or renames a node to, the step named (Q223).
     UnknownNode {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The step of a steps Build that names it, numbered from 1.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         step: Option<u32>,
@@ -632,7 +673,9 @@ pub enum BuildReject {
     /// The node is not live.
     NodeNotLive {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// The change would leave the mesh without a node-admin.
     WouldLeaveMeshWithoutAdmin {
@@ -672,7 +715,9 @@ pub enum BuildReject {
     /// control-plane visibility targets lifecycle mutation for every node of it (R-D1).
     UnheardMesh {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The mesh the node belongs to.
         mesh: String,
         /// How long the mesh has gone unheard, in milliseconds.
@@ -683,7 +728,9 @@ pub enum BuildReject {
     /// node recovery.
     NodeAdminNotNodeRecovered {
         /// The node-admin named.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// The Build would stop, delete the connections of or delete a primary (its
     /// mesh's primary, or the fabric-primary) whose node.primary.update has no successor (the approved proposal
@@ -692,7 +739,9 @@ pub enum BuildReject {
     /// admitted.
     LastAdmin {
         /// The primary the Build would end.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// Its mesh.
         mesh: String,
         /// What the Build would do to it (`node.connection.delete`, `stop`, `delete`).
@@ -709,7 +758,9 @@ pub enum BuildReject {
     /// stays primary and nothing is admitted.
     NoSecondary {
         /// The primary the Build would end.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// Its mesh.
         mesh: String,
         /// What the Build would do to it (`node.connection.delete`, `stop`, `delete`,
@@ -723,7 +774,9 @@ pub enum BuildReject {
     /// its current stopped period no longer the one the scan aged.
     NodeNotStopped {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// What its admission found instead.
         found: String,
     },
@@ -731,7 +784,9 @@ pub enum BuildReject {
     /// (node-identity-and-state.md §6.9 Selection and Recheck).
     ReferencedByOpenBuild {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The open Build.
         build_id: String,
     },
@@ -776,20 +831,26 @@ pub enum BuildReject {
     },
     /// A complete-topology request naming one `(path, name)` twice.
     NodeNamedTwice {
-        /// The `(path, name)` named twice.
-        node: PathName,
+        /// The path named twice.
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// A path the request creates whose config names no executable: nothing runs (proposal
     /// executable-bindings-at-create.md rule 1; no stored default).
     ExecutableMissing {
         /// The path created.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
     },
     /// A node the request creates names a type that is neither `node` nor `node-admin` and that the
     /// Fabric does not declare (node-identity-and-state.md §2): nothing is accepted.
     UnknownType {
         /// The node.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The type it names.
         r#type: String,
     },
@@ -798,7 +859,9 @@ pub enum BuildReject {
     /// fabric provider's.
     ExecutableRefused {
         /// The path.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// Why.
         detail: String,
     },
@@ -806,7 +869,9 @@ pub enum BuildReject {
     /// more than a node carries, or one outside the label grammar (node-rpc-envelope.md node.tags).
     TagsRefused {
         /// The path.
-        node: PathName,
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// Why.
         detail: String,
     },
@@ -860,9 +925,9 @@ impl fmt::Display for BuildReject {
             Self::MeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` needs at least one node-admin"),
             Self::UnknownMesh { mesh } => write!(f, "mesh `{mesh}` is not in the fabric"),
             Self::MeshIdUnknown { mesh } => write!(f, "mesh `{mesh}` is held, but no member has stated its id: its shutdown cannot be keyed"),
-            Self::UnknownNode { node, step: None } => write!(f, "node (path `{}`, name `{}`) is not in the fabric", node.path, node.name),
-            Self::UnknownNode { node, step: Some(step) } => write!(f, "step {step} of the Build acts on (path `{}`, name `{}`), which holds no birth now and which no earlier step creates or renames a node to", node.path, node.name),
-            Self::NodeNotLive { node } => write!(f, "node (path `{}`, name `{}`) is not live", node.path, node.name),
+            Self::UnknownNode { path, name, step: None } => write!(f, "node (path `{}`, name `{}`) is not in the fabric", path, name),
+            Self::UnknownNode { path, name, step: Some(step) } => write!(f, "step {step} of the Build acts on (path `{}`, name `{}`), which holds no birth now and which no earlier step creates or renames a node to", path, name),
+            Self::NodeNotLive { path, name } => write!(f, "node (path `{}`, name `{}`) is not live", path, name),
             Self::WouldLeaveMeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` would be left without a node-admin in the accepted topology"),
             Self::MeshAlreadyExists { mesh } => write!(f, "mesh `{mesh}` already exists"),
             Self::FabricMismatch { requested, fabric } => write!(f, "Build names fabric `{requested}`, this is `{fabric}`"),
@@ -871,13 +936,13 @@ impl fmt::Display for BuildReject {
                 f,
                 "a Build may not choose a deployment provider; this fabric's policy is {fabric_provider:?}, fixed at bootstrap"
             ),
-            Self::NodeAdminNotNodeRecovered { node } => write!(f, "node (path `{}`, name `{}`) is a node-admin whose mesh holds no other live node-admin to recover it: a mesh that lost its mesh-primary is the fabric-primary's mesh recovery, never node recovery", node.path, node.name),
-            Self::UnheardMesh { node, mesh, unheard_ms } => write!(
+            Self::NodeAdminNotNodeRecovered { path, name } => write!(f, "node (path `{}`, name `{}`) is a node-admin whose mesh holds no other live node-admin to recover it: a mesh that lost its mesh-primary is the fabric-primary's mesh recovery, never node recovery", path, name),
+            Self::UnheardMesh { path, name, mesh, unheard_ms } => write!(
                 f,
-                "node (path `{}`, name `{}`) is in mesh `{mesh}`, which this fabric-primary has not heard for {unheard_ms} ms: a peer mesh held unheard is held as a mesh, and its nodes are not restarted, replaced or deleted from here until it is heard again", node.path, node.name
+                "node (path `{}`, name `{}`) is in mesh `{mesh}`, which this fabric-primary has not heard for {unheard_ms} ms: a peer mesh held unheard is held as a mesh, and its nodes are not restarted, replaced or deleted from here until it is heard again", path, name
             ),
-            Self::NodeNotStopped { node, found } => write!(f, "node (path `{}`, name `{}`) is not the birth the stopped-node collector selected at its delete's admission: {found}; nothing is deleted from the scan's decision", node.path, node.name),
-            Self::ReferencedByOpenBuild { node, build_id } => write!(f, "node (path `{}`, name `{}`)'s stopped birth is referenced by open Build {build_id}: it keeps it, and the stopped-node collector deletes nothing it holds", node.path, node.name),
+            Self::NodeNotStopped { path, name, found } => write!(f, "node (path `{}`, name `{}`) is not the birth the stopped-node collector selected at its delete's admission: {found}; nothing is deleted from the scan's decision", path, name),
+            Self::ReferencedByOpenBuild { path, name, build_id } => write!(f, "node (path `{}`, name `{}`)'s stopped birth is referenced by open Build {build_id}: it keeps it, and the stopped-node collector deletes nothing it holds", path, name),
             Self::EmptySteps => write!(f, "a Build needs at least one step"),
             Self::StepRepeated { operation } => write!(f, "the Build names operation (action `{}`, subject {:?}, step {:?}) twice: each step's receipts are keyed by its operation, so a Build names each operation once", operation.action, operation.subject, operation.recipe_step),
             Self::LastAdmin { refusal, .. } | Self::NoSecondary { refusal, .. } => f.write_str(refusal),
@@ -885,11 +950,11 @@ impl fmt::Display for BuildReject {
             Self::NoNodeListed => write!(f, "the request lists no node: a fabric with no mesh is fabric.delete, never a topology request; nothing is accepted"),
             Self::TopologyStorageProviderNotRegistered { provider, registered } => write!(f, "the request names topology_storage_provider `{provider}`, which the fabric-primary's wiring does not register (it registers: {}): nothing is accepted and nothing moved", registered.join(", ")),
             Self::TopologyStorageProviderNotOpened { provider, detail } => write!(f, "the request names topology_storage_provider `{provider}`, which the fabric-primary's wiring registers and cannot open ({detail}): nothing is accepted and nothing moved"),
-            Self::NodeNamedTwice { node } => write!(f, "the request names (path `{}`, name `{}`) twice: each node is listed once", node.path, node.name),
-            Self::UnknownType { node, r#type } => write!(f, "(path `{}`, name `{}`) names type `{}`, which is neither `node` nor `node-admin` and which the fabric does not declare; nothing is accepted", node.path, node.name, r#type),
-            Self::ExecutableMissing { node } => write!(f, "(path `{}`, name `{}`) is created by the request and its create spec names no executable: every created node names the executable it runs; nothing is accepted", node.path, node.name),
-            Self::ExecutableRefused { node, detail } => write!(f, "the executable the request names for (path `{}`, name `{}`) is refused: {detail}; nothing is accepted", node.path, node.name),
-            Self::TagsRefused { node, detail } => write!(f, "the tags the request names for (path `{}`, name `{}`) are refused: {detail}; nothing is accepted", node.path, node.name),
+            Self::NodeNamedTwice { path, name } => write!(f, "the request names (path `{}`, name `{}`) twice: each node is listed once", path, name),
+            Self::UnknownType { path, name, r#type } => write!(f, "(path `{}`, name `{}`) names type `{}`, which is neither `node` nor `node-admin` and which the fabric does not declare; nothing is accepted", path, name, r#type),
+            Self::ExecutableMissing { path, name } => write!(f, "(path `{}`, name `{}`) is created by the request and its create spec names no executable: every created node names the executable it runs; nothing is accepted", path, name),
+            Self::ExecutableRefused { path, name, detail } => write!(f, "the executable the request names for (path `{}`, name `{}`) is refused: {detail}; nothing is accepted", path, name),
+            Self::TagsRefused { path, name, detail } => write!(f, "the tags the request names for (path `{}`, name `{}`) are refused: {detail}; nothing is accepted", path, name),
             Self::NodeSpecMismatch { mesh, missing, extra } => write!(
                 f,
                 "mesh `{mesh}`: every indexed location carries exactly one matching create spec; missing {missing:?}, inconsistent {extra:?}"
@@ -915,7 +980,7 @@ mod tests {
     #[test]
     fn rejection_preserves_separate_location_fields() {
         let location = PathName::new("unrelated.branch", "north-old").unwrap();
-        let refusal = BuildReject::UnknownNode { node: location.clone(), step: Some(2) };
+        let refusal = BuildReject::UnknownNode { path: location.path.clone(), name: location.name.clone(), step: Some(2) };
         let value = serde_json::to_value(&refusal).unwrap();
         assert_eq!(value["node"], serde_json::json!({ "path": "unrelated.branch", "name": "north-old" }));
         assert_eq!(serde_json::from_value::<BuildReject>(value).unwrap(), refusal);
@@ -925,8 +990,8 @@ mod tests {
             mesh: "explicit-mesh".into(),
             missing: vec![location.clone()],
             extra: vec![NodeSpecConflict {
-                location,
-                declared_location: PathName::new("another.branch", "north").unwrap(),
+                path: location.path.clone(), name: location.name.clone(),
+                declared_path: "another.branch".into(), declared_name: "north".into(),
                 declared_mesh: "another-mesh".into(),
             }],
         };
@@ -943,9 +1008,9 @@ mod tests {
     #[test]
     fn only_a_create_operation_names_the_node_it_creates() {
         let node: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
-        assert_eq!(BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh2".into(), node: node.clone(), over: None, executable: None, entry: None }.created_node(), Some(&node));
-        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, r#type: "node-admin".into(), mesh: "mesh2".to_owned(), step: Step::Create { mesh: "mesh1".into(), r#type: "node".into(), node: node.clone(), executable: None }, birth: None, entry: None }.created_node(), Some(&node));
-        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, r#type: "node-admin".into(), mesh: "mesh2".to_owned(), step: Step::Stop { node: node.clone() }, birth: None, entry: None }.created_node(), None);
-        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, r#type: "node-admin".into(), mesh: "mesh2".to_owned(), step: Step::Start { node: node.clone() }, birth: None, entry: None }.created_node(), None);
+        assert_eq!(BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh2".into(), path: node.path.clone(), name: node.name.clone(), over: None, executable: None, entry: None }.created_node(), Some(&node).cloned());
+        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, r#type: "node-admin".into(), mesh: "mesh2".to_owned(), step: Step::Create { mesh: "mesh1".into(), r#type: "node".into(), path: node.path.clone(), name: node.name.clone(), executable: None }, birth: None, entry: None }.created_node(), Some(&node).cloned());
+        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, r#type: "node-admin".into(), mesh: "mesh2".to_owned(), step: Step::Stop { path: node.path.clone(), name: node.name.clone()}, birth: None, entry: None }.created_node(), None);
+        assert_eq!(BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, r#type: "node-admin".into(), mesh: "mesh2".to_owned(), step: Step::Start { path: node.path.clone(), name: node.name.clone()}, birth: None, entry: None }.created_node(), None);
     }
 }

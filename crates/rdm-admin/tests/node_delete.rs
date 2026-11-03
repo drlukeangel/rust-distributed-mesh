@@ -100,7 +100,7 @@ impl DeploymentProvider for ControlledExitProvider {
 
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         Err(DeployError::Spawn {
-            node: spec.node.clone(),
+            path: spec.path.clone(), name: spec.name.clone(),
             reason: "this cell tests node.delete, not spawn".into(),
         })
     }
@@ -187,7 +187,7 @@ impl LifecycleEvents for RecordingEvents {
     async fn deleting(&self, op: &LifecycleOp) {
         self.events.lock().unwrap().push((
             "deleting",
-            op.name.clone(),
+            op.location(),
             op.node_id.clone(),
             op.incarnation.clone(),
         ));
@@ -196,7 +196,7 @@ impl LifecycleEvents for RecordingEvents {
     async fn deleted(&self, op: &LifecycleOp) {
         self.events.lock().unwrap().push((
             "deleted",
-            op.name.clone(),
+            op.location(),
             op.node_id.clone(),
             op.incarnation.clone(),
         ));
@@ -205,7 +205,7 @@ impl LifecycleEvents for RecordingEvents {
     async fn stopped(&self, op: &LifecycleOp) {
         self.events.lock().unwrap().push((
             "stopped",
-            op.name.clone(),
+            op.location(),
             op.node_id.clone(),
             op.incarnation.clone(),
         ));
@@ -214,7 +214,7 @@ impl LifecycleEvents for RecordingEvents {
     async fn joined(&self, op: &LifecycleOp) {
         self.events.lock().unwrap().push((
             "joined",
-            op.name.clone(),
+            op.location(),
             op.node_id.clone(),
             op.incarnation.clone(),
         ));
@@ -223,7 +223,7 @@ impl LifecycleEvents for RecordingEvents {
     async fn leaving(&self, op: &LifecycleOp) {
         self.events.lock().unwrap().push((
             "leaving",
-            op.name.clone(),
+            op.location(),
             op.node_id.clone(),
             op.incarnation.clone(),
         ));
@@ -366,7 +366,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             executable: std::env::current_exe().unwrap(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(),
-                name: admin_name.clone(),
+                path: admin_name.path.clone(), name: admin_name.name.clone(),
                 node_id: admin_id,
                 incarnation: executor_birth.incarnation.clone(),
             },
@@ -533,7 +533,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             .delete_node(&req_ok)
             .await
             .expect("node.delete must complete when provider reports Exited");
-        assert_eq!(terminal.node, target_name);
+        assert_eq!(terminal.location(), target_name);
         assert_eq!(terminal.node_id, target_id.to_string());
         assert_eq!(terminal.incarnation_id, target_incarnation.to_string());
         assert_eq!(terminal.exit_code, Some(0));
@@ -673,7 +673,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         }
         async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
             Err(DeployError::Spawn {
-                node: spec.node.clone(),
+                path: spec.path.clone(), name: spec.name.clone(),
                 reason: "node_delete_step_faults spawns nothing".into(),
             })
         }
@@ -717,7 +717,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             cmd: NodeCommand,
             _ctx: &CommandContext,
         ) -> CommandAdmission {
-            self.commands.lock().unwrap().push((node.name.clone(), cmd));
+            self.commands.lock().unwrap().push((node.location(), cmd));
             CommandAdmission::Indeterminate {
                 reason: "stop stream cut before Stopped".into(),
                 code: rdm_core::outcome::Code::Unavailable,
@@ -825,7 +825,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             executable: std::env::current_exe().unwrap(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(),
-                name: admin_name.clone(),
+                path: admin_name.path.clone(), name: admin_name.name.clone(),
                 node_id: admin_id,
                 incarnation: executor_birth.incarnation.clone(),
             },
@@ -946,7 +946,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             operation: rdm_core::OperationId::node("node.delete", &target_id),
             node_id: target_id.clone(),
             incarnation: target_incarnation.clone(),
-            name: target_name.clone(),
+            path: target_name.path.clone(), name: target_name.name.clone(),
             event_at_rafka_ms: 1_000_000,
             traceparent: None,
             tracestate: None,
@@ -965,7 +965,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .await
             .unwrap();
         let term_receipt = TerminalReceipt {
-            node: target_name.clone(),
+            path: target_name.path.clone(), name: target_name.name.clone(),
             node_id: target_id.to_string(),
             incarnation_id: target_incarnation.to_string(),
             runtime: None,
@@ -1082,7 +1082,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             fabric_id: template.fabric_id.clone(),
             node: rdm_core::MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: target_id.clone(),
-                name: target_name.clone(),
+                path: target_name.path.clone(), name: target_name.name.clone(),
                 endpoint_id: shared_endpoint.clone(),
                 transport_addr: "127.0.0.1:41001".parse().unwrap(),
                 incarnation: target_incarnation.clone(),
@@ -1109,7 +1109,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             operation: rdm_core::OperationId::node("node.delete", &target_id),
             node_id: target_id.clone(),
             incarnation: target_incarnation.clone(),
-            name: target_name.clone(),
+            path: target_name.path.clone(), name: target_name.name.clone(),
             event_at_rafka_ms: 2_000,
             traceparent: None,
             tracestate: None,
@@ -1118,7 +1118,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let successor_digest = rdm_core::MeshDigest {
             node: rdm_core::MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: successor_id.clone(),
-                name: target_name.clone(),
+                path: target_name.path.clone(), name: target_name.name.clone(),
                 endpoint_id: shared_endpoint,
                 transport_addr: "127.0.0.1:41002".parse().unwrap(),
                 incarnation: successor_inc.clone(),

@@ -38,7 +38,7 @@ fn launch(provider: &str, data_dir: &Path) -> Launch {
         fabric_id: FabricId::mint(),
         mesh: "mesh1".into(),
         r#type: "node".into(),
-        name: rdm_core::PathName::new("mesh1.node", "2").unwrap(),
+        path: "mesh1.node".into(), name: "2".into(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -60,8 +60,8 @@ fn launch(provider: &str, data_dir: &Path) -> Launch {
 fn fact(launch: &Launch, ordinal: u32) -> NodeConnection {
     NodeConnection {
         id: ConnectionId::mint(),
-        source: ConnectionEnd { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
-        destination: ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), name: rdm_core::PathName::new("mesh1.node", ordinal.to_string()).unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
+        source: ConnectionEnd { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), path: launch.path.clone(), name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
+        destination: ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), path: "mesh1.node".into(), name: ordinal.to_string(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
         kind: ConnectionKind::Direct,
         alpn: b"storage-provider/1".to_vec(),
         state: ConnectionState::Connected,

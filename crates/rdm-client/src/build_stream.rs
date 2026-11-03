@@ -558,7 +558,7 @@ mod tests {
         let _router = iroh::protocol::Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
         let fp: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id, name: fp.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation });
+        resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id, path: fp.path.clone(), name: fp.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation });
         let cep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let carrier = BuildCarrier::new(Arc::new(NodeRpcClient::new(cep, resolver).with_caller_system("rdm")), fp);
         let mut stream = carrier.create(BuildChange::RemoveNode { node: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap() }).await.expect("the call was accepted");

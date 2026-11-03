@@ -90,14 +90,21 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameHeld {
     /// The name claimed.
-    pub name: PathName,
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The node that holds it.
     pub by: NodeId,
 }
 
+impl NameHeld {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
+}
+
 impl std::fmt::Display for NameHeld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "path {:?}, name {:?} is held by node {}: it is released only when that node is renamed or deleted", self.name.path, self.name.name, self.by)
+        write!(f, "path {:?}, name {:?} is held by node {}: it is released only when that node is renamed or deleted", self.path, self.name, self.by)
     }
 }
 

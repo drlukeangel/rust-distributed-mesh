@@ -124,7 +124,7 @@ fn the_largest_complete_message_golden_fits_max_frame() {
 #[test]
 fn members_chunks_are_sized_against_the_complete_message() {
     let mut first = digest("ready"); first.admin_api_base = Some("x".repeat(1800));
-    let mut second = first.clone(); second.node.node_id = rdm_core::NodeId::parse("1123456789ab").unwrap(); second.node.name = rdm_core::PathName::new("mesh1.node", "2").unwrap();
+    let mut second = first.clone(); second.node.node_id = rdm_core::NodeId::parse("1123456789ab").unwrap(); second.node.path = "mesh1.node".into(); second.node.name = "2".into();
     let author = crate::gossip_wire::author();
     let publisher = PublisherId { incarnation: author.incarnation.clone(), node_id: author.node.clone() };
     let shape = |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted }.authored(&author, 0, 1);
@@ -171,7 +171,7 @@ fn members_chunks_include_the_maximum_trace_context_in_their_complete_size() {
     let state = format!("a={},b={}", "x".repeat(256), "y".repeat(251));
     assert_eq!(state.len(), rdm_core::context::MAX_TRACESTATE_BYTES);
     let mut d = digest("ready"); d.admin_api_base = Some("x".repeat(1600));
-    let mut other = d.clone(); other.node.node_id = rdm_core::NodeId::mint(); other.node.name = rdm_core::PathName::new("mesh1.node", "2").unwrap();
+    let mut other = d.clone(); other.node.node_id = rdm_core::NodeId::mint(); other.node.path = "mesh1.node".into(); other.node.name = "2".into();
     let shape = |digests, in_flight, deleted, chunk_index, chunk_count| {
         let mut f = Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted: deleted }.authored(&author, 0, 1);
         let Frame::Authored { context, .. } = &mut f else { unreachable!() };

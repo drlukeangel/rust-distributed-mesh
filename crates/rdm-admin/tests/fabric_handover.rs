@@ -164,7 +164,7 @@ impl DeploymentProvider for Inspected {
         "fabric-handover".into()
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-        Err(DeployError::Spawn { node: spec.node.clone(), reason: "a fabric_handover cell births nothing".into() })
+        Err(DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason: "a fabric_handover cell births nothing".into() })
     }
     async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
@@ -231,7 +231,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
     let server = rdm_admin::fabric_handover::serve(pinged, slot.clone()).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let resolved = ResolvedNode { mesh: mesh.into(), r#type: "node-admin".into(), node_id: node_id.clone(), name: path.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
+    let resolved = ResolvedNode { mesh: mesh.into(), r#type: "node-admin".into(), node_id: node_id.clone(), path: path.path.clone(), name: path.name.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let topology = Arc::new(tokio::sync::RwLock::new(view(vec![])));
     let finishes: Arc<std::sync::atomic::AtomicUsize> = Arc::default();
     let (writes_finish, writes_gate) = tokio::sync::watch::channel(true);
@@ -255,10 +255,10 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
         })
     };
     let (provider, nodes) = (Arc::new(Inspected::default()), Arc::new(MemoryNodesStorage::default()));
-    let looker = rdm_admin::primary_watch::Looker { me: path.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: client.clone(), provider: provider.clone(), nodes: Some(nodes.clone()), heard_again: Default::default(), connections: None };
+    let looker = rdm_admin::primary_watch::Looker { me_path: path.path.clone(), me_name: path.name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: client.clone(), provider: provider.clone(), nodes: Some(nodes.clone()), heard_again: Default::default(), connections: None };
     let door = Arc::new(HandoverDoor {
         fabric: "fabric1".into(),
-        me: path.clone(),
+        me_path: path.path.clone(), me_name: path.name.clone(),
         node_id: node_id.clone(),
         incarnation,
         topology,
@@ -290,7 +290,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
-    let mut n = Node::allocated(a.resolved.name.clone(), a.resolved.mesh.clone(), &a.resolved.r#type);
+    let mut n = Node::allocated(a.resolved.location(), a.resolved.mesh.clone(), &a.resolved.r#type);
     n.node_id = a.resolved.node_id.clone();
     n.incarnation_id = Some(a.resolved.incarnation.clone());
     n.endpoint_id = Some(EndpointId(a.resolved.endpoint_id.to_string()));
@@ -536,14 +536,14 @@ async fn member(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_i
     let server = rdm_admin::fabric_handover::serve_member(ServerBuilder::new(), slot.clone()).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let resolved = ResolvedNode { mesh: mesh.into(), r#type: "node".into(), node_id: node_id.clone(), name: path.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
+    let resolved = ResolvedNode { mesh: mesh.into(), r#type: "node".into(), node_id: node_id.clone(), path: path.path.clone(), name: path.name.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let door = Arc::new(rdm_admin::fabric_handover::MemberDoor::new(path.clone(), "node", node_id, incarnation, topology_view, client));
     let _ = slot.set(door.clone());
     Member { door, resolved, resolver, fabric: fabric.clone(), _router: router }
 }
 
 fn member_node(m: &Member, primary: bool) -> Node {
-    let mut n = Node::allocated(m.resolved.name.clone(), m.resolved.mesh.clone(), &m.resolved.r#type);
+    let mut n = Node::allocated(m.resolved.location(), m.resolved.mesh.clone(), &m.resolved.r#type);
     n.node_id = m.resolved.node_id.clone();
     n.incarnation_id = Some(m.resolved.incarnation.clone());
     n.endpoint_id = Some(EndpointId(m.resolved.endpoint_id.to_string()));
@@ -557,7 +557,7 @@ fn member_node(m: &Member, primary: bool) -> Node {
 fn digest_of(r: &ResolvedNode, fabric: &FabricId) -> rdm_core::MeshDigest {
     rdm_core::MeshDigest {
         fabric_id: fabric.clone(),
-        node: rdm_core::MeshNode { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: rdm_core::EndpointId(r.endpoint_id.to_string()), transport_addr: r.transport_addr, incarnation: r.incarnation.clone(), supersedes: None, runtime: None },
+        node: rdm_core::MeshNode { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node_id: r.node_id.clone(), path: r.path.clone(), name: r.name.clone(), endpoint_id: rdm_core::EndpointId(r.endpoint_id.to_string()), transport_addr: r.transport_addr, incarnation: r.incarnation.clone(), supersedes: None, runtime: None },
         status: rdm_core::MemberStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
@@ -633,7 +633,7 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
         for other in members.iter().filter(|o| o.resolved.node_id != m.resolved.node_id && (b1_hears_b2 || m.resolved.node_id != b1.resolved.node_id)) {
             assert!(m.door.topology_view().digest_view.record(digest_of(&other.resolved, &other.fabric)));
             // Its mesh-primary's projection holds it Ready.
-            assert!(m.door.topology_view().digest_view.started(&other.resolved.node_id, &other.resolved.incarnation, &other.resolved.name, &other.resolved.mesh));
+            assert!(m.door.topology_view().digest_view.started(&other.resolved.node_id, &other.resolved.incarnation, &other.resolved.location(), &other.resolved.mesh));
         }
     }
     TypeFabric { p, x, b1, b2 }
@@ -641,7 +641,7 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
 
 /// The node at `name` in `a`'s view.
 async fn node_at(a: &Admin, name: &rdm_core::PathName) -> Node {
-    a.door.topology.read().await.members().find(|n| &n.name == name).cloned().unwrap_or_else(|| panic!("{name:?} is in the view"))
+    a.door.topology.read().await.members().find(|n| &n.location() == name).cloned().unwrap_or_else(|| panic!("{name:?} is in the view"))
 }
 
 /// CONTRACT (node-primary-update.md steps 2-4 and "Both primaries": "When the mesh-primary is also the

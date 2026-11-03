@@ -145,7 +145,7 @@ impl Run {
     /// the current build_id as the fabric primary holds it: `fabric.get` at the admin behind its door.
     async fn fabric_build_id(&self) -> String {
         let door = self.fabric_door().await;
-        let at = door.name.clone();
+        let at = door.location();
         self.estate.fabric_view_at(&at).await.unwrap_or_else(|| panic!("{at:?} does not answer fabric.get for this estate's Fabric")).build_id.unwrap_or_default()
     }
 
@@ -201,7 +201,7 @@ impl Run {
 
     /// `node` as the admin behind `door` holds it.
     async fn node_from(&self, door: &Door, node: &PathName) -> Option<Value> {
-        self.estate.node_values_at(&door.name).await.into_iter().find(|n| location(n) == *node)
+        self.estate.node_values_at(&door.location()).await.into_iter().find(|n| location(n) == *node)
     }
 
     /// Await the fact `holds` of Build `id` as the fabric's Build records hold it, the records the admin
@@ -298,7 +298,7 @@ impl Run {
     /// has no property record yet answers nothing (`node_views`), and is read again.
     async fn primary_where(&self, what: &str, is: impl Fn(&rdm_client::NodeView) -> bool) -> PathName {
         rdm_test::estate::wait_for(what, Duration::from_secs(30), || {
-            let found = async { self.estate.node_views().await.into_iter().find(|n| is(n)).map(|n| n.name) };
+            let found = async { self.estate.node_views().await.into_iter().find(|n| is(n)).map(|n| n.location()) };
             found
         })
         .await
@@ -696,7 +696,7 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
     let previous = run.fabric_build_id().await;
     let ack = door.arm(id, spec.clone()).await;
     let request = {
-        let nodes = Nodes::new(run.estate.carrier_at(&door.name).await);
+        let nodes = Nodes::new(run.estate.carrier_at(&door.location()).await);
         let (based_on, request) = run.estate.create_node_request("mesh1", "node").await;
         tokio::spawn(async move { nodes.create_named(based_on, request).await })
     };

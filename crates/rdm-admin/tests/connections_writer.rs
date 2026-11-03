@@ -19,13 +19,13 @@ fn policy() -> CarrierPolicy {
 }
 
 fn end(name: rdm_core::PathName, mesh: &str, r#type: &str) -> ConnectionEnd {
-    ConnectionEnd { mesh: mesh.into(), r#type: r#type.to_string(), name, node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
+    ConnectionEnd { mesh: mesh.into(), r#type: r#type.to_string(), path: name.path.clone(), name: name.name.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
 }
 
 fn resolved(e: &ConnectionEnd) -> ResolvedNode {
     ResolvedNode { mesh: e.mesh.clone(), r#type: e.r#type.clone(),
         node_id: e.node_id.clone(),
-        name: e.name.clone(),
+        path: e.path.clone(), name: e.name.clone(),
         endpoint_id: iroh::SecretKey::generate().public(),
         transport_addr: "127.0.0.1:1".parse().unwrap(),
         incarnation: e.incarnation.clone().unwrap(),
@@ -285,7 +285,7 @@ async fn a_failed_dial_after_an_accept_keeps_the_proxy_and_reschedules_from_its_
 async fn an_accept_from_another_birth_arms_nothing_and_an_attempt_for_a_gone_birth_is_dropped_undialled() {
     let (dir, _me, dest, _storage, held, writer, _) = proxied("accept-stale-birth", now_ms()).await;
     let topology_view = Arc::new(rdm_core::connections::StaticIncarnations::default());
-    topology_view.set(dest.node_id.clone(), dest.name.clone(), dest.incarnation.clone().unwrap());
+    topology_view.set(dest.node_id.clone(), dest.location(), dest.incarnation.clone().unwrap());
     held.lock().unwrap().set_topology_view(topology_view.clone());
     let dial = CellDial::new(&writer, resolved(&dest), vec![Ok(())]);
     let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(50), Some(dial.dial()));
@@ -295,7 +295,7 @@ async fn an_accept_from_another_birth_arms_nothing_and_an_attempt_for_a_gone_bir
     // The Proxy's own birth coalesces into its pending attempt (due when its backoff ends, seconds away); then it is gone.
     writer.accepted(&resolved(&dest));
     assert_eq!(writer.recovery_pending().len(), 1);
-    topology_view.depart(dest.node_id.clone(), dest.name.clone());
+    topology_view.depart(dest.node_id.clone(), dest.location());
     until("the attempt for the gone birth is dropped", || writer.recovery_pending().is_empty()).await;
     assert!(dial.calls().is_empty(), "no dial toward a birth that is gone");
     let _ = std::fs::remove_dir_all(&dir);
@@ -497,7 +497,7 @@ async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm").with_connection_observer(writer.clone());
     let opts = CallOptions { resend: Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(std::time::Duration::from_millis(300)) }, ..Default::default() };
     let resolution = resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, policy());
-    let call = client.call_resolved::<Ping>(resolution, &me.node_id, &dest.name, &dest.node_id, &PingRequest::Ping { payload: vec![1] }, &opts).await;
+    let call = client.call_resolved::<Ping>(resolution, &me.node_id, &dest.location(), &dest.node_id, &PingRequest::Ping { payload: vec![1] }, &opts).await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });
     assert!(matches!(call.outcome, RpcOutcome::NotSent(_)), "{:?}", call.outcome);
     writer.observations_landed().await;
@@ -574,7 +574,7 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     // The process's held name, as its topology view holds it: none told yet, so the birth's.
     let told: Arc<Mutex<Option<PathName>>> = Arc::default();
-    let (cell, birth) = (told.clone(), me.name.clone());
+    let (cell, birth) = (told.clone(), me.location());
     writer.follow_held_name(move || cell.lock().unwrap().clone().unwrap_or_else(|| birth.clone())).unwrap();
     assert!(writer.follow_held_name(|| rdm_core::PathName::new("mesh1.node", "9").unwrap()).is_err_and(|e| e.contains(me.node_id.as_str()) && e.contains("already reads its name")), "one place holds the name");
     let target = resolved(&peer);
@@ -585,13 +585,13 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
     assert_eq!((&before[0].source.name, &before[0].source.node_id), (&me.name, &me.node_id), "the row before the rename names the birth's name: {:?}", before[0]);
 
     *told.lock().unwrap() = Some(taken.clone());
-    assert_eq!(writer.own(), ConnectionEnd { name: taken.clone(), ..me.clone() }, "the source end is the name the node holds, with its node id and birth");
+    assert_eq!(writer.own(), ConnectionEnd { path: taken.path.clone(), name: taken.name.clone(), ..me.clone() }, "the source end is the name the node holds, with its node id and birth");
     writer.direct_broken(&target, "the pooled connection closed");
     writer.observations_landed().await;
     let after = storage.history().await.unwrap();
     assert_eq!(after.len(), 2);
     assert_eq!(after[0], before[0], "the row written before the rename stays exactly as written");
-    assert_eq!((&after[1].source, &after[1].destination.name, after[1].state), (&ConnectionEnd { name: taken.clone(), ..me.clone() }, &peer.name, ConnectionState::Disconnected), "{:?}", after[1]);
+    assert_eq!((&after[1].source, &after[1].destination.name, after[1].state), (&ConnectionEnd { path: taken.path.clone(), name: taken.name.clone(), ..me.clone() }, &peer.name, ConnectionState::Disconnected), "{:?}", after[1]);
     let own: Vec<NodeConnection> = held.lock().unwrap().own_latest_directs().into_iter().cloned().collect();
     assert_eq!(own, vec![after[1].clone()], "the row under the held name is this node's own Direct, the birth name's is not");
     let _ = std::fs::remove_dir_all(&dir);
@@ -1036,12 +1036,12 @@ fn a_pending_reconnect_attempt_never_dialled_ends_on_a_span_naming_its_supersede
         // The superseded birth.
         let (dir, _me, dest, _storage, held, writer, _) = proxied("pending-superseded", now_ms()).await;
         let topology_view = Arc::new(rdm_core::connections::StaticIncarnations::default());
-        topology_view.set(dest.node_id.clone(), dest.name.clone(), dest.incarnation.clone().unwrap());
+        topology_view.set(dest.node_id.clone(), dest.location(), dest.incarnation.clone().unwrap());
         held.lock().unwrap().set_topology_view(topology_view.clone());
         let dial = CellDial::new(&writer, resolved(&dest), vec![Ok(())]);
         let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(25), Some(dial.dial()));
         assert_eq!(writer.recovery_pending().len(), 1, "one attempt pending, seconds from due");
-        topology_view.depart(dest.node_id.clone(), dest.name.clone());
+        topology_view.depart(dest.node_id.clone(), dest.location());
         until("the attempt for the superseded birth ends", || writer.recovery_pending().is_empty()).await;
         assert!(dial.calls().is_empty(), "no dial toward a superseded birth");
         dirs.borrow_mut().push(dir);

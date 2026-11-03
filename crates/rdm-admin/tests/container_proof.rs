@@ -68,7 +68,7 @@ pub(crate) fn launch(p: &ContainerDeploymentProvider, fabric: &str, n: u32) -> R
     let ip = Ipv4Addr::from(u32::from(first) + n);
     let data_dir = std::env::temp_dir().join(format!("{fabric}-node{n}"));
     ResolvedNodeLaunch { mesh: "mesh1".to_owned(), r#type: "node".into(), secrets: Default::default(), withhold: Vec::new(),
-        node: rdm_core::PathName::new("mesh1.node", (n + 1).to_string()).unwrap(),
+        path: "mesh1.node".into(), name: ((n + 1).to_string()).to_string(),
         deployment_id: DeploymentId::mint(),
         executable: PathBuf::from("/usr/bin/tail"),
         args: vec!["-f".into(), "/dev/null".into()],
@@ -128,14 +128,14 @@ async fn a_new_birth_at_a_name_whose_stopped_predecessor_still_runs_gets_its_own
     let fabric = fabric_name("new-birth-address");
     let Some(p) = provider(&fabric).await else { return };
     let _cleanup = Fabric(fabric.clone());
-    let name = launch(&p, &fabric, 0).node;
+    let name = launch(&p, &fabric, 0).location();
     let first = launch(&p, &fabric, 0);
     let first_ip = p.bind_ip(&name, &first.deployment_id, rdm_admin::deployment::deadline::Deadline::step()).await.expect("an address for the first birth");
     let first = ResolvedNodeLaunch { transport: SocketAddr::new(first_ip, 20000), ..first };
     let held = p.spawn(&first, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the first birth's container runs");
     assert_eq!(p.bind_ip(&name, &first.deployment_id, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the first birth's address again"), first_ip, "a birth binds the address it holds again");
     // The first birth is renamed and stopped: its container keeps running, and its address with it.
-    let second = ResolvedNodeLaunch { node: name.clone(), ..launch(&p, &fabric, 1) };
+    let second = ResolvedNodeLaunch { path: name.path.clone(), name: name.name.clone(), ..launch(&p, &fabric, 1) };
     let second_ip = p.bind_ip(&name, &second.deployment_id, rdm_admin::deployment::deadline::Deadline::step()).await.expect("an address for the new birth");
     let second = ResolvedNodeLaunch { transport: SocketAddr::new(second_ip, 20000), ..second };
     p.spawn(&second, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap_or_else(|e| panic!("the new birth at {name:?} starts on its own address ({second_ip}; the stopped birth holds {first_ip}): {e}"));

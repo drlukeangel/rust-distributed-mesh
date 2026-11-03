@@ -792,7 +792,7 @@ impl Estate {
         };
         // A container fabric's id is the one minted for its network: the estate holds it from
         // birth, so a panic before the fabric answers still removes the fabric's containers.
-        let mut estate = Self { owner, root, artifacts, evidence, admin: birth.name.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, executables, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(Vec::new()), births: Default::default(), ready: std::sync::OnceLock::new(), spans: Default::default(), _scope: scope };
+        let mut estate = Self { owner, root, artifacts, evidence, admin: birth.location(), fabric_id: container_fabric, bootstrap: Some(child), external, executables, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(Vec::new()), births: Default::default(), ready: std::sync::OnceLock::new(), spans: Default::default(), _scope: scope };
         estate.hold_printed(birth);
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
@@ -1102,7 +1102,7 @@ impl Estate {
         let (exe, env) = self.admin_launch(data_dir, operator_env);
         let (child, birth) = spawn_admin(&exe, &env, &format!("restarted node-admin on {}", data_dir.display()));
         self.restarted.push(child);
-        let name = birth.name.clone();
+        let name = birth.location();
         self.hold_printed(birth);
         name
     }
@@ -1172,7 +1172,7 @@ impl Estate {
     /// Hold the birth an admin this estate started printed: the typed objects learn it at their next
     /// handover, and a probe can enter at it now.
     fn hold_printed(&self, birth: MeshNode) {
-        self.births.lock().unwrap().insert(birth.name.clone(), birth.clone());
+        self.births.lock().unwrap().insert(birth.location(), birth.clone());
         self.printed.lock().unwrap().push(birth);
     }
 

@@ -113,7 +113,7 @@ fn testkit_store_applies_cas_reports_exact_executing_birth() {
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+            path: "mesh1.node".into(), name: "1".into(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -130,14 +130,14 @@ fn testkit_store_applies_cas_reports_exact_executing_birth() {
             declared: Default::default(),
         };
         let store = Arc::new(FileTestkitStore::open(&launch.data_dir).expect("the store opens in its data dir"));
-        let server = testkit_store::serve(ServerBuilder::new(), store.clone(), &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))
+        let server = testkit_store::serve(ServerBuilder::new(), store.clone(), &launch, &rdm_test::held_name::HeldName::of_birth(launch.location()))
             .build(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .expect("the testkit store is built");
         let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
+        resolver.insert(ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type, node_id: launch.node_id.clone(), path: launch.path.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
         let client = NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let call = |req: TestkitStoreRequest| {
@@ -146,7 +146,7 @@ fn testkit_store_applies_cas_reports_exact_executing_birth() {
         };
         let at = |op: TestkitStoreOp| Provenance {
             node_id: launch.node_id.to_string(),
-            node: launch.name.clone(),
+            path: launch.path.clone(), name: launch.name.clone(),
             mesh: launch.mesh.clone(),
             incarnation_id: launch.incarnation.to_string(),
             op,
@@ -196,7 +196,7 @@ fn testkit_store_applies_cas_reports_exact_executing_birth() {
         let r = call(TestkitStoreRequest::Get { key: b"kept".to_vec() }).await;
         step("get-kept", TestkitStoreRequest::Get { key: b"kept".to_vec() }, r, TestkitStoreReply::Value { at: at(TestkitStoreOp::Get), value: b"kv".to_vec() });
         json!({
-            "birth": {"node_id": launch.node_id.to_string(), "path": launch.name.path, "name": launch.name.name, "mesh": launch.mesh, "incarnation_id": launch.incarnation.to_string()},
+            "birth": {"node_id": launch.node_id.to_string(), "path": launch.path, "name": launch.name, "mesh": launch.mesh, "incarnation_id": launch.incarnation.to_string()},
             "store_file": store.path().display().to_string(),
             "steps": seen,
         })

@@ -61,13 +61,13 @@ impl TestPeer {
         .unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let birth = Birth { mesh: mesh.to_owned(), r#type: r#type.to_string(),
-            name,
+            path: name.path.clone(), name: name.name.clone(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
         let resolved = ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(),
             node_id: birth.node_id.clone(),
-            name: birth.name.clone(),
+            path: birth.path.clone(), name: birth.name.clone(),
             endpoint_id: key.public(),
             transport_addr: addr,
             incarnation: birth.incarnation.clone(),
@@ -218,7 +218,7 @@ async fn a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_d
 
     // Seed an active Proxy on ALPN_B and a Failed Direct on ALPN_A in peer_a's held projection:
     let carrier_birth = Birth { mesh: "mesh1".into(), r#type: "node".into(),
-        name: rdm_core::PathName::new("mesh1.node", "3").unwrap(),
+        path: "mesh1.node".into(), name: "3".into(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
     };
@@ -288,7 +288,7 @@ async fn an_open_against_another_incarnation_is_wrong_incarnation_and_never_serv
     let stale_incarnation = IncarnationId::mint();
     assert_ne!(stale_incarnation, peer_b.birth.incarnation);
     let stale_target = Birth { mesh: peer_b.birth.mesh.clone(), r#type: peer_b.birth.r#type.clone(),
-        name: peer_b.birth.name.clone(),
+        path: peer_b.birth.path.clone(), name: peer_b.birth.name.clone(),
         node_id: peer_b.birth.node_id.clone(),
         incarnation: stale_incarnation.clone(),
     };
@@ -508,8 +508,8 @@ async fn process(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Process 
     let key = SecretKey::generate();
     let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), &[ALPN_A.to_vec()]).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let birth = Birth { mesh: mesh.to_owned(), r#type: r#type.to_string(), name, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    let resolved = ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: birth.incarnation.clone() };
+    let birth = Birth { mesh: mesh.to_owned(), r#type: r#type.to_string(), path: name.path.clone(), name: name.name.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let resolved = ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(), node_id: birth.node_id.clone(), path: birth.path.clone(), name: birth.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: birth.incarnation.clone() };
     let resolver = Arc::new(StaticResolver::new());
     let sink = Arc::new(MemoryConnectionsSink::new(birth.clone()));
     let (registry, handlers) = ConnectionsRegistry::new(ep.clone(), resolver.clone(), sink.clone(), &[alpn(ALPN_A)], b"cert-v1".to_vec()).unwrap();
@@ -564,7 +564,7 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
             fabric_id: fabric.clone(),
             node: rdm_core::MeshNode { mesh: dialer.peer.birth.mesh.clone(), r#type: dialer.peer.birth.r#type.clone(),
                 node_id: dialer.peer.birth.node_id.clone(),
-                name: dialer.peer.birth.name.clone(),
+                path: dialer.peer.birth.path.clone(), name: dialer.peer.birth.name.clone(),
                 endpoint_id: rdm_core::EndpointId(dialer.ep.id().to_string()),
                 transport_addr: dialer.peer.resolved.transport_addr,
                 incarnation: dialer.peer.birth.incarnation.clone(),
@@ -635,11 +635,11 @@ impl RawDialer {
         let key = SecretKey::generate();
         let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), &[ALPN_A.to_vec()]).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let birth = Birth { mesh: mesh.to_owned(), r#type: r#type.to_string(), name, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let birth = Birth { mesh: mesh.to_owned(), r#type: r#type.to_string(), path: name.path.clone(), name: name.name.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         if known {
             acceptor.resolver.insert(ResolvedNode { mesh: birth.mesh.clone(), r#type: birth.r#type.clone(),
                 node_id: birth.node_id.clone(),
-                name: birth.name.clone(),
+                path: birth.path.clone(), name: birth.name.clone(),
                 endpoint_id: key.public(),
                 transport_addr: addr,
                 incarnation: birth.incarnation.clone(),
@@ -734,7 +734,7 @@ async fn a_dial_that_presents_nothing_within_the_floor_is_no_credential() {
 
     tokio::time::sleep(floor + floor / 3).await;
     let refused: Vec<_> = acceptor.sink.history().into_iter().filter(|r| r.state == ConnectionState::Refused).collect();
-    let mut named: Vec<(rdm_core::PathName, Option<String>)> = refused.iter().map(|r| (r.source.name.clone(), r.reason.clone())).collect();
+    let mut named: Vec<(rdm_core::PathName, Option<String>)> = refused.iter().map(|r| (r.source.location(), r.reason.clone())).collect();
     named.sort();
     let no_credential = Some("no-credential".to_string());
     assert_eq!(
@@ -1794,7 +1794,7 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
     dest_admitter.allow.store(true, Ordering::SeqCst);
     let wrong_inc = IncarnationId::mint();
     let stale_dest = Birth { mesh: dest.birth.mesh.clone(), r#type: dest.birth.r#type.clone(),
-        name: dest.birth.name.clone(),
+        path: dest.birth.path.clone(), name: dest.birth.name.clone(),
         node_id: dest.birth.node_id.clone(),
         incarnation: wrong_inc.clone(),
     };
@@ -1839,7 +1839,7 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
     // Case 3: Carrier cannot reach destination (connection-lost): the one carrier refused by name, so
     // the open ends with no active route (Q227), no Proxy Connected:
     let dead_dest = Birth { mesh: "mesh1".into(), r#type: "node".into(),
-        name: rdm_core::PathName::new("mesh1.node", "4").unwrap(),
+        path: "mesh1.node".into(), name: "4".into(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
     };
@@ -2234,7 +2234,7 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
         assert_eq!(deleted, vec![tunnel.id().clone()]);
         assert_eq!(tokio::time::timeout(Duration::from_secs(5), tunnel.closed()).await.unwrap(), Closed::ConnectionsDeleted);
         let proxy_disconnects: Vec<Option<String>> = source.sink.history().into_iter().filter(|r| r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Disconnected).map(|r| r.reason).collect();
-        let names = (source.birth.name.clone(), carrier.birth.node_id.to_string(), dest.birth.name.clone());
+        let names = (source.birth.location(), carrier.birth.node_id.to_string(), dest.birth.location());
         let id = tunnel.id().to_string();
         source.shutdown().await;
         carrier.shutdown().await;
@@ -2302,7 +2302,7 @@ fn a_carriers_tunnel_span_is_exported_once_the_tunnel_opens_while_the_tunnel_sti
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let carrier_span = carriers_tunnel_span(&spans, &entry).cloned();
         carry("after-the-read").await;
-        let names = (source.birth.name.clone(), carrier.birth.name.clone(), dest.birth.name.clone());
+        let names = (source.birth.location(), carrier.birth.location(), dest.birth.location());
         source.shutdown().await;
         carrier.shutdown().await;
         dest.shutdown().await;
@@ -2682,7 +2682,7 @@ impl Chain {
             node_id: peer.birth.node_id.clone(),
             incarnation: peer.birth.incarnation.clone(),
             mesh: peer.birth.mesh.clone(),
-            name: peer.birth.name.clone(),
+            path: peer.birth.path.clone(), name: peer.birth.name.clone(),
             endpoint_key: rdm_core::EndpointId(peer.resolved.endpoint_id.to_string()),
         };
         rdm_core::certs::issue(&self.issuer, &birth, self.issuer.cert().cert.issued_ms, expiry_ms).expect("the testkit chain issues the member cert")
@@ -3126,7 +3126,7 @@ fn a_no_certs_acceptor_admits_by_name() {
             let conn = opener.open(&acceptor.birth).await.unwrap_or_else(|e| panic!("a no-certs acceptor admits {} presented bytes: {e:?}", presented.len()));
             let served = tokio::time::timeout(Duration::from_secs(10), accepted).await.expect("the admitted connection reaches accept").unwrap().unwrap();
             assert_eq!(&served, conn.id());
-            names = (Some(dialer.birth.name.clone()), Some(acceptor.birth.name.clone()));
+            names = (Some(dialer.birth.location()), Some(acceptor.birth.location()));
             dialer.shutdown().await;
             acceptor.shutdown().await;
         }
@@ -3149,7 +3149,7 @@ fn a_no_certs_acceptor_admits_by_name() {
 async fn registering_the_step_for_node_rpc_or_gossip_is_refused_at_bind() {
     let ep = rdm_transport::endpoint::bind_with_alpns(SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), &[ALPN_A.to_vec()]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
-    let sink = Arc::new(MemoryConnectionsSink::new(Birth { mesh: "mesh1".into(), r#type: "node".into(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }));
+    let sink = Arc::new(MemoryConnectionsSink::new(Birth { mesh: "mesh1".into(), r#type: "node".into(), path: "mesh1.node".into(), name: "1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }));
     for (own, says) in [(rdm_transport::ALPN, "RDM's own Node RPC ALPN"), (iroh_gossip::ALPN, "RDM's own gossip ALPN")] {
         let refused = ConnectionsRegistry::new(ep.clone(), resolver.clone(), sink.clone(), &[alpn(ALPN_A), alpn(own)], Vec::new()).err().unwrap_or_else(|| panic!("binding {} must be refused", String::from_utf8_lossy(own)));
         assert!(refused.contains(says) && refused.contains(&*String::from_utf8_lossy(own)), "the refusal names the ALPN and whose it is: {refused}");

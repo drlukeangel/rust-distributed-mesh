@@ -260,7 +260,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     assert!(!survivors.is_empty(), "a live admin other than the fabric primary {fp_name}");
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let entry = estate.node_views().await.into_iter().find(|n| n.node_id.as_str() == survivors[0]).expect("surviving admin");
-    estate.enter(&entry.name).await;
+    estate.enter(&entry.location()).await;
     let lost_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let mut stop = estate.nodes_obj().await.stop(&location(&fp)).await.expect("node.stop of fp_name");
     // A stop is a node command, never a Build (Q342): its stream ends with the stop's own completion.

@@ -322,7 +322,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     let carrier = estate.carrier().await;
     let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default()).await.expect("node.config.update answered");
     assert!(matches!(&reply, rdm_core::status::StatusReply::ConfigUpdated { node_id: n, incarnation: i, config, .. } if *n == node_id && *i == incarnation && *config == told), "the fabric-primary sent it down and the node applied it, the config as written carried back: {reply:?}");
-    let read = |views: Vec<rdm_client::NodeView>| views.into_iter().find(|v| v.name == subject_name).unwrap_or_else(|| panic!("{subject_name:?} is answered"));
+    let read = |views: Vec<rdm_client::NodeView>| views.into_iter().find(|v| v.location() == subject_name).unwrap_or_else(|| panic!("{subject_name:?} is answered"));
     let at_once = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("node.get [mesh] at the fabric-primary"));
     assert_eq!(at_once.config, told, "the fabric-primary answers the config at once, from the node's own record");
     // The fabric-primary's process is killed below: its evidence is read once its span reached it
@@ -378,7 +378,7 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
     let heir = sibling(&old);
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     kill(&mut estate, &old).await;
-    estate.until_view("the surviving admin is its mesh's primary", Duration::from_secs(90), |views| views.iter().any(|n| n.name == heir && n.is_primary).then_some(())).await;
+    estate.until_view("the surviving admin is its mesh's primary", Duration::from_secs(90), |views| views.iter().any(|n| n.location() == heir && n.is_primary).then_some(())).await;
     let watcher = nodes.iter().find(|n| n["type"] == "node-admin" && n["mesh"] != mesh).map(|n| location(&n)).expect("an admin of the other mesh");
     let heard = estate
         .until_view_at(&watcher, &format!("{watcher:?} names {heir:?} {mesh}'s primary"), Duration::from_secs(60), |views| {

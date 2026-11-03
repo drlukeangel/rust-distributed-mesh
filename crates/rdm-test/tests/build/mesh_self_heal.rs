@@ -39,7 +39,7 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
         .await
         .into_iter()
         .filter(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary)
-        .map(|n| (n.name, n.node_id, n.incarnation_id.expect("launched victim")))
+        .map(|n| (n.location(), n.node_id, n.incarnation_id.expect("launched victim")))
         .min_by(|a, b| a.0.cmp(&b.0))
         .expect("a node of mesh2");
 

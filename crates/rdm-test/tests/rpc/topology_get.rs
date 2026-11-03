@@ -53,7 +53,7 @@ async fn estate(cell: &str) -> (Estate, Vec<NodeView>) {
 }
 
 fn node_id(nodes: &[NodeView], name: &rdm_core::PathName) -> String {
-    nodes.iter().find(|n| &n.name == name).map(|n| n.node_id.to_string()).unwrap_or_else(|| panic!("{name:?} is not in the view"))
+    nodes.iter().find(|n| &n.location() == name).map(|n| n.node_id.to_string()).unwrap_or_else(|| panic!("{name:?} is not in the view"))
 }
 
 /// The members of `mesh` across every chunk of its one snapshot, with the snapshot's identity.
@@ -189,12 +189,12 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
     estate.stop().await;
     let spans = estate.spans();
     let mut births = Vec::new();
-    for row in nodes.iter().filter(|n| n.name != rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()) {
+    for row in nodes.iter().filter(|n| n.location() != rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()) {
         let node = row.node_id.to_string();
         let joined = named(&spans, "rdm.mesh.entry.update.via-topology-pulled").into_iter().find(|sp| attr(sp, "node") == node).unwrap_or_else(|| panic!("{node} never completed a JoinNode"));
         let maker = attr(joined, "served_by");
         let maker_row = nodes.iter().find(|n| n.node_id.as_str() == maker).expect("maker ID is in the settled view");
-        let join_served: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().filter(|sp| attr(sp, "node_id") == node && attr(sp, "served_by_path") == maker_row.name.path && attr(sp, "served_by_name") == maker_row.name.name).collect();
+        let join_served: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().filter(|sp| attr(sp, "node_id") == node && attr(sp, "served_by_path") == maker_row.path && attr(sp, "served_by_name") == maker_row.name).collect();
         let join_span = join_served.iter().find(|sp| attr(sp, "outcome") == "installed").unwrap_or_else(|| panic!("{maker} installed no join of {node}: {join_served:?}"));
         // The birth's own read: its installs are in the birth's trace. A later read of the node
         // (the delta-gap top-up when a peer mesh's delta arrives past what it holds,
@@ -203,7 +203,7 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
         let installs: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().filter(|sp| attr(sp, "node") == node && sp["trace_id"] == joined["trace_id"]).collect();
         let serve = named(&spans, "rdm.mesh.topology.serve.via-read")
             .into_iter()
-            .filter(|sp| attr(sp, "node_path") == maker_row.name.path && attr(sp, "node_name") == maker_row.name.name && sp["trace_id"] == joined["trace_id"] && at(sp) >= at(join_span))
+            .filter(|sp| attr(sp, "node_path") == maker_row.path && attr(sp, "node_name") == maker_row.name && sp["trace_id"] == joined["trace_id"] && at(sp) >= at(join_span))
             .min_by_key(|sp| at(sp))
             .unwrap_or_else(|| panic!("{maker} served no topology read after the join of {node}"));
         assert_eq!(attr(serve, "outcome"), "served", "{maker}'s read of {node} is answered, not refused");

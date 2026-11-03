@@ -355,13 +355,13 @@ impl CertIssuer {
     pub fn issue_member(&self, birth: &BirthIdentity) -> Result<MemberIssue, IssueFailure> {
         if matches!(self.material(), Material::NoCerts) {
             let now = self.time.try_now_ms().unwrap_or(0);
-            tracing::info_span!("rdm.node_admin.cert.create.via-no-certs-configured", node_path = %birth.name.path, node_name = %birth.name.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), issued_at_rafka_ms = now)
+            tracing::info_span!("rdm.node_admin.cert.create.via-no-certs-configured", node_path = %birth.path, node_name = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), issued_at_rafka_ms = now)
                 .in_scope(|| tracing::info!("this node-admin is configured with no certs: the member cert is empty"));
             return Ok(MemberIssue { bytes: Vec::new(), issued_at: now, expires_at: 0, issuer_expires_at: 0, renew_at: 0, minted: None });
         }
         let span = tracing::info_span!(
             "rdm.node_admin.cert.create.via-join",
-            node_path = %birth.name.path, node_name = %birth.name.name,
+            node_path = %birth.path, node_name = %birth.name,
             node_id = %birth.node_id,
             incarnation_id = %birth.incarnation.as_str(),
             issued_at_rafka_ms = tracing::field::Empty,
@@ -387,7 +387,7 @@ impl CertIssuer {
             }
             Err(IssueFailure::Refused { error, detail }) => {
                 span.record("outcome", "refused");
-                tracing::info_span!("rdm.node_admin.cert.reject.via-refused", node_path = %birth.name.path, node_name = %birth.name.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), refusal = %error, detail = %detail)
+                tracing::info_span!("rdm.node_admin.cert.reject.via-refused", node_path = %birth.path, node_name = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), refusal = %error, detail = %detail)
                     .in_scope(|| tracing::warn!("the member cert is refused: the join is refused"));
             }
         }
@@ -681,7 +681,7 @@ mod tests {
 
     fn birth(name: rdm_core::PathName, mesh: &str) -> BirthIdentity {
         
-        BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: mesh.to_owned(), name, endpoint_key: EndpointId("k".into()) }
+        BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: mesh.to_owned(), path: name.path.clone(), name: name.name.clone(), endpoint_key: EndpointId("k".into()) }
     }
 
     /// A fabric CA under `root`.

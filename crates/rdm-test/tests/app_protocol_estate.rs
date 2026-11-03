@@ -103,12 +103,12 @@ async fn day0(dir: &Path) -> Day0 {
     let (dialer, acceptor) = running.connections(APP_PROTOCOL).expect("the app takes its protocol's Connections from the admin").split();
     let me = running.birth();
     let echo = echo_streams(acceptor, me.node_id.to_string());
-    let admin = ResolvedNode { mesh: me.mesh.clone(), r#type: me.r#type, node_id: me.node_id.clone(), name: me.name.clone(), endpoint_id: me.endpoint_id.0.parse().unwrap(), incarnation: me.incarnation.clone(), transport_addr: me.transport_addr };
+    let admin = ResolvedNode { mesh: me.mesh.clone(), r#type: me.r#type, node_id: me.node_id.clone(), path: me.path.clone(), name: me.name.clone(), endpoint_id: me.endpoint_id.0.parse().unwrap(), incarnation: me.incarnation.clone(), transport_addr: me.transport_addr };
     let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller's endpoint binds");
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(admin);
     let client = Arc::new(NodeRpcClient::new(endpoint, resolver).with_caller_system("rdm"));
-    let carrier = BuildCarrier::new(client, me.name.clone());
+    let carrier = BuildCarrier::new(client, rdm_core::PathName { path: me.path.clone(), name: me.name.clone() });
     let fabrics = Fabrics::new(carrier.clone());
     let day_zero = tokio::time::timeout(WRONG, async {
         loop {
@@ -153,7 +153,7 @@ impl Day0 {
         tokio::time::timeout(WRONG, async {
             loop {
                 let listed = self.nodes.get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.unwrap_or_else(|e| panic!("node.get [{node:?}]: {e}"));
-                if listed.iter().any(|n| &n.name == node && n.status == NodeStatus::Ready) {
+                if listed.iter().any(|n| &n.location() == node && n.status == NodeStatus::Ready) {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -196,7 +196,7 @@ impl Day0 {
 
     /// The Day-0 admin dials `node` on the app protocol: admitted, its stream echoed by the node's app.
     async fn dials(&self, node: &ResolvedNode) {
-        let to = Birth { mesh: node.mesh.clone(), r#type: node.r#type.clone(), name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
+        let to = Birth { mesh: node.mesh.clone(), r#type: node.r#type.clone(), path: node.path.clone(), name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
         let conn = match tokio::time::timeout(WRONG, self.dialer.open(&to)).await {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => panic!("the Day-0 admin's dial to {:?} on an app protocol is refused: {e:?}", node.name),

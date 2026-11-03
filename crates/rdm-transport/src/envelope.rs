@@ -486,7 +486,7 @@ mod tests {
     }
     #[test]
     fn operation_sequence_is_absent_and_source_survives_forwarding() {
-        let op = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "m".into(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("o"), node_id: author().node, incarnation: author().incarnation, name: rdm_core::PathName::new("m.node", "1").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let op = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "m".into(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("o"), node_id: author().node, incarnation: author().incarnation, path: "m.node".into(), name: "1".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let event = Frame::NodeDeleted { op, forwarded_by: None }.authored(&author(), 0, 1);
         let forwarded = crate::topology::forward_of(event.clone(), "other.node-admin.1", "other").unwrap();
         assert_eq!(event.context(), forwarded.context());
@@ -501,7 +501,7 @@ mod tests {
         let base = rdm_core::OperationId::node("node.mesh.join", &node.node);
         let first = base.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint());
         let second = base.in_occurrence(rdm_core::OperationOccurrenceId::mint());
-        let event = |operation| Frame::NodeDeleted { op: rdm_core::LifecycleOp { r#type: "node".into(), mesh: "m".into(), build_id: "b".into(), attempt: 1, operation, node_id: node.node.clone(), incarnation: node.incarnation.clone(), name: rdm_core::PathName::new("arbitrary", "worker").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }, forwarded_by: None };
+        let event = |operation| Frame::NodeDeleted { op: rdm_core::LifecycleOp { r#type: "node".into(), mesh: "m".into(), build_id: "b".into(), attempt: 1, operation, node_id: node.node.clone(), incarnation: node.incarnation.clone(), path: "arbitrary".into(), name: "worker".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }, forwarded_by: None };
         let first_event = event(first.clone());
         let first_context = Context::authored(&first_event, &node, 1, 1);
         assert_eq!(Context::authored(&event(first.clone()), &node, 1, 1).id, first_context.id);

@@ -94,7 +94,9 @@ pub struct HandoverDoor {
     /// The fabric's name.
     pub fabric: String,
     /// This admin's path.
-    pub me: PathName,
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// This admin's node id.
     pub node_id: NodeId,
     /// This admin's incarnation.
@@ -130,6 +132,11 @@ pub struct HandoverDoor {
     pub looker: crate::primary_watch::Looker,
 }
 
+impl HandoverDoor {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
+}
+
 fn birth_of(n: &crate::model::Node) -> Option<HandoverBirth> {
     Some(HandoverBirth { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone()? })
 }
@@ -151,7 +158,7 @@ fn refused(side: &'static str, reason: &'static str, detail: &str, operation: &r
 
 impl HandoverDoor {
     fn held_name(&self) -> PathName {
-        self.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.digest_view.held_path_name().unwrap_or_else(|| self.me())
     }
 
     fn incumbency(&self) -> crate::election::Incumbency {
@@ -375,7 +382,7 @@ impl HandoverDoor {
         let view = self.topology.read().await.clone();
         let finding = self.looker.look(&view, successor).await;
         let verdict = finding.name();
-        let span = tracing::info_span!("rdm.node_admin.primary.resolve.via-successor-investigation", node_path = %self.held_name().path, node_name = %self.held_name().name, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, successor_path = %successor.name.path, successor_name = %successor.name.name, call = %how, verdict, detail = %finding.detail(), retry = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.resolve.via-successor-investigation", node_path = %self.held_name().path, node_name = %self.held_name().name, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, successor_path = %successor.path, successor_name = %successor.name, call = %how, verdict, detail = %finding.detail(), retry = tracing::field::Empty);
         if matches!(finding, crate::primary_watch::Finding::Reached { .. }) {
             match call_successor(&self.client, &successor.node_id, entries, build_id, run, operation).await {
                 Ok(revisions) => {
@@ -405,7 +412,7 @@ impl HandoverDoor {
     /// acknowledges, and records them on its own row as the mesh's writer.
     pub async fn restore(&self, target: &rdm_core::Primary, mesh: Option<&rdm_core::Primary>, to: &crate::model::Node) -> Result<Vec<Entry>, Reply> {
         let me = self.held_name();
-        let span = tracing::info_span!("rdm.node_admin.primary.update.via-fabric-recovery", node_path = %me.path, node_name = %me.name, target = %target, to_path = %to.name.path, to_name = %to.name.name, to_node_id = %to.node_id, outcome = tracing::field::Empty, detail = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-fabric-recovery", node_path = %me.path, node_name = %me.name, target = %target, to_path = %to.path, to_name = %to.name, to_node_id = %to.node_id, outcome = tracing::field::Empty, detail = tracing::field::Empty);
         let Some(incarnation) = to.incarnation_id.clone() else {
             return Err(rdm_core::reply::handover::not_ready(format!("{} holds no incarnation: no birth to restore", to.node_id)));
         };
@@ -475,7 +482,7 @@ impl HandoverDoor {
     /// leaves the step incomplete, and the next attempt sends the identical command.
     pub async fn command_update_primary(&self, primary: &crate::model::Node, build_id: &str, run: u32, operation: &rdm_core::OperationId) -> Result<Vec<Entry>, crate::build_drive::RoleMoveEnd> {
         let me = self.held_name();
-        let span = tracing::info_span!("rdm.node_admin.primary.update.via-command", node_path = %me.path, node_name = %me.name, primary_path = %primary.name.path, primary_name = %primary.name.name, primary_node_id = %primary.node_id, "type" = primary.r#type, to = tracing::field::Empty, build_id, run, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, outcome = tracing::field::Empty, detail = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-command", node_path = %me.path, node_name = %me.name, primary_path = %primary.path, primary_name = %primary.name, primary_node_id = %primary.node_id, "type" = primary.r#type, to = tracing::field::Empty, build_id, run, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, outcome = tracing::field::Empty, detail = tracing::field::Empty);
         let r = self.command_update_primary_in(primary, build_id, run, operation).instrument(span.clone()).await;
         match &r {
             Ok(revisions) => {
@@ -629,7 +636,7 @@ impl HandoverDoor {
     /// node.primary.updated, installed here. The successor's row is recorded from its digest (step 5).
     pub async fn update_node_type_primary(&self, primary: &crate::model::Node, _expected: Option<u64>, build_id: &str, run: u32, operation: &rdm_core::OperationId) -> Result<Vec<Entry>, Reply> {
         let me = self.held_name();
-        let span = tracing::info_span!("rdm.node_admin.primary.update.via-command-member", node_path = %me.path, node_name = %me.name, primary_path = %primary.name.path, primary_name = %primary.name.name, "type" = primary.r#type, build_id, run, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, outcome = tracing::field::Empty, detail = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-command-member", node_path = %me.path, node_name = %me.name, primary_path = %primary.path, primary_name = %primary.name, "type" = primary.r#type, build_id, run, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, outcome = tracing::field::Empty, detail = tracing::field::Empty);
         let r = self.update_node_type_primary_in(primary, build_id, run, operation).instrument(span.clone()).await;
         match &r {
             Ok(revisions) => {
@@ -779,7 +786,7 @@ mod tests {
         let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver));
         let provider = Arc::new(ProcessDeploymentProvider::new());
         let looker = crate::primary_watch::Looker {
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             me_id: node_id.clone(),
             topology_view: topology_view.clone(),
             client: client.clone(),
@@ -790,7 +797,7 @@ mod tests {
         };
         let door = HandoverDoor {
             fabric: "fab".into(),
-            me: me.clone(),
+            me_path: me.path.clone(), me_name: me.name.clone(),
             node_id: node_id.clone(),
             incarnation: incarnation.clone(),
             topology: Arc::new(RwLock::new(Topology {

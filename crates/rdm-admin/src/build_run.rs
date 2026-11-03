@@ -632,8 +632,10 @@ pub enum Attached {
 
 /// The door an executor answers `build.attempt.run` through.
 pub struct RunDoor {
-    /// This admin's `(path, name)`.
-    pub me: PathName,
+    /// This admin's path.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// This admin's Build state, as the pipelines write it (through [`FramedBuilds`]).
     pub builds: Arc<dyn BuildStateAdapter>,
     /// The executor that runs a claimed attempt.
@@ -648,6 +650,11 @@ pub struct RunDoor {
 }
 
 impl RunDoor {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
+}
+
+impl RunDoor {
     /// The path name this admin holds now (`builds.held_name()` when joined to the fabric Build
     /// topic, else the name its executor resolves from the topology view, or `self.me`).
     pub async fn held_name(&self) -> PathName {
@@ -659,9 +666,9 @@ impl RunDoor {
         }
         // The name the view holds for this executor's own birth, whatever name it booted under.
         if let Some(n) = self.exec.topology.read().await.own(&self.exec.executor.node_id) {
-            return n.name.clone();
+            return n.location();
         }
-        self.me.clone()
+        self.me()
     }
 
     /// Answer `build.attempt.run` for `attempt` of `build_id`, claimed for `executor`. `plan` is the
@@ -1130,6 +1137,7 @@ mod tests {
         }
     }
 
+
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
         BuildStepReceipt { mesh: None, build_id: id(), attempt, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), step: step.into(), outcome, output: None, executor: None }
     }
@@ -1182,7 +1190,7 @@ mod tests {
             nodes: vec![admin],
         }));
         let exec = Arc::new(BuildExecutor { executor: birth, builds: builds.clone(), topology, runner: Arc::new(Nothing) });
-        (RunDoor { me, builds, exec, runs, local: memory.clone(), gate: crate::stop_gate::StopGate::new() }, memory)
+        (RunDoor { me_path: me.path.clone(), me_name: me.name.clone(), builds, exec, runs, local: memory.clone(), gate: crate::stop_gate::StopGate::new() }, memory)
     }
 
     async fn accepted(memory: &MemoryBuildStateAdapter) {

@@ -60,14 +60,14 @@ fn launch_by(root: &Running, name: &PathName, dir: &std::path::Path) -> Launch {
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         r#type: "node-admin".into(),
-        name: name.clone(),
+        path: name.path.clone(), name: name.name.clone(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: dir.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -101,7 +101,7 @@ fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once
         let launch = launch_by(&root, &boot, &admin_dir);
         let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
         let _ = root.runner.joins.expect(Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-            name: row.clone(),
+            path: row.path.clone(), name: row.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
             supersedes: None,
@@ -119,7 +119,7 @@ fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once
         let admin = start_with(admin_cfg, Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
         // The authority admitted the birth under the row's name: the admin publishes it.
         tokio::time::timeout(WRONG, async {
-            while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.node.name != row) {
+            while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.node.location() != row) {
                 digests.changed().await.unwrap();
             }
         })

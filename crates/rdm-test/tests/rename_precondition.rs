@@ -59,7 +59,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
                 fabric_id: fabric.clone(),
                 mesh: "mesh1".into(),
                 r#type: "node".into(),
-                name: name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
                 node_id,
                 incarnation: IncarnationId::mint(),
                 supersedes: None,
@@ -123,11 +123,11 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         renamed_seams.connections.observations_landed().await;
         let before = kept_log(&store, &fabric, &renamed.node_id);
         for dest in [&admin.launcher.node_id, &peer.node_id] {
-            assert!(before.iter().any(|e| e.source.name == born && &e.destination.node_id == dest), "the node holds a route to {dest}: {before:#?}");
+            assert!(before.iter().any(|e| e.source.location() == born && &e.destination.node_id == dest), "the node holds a route to {dest}: {before:#?}");
         }
 
         let (d, _) = digest_view.get(renamed.node_id.as_str()).unwrap();
-        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let target = NodeTarget::ExactNode(renamed.node_id.clone());
         let call = |req: StatusRequest| {
@@ -146,7 +146,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         assert_eq!(holding.len(), 2, "the node holds its two routes: {holding:?}");
         let busy = call(apply.clone()).await;
         assert_eq!(busy, StatusReply::BusyHoldingConnections { connections: holding }, "a node holding its routes keeps its name, naming each connection");
-        assert_eq!(renamed_seams.connections.own().name, born, "the node holds the name it had");
+        assert_eq!(renamed_seams.connections.own().location(), born, "the node holds the name it had");
 
         // node.connection.delete { All }: every route closed, each drop under the name it holds.
         let open_ids: Vec<_> = renamed_seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
@@ -156,7 +156,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
 
         // The same apply now takes the name.
         assert_eq!(call(apply).await, StatusReply::Applied, "with no connection held the name moves");
-        assert_eq!(renamed_seams.connections.own().name, taken, "the node holds its new name");
+        assert_eq!(renamed_seams.connections.own().location(), taken, "the node holds its new name");
         assert_eq!(taken.path, born.path, "renaming preserves the immutable path");
         assert_eq!(renamed_seams.connections.own().node_id, renamed.node_id, "renaming preserves identity");
 
@@ -175,18 +175,18 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
             latest.insert(e.index(), e);
         }
         for (index, e) in &latest {
-            if index.source == renamed.node_id && e.source.name == born && e.state == ConnectionState::Connected {
+            if index.source == renamed.node_id && e.source.location() == born && e.state == ConnectionState::Connected {
                 wrong.push(format!("{index:?} is still connected under the name the node gave up: {e:?}"));
             }
         }
         for dest in [&admin.launcher.node_id, &peer.node_id] {
-            let drop = log.iter().find(|e| e.source.name == born && &e.destination.node_id == dest && e.state == ConnectionState::Disconnected && e.reason.as_deref() == Some("node.connection.delete"));
+            let drop = log.iter().find(|e| e.source.location() == born && &e.destination.node_id == dest && e.state == ConnectionState::Disconnected && e.reason.as_deref() == Some("node.connection.delete"));
             if drop.is_none() {
                 wrong.push(format!("no drop of the route to {dest} under {born:?}"));
             }
         }
         let next = log.iter().rev().find(|e| e.destination.node_id == peer.node_id && e.state == ConnectionState::Connected);
-        if !next.is_some_and(|e| e.source.name == taken) {
+        if !next.is_some_and(|e| e.source.location() == taken) {
             wrong.push(format!("the node's next entry for its peer names {taken:?} as its source: {next:?}"));
         }
         assert!(wrong.is_empty(), "{} wrong after the rename:\n{}", wrong.len(), wrong.join("\n"));
@@ -230,7 +230,7 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
             fabric_id: fabric.clone(),
             mesh: "mesh1".into(),
             r#type: "node".into(),
-            name: born.clone(),
+            path: born.path.clone(), name: born.name.clone(),
             node_id,
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -275,7 +275,7 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
         assert!(seams.connections.in_flight() > 0, "the Connected row is owed");
 
         let (d, _) = digest_view.get(renamed.node_id.as_str()).unwrap();
-        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let target = NodeTarget::ExactNode(renamed.node_id.clone());
         let call = |req: StatusRequest| {
@@ -292,7 +292,7 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
         let busy = call(apply).await;
         let StatusReply::BusyHoldingConnections { connections } = &busy else { panic!("a node with an open connection keeps its name, its row owed or not: {busy:?}") };
         assert_eq!(connections.len(), 1, "the one open connection is named: {busy:?}");
-        assert_eq!(seams.connections.own().name, born, "the node holds the name it had");
+        assert_eq!(seams.connections.own().location(), born, "the node holds the name it had");
         let leave = StatusRequest::LeaveMesh { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 1, operation: rdm_core::OperationId::node("node.mesh.leave", &renamed.node_id) };
         assert_eq!(call(leave).await, busy, "the leave is refused naming the same open connection");
 

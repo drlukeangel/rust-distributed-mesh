@@ -52,10 +52,17 @@ pub enum ResolveRequest {
 pub struct AnsweredBy {
     /// The answering node's id.
     pub node_id: String,
-    /// The answering node's separate path and name.
-    pub node: PathName,
+    /// The answering node's separate path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The answering node's incarnation id.
     pub incarnation_id: String,
+}
+
+impl AnsweredBy {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 /// A resolve probe answer.
@@ -69,8 +76,10 @@ pub enum ResolveReply {
         by: AnsweredBy,
         /// The resolved node's id.
         node_id: String,
-        /// The resolved node's separate path and name.
-        name: PathName,
+        /// The resolved node's separate path.
+        path: String,
+        /// The name, beside its path.
+        name: String,
         /// The resolved node's incarnation.
         incarnation_id: String,
     },
@@ -232,7 +241,8 @@ impl NodeProtocol for ResolveProbe {
 pub fn serve(b: ServerBuilder, resolver: Arc<LiveNodeResolver>, launch: &Launch, name: &HeldName) -> ServerBuilder {
     let (node_id, incarnation_id, name) = (launch.node_id.to_string(), launch.incarnation.to_string(), name.clone());
     b.serve::<ResolveProbe, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: ResolveRequest| {
-        let by = AnsweredBy { node_id: node_id.clone(), node: name.now(), incarnation_id: incarnation_id.clone() };
+        let held = name.now();
+        let by = AnsweredBy { node_id: node_id.clone(), path: held.path, name: held.name, incarnation_id: incarnation_id.clone() };
         let resolver = resolver.clone();
         async move {
             let ResolveRequest::Resolve { target, .. } = req;
@@ -243,7 +253,7 @@ pub fn serve(b: ServerBuilder, resolver: Arc<LiveNodeResolver>, launch: &Launch,
             let reply = match target {
                 Err(reason) => ResolveReply::BadTarget { by, reason },
                 Ok(t) => match resolver.resolve(&t) {
-                    Ok(n) => ResolveReply::Found { by, node_id: n.node_id.to_string(), name: n.name.clone(), incarnation_id: n.incarnation.to_string() },
+                    Ok(n) => ResolveReply::Found { by, node_id: n.node_id.to_string(), path: n.path.clone(), name: n.name.clone(), incarnation_id: n.incarnation.to_string() },
                     Err(ResolveFailure::Gone) => ResolveReply::Gone { by },
                     Err(ResolveFailure::Unknown) => ResolveReply::Unknown { by },
                     Err(ResolveFailure::Unavailable) => ResolveReply::Unavailable { by },
@@ -273,9 +283,9 @@ mod tests {
 
     #[test]
     fn every_reply_variant_encodes_and_round_trips() {
-        let by = AnsweredBy { node_id: "n".into(), node: PathName::new("mesh1.node", "1").unwrap(), incarnation_id: "i".into() };
+        let by = AnsweredBy { node_id: "n".into(), path: "mesh1.node".into(), name: "1".into(), incarnation_id: "i".into() };
         let all = [
-            ResolveReply::Found { by: by.clone(), node_id: "x".into(), name: PathName::new("mesh1.node", "2").unwrap(), incarnation_id: "j".into() },
+            ResolveReply::Found { by: by.clone(), node_id: "x".into(), path: "mesh1.node".into(), name: "2".into(), incarnation_id: "j".into() },
             ResolveReply::Gone { by: by.clone() },
             ResolveReply::Unknown { by: by.clone() },
             ResolveReply::Unavailable { by: by.clone() },

@@ -75,7 +75,7 @@ async fn elect(
     contexts: Arc<AttemptContexts>,
 ) -> Admin {
     let door = Arc::new(ClaimDoor {
-        me: b.node.name.clone(),
+        me_path: b.node.path.clone(), me_name: b.node.name.clone(),
         node_id: b.node.node_id.clone(),
         incarnation: b.node.incarnation_id.clone().unwrap(),
         topology,
@@ -94,7 +94,7 @@ async fn elect(
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolved = ResolvedNode { mesh: b.node.mesh.clone(), r#type: b.node.r#type.clone(),
         node_id: b.node.node_id.clone(),
-        name: b.node.name.clone(),
+        path: b.node.path.clone(), name: b.node.name.clone(),
         endpoint_id: b.key.public(),
         transport_addr: addr,
         incarnation: b.node.incarnation_id.clone().unwrap(),

@@ -13,7 +13,7 @@
 //! [`plan`] decides what a pass owes, from the view and births already inspected; [`run`] drives it.
 
 use crate::admin::Records;
-use crate::model::{IncarnationId, Node, NodeId, NodeStatus, PathName};
+use crate::model::{IncarnationId, Node, NodeId, NodeStatus};
 use crate::topology::Topology;
 use rdm_core::Primary;
 use rdm_transport::topology::TopologyView;
@@ -120,8 +120,10 @@ pub use crate::node_investigation::Finding;
 
 /// What the look needs of this admin.
 pub struct Looker {
-    /// This admin's path and name.
-    pub me: PathName,
+    /// This admin's path.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// The node id this admin was born with: it is never its own carrier.
     pub me_id: NodeId,
     /// Its mesh topology.
@@ -136,6 +138,11 @@ pub struct Looker {
     pub heard_again: crate::heard_again::HeardAgainSlot,
     /// Its connections store: the by-destination index names the leads of a look (Q107 item 1).
     pub connections: Option<Arc<dyn crate::storage::ConnectionsStorage>>,
+}
+
+impl Looker {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
 impl Looker {
@@ -171,7 +178,7 @@ impl Looker {
         for n in others {
             let finding = self.look(view, &n).await;
             if matches!(finding, Finding::Reached { .. } | Finding::Running) {
-                tracing::info_span!("rdm.node_admin.node.resolve.via-node-admin-left", observer = %self.me_id, mesh, lost_node_id = %lost, subject_path = %n.name.path, subject_name = %n.name.name, subject_node_id = %n.node_id, finding = finding.name())
+                tracing::info_span!("rdm.node_admin.node.resolve.via-node-admin-left", observer = %self.me_id, mesh, lost_node_id = %lost, subject_path = %n.path, subject_name = %n.name, subject_node_id = %n.node_id, finding = finding.name())
                     .in_scope(|| tracing::info!("a node-admin of the mesh is left: the mesh's own election names it, and nothing is executed from here"));
                 return Some(n);
             }
@@ -199,8 +206,10 @@ pub struct Watch {
     /// The admin's stop gate: this watch is held at its own wait while the admin is stopped, never
     /// where it reads the view.
     pub gate: crate::stop_gate::StopGate,
-    /// This admin's path and name.
-    pub me: PathName,
+    /// This admin's path.
+    pub me_path: String,
+    /// This node's name, beside its path.
+    pub me_name: String,
     /// This admin's NodeId.
     pub me_id: NodeId,
     /// This admin's mesh.
@@ -220,6 +229,11 @@ pub struct Watch {
     /// Fabric recovery (Q122): this watch starts it at the first tick after the fabric-primary's mark when
     /// this admin is the lowest Ready node-admin of its mesh.
     pub fabric_recovery: Arc<crate::fabric_recovery::FabricRecoveryDoor>,
+}
+
+impl Watch {
+    /// The `(path, name)` lookup index key of me_path and me_name.
+    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
 /// Run the watch on role changes and the gossip cadence, from the admin's own silence evidence.
@@ -262,7 +276,7 @@ pub async fn run(w: Watch) {
                 }
             }
         }
-        let me = w.topology_view.digest_view.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me, Some(&w.me_id)));
+        let me = w.topology_view.digest_view.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me(), Some(&w.me_id)));
         // The fabric-primary unheard past the floor (fabric-recovery.md step 2; Q122, Q335): its mesh's
         // lowest Ready node-admin, or with none the lowest Ready mesh-primary on the backbone, starts fabric
         // recovery at the first tick after the mark, once the record has named the unheard birth for a floor
@@ -396,7 +410,7 @@ where
     loop {
         match submit().await {
             Ok(()) => break,
-            Err(e) => tracing::info!(node_path = %node.name.path, node_name = %node.name.name, error = %e, "the recovery submit of an unheard mesh-primary ended without the recovery"),
+            Err(e) => tracing::info!(node_path = %node.path, node_name = %node.name, error = %e, "the recovery submit of an unheard mesh-primary ended without the recovery"),
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(ceiling);
@@ -505,7 +519,7 @@ mod tests {
         let (mut t, primary, standby, _) = world();
         let mut said = Said::default();
         let own = plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false, &|_| true);
-        assert_eq!(own.investigate.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), vec![rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()]);
+        assert_eq!(own.investigate.iter().map(|n| n.location()).collect::<Vec<_>>(), vec![rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()]);
         assert!(plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false, &|_| true).investigate.is_empty(), "once per mark");
         // A silent admin of a third mesh that holds nothing.
         t.nodes.push(admin(rdm_core::PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", "500000000000", "x1", NodeStatus::PendingReconnect));
@@ -552,7 +566,7 @@ mod tests {
         rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,

@@ -79,7 +79,7 @@ impl RosterBirth {
     /// The birth `n` holds.
     pub fn of(n: &Node) -> Result<Self, String> {
         let incarnation_id = n.incarnation_id.as_ref().map(|i| i.to_string()).ok_or_else(|| format!("{} has no known birth", n.node_id))?;
-        Ok(Self { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node: n.name.clone(), node_id: n.node_id.to_string(), incarnation_id })
+        Ok(Self { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node: n.location(), node_id: n.node_id.to_string(), incarnation_id })
     }
 
     /// The exact birth the roster names, refused by name when its incarnation is not a Crockford id
@@ -701,7 +701,7 @@ pub fn stored_roster(rows: &[crate::storage::NodeRow], mesh: &str, mesh_id: &Mes
         .filter(|r| r.mesh_id.as_ref().is_none_or(|id| id == mesh_id) && r.mesh == mesh)
         .filter_map(|r| r.newest_birth().map(|b| b.incarnation_id.clone()).or_else(|| r.allocated.as_ref().map(|a| a.incarnation.clone())).map(|inc| (r, inc)))
         .filter(|(r, inc)| r.status != crate::model::NodeStatus::Deleted || began(r, inc))
-        .map(|(r, inc)| RosterBirth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node: r.name.clone(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() })
+        .map(|(r, inc)| RosterBirth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node: r.location(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() })
         .collect();
     roster.sort();
     roster.dedup();
@@ -1871,7 +1871,7 @@ mod tests {
     }
     fn receipt(b: &RosterBirth) -> TerminalReceipt {
         TerminalReceipt {
-            node: b.node.clone(),
+            path: b.node.path.clone(), name: b.node.name.clone(),
             node_id: b.node_id.clone(),
             incarnation_id: b.incarnation_id.clone(),
             runtime: Some(RuntimeIdentity { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() }),
@@ -1904,7 +1904,7 @@ mod tests {
         let mut claim = NodeRow::new(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", NodeId::mint(), crate::model::NodeStatus::Pending);
         claim.allocated = Some(Allocation { predecessor: None, build_id: Some(BuildId::mint()), operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.node", "2").unwrap()), incarnation: claimed_inc.clone(), deployment_id: crate::model::DeploymentId::mint() });
         let roster = stored_roster(&[admin.clone(), rpc.clone(), claim.clone()], "mesh1", &mesh_id, &[]);
-        let of = |r: &NodeRow, inc: &crate::model::IncarnationId| RosterBirth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node: r.name.clone(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() };
+        let of = |r: &NodeRow, inc: &crate::model::IncarnationId| RosterBirth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node: r.location(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() };
         let mut want = vec![of(&admin, &admin.births[0].incarnation_id), of(&rpc, &rpc.births[0].incarnation_id), of(&claim, &claimed_inc)];
         want.sort();
         assert_eq!(roster, want, "the create in flight's claimed birth is a birth of the roster");

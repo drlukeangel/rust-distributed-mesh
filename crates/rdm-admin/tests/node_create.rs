@@ -105,7 +105,7 @@ impl DeploymentProvider for ImmediateReportProvider {
             "node.create must bind port 0 and never pick, reserve or predict a transport port"
         );
         *self.spawn_calls.lock().unwrap() += 1;
-        let refused = |reason: String| DeployError::Spawn { node: spec.node.clone(), reason };
+        let refused = |reason: String| DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason };
         let fact = RuntimeFact::of_this_process(&spec.deployment_id.to_string()).map_err(refused)?;
         let (pid, start) = match fact.locator {
             RuntimeLocator::Process { pid, start } => (pid, start),
@@ -133,7 +133,7 @@ impl DeploymentProvider for ImmediateReportProvider {
             node: MeshNode { mesh: spec.mesh.clone(), r#type: spec.r#type.clone(),
                 node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?)
                     .map_err(|e| refused(e.to_string()))?,
-                name: spec.node.clone(),
+                path: spec.location().path, name: spec.location().name,
                 endpoint_id: EndpointId(key.public().to_string()),
                 transport_addr: "127.0.0.1:45678".parse().unwrap(),
                 incarnation: IncarnationId::parse(&env(rdm_core::launch::ENV_INCARNATION)?)
@@ -347,7 +347,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             executable: binding.executable.clone(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(),
-                name: me.clone(),
+                path: me.path.clone(), name: me.name.clone(),
                 node_id: me_id.clone(),
                 incarnation: executor_birth.incarnation.clone(),
             },
@@ -435,7 +435,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let held_req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(held_path)), mesh: "mesh1".into(), r#type: "node".into(),
             build_id: Some(build_id.clone()),
             attempt: 1,
-            node: held_path,
+            path: held_path.path.clone(), name: held_path.name.clone(),
             spec: &NODE_SPEC,
             data_dir: None,
             held_runtimes: Vec::new(),
@@ -464,7 +464,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         //    the validated join report while gossip is silent.
         let new_path: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         let create_op = rdm_admin::build::BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(),
-            node: new_path.clone(),
+            path: new_path.path.clone(), name: new_path.name.clone(),
             over: None,
             executable: None,
             entry: None,
@@ -484,7 +484,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let create_req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(new_path)), mesh: "mesh1".into(), r#type: "node".into(),
             build_id: Some(build_id.clone()),
             attempt: 1,
-            node: new_path.clone(),
+            path: new_path.path.clone(), name: new_path.name.clone(),
             spec: &NODE_SPEC,
             data_dir: None,
             held_runtimes: Vec::new(),
@@ -494,7 +494,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             .create(&create_req)
             .await
             .expect("node.create on available path must complete");
-        assert_eq!(created.node.name, new_path);
+        assert_eq!(created.node.location(), new_path);
         assert!(created.node.incarnation_id.is_some());
         assert_eq!(
             created.node.transport_addr,
@@ -535,7 +535,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let exp_ep = EndpointId(loaded_key.public().to_string());
         let exp_fact = RuntimeFact::of_this_process(&rdm_admin::model::DeploymentId::mint().to_string()).unwrap();
         let exp_rx = joins.expect(rdm_admin::join::Deployed { mesh: "mesh1".to_owned(), r#type: "node".into(),
-            name: exp_path.clone(),
+            path: exp_path.path.clone(), name: exp_path.name.clone(),
             node_id: exp_id.clone(),
             incarnation: exp_inc.clone(),
             supersedes: None,
@@ -551,7 +551,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             fabric_id: rdm_core::FabricId::mint(),
             node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: exp_id.clone(),
-                name: rdm_core::PathName::new("mesh1.node", "99").unwrap(),
+                path: "mesh1.node".into(), name: "99".into(),
                 endpoint_id: exp_ep,
                 transport_addr: "127.0.0.1:45680".parse().unwrap(),
                 incarnation: exp_inc,
@@ -579,7 +579,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             exp_rx.borrow().is_none(),
             "mismatched join report installs nothing and releases no wait"
         );
-        wrong_name_digest.node.name = exp_path;
+        { let at = exp_path; wrong_name_digest.node.path = at.path; wrong_name_digest.node.name = at.name; }
         joins.end(&exp_id, &build_id.to_string(), 1);
         assert!(
             matches!(
@@ -647,7 +647,7 @@ impl DeploymentProvider for StepFaultProvider {
             "node.create must bind port 0 and never pick, reserve or predict a transport port"
         );
         *self.spawn_calls.lock().unwrap() += 1;
-        let refused = |reason: String| DeployError::Spawn { node: spec.node.clone(), reason };
+        let refused = |reason: String| DeployError::Spawn { path: spec.path.clone(), name: spec.name.clone(), reason };
         let fact = RuntimeFact::of_this_process(&spec.deployment_id.to_string()).map_err(refused)?;
         let (pid, start) = match fact.locator {
             RuntimeLocator::Process { pid, start } => (pid, start),
@@ -675,7 +675,7 @@ impl DeploymentProvider for StepFaultProvider {
             node: MeshNode { mesh: spec.mesh.clone(), r#type: spec.r#type.clone(),
                 node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?)
                     .map_err(|e| refused(e.to_string()))?,
-                name: spec.node.clone(),
+                path: spec.location().path, name: spec.location().name,
                 endpoint_id: EndpointId(key.public().to_string()),
                 transport_addr: "127.0.0.1:45679".parse().unwrap(),
                 incarnation: IncarnationId::parse(&env(rdm_core::launch::ENV_INCARNATION)?)
@@ -871,7 +871,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
                 std::net::SocketAddr::from(([127, 0, 0, 1], seed_port)),
             )],
             launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(),
-                name: me.clone(),
+                path: me.path.clone(), name: me.name.clone(),
                 node_id: me_id.clone(),
                 incarnation: executor_birth.incarnation.clone(),
             },
@@ -939,7 +939,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(cut_path)), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(build_id.clone()),
                 attempt: 1,
-                node: cut_path.clone(),
+                path: cut_path.path.clone(), name: cut_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
                 held_runtimes: Vec::new(),
@@ -962,7 +962,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(build_id.clone()),
                 attempt: 1,
-                node: fault_path.clone(),
+                path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
                 held_runtimes: Vec::new(),
@@ -991,7 +991,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(build_id.clone()),
                 attempt: 2,
-                node: fault_path.clone(),
+                path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
                 held_runtimes: Vec::new(),
@@ -1022,7 +1022,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(build_id.clone()),
                 attempt: 3,
-                node: fault_path.clone(),
+                path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
                 held_runtimes: Vec::new(),
@@ -1056,7 +1056,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         let req4 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), r#type: "node".into(),
             build_id: Some(build_id.clone()),
             attempt: 4,
-            node: fault_path.clone(),
+            path: fault_path.path.clone(), name: fault_path.name.clone(),
             spec: &NODE_SPEC,
             data_dir: None,
             held_runtimes: Vec::new(),
@@ -1095,7 +1095,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(build_id.clone()),
                 attempt: 5,
-                node: fault_path.clone(),
+                path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
                 held_runtimes: Vec::new(),
@@ -1108,7 +1108,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             spawns_after_attempt4,
             "an OsStopped runtime must never be spawned over by the next attempt"
         );
-        assert_eq!(resumed_created.node.name, fault_path);
+        assert_eq!(resumed_created.node.location(), fault_path);
     });
     drop(rt);
     let _ = std::fs::remove_dir_all(&data_root);

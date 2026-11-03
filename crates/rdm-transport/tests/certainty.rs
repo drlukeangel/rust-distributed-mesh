@@ -63,7 +63,7 @@ async fn rig(echo_cap: Option<Limits>) -> Rig {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(),
         node_id: node_id.clone(),
-        name: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
+        path: "mesh1.node".into(), name: "1".into(),
         endpoint_id: key.public(),
         transport_addr: addr,
         incarnation,

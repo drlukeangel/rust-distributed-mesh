@@ -66,7 +66,7 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
                 fabric_id: fabric.clone(),
                 mesh: "mesh1".into(),
                 r#type: "node".into(),
-                name: name.clone(),
+                path: name.path.clone(), name: name.name.clone(),
                 node_id,
                 incarnation: IncarnationId::mint(),
                 supersedes: None,
@@ -120,17 +120,17 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
             .expect("source resolver holds peer");
 
         let src_end = ConnectionEnd { mesh: src_launch.mesh.clone(), r#type: src_launch.r#type,
-            name: src_launch.name.clone(),
+            path: src_launch.path.clone(), name: src_launch.name.clone(),
             node_id: src_launch.node_id.clone(),
             incarnation: Some(src_launch.incarnation.clone()),
         };
         let carrier_end = ConnectionEnd { mesh: admin.launcher.mesh.clone(), r#type: "node-admin".into(),
-            name: admin.launcher.name.clone(),
+            path: admin.launcher.path.clone(), name: admin.launcher.name.clone(),
             node_id: admin.launcher.node_id.clone(),
             incarnation: Some(admin.launcher.incarnation.clone()),
         };
         let peer_end = ConnectionEnd { mesh: resolved_peer.mesh.clone(), r#type: resolved_peer.r#type,
-            name: resolved_peer.name.clone(),
+            path: resolved_peer.path.clone(), name: resolved_peer.name.clone(),
             node_id: resolved_peer.node_id.clone(),
             incarnation: Some(resolved_peer.incarnation.clone()),
         };

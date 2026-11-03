@@ -45,7 +45,7 @@ async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &Fabri
         fabric_id: fabric.clone(),
         mesh: "mesh1".into(),
         r#type: "node".into(),
-        name: rdm_core::PathName::new("mesh1.node", "7").unwrap(),
+        path: "mesh1.node".into(), name: "7".into(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -77,7 +77,7 @@ async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &Fabri
         digests.changed().await.unwrap();
     }
     let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-    admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+    admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
     (launch, running, seams)
 }
 
@@ -351,7 +351,7 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.clone() };
         assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "a node that opened nothing takes its name");
-        assert_eq!(running.topology_view.held_name(&launch.name), taken, "the node holds the applied name");
+        assert_eq!(running.topology_view.held_name(&launch.location()), taken, "the node holds the applied name");
 
         // The block stays after the apply: a renamed node opens nothing until it starts or joins its mesh
         // again (node-replace.md: it is renamed once nothing is connected to it).
@@ -367,7 +367,7 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         assert!(matches!(after, RpcOutcome::Reply(_)), "once it joined its mesh again the node opens connections: {after:?}");
         seams.connections.observations_landed().await;
         let routes = seams.connections.held_routes().await;
-        assert_eq!(routes.iter().map(|r| (r.source.name.clone(), r.destination.name.clone())).collect::<Vec<_>>(), vec![(taken.clone(), admin.launcher.name.clone())], "the next connection names the name the node took: {routes:?}");
+        assert_eq!(routes.iter().map(|r| (r.source.location(), r.destination.location())).collect::<Vec<_>>(), vec![(taken.clone(), admin.launcher.location())], "the next connection names the name the node took: {routes:?}");
         assert_eq!(fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block").len(), 2, "one refusal before the apply and one after it, none after the join");
         assert!(fields_of(&spans, "rdm.node_rpc.connection.delete.via-hard-cut").is_empty(), "the block cuts no Node RPC pool");
         let _ = std::fs::remove_dir_all(&dir);

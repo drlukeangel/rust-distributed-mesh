@@ -61,17 +61,17 @@ async fn a_successor_manages_births_it_never_launched() {
     let nodes = estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     // The initial fabric refuses a node restart and a node delete until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let successor = nodes.iter().find(|n| n.name == PathName::new("mesh1.node-admin", "2").unwrap()).cloned().unwrap();
-    let launcher = nodes.iter().find(|n| n.name == PathName::new("mesh1.node-admin", "1").unwrap()).cloned().unwrap();
-    let rpc = |name: &str| a_births.iter().find(|n| n.name == PathName::new("mesh1.node", name).unwrap()).cloned().unwrap();
+    let successor = nodes.iter().find(|n| n.location() == PathName::new("mesh1.node-admin", "2").unwrap()).cloned().unwrap();
+    let launcher = nodes.iter().find(|n| n.location() == PathName::new("mesh1.node-admin", "1").unwrap()).cloned().unwrap();
+    let rpc = |name: &str| a_births.iter().find(|n| n.location() == PathName::new("mesh1.node", name).unwrap()).cloned().unwrap();
     let (restarted, deleted) = (rpc("2"), rpc("3"));
     let deleted_pid = estate.pid_of(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await;
 
     // Stop the launching admin (`node.stop` runs `node.primary.update` to `mesh1.node-admin.2` first and
     // takes `mesh1.node-admin.1` down only after the confirmed transfer).
-    estate.enter(&successor.name).await;
+    estate.enter(&successor.location()).await;
     // A stop is a node command, never a Build (Q342): its stream ends with the stop's own completion.
-    let mut stop = estate.nodes_obj().await.stop(&launcher.name).await.expect("node.stop of mesh1.node-admin.1");
+    let mut stop = estate.nodes_obj().await.stop(&launcher.location()).await.expect("node.stop of mesh1.node-admin.1");
     let frames = Estate::frames_of(&mut stop).await;
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "node.stop of mesh1.node-admin.1 completes: {frames:?}");
     estate.kill_bootstrap();
@@ -86,12 +86,12 @@ async fn a_successor_manages_births_it_never_launched() {
     }
 
     // Restart one of A's births and delete another, through the successor.
-    estate.stop_then_start(&restarted.name).await;
+    estate.stop_then_start(&restarted.location()).await;
     // A stop then a start keep the birth (node-stop.md "Kept": "node.id, incarnation, endpoint key, port,
     // bin, path/name and storage"): the node is ready again as the same birth.
     let after = estate.until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1.node.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation_id), (&restarted.node_id, &restarted.incarnation_id), "a restart keeps the node id and the birth");
-    Estate::workflow("node.delete of mesh1.node.3", estate.nodes_obj().await.delete(&deleted.name).await).await;
+    Estate::workflow("node.delete of mesh1.node.3", estate.nodes_obj().await.delete(&deleted.location()).await).await;
     wait_for("mesh1.node.3's runtime is gone", Duration::from_secs(30), || async { (!alive(deleted_pid)).then_some(()) }).await;
 
     // The admins that hold mesh1 now: the successor, and the drift recovery's rebirth of the

@@ -146,11 +146,14 @@ pub enum ProviderKind {
 /// One node as the fabric control projection knows it (`NodeView`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
-    /// The exact birth's original claimed pair while listed as a moved predecessor.
+    /// The exact birth's original claimed name, at its unchanged path, while listed as a moved
+    /// predecessor.
     #[serde(default)]
-    pub renamed_from: Option<PathName>,
-    /// The node's separate path and name fields.
-    pub name: PathName,
+    pub renamed_from: Option<String>,
+    /// The node's path.
+    pub path: String,
+    /// The name, beside its path.
+    pub name: String,
     /// The node's immutable type, set at creation, independent of its path and name.
     pub r#type: String,
     /// The name of the node's mesh.
@@ -194,6 +197,11 @@ pub struct Node {
     pub stopped: bool,
 }
 
+impl Node {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
+}
+
 /// A node read without the fact held is not selected (states.md "Routing": selection needs the
 /// held ready of the birth and its mesh).
 fn routable_default() -> bool {
@@ -212,7 +220,7 @@ impl Node {
             renamed_from: None,
             r#type: r#type.to_string(),
             mesh: mesh.into(),
-            name,
+            path: name.path.clone(), name: name.name.clone(),
             node_id: NodeId::mint(),
             endpoint_id: None,
             incarnation_id: None,
@@ -234,12 +242,12 @@ impl Node {
 
     /// The node's immutable path, separate from its name and explicit mesh and type.
     pub fn path(&self) -> String {
-        self.name.path()
+        self.path.clone()
     }
 
     /// The node's name within its path (an ordinary name, or `<name>-old` for an explicitly replaced predecessor).
     pub fn node_name(&self) -> String {
-        self.name.name()
+        self.name.clone()
     }
 
     /// Whether the node is a node-admin.
@@ -375,12 +383,12 @@ mod type_tests {
     fn a_nodes_type_is_independent_of_the_path() {
         let mut node = Node::allocated(crate::PathName::new("mesh1.node", "north").unwrap(), "mesh1", "node").with_type("application-worker").unwrap();
         assert_eq!(node.r#type, "application-worker");
-        node.name = crate::PathName::new("mesh2.gateway", "south").unwrap();
+        { let at = crate::PathName::new("mesh2.gateway", "south").unwrap(); node.path = at.path; node.name = at.name; }
         assert_eq!(node.r#type, "application-worker");
         assert!(node.update_type("gateway").unwrap_err().contains("application-worker"));
         let encoded = serde_json::to_vec(&node).unwrap();
         let decoded: Node = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded.r#type, "application-worker");
-        assert_eq!(Node::allocated(node.name, "mesh1", "node").with_type("").unwrap().r#type, crate::meta::NODE);
+        assert_eq!(Node::allocated(node.location(), "mesh1", "node").with_type("").unwrap().r#type, crate::meta::NODE);
     }
 }

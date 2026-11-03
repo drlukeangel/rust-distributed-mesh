@@ -85,7 +85,7 @@ impl CurrentRecords<'_> {
         let Some(at) = crate::node_rows::record_at(self.nodes, name).await.map_err(|e| format!("the record at path {:?}, name {:?} could not be read: {e}", name.path, name.name))? else {
             return Ok(None);
         };
-        Ok(self.row(&at.node_id).await?.filter(|r| r.name == *name))
+        Ok(self.row(&at.node_id).await?.filter(|r| r.location() == *name))
     }
 }
 

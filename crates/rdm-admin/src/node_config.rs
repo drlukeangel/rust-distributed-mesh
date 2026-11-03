@@ -120,7 +120,7 @@ impl NodeConfigs {
     pub fn uses_records(&self, records: Arc<dyn crate::storage::NodesStorage>, provider: impl Fn() -> String + Send + Sync + 'static, channels: rdm_transport::topology::TopologyView) {
         let writer = rdm_node::node_records::NodePropertyWriter::new(records.clone(), provider);
         let held = channels.clone();
-        writer.named_by(move || held.own_row().map(|row| row.name));
+        writer.named_by(move || held.own_row().map(|row| row.location()));
         let _ = self.own_channels.set(channels);
         let _ = self.own_properties.set(writer);
         let _ = self.records.set(records);
@@ -282,14 +282,14 @@ impl NodeConfigs {
             }
             let held_by = view.fabric_primary().map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
             let needed = format!("the fabric-primary, where node.config.update of {} goes ({held_by}; {me_id} does not hold it)", subject.node_id);
-            tracing::info_span!("rdm.node_admin.node.reject.via-not-primary", node_path = %me.path, node_name = %me.name, subject_path = %subject.name.path, subject_name = %subject.name.name, op = req.op(), detail = %needed, "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.node.reject.via-not-primary", node_path = %me.path, node_name = %me.name, subject_path = %subject.path, subject_name = %subject.name, op = req.op(), detail = %needed, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("node.config.update refused: this admin holds neither the fabric-primary nor the node's mesh-primary"));
             return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
         }
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-fabric-primary",
             receiver_node_id = %me_id,
-            subject_path = %subject.name.path, subject_name = %subject.name.name,
+            subject_path = %subject.path, subject_name = %subject.name,
             node_id = %node_id,
             keys = config.len(),
             mesh_primary = tracing::field::Empty,
@@ -347,7 +347,7 @@ impl NodeConfigs {
     /// `rdm.node_admin.node.update.via-forward`, names the fabric-primary, the sends and the answer.
     pub async fn forward_up(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, req: &StatusRequest) -> Up {
         let (node_id, subject) = match req {
-            StatusRequest::UpdateNodeConfig { node_id, .. } | StatusRequest::CreateTags { node_id, .. } | StatusRequest::DeleteTags { node_id, .. } | StatusRequest::UpdateName { node_id, .. } => (node_id, first.own(node_id).map(|n| n.name.clone())),
+            StatusRequest::UpdateNodeConfig { node_id, .. } | StatusRequest::CreateTags { node_id, .. } | StatusRequest::DeleteTags { node_id, .. } | StatusRequest::UpdateName { node_id, .. } => (node_id, first.own(node_id).map(|n| n.location())),
             other => unreachable!("forward_up carries a node's property command only, never {}", other.op()),
         };
         let span = tracing::info_span!(
@@ -399,7 +399,7 @@ impl NodeConfigs {
 /// The route of a call to `primary`, a primary of `mesh` in `view`: direct first; once an attempt sends
 /// nothing, through each other live node-admin of `mesh` in turn (Forward `0x1A`), never `me_id`.
 fn primary_route(view: &Topology, mesh: &str, primary: &rdm_core::NodeId, me_id: &rdm_core::NodeId) -> rdm_transport::RoutePolicy {
-    let carriers: Vec<(rdm_core::NodeId, crate::model::PathName)> = view.births().filter(|n| n.mesh == mesh && rdm_core::is_node_admin(&n.r#type) && n.node_id != *primary && n.node_id != *me_id && n.status.is_live()).map(|n| (n.node_id.clone(), n.name.clone())).collect();
+    let carriers: Vec<(rdm_core::NodeId, crate::model::PathName)> = view.births().filter(|n| n.mesh == mesh && rdm_core::is_node_admin(&n.r#type) && n.node_id != *primary && n.node_id != *me_id && n.status.is_live()).map(|n| (n.node_id.clone(), n.location())).collect();
     rdm_transport::RoutePolicy(Arc::new(move |attempt: u32| match carriers.get(attempt.saturating_sub(1) as usize % carriers.len().max(1)) {
         Some((carrier, path)) if attempt > 0 => rdm_transport::route::RouteChoice::ViaPeer { carrier: carrier.clone() },
         _ => rdm_transport::route::RouteChoice::Direct,
@@ -635,7 +635,7 @@ impl NodeConfigs {
             span.record("detail", format!("{me_id}: node {node_id} holds no birth in this admin's view; its config cannot be put").as_str());
             return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
         };
-        span.record("subject_path", subject.name.path.as_str()).record("subject_name", subject.name.name.as_str());
+        span.record("subject_path", subject.path.as_str()).record("subject_name", subject.name.as_str());
         span.record("row_status", format!("{:?}", subject.status).as_str());
         // The writer of the row is the mesh-primary of the node's mesh, and no other admin
         // (fabric-node-lifecycle §4.3); a caller that sent it elsewhere is told whose role it needs.
@@ -742,16 +742,16 @@ mod tests {
         let req = |value: &str| StatusRequest::UpdateNodeConfig {
             node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap(), config: [("source".into(), value.into())].into(),
         };
-        assert!(matches!(door.update(&admin.name, &admin.node_id, &view, &storage, &req("unbound")).await, StatusReply::NotReady { .. }));
-        assert!(storage.record_at(&admin.name).await.unwrap().is_none());
+        assert!(matches!(door.update(&admin.location(), &admin.node_id, &view, &storage, &req("unbound")).await, StatusReply::NotReady { .. }));
+        assert!(storage.record_at(&admin.location()).await.unwrap().is_none());
         door.uses_records(records.clone(), || "memory".into(), channels.clone());
         door.bound_own(&admin, rdm_core::launch::InitialProperties { config: [("old".into(), "value".into())].into(), tags: ["kept".into()].into() }).await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(view.clone()));
-        assert!(matches!(door.serve(&admin.name, &admin.node_id, &view, &topology, &storage, SentBy::Caller, &req("caller")).await, StatusReply::ConfigUpdated { .. }));
+        assert!(matches!(door.serve(&admin.location(), &admin.node_id, &view, &topology, &storage, SentBy::Caller, &req("caller")).await, StatusReply::ConfigUpdated { .. }));
         let caller = records.properties(&admin.node_id).await.unwrap().unwrap();
         assert_eq!(caller.config, [("source".into(), "caller".into())].into());
         assert_eq!(caller.tags, ["kept".into()].into());
-        assert!(storage.record_at(&admin.name).await.unwrap().is_none(), "primaries copy no properties into combined rows");
+        assert!(storage.record_at(&admin.location()).await.unwrap().is_none(), "primaries copy no properties into combined rows");
         let entry = EntryProperties { config: [("source".into(), "build".into())].into(), tags: ["build".into()].into() };
         assert!(matches!(door.own_entry(&admin, entry.clone()).await.unwrap().unwrap(), StatusReply::Applied));
         assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().tags, ["build".into()].into());
@@ -759,13 +759,13 @@ mod tests {
         assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().config, [("source".into(), "later".into())].into(), "the later local map stands");
         door.own_entry(&admin, entry).await.unwrap().unwrap();
         assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().config, [("source".into(), "build".into())].into(), "a Build's entry written after it replaces it");
-        let absent = door.update_with(&admin.name, &admin.node_id, &view, &storage, &req("metadata"), Some(rdm_core::meta::StoragePersistence::Ephemeral)).await;
+        let absent = door.update_with(&admin.location(), &admin.node_id, &view, &storage, &req("metadata"), Some(rdm_core::meta::StoragePersistence::Ephemeral)).await;
         assert!(matches!(absent, StatusReply::NodeRowRefused { .. }), "missing lifecycle metadata cannot report success: {absent:?}");
         let mut stale = req("stale");
         if let StatusRequest::UpdateNodeConfig { incarnation, .. } = &mut stale { *incarnation = IncarnationId::mint(); }
-        assert!(matches!(door.update(&admin.name, &admin.node_id, &view, &storage, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
+        assert!(matches!(door.update(&admin.location(), &admin.node_id, &view, &storage, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
         let mut other = view.clone(); other.nodes[0].is_primary = false;
-        assert!(matches!(door.update(&admin.name, &admin.node_id, &other, &storage, &req("wrong-primary")).await, StatusReply::RejectedNotPrimary { .. }));
+        assert!(matches!(door.update(&admin.location(), &admin.node_id, &other, &storage, &req("wrong-primary")).await, StatusReply::RejectedNotPrimary { .. }));
         assert_eq!(SentBy::of_writer_call(None), SentBy::Caller);
         assert_eq!(SentBy::of_writer_call(Some(&admin)), SentBy::Other);
         ep.close().await;

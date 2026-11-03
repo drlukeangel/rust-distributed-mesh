@@ -256,14 +256,14 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(ResolvedNode { mesh: peer1.mesh.clone(), r#type: peer1.r#type.clone(),
             node_id: peer1.node_id.clone(),
-            name: peer1.name.clone(),
+            path: peer1.path.clone(), name: peer1.name.clone(),
             endpoint_id: p1_key.public(),
             transport_addr: p1_addr,
             incarnation: peer1.incarnation_id.clone().unwrap(),
         });
         resolver.insert(ResolvedNode { mesh: peer2.mesh.clone(), r#type: peer2.r#type.clone(),
             node_id: peer2.node_id.clone(),
-            name: peer2.name.clone(),
+            path: peer2.path.clone(), name: peer2.name.clone(),
             endpoint_id: p2_key.public(),
             transport_addr: p2_addr,
             incarnation: peer2.incarnation_id.clone().unwrap(),

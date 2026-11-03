@@ -664,7 +664,7 @@ mod tests {
             let resolver = Arc::new(StaticResolver::new());
             let resolved1_a = ResolvedNode { r#type: "node".into(), mesh: "mesh1".into(),
                 node_id: node1.clone(),
-                name: path1.clone(),
+                path: path1.path.clone(), name: path1.name.clone(),
                 incarnation: inc1_a.clone(),
                 endpoint_id: peer1_key,
                 transport_addr: peer1_addr,
@@ -675,7 +675,7 @@ mod tests {
             };
             let resolved2 = ResolvedNode { r#type: "node-admin".into(), mesh: "mesh1".into(),
                 node_id: node2.clone(),
-                name: path2.clone(),
+                path: path2.path.clone(), name: path2.name.clone(),
                 incarnation: inc2.clone(),
                 endpoint_id: peer2_key,
                 transport_addr: peer2_addr,
@@ -864,7 +864,7 @@ mod tests {
             });
             let node = ResolvedNode { r#type: "node".into(), mesh: "mesh1".into(),
                 node_id: NodeId::mint(),
-                name: PathName::new("mesh1.node", "1").unwrap(),
+                path: "mesh1.node".into(), name: "1".into(),
                 incarnation: IncarnationId::mint(),
                 endpoint_id: peer_key,
                 transport_addr: peer_addr,

@@ -186,7 +186,7 @@ fn step_rows(step: &Step, recipe_step: u32) -> Vec<Row> {
     };
     for r in &mut rows {
         r.terminal = false;
-        r.key = Some(rdm_core::OperationId::location(r.operation, step.node()).at_step(Some(recipe_step)));
+        r.key = Some(rdm_core::OperationId::location(r.operation, &step.location()).at_step(Some(recipe_step)));
     }
     rows
 }
@@ -250,7 +250,7 @@ impl WorkflowKind {
             (None, Self::Steps(steps)) => tracing::info_span!(
                 "rdm.node_admin.build.create.via-steps",
                 op = "build.create",
-                steps = %steps.iter().map(|s| format!("{}: path {:?}, name {:?}", node_step_of(s).name(), s.node().path, s.node().name)).collect::<Vec<_>>().join(" "),
+                steps = %steps.iter().map(|s| format!("{}: path {:?}, name {:?}", node_step_of(s).name(), s.location().path, s.location().name)).collect::<Vec<_>>().join(" "),
                 outcome = tracing::field::Empty,
                 failed_step = tracing::field::Empty,
                 build_id = tracing::field::Empty,
@@ -793,7 +793,7 @@ mod tests {
     #[test]
     fn step_resume_retains_each_positions_admitted_subject() {
         let location = PathName::new("services.node", "north").unwrap();
-        let kind = WorkflowKind::Steps(vec![Step::Stop { node: location.clone() }, Step::Stop { node: location }]);
+        let kind = WorkflowKind::Steps(vec![Step::Stop { path: location.path.clone(), name: location.name.clone()}, Step::Stop { path: location.path.clone(), name: location.name.clone()}]);
         let first = rdm_core::OperationId::node("node.stop", &rdm_core::NodeId::mint()).at_step(Some(1));
         let second = rdm_core::OperationId::node("node.stop", &rdm_core::NodeId::mint()).at_step(Some(2)).in_occurrence(rdm_core::OperationOccurrenceId::mint());
         let receipt = |operation: &rdm_core::OperationId, step: &str| StepView { attempt: 1, operation: operation.clone(), step: step.into(), outcome: serde_json::json!("complete") };

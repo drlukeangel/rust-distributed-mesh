@@ -55,12 +55,12 @@ enum Back {
 /// so the request is the accepted topology unchanged.
 async fn verbatim(estate: &Estate) -> (rdm_client::BuildId, Vec<NodeSpec>, Vec<NodeView>) {
     let current = estate.current().await;
-    let live = |p: &PathName| current.rows.iter().find(|n| &n.name == p && !matches!(n.status, rdm_client::NodeStatus::Deleted | rdm_client::NodeStatus::Dead));
+    let live = |p: &PathName| current.rows.iter().find(|n| &n.location() == p && !matches!(n.status, rdm_client::NodeStatus::Deleted | rdm_client::NodeStatus::Dead));
     let nodes = current
         .topology
         .values()
         .flat_map(|m| m.values())
-        .map(|s| match live(&s.path) {
+        .map(|s| match live(&s.location()) {
             Some(row) => NodeSpec { executable: None, tags: row.tags.clone(), config: row.config.clone(), ..s.clone() },
             None => NodeSpec { executable: None, ..s.clone() },
         })
@@ -69,13 +69,13 @@ async fn verbatim(estate: &Estate) -> (rdm_client::BuildId, Vec<NodeSpec>, Vec<N
 }
 
 fn at<'a>(request: &'a mut [NodeSpec], path: &PathName) -> &'a mut NodeSpec {
-    request.iter_mut().find(|s| &s.path == path).unwrap_or_else(|| panic!("the request lists {path:?}"))
+    request.iter_mut().find(|s| &s.location() == path).unwrap_or_else(|| panic!("the request lists {path:?}"))
 }
 
 /// The executable the live row at `path` records.
 fn row_executable(rows: &[NodeView], path: &PathName) -> Binding {
     rows.iter()
-        .find(|n| &n.name == path && !matches!(n.status, rdm_client::NodeStatus::Deleted | rdm_client::NodeStatus::Dead))
+        .find(|n| &n.location() == path && !matches!(n.status, rdm_client::NodeStatus::Deleted | rdm_client::NodeStatus::Dead))
         .and_then(|n| n.executable.clone())
         .unwrap_or_else(|| panic!("the row at {path:?} records its executable"))
 }
@@ -95,7 +95,7 @@ fn another_build(estate: &Estate, b: &Binding, tag: &str) -> Binding {
 
 /// The lifecycle/launch record of the live node at `path` on the fabric's store root, and its view (`fabric.nodes.get`).
 async fn node_row(estate: &Estate, path: &PathName) -> (Value, NodeView) {
-    let node = estate.nodes_obj().await.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("node.get: {e}")).into_iter().find(|n| &n.name == path).unwrap_or_else(|| panic!("fabric.nodes.get answers {path:?}"));
+    let node = estate.nodes_obj().await.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("node.get: {e}")).into_iter().find(|n| &n.location() == path).unwrap_or_else(|| panic!("fabric.nodes.get answers {path:?}"));
     let stored: Value = estate.node_record(node.node_id.as_str()).unwrap_or_else(|| panic!("the record of {path:?} is not in nodes.jsonl"));
     (stored["record"].clone(), node)
 }
@@ -188,7 +188,7 @@ async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, Strin
     assert_eq!(replaced.executable.as_ref(), Some(&next), "{rpc2:?} runs the executable its request named");
 
     let (based_on, mut r, _) = verbatim(estate).await;
-    r.retain(|s| s.path != rpc2);
+    r.retain(|s| s.location() != rpc2);
     row(estate, &format!("{mesh}: a removed path"), based_on, r, Back::ToPending, rows).await;
 }
 

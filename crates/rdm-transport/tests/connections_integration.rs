@@ -11,7 +11,6 @@ use crate::common;
 use common::*;
 use rdm_core::connections::{CarrierPolicy, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute};
 use rdm_core::reconnect::owed_direct_restored;
-use rdm_core::{PathName};
 use rdm_transport::{Resend, CallOptions, ConnectedCall, PoolKey, RouteLeg};
 use rdm_core::outcome::RpcOutcome;
 use std::sync::atomic::Ordering;
@@ -28,7 +27,7 @@ async fn connected(rig: &Rig, held: &ConnectionsHeld, own: &rdm_core::connection
         .call_connected::<Probe>(
             held,
             &own.node_id,
-            &target.resolved.name,
+            &target.resolved.location(),
             &target.resolved.node_id,
             policy(),
             &probe(payload),
@@ -153,7 +152,7 @@ async fn a_fact_naming_a_superseded_birth_still_dials_the_current_one() {
     let mut held = held_for(&own.node_id);
     held.apply(connection(own.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
     let members = std::sync::Arc::new(rdm_core::connections::StaticIncarnations::default());
-    members.set(r.b.resolved.node_id.clone(), r.b.resolved.name.clone(), rdm_core::IncarnationId::mint());
+    members.set(r.b.resolved.node_id.clone(), r.b.resolved.location(), rdm_core::IncarnationId::mint());
     held.set_topology_view(members);
     let call = connected(&r, &held, &own, &r.b, b"re-born").await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });

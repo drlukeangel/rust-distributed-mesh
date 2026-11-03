@@ -45,7 +45,7 @@ async fn a_create_accepted_inside_a_deletions_window_births_the_path_once() {
     // moves to the other admin, which executes the delete, and the create is a node-admin in mesh2.
     let primary_id = estate.mesh_view("mesh2").await.primary_admin.expect("mesh primary");
     let before = estate.node_views().await.into_iter().find(|n| n.node_id == primary_id).expect("primary record");
-    let path = &before.name;
+    let path = &before.location();
     assert_eq!(before.status, NodeStatus::Ready, "{path:?} is ready before the delete: {before:?}");
 
     let mut deleting = estate.nodes_obj().await.delete(path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {path:?}: {e}"));

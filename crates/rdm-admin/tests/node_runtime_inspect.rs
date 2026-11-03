@@ -123,7 +123,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
         store
             .put_runtime(&RuntimeRow { r#type: running_node.r#type.clone(), mesh: running_node.mesh.clone(),
                 node_id: running_node.node_id.clone(),
-                name: running_node.name.clone(),
+                path: running_node.path.clone(), name: running_node.name.clone(),
                 incarnation_id: running_inc,
                 runtime: running_fact,
                 data_dir: None,
@@ -158,7 +158,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
         store
             .put_runtime(&RuntimeRow { r#type: exited_node.r#type.clone(), mesh: exited_node.mesh.clone(),
                 node_id: exited_node.node_id.clone(),
-                name: exited_node.name.clone(),
+                path: exited_node.path.clone(), name: exited_node.name.clone(),
                 incarnation_id: exited_inc,
                 runtime: RuntimeFact {
                     deployment_id: exited_dep,
@@ -192,7 +192,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
         store
             .put_runtime(&RuntimeRow { r#type: foreign_node.r#type.clone(), mesh: foreign_node.mesh.clone(),
                 node_id: foreign_node.node_id.clone(),
-                name: foreign_node.name.clone(),
+                path: foreign_node.path.clone(), name: foreign_node.name.clone(),
                 incarnation_id: foreign_inc,
                 runtime: RuntimeFact {
                     deployment_id: rdm_core::fixture_crockford60("dep-foreign-3"),
