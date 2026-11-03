@@ -28,7 +28,7 @@ const TOKEN: &str = "EXAMPLE_APP_TOKEN";
 
 /// The application's declarations, as every one of its node-admins registers them.
 fn declared() -> Vec<DeclaredSecret> {
-    vec![DeclaredSecret { name: TOKEN.to_string(), kinds: vec!["broker"] }]
+    vec![DeclaredSecret { name: TOKEN.to_string(), types: vec!["broker".into()] }]
 }
 
 #[tokio::main]
