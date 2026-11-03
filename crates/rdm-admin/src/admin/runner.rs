@@ -813,6 +813,10 @@ impl AdminRunner {
         // The re-created node is a new node.id at the same path and name (node-recovery.md), minted
         // when the primary decides the re-create.
         let born = crate::model::NodeId::mint();
+        // Work on one node is serialized at its mesh-primary (node-recovery.md "Execution"): the re-created
+        // node's turn is this recovery's until its create ends, so a step on it (a Build's node.delete of
+        // it, a node command) runs after the create, never beside its WaitForNodeReady.
+        let _born_turn = self.node_work(&born).await;
         let create = tracing::info_span!("rdm.node_admin.node.create.via-node-recovery", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), created_node_id = %born);
         self.create_over(&*self.builds, None, node, from, &born, read_exited(&terminal), None, None).instrument(create).await
     }
