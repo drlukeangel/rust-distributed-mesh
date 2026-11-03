@@ -572,24 +572,17 @@ fn check_formation_chain(f: &Formed, spans: &[Value], inv: &mut Invariants) -> V
     let accepted = named(spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == bid).cloned().expect("the formation Build's build.create span");
     let reconciles: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == bid).collect();
     assert!(!reconciles.is_empty(), "the formation Build's sections ran");
-    // Each mesh's section is one call from the fabric-primary to the mesh's primary, its span parented to
-    // the dispatch's context (build.md §4): a section the accepting fabric-primary dispatched runs under the
-    // drive the request opened (`build.update.via-drive`, beside `build.create.via-node-rpc` under the
-    // request's serve), in the request's trace. A section a mesh's new primary ran after the role moved, or a
-    // resubmission's, is listed as its own trace, never asserted.
-    let in_request = |r: &Value| r["trace_id"] == accepted["trace_id"] || descends_from(spans, r, &accepted);
-    let own_trace: Vec<Value> = reconciles
+    // Each pass of the Build drive is a root of its own, joined to the request by `build_id`
+    // (telemetry.md §4 "Loops on a timer"): each mesh's section of the formation Build is a
+    // `build.update.via-reconcile` carrying its build_id, whatever trace its drive pass is.
+    let sections: Vec<Value> = reconciles
         .iter()
-        .filter(|r| !in_request(r))
         .map(|r| json!({"mesh": r["attributes"]["mesh"], "executor": r["attributes"]["executor"], "outcome": r["attributes"]["outcome"], "span_id": r["span_id"], "trace_id": r["trace_id"]}))
         .collect();
     for mesh in meshes() {
-        assert!(
-            reconciles.iter().any(|r| r["attributes"]["mesh"] == *mesh && in_request(r)),
-            "the formation Build's section of {mesh} runs in its build.create request's trace: {own_trace:?}"
-        );
+        assert!(reconciles.iter().any(|r| r["attributes"]["mesh"] == *mesh), "the formation Build ran a section of {mesh}: {sections:?}");
     }
-    inv.holds("every mesh's section of the formation Build runs in its build.create request's trace", true, json!({"sections": reconciles.len(), "own_trace_sections": own_trace, "accepted_span": accepted["span_id"], "trace_id": accepted["trace_id"]}));
+    inv.holds("every mesh's section of the formation Build ran, joined to its build.create request by build_id", true, json!({"sections": sections, "accepted_span": accepted["span_id"], "trace_id": accepted["trace_id"]}));
     let mut chains = Vec::new();
     for name in f.shape.names().into_iter().filter(|n| *n != Estate::path("mesh1.node-admin", "1")) {
         let creates: Vec<&Value> = named(spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|c| c["attributes"]["build_id"] == bid && at_location(c, &name)).collect();
