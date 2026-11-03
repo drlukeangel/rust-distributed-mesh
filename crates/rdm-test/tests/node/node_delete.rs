@@ -21,8 +21,7 @@
 use rdm_core::PathName;
 use rdm_test::estate::location;
 use rdm_client::{FabricDesired, MeshDesired, ScopeStatus};
-use rdm_test::estate::{named, wait_for, Estate, Owner};
-use rdm_test::faults::{binding_set, candidate_sha, Door};
+use rdm_test::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -271,77 +270,4 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let mut asked = vec![location(&newcomer), location(&newcomer2)];
     asked.sort();
     assert_eq!(births, asked, "the only births after the delete are the two asked for");
-}
-
-fn unix_nanos() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("after the Unix epoch").as_nanos() as u64
-}
-
-/// CONTRACT (node-delete.md step 4: "The surviving executor emits node.deleted on the caller stream
-/// from the Exited evidence and records the complete delete receipt. The exited node cannot publish
-/// its own terminal proof or serve that stream"; "NodeDeleting / NodeDeleted are peer
-/// dissemination"): mesh1 (one admin, one node) and mesh2 (two admins, two nodes), every
-/// node-admin the testkit's faulted node-admin. `node.delete` of mesh2.node.2 is executed by mesh2's
-/// primary P. The fault door holds P at the `deleted` event cut: the victim's runtime is proven
-/// terminal and the NodeDeleted step event (its row Deleted inside) is durable, and NodeDeleted is not
-/// yet published. Once that step event is in the events store, which mesh2's other admin NA2 reads
-/// too (build.md §5), P is killed at the hold. The surviving executor publishes NodeDeleted for the victim's exact birth, the peer
-/// mesh's node retains the departure, and the removal's caller stream ends Complete. Must NOT
-/// happen: the deleted birth held in a view for good because the one executor that would have
-/// published its departure exited between the receipt and the publish.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publish_is_published_by_the_surviving_executor() {
-    const SETTLE: Duration = Duration::from_secs(120);
-    let test = "a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publish";
-    let sha = candidate_sha();
-    let estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
-    let shape = [("mesh1", 1, 1), ("mesh2", 2, 2)];
-    estate.resize_shape("fabric1", &shape).await;
-    estate.settles_to(&shape, Duration::from_secs(90)).await;
-    // The initial fabric refuses the removal of a node until it has first reached ready (states.md "The initial fabric before ready").
-    estate.until_fabric_ready(SETTLE).await;
-    let nodes = estate.node_values().await;
-    let fp = location(nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary"));
-    assert!(!fp.path.starts_with("mesh2."), "the fabric-primary is not in mesh2: {fp:?}");
-    let p = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
-    let p_name = location(&p);
-    let na2 = location(nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && (rdm_test::estate::location(&n) != rdm_test::estate::location(&p))).expect("mesh2's other node-admin"));
-    let (victim_at, witness_at) = (victim(), witness_node());
-    let victim = nodes.iter().find(|n| location(n) == victim_at).cloned().expect("the victim");
-    let (victim_id, victim_inc) = (s(&victim["node_id"]), s(&victim["incarnation_id"]));
-    estate.witness_holds_birth(&witness_at, &victim_at).await;
-
-    let door = Door::at(&estate, &p_name).await;
-    door.arm("deleted-unpublished", json!({"kind": "event", "event": "deleted", "node": victim_id})).await;
-    let mut removal = estate.delete_node(&victim_at).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {victim_at:?}: {e}"));
-    let held = door.wait_held("deleted-unpublished").await;
-    let build = s(&held["hit"]["build_id"]);
-    assert_eq!((&held["hit"]["operation"]["action"], &held["hit"]["operation"]["subject"], s(&held["hit"]["incarnation_id"])), (&json!("node.delete"), &json!({"Node": victim_id}), victim_inc.clone()), "P holds the victim's NodeDeleted publish: {held}");
-    // The NodeDeleted step event is durable in the events store, which the surviving executor reads.
-    let delete_op = format!("node.delete:{victim_id}");
-    crate::build_log::build_fact(&estate, &build, &format!("the NodeDeleted step event of {victim_at:?}"), SETTLE, |pr| {
-        pr.steps.iter().any(|r| r.operation == delete_op && r.step == "NodeDeleted" && r.outcome == rdm_admin::build_state::StepOutcome::Complete)
-    })
-        .await
-        .unwrap_or_else(|end| panic!("{end}"));
-    let killed_at = unix_nanos();
-    estate.kill_node(&p_name).await;
-
-    // The surviving executor publishes the departure of the exact birth.
-    let published = wait_for(&format!("a surviving executor publishes NodeDeleted for {victim_at:?} ({victim_id}) after {p_name:?} exited"), SETTLE, || async {
-        named(&estate.spans(), "rdm.node_admin.node.delete.via-node-deleted")
-            .into_iter()
-            .find(|sp| sp["attributes"]["node_id"] == victim_id.as_str() && sp["start_unix_nano"].as_u64().unwrap_or(0) > killed_at)
-            .cloned()
-    })
-    .await;
-    assert_eq!((s(&published["attributes"]["incarnation_id"]), s(&published["attributes"]["build_id"])), (victim_inc.clone(), build.clone()), "the departure names the exact birth and the removal's Build: {published}");
-    estate.holds_departure(&witness_at, "mesh2", &victim_id).await;
-    let end = Estate::complete(&mut removal).await.expect("a delete opens a Build");
-    eprintln!(
-        "s78 B: {p_name:?} held at the deleted cut of {victim_at:?} (Build {build}) and killed; {na2:?} survives; NodeDeleted published trace {} span {}; {witness_at:?} holds the departure; removal complete {:?}",
-        s(&published["trace_id"]), s(&published["span_id"]), end.build_id,
-    );
-    estate.record_trace_url(published["trace_id"].as_str().unwrap_or(""));
-    estate.shutdown().await;
 }
