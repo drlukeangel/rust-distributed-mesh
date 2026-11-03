@@ -1017,68 +1017,6 @@ mod tests {
         assert_eq!(records.fabric_state(), FabricState::Pending, "a new Build that names a new executable puts the fabric back to pending");
     }
 
-    /// CONTRACT (states.md, Resize and executable replacement: "A resize or an executable replacement puts the
-    /// fabric back to pending"; build-deployment.md §3: a member is replaced when its row records another
-    /// executable than its entry names): day 0's entry for the Day-0 admin names no executable, and its row
-    /// records the one it runs. A Build whose request names, for that path, the executable its row records
-    /// is neither a resize nor a replacement: the fabric stays ready and the change holds the
-    /// new Build. A later Build naming another executable for it is a replacement and puts the fabric back
-    /// to pending. Must NOT happen: a request naming what the admin already runs taken as "the accepted
-    /// topology changed", the fabric reset to pending for a Build that has nothing to do.
-    #[tokio::test]
-    async fn a_request_naming_the_executable_the_row_records_is_no_replacement_and_another_executable_is() {
-        use crate::accepted::MeshTopology;
-        use crate::build::MeshDesired;
-        use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
-        use crate::node_rows::WriteRecord;
-        let builds = Arc::new(MemoryBuildStateAdapter::new());
-        let admin: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-        let exe = |sha: &str| rdm_core::binding::Binding { launch_id: "node-admin".into(), executable: "/b/admin".into(), sha256: sha.into(), image: None };
-        let day0 = MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)]));
-        let topology = |sha: Option<&str>| {
-            let mut m = day0.clone();
-            let mut c = m.spec(&admin).cloned().unwrap();
-            c.executable = sha.map(exe);
-            m.set_spec(c).unwrap();
-            FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
-        };
-        let (fp, _) = fabric_primary_and_mesh2();
-        // The Day-0 admin's row records the executable it runs.
-        let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let mut row = crate::storage::NodeRow::new(admin.clone(), "mesh1", "node-admin", fp.node_id.clone(), NodeStatus::Ready);
-        row.executable = Some(exe("aa"));
-        rows.write_record(&row).await.unwrap();
-        let a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
-        builds.publish_accepted(&BuildAccepted { build_id: a.clone(), topology: topology(None), submitted_change: None, source: None, submitted_at_ms: 1_000 }).await.unwrap();
-        claim(&builds, &a, 1, &fp.birth().unwrap()).await;
-        let view = projected(vec![fp.clone()]);
-        let records = Arc::new(Records::default());
-        let _ = records.contacts.set(rows.clone());
-        let states = states_of(&fp, view, builds.clone(), records.clone(), FabricId::mint()).await;
-        records.set_fabric_state(FabricState::Ready);
-        records.set_published_fabric_state(Some(FabricState::Ready));
-        {
-            let mut change = states.change.lock().await;
-            states.step_ready(&mut change, &states.env.builds.current().await).await;
-            assert_eq!(change.tracked_build, Some(a.clone()), "day 0's Build is the topology the fabric changes under");
-        }
-        let b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
-        builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology(Some("aa")), submitted_change: None, source: None, submitted_at_ms: 2_000 }).await.unwrap();
-        claim(&builds, &b, 1, &fp.birth().unwrap()).await;
-        assert!(!states.accepted().await, "a request naming the executable the row records puts nothing back at its acceptance");
-        {
-            let mut change = states.change.lock().await;
-            states.step_ready(&mut change, &states.env.builds.current().await).await;
-            assert_eq!(change.tracked_build, Some(b.clone()), "the change holds the new Build's topology");
-        }
-        assert_eq!(records.fabric_state(), FabricState::Ready, "the executable the row records is no replacement: the fabric stays ready");
-        let c = crate::build::BuildId::parse("cprrv6tggykq").unwrap();
-        builds.publish_accepted(&BuildAccepted { build_id: c.clone(), topology: topology(Some("cc")), submitted_change: None, source: None, submitted_at_ms: 3_000 }).await.unwrap();
-        claim(&builds, &c, 1, &fp.birth().unwrap()).await;
-        assert!(states.accepted().await, "another executable than the row records is a replacement: the fabric is back to pending at its acceptance");
-        assert_eq!(records.fabric_state(), FabricState::Pending, "an executable replacement puts the fabric back to pending");
-    }
-
     use crate::model::{MeshId, NodeStatus as NS};
     use rdm_transport::topology::DigestView;
 

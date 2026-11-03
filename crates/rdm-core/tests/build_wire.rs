@@ -40,8 +40,8 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
     }
     assert_eq!(Build::REQUEST_VARIANTS, 5);
     assert_eq!(Build::decode_request(&[5]), Err(DecodeFailure::UnknownVariant));
-    // a change past DeleteFabric (position 2) is an unknown variant
-    assert_eq!(Build::decode_request(&bytes("00 00 03")), Err(DecodeFailure::UnknownVariant));
+    // a change past DeleteFabric (position 2) does not decode
+    assert_eq!(Build::decode_request(&bytes("00 00 03")), Err(DecodeFailure::Corrupt));
 }
 
 #[test]

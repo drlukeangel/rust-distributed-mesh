@@ -152,7 +152,8 @@ pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, of: impl
 }
 
 /// The Create that grows each mesh of `desired` to its counts in `t`: each missing node at the lowest
-/// free ordinal of its type, on [`test_executable`] of its type, and each mesh `t` does not hold with it.
+/// free ordinal of its type the view holds no node at, on [`test_executable`] of its type, and each mesh
+/// `t` does not hold with it.
 /// A count below what the mesh holds removes nothing (a Delete names the nodes it removes).
 pub fn grown(t: &rdm_admin::topology::Topology, desired: &[rdm_admin::build::MeshDesired]) -> rdm_core::build::BuildChange {
     let mut meshes = Vec::new();
@@ -164,8 +165,8 @@ pub fn grown(t: &rdm_admin::topology::Topology, desired: &[rdm_admin::build::Mes
         let mut types: Vec<(String, u32)> = d.counts().into_iter().collect();
         types.sort_by_key(|(r#type, _)| !rdm_core::is_node_admin(r#type));
         for (r#type, want) in types {
-            let held = |p: &rdm_core::PathName| t.nodes.iter().any(|n| n.location() == *p && n.status.is_live());
-            let mut have = t.nodes.iter().filter(|n| n.mesh == d.name && n.r#type == r#type && n.status.is_live()).count() as u32;
+            let held = |p: &rdm_core::PathName| t.node(p).is_some();
+            let mut have = t.nodes.iter().filter(|n| n.mesh == d.name && n.r#type == r#type).map(|n| n.location()).collect::<std::collections::BTreeSet<_>>().len() as u32;
             let mut ordinal = 1;
             while have < want {
                 let path = rdm_core::PathName::numbered(&d.name, &r#type, ordinal);
@@ -183,7 +184,7 @@ pub fn grown(t: &rdm_admin::topology::Topology, desired: &[rdm_admin::build::Mes
 
 /// The Create of one more `type` node in `mesh` than `t` holds there.
 pub fn grown_by_one(t: &rdm_admin::topology::Topology, mesh: &str, r#type: &str) -> rdm_core::build::BuildChange {
-    let have = t.nodes.iter().filter(|n| n.mesh == mesh && n.r#type == r#type && n.status.is_live()).count() as u32;
+    let have = t.nodes.iter().filter(|n| n.mesh == mesh && n.r#type == r#type).map(|n| n.location()).collect::<std::collections::BTreeSet<_>>().len() as u32;
     grown(t, &[rdm_admin::build::MeshDesired::of(mesh, [(r#type, have + 1)])])
 }
 

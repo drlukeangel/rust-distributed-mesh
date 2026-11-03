@@ -2440,7 +2440,7 @@ fn a_build_whose_later_attempt_failed_claims_no_next_attempt_without_a_resubmit(
 /// 2026-10-24: the plan reads mesh death from the Mesh record and the receipts, never from a view that has
 /// not caught up): mesh3 was deleted by an earlier Build, its Mesh record Dead, and this fabric-primary's
 /// view has not heard its Dead yet (it shows mesh3 Ready, its final primary still a member). A
-/// Build whose topology leaves mesh3 out plans nothing for it: no mesh.delete is dispatched, and the Build
+/// Delete of mesh3 plans nothing for it: no mesh.delete is dispatched, and the Build
 /// completes. Must NOT happen: a deleted mesh's mesh.delete planned again.
 #[tokio::test]
 async fn a_mesh_the_mesh_records_hold_dead_is_never_planned_again_while_the_view_still_shows_it_live() {
@@ -2448,8 +2448,7 @@ async fn a_mesh_the_mesh_records_hold_dead_is_never_planned_again_while_the_view
     let mesh3 = MeshId::mint();
     t.meshes.push(Mesh { id: Some(mesh3.clone()), name: "mesh3".into(), status: ScopeStatus::Ready });
     t.nodes.push(node(rdm_core::PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", true, false));
-    let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [("node-admin", admins), ("node", rpcs)]);
-    let change = move |t: &rdm_admin::topology::Topology| crate::grown(t, &(FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh1", 2, 1)] }).meshes);
+    let change = |_: &rdm_admin::topology::Topology| BuildChange::Delete { meshes: vec!["mesh3".into()], node_ids: Vec::new() };
     let r = rig_for(t, change, |ran, _| ran).await;
     r.switch.dead.lock().unwrap().insert(mesh3.clone());
     let drive = Drive::detached(r.build.clone());

@@ -1380,6 +1380,7 @@ mod tests {
         let with = |b: rdm_core::binding::Binding| {
             let mut next = current.clone();
             let p: PathName = PathName::new("mesh1.node", "1").unwrap();
+            next.mint_created(std::iter::once(&p));
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
             m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), r#type: "node".into(), path: p.path.clone(), name: p.name.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: Some(b), tags: Default::default(), config: Default::default() });

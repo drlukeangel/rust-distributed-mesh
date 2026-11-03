@@ -2387,7 +2387,7 @@ mod tests {
             n.node_id = pinned.node_id.clone();
             n.incarnation_id = Some(pinned.incarnation.clone());
         }
-        for op in &ops[..5] {
+        for op in &ops {
             let err = runner.run_op(&build_id, None, 1, op).await.expect_err("permanent error on a held birth fails");
             assert!(matches!(err, RunEnd::Failed { .. }), "{:?} with a permanent error on a held birth must end Failed, got {err:?}", op.key());
         }
