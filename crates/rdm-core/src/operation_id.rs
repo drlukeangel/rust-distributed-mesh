@@ -109,6 +109,33 @@ impl OperationId {
     pub fn unscoped(action: impl Into<String>) -> Self {
         Self { action: action.into(), subject: None, recipe_step: None, occurrence: None }
     }
+
+    /// The node the operation acts on, when it acts on one: its subject's node.id, a primary update's
+    /// the node its preceding operation acts on. The `subject` of its `rdm.build.step` event (build.md §5).
+    pub fn node_id(&self) -> Option<&NodeId> {
+        match self.subject.as_ref()? {
+            OperationSubject::Node(id) | OperationSubject::Birth { node_id: id, .. } => Some(id),
+            OperationSubject::PrimaryUpdate { preceding, .. } => preceding.node_id(),
+            OperationSubject::Reserved2 | OperationSubject::Mesh(_) | OperationSubject::Fabric(_) | OperationSubject::Named(_) => None,
+        }
+    }
+}
+
+/// The operation as the pages write it, `<action>:<subject>` (`node.create:<node_id>`,
+/// `mesh.delete:<mesh_id>`, a primary update `node.primary.update:<the operation it precedes>`): the `op`
+/// of its `rdm.build.step` event (build.md §5). An operation with no subject is its action alone.
+impl std::fmt::Display for OperationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.action)?;
+        match &self.subject {
+            None | Some(OperationSubject::Reserved2) => Ok(()),
+            Some(OperationSubject::Node(id)) | Some(OperationSubject::Birth { node_id: id, .. }) => write!(f, ":{id}"),
+            Some(OperationSubject::Mesh(id)) => write!(f, ":{id}"),
+            Some(OperationSubject::Fabric(id)) => write!(f, ":{id}"),
+            Some(OperationSubject::Named(name)) => write!(f, ":{name}"),
+            Some(OperationSubject::PrimaryUpdate { preceding, .. }) => write!(f, ":{preceding}"),
+        }
+    }
 }
 
 // Lexical ordering is only for deterministic collection storage; it assigns no temporal

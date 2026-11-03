@@ -279,9 +279,10 @@ impl Event {
         Self::new(source, time_ms, BUILD_DISPATCHED, None, object(Data { build_id, mesh }))
     }
 
-    /// `rdm.build.step` on the node `node_id` {build_id, mesh, step, op, state}.
+    /// `rdm.build.step` on the node `node_id` acted on, none for a mesh or fabric operation {build_id,
+    /// mesh, step, op, state}.
     #[allow(clippy::too_many_arguments)]
-    pub fn build_step(source: &EventSource, time_ms: u64, node_id: &NodeId, build_id: &BuildId, mesh: &str, step: &str, op: &str, state: &StepState) -> Self {
+    pub fn build_step(source: &EventSource, time_ms: u64, node_id: Option<&NodeId>, build_id: &BuildId, mesh: &str, step: &str, op: &str, state: &StepState) -> Self {
         #[derive(Serialize)]
         struct Data<'a> {
             build_id: &'a BuildId,
@@ -290,7 +291,7 @@ impl Event {
             op: &'a str,
             state: &'a StepState,
         }
-        Self::new(source, time_ms, BUILD_STEP, Some(node_id.clone()), object(Data { build_id, mesh, step, op, state }))
+        Self::new(source, time_ms, BUILD_STEP, node_id.cloned(), object(Data { build_id, mesh, step, op, state }))
     }
 
     /// `rdm.build.ended` {build_id, state}.
@@ -637,11 +638,11 @@ mod tests {
             Event::build_started(&fp, 1_000, &b1),
             Event::build_started(&fp, 1_001, &b2),
             Event::build_dispatched(&fp, 1_002, &b1, "mesh1"),
-            Event::build_step(&mp, 1_003, &n1, &b1, "mesh1", "create", "node.create", &StepState::Complete),
+            Event::build_step(&mp, 1_003, Some(&n1), &b1, "mesh1", "create", "node.create", &StepState::Complete),
             Event::node_investigated(&mp, 1_004, &n2, &inc, "mesh1.node", "2", "exited", "recreate"),
             Event::build_dispatched(&fp, 1_005, &b2, "mesh1"),
-            Event::build_step(&mp, 1_006, &n2, &b2, "mesh1", "create", "node.create", &StepState::Failed { reason: "the provider refused".into(), code: "FAILED_PRECONDITION".into() }),
-            Event::build_step(&mp, 1_007, &n1, &b2, "mesh1", "delete", "node.delete", &StepState::Complete),
+            Event::build_step(&mp, 1_006, Some(&n2), &b2, "mesh1", "create", "node.create", &StepState::Failed { reason: "the provider refused".into(), code: "FAILED_PRECONDITION".into() }),
+            Event::build_step(&mp, 1_007, Some(&n1), &b2, "mesh1", "delete", "node.delete", &StepState::Complete),
             Event::build_ended(&fp, 1_008, &b1, &EndedState::Complete),
             Event::node_investigated(&mp, 1_009, &n1, &inc, "mesh1.node", "1", "reached", "rejoin"),
             Event::build_ended(&fp, 1_010, &b2, &EndedState::Failed { step: "create".into(), reason: "the provider refused".into(), code: "FAILED_PRECONDITION".into() }),

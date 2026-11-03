@@ -301,6 +301,10 @@ pub struct FramedBuilds {
     runs: Arc<AttemptRuns>,
     /// The receipts of reporting runs (Q118): never written here, read back by the run that made them.
     reported: Mutex<Vec<BuildStepReceipt>>,
+    /// Where this admin writes the `rdm.build.step` event of each step it runs (build.md §5: the mesh's
+    /// mesh-primary writes its mesh's steps), and the mesh a step of the fabric lane is its own; none in
+    /// a rig with no events store.
+    steps: Option<(crate::events_storage::EventsWriter, String)>,
 }
 
 impl FramedBuilds {
@@ -310,6 +314,34 @@ impl FramedBuilds {
             inner,
             runs,
             reported: Mutex::default(),
+            steps: None,
+        }
+    }
+
+    /// [`Self::new`], each step this admin runs written as its `rdm.build.step` event through `events`,
+    /// `mesh` the admin's own mesh.
+    pub fn writing_steps(self, events: crate::events_storage::EventsWriter, mesh: impl Into<String>) -> Self {
+        Self { steps: Some((events, mesh.into())), ..self }
+    }
+
+    /// The `rdm.build.step` event of `receipt`, by this admin (build.md §5): its subject the node the
+    /// operation acts on, none for a mesh or fabric operation; its mesh the run's, else this admin's own.
+    async fn write_step(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
+        let Some((events, own)) = &self.steps else { return Ok(()) };
+        let mesh = receipt.mesh.clone().unwrap_or_else(|| own.clone());
+        let state = match &receipt.outcome {
+            StepOutcome::Complete => crate::events_storage::StepState::Complete,
+            StepOutcome::Failed { reason, code } => crate::events_storage::StepState::Failed { reason: reason.clone(), code: code.name().to_string() },
+        };
+        let op = receipt.operation.to_string();
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-step-event", build_id = %receipt.build_id.log(), mesh = %mesh, op = %op, step = %receipt.step, event_id = tracing::field::Empty);
+        let written = events.append(|source, time_ms| crate::events_storage::Event::build_step(source, time_ms, receipt.operation.node_id(), &receipt.build_id, &mesh, &receipt.step, &op, &state)).instrument(span.clone()).await;
+        match written {
+            Ok(id) => {
+                span.record("event_id", id.as_str());
+                Ok(())
+            }
+            Err(e) => Err(BuildStateError::Io(format!("the rdm.build.step event of {op} step {} could not be written: {e}", receipt.step))),
         }
     }
 
@@ -398,6 +430,8 @@ impl BuildStateAdapter for FramedBuilds {
         } else {
             self.inner.append_step_receipt(receipt).await?;
         }
+        // The step's event is durable before its frame is made, as its receipt is.
+        self.write_step(receipt).await?;
         if let Some(run) = run {
             match &receipt.outcome {
                 StepOutcome::Complete => run.step_with(
@@ -1162,6 +1196,33 @@ mod tests {
         log.finish(BuildReply::Complete { build_id: id().to_string(), attempt: 1 });
         assert_eq!(reader.next().await.unwrap().name(), "complete", "an append that failed and a failed step made no step frame");
         assert_eq!(log.last_failed_step(), Some((rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap())), "PrepareNetwork".into(), "no port".into())), "the failed step is kept for the terminal to name");
+    }
+
+    /// CONTRACT (build.md §5: `rdm.build.step`, written by the mesh's mesh-primary, subject the node acted
+    /// on, data `build_id`, `mesh`, `step`, `op`, `state`): each step an admin runs is one event, by this
+    /// birth, durable before the step's frame. A complete step's state is `complete`; a failed one's is
+    /// `failed` with its reason and the gRPC code name. A step of the fabric lane is of the admin's own mesh.
+    #[tokio::test]
+    async fn each_step_an_admin_runs_is_one_rdm_build_step_event_naming_the_node_the_mesh_the_op_and_its_state() {
+        use crate::events_storage::{EventsStorage, MemoryEventsStorage, StepState};
+        let runs = Arc::new(AttemptRuns::default());
+        let (log, _) = runs.begin(&id(), None, 1);
+        let mut reader = log.reader();
+        let events = Arc::new(MemoryEventsStorage::new());
+        let node = rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap());
+        let writer = crate::events_storage::EventsWriter::on(events.clone(), &rdm_core::FabricId::mint(), &rdm_core::NodeId::mint());
+        let framed = FramedBuilds::new(Arc::new(MemoryBuildStateAdapter::new()), runs.clone()).writing_steps(writer.clone(), "mesh1");
+        framed.append_step_receipt(&receipt(1, "AllocateIdentity", StepOutcome::Complete)).await.unwrap();
+        assert!(matches!(reader.next().await.unwrap(), BuildReply::Step { step, .. } if step == "AllocateIdentity"));
+        let written = events.of_build(&id()).await.unwrap();
+        assert_eq!(written.len(), 1, "the step's event was durable before its frame was readable: {written:?}");
+        framed.append_step_receipt(&receipt(1, "PrepareNetwork", StepOutcome::failed("no port"))).await.unwrap();
+        let written = events.of_build(&id()).await.unwrap();
+        let data = |i: usize, k: &str| written[i].data[k].clone();
+        assert_eq!(written.iter().map(|e| (e.r#type.as_str(), e.subject.clone(), e.source.clone())).collect::<Vec<_>>(), vec![("rdm.build.step", Some(node.clone()), writer.source.uri()); 2], "by this birth, about the node acted on");
+        assert_eq!((data(0, "mesh"), data(0, "op"), data(0, "step")), (serde_json::json!("mesh1"), serde_json::json!(format!("node.create:{node}")), serde_json::json!("AllocateIdentity")));
+        assert_eq!(serde_json::from_value::<StepState>(data(0, "state")).unwrap(), StepState::Complete);
+        assert_eq!(serde_json::from_value::<StepState>(data(1, "state")).unwrap(), StepState::Failed { reason: "no port".into(), code: "FAILED_PRECONDITION".into() });
     }
 
     struct Nothing;
