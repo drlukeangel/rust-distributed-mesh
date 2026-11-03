@@ -547,9 +547,11 @@ const BUILD_RELOADED: &str = "rdm.node_admin.fabric.update.via-inherited-root";
 const BOOTS_WITHIN: Duration = Duration::from_secs(10);
 /// How long an admin started on a root recording nodes that do not run may take to boot: before its first
 /// mutation it asks the recorded node-admins whether one answers (Q156, Q199), one probe each at once
-/// within the default call budget (10 s), then pulls rafka-time from the recorded nodes at once within one
-/// read's budget (10 s), each unanswered; and a margin.
-const RECOVERS_WITHIN: Duration = Duration::from_secs(30);
+/// within the default call budget (10 s), then pulls rafka-time from the recorded nodes at once, each
+/// read one call on the default `Send` (Q344: 3 attempts of 10 s, the schedule's delays between them at
+/// the production cadence, 2 s and 4 s with ±25 % jitter: at most 37.5 s), each unanswered; and a
+/// margin of 10 s.
+const RECOVERS_WITHIN: Duration = Duration::from_secs(60);
 
 /// CONTRACT (R-SB1, Luke 2026-10-13: "An admin started on an inherited root is fabric recovery: a new
 /// node.id and incarnation over the inherited directory (fabric-recovery.md:10), in its role by the ordinary
