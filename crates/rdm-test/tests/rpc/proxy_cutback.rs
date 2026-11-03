@@ -249,7 +249,7 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     let result = json!({
         "cell": cell,
         "seeded": seeded,
-        "seeded_failed_row": failed,
+        "seeded_failed_rows": seeded_rows.iter().filter(|r| r["kind"] == "Direct" && r["state"] == "Failed").count(),
         "healthy_call_over_proxy": healthy,
         "fault_armed": armed,
         "inbound_call_from_destination": inbound,
