@@ -243,9 +243,12 @@ async fn boot_trace(State(s): State<AppState>, Query(q): Query<BootQuery>) -> Re
 }
 
 /// Put the port the UI bound on its admin's own row config (`admin_ui_port`), once the fabric takes it:
-/// a refusal before the first ready is put again a second later.
+/// a refusal before the first ready is put again after the one schedule's next delay (node-rpc.md §43).
 async fn put_ui_port(admin: Arc<Admin>, port: u16) {
+    let pacing = rdm_transport::Pacing::from_cadences();
+    let mut turn = 0u32;
     loop {
+        turn = turn.saturating_add(1);
         match admin.put_own_config("admin_ui_port", &port.to_string()).await {
             Ok(rdm_core::status::StatusReply::ConfigUpdated { .. }) => {
                 tracing::info!(port, "the UI's port is on its admin's row config as admin_ui_port");
@@ -253,7 +256,7 @@ async fn put_ui_port(admin: Arc<Admin>, port: u16) {
             }
             other => tracing::info!(port, ?other, "the UI's port is not on its admin's row config yet"),
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(pacing.after(turn)).await;
     }
 }
 

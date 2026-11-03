@@ -544,21 +544,22 @@ const BUILD_IN_PROGRESS_BOUND: Duration = Duration::from_secs(120);
 /// `submit`, submitted again while it is refused `build-in-progress` (one Build at a time, build.md
 /// §1): a caller that must go after the Build in flight follows it to its end and submits again
 /// (`CallEnd::BuildInProgress`). An attempt the fabric opens itself between rounds, a recovery or the
-/// termination of a returned birth, is that Build in flight. Exponential backoff from 500 ms to 4 s,
-/// within [`BUILD_IN_PROGRESS_BOUND`]; any other refusal, or the bound passed, is the call's.
+/// termination of a returned birth, is that Build in flight. A domain answer: asked again after the
+/// one schedule's next delay (node-rpc.md §43), within [`BUILD_IN_PROGRESS_BOUND`]; any other refusal,
+/// or the bound passed, is the call's.
 async fn after_build_in_progress<T, F, Fut>(mut submit: F) -> Result<T, CallEnd>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, CallEnd>>,
 {
     let until = Instant::now() + BUILD_IN_PROGRESS_BOUND;
-    let mut backoff = Duration::from_millis(500);
+    let pacing = rdm_transport::Pacing::from_cadences();
+    let mut turn = 0u32;
     loop {
+        turn = turn.saturating_add(1);
+        let after = pacing.after(turn);
         match submit().await {
-            Err(CallEnd::BuildInProgress { .. }) if Instant::now() + backoff < until => {
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(4));
-            }
+            Err(CallEnd::BuildInProgress { .. }) if Instant::now() + after < until => tokio::time::sleep(after).await,
             other => return other,
         }
     }
