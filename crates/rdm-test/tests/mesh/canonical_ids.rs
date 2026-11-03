@@ -38,7 +38,7 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-fn location(node: &Value) -> PathName { serde_json::from_value(node["name"].clone()).expect("structured node location") }
+fn location(node: &Value) -> PathName { rdm_test::estate::location(&node) }
 
 fn canonical(what: &str, v: &Value) -> String {
     let id = s(v);
@@ -265,7 +265,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     for n in regrown.iter().filter(|n| n["mesh"] == "mesh2") {
         let row = deleted.iter().find(|sp| {
             let a = &sp["attributes"];
-            (a["operation"] == "mesh.delete" || a["operation"] == "node.delete") && a["subject_path"] == n["name"]["path"] && a["subject_name"] == n["name"]["name"] && s(&a["node_id"]) == s(&n["node_id"]) && a["outcome"] == "row-deleted"
+            (a["operation"] == "mesh.delete" || a["operation"] == "node.delete") && a["subject_path"] == n["path"] && a["subject_name"] == n["name"] && s(&a["node_id"]) == s(&n["node_id"]) && a["outcome"] == "row-deleted"
         });
         assert!(row.is_some_and(|sp| sp["attributes"]["outcome"] == "row-deleted"), "{}'s row is written Deleted by mesh2's removal: {row:?}", n["name"]);
     }

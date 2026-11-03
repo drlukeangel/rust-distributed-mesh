@@ -59,7 +59,7 @@ fn mesh(name: &str) -> (&str, u32, u32) {
 
 /// One process of the run, as the control APIs and the host describe it.
 async fn describe(estate: &Estate, node: &Value) -> Value {
-    let name: rdm_core::PathName = serde_json::from_value(node["name"].clone()).expect("structured location");
+    let name: rdm_core::PathName = rdm_test::estate::location(&node);
     let pid = match estate.bootstrap_pid() {
         Some(p) if name == rdm_core::PathName::new("mesh1.node-admin", "1").unwrap() => u64::from(p),
         _ => estate.pid_of(&name).await,
@@ -97,7 +97,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     // The role's primary and the mesh that outlives it.
     let primary = estate.fabric_view().await.fabric_primary.expect("the fabric names its primary").to_string();
     let primary_record = before.iter().find(|n| s(&n["node_id"]) == primary).expect("fabric primary in view");
-    let primary_location: rdm_core::PathName = serde_json::from_value(primary_record["name"].clone()).unwrap();
+    let primary_location: rdm_core::PathName = rdm_test::estate::location(&primary_record);
     let lost_mesh = s(&primary_record["mesh"]);
     let survivor_mesh = if lost_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
 
@@ -114,7 +114,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let survivor_pids: BTreeMap<String, u64> = described.values().filter(|d| survivors.contains(&s(&d["node_id"]))).map(|d| (s(&d["node_id"]), d["host"]["pid"].as_u64().unwrap())).collect();
     let survivor_bases: BTreeSet<String> = survivors.iter().map(|n| s(&described[n]["admin_api_base"])).collect();
     // Control moves to the surviving mesh's admins before the loss: they execute the delete.
-    let entry: rdm_core::PathName = serde_json::from_value(described[&survivors[0]]["name"].clone()).unwrap();
+    let entry: rdm_core::PathName = rdm_test::estate::location(&described[&survivors[0]]);
     estate.enter(&entry).await;
     let fabric_id = estate.fabric_id.clone();
 
@@ -225,7 +225,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         survivors_after.insert(name.clone(), json!({"admin_api_base": base, "node": describe(&estate, n).await, "fabric": fabric_view, "nodes_seen": nodes_view.iter().map(|v| json!({"name": v["name"], "status": v["status"], "is_primary": v["is_primary"], "is_fabric_primary": v["is_fabric_primary"], "admin_api_base": v["admin_api_base"]})).collect::<Vec<_>>()}));
     }
 
-    let entry: rdm_core::PathName = serde_json::from_value(primary_record["name"].clone()).unwrap();
+    let entry: rdm_core::PathName = rdm_test::estate::location(&primary_record);
     estate.enter(&entry).await;
     estate.stop().await;
     let spans = estate.spans();

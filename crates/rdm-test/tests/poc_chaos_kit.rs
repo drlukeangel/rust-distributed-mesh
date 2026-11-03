@@ -76,7 +76,7 @@ async fn poc_netfault_cut_unhears_one_node_and_heal_restores_it() {
     let mut estate = small_estate("poc_netfault_cut_unhears_one_node_and_heal_restores_it").await;
     let nodes = estate.node_values().await;
     let victim = PathName::new("mesh1.node", "2").unwrap();
-    let rest: Vec<PathName> = nodes.iter().map(|n| serde_json::from_value(n["name"].clone()).expect("separate path and name")).filter(|n| *n != victim).collect();
+    let rest: Vec<PathName> = nodes.iter().map(|n| rdm_test::estate::location(&n)).filter(|n| *n != victim).collect();
     let before = estate.node_view(&victim).await;
     let cut = match Partition::start(&udp_ports(&nodes, &[victim.clone()]), &udp_ports(&nodes, &rest)) {
         Ok(c) => c,

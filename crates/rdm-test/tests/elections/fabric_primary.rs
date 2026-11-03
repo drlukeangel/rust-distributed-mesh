@@ -53,7 +53,7 @@ fn s(v: &Value) -> String {
 }
 
 fn location(row: &Value) -> PathName {
-    serde_json::from_value(row["name"].clone()).expect("structured location")
+    rdm_test::estate::location(&row)
 }
 
 /// CONTRACT (Q122; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2,
@@ -174,7 +174,7 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
         })
         .await;
     let boot_location = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-    let winner_node = nodes.iter().find(|n| serde_json::from_value::<rdm_core::PathName>(n["name"].clone()).is_ok_and(|location| location == boot_location)).expect("bootstrap node").clone();
+    let winner_node = nodes.iter().find(|n| Some(rdm_test::estate::location(&n)).is_some_and(|location| location == boot_location)).expect("bootstrap node").clone();
     let winner = s(&winner_node["node_id"]);
     assert_eq!(advertised_fabric_primaries(&nodes), vec![winner.clone()], "the Day-0 admin holds the fabric-primary role: {nodes:#?}");
     // Every mesh primary's own view advertises the same primary.

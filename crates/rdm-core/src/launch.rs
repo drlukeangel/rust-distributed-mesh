@@ -475,12 +475,15 @@ impl Launch {
     /// malformed is refused by name.
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
         let req = |k: &str| get(k).filter(|v| !v.trim().is_empty()).ok_or_else(|| format!("{k} is required and must not be empty"));
+        let initial_properties = get(ENV_NODE_PROPERTIES).map(|v| serde_json::from_str(&v)
+            .map_err(|_| format!("{ENV_NODE_PROPERTIES} does not parse as initial properties"))).transpose()?.unwrap_or_default();
+        let fabric = req(ENV_FABRIC)?;
+        let fabric_id = FabricId::parse(&req(ENV_FABRIC_ID)?).map_err(|e| format!("{ENV_FABRIC_ID}: {e}"))?;
         let at = PathName::new(req(ENV_NODE_PATH)?, req(ENV_NODE_NAME)?).map_err(|e| format!("{ENV_NODE_PATH}/{ENV_NODE_NAME}: {e}"))?;
         Ok(Self {
-            initial_properties: get(ENV_NODE_PROPERTIES).map(|v| serde_json::from_str(&v)
-                .map_err(|_| format!("{ENV_NODE_PROPERTIES} does not parse as initial properties"))).transpose()?.unwrap_or_default(),
-            fabric: req(ENV_FABRIC)?,
-            fabric_id: FabricId::parse(&req(ENV_FABRIC_ID)?).map_err(|e| format!("{ENV_FABRIC_ID}: {e}"))?,
+            initial_properties,
+            fabric,
+            fabric_id,
             path: at.path,
             name: at.name,
             mesh: req(ENV_MESH)?,

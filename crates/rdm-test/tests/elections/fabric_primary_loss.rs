@@ -8,7 +8,7 @@ use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use rdm_core::PathName;
 
-fn location(node: &Value) -> PathName { serde_json::from_value(node["name"].clone()).expect("separate path and name") }
+fn location(node: &Value) -> PathName { rdm_test::estate::location(&node) }
 fn actor_is(span: &Value, location: &PathName) -> bool { span["attributes"]["node_path"] == location.path && span["attributes"]["node_name"] == location.name }
 use std::time::Duration;
 

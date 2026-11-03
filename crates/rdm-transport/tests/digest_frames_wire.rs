@@ -19,7 +19,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 /// default (`Joining`), and the status `status`.
 fn digest(status: &str) -> MeshDigest {
     serde_json::from_str(&format!(
-        r#"{{"fabric_id":"1123456789ab","node":{{"mesh":"mesh1","type":"node","node_id":"0123456789ab","name":{{"path":"mesh1.node","name":"1"}},"endpoint_id":"k","transport_addr":"127.0.0.1:80","incarnation":"yrz49j303yh4","supersedes":null}},"status":"{status}","admin_api_base":null,"digest_seq":7,"emitted_at_rafka_ms":9}}"#
+        r#"{{"fabric_id":"1123456789ab","node":{{"mesh":"mesh1","type":"node","node_id":"0123456789ab","path":"mesh1.node","name":"1","endpoint_id":"k","transport_addr":"127.0.0.1:80","incarnation":"yrz49j303yh4","supersedes":null}},"status":"{status}","admin_api_base":null,"digest_seq":7,"emitted_at_rafka_ms":9}}"#
     ))
     .unwrap()
 }

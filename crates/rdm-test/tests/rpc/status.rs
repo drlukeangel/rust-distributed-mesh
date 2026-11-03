@@ -18,7 +18,7 @@
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 
-fn actor_is(span: &Value, node: &Value) -> bool { span["attributes"]["node_path"] == node["name"]["path"] && span["attributes"]["node_name"] == node["name"]["name"] }
+fn actor_is(span: &Value, node: &Value) -> bool { span["attributes"]["node_path"] == node["path"] && span["attributes"]["node_name"] == node["name"] }
 use std::time::Duration;
 
 fn owner(test: &str) -> Owner {
@@ -130,7 +130,7 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     assert!(decided.iter().all(|s| ["declare-node-state", "declare-mesh-state", "apply-fabric-event", "apply-mesh-state"].contains(&s["attributes"]["op"].as_str().unwrap_or(""))), "{decided:?}");
     let root_pending: Vec<_> = decided.iter().filter(|s| s["attributes"]["op"] == "apply-mesh-state").collect();
     assert_eq!(root_pending.len(), 1, "exactly one Pending, self-applied by the Day-0 root: {root_pending:?}");
-    let bootstrap = nodes.iter().find(|n| n["name"]["path"] == "mesh1.node-admin" && n["name"]["name"] == "1").expect("bootstrap fixture");
+    let bootstrap = nodes.iter().find(|n| n["path"] == "mesh1.node-admin" && n["name"] == "1").expect("bootstrap fixture");
     assert_eq!(root_pending[0]["attributes"]["sender_node_id"], bootstrap["node_id"], "{root_pending:?}");
     assert!(actor_is(root_pending[0], bootstrap), "the bootstrap applies its own Pending: {root_pending:?}");
     assert_eq!(root_pending[0]["attributes"]["receiver_is_primary"], "false", "applied before any election: {root_pending:?}");

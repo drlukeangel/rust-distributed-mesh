@@ -142,8 +142,8 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
         .await;
     let predecessor_id: rdm_core::NodeId = serde_json::from_value(recovered["node_id"].clone()).expect("predecessor ID");
     let predecessor = estate.node_record(predecessor_id.as_str()).expect("predecessor history remains");
-    assert_eq!(predecessor["record"]["name"]["path"], location().path);
-    assert_eq!(predecessor["record"]["name"]["name"], "1-old");
+    assert_eq!(predecessor["record"]["path"], location().path);
+    assert_eq!(predecessor["record"]["name"], "1-old");
     assert_ne!(replacement["endpoint_id"], recovered["endpoint_id"], "a planned replacement is a new node with a new endpoint key");
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");

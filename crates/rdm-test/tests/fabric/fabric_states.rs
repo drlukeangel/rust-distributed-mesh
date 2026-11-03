@@ -413,7 +413,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let holds = |rows: &[String], prefix: &str| rows.iter().any(|r| r.starts_with(prefix));
     for n in &nodes {
         let name = s(&n["node_id"]);
-        let location: PathName = serde_json::from_value(n["name"].clone()).expect("structured node location");
+        let location: PathName = rdm_test::estate::location(&n);
         let want: &[&str] = &["Ready"];
         // A mesh-primary's own Ready has no Applied reply to be durable before (states.md): its
         // writer records it on its own record after the view shows it, so the cell reads until it is there.

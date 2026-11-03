@@ -996,8 +996,8 @@ mod tests {
             }],
         };
         let value = serde_json::to_value(&conflict).unwrap();
-        assert_eq!(value["extra"][0]["location"]["path"], "unrelated.branch");
-        assert_eq!(value["extra"][0]["declared_location"]["name"], "north");
+        assert_eq!(value["extra"][0]["path"], "unrelated.branch");
+        assert_eq!(value["extra"][0]["declared_name"], "north");
         assert_eq!(value["extra"][0]["declared_mesh"], "another-mesh");
         assert_eq!(serde_json::from_value::<BuildReject>(value).unwrap(), conflict);
     }

@@ -152,7 +152,7 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
 
         // The store's tail: an object another writer is still writing, never ended.
         let file = nodes_file(&root_dir, &root);
-        std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(br#"{"v":1,"kind":"record","key":"unended","record":{"name":{"path":"mesh1.node","name":"9""#).unwrap();
+        std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(br#"{"v":1,"kind":"record","key":"unended","record":{"path":"mesh1.node","name":"9""#).unwrap();
 
         for mesh in [None, Some("mesh1")] {
             let read = tokio::time::timeout(WRONG, rdm_admin::topology_read::read_topology(&admin.node_rpc.client, &target, launch.node_id.as_str(), mesh, None))

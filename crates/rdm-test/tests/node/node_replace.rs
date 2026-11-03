@@ -1109,7 +1109,7 @@ async fn a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births() {
     let before = admins.iter().find(|n| n["is_primary"] != true && n["is_fabric_primary"] != true).map(|n| (*n).clone()).expect("an admin that holds no primary role");
     let stays = serde_json::from_value::<PathName>(admins.iter().find(|n| n["node_id"] != before["node_id"]).unwrap()["name"].clone()).expect("structured location");
     assert_eq!(estate.entry().await, stays, "the admin that stays is the entry the typed objects ask");
-    let node: PathName = serde_json::from_value(before["name"].clone()).expect("structured location");
+    let node: PathName = rdm_test::estate::location(&before);
     let node_path = node.clone();
     let nodes_obj = objects(&estate).await;
     let got = frames(nodes_obj.steps(replace_steps(&node_path, &s(&before["mesh"]), before["type"].as_str().unwrap()).expect("valid replacement fixture name")).await.expect("the Build was accepted")).await;
@@ -1539,7 +1539,7 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     let (estate, birth_build) = two_mesh_estate("a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused_by_name").await;
     let before = estate.node_values().await;
     let primary = before.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
-    let fp: PathName = serde_json::from_value(primary["name"].clone()).expect("structured primary location");
+    let fp: PathName = rdm_test::estate::location(&primary);
     let mesh = s(&primary["mesh"]);
     assert_eq!(before.iter().filter(|n| n["type"] == "node-admin" && n["mesh"] == mesh.as_str()).count(), 1, "the fabric-primary is its mesh's only admin: {before:#?}");
     let attempt = build_log::build_value(&estate, &birth_build).await["attempt"].clone();
@@ -1603,7 +1603,7 @@ async fn a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refuse
     assert_eq!(admins.len(), 1, "mesh2 has one node-admin: {before:#?}");
     let primary = admins[0];
     assert_eq!((primary["is_primary"].clone(), primary["is_fabric_primary"].clone()), (json!(true), json!(false)), "mesh2's only admin is its mesh-primary, not the fabric-primary: {primary}");
-    let mp: PathName = serde_json::from_value(primary["name"].clone()).expect("structured primary location");
+    let mp: PathName = rdm_test::estate::location(&primary);
     let attempt = build_log::build_value(&estate, &birth_build).await["attempt"].clone();
     let q7 = "cannot transfer: no secondary of type node-admin in mesh mesh2";
     match estate.carrier().await.create(Change::Steps { steps: replace_steps(&mp, "mesh2", "node-admin").expect("valid replacement fixture name") }).await {

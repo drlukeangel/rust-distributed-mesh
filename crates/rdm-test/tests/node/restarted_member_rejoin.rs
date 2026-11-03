@@ -96,13 +96,13 @@ async fn restarted_member_pulls_current_admin_within_staleness_window() {
     assert_eq!(pulled.len(), 1, "one completed pull after the restart: {pulled:?}");
     assert_eq!(pulled[0]["attributes"]["served_by"], admin["node_id"]);
     // The admin logs the request it answered, after the restart, for this node.
-    let served: Vec<&Value> = named(&spans, "rdm.mesh.entry.serve.via-pull").into_iter().filter(|sp| sp["attributes"]["node_path"] == before["name"]["path"] && sp["attributes"]["node_name"] == before["name"]["name"] && sp["attributes"]["served_by"] == admin["node_id"] && at(sp) > restart_at).collect();
+    let served: Vec<&Value> = named(&spans, "rdm.mesh.entry.serve.via-pull").into_iter().filter(|sp| sp["attributes"]["node_path"] == before["path"] && sp["attributes"]["node_name"] == before["name"] && sp["attributes"]["served_by"] == admin["node_id"] && at(sp) > restart_at).collect();
     assert!(!served.is_empty(), "the launching admin served the restarted birth's pull");
 
     let result = json!({
         "cell": cell,
-        "launching_admin": { "path": admin["name"]["path"], "name": admin["name"]["name"], "node_id": admin["node_id"], "endpoint_id": admin["endpoint_id"], "transport_addr": admin["transport_addr"], "incarnation_id": admin["incarnation_id"] },
-        "node": { "path": before["name"]["path"], "name": before["name"]["name"], "node_id": before["node_id"], "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"], "transport_addr": after["transport_addr"] },
+        "launching_admin": { "path": admin["path"], "name": admin["name"], "node_id": admin["node_id"], "endpoint_id": admin["endpoint_id"], "transport_addr": admin["transport_addr"], "incarnation_id": admin["incarnation_id"] },
+        "node": { "path": before["path"], "name": before["name"], "node_id": before["node_id"], "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"], "transport_addr": after["transport_addr"] },
         "restart_at_unix_nano": restart_at,
         "staleness_ms": staleness_ms,
         "pull_attempts": attempts.iter().map(|sp| json!({ "start_unix_nano": at(sp), "attempt": sp["attributes"]["attempt"], "anchor": sp["attributes"]["anchor"], "step": sp["attributes"]["step"], "elapsed_ms": sp["attributes"]["elapsed_ms"], "outcome": sp["attributes"]["outcome"], "trace_id": sp["trace_id"], "span_id": sp["span_id"] })).collect::<Vec<_>>(),
@@ -139,8 +139,8 @@ async fn restarted_member_resubscribes_its_mesh_channel_and_its_entry_completes_
 
     let result = json!({
         "cell": cell,
-        "launching_admin": { "path": admin["name"]["path"], "name": admin["name"]["name"], "node_id": admin["node_id"], "endpoint_id": admin["endpoint_id"] },
-        "node": { "path": before["name"]["path"], "name": before["name"]["name"], "node_id": before["node_id"], "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"] },
+        "launching_admin": { "path": admin["path"], "name": admin["name"], "node_id": admin["node_id"], "endpoint_id": admin["endpoint_id"] },
+        "node": { "path": before["path"], "name": before["name"], "node_id": before["node_id"], "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"] },
         "restart_at_unix_nano": restart_at,
         "join": { "start_unix_nano": at(&joined), "peers": joined["attributes"]["peers"], "trace_id": joined["trace_id"], "span_id": joined["span_id"] },
         "pulled": pulled.iter().map(|sp| json!({ "start_unix_nano": at(sp), "served_by": sp["attributes"]["served_by"], "attempt": sp["attributes"]["attempt"] })).collect::<Vec<_>>(),

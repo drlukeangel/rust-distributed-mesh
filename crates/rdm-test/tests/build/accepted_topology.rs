@@ -116,8 +116,8 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let mut spawn = estate.create_node("mesh1", "node-admin").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node-admin in mesh1: {e}"));
     let c = Estate::complete(&mut spawn).await.expect("the call opened a Build").build_id.to_string();
     let nodes = Estate::values(&estate.settled_views(&[("mesh1", 3, 3)]).await);
-    let late = nodes.iter().find(|n| n["name"]["path"] == "mesh1.node-admin" && n["name"]["name"] == "3").cloned().unwrap();
-    let late_path: PathName = serde_json::from_value(late["name"].clone()).expect("separate location fields");
+    let late = nodes.iter().find(|n| n["path"] == "mesh1.node-admin" && n["name"] == "3").cloned().unwrap();
+    let late_path: PathName = rdm_test::estate::location(&late);
     assert_eq!(estate.fabric_view_at(&late_path).await.expect("the late admin answers fabric.get").build_id.as_deref(), Some(c.as_str()));
     // The late admin reads the Build records from the store root as every admin does (Q185); the completion is a
     // later record the fabric-primary appended, so the read awaits it as step 1 does.
@@ -139,7 +139,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
 
     // 6. An admin that misses a Build catches up to the current Build when it is back.
     let quiet = estate.node_values().await.into_iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no primary role");
-    let quiet_name: PathName = serde_json::from_value(quiet["name"].clone()).expect("separate location fields");
+    let quiet_name: PathName = rdm_test::estate::location(&quiet);
     let stopped = estate.pid_of(&quiet_name).await;
     // Stopped across the acceptance only, never past the staleness floor: the admin misses the Build's
     // acceptance and is never silent, so no investigation looks at it. The build.create door answers once

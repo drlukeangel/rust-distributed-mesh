@@ -67,7 +67,7 @@ fn s(v: &Value) -> String {
 }
 
 fn location(row: &Value) -> PathName {
-    serde_json::from_value(row["name"].clone()).expect("structured node location")
+    rdm_test::estate::location(&row)
 }
 
 fn location_of(nodes: &[Value], node_id: &str) -> PathName {

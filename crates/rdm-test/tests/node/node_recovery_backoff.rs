@@ -17,7 +17,7 @@ use rdm_test::netfault::{udp_ports, Partition};
 use serde_json::Value;
 use rdm_core::PathName;
 
-fn location(node: &Value) -> PathName { serde_json::from_value(node["name"].clone()).expect("separate path and name fields") }
+fn location(node: &Value) -> PathName { rdm_test::estate::location(&node) }
 use std::time::Duration;
 
 fn owner(test: &str) -> Owner {

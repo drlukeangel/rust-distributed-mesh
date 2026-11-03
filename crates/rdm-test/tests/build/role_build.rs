@@ -13,7 +13,7 @@
 use crate::build_log;
 use rdm_core::PathName;
 
-fn location(node: &Value) -> PathName { serde_json::from_value(node["name"].clone()).expect("separate path and name fields") }
+fn location(node: &Value) -> PathName { rdm_test::estate::location(&node) }
 use rdm_client::{FabricDesired, MeshDesired, NodeView};
 use rdm_test::estate::{wait_for, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};

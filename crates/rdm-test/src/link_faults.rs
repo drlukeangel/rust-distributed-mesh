@@ -266,7 +266,7 @@ mod tests {
     use serde_json::json;
 
     fn view() -> Vec<Value> {
-        (1..=4).map(|i| json!({"node_id": format!("{i:064x}"), "name": {"path": "arbitrary.path", "name": "same-name"}, "transport_addr": format!("127.0.0.1:{}", 40000 + i)})).collect()
+        (1..=4).map(|i| json!({"node_id": format!("{i:064x}"), "path": "arbitrary.path", "name": "same-name", "transport_addr": format!("127.0.0.1:{}", 40000 + i)})).collect()
     }
 
     fn node_ids(v: &[&str]) -> Vec<String> {

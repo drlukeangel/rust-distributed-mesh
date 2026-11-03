@@ -347,7 +347,7 @@ mod tests {
         }
         let n = Node::allocated(crate::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node");
         let v = serde_json::to_value(&n).unwrap();
-        assert_eq!(v["name"], serde_json::json!({"path": "mesh1.node", "name": "2"}));
+        assert_eq!((&v["path"], &v["name"]), (&serde_json::json!("mesh1.node"), &serde_json::json!("2")), "path and name are two fields");
         assert_eq!(v["type"], "node");
         assert!(v.get("kind").is_none() && v.get("node_type").is_none(), "one field names the type: {v}");
         assert_eq!(v["mesh"], "mesh1");

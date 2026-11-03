@@ -82,7 +82,7 @@ fn s(v: &Value) -> String {
 }
 
 
-fn location(node: &Value) -> PathName { serde_json::from_value(node["name"].clone()).expect("structured location") }
+fn location(node: &Value) -> PathName { rdm_test::estate::location(&node) }
 fn at_node(sp: &Value, node: &PathName) -> bool { attr(sp, "node_path") == node.path && attr(sp, "node_name") == node.name }
 
 fn attr(sp: &Value, k: &str) -> String {

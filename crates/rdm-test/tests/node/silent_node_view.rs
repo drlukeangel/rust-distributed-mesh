@@ -59,9 +59,9 @@ async fn an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_mark
         .await;
     let mp_row = nodes.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh1's primary");
     let mp = s(&mp_row["node_id"]);
-    let mp_location: rdm_core::PathName = serde_json::from_value(mp_row["name"].clone()).expect("structured location");
+    let mp_location: rdm_core::PathName = rdm_test::estate::location(&mp_row);
     let victim_node = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] != true).expect("a node that is no primary").clone();
-    let (victim, victim_id) = (serde_json::from_value::<rdm_core::PathName>(victim_node["name"].clone()).expect("structured location"), s(&victim_node["node_id"]));
+    let (victim, victim_id) = (rdm_test::estate::location(&victim_node), s(&victim_node["node_id"]));
 
     // Nothing happens: the estate formed, and it is left alone for a while.
     tokio::time::sleep(Duration::from_secs(2)).await;

@@ -487,7 +487,7 @@ impl Admin {
 }
 
 fn location(n: &Value) -> PathName {
-    serde_json::from_value(n["name"].clone()).expect("node views carry separate path and name fields")
+    crate::estate::location(n)
 }
 
 /// The node-admin's explicit identity and descriptive location.
@@ -2337,7 +2337,7 @@ mod tests {
     /// runtime" at the release instant while the birth was running, ready 0.3 s later.
     #[test]
     fn a_released_birth_marked_pending_reconnect_is_returning_never_replaced() {
-        let row = |inc: &str, status: &str| json!({"name": {"path": "mesh2.node-admin", "name": "1"}, "node_id": "100000000000", "incarnation_id": inc, "status": status});
+        let row = |inc: &str, status: &str| json!({"path": "mesh2.node-admin", "name": "1", "node_id": "100000000000", "incarnation_id": inc, "status": status});
         assert_eq!(judge_held_birth(&[row("qx6", "pending-reconnect")], "100000000000", "qx6"), HeldBirth::Returning);
         assert_eq!(judge_held_birth(&[row("qx6", "ready")], "100000000000", "qx6"), HeldBirth::Ready);
         assert_eq!(judge_held_birth(&[row("zzz", "ready")], "100000000000", "qx6"), HeldBirth::Replaced);

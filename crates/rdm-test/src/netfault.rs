@@ -151,7 +151,7 @@ impl Partition {
 /// Udp ports.
 pub fn udp_ports(nodes: &[Value], names: &[rdm_core::PathName]) -> Vec<u16> {
     let mut out = Vec::new();
-    for n in nodes.iter().filter(|n| serde_json::from_value::<rdm_core::PathName>(n["name"].clone()).is_ok_and(|location| names.contains(&location))) {
+    for n in nodes.iter().filter(|n| Some(crate::estate::location(&n)).is_some_and(|location| names.contains(&location))) {
         out.push(s(&n["transport_addr"]).rsplit(':').next().unwrap().parse().unwrap());
     }
     out

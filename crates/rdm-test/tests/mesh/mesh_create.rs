@@ -118,7 +118,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(15)).await);
     assert_eq!(nodes.iter().filter(|n| n["is_fabric_primary"] == true).count(), 1, "one fabric primary once the view settles");
     let mesh2_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).unwrap();
-    let node_at = |path: &str, name: &str| nodes.iter().find(|node| node["name"]["path"] == path && node["name"]["name"] == name).expect("settled node at explicit location");
+    let node_at = |path: &str, name: &str| nodes.iter().find(|node| node["path"] == path && node["name"] == name).expect("settled node at explicit location");
     let first_admin = node_at("mesh2.node-admin", "1");
     let day0_admin = node_at("mesh1.node-admin", "1");
     assert_eq!(last_run_executor(&build), mesh2_primary, "the Build's last run ran on mesh2's own primary: {build:#}");

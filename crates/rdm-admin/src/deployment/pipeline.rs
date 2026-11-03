@@ -2875,10 +2875,11 @@ mod tests {
             runtime: None, exit_code: Some(0), verdict: Some("exited".into()), data_dir: None,
         };
         let mut encoded = serde_json::to_value(&receipt).unwrap();
-        assert_eq!(encoded["node"]["path"], "arbitrary.location");
-        assert_eq!(encoded["node"]["name"], "worker-old");
+        assert_eq!(encoded["path"], "arbitrary.location");
+        assert_eq!(encoded["name"], "worker-old");
         assert_eq!(serde_json::from_value::<TerminalReceipt>(encoded.clone()).unwrap(), receipt);
-        encoded["node"] = serde_json::json!("arbitrary.location.worker-old");
+        encoded.as_object_mut().unwrap().remove("path");
+        encoded["name"] = serde_json::json!("arbitrary.location.worker-old");
         assert!(serde_json::from_value::<TerminalReceipt>(encoded).is_err());
     }
 

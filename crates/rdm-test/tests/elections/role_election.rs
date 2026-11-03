@@ -60,7 +60,7 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     let (succ, succ_id) = nodes
         .iter()
         .filter(|n| n["type"] == "broker" && n["node_id"] != killed_id.as_str())
-        .map(|n| (serde_json::from_value::<rdm_core::PathName>(n["name"].clone()).expect("a structured node location"), s(&n["node_id"])))
+        .map(|n| (rdm_test::estate::location(&n), s(&n["node_id"])))
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap();
     estate.kill_node(&killed).await;

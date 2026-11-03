@@ -1657,9 +1657,10 @@ fn line_carries_name(mut line: &[u8], names: &[&str]) -> bool {
     false
 }
 
-/// The location a node view carries in its `name`: its separate path and name fields.
+/// The lookup index key of the node a node view or record names by its two fields, `path` and `name`.
 pub fn location(node: &Value) -> rdm_core::PathName {
-    serde_json::from_value(node["name"].clone()).expect("a node view carries separate path and name fields")
+    let field = |k: &str| node[k].as_str().unwrap_or_else(|| panic!("a node view carries `{k}` as a string: {node}")).to_string();
+    rdm_core::PathName { path: field("path"), name: field("name") }
 }
 
 /// Whether span `sp` names `location` as its node: its separate `node_path` and `node_name` fields.

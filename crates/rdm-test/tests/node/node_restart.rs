@@ -54,7 +54,7 @@ async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_ro
     let before = estate.node_values().await;
     let admin = |primary: bool| before.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && (n["is_primary"] == true) == primary).cloned().unwrap_or_else(|| panic!("mesh2 holds an admin with is_primary={primary}: {before:#?}"));
     let (first, second) = (admin(true), admin(false));
-    let name = |n: &Value| serde_json::from_value::<PathName>(n["name"].clone()).expect("structured location");
+    let name = |n: &Value| rdm_test::estate::location(&n);
     let nodes = estate.nodes_obj().await;
     // Each stop is a node command, never a Build (Q342): the second one's hand-back is read from when it began.
     let mut stops_at = Vec::new();
