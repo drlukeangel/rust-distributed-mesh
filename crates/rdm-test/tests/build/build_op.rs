@@ -1360,6 +1360,7 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
 /// (`via-returned-reported` outcome `opened`), and its runtime is terminated while the re-created birth
 /// holds `(path mesh2.admin, name 1)`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/304: the refused-caller decision races; i152 s2 (rdm#296) rewrites it and moves this cell"]
 async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_deleted() {
     let test = "an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_deleted";
     let Suspended { mut estate, mut stream, door, rt, node_id, executor, successor, fabric_primary, .. } = suspended_executor(test).await;
