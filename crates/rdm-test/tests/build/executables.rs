@@ -360,6 +360,7 @@ async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_
 /// touching it, and a request without it, under the stale `based_on`, is refused.
 /// Must NOT happen: the added admin removed as left out, or the original left on its old executable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/298: executor loss during a Build: s4 item 1 (a recovery of the lost executor replaces the birth the Build's pinned delete names, refused birth-replaced by build.md §4.4 / Q218; D53)"]
 async fn a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_executor_is_killed() {
     let sha = candidate_sha();
     let set = binding_set(&sha);

@@ -2048,6 +2048,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 rdm_core::topology::StoredNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(), node_id: d.node.node_id, name: d.node.name, endpoint_id: d.node.endpoint_id, incarnation: d.node.incarnation, transport_addr: d.node.transport_addr },
                                             );
                                         }
+                                        // Its durable topology (Q317: Stored is built from "the records the answerer writes and
+                                        // the births its view holds, its durable topology included"): the births its records hold,
+                                        // a restarted fabric-primary's every recorded birth of the accepted Build's topology among
+                                        // them (fabric-recovery.md step 1), each with the address its record names. A birth the
+                                        // digest view holds is listed as heard.
+                                        for n in held_ids.nodes.lock().unwrap().values().filter(|n| n.node_id != held_me && !held_digest_view.is_deleted(n.node_id.as_str())) {
+                                            let (Some(endpoint_id), Some(incarnation), Some(transport_addr)) = (n.endpoint_id.clone(), n.incarnation_id.clone(), n.transport_addr) else { continue };
+                                            nodes.entry(n.node_id.clone()).or_insert_with(|| rdm_core::topology::StoredNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id, incarnation, transport_addr });
+                                        }
                                         Ok(crate::topology_read::StoredMap { nodes: nodes.into_values().collect(), mesh_ids: ids })
                                     })
                                 });
