@@ -720,7 +720,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             let name = PathName::numbered(&cfg.mesh, NodeKind::NodeAdmin, 1);
             let node_id = minted_node_id.clone();
             // Day 0 (R-OW1 item 2): the bootstrap admin, its mesh's primary, claims its own path and name,
-            // the first write of its birth, before Ready (`claim_day0_name`). A name another
+            // the first write of its birth, before Ready (`create_day0_row`). A name another
             // node holds refuses the start by name. A recovery start (both primary flags) is no Day 0: its row
             // is written when it holds its mesh's role, as every member's is (`NodeRows::arrivals`).
             if !cfg.mesh_primary && !cfg.fabric_primary {
@@ -728,7 +728,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // hashed now; there is no configured sha to hold it to.
                 let provider = early.as_ref().map(|(p, _)| p.provider.kind()).unwrap_or(ProviderKind::Process);
                 let running = super::runner::running_binding(provider).await.map_err(|e| format!("refusing to start: {}: {e}", cfg.data_dir.display()))?;
-                crate::node_rows::claim_day0_name_in_boot(&boot, &*nodes_storage, &caches.nodes, &name, &cfg.mesh, &node_id, Some(&running))
+                crate::node_rows::create_day0_row_in_boot(&boot, &*nodes_storage, &caches.nodes, &name, &cfg.mesh, &node_id, Some(&running))
                     .await
                     .map_err(|e| format!("refusing to start: {}: Day 0's {node_id} claims path {:?}, name {:?}: {e}", cfg.data_dir.display(), name.path, name.name))?;
             }

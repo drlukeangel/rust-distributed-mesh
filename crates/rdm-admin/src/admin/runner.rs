@@ -578,14 +578,14 @@ impl AdminRunner {
         rows.into_values().collect()
     }
 
-    /// node.create of `node`, its name claimed for `claim_for` (a plain create, or a replace
+    /// node.create of `node`, its name claimed for `row_for` (a plain create, or a replace
     /// successor's at the name its predecessor released), launching the executable the step names, else
     /// the path's entry the fabric-primary put on the operation (`entry`, [`crate::build::EntrySpec`]:
     /// proposal executable-bindings-at-create.md rules 1-2; a Build message carries none, rule 7, and this
     /// admin reads no Build record, Q227), else the row's ([`Self::create_template`]). A plain create's
     /// row takes the entry's tags and config at its name claim.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, mesh: &str, kind: NodeKind, executable: Option<&rdm_core::binding::Binding>, entry: Option<&crate::build::EntrySpec>, pre_node_ready: Option<crate::deployment::pipeline::PreNodeReady>, claim_for: crate::node_rows::ClaimFor, operation: &rdm_core::OperationId, predecessor: Option<crate::storage::BirthRef>) -> Result<(), crate::executor::RunEnd> {
+    pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, mesh: &str, kind: NodeKind, executable: Option<&rdm_core::binding::Binding>, entry: Option<&crate::build::EntrySpec>, pre_node_ready: Option<crate::deployment::pipeline::PreNodeReady>, row_for: crate::node_rows::RowFor, operation: &rdm_core::OperationId, predecessor: Option<crate::storage::BirthRef>) -> Result<(), crate::executor::RunEnd> {
         let executable = executable.or(entry.and_then(|e| e.executable.as_ref()));
         let held_runtimes = if kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = CreateRequest { predecessor, operation: operation.clone(), mesh: mesh.to_string(), kind, build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(kind), data_dir: None, held_runtimes, entry: entry.cloned() };
@@ -596,7 +596,7 @@ impl AdminRunner {
             // so the create is never planned again in this Build (`accepted::plan_with`).
             TargetOutcome::Alive => {
                 let stopped = self.topology.read().await.node(node).is_some_and(|n| n.stopped);
-                if stopped && matches!(claim_for, crate::node_rows::ClaimFor::Create) {
+                if stopped && matches!(row_for, crate::node_rows::RowFor::Create) {
                     let r = crate::build_state::BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation.clone(), step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete, output: None, executor: None };
                     self.builds.append_step_receipt(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation:?}: the stopped birth at path {node_path:?}, name {node_name:?} is held, and its Complete could not be recorded: {e}", node_path = &node.path, node_name = &node.name)))?;
                     tracing::info_span!("rdm.node_admin.node.create.via-stopped-held", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt).in_scope(|| tracing::info!("the path's stopped birth answers: this Build's create of the path is complete and is not planned again"));
@@ -618,7 +618,7 @@ impl AdminRunner {
                 if let Some(incarnation) = prev.incarnation_id.clone() {
                     let from = crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation };
                     self.delete_unreached(&*self.builds, build_id, attempt, node, &from).await?;
-                    return self.create_over(&*self.builds, build_id, attempt, node, &from, executable, Some((&req, claim_for))).await;
+                    return self.create_over(&*self.builds, build_id, attempt, node, &from, executable, Some((&req, row_for))).await;
                 }
             }
             TargetOutcome::Clear { gone: None } => {}
@@ -627,7 +627,7 @@ impl AdminRunner {
         if kind == NodeKind::NodeAdmin {
             template = self.with_issuing_material(template, &mesh).await?;
         }
-        let created = self.pipeline(&template).create_with_claim(&req, claim_for, pre_node_ready, None).await.map_err(crate::executor::RunEnd::from)?;
+        let created = self.pipeline(&template).create_with_row_for(&req, row_for, pre_node_ready, None).await.map_err(crate::executor::RunEnd::from)?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(created.node.node_id.clone(), (created.node, created.handle));
         Ok(())
@@ -821,7 +821,7 @@ impl AdminRunner {
     /// executor runs the create targets, so an executor lost after the delete's Complete leaves
     /// nothing untargeted; a rerun that reuses a runtime an earlier attempt launched (it was targeted
     /// before that launch) cuts none of that runtime's paths.
-    pub(crate) async fn create_over(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, executable: Option<&rdm_core::binding::Binding>, requested: Option<(&CreateRequest, crate::node_rows::ClaimFor)>) -> Result<(), crate::executor::RunEnd> {
+    pub(crate) async fn create_over(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, executable: Option<&rdm_core::binding::Binding>, requested: Option<(&CreateRequest, crate::node_rows::RowFor)>) -> Result<(), crate::executor::RunEnd> {
         let (exited, _) = self.exited_birth("node.create", node, from).await?;
         let (mesh, kind) = requested.map(|(req, _)| (req.mesh.clone(), req.kind)).unwrap_or_else(|| (exited.mesh.clone(), exited.kind));
         // A node-admin created into a mesh with no other live node-admin is that mesh's first admin, as
@@ -883,13 +883,13 @@ impl AdminRunner {
             }
             Some(data_dir)
         };
-        let (mut req, claim_for) = match requested {
-            Some((req, claim_for)) => (req.clone(), claim_for),
-            None => (CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node)), mesh, kind, build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(kind), data_dir: None, held_runtimes, entry: None }, crate::node_rows::ClaimFor::Recovery),
+        let (mut req, row_for) = match requested {
+            Some((req, row_for)) => (req.clone(), row_for),
+            None => (CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node)), mesh, kind, build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(kind), data_dir: None, held_runtimes, entry: None }, crate::node_rows::RowFor::Recovery),
         };
         req.data_dir = data_dir;
         req.predecessor = Some(crate::storage::BirthRef { node_id: from.node_id.clone(), incarnation_id: from.incarnation.clone() });
-        let created = pipeline.create_with_claim(&req, claim_for, pre_node_ready, Some(Box::pin(self.revise_exited(&targeted)))).await.map_err(crate::executor::RunEnd::from)?;
+        let created = pipeline.create_with_row_for(&req, row_for, pre_node_ready, Some(Box::pin(self.revise_exited(&targeted)))).await.map_err(crate::executor::RunEnd::from)?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(created.node.node_id.clone(), (created.node, created.handle));
         Ok(())
@@ -1435,7 +1435,7 @@ impl AdminRunner {
                 self.create_replacement(&*builds, build_id, attempt, node, from, executable).instrument(span).await
             }
             BuildOperation::CreateNode { node, over: Some(from), executable: None, .. } => self.create_over_exited(&*builds, build_id, attempt, node, from).await,
-            BuildOperation::CreateNode { node, over: None, executable, entry, .. } => self.create_node(build_id, lane, attempt, node, executable.as_ref(), entry.as_ref(), crate::node_rows::ClaimFor::Create, operation).await,
+            BuildOperation::CreateNode { node, over: None, executable, entry, .. } => self.create_node(build_id, lane, attempt, node, executable.as_ref(), entry.as_ref(), crate::node_rows::RowFor::Create, operation).await,
             BuildOperation::StartNode { kind, mesh, node, node_id, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, node_id = %node_id, incarnation_id = %from_incarnation.as_str());
                 self.start_stopped(build_id, attempt, node, &crate::build::PinnedBirth { kind: *kind, mesh: mesh.clone(), node_id: node_id.clone(), incarnation: from_incarnation.clone() }, operation).instrument(span).await
@@ -1552,13 +1552,13 @@ impl AdminRunner {
     }
 
     /// A Build's node.create of `node` with no exited birth (`CreateNode { over: None }`, and a Build's
-    /// create step, whose claim is a replace successor's), its name claimed for `claim_for`.
-    fn create_node<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, node: &'a PathName, executable: Option<&'a rdm_core::binding::Binding>, entry: Option<&'a crate::build::EntrySpec>, claim_for: crate::node_rows::ClaimFor, operation: &'a rdm_core::OperationId) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
+    /// create step, whose claim is a replace successor's), its name claimed for `row_for`.
+    fn create_node<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, node: &'a PathName, executable: Option<&'a rdm_core::binding::Binding>, entry: Option<&'a crate::build::EntrySpec>, row_for: crate::node_rows::RowFor, operation: &'a rdm_core::OperationId) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
         // Boxed where it is made, as `run_op`.
-        Box::pin(self.create_node_body(build_id, lane, attempt, node, executable, entry, claim_for, operation))
+        Box::pin(self.create_node_body(build_id, lane, attempt, node, executable, entry, row_for, operation))
     }
 
-    async fn create_node_body(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, entry: Option<&crate::build::EntrySpec>, claim_for: crate::node_rows::ClaimFor, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
+    async fn create_node_body(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, entry: Option<&crate::build::EntrySpec>, row_for: crate::node_rows::RowFor, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
         let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt);
         async {
@@ -1566,7 +1566,7 @@ impl AdminRunner {
             // joined its mesh, the fabric primary applies MeshStatus::Pending at that exact birth,
             // before it is asked to be Ready; only with that certainty does the shape proceed (e4.s11).
             let held = self.builds.read_build(build_id).await.map_err(|error| format!("node.create:path {node_path:?}, name {node_name:?}: Build {build_id} could not be read: {error}", node_path = &node.path, node_name = &node.name))?.in_lane(lane);
-            let owner = if claim_for == crate::node_rows::ClaimFor::Successor {
+            let owner = if row_for == crate::node_rows::RowFor::Successor {
                 match held.attempt_actions.get(&attempt) {
                     Some(crate::accepted::AttemptAction::Steps { steps, .. }) => operation.recipe_step
                         .and_then(|position| position.checked_sub(1))
@@ -1596,7 +1596,7 @@ impl AdminRunner {
                 }
                 _ => None,
             };
-            self.create(build_id, attempt, node, mesh, kind, executable, entry, pre_node_ready, claim_for, operation, predecessor).await
+            self.create(build_id, attempt, node, mesh, kind, executable, entry, pre_node_ready, row_for, operation, predecessor).await
         }
         .instrument(span)
         .await
@@ -1605,13 +1605,13 @@ impl AdminRunner {
     /// One step of a Build (`BuildChange::Steps`; lifecycles/node-replace.md): the op it names, run
     /// as that op's own workflow on the exact birth the step acts on, the one it is targeted to, or for a
     /// node an earlier step of the Build created, the birth this executor holds at the step's path.
-    /// node.create is the create workflow, its claim a replace successor's ([`ClaimFor::Successor`]);
+    /// node.create is the create workflow, its claim a replace successor's ([`RowFor::Successor`]);
     /// node.connection.delete the standalone `{ All }`; node.mesh.leave carried by this admin as the
     /// node's mesh-primary, which holds its `node.mesh.left`; node.stop the standalone stop;
     /// node.name.update its own core at this admin as the node's mesh-primary; node.start the start of
     /// the stopped birth; node.delete node.delete's workflow from the state the birth is in.
     ///
-    /// [`ClaimFor::Successor`]: crate::node_rows::ClaimFor::Successor
+    /// [`RowFor::Successor`]: crate::node_rows::RowFor::Successor
     pub(crate) fn step<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, step: &'a rdm_core::build::Step, birth: Option<&'a crate::build::PinnedBirth>, entry: Option<&'a crate::build::EntrySpec>, operation: &'a rdm_core::OperationId, rename_intent: &'a crate::accepted::RenameIntent) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
         // Boxed where it is made, as `run_op`: a step runs `run_op` again, and neither holds the
         // other's state machine inline.
@@ -1624,7 +1624,7 @@ impl AdminRunner {
         let node = step.node();
         let key = operation.clone();
         if let S::Create { node, executable, .. } = step {
-            return self.create_node(build_id, lane, attempt, node, executable.as_ref(), entry, crate::node_rows::ClaimFor::Successor, operation).await;
+            return self.create_node(build_id, lane, attempt, node, executable.as_ref(), entry, crate::node_rows::RowFor::Successor, operation).await;
         }
         let birth = match birth {
             Some(b) => b.clone(),

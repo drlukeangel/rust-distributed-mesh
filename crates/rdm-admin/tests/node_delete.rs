@@ -19,7 +19,7 @@ use rdm_admin::model::{
     ProviderKind, ScopeStatus,
 };
 use rdm_admin::node_commands::NodeCommand;
-use rdm_admin::node_rows::{ClaimFor, WriteRecord as _};
+use rdm_admin::node_rows::{RowFor, WriteRecord as _};
 use rdm_admin::storage::{MemoryNodesStorage, NodeRow, NodesStorage as _};
 use rdm_admin::topology::Topology;
 use rdm_core::status::ConnectionsReceipt;
@@ -570,7 +570,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         assert_eq!(deleted_row.status, NodeStatus::Deleted);
         assert_eq!(deleted_row.births.last().map(|b| b.incarnation_id.clone()), Some(target_incarnation.clone()), "the deleted row keeps its record, its birth included");
         let successor_id = NodeId::mint();
-        rows.claim(&target_name, "mesh1", rdm_core::NodeKind::RpcNode, &successor_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), None, None, ClaimFor::Create)
+        rows.create_row(&target_name, "mesh1", rdm_core::NodeKind::RpcNode, &successor_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), None, None, RowFor::Create)
         .await
         .expect("deleted row must release the name claim for a successor node_id");
 

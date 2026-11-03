@@ -235,7 +235,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert_eq!(s(&m2_claim["attributes"]["node"]), creator, "mesh2's name is claimed by the fabric-primary that creates its first admin, the acting primary of a mesh with none: {m2_claim}");
     let admin_row = named(&spans, "rdm.node_admin.node.create.via-node-row")
         .into_iter()
-        .find(|c| c["attributes"]["subject_path"] == "mesh2.admin" && c["attributes"]["subject_name"] == "1" && c["attributes"]["moment"] == "claim")
+        .find(|c| c["attributes"]["subject_path"] == "mesh2.admin" && c["attributes"]["subject_name"] == "1" && c["attributes"]["moment"] == "create")
         .unwrap_or_else(|| panic!("mesh2.admin.1's name is claimed"));
     assert!(
         m2_claim["end_unix_nano"].as_u64().unwrap() <= admin_row["start_unix_nano"].as_u64().unwrap(),

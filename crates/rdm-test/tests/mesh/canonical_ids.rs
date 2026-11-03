@@ -274,7 +274,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_ne!(new_admin["node_id"], old_admin["node_id"], "the recreated mesh's admin is a new node");
     let claim = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| {
         let a = &sp["attributes"];
-        a["subject_path"] == "mesh2.admin" && a["subject_name"] == "1" && a["moment"] == "claim" && s(&a["node_id"]) == s(&new_admin["node_id"])
+        a["subject_path"] == "mesh2.admin" && a["subject_name"] == "1" && a["moment"] == "create" && s(&a["node_id"]) == s(&new_admin["node_id"])
     });
     let claim = claim.unwrap_or_else(|| panic!("the recreated mesh2.admin.1 {} claims its name", new_admin["node_id"]));
     assert_eq!(claim["attributes"]["outcome"], "row-written", "a new mesh starts a fresh node row: {claim}");

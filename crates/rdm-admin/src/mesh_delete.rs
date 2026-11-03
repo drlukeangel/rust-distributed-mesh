@@ -1890,7 +1890,7 @@ mod tests {
     /// newest birth. What must NOT happen: the claimed birth left out, so its launched runtime is no
     /// birth of the delete and is never deleted.
     #[test]
-    fn a_roster_captured_from_the_node_rows_holds_the_birth_a_create_in_flight_claimed() {
+    fn a_roster_captured_from_the_node_rows_holds_the_birth_a_create_in_flight_wrote() {
         use crate::storage::{Allocation, BirthFacts, NodeRow};
         let mesh_id = MeshId::mint();
         let joined = |name: crate::model::PathName, mesh: &str, kind: rdm_core::NodeKind| {

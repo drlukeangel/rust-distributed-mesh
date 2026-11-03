@@ -196,7 +196,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     // Its node id is the one its create's claim took the name for.
     let recovery_admin_id = named(&spans, "rdm.node_admin.node.create.via-node-row")
         .into_iter()
-        .filter(|c| rdm_test::estate::names_location(c, "subject", &recovery_admin) && attr(c, "moment") == "claim" && at(c) > at(first))
+        .filter(|c| rdm_test::estate::names_location(c, "subject", &recovery_admin) && attr(c, "moment") == "create" && at(c) > at(first))
         .min_by_key(|c| at(c))
         .map(|c| attr(c, "node_id"))
         .unwrap_or_else(|| panic!("{recovery_admin:?}'s create claimed its name for a node id"));

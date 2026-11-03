@@ -153,7 +153,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert_eq!(row_deleted.len(), 1, "one Deleted row for one delete: {row_deleted:?}");
     let a = &row_deleted[0]["attributes"];
     assert_eq!((s(&a["outcome"]), s(&a["node_id"]), s(&a["node_path"]), s(&a["node_name"])), ("row-deleted".to_string(), victim_id.clone(), "mesh2.admin".to_string(), "1".to_string()), "{a}");
-    let row_claimed: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "subject", &victim_at) && sp["attributes"]["node_id"] == newcomer2["node_id"] && sp["attributes"]["moment"] == "claim").collect();
+    let row_claimed: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "subject", &victim_at) && sp["attributes"]["node_id"] == newcomer2["node_id"] && sp["attributes"]["moment"] == "create").collect();
     assert_eq!(row_claimed.len(), 1, "the newcomer at {victim_at:?} claims its row once: {row_claimed:?}");
     let a = &row_claimed[0]["attributes"];
     assert_eq!((s(&a["outcome"]), s(&a["seeded_from"])), ("row-written".to_string(), String::new()), "a plain create seeds nothing from the Deleted row: {a}");

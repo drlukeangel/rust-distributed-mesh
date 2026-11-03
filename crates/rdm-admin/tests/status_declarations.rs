@@ -1579,7 +1579,7 @@ fn outcomes_and_connections(spans: &[(String, BTreeMap<String, String>)]) -> Vec
 /// `traffic=Ready` and `connections=none-deleted`. What must NOT happen: the row written, the
 /// birth told `ApplyNodeName`, or `NameUpdated`.
 #[test]
-fn a_ready_nodes_rename_is_refused_admitting_connections_and_nothing_is_claimed_or_told() {
+fn a_ready_nodes_rename_is_refused_admitting_connections_and_nothing_is_written_or_told() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
@@ -1796,7 +1796,7 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
 /// with `traffic=Stopped` and `connections=stopped`, its detail naming the rule. What must NOT happen:
 /// `NameUpdated`, a row at the new key, or a stopped node renamed to read its name at its next join.
 #[test]
-fn a_stopped_nodes_rename_is_refused_admitting_connections_and_nothing_is_claimed_or_told() {
+fn a_stopped_nodes_rename_is_refused_admitting_connections_and_nothing_is_written_or_told() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
@@ -2318,7 +2318,7 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
 /// `{ path, name }`, "its own tags remain at its node ID"):
 /// 1. The predecessor `mesh1.rpc.2`, live and off its mesh, its own property record holding `{zone: a}`
 ///    and `{rabbit, red}`, is renamed `mesh1.rpc.2-old` under the replace step's intent (step 2). The successor's claim at `mesh1.rpc.2`,
-///    the name it released (step 3, `ClaimFor::Successor`), names the predecessor's exact birth
+///    the name it released (step 3, `RowFor::Successor`), names the predecessor's exact birth
 ///    (`Allocation.predecessor`) and retains its Build entry's `{zone: c}` and `{rabbit, red}` as its
 ///    launch snapshot, never the predecessor's `{zone: a}` (Q305); the retained row at `mesh1.rpc.2-old`
 ///    is marked `inherited_by` the successor and the predecessor's own record keeps its properties.
@@ -2329,8 +2329,8 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
 ///    to `mesh1.rpc.2` under the rollback step's intent (an ordinary caller rename back is refused) stands there with no `inherited_by`, `mesh1.rpc.2-old` is released, and its own
 ///    record still holds `{zone: a}` and `{rabbit, red}`.
 #[test]
-fn a_replace_successor_takes_its_entrys_properties_keeps_its_later_updates_on_a_repeated_claim_and_the_rollback_rename_restores_the_predecessor() {
-    use rdm_admin::node_rows::{ClaimFor, NodeRows};
+fn a_replace_successor_takes_its_entrys_properties_keeps_its_later_updates_on_a_repeated_create_and_the_rollback_rename_restores_the_predecessor() {
+    use rdm_admin::node_rows::{RowFor, NodeRows};
     use rdm_core::status::TagScope;
     let cap = capture();
     cap.run(async {
@@ -2373,9 +2373,9 @@ fn a_replace_successor_takes_its_entrys_properties_keeps_its_later_updates_on_a_
             incarnation: succ.node.incarnation_id.clone().unwrap(),
             deployment_id: rdm_admin::model::DeploymentId::mint(),
         };
-        let claim = || rows.claim_spec(&base_name, &succ.node.mesh, succ.node.kind, &succ.node.node_id, &create_operation, Some(&allocation), None, &entry_tags, &entry_cfg, None, ClaimFor::Successor);
+        let claim = || rows.create_row_with_spec(&base_name, &succ.node.mesh, succ.node.kind, &succ.node.node_id, &create_operation, Some(&allocation), None, &entry_tags, &entry_cfg, None, RowFor::Successor);
         let claimed = claim().await;
-        let Ok(rdm_admin::node_rows::Claimed::Written { row: succ_row, seeded_from }) = claimed else { panic!("the successor claims the released name: {claimed:?}") };
+        let Ok(rdm_admin::node_rows::RowCreated::Written { row: succ_row, seeded_from }) = claimed else { panic!("the successor claims the released name: {claimed:?}") };
         assert_eq!((succ_row.node_id.clone(), seeded_from), (succ.node.node_id.clone(), Some(pred.node.node_id.clone())), "the claim's admitted provenance names the predecessor");
         let snapshot = succ_row.initial_properties.clone().expect("the claim retains the launch snapshot");
         assert_eq!((&snapshot.config, &snapshot.tags), (&entry_cfg, &labels(&["rabbit", "red"])), "the successor's snapshot is its entry's, never the predecessor's {{zone: a}}");
@@ -2398,7 +2398,7 @@ fn a_replace_successor_takes_its_entrys_properties_keeps_its_later_updates_on_a_
             reply(&call(&rig, &b["admin2"], &delete_tags(&succ, TagScope::Labels(labels(&["red"])))).await),
             StatusReply::TagsDeleted { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), not_carried: labels(&["red"]) }
         );
-        assert!(matches!(claim().await, Ok(rdm_admin::node_rows::Claimed::HeldByNode(ref held)) if held.initial_properties.as_ref() == Some(&snapshot)), "a repeated claim finds the successor's own claim, its snapshot unchanged");
+        assert!(matches!(claim().await, Ok(rdm_admin::node_rows::RowCreated::HeldByNode(ref held)) if held.initial_properties.as_ref() == Some(&snapshot)), "a repeated claim finds the successor's own claim, its snapshot unchanged");
         assert_eq!(props(&rig, &succ.node.node_id).await, (succ_cfg, labels(&["rabbit", "blue"])), "a repeated claim keeps the successor's later updates");
 
         // Rollback: the successor deleted, the predecessor renamed back to `mesh1.rpc.2`.

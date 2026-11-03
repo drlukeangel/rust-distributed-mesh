@@ -408,8 +408,8 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
 /// own record, initialized from its launch snapshot. No digest carries the
 /// config (Q203).
 #[test]
-fn a_first_start_whose_row_is_its_own_claim_is_installed_once() {
-    let cell = "a_first_start_whose_row_is_its_own_claim_is_installed_once";
+fn a_first_start_whose_row_its_own_create_wrote_is_installed_once() {
+    let cell = "a_first_start_whose_row_its_own_create_wrote_is_installed_once";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let cap = capture(cell);

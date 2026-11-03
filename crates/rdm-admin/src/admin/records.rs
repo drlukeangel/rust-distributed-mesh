@@ -406,7 +406,7 @@ pub struct Records {
     /// executor's claims, moves and Deleted rows, and a birth its view holds for the first time
     /// that no create of it claimed. Set once at start.
     pub(crate) rows: std::sync::OnceLock<Arc<crate::node_rows::NodeRows>>,
-    /// Births whose row is to be seeded at their arrival (`ClaimFor::Arrival`), taken at a Join while
+    /// Births whose row is to be seeded at their arrival (`RowFor::Arrival`), taken at a Join while
     /// this admin wrote no rows yet (a Day-0 admin before it is Ready holds its mesh's role by no view:
     /// Q59 = x), seeded with its first write after it takes the role.
     pub(crate) held_arrival_seeds: Mutex<Vec<rdm_core::MeshDigest>>,

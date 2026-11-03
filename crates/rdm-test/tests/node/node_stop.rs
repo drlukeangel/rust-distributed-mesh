@@ -1356,7 +1356,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     let bare = |id: String| id.trim_start_matches("bid_").replace('-', "");
     // Every birth at the node's path.name, by its claim: the create's, and its next attempt's (Q245,
     // Q252: the next attempt deletes the unready birth the failed create left and creates it again).
-    let births: std::collections::BTreeSet<String> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| names_location(sp, "subject", &node) && attr(sp, "moment") == "claim").map(|sp| attr(sp, "node_id")).collect();
+    let births: std::collections::BTreeSet<String> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| names_location(sp, "subject", &node) && attr(sp, "moment") == "create").map(|sp| attr(sp, "node_id")).collect();
     let removal: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| attr(sp, "scope").starts_with("surplus: ") && births.iter().any(|id| attr(sp, "scope").contains(id.as_str()))).collect();
     assert_eq!(removal.len(), 1, "one drift attempt removes the surplus node: {removal:#?}");
     assert!(start_ns(removal[0]) >= released_at, "the drift attempt opened after the release, never before: {:#?}", removal[0]);

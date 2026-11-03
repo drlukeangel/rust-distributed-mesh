@@ -488,7 +488,7 @@ async fn the_sole_admin_lost_mid_delete_is_adopted_by_a_launch_at_a_new_path_nam
     let created: Vec<&Value> = spans
         .iter()
         .filter(|sp| sp["name"].as_str().is_some_and(|n| n.starts_with("rdm.node_admin.node.create.")) && sp["attributes"]["moment"] != "arrival" && start(sp) >= accepted_ns)
-        .filter(|sp| !(sp["attributes"]["moment"] == "claim" && rdm_test::estate::names_location(sp, "subject", &Estate::path("mesh1.admin", "2"))))
+        .filter(|sp| !(sp["attributes"]["moment"] == "create" && rdm_test::estate::names_location(sp, "subject", &Estate::path("mesh1.admin", "2"))))
         .collect();
     assert!(created.is_empty(), "nothing is created after the delete's acceptance but the launch itself: {created:?}");
 }
@@ -839,7 +839,7 @@ async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_
     let created: Vec<&Value> = spans
         .iter()
         .filter(|sp| sp["name"].as_str().is_some_and(|n| n.starts_with("rdm.node_admin.node.create.")) && sp["attributes"]["moment"] != "arrival" && start(sp) >= accepted_ns)
-        .filter(|sp| !(sp["attributes"]["moment"] == "claim" && [Estate::path("mesh1.admin", "2"), Estate::path("mesh1.admin", "3")].iter().any(|at| rdm_test::estate::names_location(sp, "subject", at))))
+        .filter(|sp| !(sp["attributes"]["moment"] == "create" && [Estate::path("mesh1.admin", "2"), Estate::path("mesh1.admin", "3")].iter().any(|at| rdm_test::estate::names_location(sp, "subject", at))))
         .collect();
     assert!(created.is_empty(), "nothing is created after the delete's acceptance but each launch itself: {created:?}");
 }

@@ -293,7 +293,7 @@ mod tests {
     /// refused naming the one the root holds, and the held identity is never rewritten. The memory store
     /// and the file store each run their own check.
     #[tokio::test]
-    async fn the_fabric_name_is_claimed_once_by_its_writer_for_both_stores() {
+    async fn the_fabric_identity_is_written_once_by_its_writer_for_both_stores() {
         for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()), &crate::store_log::LogWriter::mint()).await.unwrap())] {
             let first = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
             let other = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };

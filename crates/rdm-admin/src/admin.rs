@@ -941,7 +941,7 @@ mod tests {
     /// happen: a mesh id held, or anything of the mesh written, beside a refused claim.
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn create_mesh_claims_the_mesh_name_first_and_a_refused_claim_holds_nothing_of_the_mesh() {
+    async fn create_mesh_writes_the_mesh_record_first_and_a_refused_name_holds_nothing_of_the_mesh() {
         let meshes = crate::storage::MemoryMeshStorage::default();
         let records = Records::default();
         let holder = MeshId::mint();
@@ -982,7 +982,7 @@ mod tests {
     /// and being refused `name-held` by its own mesh's row.
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn a_successor_re_running_create_mesh_of_the_same_build_claims_with_its_mesh_id_and_finds_its_own_row() {
+    async fn a_successor_re_running_create_mesh_of_the_same_build_writes_with_its_mesh_id_and_finds_its_own_row() {
         let meshes = crate::storage::MemoryMeshStorage::default();
         let observed = view(&[digest(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, MemberStatus::Ready)]);
         let current = crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap());
@@ -1036,7 +1036,7 @@ mod tests {
     /// the successor claiming again (`row-held-by-mesh`), or a second `Complete` receipt of the step.
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn a_completed_create_mesh_is_receipted_and_a_successor_replays_the_receipt_instead_of_claiming_again() {
+    async fn a_completed_create_mesh_is_receipted_and_a_successor_replays_the_receipt_instead_of_writing_again() {
         let meshes = crate::storage::MemoryMeshStorage::default();
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let (build_id, op) = build_creating_mesh2(&builds).await;
@@ -1284,7 +1284,7 @@ mod tests {
     /// a row written into another Fabric's `fabric/` beside a refused claim.
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn a_fabric_primarys_refused_fabric_claim_writes_nothing_of_the_fabric() {
+    async fn a_fabric_primary_refused_by_another_fabrics_identity_writes_nothing_of_the_fabric() {
         let storage: Arc<dyn crate::fabric_storage::FabricStorage> = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         let (holder, ours) = (crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }, crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() });
         let birth = |revision: u64| rdm_core::Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision };
@@ -1325,7 +1325,7 @@ mod tests {
     // @feature: mesh-lifecycle
     #[cfg(feature = "file-backend")]
     #[tokio::test]
-    async fn a_mesh_removed_and_created_again_claims_its_name_over_the_dead_row() {
+    async fn a_mesh_removed_and_created_again_writes_its_record_over_the_dead_row() {
         let d = crate::test_support::tempdir("mesh-claim-dead");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let store = |data: &str| {
@@ -3039,23 +3039,23 @@ mod tests {
     /// refused the birth ...: mesh1.admin.1 is not the writer of mesh2's node rows").
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn the_lost_only_admins_exit_held_admits_the_fabric_primarys_claim_for_the_admin_it_creates() {
+    async fn the_lost_only_admins_exit_held_admits_the_fabric_primarys_row_for_the_admin_it_creates() {
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         let lost = with_id(digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, MemberStatus::Ready), "200000000000");
         let (_fp, digest_view, records, view, rows) = fabric_primary_over(std::slice::from_ref(&lost), storage.clone()).await;
         let capture = crate::span_capture::Capture::new("i143-3068-leaving-mesh-admin-claim");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let created: PathName = rdm_core::PathName::new("mesh2.admin", "2").unwrap();
-        let refused = rows.claim(&created, "mesh2", rdm_core::NodeKind::NodeAdmin, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &created), None, None, crate::node_rows::ClaimFor::Create).await;
+        let refused = rows.create_row(&created, "mesh2", rdm_core::NodeKind::NodeAdmin, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &created), None, None, crate::node_rows::RowFor::Create).await;
         assert!(matches!(&refused, Err(crate::node_rows::RowRefused::NotMeshPrimary(_))), "unheld, the lost primary still writes mesh2's rows: {refused:?}");
         depart(&digest_view, &records, &lost).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)).await;
         let born = NodeId::mint();
-        match rows.claim(&created, "mesh2", rdm_core::NodeKind::NodeAdmin, &born, &rdm_core::OperationId::location("node.create", &created), None, None, crate::node_rows::ClaimFor::Create).await {
-            Ok(crate::node_rows::Claimed::Written { row, .. }) => assert_eq!((row.node_id, row.status), (born, NodeStatus::Starting), "a create's claim writes the record starting"),
+        match rows.create_row(&created, "mesh2", rdm_core::NodeKind::NodeAdmin, &born, &rdm_core::OperationId::location("node.create", &created), None, None, crate::node_rows::RowFor::Create).await {
+            Ok(crate::node_rows::RowCreated::Written { row, .. }) => assert_eq!((row.node_id, row.status), (born, NodeStatus::Starting), "a create's claim writes the record starting"),
             other => panic!("the fabric-primary claims the created admin's name once the lost primary's exit is held: {other:?}"),
         }
-        let mut outcomes: Vec<String> = capture.named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s.attributes.get("moment").map(String::as_str) == Some("claim")).map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
+        let mut outcomes: Vec<String> = capture.named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s.attributes.get("moment").map(String::as_str) == Some("create")).map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
         outcomes.dedup();
         assert_eq!(outcomes, ["not-mesh-primary", "row-written"], "{outcomes:?}");
         let written = capture.named("rdm.node_admin.node.create.via-node-row").pop().unwrap();

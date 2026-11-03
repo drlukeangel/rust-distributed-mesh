@@ -920,7 +920,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             incarnation: pre_incarnation.clone(),
             deployment_id: pre_deployment.clone(),
         };
-        rows.claim(&cut_path, "mesh1", rdm_core::NodeKind::RpcNode, &pre_node_id, &rdm_core::OperationId::location("node.create", &cut_path), Some(&allocated), None, rdm_admin::node_rows::ClaimFor::Create)
+        rows.create_row(&cut_path, "mesh1", rdm_core::NodeKind::RpcNode, &pre_node_id, &rdm_core::OperationId::location("node.create", &cut_path), Some(&allocated), None, rdm_admin::node_rows::RowFor::Create)
         .await
         .expect("cut attempt claims the name with its allocated identity");
 
@@ -1113,12 +1113,12 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
     drop(rt);
     let _ = std::fs::remove_dir_all(&data_root);
 
-    let claimed_spans = capture.named("rdm.node_admin.node.resolve.via-claimed-allocation");
+    let claimed_spans = capture.named("rdm.node_admin.node.resolve.via-row-allocation");
     assert!(
         claimed_spans
             .iter()
             .any(|s| s.attributes.get("outcome").map(String::as_str) == Some("never-launched")),
-        "expected via-claimed-allocation span with outcome=never-launched"
+        "expected via-row-allocation span with outcome=never-launched"
     );
     let names = capture.all_names();
     crate::assert_own_story(names.iter().map(String::as_str));

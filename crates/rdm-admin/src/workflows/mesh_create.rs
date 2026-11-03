@@ -21,7 +21,7 @@ mod tests {
         EndpointId, Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeId, NodeKind,
         NodeStatus, PathName, ProviderKind, ScopeStatus,
     };
-    use crate::node_rows::{ClaimFor, NodeRows};
+    use crate::node_rows::{RowFor, NodeRows};
     use crate::status_rpc::{Declared, StatusDoor};
     use crate::storage::{
         Allocation, MemoryMeshStorage, MemoryNodesStorage, MeshRecord, MeshStorage, NodesStorage,
@@ -440,13 +440,13 @@ mod tests {
             deployment_id: crate::model::DeploymentId::mint(),
         };
         fp_rows
-            .claim(
+            .create_row(
                 &rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin,
                 &m2_admin_id,
                 &m2_admin_alloc.operation,
                 Some(&m2_admin_alloc),
                 None,
-                ClaimFor::Create,
+                RowFor::Create,
             )
             .await
             .expect("fabric-primary writes mesh2.admin.1's node row");
@@ -464,13 +464,13 @@ mod tests {
             deployment_id: crate::model::DeploymentId::mint(),
         };
         m2_primary_rows
-            .claim(
+            .create_row(
                 &rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode,
                 &m2_rpc_id,
                 &m2_rpc_alloc.operation,
                 Some(&m2_rpc_alloc),
                 None,
-                ClaimFor::Create,
+                RowFor::Create,
             )
             .await
             .expect("mesh2.admin.1 as mesh-primary writes mesh2.rpc.1's node row");

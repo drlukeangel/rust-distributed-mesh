@@ -2339,7 +2339,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
 
         let nodes_storage = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
         let rows = rdm_admin::node_rows::NodeRows::new(boot.clone(), fp_id.clone(), topology.clone(), nodes_storage);
-        rows.claim(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "2").unwrap()), None, None, rdm_admin::node_rows::ClaimFor::Create)
+        rows.create_row(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "2").unwrap()), None, None, rdm_admin::node_rows::RowFor::Create)
         .await
         .expect("the renamed mesh-primary claims the node row");
 

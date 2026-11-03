@@ -210,7 +210,7 @@ pub struct NodeRow {
     /// executor's own journal, build.md §5.2), so the identity the claim was made with is durable in
     /// it, and a later attempt of the same operation of the same Build that never heard the
     /// `AllocateIdentity` receipt continues under that identity: its claim is the same birth's
-    /// (`rdm_admin::node_rows::Claimed::HeldByNode`). Every later row of the node is written after its
+    /// (`rdm_admin::node_rows::RowCreated::HeldByNode`). Every later row of the node is written after its
     /// launch and carries none; a row written before allocations existed carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allocated: Option<Allocation>,

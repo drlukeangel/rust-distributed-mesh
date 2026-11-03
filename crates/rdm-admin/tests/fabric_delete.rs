@@ -38,7 +38,7 @@ use rdm_admin::fabric_storage::{FabricIdentity, FabricStorage, MemoryFabricStora
 use rdm_admin::join::Joins;
 use rdm_admin::mesh_delete::{accepted_roster, amend_roster, complete_fabric_delete, handoff_verdict, leaving_roster, manifest_reference, members_exited, mesh_left_manifest, mesh_left_rows, operation, owner_resume, record_completion, roster_records, roster_rows_read, unanswered_mesh_delete, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, UnansweredMeshOutcome, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
 use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
-use rdm_admin::node_rows::{ClaimFor, Claimed, NodeRows};
+use rdm_admin::node_rows::{RowFor, RowCreated, NodeRows};
 use rdm_admin::status_rpc::Declared;
 use rdm_admin::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshStorage, NodeRow, NodesStorage, RuntimeRow};
 use rdm_admin::topology::Topology;
@@ -172,7 +172,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
             row.birth_mut(incarnation, &n.name);
         }
         storage.write_record(&row).await.unwrap();
-        assert!(matches!(rows.claim(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+        assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
         let h = handle(50_000);
         storage
             .put_runtime(&RuntimeRow { kind: n.kind, mesh: n.mesh.clone(),

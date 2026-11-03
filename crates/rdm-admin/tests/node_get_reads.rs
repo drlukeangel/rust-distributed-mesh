@@ -134,9 +134,9 @@ async fn node_get_answers_data_dir_facts_from_the_records_at_their_path_name() {
     rows.deleted_unreached(&exited_node, &rdm_core::OperationId::node("node.delete", &exited_id)).await.unwrap();
     // The recovery names the exited birth by its admitted provenance, never by the location.
     let recovery = rdm_admin::storage::Allocation { predecessor: Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }), build_id: rdm_core::BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &recovered.name), incarnation: recovered.incarnation_id.clone().unwrap(), deployment_id: rdm_admin::model::DeploymentId::mint() };
-    let claimed = rows.claim(&path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, &recovered.node_id, &recovery.operation, Some(&recovery), None, rdm_admin::node_rows::ClaimFor::Recovery).await.unwrap();
+    let claimed = rows.create_row(&path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, &recovered.node_id, &recovery.operation, Some(&recovery), None, rdm_admin::node_rows::RowFor::Recovery).await.unwrap();
     match claimed {
-        rdm_admin::node_rows::Claimed::Written { row, seeded_from } => {
+        rdm_admin::node_rows::RowCreated::Written { row, seeded_from } => {
             assert_eq!(seeded_from, Some(exited_id.clone()));
             assert_eq!(row.predecessor, Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }));
         }

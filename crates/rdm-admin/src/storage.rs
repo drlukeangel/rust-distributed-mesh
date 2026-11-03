@@ -1044,7 +1044,7 @@ mod tests {
     /// the name, and a repeat of it writes nothing; the deleted mesh is never written live again; another
     /// mesh then claims the name. The memory store and the file store each run their own check.
     #[tokio::test]
-    async fn a_mesh_name_is_claimed_by_its_writer_and_only_a_dead_row_releases_it() {
+    async fn a_mesh_name_is_held_by_its_writers_record_and_only_a_dead_row_releases_it() {
         let d = crate::test_support::tempdir("storage-mesh-claim");
         let check = async |m: &dyn MeshStorage, store: &str| {
             let (first, second) = (MeshId::mint(), MeshId::mint());

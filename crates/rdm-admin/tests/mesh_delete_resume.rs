@@ -19,7 +19,7 @@ use rdm_admin::join::Joins;
 use rdm_admin::mesh_delete::{await_mesh_deleted, MeshDeleteView, MESH_DELETED_WAIT, completion_of, mesh_left_manifest, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, Admitted, Amended, ExitManifest, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rdm_core::status::StatusReply;
 use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
-use rdm_admin::node_rows::{ClaimFor, Claimed, NodeRows, RowRefused};
+use rdm_admin::node_rows::{RowFor, RowCreated, NodeRows, RowRefused};
 use rdm_admin::status_rpc::Declared;
 use rdm_admin::storage::{MemoryMeshStorage, MeshStorage};
 use rdm_admin::storage::{MemoryNodesStorage, NodeRow};
@@ -363,7 +363,7 @@ fn writer_view(records: &[Node], primary: Option<&NodeId>, fabric_primary: Optio
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
         storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
-        assert!(matches!(rows.claim(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+        assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
     }
 }
 
@@ -779,7 +779,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         // mesh had a primary.
         rows_written(&storage, &rows, std::slice::from_ref(&last)).await;
         // A live path `mesh2.admin`, name `1` holds its name: a second birth's claim is refused.
-        let second = rows.claim(&last.name, &last.mesh.clone(), last.kind, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()), None, None, ClaimFor::Create).await;
+        let second = rows.create_row(&last.name, &last.mesh.clone(), last.kind, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()), None, None, RowFor::Create).await;
         // In its role and live: the fabric-primary is not the writer of mesh2's rows.
         view.write().await.nodes.iter_mut().filter(|n| n.node_id == last.node_id).for_each(|n| n.is_primary = true);
         let live = rows.deleted(&last, &deleting).await;
@@ -795,7 +795,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         let statuses = status.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>();
         let dead_held = status.mesh(&mesh_id.clone()).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted);
         // mesh2 created again: its first admin's claim wins over the Deleted row.
-        let again = rows.claim(&last.name, &last.mesh.clone(), last.kind, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()), None, None, ClaimFor::Create).await;
+        let again = rows.create_row(&last.name, &last.mesh.clone(), last.kind, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()), None, None, RowFor::Create).await;
         (second, live, stopped, after, row, (statuses, dead_held), again, trace_id)
     });
     let (statuses, dead_held) = statuses;
@@ -815,7 +815,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     assert_eq!(statuses.get(&mesh_id), Some(&MeshState::Deleted), "mesh2's one status fact is its Dead, on mesh2: {statuses:?}");
     assert_eq!(declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Deleted), "and held as applied");
     match &again {
-        Ok(Claimed::Written { row, seeded_from }) => {
+        Ok(RowCreated::Written { row, seeded_from }) => {
             assert_eq!(seeded_from.as_ref(), None, "a plain create names no seed: the Deleted row's location is not provenance");
             assert_eq!(row.initial_properties.as_ref().map(|p| p.config.clone()), Some(Default::default()), "its create spec's config, none: a plain create inherits no config (Q166)");
         }
@@ -1671,7 +1671,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
             storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
         }
         for n in &records {
-            assert!(matches!(rows.claim(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+            assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
         }
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();

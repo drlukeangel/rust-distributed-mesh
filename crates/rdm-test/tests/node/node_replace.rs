@@ -1030,7 +1030,7 @@ async fn a_replace_runs_as_one_build_of_node_primitives_in_order() {
     let stop_node: Vec<String> = named(&spans, "rdm.node_admin.status.update.via-stop-node").into_iter().filter(|sp| sp["attributes"]["operation"] == "node.stop" && sp["attributes"]["node"] == before.node_id.as_str() && sp["attributes"]["build_id"] == build).map(|sp| s(&sp["attributes"]["node"])).collect();
     assert_eq!(stop_node, vec![before.node_id.to_string()], "the predecessor stops as the same node after its rename");
     // The successor: a re-birth at the name, its claim seeded from the predecessor's row, admitted there.
-    let claim = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == successor.node_id.to_string() && sp["attributes"]["moment"] == "claim").cloned().expect("the successor's claim");
+    let claim = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == successor.node_id.to_string() && sp["attributes"]["moment"] == "create").cloned().expect("the successor's claim");
     assert_eq!((s(&claim["attributes"]["subject_path"]), s(&claim["attributes"]["subject_name"]), s(&claim["attributes"]["seeded_from"])), (path.path.clone(), path.name.clone(), before.node_id.to_string()), "the successor claims the released name, seeded from the predecessor's row: {claim:#}");
     assert!(end(&stopped1[0]) <= start(&claim), "the successor is created once the predecessor is stopped as name-old");
     let join = of("rdm.node_admin.node.update.via-join", &successor.node_id).into_iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "installed").collect::<Vec<_>>();
@@ -1149,7 +1149,7 @@ async fn a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_it
     })
     .await;
     // Step 3: the successor's claim at the released name writes its entry's properties (none here), then marks the retained row.
-    let claim = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "claim").expect("the successor's claim").clone();
+    let claim = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "create").expect("the successor's claim").clone();
     let a = &claim["attributes"];
     assert_eq!(
         (s(&a["node_path"]), s(&a["node_name"]), s(&a["subject_path"]), s(&a["subject_name"]), s(&a["outcome"]), s(&a["seeded_from"]), s(&a["keys"]), s(&a["tags"])),
@@ -2269,7 +2269,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     // Deleted row: its config is the one told.
     let claim = wait_for("the new node's name claim is exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "claim").cloned()
+        named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "create").cloned()
     })
     .await;
     let a = &claim["attributes"];

@@ -200,7 +200,7 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
         assert_eq!(attr(&at_delete, "verdict"), "os-stopped", "{at_delete}");
         let stopped: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.reject.via-lost-executor").into_iter().filter(|sp| at_node(sp, &held.path)).collect();
         assert!(stopped.is_empty(), "{:?}: the recovery's create stops no runtime as a lost executor's launch: {stopped:#?}", held.path);
-        let claimed: Vec<&Value> = named(&spans, "rdm.node_admin.node.resolve.via-claimed-allocation").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id).collect();
+        let claimed: Vec<&Value> = named(&spans, "rdm.node_admin.node.resolve.via-row-allocation").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id).collect();
         assert!(claimed.is_empty(), "{:?}: the deleted birth's row stands Deleted, so the recovery's create finds no claim of it: {claimed:#?}", held.path);
         // The fabric-primary opened the recovery of the unheard mesh-primary and claimed every attempt of
         // it for the admin the election named in its place (node-recovery.md step 2 and "Execution"): its

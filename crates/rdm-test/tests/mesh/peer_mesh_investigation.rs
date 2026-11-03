@@ -326,7 +326,7 @@ async fn a_mesh_primary_heard_again_before_the_floor_is_never_investigated_and_n
         .filter(|sp| sp["attributes"].to_string().contains(&first_id) || sp["attributes"].to_string().contains(&first_inc))
         .collect();
     assert!(marks.is_empty(), "nothing deleted or marked {first:?}'s birth: {marks:#?}");
-    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(story).filter(|sp| rdm_test::estate::names_location(sp, "subject", &first) && attr(sp, "moment") == "claim").collect();
+    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(story).filter(|sp| rdm_test::estate::names_location(sp, "subject", &first) && attr(sp, "moment") == "create").collect();
     assert!(creates.is_empty(), "no node.create claimed {first:?}'s row: {creates:#?}");
     for name in REMOVED_SPANS {
         assert!(named(&spans, name).is_empty(), "no span of the removed second ladder: {name}");

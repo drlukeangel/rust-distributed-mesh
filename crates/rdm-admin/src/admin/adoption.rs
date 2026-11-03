@@ -505,10 +505,10 @@ pub async fn fail(c: &Claimed, builds: &dyn BuildStateAdapter, claims: &dyn crat
 }
 
 /// Under an in-force fabric.delete (Q159), the launch `me_id` claims its own new path and name `me`, the one
-/// create a delete admits ([`crate::node_rows::claim_adopted_name`]): nothing of the lost birth is written,
+/// create a delete admits ([`crate::node_rows::create_adopted_row`]): nothing of the lost birth is written,
 /// its row deleted by the teardown.
 pub async fn take_new_name(me: &PathName, mesh: &str, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows) -> Result<(), String> {
-    crate::node_rows::claim_adopted_name(nodes, written, me, mesh, me_id).await.map(|_| ()).map_err(|e| format!("node_id={me_id} claims path={} name={}: {e}", me.path, me.name))
+    crate::node_rows::create_adopted_row(nodes, written, me, mesh, me_id).await.map(|_| ()).map_err(|e| format!("node_id={me_id} claims path={} name={}: {e}", me.path, me.name))
 }
 
 /// The claimed attempt releases the lost birth's name and the launch, `me_id`, takes it

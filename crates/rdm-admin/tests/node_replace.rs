@@ -3,7 +3,7 @@
 use rdm_admin::model::{
     Fabric, IncarnationId, Mesh, Node, NodeId, NodeStatus, PathName, ProviderKind, ScopeStatus,
 };
-use rdm_admin::node_rows::{record_at, ClaimFor, Claimed, NodeRows, RowRefused, WriteRecord};
+use rdm_admin::node_rows::{record_at, RowFor, RowCreated, NodeRows, RowRefused, WriteRecord};
 use rdm_admin::storage::{Allocation, BirthRef, MemoryNodesStorage, NameHeld, NodeRow, NodesStorage};
 use rdm_admin::topology::Topology;
 use rdm_core::binding::Binding;
@@ -147,7 +147,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         };
         let entry_tags = BTreeSet::from(["tier-a".to_string(), "canary".to_string()]);
         let entry_config = BTreeMap::from([("zone".to_string(), "b".to_string())]);
-        let claim1 = || rows.claim_spec(&name1, "mesh1", rdm_core::NodeKind::RpcNode, &succ1_id, &succ1_allocation.operation, Some(&succ1_allocation), Some(&v2_binding), &entry_tags, &entry_config, None, ClaimFor::Successor);
+        let claim1 = || rows.create_row_with_spec(&name1, "mesh1", rdm_core::NodeKind::RpcNode, &succ1_id, &succ1_allocation.operation, Some(&succ1_allocation), Some(&v2_binding), &entry_tags, &entry_config, None, RowFor::Successor);
 
         // 1. Before predecessor node[1] releases `mesh1.rpc.1`, successor node[2]'s claim is refused NameHeld.
         assert_eq!(
@@ -168,11 +168,11 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
             "mesh1.rpc.1 is free after rename_row"
         );
 
-        // 3. Successor node[2] claims `mesh1.rpc.1` with ClaimFor::Successor, naming node[1]'s exact
+        // 3. Successor node[2] claims `mesh1.rpc.1` with RowFor::Successor, naming node[1]'s exact
         //    birth: its launch snapshot is its Build entry's config and tags (Q305), never node[1]'s,
         //    and node[1]'s retained row is marked inherited by it.
-        let Claimed::Written { row: succ1_row, seeded_from } = claim1().await.expect("successor claim after rename") else {
-            panic!("expected Claimed::Written");
+        let RowCreated::Written { row: succ1_row, seeded_from } = claim1().await.expect("successor claim after rename") else {
+            panic!("expected RowCreated::Written");
         };
         assert_eq!(seeded_from, Some(pred1_id.clone()), "the admitted provenance names the predecessor");
         let snapshot1 = succ1_row.initial_properties.clone().expect("the claim retains the launch snapshot");
@@ -189,7 +189,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         // 4. A repeated cutover finds the successor's own claim and writes nothing: its snapshot is the
         //    first claim's, never re-taken, and a later node or caller update in its own property record
         //    is never written over.
-        let Claimed::HeldByNode(held_row) = claim1().await.expect("repeated successor claim") else {
+        let RowCreated::HeldByNode(held_row) = claim1().await.expect("repeated successor claim") else {
             panic!("expected HeldByNode on repeated claim");
         };
         assert_eq!(held_row.initial_properties, Some(snapshot1.clone()), "a repeated cutover keeps the first claim's snapshot");
@@ -203,9 +203,9 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         let succ2_allocation = provenance(&pred2, &name2);
         let entry2_tags = BTreeSet::from(["tier-c".to_string()]);
         let entry2_config = BTreeMap::new();
-        let claim2 = || rows.claim_spec(&name2, "mesh1", rdm_core::NodeKind::RpcNode, &succ2_id, &succ2_allocation.operation, Some(&succ2_allocation), Some(&v2_binding), &entry2_tags, &entry2_config, None, ClaimFor::Successor);
-        let Claimed::Written { row: succ2_row, seeded_from: seeded2 } = claim2().await.expect("successor claim over deleted predecessor") else {
-            panic!("expected Claimed::Written for succ2");
+        let claim2 = || rows.create_row_with_spec(&name2, "mesh1", rdm_core::NodeKind::RpcNode, &succ2_id, &succ2_allocation.operation, Some(&succ2_allocation), Some(&v2_binding), &entry2_tags, &entry2_config, None, RowFor::Successor);
+        let RowCreated::Written { row: succ2_row, seeded_from: seeded2 } = claim2().await.expect("successor claim over deleted predecessor") else {
+            panic!("expected RowCreated::Written for succ2");
         };
         assert_eq!(seeded2, Some(pred2_id));
         // Q305 over a Deleted predecessor too: an entry naming no config is an empty map, never a
@@ -217,7 +217,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         // (PrepareStorage again, the same birth) finds its own lifecycle record and writes nothing over
         // it. Must NOT happen: the re-run reseeding the snapshot.
         let rerun = claim2().await.expect("the re-run claim");
-        assert!(matches!(&rerun, Claimed::HeldByNode(row) if row.initial_properties.as_ref() == Some(&snapshot2)), "the re-run finds its own birth's claim: {rerun:?}");
+        assert!(matches!(&rerun, RowCreated::HeldByNode(row) if row.initial_properties.as_ref() == Some(&snapshot2)), "the re-run finds its own birth's claim: {rerun:?}");
     });
 
     drop(rt);

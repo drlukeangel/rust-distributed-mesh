@@ -196,7 +196,7 @@ const DAY0_WRITES: [&str; 3] = ["rdm.node_admin.fabric.create.via-fabric-row", "
 /// the process's deployment span carries from its start (Q208). What must NOT happen: a Day-0 fabric whose
 /// primary holds no row of its own, so that `mesh1.admin.1` has no claimed name.
 #[test]
-fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_before_ready() {
+fn the_day0_admin_writes_its_own_record_at_its_path_name_as_the_first_write_of_its_birth_before_ready() {
     let day0 = Day0::at("the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth");
     let running = day0.day0_until_ready();
     let spans = day0.stop(running);
@@ -211,7 +211,7 @@ fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_befor
     assert!(rdm_admin::model::NodeId::parse(&node_id).is_ok(), "the boot runs as a minted node id: {boot}");
     assert_eq!(attr(deployment, "node_id"), node_id, "the process's first boot span carries the node id its boot runs as: {deployment}");
     let rows: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject_path") == "mesh1.admin" && attr(s, "subject_name") == "1").collect();
-    let claims: Vec<&serde_json::Value> = rows.iter().copied().filter(|s| attr(s, "moment") == "claim").collect();
+    let claims: Vec<&serde_json::Value> = rows.iter().copied().filter(|s| attr(s, "moment") == "create").collect();
     assert_eq!(claims.len(), 1, "the Day-0 admin claims its own path.name once: every node row span of mesh1.admin.1 {rows:?}");
     let claim = claims[0];
     assert_eq!(
@@ -609,11 +609,11 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     let deleted: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.delete.via-node-row" && attr(s, "subject_path") == "mesh1.admin" && attr(s, "subject_name") == "1").collect();
     assert_eq!(deleted.len(), 1, "the inherited birth's node.delete, once: {deleted:?}");
     assert_eq!((attr(deleted[0], "node_id"), attr(deleted[0], "outcome")), (root.node_id.to_string(), "row-deleted".to_string()), "{}", deleted[0]);
-    let claimed: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject_path") == "mesh1.admin" && attr(s, "subject_name") == "1" && attr(s, "moment") == "claim").collect();
+    let claimed: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject_path") == "mesh1.admin" && attr(s, "subject_name") == "1" && attr(s, "moment") == "create").collect();
     assert_eq!(claimed.len(), 1, "this node's name claim, once: {claimed:?}");
     assert_eq!(
         (attr(claimed[0], "node_id"), attr(claimed[0], "moment"), attr(claimed[0], "seeded_from"), attr(claimed[0], "outcome")),
-        (node_id.clone(), "claim".to_string(), root.node_id.to_string(), "row-seeded".to_string()),
+        (node_id.clone(), "create".to_string(), root.node_id.to_string(), "row-seeded".to_string()),
         "{}",
         claimed[0]
     );
