@@ -26,7 +26,7 @@ How spans leave a process and how one trace crosses processes is
 | `JAEGER_QUERY_URL` | the Jaeger base an estate writes into `trace-url.txt`; default `http://localhost:16686` | `estate.rs::Estate::record_trace_url` |
 
 `RUST_LOG` drives stdout only. Span export is a fixed filter: everything off, then INFO (DEBUG with
-`RDM_OTEL_DEBUG=1`) from RDM's own targets (`rafka*`, `rshape*`, `rdm*` and the one test
+`RDM_OTEL_DEBUG=1`) from RDM's own targets (`rafka*`, `rshape*`, `rdm*`, the testkit node's `testkit_node` and the one test
 executable per crate, `main`), and every third-party crate (iroh, iroh-gossip, noq, netwatch,
 the HTTP and OTLP stacks) off whatever `RUST_LOG` says (`telemetry.rs::span_export_filter`).
 

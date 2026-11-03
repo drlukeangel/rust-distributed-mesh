@@ -753,14 +753,14 @@ fn not_transport_diag(meta: &tracing::Metadata<'_>) -> bool {
 
 /// What span export (OTLP and the evidence files) carries, as rafka-v2's telemetry
 /// (`rafka-telemetry` `make_otel_filter`): nothing by default, then INFO from RDM's own crates
-/// (`rafka_*`), the R-shape consumer (`rshape_*`), RDM tools (`rdm_*`) and the one test executable
-/// per crate (`main`); DEBUG with `RDM_OTEL_DEBUG=1`. Every third-party crate (iroh, iroh-gossip
+/// (`rafka_*`), the R-shape consumer (`rshape_*`), RDM tools (`rdm_*`), the testkit node
+/// (`testkit_node`) and the one test executable per crate (`main`); DEBUG with `RDM_OTEL_DEBUG=1`. Every third-party crate (iroh, iroh-gossip
 /// and its HyParView `rg3` diagnostics, noq, the HTTP and OTLP stacks) is off, whatever RUST_LOG
 /// says; RUST_LOG drives stdout only.
 pub(crate) fn span_export_filter() -> EnvFilter {
     let level = if std::env::var("RDM_OTEL_DEBUG").as_deref() == Ok("1") { "debug" } else { "info" };
     let mut f = EnvFilter::new("off");
-    for own in ["rafka", "rshape", "rdm", "main"] {
+    for own in ["rafka", "rshape", "rdm", "testkit_node", "main"] {
         f = f.add_directive(format!("{own}={level}").parse().expect("static directive"));
     }
     for third in ["iroh", "iroh_gossip", "rg3", "noq", "noq_proto", "netwatch", "quinn", "h2", "hyper", "hyper_util", "rustls", "reqwest", "tower", "tower_http", "opentelemetry", "opentelemetry_sdk", "opentelemetry_otlp"] {
