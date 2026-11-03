@@ -592,7 +592,7 @@ mod tests {
                 republish: Default::default(),
                 pre_node_ready: Default::default(),
                 rename: Default::default(),
-                row_moved: Default::default(),
+                row_moved: Default::default(), rejoin: Default::default(),
                 loads: None,
                 digest_view: None,
                 unreachable: Default::default(),

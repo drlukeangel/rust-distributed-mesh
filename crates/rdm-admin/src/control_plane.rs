@@ -616,8 +616,6 @@ pub enum ActionKind {
     Start,
     /// `node.delete` targeting the retained predecessor by node ID.
     Delete,
-    /// `node.mesh.leave` of a node whose connections the caller deleted (node-mesh-leave.md).
-    LeaveMesh,
 }
 
 impl ActionKind {
@@ -628,7 +626,6 @@ impl ActionKind {
             Self::Stop => "stop",
             Self::Start => "start",
             Self::Delete => "delete",
-            Self::LeaveMesh => "node.mesh.leave",
         }
     }
 }

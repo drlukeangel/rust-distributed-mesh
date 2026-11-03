@@ -20,9 +20,9 @@ fn bytes(hex: &str) -> Vec<u8> {
 
 /// CONTRACT (Luke Q7): the requests of op 0x22 in frozen bytes: `DeleteConnections` variant 0 (node id,
 /// incarnation, then the scope: `All` 0, `Connections` 1 with its ids), `StopNode` 1, `StartNode` 2 and a
-/// storage change's `StorageStep` 3 (storage.md §2 "Changing it"), `LeaveMesh` 4 (Q205,
-/// node-mesh-leave.md Wire), `StorageBlock` 5, and the fabric-primary's `BlockMesh` 6 and `UnblockMesh` 7
-/// to a mesh-primary: the change and its two providers, no Build. A stop, a start and a leave carry the
+/// storage change's `StorageStep` 3 (storage.md §2 "Changing it"), position 4 reserved
+/// (Q345), `StorageBlock` 5, and the fabric-primary's `BlockMesh` 6 and `UnblockMesh` 7
+/// to a mesh-primary: the change and its two providers, no Build. A stop and a start carry the
 /// birth and the command's identity, its operation keyed on the node.id: they belong to no Build (Q342).
 #[test]
 fn the_requests_match_the_frozen_eight_variant_wire_schema() {
@@ -36,7 +36,7 @@ fn the_requests_match_the_frozen_eight_variant_wire_schema() {
         (NodeCommandRequest::StorageStep { node_id: node(), incarnation: birth(), change_id: change(), provider: "f".into() }, "030c3031323334353637383961620c3977637072666777767468790c3331323334353637383961620166"),
         (NodeCommandRequest::BlockMesh { node_id: node(), incarnation: birth(), change_id: change(), from: "f".into(), to: "t".into() }, "060c3031323334353637383961620c3977637072666777767468790c33313233343536373839616201660174"),
         (NodeCommandRequest::UnblockMesh { node_id: node(), incarnation: birth(), change_id: change(), from: "f".into(), to: "t".into() }, "070c3031323334353637383961620c3977637072666777767468790c33313233343536373839616201660174"),
-        (NodeCommandRequest::LeaveMesh { node_id: node(), incarnation: birth(), operation: rdm_core::OperationId::unscoped("o") }, "040c3031323334353637383961620c397763707266677776746879016f000000"),
+        (NodeCommandRequest::Reserved4 { node_id: node(), incarnation: birth(), operation: rdm_core::OperationId::unscoped("o") }, "040c3031323334353637383961620c397763707266677776746879016f000000"),
     ] {
         let expected = bytes(hex);
         assert_eq!(NodeCommand::encode_request(&req).unwrap(), expected, "{req:?}");
@@ -46,8 +46,8 @@ fn the_requests_match_the_frozen_eight_variant_wire_schema() {
 
 /// CONTRACT (Luke Q7): every reply of op 0x22 in frozen bytes, in its position: `CommandAccepted` 0,
 /// `ConnectionsDeleting` 1, `ConnectionsDeleted` 2 (its receipt absent for a list of ids, present for
-/// `All`), then the refusals; Q205 appends `Leaving` 19, `StopMeshLeft` 20, `MeshLeft` 21 and
-/// `BusyHoldingConnections` 22; `StorageBlocked` 23; a mesh-primary's `MeshBlocked` 24 and
+/// `All`), then the refusals; Q205 appends `Leaving` 19 and `StopMeshLeft` 20; positions 21 and
+/// 22 are reserved (Q345); `StorageBlocked` 23; a mesh-primary's `MeshBlocked` 24 and
 /// `MeshUnblocked` 25; Q342 appends `Rejected` 26, the primary above the node's refusal of a caller's
 /// node command by name.
 #[test]
@@ -79,8 +79,8 @@ fn replies_match_the_frozen_twenty_seven_variant_wire_schema() {
         (RejectedStaleChange { held: change() }, "120c333132333435363738396162"),
         (Leaving { node_id: node(), incarnation: birth() }, "130c3031323334353637383961620c397763707266677776746879"),
         (StopMeshLeft { left: vec![rdm_core::status::WhichMesh::Own] }, "140100"),
-        (MeshLeft { node_id: node(), incarnation: birth(), left: vec![rdm_core::status::WhichMesh::Own, rdm_core::status::WhichMesh::Backbone] }, "150c3031323334353637383961620c397763707266677776746879020001"),
-        (BusyHoldingConnections { connections: vec![connection()] }, "16010c333132333435363738396162"),
+        (Reserved21 { node_id: node(), incarnation: birth(), left: vec![rdm_core::status::WhichMesh::Own, rdm_core::status::WhichMesh::Backbone] }, "150c3031323334353637383961620c397763707266677776746879020001"),
+        (Reserved22 { connections: vec![connection()] }, "16010c333132333435363738396162"),
         (MeshBlocked, "18"),
         (MeshUnblocked { provider: "f".into() }, "190166"),
         (Rejected { reason: "r".into(), detail: "d".into() }, "1a01720164"),

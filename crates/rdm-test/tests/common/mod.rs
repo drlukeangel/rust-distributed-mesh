@@ -578,8 +578,6 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
     let command = match req {
         S::StopNode { node_id, incarnation, build_id, attempt, operation } => Q::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone() },
         S::StartNode { node_id, incarnation, build_id, attempt, operation } => Q::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone() },
-        // node.mesh.leave is a node command on 0x22 (Q205): its Status position is reserved.
-        S::LeaveMesh { node_id, incarnation, build_id, attempt, operation } => Q::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone() },
         _ => return None,
     };
     let (node_id, incarnation) = command.subject();
@@ -589,7 +587,6 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
             N::RejectedStaleIncarnation { held } => R::RejectedStaleIncarnation { held },
             N::NotReady { reason } => R::NotReady { reason },
             N::RejectedInvalidNodeTransition { current } => R::RejectedInvalidNodeTransition { current },
-            N::BusyHoldingConnections { connections } => R::BusyHoldingConnections { connections },
             other => panic!("{} refused: {other:?}", command.op()),
         }),
         Err((other, _)) => panic!("{} did not open: {other:?}", command.op()),
@@ -616,8 +613,6 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
                 Some(R::Stopped { receipt: receipt.take().expect("stop reports its closure before NodeStopped") })
             }
             N::Failed { step, reason, .. } => Some(R::StartFailed { step, reason }),
-            N::MeshLeft { node_id, incarnation, left } => Some(R::MeshLeft { node_id, incarnation, left }),
-            N::BusyHoldingConnections { connections } => Some(R::BusyHoldingConnections { connections }),
             N::NotReady { reason } => Some(R::NotReady { reason }),
             N::RejectedInvalidNodeTransition { current } => Some(R::RejectedInvalidNodeTransition { current }),
             N::RejectedStaleIncarnation { held } => Some(R::RejectedStaleIncarnation { held }),

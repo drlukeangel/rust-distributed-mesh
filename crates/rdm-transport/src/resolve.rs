@@ -203,7 +203,7 @@ mod tests {
     fn replacement_and_rename_preserve_exact_ids_and_unique_location_index() {
         let resolver = StaticResolver::new();
         let original = PathName::new("apps.east", "worker").unwrap();
-        let retained = original.renamed().unwrap();
+        let retained = original.with_name("renamed").unwrap();
         let make = || ResolvedNode {
             mesh: "explicit-mesh".into(), r#type: "node".into(),
             node_id: NodeId::mint(), path: original.path.clone(), name: original.name.clone(),

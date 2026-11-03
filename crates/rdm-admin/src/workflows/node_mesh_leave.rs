@@ -1,7 +1,7 @@
 //! Node mesh leave primitive (`docs/architecture/lifecycles/node-mesh-leave.md`).
 //!
 //! Takes a node off its mesh (and backbone for node-admins) after its connections
-//! are deleted.
+//! are deleted: a step of node.stop, never a command of its own (Q345).
 
 pub use crate::node_self::CutReport;
 pub use crate::stop_gate::StopGate;
@@ -9,7 +9,6 @@ pub use crate::stop_gate::StopGate;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deployment::pipeline::LeaveStep;
     use crate::span_capture::Capture;
 
     // @feature: node-mesh-leave
@@ -19,12 +18,9 @@ mod tests {
     /// connections are deleted and never before (R-CR5): the data plane first, then the control plane.
     /// Progress is `leaving`, completion `node.mesh.left`."
     #[tokio::test]
-    async fn leave_step_names_cut_report_and_stop_gate_quiescence_match_contract() {
+    async fn cut_report_and_stop_gate_quiescence_match_contract() {
         let capture = Capture::new("node_mesh_leave_unit_contract");
         let _guard = tracing::dispatcher::set_default(&capture.dispatch);
-
-        assert_eq!(LeaveStep::LeaveMesh.name(), "LeaveMesh");
-        assert_eq!(LeaveStep::Complete.name(), "Complete");
 
         let report = CutReport {
             neighbours: 2,

@@ -263,14 +263,6 @@ impl ConsumerEstate {
         (estate, admin)
     }
 
-    /// `executable` copied beside it with one byte appended: the same program under another sha256.
-    fn another_build(&self, exe: &str) -> std::path::PathBuf {
-        use std::io::Write;
-        let to = self.bin.join(format!("{exe}-next"));
-        std::fs::copy(self.bin.join(exe), &to).unwrap();
-        std::fs::OpenOptions::new().append(true).open(&to).unwrap().write_all(&[0]).unwrap();
-        to
-    }
 }
 
 impl Drop for ConsumerEstate {
@@ -289,30 +281,3 @@ impl Drop for ConsumerEstate {
     }
 }
 
-/// CONTRACT (build-deployment.md §3: a request naming a different executable for an existing path is that
-/// node's replacement, node.delete then node.create at the path; states.md "Resize and executable
-/// replacement"; lifecycles/node-replace.md; Q154): on the consumer's own estate, the UI adds two gateways
-/// (each Complete) and replaces the first on another build of its executable (node commands free its name, then a
-/// Create of its successor, Complete); after each the fabric is ready, and after the last the gateway's row
-/// records the new executable. Must NOT happen: a Build the UI submitted never Complete.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn adding_and_replacing_a_gateway_through_the_ui_each_completes() {
-    let (estate, admin) = ConsumerEstate::start("replace").await;
-    let ui = router(Some(admin.clone()), Arc::new(Timeline::default()));
-    // Two gateways: the replaced one's node commands move its type's primary role first, and a sole
-    // gateway has no secondary to take it (`no-secondary`, node-primary-update.md).
-    for n in ["first", "second"] {
-        let id = accepted(&ui, "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "type": "gateway"}))).await;
-        until_complete(&admin, &format!("the {n} gateway added"), &id).await;
-        ready(&admin, &format!("after the {n} gateway added")).await;
-    }
-    let next = estate.another_build("rshape-gateway");
-    let id = accepted(&ui, "/api/nodes/mesh1.gateway/1/replace", Some(json!({"executable": next}))).await;
-    until_complete(&admin, "the gateway's executable replaced", &id).await;
-    ready(&admin, "after the gateway's executable replaced").await;
-    let sha = rdm_core::binding::sha256_file(&next).unwrap();
-    let rows = admin.rows().await.expect("fabric.nodes.get");
-    let gateway = rows.iter().find(|n| (n.path.as_str(), n.name.as_str()) == ("mesh1.gateway", "1") && n.status == rdm_client::NodeStatus::Ready).unwrap_or_else(|| panic!("path mesh1.gateway, name 1 is ready: {rows:?}"));
-    assert_eq!(gateway.executable.as_ref().map(|b| b.sha256.clone()), Some(sha), "the replaced gateway's row records the executable its request named: {gateway:?}");
-    drop(estate);
-}

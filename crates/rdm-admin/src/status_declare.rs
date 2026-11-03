@@ -1017,11 +1017,11 @@ mod tests {
         let me_id = id_of(2);
         let mut v = view(1, 3);
         let own = v.nodes.iter_mut().find(|n| n.node_id == me_id).unwrap();
-        { let at = me.renamed().unwrap(); own.path = at.path; own.name = at.name; }
-        assert_eq!(own.location(), me.renamed().unwrap());
+        { let at = me.with_name("renamed").unwrap(); own.path = at.path; own.name = at.name; }
+        assert_eq!(own.location(), me.with_name("renamed").unwrap());
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
-        owed_from_view(&d, &me.renamed().unwrap(), &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, false, None, |_| 0, &v, &ids);
+        owed_from_view(&d, &me.with_name("renamed").unwrap(), &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, false, None, |_| 0, &v, &ids);
         let due: Vec<(Key, String)> = d.due(&me_id, &v, &BTreeSet::new()).into_iter().map(|(p, to)| (p.key, to.node_id.to_string())).collect();
         assert_eq!(due, vec![(Key::OwnState(INC.into(), NodeState::Ready), id_of(1).to_string())], "its node.started, owed to mesh1's primary by its exact birth");
     }

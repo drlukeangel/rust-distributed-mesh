@@ -1237,14 +1237,14 @@ mod tests {
             let mut o = mn();
             let mut old = n(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", status, false);
             old.renamed_from = Some(old.name.clone());
-            { let at = old.location().renamed().unwrap(); old.path = at.path; old.name = at.name; }
+            { let at = old.location().with_name("renamed").unwrap(); old.path = at.path; old.name = at.name; }
             old.stopped = status == NodeStatus::Leaving;
             o.nodes.push(old);
             assert_eq!(plan(&cur, &o, None).operations, vec![], "{status:?}");
             let mut missing = mn();
             let mut old = n(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", status, false);
             old.renamed_from = Some(old.name.clone());
-            { let at = old.location().renamed().unwrap(); old.path = at.path; old.name = at.name; }
+            { let at = old.location().with_name("renamed").unwrap(); old.path = at.path; old.name = at.name; }
             missing.nodes.retain(|x| x.location() != PathName::new("mesh1.node", "2").unwrap());
             missing.nodes.push(old);
             assert_eq!(plan(&cur, &missing, None).operations, vec![BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "2".into(), node_id: rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap()), over: None, executable: None, entry: None }], "the path itself is missing: {status:?}");

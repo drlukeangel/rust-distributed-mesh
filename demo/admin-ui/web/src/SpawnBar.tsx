@@ -50,16 +50,6 @@ export function SpawnBar() {
         title="Retire this whole mesh: members first, its node-admins last">
         remove mesh
       </button>
-      <button disabled={busy === "replace"} onClick={() => {
-          const path = window.prompt("replace the executable of the node at path");
-          const name = path ? window.prompt(`and name (path ${path})`) : null;
-          const node = path && name ? { path, name } : null;
-          const executable = node ? window.prompt(`the executable file ${pathNameText(node)} runs next`) : null;
-          if (node && executable) run("replace", `replace ${pathNameText(node)}'s executable`, () => api.replace(node, executable));
-        }}
-        title="Replace a node's executable: node.delete then node.create at its path, on the file named">
-        replace executable
-      </button>
       <span style={{ flex: 1 }} />
       <button className="primary" disabled={busy === "bootstrap"} onClick={() => run("bootstrap", "bootstrap", () => api.bootstrap())}
         title="Reconcile the fabric to mesh1 with 2 node-admins and 3 rpc nodes">

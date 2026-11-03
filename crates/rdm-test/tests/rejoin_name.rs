@@ -1,9 +1,7 @@
-//! The start of a node renamed off its mesh and then stopped (R-JN1; lifecycles/node-replace.md
-//! steps 1-2 and Rollback step 2; lifecycles/node-name-update.md; lifecycles/node-start.md step 2): a
-//! node is renamed only while it is live, its connections deleted and its mesh left, and it is stopped
-//! after, so it stops under the name it took and starts under the name it holds. A stopped node is
-//! never renamed: its mesh-primary refuses it (the rename precondition's cells in rdm-admin's
-//! status_declarations and node_stop's process cell).
+//! The start of a node renamed and then stopped (R-JN1; lifecycles/node-name-update.md;
+//! lifecycles/node-start.md step 2): a node holding no connection takes its row's name and publishes
+//! it, and a stop that follows (Q347: "To keep a node aside, node.stop follows as its own primitive")
+//! stops it under the name it took; its start presents the name it holds.
 //!
 //! Its own process: the cell holds process-wide state (the stop flag).
 
@@ -28,22 +26,19 @@ async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &Statu
     }
 }
 
-/// CONTRACT (node-replace.md steps 1-2: node[1]'s `node.connection.delete { All }`, then its
-/// `node.mesh.leave`, then `node.name.update` to `<name>.old`, then node[1].stop "leaves it stopped as
-/// `<name>.old`"; node-mesh-leave.md: once it has left, "the node publishes nothing"; Rollback step 2;
-/// R-JN1): a node born path `mesh1.node`, name `1` has its connections deleted, leaves its mesh (`MeshLeft`) and
-/// takes path `mesh1.node`, name `1-old` live: `ApplyNodeName` answers `Applied`, and the node publishes nothing off
-/// its mesh (its apply span says `digest=off-mesh`, and its admin hears no digest of it from the leave
-/// until its start). It is then stopped: its stop span names path `mesh1.node`, name `1-old`. Its start presents the
-/// name it holds and is admitted under it: every digest after the join names path `mesh1.node`, name `1-old`, and its
-/// start span names it. What must NOT happen: a digest under either name while the node is off its
-/// mesh, a stop span naming path `mesh1.node`, name `1`, or the start refused `JoinMismatch("name")`.
+/// CONTRACT (node-name-update.md step 5: the node "holds the new name and publishes it"; R-JN1): a node
+/// born path `mesh1.node`, name `1` has its connections deleted and takes path `mesh1.node`, name
+/// `renamed` live: `ApplyNodeName` answers `Applied` and its apply span says `digest=published`. It is
+/// then stopped and started: its stop and start select the same node id, its start presents the name
+/// it holds and is admitted under it, and every digest after the apply names path `mesh1.node`, name
+/// `renamed`. What must NOT happen: a digest under name `1` after the apply, or the start refused
+/// `JoinMismatch("name")`.
 #[test]
-fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_holds() {
-    let cap = crate::common::capture("a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_holds");
+fn a_node_renamed_then_stopped_stops_and_starts_under_the_name_it_holds() {
+    let cap = crate::common::capture("a_node_renamed_then_stopped_stops_and_starts_under_the_name_it_holds");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        if crate::own_process::delegated(module_path!(), "a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_holds") {
+        if crate::own_process::delegated(module_path!(), "a_node_renamed_then_stopped_stops_and_starts_under_the_name_it_holds") {
             return;
         }
         let fabric = FabricId::mint();
@@ -53,9 +48,9 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let born: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let taken: PathName = born.renamed().unwrap();
+        let taken: PathName = born.with_name("renamed").unwrap();
         assert_eq!(taken.path, born.path, "rename preserves the immutable path");
-        assert_eq!(taken.name, "1-old");
+        assert_eq!(taken.name, "renamed");
         let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric,
@@ -89,23 +84,19 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
-        // Step 1: every connection deleted, then off its mesh.
+        // Every connection deleted.
         let delete = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
         assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &delete).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
-        let leave = StatusRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), attempt: 1, operation: rdm_core::OperationId::node("node.mesh.leave", &node_id) };
-        assert!(matches!(call(&admin, &target, &leave).await, StatusReply::MeshLeft { .. }), "the node leaves its mesh");
         // What the node published is read from the node itself: its own view records every digest it
-        // publishes. Its admin hears a digest eventually, so its admin's view read at the leave can lack
-        // a heartbeat the node published just before it.
+        // publishes.
         let published = || running.topology_view.digest_view.get(launch.node_id.as_str()).expect("the node's own view records what it published").0.digest_seq;
-        let seq_at_leave = published();
-        // Step 2: the name, live and off its mesh; then the stop.
+        // The name, live; then the stop.
         let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.clone() };
         assert_eq!(call(&admin, &target, &apply).await, StatusReply::Applied);
+        let seq_at_apply = published();
         let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &node_id) };
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), attempt: 2, operation: rdm_core::OperationId::node("node.start", &node_id) };
         assert!(matches!(call(&admin, &target, &stop).await, StatusReply::Stopped { .. }));
-        assert_eq!(published(), seq_at_leave, "the node published nothing from its leave to its stop");
 
         // The authority holds the birth under its row's name, and its held stopped digest names it too.
         admin.put_row(NodeRow { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None });
@@ -113,17 +104,17 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
 
         assert_eq!(call(&admin, &target, &start).await, StatusReply::Started, "the start presents the name the node holds");
         digests.borrow_and_update();
-        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.digest_seq <= seq_at_leave || d.status != MemberStatus::Ready) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.digest_seq <= seq_at_apply || d.status != MemberStatus::Ready) {
             let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-            if d.digest_seq > seq_at_leave {
-                assert_eq!(d.node.location(), taken, "every digest after the start's join names the name the node holds");
+            if d.digest_seq >= seq_at_apply {
+                assert_eq!(d.node.location(), taken, "every digest after the apply names the name the node holds");
             }
             digests.changed().await.unwrap();
         }
         assert_eq!(digest_view.get(launch.node_id.as_str()).unwrap().0.node.location(), taken, "the started node publishes the name it holds");
-        // Its apply published nothing; its stop and start name the name it holds (R12).
+        // Its apply published the name; its stop and start select the same node (R12).
         let applies: Vec<(String, String, String)> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.update.via-apply-node-name").map(|(_, _, f)| (f["to_path"].clone(), f["to_name"].clone(), f["digest"].clone())).collect();
-        assert_eq!(applies, vec![(taken.path.clone(), taken.name.clone(), "off-mesh".to_string())], "the apply off its mesh publishes nothing");
+        assert_eq!(applies, vec![(taken.path.clone(), taken.name.clone(), "published".to_string())], "the apply publishes the name");
         for span in ["rdm.node_admin.status.update.via-stop-node", "rdm.node_admin.status.update.via-start-node"] {
             let named: Vec<String> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == span).map(|(_, _, f)| f["node"].clone()).collect();
             assert_eq!(named, vec![node_id.to_string()], "{span} selects the same node ID after rename");

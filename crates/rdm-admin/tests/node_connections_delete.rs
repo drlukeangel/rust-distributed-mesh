@@ -381,7 +381,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
-            row_moved: Default::default(),
+            row_moved: Default::default(), rejoin: Default::default(),
             loads: None,
             digest_view: None,
             unreachable: Default::default(),

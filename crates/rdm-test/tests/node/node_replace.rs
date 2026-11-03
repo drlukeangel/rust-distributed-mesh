@@ -1,15 +1,13 @@
-//! product=mesh, feature=node-lifecycle, subfeature=node-replace, rung=MN, provider=process.
+//! product=mesh, feature=node-lifecycle, subfeature=node-recovery, rung=MN, provider=process.
 //!
-//! A planned replace (Luke R-R1) and node recovery (node-recovery.md, R-RC1). A planned
-//! replacement is the next attempt of the accepted Build with a typed action; no Build is minted.
-//! A member that exits outside any workflow is recovered by its own mesh-primary on the provider's
+//! Node recovery (node-recovery.md, R-RC1). A member that exits outside any workflow is recovered by its own mesh-primary on the provider's
 //! exact exited verdict: node.delete of the exited instance, then node.create at the same (path, name)
 //! over the inherited data dir (same endpoint key, new node.id). A member that is hung but still
 //! running is never recovered; a repeat submit is answered, never run twice; an exit during a
 //! workflow fails that workflow and the next tick recovers the member.
 
 use crate::build_log;
-use rdm_client::{Change, Frame, NodeStatus, Nodes, PathName};
+use rdm_client::{NodeStatus, PathName};
 use rdm_test::estate::{at_location, descends_from, location, named, wait_for, Estate, Owner};
 use rdm_core::{NodeId, OperationSubject};
 use rdm_test::process_faults::{ExactRuntime, Fault};
@@ -20,7 +18,7 @@ use std::time::Duration;
 const SETTLE: Duration = Duration::from_secs(120);
 
 fn owner(test: &str) -> Owner {
-    Owner { product: "mesh".into(), feature: "node-lifecycle".into(), subfeature: "node-replace".into(), rung: "MN".into(), provider: "process".into(), test: test.into() }
+    Owner { product: "mesh".into(), feature: "node-lifecycle".into(), subfeature: "node-recovery".into(), rung: "MN".into(), provider: "process".into(), test: test.into() }
 }
 
 fn s(v: &Value) -> String {
@@ -34,16 +32,6 @@ fn ready(node: &Value) -> bool {
 /// A birth that holds or contends for a role and serves (`NodeStatus::is_live`).
 fn live(node: &Value) -> bool {
     matches!(node["status"].as_str(), Some("pending" | "ready" | "connections-deleting"))
-}
-
-/// Every admin's view at `admins` holds at most one live birth at `path`. An admin that does not answer
-/// `node.get` for this Fabric within 2 s (being replaced, a successor not bound yet) is skipped.
-async fn at_most_one_live_birth(estate: &Estate, admins: &[PathName], path: &PathName) {
-    for admin in admins {
-        let Some(views) = estate.node_views_at(admin).await else { continue };
-        let at: Vec<(String, String)> = Estate::values(&views).iter().filter(|n| rdm_test::estate::is_location(&n, &path) && live(n)).map(|n| (s(&n["node_id"]), s(&n["status"]))).collect();
-        assert!(at.len() <= 1, "the view of {admin:?} holds two live births at {path:?}: {at:?}");
-    }
 }
 
 /// The node at `name` once `holds` is true of what `node.get` lists there, as the JSON the view
@@ -64,7 +52,7 @@ async fn until_new_birth(estate: &Estate, name: &PathName, before: &Value, withi
 
 /// A fabric born at `shape` (each `(mesh, node_admin, rpc_node)`) by `build.create`, followed to its
 /// terminal frame, the view settled on it within `settle` and the fabric ready; the birth
-/// Build's id. The cells hold, kill and replace members: workflows the initial fabric refuses until it has
+/// Build's id. The cells hold and kill members: workflows the initial fabric refuses until it has
 /// first reached ready (states.md "The initial fabric before ready").
 async fn fabric_of(test: &str, shape: &[(&str, u32, u32)], settle: Duration) -> (Estate, String) {
     born_at(Estate::bootstrap(owner(test), "fabric1", "mesh1").await, shape, settle).await
@@ -360,7 +348,6 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
         !named(&run, "rdm.node_admin.deployment.update.via-pipeline").into_iter().any(|sp| at_location(sp, node) && sp["attributes"]["pipeline"] == "update"),
         "no node.update after the create: the create's row seeded what the recovery keeps"
     );
-    assert!(nodes_named_old(&estate.node_values().await).is_empty(), "no name-old replacement");
     assert_eq!(estate.build_ids().await, builds, "no Build was minted");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
     for (name, id) in others {
@@ -438,11 +425,6 @@ fn booted(spans: &[Value], node: &Value) -> bool {
     named(spans, "rdm.mesh.node.create.via-deployment").into_iter().any(|sp| sp["attributes"]["node_id"] == node["node_id"])
 }
 
-/// The nodes whose (path, name) is a deleted `<name>-old` at the unchanged path.
-fn nodes_named_old(nodes: &[Value]) -> Vec<String> {
-    nodes.iter().map(|n| s(&n["name"])).filter(|n| n.ends_with(".old")).collect()
-}
-
 /// The reconcile span of the fabric lane's `attempt` of `build`. It closes after the attempt's last
 /// step, so it is exported after that step's span.
 fn reconcile_span<'a>(spans: &'a [Value], build: &str, attempt: &str) -> Option<&'a Value> {
@@ -478,359 +460,6 @@ fn end(sp: &Value) -> u64 {
 
 fn alive(pid: u64) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
-}
-
-/// Every frame of `stream`, in order, up to and including the terminal one.
-async fn frames(mut stream: rdm_client::WorkflowStream) -> Vec<Frame> {
-    let mut out = Vec::new();
-    while let Some(f) = stream.next().await {
-        let f = f.unwrap_or_else(|e| panic!("the reply stream broke: {e}"));
-        let terminal = f.is_terminal();
-        out.push(f);
-        if terminal {
-            break;
-        }
-    }
-    out
-}
-
-/// CONTRACT (lifecycles/node-replace.md: "Replace is the caller's sequence: node commands free the
-/// name, then one Build adds the successor ... The sequence is not a Build of its own"; steps 1-4): the
-/// caller replaces `mesh1.node.1`. node.connection.delete `{ All }` and node.mesh.leave of the
-/// predecessor, node commands of its mesh-primary, each end `Complete` and open no Build; the
-/// mesh-primary carries the leave (one `rdm.node_admin.node.remove.via-mesh-leave` naming it, outcome
-/// `mesh-left`). node.name.update renames it `<name>-old` live (`via-writer` says `connections=deleted
-/// mesh=left`), and node.stop stops it there: node.get lists it stopped at `<name>-old` with its
-/// node.id, its process alive, its data dir kept. Then `Create { nodes: [the successor] }` is one Build
-/// that births a new node.id at `<name>`, ready, its own data dir, nothing handed from the predecessor
-/// (its row is seeded from no other row). Last, `Delete { node_ids: [the predecessor] }` removes the
-/// predecessor: its process exits, nothing is listed at `<name>-old`, its data kept. Must NOT happen:
-/// a Build accepted for a node command, the successor born at any other name, the predecessor's data
-/// moved or deleted by RDM.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replace_is_node_commands_then_one_create_and_the_predecessor_stays_stopped_at_its_old_name() {
-    let (mut estate, _birth) = estate("a_replace_is_node_commands_then_one_create_and_the_predecessor_stays_stopped_at_its_old_name").await;
-    let path = PathName::new("mesh1.node", "1").unwrap();
-    let old = path.renamed().unwrap();
-    let before = estate.node_view(&path).await;
-    let pid = estate.pid_of(&path).await;
-    let old_dir = std::path::PathBuf::from(estate.data_dir(&path).await);
-    let segment = old_dir.join("app-data").join("seg-0");
-    std::fs::create_dir_all(segment.parent().unwrap()).unwrap();
-    std::fs::write(&segment, b"records").unwrap();
-    let builds_before = estate.builds_obj().await.get(&rdm_client::Filter::new()).await.expect("build.get").len();
-
-    let predecessor = rdm_test::replace::free_the_name(&estate, &path).await.unwrap_or_else(|e| panic!("the node commands free {path:?}: {e}"));
-    assert_eq!(predecessor, before.node_id, "the commands acted on the node at {path:?}");
-    let stopped = estate.node_view(&old).await;
-    assert!(stopped.stopped && stopped.node_id == before.node_id, "node.get lists the predecessor stopped at {old:?} with its node.id: {stopped:?}");
-    assert!(alive(pid), "the stopped predecessor ({pid}) is alive: it is kept for the caller's transfer");
-    assert_eq!(estate.builds_obj().await.get(&rdm_client::Filter::new()).await.expect("build.get").len(), builds_before, "the node commands opened no Build");
-
-    let got = rdm_test::replace::add_successor(&estate, &path, &before.mesh, &before.r#type).await.unwrap_or_else(|e| panic!("the successor's Create: {e}"));
-    assert!(matches!(got.first(), Some(Frame::Started { .. })), "the Create is one Build: {got:?}");
-    let successor = estate.node_view(&path).await;
-    assert!(successor.status == NodeStatus::Ready && !successor.stopped, "{successor:?}");
-    assert_ne!(successor.node_id, before.node_id, "a new node.id at {path:?}");
-    let new_dir = std::path::PathBuf::from(estate.data_dir(&path).await);
-    assert_ne!(new_dir, old_dir, "the successor has its own data dir");
-    assert!(!new_dir.join("app-data").exists(), "RDM handed nothing to the successor: {new_dir:?}");
-
-    let deleted = frames(estate.nodes_obj().await.delete(vec![before.node_id.clone()]).await.expect("the predecessor's Delete is accepted")).await;
-    assert_eq!(deleted.last(), Some(&Frame::Complete), "{deleted:?}");
-    wait_for(&format!("the predecessor's process {pid} exits at its delete"), Duration::from_secs(30), || async { (!alive(pid)).then_some(()) }).await;
-    let after = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
-    assert!(!after.iter().any(|n| n.location() == old), "nothing is listed at {old:?}: {after:#?}");
-    assert_eq!(std::fs::read(&segment).unwrap(), b"records", "node.delete keeps storage, and RDM moved no data: {segment:?}");
-    assert!(estate.builds_obj().await.get(&rdm_client::Filter::new()).await.expect("build.get").len() > builds_before, "the successor's Create is a Build of its own");
-
-    estate.stop().await;
-    let spans = estate.spans();
-    let left: Vec<&Value> = named(&spans, "rdm.node_admin.node.remove.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["subject_id"]) == before.node_id.to_string()).collect();
-    assert_eq!(left.len(), 1, "the mesh-primary carried the predecessor's leave once: {left:#?}");
-    assert_eq!(s(&left[0]["attributes"]["outcome"]), "mesh-left", "{:#}", left[0]);
-    let renamed: Vec<&Value> = named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string()).collect();
-    assert_eq!(renamed.len(), 1, "{renamed:#?}");
-    assert_eq!((s(&renamed[0]["attributes"]["to_name"]), s(&renamed[0]["attributes"]["connections"]), s(&renamed[0]["attributes"]["mesh"])), (old.name.clone(), "deleted".to_string(), "left".to_string()), "{:#}", renamed[0]);
-    let row = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == successor.node_id.to_string() && sp["attributes"]["moment"] == "create").cloned().expect("the successor's row");
-    assert_eq!(s(&row["attributes"]["seeded_from"]), "", "the successor's row is seeded from no other row: {row:#}");
-    estate.record_trace_url(left[0]["trace_id"].as_str().unwrap_or(""));
-}
-
-/// The steps of `node.delete` of a stopped birth at its `.old` path (node-delete.md: its stop steps
-/// are already done): the removal is announced, the provider's exact Exited is the proof, then the
-/// executor publishes NodeDeleted and the operation's Complete names the birth. Storage is not
-/// released.
-const DELETE_STOPPED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"];
-
-/// CONTRACT: the Build's `node[1].delete` of the stopped predecessor at `<name>-old` at the unchanged path
-/// (lifecycles/node-replace.md step 2; node-delete.md) as its own call: `mesh1.node.1` has its
-/// connections deleted, leaves its mesh, is renamed path `mesh1.node`, name `1-old` live by node.name.update at its
-/// mesh-primary and is stopped there, its successor created at `1` (the replace steps keeping the
-/// predecessor for a rollback, node-replace.md steps 1-3), then `build.create` of a
-/// RemoveNode change at `<name>-old` at the unchanged path is the next attempt of the accepted Build (reason delete,
-/// action delete targeted to the exact stopped birth, no Build minted). One operation
-/// `node.delete:<path>.old` (node.delete's one key) asks the provider to end the stopped runtime
-/// and inspects it; only the provider's Exited is the proof, after which the executor publishes
-/// NodeDeleted for the exact birth and the mesh's primary, which executes it, writes the Deleted
-/// row at `<name>-old` at the unchanged path, its record kept (R13). The process is gone; its data dir stays.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
-async fn deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row() {
-    let (estate, birth_build) = estate("deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row").await;
-    let nodes = objects(&estate).await;
-    let stopped = leave_rename_and_stop(&estate, &nodes, &Estate::path("mesh1.node", "1")).await;
-    delete_stopped_and_assert(&estate, &birth_build, &stopped).await;
-    estate.shutdown().await;
-}
-
-/// CONTRACT: the same delete when the fabric-primary is in another mesh than the node (R13: the
-/// mesh-primary of a node's mesh is the only writer of that mesh's rows). The fabric-primary in mesh1
-/// admits `node.delete:<path>.old` of a mesh2 node from its view, which reads the stopped birth at the
-/// row's name by its node id (R12), targeted to that exact birth; mesh2's primary executes the delete
-/// and writes the Deleted row at `<name>-old` at the unchanged path; the fabric-primary writes no row of mesh2.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
-async fn deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_primary_held_record() {
-    let (estate, birth_build) = two_mesh_estate("deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_primary_held_record").await;
-    let nodes = objects(&estate).await;
-    let stopped = leave_rename_and_stop(&estate, &nodes, &Estate::path("mesh2.node", "1")).await;
-    let (renamer, fp) = (estate.node_view_by_id(&stopped.renamed_by).await, estate.node_view_by_id(&stopped.fabric_primary).await);
-    assert!(renamer.mesh == "mesh2" && renamer.r#type == "node-admin", "mesh2's primary renamed it: {renamer:?}");
-    assert!(fp.mesh == "mesh1" && fp.r#type == "node-admin", "the fabric-primary is in mesh1: {fp:?}");
-    let executor = delete_stopped_and_assert(&estate, &birth_build, &stopped).await;
-    assert_eq!(executor, stopped.renamed_by, "mesh2's primary, the writer of its rows, executes the delete");
-    estate.shutdown().await;
-}
-
-/// CONTRACT: the same delete when the stopped birth's mesh changed its primary between the rename and
-/// the delete (node-delete.md: "Stop and inspect the exact runtime through provider control"). mesh2's
-/// primary is stopped, its roles moving to mesh2's other admin; that admin did not rename the birth.
-/// It resolves the exact stopped birth the action is targeted to from what it holds of that birth (its
-/// topology view's stopped digest, else its durable runtime row of it), ends it with the provider's
-/// Exited proof and publishes NodeDeleted for it, and, as mesh2's primary, writes the Deleted row at
-/// `<name>-old` at the unchanged path.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
-async fn deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth() {
-    let (estate, birth_build) = fabric_of("deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth", &[("mesh1", 1, 2), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
-    let nodes = objects(&estate).await;
-    let stopped_birth = leave_rename_and_stop(&estate, &nodes, &Estate::path("mesh2.node", "1")).await;
-    let first_primary = estate.node_view_by_id(&stopped_birth.renamed_by).await;
-    assert!(first_primary.mesh == "mesh2" && first_primary.r#type == "node-admin", "mesh2's primary renamed it: {first_primary:?}");
-    // mesh2's primary changes: its stop hands its roles to mesh2's other admin, which executes that
-    // stop (executor_for: the mesh primary never executes its own).
-    let stopped = frames(nodes.stop(&first_primary.location()).await.expect("the stop of mesh2's primary was accepted")).await;
-    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    let new_primary = wait_for("mesh2's other admin holds the primary role", Duration::from_secs(30), || async {
-        estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.ok()?.into_iter().find(|n| n.r#type == "node-admin" && n.is_primary && n.node_id != first_primary.node_id).map(|n| n.node_id)
-    })
-    .await;
-    let executor = delete_stopped_and_assert(&estate, &birth_build, &stopped_birth).await;
-    assert_eq!(executor, new_primary, "mesh2's new primary, which did not rename the birth, executes the delete");
-    estate.shutdown().await;
-}
-
-/// CONTRACT (node-admin-lifecycle.md §6.1: "A replace of a birth absent from the view runs node.delete
-/// against its exact runtime, rebuilt from the Build action and the data-root runtime record. It emits
-/// `rdm.node_admin.node.update.via-rebuilt-birth` and refuses by name when no record names the birth.
-/// Completion requires the NodeDeleted receipt of that exact birth"): mesh2's only admin runs the
-/// predecessor's half of the replace of `mesh2.node.1` (stopped at `.old`); mesh2 then takes a second
-/// admin, born after the stop, so no digest of the stopped birth ever reached its view; mesh2's first
-/// admin is stopped and its roles move to the second. The Build's `node[1].delete` at `.old` is executed
-/// by that admin, whose view does not hold the birth: it rebuilds the birth from the Build action's
-/// exact birth and the runtime record in the birth's data dir under the data root
-/// (`via-rebuilt-birth`, `outcome = rebuilt`, naming the birth, its data dir and the record's
-/// deployment), then deletes that exact runtime with everything node.delete owes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replacing_a_birth_absent_from_the_executors_view_deletes_the_runtime_rebuilt_from_the_build_action_and_the_data_root_record() {
-    const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 1, 2), ("mesh2", 1, 2)];
-    const GROWN: [(&str, u32, u32); 2] = [("mesh1", 1, 2), ("mesh2", 2, 2)];
-    let (estate, _birth_build) = fabric_of("replacing_a_birth_absent_from_the_executors_view_deletes_the_runtime_rebuilt_from_the_build_action_and_the_data_root_record", &SHAPE, Duration::from_secs(90)).await;
-    let nodes = objects(&estate).await;
-    let stopped_birth = leave_rename_and_stop(&estate, &nodes, &Estate::path("mesh2.node", "1")).await;
-    let (first_admin, second_admin) = (Estate::path("mesh2.node-admin", "1"), Estate::path("mesh2.node-admin", "2"));
-    assert_eq!(estate.node_view_by_id(&stopped_birth.renamed_by).await.location(), first_admin, "mesh2's only admin renamed and stopped it");
-    // mesh2's second admin is born after the stop: no digest of the stopped birth reaches its view.
-    let grown = estate.resize_shape("fabric1", &GROWN).await;
-    // The view holds the stopped `.old` beside the grown node types, so it is read by name.
-    wait_for("mesh2.node-admin.2 is ready", Duration::from_secs(90), || async {
-        estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.ok()?.into_iter().find(|n| n.location() == second_admin && n.status == NodeStatus::Ready).map(|_| ())
-    })
-    .await;
-    let nodes = objects(&estate).await;
-    let stopped = frames(nodes.stop(&first_admin).await.expect("the stop of mesh2's first admin was accepted")).await;
-    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    wait_for("mesh2.node-admin.2 holds mesh2's role", Duration::from_secs(30), || async {
-        estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.ok()?.into_iter().find(|n| n.location() == second_admin && n.is_primary).map(|_| ())
-    })
-    .await;
-    let record = match rdm_core::RuntimeFact::read_record(&stopped_birth.old_dir) {
-        Some(Ok(f)) => f,
-        other => panic!("the stopped birth's data dir {:?} holds its runtime record: {other:?}", stopped_birth.old_dir),
-    };
-    let executor = delete_stopped_and_assert(&estate, &grown.build_id.to_string(), &stopped_birth).await;
-    assert_eq!(estate.node_view_by_id(&executor).await.location(), second_admin, "mesh2's new primary, born after the stop, executes the delete");
-
-    let spans = estate.spans();
-    let old = stopped_birth.node.renamed().expect("the reserved name fits");
-    let rebuilt: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-rebuilt-birth").into_iter().filter(|sp| at_location(sp, &old)).collect();
-    assert_eq!(rebuilt.len(), 1, "the executor rebuilt the birth its view does not hold, once: {rebuilt:#?}");
-    let a = &rebuilt[0]["attributes"];
-    assert_eq!(
-        (s(&a["executor_node_id"]), s(&a["node_id"]), s(&a["incarnation_id"]), s(&a["outcome"])),
-        (executor.to_string(), s(&stopped_birth.before["node_id"]), s(&stopped_birth.before["incarnation_id"]), "rebuilt".to_string()),
-        "the exact birth the Build action names, rebuilt by the executor: {:#}",
-        rebuilt[0]
-    );
-    assert_eq!(s(&a["data_dir"]), stopped_birth.old_dir.display().to_string(), "the birth's data dir under the data root: {:#}", rebuilt[0]);
-    assert_eq!(s(&a["deployment_id"]), record.deployment_id, "the runtime its data-root record names: {:#}", rebuilt[0]);
-    let op = named(&spans, "rdm.node_admin.node.delete.via-build").into_iter().find(|sp| at_location(sp, &old)).cloned().expect("the delete operation span");
-    assert!(descends_from(&spans, rebuilt[0], &op), "the rebuild runs inside the delete operation: {:#} / {op:#}", rebuilt[0]);
-    estate.artifact("rebuilt-birth.json", &json!({"rebuilt": rebuilt[0], "record": record.deployment_id}));
-    estate.shutdown().await;
-}
-
-/// The stopped birth a Build's rename left at `<name>-old` at the unchanged path: who it was, where, who renamed it.
-struct StoppedBirth {
-    node: PathName,
-    before: Value,
-    pid: u64,
-    old_dir: std::path::PathBuf,
-    /// The mesh-primary that served the node.name.update (the writer of the node's row), by node id.
-    renamed_by: NodeId,
-    /// The fabric-primary when the node was renamed, by node id.
-    fabric_primary: NodeId,
-}
-
-fn dispatch<'a>(spans: &'a [Value], build: &str, attempt: &str) -> Option<&'a Value> {
-    named(spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["attempt"]) == attempt)
-}
-
-/// The `node` objects over the estate's fabric-primary, every member's address learned.
-async fn objects(estate: &Estate) -> Nodes {
-    let _ = estate.try_node_views().await;
-    estate.nodes_obj().await
-}
-
-/// `node` off its mesh, renamed `<name>-old` at its unchanged path live and stopped there, and its
-/// successor created at `<name>`, by the replace steps that keep the predecessor stopped for a rollback
-/// (lifecycles/node-replace.md steps 1-3): the stopped predecessor a Build's `node[1].delete` deletes.
-/// The successor's create in the same Build is what makes the renamed birth a predecessor; a name
-/// ending `-old` does not.
-async fn leave_rename_and_stop(estate: &Estate, nodes: &Nodes, node: &PathName) -> StoppedBirth {
-    let before = estate.node_value(node).await;
-    let pid = estate.pid_of(node).await;
-    let old_dir = std::path::PathBuf::from(estate.data_dir(node).await);
-    // The fabric-primary as fabric.get names it, and the node's mesh-primary as mesh.get names it.
-    let fabric_primary = rdm_test::typed::the_fabric(&estate.fabrics_obj().await).await.expect("fabric.get").fabric_primary.expect("a fabric-primary");
-    let primary = rdm_test::typed::one_mesh(&estate.meshes_obj().await, &s(&before["mesh"])).await.expect("mesh.get").expect("the admin holds the node's mesh").primary_admin.expect("the node's mesh-primary");
-    let r#type: &str = before["type"].as_str().expect("a node type");
-    rdm_test::replace::replace_keeping_predecessor(estate, node, &s(&before["mesh"]), r#type).await.unwrap_or_else(|e| panic!("the replace of {node:?} keeping its predecessor: {e}"));
-    let old = node.renamed().expect("the reserved name fits");
-    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [&s(&before["mesh"])])).await.expect("node.get [mesh]");
-    let stopped = mesh.iter().find(|n| n.location() == old && n.stopped).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node:?} stopped at {old:?} once its replace completed: {mesh:#?}"));
-    assert_eq!(stopped.node_id.to_string(), s(&before["node_id"]), "the stopped birth at {old:?} is {node:?}'s");
-    assert!(alive(pid), "the stopped {node:?} ({pid}) is alive before its delete");
-    StoppedBirth { node: node.clone(), before, pid, old_dir, renamed_by: primary, fabric_primary }
-}
-
-/// `build.create` of a RemoveNode change at `<name>-old` at the unchanged path of `stopped`, and everything
-/// node.delete owes (node-delete.md). Returns the node id of the admin that executed the delete.
-async fn delete_stopped_and_assert(estate: &Estate, birth_build: &str, stopped: &StoppedBirth) -> NodeId {
-    let StoppedBirth { node, before, pid, old_dir, .. } = stopped;
-    let old = node.renamed().expect("the reserved name fits");
-    let node_id: NodeId = serde_json::from_value(before["node_id"].clone()).expect("a node id");
-    let delete = estate.submit_change(Change::Delete { meshes: vec![], node_ids: vec![node_id.clone()] }).await;
-    assert_eq!(delete.build_id().as_str(), birth_build, "no Build is minted");
-    let attempt_no = u64::from(delete.attempt());
-    let opened = build_log::build_fact(&estate, birth_build, "the delete attempt is the Build's current attempt", Duration::from_secs(30), |p| serde_json::to_value(p).expect("a Build view serializes")["reason"] == "delete")
-        .await
-        .map(|p| serde_json::to_value(p).expect("a Build view serializes"))
-        .unwrap_or_else(|end| panic!("{end}"));
-    assert_eq!((s(&opened["action"]["action"]).as_str(), &opened["action"]["path"]), ("delete", &json!(old)), "{opened}");
-    assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "targeted to the exact stopped birth: {opened}");
-    estate.follow(delete).await;
-    let attempt = attempt_no.to_string();
-    let deletes = OperationSubject::Node(node_id.clone());
-    let spans = wait_for("the delete's last step, its reconcile span, its dispatch and the Deleted row are exported", Duration::from_secs(60), || async {
-        let spans = estate.spans();
-        let row = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().any(|sp| rdm_test::estate::names_location(sp, "subject", &old));
-        (step_span(&spans, birth_build, &attempt, &old, "Complete").is_some() && reconcile_span(&spans, birth_build, &attempt).is_some() && dispatch(&spans, birth_build, &attempt).is_some() && row).then_some(spans)
-    })
-    .await;
-    let reconcile = reconcile_span(&spans, birth_build, &attempt).unwrap();
-    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("{:?}", vec![rdm_core::OperationId::node("node.delete", &node_id)]), "one delete operation of the stopped birth: {reconcile}");
-    let mut last = 0u64;
-    for step in DELETE_STOPPED_ORDER {
-        let sp = step_span(&spans, birth_build, &attempt, &old, step).unwrap_or_else(|| panic!("step {step} of the delete ran"));
-        assert!(start(sp) >= last, "step {step} starts before the step it follows: {sp}");
-        last = start(sp);
-    }
-    for step in ["DeleteConnections", "StopNode", "ReleaseStorage"] {
-        assert!(step_span(&spans, birth_build, &attempt, &old, step).is_none(), "the stopped birth's delete runs no {step}");
-    }
-    // The provider's Exited is the proof, and it precedes the NodeDeleted the executor publishes.
-    let terminate = step_span(&spans, birth_build, &attempt, &old, "TerminateRuntime").unwrap();
-    assert_eq!(s(&terminate["attributes"]["outcome"]), "complete", "{terminate}");
-    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
-    assert_eq!(deleted.len(), 1, "NodeDeleted once for the stopped birth: {deleted:?}");
-    assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact birth");
-    assert!(rdm_test::estate::span_operation(deleted[0], "node.delete", &deletes), "the delete of the exact node: {}", deleted[0]);
-    assert!(end(terminate) <= start(deleted[0]), "NodeDeleted follows the exited verdict: {terminate} vs {}", deleted[0]);
-    // The Deleted row at `<name>-old` at the unchanged path, written by the mesh's primary that executes the delete (R13).
-    let dispatched = dispatch(&spans, birth_build, &attempt).unwrap();
-    let executor: NodeId = serde_json::from_value(reconcile["attributes"]["executor_node_id"].clone()).expect("the executor's node id");
-    let executor_at = estate.node_view_by_id(&executor).await.location();
-    let rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "subject", &old)).collect();
-    assert_eq!(rows.len(), 1, "one Deleted row at {old:?}: {rows:?}");
-    assert!(at_location(rows[0], &executor_at) && rows[0]["attributes"]["node_id"] == before["node_id"] && rows[0]["attributes"]["outcome"] == "row-deleted", "the mesh's primary executing the delete writes the Deleted row of the exact node: {}", rows[0]);
-    estate.artifact("deleted-row.json", &json!({"row": rows[0], "node_deleted": deleted[0], "terminate": terminate, "dispatch": dispatched}));
-    let op = named(&spans, "rdm.node_admin.node.delete.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && at_location(sp, &old)).expect("the delete operation span");
-    estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
-    // The stopped process is gone and its data dir stays.
-    assert!(!alive(*pid), "the stopped birth's process {pid} exited");
-    assert!(old_dir.exists(), "node.delete releases node.id and name, not storage: {old_dir:?}");
-    executor
-}
-
-/// CONTRACT (lifecycles/node-replace.md, the same steps for a node-admin): the replace steps of a
-/// node-admin that holds no role runs as one Build of node primitives: the predecessor has its
-/// connections deleted, leaves its mesh and the backbone, is renamed `<name>-old` at the unchanged path live and then stopped
-/// (its NodeStopped drops it from every view), the successor is a re-birth at the path, and the
-/// predecessor is deleted. The successor admin's own view holds itself at the path, ready, under its
-/// new NodeId, and no admin's view holds two live births at the path.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births() {
-    let (mut estate, _birth) = estate("a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births").await;
-    let nodes = estate.node_values().await;
-    let admins: Vec<&Value> = nodes.iter().filter(|n| n["type"] == "node-admin").collect();
-    assert_eq!(admins.len(), 2, "{nodes:#?}");
-    let before = admins.iter().find(|n| n["is_primary"] != true && n["is_fabric_primary"] != true).map(|n| (*n).clone()).expect("an admin that holds no primary role");
-    let stays = rdm_test::estate::location(admins.iter().find(|n| n["node_id"] != before["node_id"]).unwrap());
-    assert_eq!(estate.entry().await, stays, "the admin that stays is the entry the typed objects ask");
-    let node: PathName = rdm_test::estate::location(&before);
-    let node_path = node.clone();
-
-    rdm_test::replace::replace(&estate, &node_path, &s(&before["mesh"]), before["type"].as_str().unwrap()).await.unwrap_or_else(|e| panic!("the replace of {node_path:?}: {e}"));
-    at_most_one_live_birth(&estate, &[stays.clone()], &node).await;
-    let after = estate.until_node(&node, "the successor admin is ready", SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id.as_str() != before["node_id"].as_str().unwrap()).map(|n| serde_json::to_value(n).unwrap())).await;
-    // The successor admin's own view: itself at the path, ready, under its new NodeId.
-    let me = estate
-        .until_view_at(&node_path, &format!("the successor {node:?} sees itself"), Duration::from_secs(30), |views| {
-            let at: Vec<Value> = Estate::values(views).into_iter().filter(|n| rdm_test::estate::is_location(&n, &node) && live(n)).collect();
-            assert!(at.len() <= 1, "the successor's view holds two live births at {node:?}: {at:#?}");
-            at.into_iter().find(|n| n["node_id"] == after["node_id"] && ready(n))
-        })
-        .await;
-    assert_eq!(me["incarnation_id"], after["incarnation_id"], "the successor's view holds its own birth: {me}");
-    estate.stop().await;
-    let spans = estate.spans();
-    let stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().expect("the predecessor's NodeStopped");
-    let rename = named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().expect("the predecessor's rename");
-    assert!(end(&rename) <= start(&stopped), "the predecessor gives up its name before it is stopped");
-    assert_eq!((s(&rename["attributes"]["mesh"]), s(&rename["attributes"]["outcome"])), ("left".to_string(), "name-updated".to_string()), "the predecessor is renamed off its mesh: {rename:#}");
-    estate.record_trace_url(rename["trace_id"].as_str().unwrap_or(""));
 }
 
 /// CONTRACT (node-recovery.md step 3: "Any other verdict (`running`, ...): the recovery below, at once.

@@ -82,7 +82,7 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         // node_id | incarnation | operation "join-mesh:mesh1.node.1" (Q342: no Build, no attempt) | primary None (D57)
         (JoinMesh { node_id: node(), incarnation: birth(), operation: rdm_core::OperationId::unscoped("join-mesh:mesh1.node.1"), primary: None }, "1c0c3031323334353637383961620c397763707266677776746879166a6f696e2d6d6573683a6d657368312e6e6f64652e3100000000"),
         // node_id | incarnation | build_id | attempt 1 | operation "leave-mesh:mesh1.node.1"
-        (LeaveMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("leave-mesh:mesh1.node.1") }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201176c656176652d6d6573683a6d657368312e6e6f64652e31000000"),
+        (Reserved29 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("leave-mesh:mesh1.node.1") }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201176c656176652d6d6573683a6d657368312e6e6f64652e31000000"),
         // node_id | incarnation | cert (len 3) (i145 e3, node.cert.renew)
         (RenewCert { node_id: node(), incarnation: birth(), cert: vec![1, 2, 3] }, "1e0c3031323334353637383961620c39776370726667777674687903010203"),
         // node_id | incarnation | key "ab" | cert "cd" (node.issuer.update)
@@ -228,7 +228,7 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
         // node_id | incarnation | joined (len 2: Own (0), Backbone (1))
         (MeshJoined { node_id: node(), incarnation: birth(), joined: vec![WhichMesh::Own, WhichMesh::Backbone] }, "310c3031323334353637383961620c397763707266677776746879020001"),
         // node_id | incarnation | left (len 1: Own (0))
-        (MeshLeft { node_id: node(), incarnation: birth(), left: vec![WhichMesh::Own] }, "320c3031323334353637383961620c3977637072666777767468790100"),
+        (Reserved50 { node_id: node(), incarnation: birth(), left: vec![WhichMesh::Own] }, "320c3031323334353637383961620c3977637072666777767468790100"),
         (RequestNotHandled { request: "declare-node-state".into() }, "33126465636c6172652d6e6f64652d7374617465"),
         // node_id | incarnation | expires_at 7 (i145 e3, node.cert.renewed)
         (CertRenewed { node_id: node(), incarnation: birth(), expires_at: 7 }, "340c3031323334353637383961620c39776370726667777674687907"),

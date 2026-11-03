@@ -598,14 +598,12 @@ where
 }
 
 /// The first available generated name for a node-admin created in a leaving mesh.
-/// The accepted roster and current view reserve separate path/name pairs, including
-/// predecessor names. Existing fields are never parsed for ownership or ordinals.
+/// The accepted roster and current view reserve separate path/name pairs. Existing fields are never parsed for ownership or ordinals.
 pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate::model::PathName]) -> Result<crate::model::PathName, String> {
     let occupied: std::collections::BTreeSet<_> = roster.iter().map(|b| b.node.clone()).chain(held.iter().cloned()).collect();
     for ordinal in 1..=u32::MAX {
         let candidate = crate::model::PathName::numbered(mesh, "node-admin", ordinal);
-        let predecessor = candidate.renamed().map_err(|e| format!("invalid replacement name: {e:?}"))?;
-        if !occupied.contains(&candidate) && !occupied.contains(&predecessor) {
+        if !occupied.contains(&candidate) {
             return Ok(candidate);
         }
     }

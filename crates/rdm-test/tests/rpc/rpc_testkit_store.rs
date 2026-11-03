@@ -7,10 +7,10 @@
 //!    logical node serves the value written before it.
 //! 3. A killed node is recovered by its mesh-primary (node-recovery.md): a new logical node at
 //!    the same separate path and name over the inherited data dir and endpoint key, so it keeps the store.
-//! 4. The replace steps (node-replace.md: one Build of node primitives) do not inherit it:
-//!    `path:` reaches the successor, whose store is empty; the Build's node.delete of the predecessor
-//!    at `<name>-old` at the unchanged path publishes its departure, so `exact:<old>` resolves Gone and never follows the
-//!    replacement.
+//! 4. A new node at the path does not inherit it (Q345: a new node is a Build that adds it): the
+//!    Delete of the recovered node publishes its departure and releases its name, and the Create at
+//!    the path is a new node whose store is empty; `path:` reaches it, and `exact:<old>` resolves Gone
+//!    and never follows the new node.
 //! 5. A key or value over its limit is refused by name, and writes nothing.
 
 use rdm_client::NodeStatus;
@@ -27,7 +27,7 @@ fn owner() -> Owner {
         subfeature: "testkit-store".into(),
         rung: "MN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replacement".into(),
+        test: "the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_new_node".into(),
     }
 }
 
@@ -43,7 +43,7 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replacement() {
+async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_new_node() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
@@ -125,14 +125,12 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     assert_eq!(inherited["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the recovered node serves the store it inherited: {inherited}");
 
     // The recovery ends with its create of the node now holding the path: work on one node is serialized
-    // at its mesh-primary, so the replace below waits for no Build attempt.
+    // at its mesh-primary, so the Delete below waits for no Build attempt.
 
-    // 4. The replace does not inherit it: the successor's data dir is its own.
+    // 4. A new node at the path does not inherit it: its data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
-    {
-        let node = location();
-        rdm_test::replace::replace(&estate, &node, "mesh1", "node").await.unwrap_or_else(|e| panic!("the replace of {node:?}: {e}"));
-    }
+    Estate::workflow(&format!("the Delete of {:?}", location()), estate.delete_node(&location()).await).await;
+    Estate::workflow(&format!("the Create of a node at {:?}", location()), estate.create_node("mesh1", "node").await).await;
     let replacement = estate
         .until_node(&location(), "a new logical node holds the path", Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
@@ -141,14 +139,13 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
         .await;
     let predecessor_id: rdm_core::NodeId = serde_json::from_value(recovered["node_id"].clone()).expect("predecessor ID");
     let predecessor = estate.node_record(predecessor_id.as_str()).expect("predecessor history remains");
-    assert_eq!(predecessor["record"]["path"], location().path);
-    assert_eq!(predecessor["record"]["name"], "1-old");
-    assert_ne!(replacement["endpoint_id"], recovered["endpoint_id"], "a planned replacement is a new node with a new endpoint key");
+    assert_eq!((&predecessor["record"]["path"], &predecessor["record"]["name"]), (&json!(location().path), &json!(location().name)), "the deleted node's record keeps the pair it held");
+    assert_ne!(replacement["endpoint_id"], recovered["endpoint_id"], "a new node has a new endpoint key");
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
-    assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a replacement starts with an empty store: {fresh}");
-    // The Build stopped the predecessor and renamed it `<name>-old` at the unchanged path; its node.delete there is the
-    // Build's step that appends lifecycle status `Deleted`; its ID and history remain, and NodeDeleted publishes departure (node-rpc.md:
+    assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a new node starts with an empty store: {fresh}");
+    // The Delete's node.delete appends lifecycle status `Deleted`; the old node's ID and history remain, and
+    // NodeDeleted publishes departure (node-rpc.md:
     // Gone comes only from NodeDeleted). A node's own live resolver knows more: that delete published the old
     // birth's departure, so the other node answers Gone for the old id, the new primary for
     // the path, and Unknown for an id nobody ever saw.
@@ -156,16 +153,15 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     estate.holds_departure(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", recovered["node_id"].as_str().unwrap()).await;
     let gone = estate.probe(&["resolve", "--target", other, "--query", &exact_recovered]);
     assert_eq!((gone["outcome"].as_str(), gone["reply"]["resolution"].as_str()), (Some("Reply"), Some("gone")), "mesh1.node.2 holds the old birth's departure: {gone}");
-    // The admin holds the old birth as the replacement's predecessor until the departure is
-    // published, and it is published after the replacement is ready: the admin's view is
-    // current-only once the departure has been heard, so the probe's own resolver can only say
-    // the old id is nothing it knows.
+    // The departure is published at the Delete, before the new node is created: the admin's view is
+    // current-only once the departure has been heard, so the probe's own resolver can only say the
+    // old id is nothing it knows.
     let old = estate.probe(&["get", "--target", &exact_recovered, "--key", "41"]);
     // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
-    assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
+    assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a new node at the path: {old}");
     let holder = estate.probe(&["resolve", "--target", other, "--query", &path]);
     assert_eq!(holder["reply"]["resolution"], "found", "{holder}");
-    assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current primary is the replacement: {holder}");
+    assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current node is the new node: {holder}");
     let never = estate.probe(&["resolve", "--target", other, "--query", &format!("exact:{}", rdm_core::NodeId::mint())]);
     assert_eq!(never["reply"]["resolution"], "unknown", "{never}");
     estate.artifact("nodes-after.json", &json!(estate.node_values().await));

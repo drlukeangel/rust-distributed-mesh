@@ -324,7 +324,6 @@ mod fabric_delete;
 mod build_reattach;
 mod node_create;
 mod node_delete;
-mod node_mesh_leave;
 mod node_investigation;
 mod node_tickle;
 mod node_runtime_inspect;

@@ -208,8 +208,6 @@ export const api = {
     call<CommandEnded>(`${nodeRoute(node)}/start`, { method: "POST" }),
   remove: (node: PathName) =>
     call<BuildAccepted>(nodeRoute(node), { method: "DELETE" }),
-  replace: (node: PathName, executable: string) =>
-    call<BuildAccepted>(`${nodeRoute(node)}/replace`, post({ executable })),
   createMesh: (shape: MeshShape) => call<BuildAccepted>("/api/meshes", post(shape)),
   removeMesh: (name: string) =>
     call<BuildAccepted>(`/api/meshes/${encodeURIComponent(name)}`, { method: "DELETE" }),

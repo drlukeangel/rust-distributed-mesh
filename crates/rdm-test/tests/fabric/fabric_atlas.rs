@@ -249,52 +249,6 @@ async fn a_delayed_observation_of_another_meshs_node_never_moves_the_atlas_back(
     estate.stop().await;
 }
 
-/// CONTRACT (fabric-atlas.md R-FA2; node-rpc-envelope.md node.get: "node.get, mesh.nodes.get and
-/// fabric.nodes.get are answered by the fabric-primary from its atlas"): with the other mesh's topology
-/// withheld from the backbone (so no gossip observation can be the source), the predecessor's half of
-/// the replace of a mesh2 node (connections deleted, mesh left, renamed `<path>.old`, stopped; each a
-/// node command of mesh2's primary, lifecycles/node-replace.md steps 1-2) is read back through
-/// `mesh.nodes.get` at the fabric-primary the moment the stop answers: the same birth listed stopped at
-/// `<path>.old`, and the atlas holds it so. Must
-/// NOT happen: the read answering the birth at `<path>`, not stopped, from a gossip view that has not
-/// heard the stop (release red e58dbc369: the fill at .926687, the read at .929307, the view's last
-/// word `ConnectionsDeleting` from .798319).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_predecessors_half_of_a_replace_another_meshs_primary_ran_is_read_back_at_the_fabric_primary() {
-    use rdm_test::faults::{binding_set, candidate_sha, Door};
-    let test = "the_predecessors_half_of_a_replace_another_meshs_primary_ran_is_read_back_at_the_fabric_primary";
-    let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
-    let targets = two_meshes(&mut estate).await;
-    let before = &targets[0];
-    let node = path_of(before);
-    let renamed = node.renamed().unwrap();
-    let mut mesh2_doors = Vec::new();
-    for v in estate.node_values().await.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin") {
-        mesh2_doors.push(Door::at(&estate, &path_of(v)).await);
-    }
-    for d in &mesh2_doors {
-        d.arm("atlas:no-gossip", json!({"kind": "announcement", "announcement": "aggregate-in-flight", "channel": "backbone"})).await;
-    }
-    rdm_test::replace::free_the_name(&estate, &node).await.unwrap_or_else(|e| panic!("the predecessor's half of the replace of {node:?}: {e}"));
-    // No wait: the read goes out on the stop's answer.
-    let listed = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [&estate.node_view(&renamed).await.mesh])).await.expect("node.get [mesh] at the fabric-primary");
-    let read = atlas(&estate, "R-FA2: fabric.atlas.get on the Build's Complete").await;
-    for d in &mesh2_doors {
-        d.release("atlas:no-gossip").await;
-    }
-    let at_old = listed.iter().find(|n| n.location() == renamed).cloned();
-    assert!(
-        at_old.as_ref().is_some_and(|n| n.stopped && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()),
-        "mesh.nodes.get at the fabric-primary lists {node:?}'s birth stopped at {renamed:?} on the Build's Complete: {listed:#?}"
-    );
-    assert!(!listed.iter().any(|n| n.location() == node && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()), "the renamed birth is not answered at {node:?} too: {listed:#?}");
-    // `fabric.atlas.get` answers the paths the current Build names (R-FA4): the birth the rename moved
-    // off `<path>` is not at it.
-    assert!(read.nodes.iter().filter(|row| row.location() == node).all(|row| row.node_id.to_string() != before["node_id"].as_str().unwrap_or_default()), "R-FA2: on the Build's Complete the atlas holds no birth of {node:?} at {node:?}: {read:#?}");
-    estate.stop().await;
-}
-
 /// CONTRACT (node-name-update.md step 1: "an admin that is not the fabric-primary carries it to the
 /// fabric-primary ... The fabric-primary sends the command to the node's mesh-primary ... and, on its
 /// answer that the row moved, writes the new name to the node in its atlas"; Q197, Q203, Q204:
@@ -312,10 +266,10 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     let targets = two_meshes(&mut estate).await;
     let (node, primary) = (path_of(&targets[0]), &targets[3]);
-    let renamed = node.renamed().unwrap();
+    let renamed = node.with_name("renamed").unwrap();
     let nodes = estate.nodes_obj().await;
-    // The node's connections deleted and its mesh left: the precondition of a live rename.
-    for (what, stream) in [("node.connection.delete", nodes.delete_connections(&node, &rdm_core::status::ConnectionScope::All).await), ("node.mesh.leave", nodes.leave_mesh(&node).await)] {
+    // The node's connections deleted: the precondition of a rename.
+    for (what, stream) in [("node.connection.delete", nodes.delete_connections(&node, &rdm_core::status::ConnectionScope::All).await)] {
         let mut stream = stream.unwrap_or_else(|e| panic!("{what} of {node:?} was refused: {e}"));
         let mut last = None;
         while let Some(f) = stream.next().await {

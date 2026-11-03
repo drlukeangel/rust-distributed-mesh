@@ -3,18 +3,19 @@
 //! and separate path/name fields: the path must match the held node and cannot change. From what the mesh-primary holds, in
 //! order (§2.1 Validation): the exact birth matches its record (`RejectedStaleIncarnation`); it is the
 //! node's writer, the mesh-primary or, before the mesh has one, the fabric-primary
-//! (`ReceiverNotPrimary`); the node is live and admits no connection: this mesh-primary holds the
-//! birth's `node.connections.deleted` of an `All` that left nothing held, then its `node.mesh.left`
-//! (`RejectedAdmittingConnections { status, held_connections }`; a stopped node is never renamed and is
-//! refused the same way); the name is within the name grammar and the path is unchanged
-//! (`RejectedName`). Then, one change at a time with every other change
+//! (`ReceiverNotPrimary`); the node holds no connection, the one condition (Q347): stopped, or this
+//! mesh-primary holds the birth's `node.connections.deleted` of an `All` that left nothing held
+//! (`RejectedAdmittingConnections { status, held_connections }`); the name is within the name grammar
+//! and the path is unchanged (`RejectedName`). Then, one change at a time with every other change
 //! to a node record: the mesh-primary checks the new pair against the records it holds (`NameHeld {
 //! by }`, nothing written) and the row moved through the one writer of a row's move
 //! (`crate::node_rows::move_row`): one write of the record at its node.id carrying the new pair and
 //! `renamed_from`, the name move. The node is told `ApplyNodeName` (this admin itself in-process,
-//! through its own name decision) and the command completes only on its `Applied` or
-//! `AlreadyApplied` (§2.3). A repeat naming the name the row already holds resends `ApplyNodeName`
-//! (§2.1 Idempotency).
+//! through its own name decision). A live node then rejoins its mesh under the new name: this
+//! mesh-primary commands its `node.mesh.join` ([`crate::heard_again::HeardAgain::rejoin`]), and the
+//! command completes on its `MeshJoined`; a stopped node completes on its `Applied` or
+//! `AlreadyApplied`, and its start rejoins it under the name. A repeat naming the name the row already
+//! holds resends `ApplyNodeName` (Idempotency).
 
 use crate::model::{Node, PathName};
 use crate::node_rows::RenameRefused;
@@ -28,7 +29,8 @@ use tokio::sync::RwLock;
 
 /// What a mesh-primary's `node.name.update` acts through: the door its record changes take turns at
 /// (`crate::node_config::NodeConfigs`: the writer's held record and the client it tells births
-/// through), its view's take of a moved row, and its own name decision for a rename of itself.
+/// through), its view's take of a moved row, its own name decision for a rename of itself, and the
+/// command of a renamed node's rejoin.
 pub struct NameDoors<'a> {
     /// The config door: `None` until this admin's node-RPC client exists.
     pub configs: Option<&'a crate::node_config::NodeConfigs>,
@@ -36,6 +38,8 @@ pub struct NameDoors<'a> {
     pub moved: &'a crate::status_rpc::RowMoved,
     /// This admin deciding a name its own row gives it.
     pub rename: &'a crate::status_rpc::Rename,
+    /// This admin's command of a renamed live birth's `node.mesh.join`.
+    pub rejoin: &'a crate::status_rpc::Rejoin,
 }
 
 /// Where a caller's `node.name.update` is decided ([`routed`]).
@@ -102,19 +106,19 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
 /// Serve an `UpdateName` at the admin `me` (born `me_id`): one span holds the whole command, its
 /// outcome the reply's name.
 #[allow(clippy::too_many_arguments)]
-pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool, req: &StatusRequest) -> StatusReply {
+pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, req: &StatusRequest) -> StatusReply {
     let StatusRequest::UpdateName { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateName only") };
     let span = tracing::info_span!(
         "rdm.node_admin.name.update.via-writer",
         node_path = %me.path, node_name = %me.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), requested_path = %name.path, requested_name = %name.name, from_path = tracing::field::Empty, from_name = tracing::field::Empty, to_path = tracing::field::Empty, to_name = tracing::field::Empty,
-        traffic = tracing::field::Empty, connections = tracing::field::Empty, mesh = tracing::field::Empty, apply = tracing::field::Empty,
+        traffic = tracing::field::Empty, connections = tracing::field::Empty, apply = tracing::field::Empty, rejoin = tracing::field::Empty,
         outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
     let reply = tracing::Instrument::instrument(
         async {
             // A snapshot of the view: no read lock is held across the row write's I/O.
             let now = view.read().await.clone();
-            rename(me, me_id, &now, storage, doors, deleted, left, node_id, incarnation, name, &span).await
+            rename(me, me_id, &now, storage, doors, deleted, node_id, incarnation, name, &span).await
         },
         span.clone(),
     )
@@ -127,42 +131,34 @@ pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
 /// Whether the held node may take a name (R-CR1a, R-CR2; node-name-update.md Precondition), from what
 /// this mesh-primary holds.
 struct Admission {
-    /// The span's `(traffic, connections, mesh)`.
-    labels: (String, &'static str, &'static str),
-    /// It is live, admits no connection and has left its mesh; or it may not take a name: the status
-    /// the refusal names, the connections it still held, and why in words.
+    /// The span's `(traffic, connections)`.
+    labels: (String, &'static str),
+    /// It holds no connection; or it may: the status the refusal names, the connections it still
+    /// held, and why in words.
     quiet: Result<(), (crate::model::NodeStatus, Vec<ConnectionId>, String)>,
 }
 
-/// [`Admission`] of `held`: live, its `node.connection.deleted` of an `All` held with nothing left
-/// held, then its `node.mesh.left` (`left`). A stopped node is never renamed: it is renamed live, after
-/// its connections and its mesh, and stopped after (node-replace.md).
-fn admission_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool) -> Admission {
+/// [`Admission`] of `held`: no connection is the one condition (Q347). A stopped node holds none; a
+/// live one holds none once this mesh-primary holds its `node.connection.deleted` of an `All` with
+/// nothing left held.
+fn admission_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>) -> Admission {
     if held.stopped {
-        return Admission {
-            labels: ("Stopped".into(), "stopped", "stopped"),
-            quiet: Err((held.status, vec![], "is stopped, and a stopped node is never renamed: a node is renamed live, after its node.connection.delete { All } and its node.mesh.leave, and stopped after".into())),
-        };
+        return Admission { labels: ("Stopped".into(), "stopped"), quiet: Ok(()) };
     }
-    let on_mesh = if left { "left" } else { "on-mesh" };
     match deleted {
         None => Admission {
-            labels: (format!("{:?}", held.status), "none-deleted", on_mesh),
+            labels: (format!("{:?}", held.status), "none-deleted"),
             quiet: Err((held.status, vec![], format!("is {:?} and its mesh-primary holds no node.connection.deleted for this birth", held.status))),
         },
         Some(r) if !r.all => Admission {
-            labels: (format!("{:?}", r.status_at_cut), "partial", on_mesh),
+            labels: (format!("{:?}", r.status_at_cut), "partial"),
             quiet: Err((r.status_at_cut, vec![], format!("is {:?}, and its last node.connection.delete named exact connections, not All: it holds no node.connection.deleted of every connection", r.status_at_cut))),
         },
         Some(r) if !r.held.is_empty() => Admission {
-            labels: (format!("{:?}", r.status_at_cut), "held", on_mesh),
+            labels: (format!("{:?}", r.status_at_cut), "held"),
             quiet: Err((r.status_at_cut, r.held.clone(), format!("is {:?} and still held {} connection(s) after its node.connection.delete: {}", r.status_at_cut, r.held.len(), r.held.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")))),
         },
-        Some(r) if !left => Admission {
-            labels: (format!("{:?}", r.status_at_cut), "deleted", on_mesh),
-            quiet: Err((r.status_at_cut, vec![], format!("is {:?}: its connections are deleted, but its mesh-primary holds no node.mesh.left for this birth: it is still on its mesh", r.status_at_cut))),
-        },
-        Some(r) => Admission { labels: (format!("{:?}", r.status_at_cut), "deleted", on_mesh), quiet: Ok(()) },
+        Some(r) => Admission { labels: (format!("{:?}", r.status_at_cut), "deleted"), quiet: Ok(()) },
     }
 }
 
@@ -174,7 +170,6 @@ async fn rename(
     storage: &dyn NodesStorage,
     doors: NameDoors<'_>,
     deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>,
-    left: bool,
     node_id: &rdm_core::NodeId,
     incarnation: &rdm_core::IncarnationId,
     name: &PathName,
@@ -203,11 +198,11 @@ async fn rename(
         span.record("detail", needed.as_str());
         return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
     }
-    // 3. The node is live, admits no connection and has left its mesh.
-    let admission = admission_of(&held, deleted, left);
-    span.record("traffic", admission.labels.0.as_str()).record("connections", admission.labels.1).record("mesh", admission.labels.2);
+    // 3. The node holds no connection.
+    let admission = admission_of(&held, deleted);
+    span.record("traffic", admission.labels.0.as_str()).record("connections", admission.labels.1);
     if let Err((status, held_connections, why)) = admission.quiet {
-        span.record("detail", format!("{me_id}: {} {why}; a name moves only on a live node off its mesh, its node.connection.delete {{ All }} completed with nothing held and then its node.mesh.leave: nothing is claimed or written", held.node_id).as_str());
+        span.record("detail", format!("{me_id}: {} {why}; a name moves only on a node that holds no connection, stopped or its node.connection.delete {{ All }} completed with nothing held: nothing is claimed or written", held.node_id).as_str());
         return rdm_core::reply::status::bounded_rejected_admitting_connections(crate::views::node_status(status), &held_connections);
     }
     // Validate both fields before claiming the destination pair.
@@ -222,7 +217,7 @@ async fn rename(
     };
     // One change to a node record at a time, through the writer's held record: the row carries every
     // field the writer knows of it, the config and the tags included.
-    let _one = door.one_at_a_time().await;
+    let one = door.one_at_a_time().await;
     let known = match door.written().known_row(storage, node_id).await {
         Ok(row) => row,
         Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &format!("{me_id}: {why}: the rename of {} is refused and nothing is written", held.node_id)),
@@ -265,7 +260,34 @@ async fn rename(
     let (answered, detail) = match applied {
         Ok(r @ (StatusReply::Applied | StatusReply::AlreadyApplied)) => {
             span.record("answered", r.name());
-            return done;
+            // A stopped node rejoins at its start, this admin is on its own mesh: done. A live node
+            // rejoins its mesh under the name now (Q347), commanded down by this mesh-primary once the
+            // record door is released: the join's arrival takes the same turn.
+            if held.stopped || held.node_id == *me_id {
+                span.record("rejoin", if held.stopped { "at-start" } else { "in-process" });
+                return done;
+            }
+            drop(one);
+            let Some(rejoin) = doors.rejoin.get() else {
+                span.record("rejoin", "no-runner");
+                return rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), "not-ready", &format!("{me_id} moved the row to path={to_path:?} name={to_name:?} and the birth took it; this admin has no runner yet to command its node.mesh.join; a resubmit resends the apply and the join"));
+            };
+            let mut renamed = held.clone();
+            (renamed.path, renamed.name) = (to.path.clone(), to.name.clone());
+            return match rejoin(renamed, incarnation.clone()).await {
+                Ok(StatusReply::MeshJoined { .. }) => {
+                    span.record("rejoin", "mesh-joined");
+                    done
+                }
+                Ok(other) => {
+                    span.record("rejoin", other.name()).record("detail", format!("{me_id} moved the row to path={to_path:?} name={to_name:?}; the birth took it and answered its node.mesh.join {other:?}; a resubmit resends the apply and the join").as_str());
+                    rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), other.name(), &format!("{me_id}: the birth's node.mesh.join under path={to_path:?} name={to_name:?} answered {other:?}"))
+                }
+                Err(why) => {
+                    span.record("rejoin", "unanswered").record("detail", format!("{me_id} moved the row to path={to_path:?} name={to_name:?}; the birth took it and its node.mesh.join ended {why}; a resubmit resends the apply and the join").as_str());
+                    rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), "unanswered", &format!("{me_id}: the birth's node.mesh.join under path={to_path:?} name={to_name:?} ended {why}"))
+                }
+            };
         }
         Ok(refused) => (refused.name(), format!("{me_id} moved the row to path={to_path:?} name={to_name:?}; the birth answered {refused:?}; a resubmit resends the apply")),
         Err(end) => (end.outcome(), format!("{me_id} moved the row to path={to_path:?} name={to_name:?}; apply-node-name ended {end:?}; a resubmit resends the apply")),
@@ -283,21 +305,18 @@ mod tests {
     use crate::status_rpc::ConnectionsDeletedReceipt;
     use crate::storage::MemoryNodesStorage;
 
-    // CONTRACT (`docs/architecture/lifecycles/node-name-update.md:16` — "Precondition: The node is live
-    // and admits no connection: this mesh-primary holds the birth's `node.connections.deleted` of an
-    // `All`, then its `node.mesh.left` (`node.mesh.leave`), and it holds zero connections. A stopped node
-    // is never renamed; a ready node, or one still holding a connection, is refused." and
-    // `docs/architecture/lifecycles/node-name-update.md:17` — "Validation: The exact birth matches the
-    // held record, else `RejectedStaleIncarnation { held }`; the receiver is the node's writer, else
-    // `ReceiverNotPrimary { needed }` (R-RX5); the precondition holds, else
-    // `RejectedAdmittingConnections { status, held_connections }`; the name is within the name grammar,
-    // else `RejectedName { reason }`."): `admission_of` refuses stopped nodes, missing/partial/held
-    // connection receipts, and nodes still on their mesh, and admits a live left birth with zero held
-    // connections; `update` enforces exact birth, writer role, admission precondition, and name grammar
-    // before touching storage.
+    // CONTRACT (node-name-update.md Precondition: "The node holds no connection: it is stopped, or
+    // this mesh-primary holds the birth's `node.connection.deleted` of an `All` that left zero
+    // connections held"; Validation: "The exact birth matches the held record, else
+    // `RejectedStaleIncarnation { held }`; the receiver is the node's writer, else `ReceiverNotPrimary
+    // { needed }` (R-RX5); the precondition holds, else `RejectedAdmittingConnections { status,
+    // held_connections }`; the path/name pair is valid and the name has no dot, else `RejectedName {
+    // reason }`"): `admission_of` admits a stopped node and a live birth whose `All` left nothing held,
+    // and refuses a missing, partial or still-held connections receipt; `update` enforces exact birth,
+    // writer role, the precondition and the name grammar before touching storage.
     // @feature: node-name-update
     #[tokio::test]
-    async fn admission_and_validation_enforce_exact_birth_writer_quiet_left_state_and_name_grammar() {
+    async fn admission_and_validation_enforce_exact_birth_writer_no_connection_and_name_grammar() {
         let mut subject = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         subject.status = NodeStatus::ConnectionsDeleting;
         let inc = IncarnationId::mint();
@@ -306,12 +325,12 @@ mod tests {
         let mut stopped = subject.clone();
         stopped.stopped = true;
         stopped.status = NodeStatus::Leaving;
-        let stopped_adm = admission_of(&stopped, None, true);
-        assert_eq!(stopped_adm.labels, ("Stopped".into(), "stopped", "stopped"));
-        assert!(stopped_adm.quiet.is_err());
+        let stopped_adm = admission_of(&stopped, None);
+        assert_eq!(stopped_adm.labels, ("Stopped".into(), "stopped"));
+        assert!(stopped_adm.quiet.is_ok(), "a stopped node holds no connection");
 
-        let none_adm = admission_of(&subject, None, false);
-        assert_eq!(none_adm.labels, ("ConnectionsDeleting".into(), "none-deleted", "on-mesh"));
+        let none_adm = admission_of(&subject, None);
+        assert_eq!(none_adm.labels, ("ConnectionsDeleting".into(), "none-deleted"));
         assert!(none_adm.quiet.is_err());
 
         let partial = ConnectionsDeletedReceipt {
@@ -319,7 +338,7 @@ mod tests {
             held: vec![],
             status_at_cut: NodeStatus::ConnectionsDeleting,
         };
-        assert_eq!(admission_of(&subject, Some(&partial), true).labels.1, "partial");
+        assert_eq!(admission_of(&subject, Some(&partial)).labels.1, "partial");
 
         let conn = ConnectionId::mint();
         let held_rec = ConnectionsDeletedReceipt {
@@ -327,7 +346,7 @@ mod tests {
             held: vec![conn.clone()],
             status_at_cut: NodeStatus::ConnectionsDeleting,
         };
-        let held_adm = admission_of(&subject, Some(&held_rec), true);
+        let held_adm = admission_of(&subject, Some(&held_rec));
         assert_eq!(held_adm.labels.1, "held");
         assert_eq!(held_adm.quiet.unwrap_err().1, vec![conn]);
 
@@ -336,10 +355,9 @@ mod tests {
             held: vec![],
             status_at_cut: NodeStatus::ConnectionsDeleting,
         };
-        assert!(admission_of(&subject, Some(&clean_rec), false).quiet.is_err());
-        let ok_adm = admission_of(&subject, Some(&clean_rec), true);
-        assert_eq!(ok_adm.labels, ("ConnectionsDeleting".into(), "deleted", "left"));
-        assert!(ok_adm.quiet.is_ok());
+        let ok_adm = admission_of(&subject, Some(&clean_rec));
+        assert_eq!(ok_adm.labels, ("ConnectionsDeleting".into(), "deleted"));
+        assert!(ok_adm.quiet.is_ok(), "its mesh is never asked: a node on its mesh with no connection takes a name");
 
         let mut admin1 = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
         admin1.status = NodeStatus::Ready;
@@ -365,16 +383,17 @@ mod tests {
         let storage = MemoryNodesStorage::default();
         let moved = crate::status_rpc::RowMoved::default();
         let rename_slot = crate::status_rpc::Rename::default();
-        let doors = || NameDoors { configs: None, moved: &moved, rename: &rename_slot };
+        let rejoin_slot = crate::status_rpc::Rejoin::default();
+        let doors = || NameDoors { configs: None, moved: &moved, rename: &rename_slot, rejoin: &rejoin_slot };
 
         // 1. Stale incarnation -> RejectedStaleIncarnation
         let stale_req = StatusRequest::UpdateName {
             node_id: subject.node_id.clone(),
             incarnation: IncarnationId::mint(),
-            name: subject.location().renamed().unwrap(),
+            name: subject.location().with_name("renamed").unwrap(),
         };
         assert_eq!(
-            update(&admin1.location(), &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), true, &stale_req).await,
+            update(&admin1.location(), &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), &stale_req).await,
             StatusReply::RejectedStaleIncarnation { held: inc.clone() }
         );
 
@@ -382,10 +401,10 @@ mod tests {
         let valid_req = StatusRequest::UpdateName {
             node_id: subject.node_id.clone(),
             incarnation: inc.clone(),
-            name: subject.location().renamed().unwrap(),
+            name: subject.location().with_name("renamed").unwrap(),
         };
         assert!(matches!(
-            update(&admin2.location(), &admin2.node_id, &view, &storage, doors(), Some(&clean_rec), true, &valid_req).await,
+            update(&admin2.location(), &admin2.node_id, &view, &storage, doors(), Some(&clean_rec), &valid_req).await,
             StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }
         ));
 
@@ -396,7 +415,7 @@ mod tests {
             name: PathName { path: subject.path.clone(), name: "Bad_Name".into() },
         };
         assert!(matches!(
-            update(&admin1.location(), &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), true, &bad_name_req).await,
+            update(&admin1.location(), &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), &bad_name_req).await,
             StatusReply::RejectedName { .. }
         ));
     }

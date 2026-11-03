@@ -23,14 +23,14 @@
 //! Q47 appends `StopNode` and `StartNode`; Q205 makes the stop a workflow that calls its primitives
 //! and streams each one's acknowledgement and completion: stop reports `CommandAccepted`, then
 //! `ConnectionsDeleting` and `StopConnectionsDeleted` (node.connection.delete's, Data), then
-//! `Leaving` and `StopMeshLeft` (node.mesh.leave's, Data), then `NodeStopped` (Terminal). Q205 appends
-//! `LeaveMesh`, standalone node.mesh.leave: `CommandAccepted` (leaving), then `MeshLeft` (Terminal), or
-//! the refusal `BusyHoldingConnections` before acceptance. Start reports `CommandAccepted`,
+//! `Leaving` and `StopMeshLeft` (node.mesh.leave's, Data), then `NodeStopped` (Terminal). node.mesh.leave
+//! is a step of the stop only, never a command of its own (Q345): request position 4 and reply
+//! positions 21 and 22 are reserved. Start reports `CommandAccepted`,
 //! `NodeJoined` (Data), then `NodeStarted` (Terminal), or a typed `Failed` terminal after acceptance.
 //! A lifecycle state refusal before acceptance is `RejectedInvalidNodeTransition`.
 //! `CommandAccepted` carries no lifecycle state: on a stop, its admission records stopping.
-//! `ConnectionsDeleting`, `StopConnectionsDeleted`, `Leaving`, `StopMeshLeft`, `MeshLeft`, `NodeJoined`,
-//! `NodeStopped` and `NodeStarted` record their own effects; a leave's `CommandAccepted` records leaving. A stream that breaks after
+//! `ConnectionsDeleting`, `StopConnectionsDeleted`, `Leaving`, `StopMeshLeft`, `NodeJoined`,
+//! `NodeStopped` and `NodeStarted` record their own effects. A stream that breaks after
 //! `CommandAccepted` is incomplete: whatever the frames before the break reported stands, and no
 //! completion is claimed. The record is of the transport header's `(invocation_id, seq)`: delivery
 //! orders and suppresses repeats before handing progress to the mesh-primary, which records it
@@ -105,18 +105,17 @@ pub enum NodeCommandRequest {
         /// The provider the birth writes from here on.
         provider: String,
     },
-    /// `node.mesh.leave` (node-mesh-leave.md; Q205): the exact birth, its connections deleted, leaves
-    /// its mesh (and the backbone, a node-admin) and cuts its Node RPC pool, reporting its
-    /// acknowledgement (`CommandAccepted`, leaving) and its completion (`MeshLeft`) on this stream.
-    /// Appended: no variant before it moves.
+    /// Reserved position (Q345): never sent; node.mesh.leave is a step of node.stop only. A receiver
+    /// refuses it by name and executes nothing; the position and its fields stay so no later variant
+    /// moves.
     ///
     /// Position 4 on the wire.
-    LeaveMesh {
-        /// The commanded node.
+    Reserved4 {
+        /// Never read.
         node_id: NodeId,
-        /// Its exact incarnation.
+        /// Never read.
         incarnation: IncarnationId,
-        /// The command's identity, keyed on the node.id.
+        /// Never read.
         operation: crate::OperationId,
     },
     /// Freeze this exact birth's property writer before a storage copy.
@@ -179,7 +178,7 @@ impl NodeCommandRequest {
             Self::StartNode { .. } => "start-node",
             Self::StorageStep { .. } => "storage-step",
             Self::StorageBlock { .. } => "storage-block",
-            Self::LeaveMesh { .. } => "leave-mesh",
+            Self::Reserved4 { .. } => "reserved-4",
             Self::BlockMesh { .. } => "block-mesh",
             Self::UnblockMesh { .. } => "unblock-mesh",
         }
@@ -188,7 +187,7 @@ impl NodeCommandRequest {
     /// The birth the command names.
     pub fn subject(&self) -> (&NodeId, &IncarnationId) {
         match self {
-            Self::DeleteConnections { node_id, incarnation, .. } | Self::StopNode { node_id, incarnation, .. } | Self::StartNode { node_id, incarnation, .. } | Self::StorageBlock { node_id, incarnation, .. } | Self::StorageStep { node_id, incarnation, .. } | Self::LeaveMesh { node_id, incarnation, .. } | Self::BlockMesh { node_id, incarnation, .. } | Self::UnblockMesh { node_id, incarnation, .. } => (node_id, incarnation),
+            Self::DeleteConnections { node_id, incarnation, .. } | Self::StopNode { node_id, incarnation, .. } | Self::StartNode { node_id, incarnation, .. } | Self::StorageBlock { node_id, incarnation, .. } | Self::StorageStep { node_id, incarnation, .. } | Self::Reserved4 { node_id, incarnation, .. } | Self::BlockMesh { node_id, incarnation, .. } | Self::UnblockMesh { node_id, incarnation, .. } => (node_id, incarnation),
         }
     }
 }
@@ -354,31 +353,29 @@ pub enum NodeCommandReply {
         incarnation: IncarnationId,
     },
     /// Inside a stop, node.mesh.leave's completion, `node.mesh.left`: progress, never the stop's
-    /// terminal (the twin of [`Self::MeshLeft`], as `StopConnectionsDeleted` is of `ConnectionsDeleted`).
+    /// terminal.
     ///
     /// Position 20 on the wire.
     StopMeshLeft {
         /// Which meshes the birth left: its own, and the backbone for a node-admin.
         left: Vec<WhichMesh>,
     },
-    /// Standalone `node.mesh.left`: the birth left its mesh (and the backbone, a node-admin), its
-    /// endpoint still bound. The `LeaveMesh` command's terminal.
+    /// Reserved position (Q345): never sent.
     ///
     /// Position 21 on the wire.
-    MeshLeft {
-        /// The birth that left.
+    Reserved21 {
+        /// Never read.
         node_id: NodeId,
-        /// Its incarnation.
+        /// Never read.
         incarnation: IncarnationId,
-        /// Which meshes it left.
+        /// Never read.
         left: Vec<WhichMesh>,
     },
-    /// `LeaveMesh` refused before acceptance: the birth still holds these connections, and leaves
-    /// nothing (node-mesh-leave.md step 2).
+    /// Reserved position (Q345): never sent.
     ///
     /// Position 22 on the wire.
-    BusyHoldingConnections {
-        /// The connections it still holds.
+    Reserved22 {
+        /// Never read.
         connections: Vec<ConnectionId>,
     },
     /// Property admission is closed and earlier writes are finished for this change.
@@ -439,8 +436,8 @@ impl NodeCommandReply {
             Self::RejectedStaleChange { .. } => "rejected-stale-change",
             Self::Leaving { .. } => "leaving",
             Self::StopMeshLeft { .. } => "stop-mesh-left",
-            Self::MeshLeft { .. } => "mesh-left",
-            Self::BusyHoldingConnections { .. } => "busy-holding-connections",
+            Self::Reserved21 { .. } => "reserved-21",
+            Self::Reserved22 { .. } => "reserved-22",
             Self::MeshBlocked => "mesh-blocked",
             Self::MeshUnblocked { .. } => "mesh-unblocked",
             Self::Rejected { .. } => "rejected",
@@ -501,8 +498,8 @@ impl NodeProtocol for NodeCommand {
             NodeCommandReply::RejectedStaleChange { .. } => "rejected-stale-change",
             NodeCommandReply::Leaving { .. } => "leaving",
             NodeCommandReply::StopMeshLeft { .. } => "stop-mesh-left",
-            NodeCommandReply::MeshLeft { .. } => "mesh-left",
-            NodeCommandReply::BusyHoldingConnections { .. } => "busy-holding-connections",
+            NodeCommandReply::Reserved21 { .. } => "reserved-21",
+            NodeCommandReply::Reserved22 { .. } => "reserved-22",
             NodeCommandReply::MeshBlocked => "mesh-blocked",
             NodeCommandReply::MeshUnblocked { .. } => "mesh-unblocked",
             NodeCommandReply::Rejected { .. } => "rejected",
@@ -512,9 +509,8 @@ impl NodeProtocol for NodeCommand {
     fn classify_reply(reply: &NodeCommandReply) -> ReplyKind {
         match reply {
             NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeJoined | NodeCommandReply::NodeStarted | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } => ReplyKind::Success,
-            NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } | NodeCommandReply::MeshLeft { .. } => ReplyKind::Success,
-            // As Status 0x1B classifies the same refusal.
-            NodeCommandReply::BusyHoldingConnections { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
+            NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } => ReplyKind::Success,
+            NodeCommandReply::Reserved21 { .. } | NodeCommandReply::Reserved22 { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             NodeCommandReply::RejectedStaleChange { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             NodeCommandReply::Failed { code, .. } => ReplyKind::new(*code),
             NodeCommandReply::RejectedInvalidNodeTransition { .. } | NodeCommandReply::Rejected { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
@@ -559,7 +555,7 @@ impl StreamingProtocol for NodeCommand {
         match frame {
             NodeCommandReply::CommandAccepted { .. } => FrameKind::Started,
             NodeCommandReply::ConnectionsDeleting { .. } | NodeCommandReply::StopConnectionsDeleted { .. } | NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } | NodeCommandReply::NodeJoined => FrameKind::Data,
-            NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::MeshLeft { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } => FrameKind::Terminal,
+            NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(NodeCommand::classify_reply(other)),
         }
     }
@@ -608,35 +604,22 @@ mod tests {
         assert!(late.admit(NodeCommand::frame_kind(&NodeCommandReply::RejectedConnectionScope { reason: "late".into() })).is_err(), "no refusal after acceptance");
     }
 
-    /// CONTRACT (Q205; node-stop.md steps 1-4; node-mesh-leave.md Wire): a stop streams each of its
-    /// primitives' acknowledgement and completion, `CommandAccepted`, `ConnectionsDeleting`,
-    /// `StopConnectionsDeleted`, `Leaving`, `StopMeshLeft`, `NodeStopped`, a legal order ending in its one
-    /// terminal; a standalone leave streams `CommandAccepted` then `MeshLeft`, its terminal, or the one
-    /// refusal `BusyHoldingConnections`. Must NOT happen: a primitive's completion inside a stop ending
-    /// the stop's stream, or a frame after a standalone leave's `MeshLeft`.
+    /// CONTRACT (Q205; node-stop.md steps 1-4): a stop streams each of its primitives' acknowledgement
+    /// and completion, `CommandAccepted`, `ConnectionsDeleting`, `StopConnectionsDeleted`, `Leaving`,
+    /// `StopMeshLeft`, `NodeStopped`, a legal order ending in its one terminal. Must NOT happen: a
+    /// primitive's completion inside a stop ending the stop's stream.
     // @feature: node-lifecycle
     #[test]
-    fn a_stop_streams_each_primitives_frames_and_a_standalone_leave_ends_on_mesh_left() {
+    fn a_stop_streams_each_primitives_frames() {
         let mut stop = FrameOrder::new();
         let receipt = ConnectionsReceipt::Established { in_flight: 0, closed: vec![] };
         for f in [accepted(), NodeCommandReply::ConnectionsDeleting { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, NodeCommandReply::StopConnectionsDeleted { receipt }, NodeCommandReply::Leaving { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, NodeCommandReply::StopMeshLeft { left: vec![WhichMesh::Own] }, NodeCommandReply::NodeStopped] {
             stop.admit(NodeCommand::frame_kind(&f)).unwrap_or_else(|e| panic!("stop: {f:?}: {e}"));
         }
         assert!(stop.admit(NodeCommand::frame_kind(&NodeCommandReply::NodeStopped)).is_err(), "one terminal");
-        let mut leave = FrameOrder::new();
-        let left = NodeCommandReply::MeshLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), left: vec![WhichMesh::Own, WhichMesh::Backbone] };
-        for f in [accepted(), left.clone()] {
-            leave.admit(NodeCommand::frame_kind(&f)).unwrap_or_else(|e| panic!("leave: {f:?}: {e}"));
-        }
-        assert!(leave.admit(NodeCommand::frame_kind(&left)).is_err(), "nothing follows MeshLeft");
-        let mut busy = FrameOrder::new();
-        busy.admit(NodeCommand::frame_kind(&NodeCommandReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] })).expect("a refusal alone");
-        assert_eq!(NodeCommand::classify_reply(&NodeCommandReply::BusyHoldingConnections { connections: vec![] }).code(), crate::outcome::Code::Unavailable, "as on Status 0x1B");
-        for f in [NodeCommandReply::Leaving { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, NodeCommandReply::StopMeshLeft { left: vec![WhichMesh::Own] }, left, NodeCommandReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] }] {
+        for f in [NodeCommandReply::Leaving { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, NodeCommandReply::StopMeshLeft { left: vec![WhichMesh::Own] }] {
             assert_eq!(NodeCommand::decode_reply(&NodeCommand::encode_reply(&f).unwrap()).unwrap(), f, "{}", f.name());
         }
-        let req = NodeCommandRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), operation: crate::OperationId::node("node.mesh.leave", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) };
-        assert_eq!(NodeCommand::decode_request(&NodeCommand::encode_request(&req).unwrap()).unwrap(), req);
     }
 
     /// CONTRACT (node-rpc-envelope.md, the wire is postcard): every request and reply of op 0x22

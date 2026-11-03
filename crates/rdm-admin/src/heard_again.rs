@@ -62,6 +62,50 @@ impl HeardAgain {
         }
         outcome
     }
+
+    /// `node.name.update`'s rejoin (node-name-update.md step 6; Q347): the live birth `node` at the
+    /// name its row now holds, its connections deleted and its `ApplyNodeName` answered, is commanded
+    /// `node.mesh.join` by this mesh-primary over its own call, its join registered first under the
+    /// row's name so the join door admits its report (node-mesh-join.md step 4). Answers the birth's
+    /// reply (`MeshJoined` once it is back on its mesh), or `Err` naming how the call ended. A command
+    /// of the primary's own, never a Build or part of one (Q342). One
+    /// `rdm.node_admin.node.update.via-mesh-join-commanded` span.
+    pub async fn rejoin(&self, node: &Node, incarnation: &IncarnationId) -> Result<rdm_core::status::StatusReply, String> {
+        let operation = rdm_core::OperationId::new("node.mesh.join", rdm_core::OperationSubject::Birth { node_id: node.node_id.clone(), incarnation: incarnation.clone() })
+            .in_occurrence(rdm_core::OperationOccurrenceId::mint());
+        let (build_id, attempt) = (rdm_core::LifecycleOp::NO_BUILD.to_string(), rdm_core::LifecycleOp::NO_ATTEMPT);
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.update.via-mesh-join-commanded",
+            node_path = %node.path, node_name = %node.name,
+            node_id = %node.node_id,
+            incarnation_id = %incarnation.as_str(),
+            build_id = %build_id,
+            attempt,
+            operation = %operation.action, operation_subject = ?operation.subject, operation_occurrence = ?operation.occurrence,
+            cause = "node.name.update",
+            outcome = tracing::field::Empty,
+            "otel.kind" = "internal"
+        );
+        let ended = async {
+            let runner = self.runner.get().ok_or_else(|| "no-runner: this admin's runner is not built yet".to_string())?;
+            let status_door = self.status_door.get().ok_or_else(|| "no-authority: this admin's Status door is not open yet".to_string())?;
+            let (_, _, deployed) = runner.stopped_birth_or_live(node).await.map_err(|why| format!("join-not-registered: {why}"))?;
+            let _ = runner.joins.expect(deployed);
+            let command = crate::node_commands::CommandKey { build_id: build_id.clone(), attempt, operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+            let _ = status_door.commands.open(command.clone());
+            let req = StatusRequest::JoinMesh { node_id: node.node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone(), primary: self.digest_view.primaries.mesh(&node.mesh) };
+            let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &CallOptions::default()).await;
+            status_door.commands.close(&command);
+            match out.reply() {
+                Some(r) => Ok(r.value().clone()),
+                None => Err(out.name().to_string()),
+            }
+        };
+        let ended = tracing::Instrument::instrument(ended, span.clone()).await;
+        span.record("outcome", match &ended { Ok(r) => r.name().to_string(), Err(why) => why.clone() }.as_str());
+        span.in_scope(|| tracing::info!("a renamed birth is commanded back on its mesh through node.mesh.join"));
+        ended
+    }
 }
 
 /// Begin `node`'s next cycle (its declared state is measured from Pending again) and command

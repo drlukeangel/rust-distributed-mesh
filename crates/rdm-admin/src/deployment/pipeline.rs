@@ -189,26 +189,6 @@ impl UpdateStep {
     }
 }
 
-/// The steps of a Build's `node.mesh.leave` as a Build operation (`node.mesh.leave:<path>`,
-/// node-mesh-leave.md).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LeaveStep {
-    /// The node's mesh-primary carried `LeaveMesh` to the exact birth and holds its `node.mesh.left`.
-    LeaveMesh,
-    /// The leave is done.
-    Complete,
-}
-
-impl LeaveStep {
-    /// The step's name as it appears in receipts and spans.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::LeaveMesh => "LeaveMesh",
-            Self::Complete => "Complete",
-        }
-    }
-}
-
 /// The steps of creating a mesh (`create-mesh:<mesh>`, node-identity-and-state.md §2.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateMeshStep {
@@ -2779,22 +2759,6 @@ impl DeploymentPipeline<'_> {
     /// root's `<node_id>`.
     pub(crate) fn birth_dir(&self, node: &Node) -> PathBuf {
         node.data_dir.as_deref().map(PathBuf::from).unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &node.node_id))
-    }
-
-    /// A Build's node.mesh.leave of `node` (`node.mesh.leave:<path>`, node-mesh-leave.md): `leave`
-    /// is the mesh-primary's carry of `LeaveMesh` to the exact birth, then `Complete`.
-    pub fn leave_mesh<'a, F>(&'a self, build_id: &'a BuildId, attempt: u32, node: &'a PathName, operation: &'a rdm_core::OperationId, leave: F) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>>
-    where
-        F: std::future::Future<Output = Result<(), String>> + Send + 'a,
-    {
-        use tracing::Instrument;
-        let span = self.pipeline_span("leave", Some(build_id), node, attempt);
-        Box::pin(async move {
-            let mut run = self.begin(Some(build_id), attempt, node, operation.clone()).await?;
-            self.step(&mut run, LeaveStep::LeaveMesh.name(), leave).await?;
-            self.step(&mut run, LeaveStep::Complete.name(), async { Ok(()) }).await
-        }
-        .instrument(span))
     }
 
     /// node.name.update of the name of `node` as a Build's step (node-name-update.md;

@@ -85,9 +85,6 @@ pub enum WorkflowKind {
     /// `node.connection.delete { All }` of this node: `node.connection.delete:<path and name>`. The
     /// process keeps running.
     DeleteConnections(PathName),
-    /// `node.mesh.leave` of this node, a node command of its mesh-primary (node-mesh-leave.md): it
-    /// leaves its mesh and keeps running.
-    LeaveMesh(PathName),
 }
 
 /// One row of the mapping from a Build receipt to the canonical names.
@@ -196,7 +193,6 @@ impl WorkflowKind {
             Self::Start(_) => NodeOp::Start,
             Self::Delete(_) => NodeOp::Delete,
             Self::DeleteConnections(_) => NodeOp::ConnectionsDelete,
-            Self::LeaveMesh(_) => NodeOp::MeshLeave,
         }
     }
 
@@ -222,7 +218,6 @@ impl WorkflowKind {
                 row("node.connection.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
                 row("node.connection.delete", "Complete", NodeStep::ConnectionsDelete, &[], true),
             ],
-            Self::LeaveMesh(_) => vec![row("node.mesh.leave", "LeaveMesh", NodeStep::MeshLeave, &[NodeEvent::MeshLeft], false), row("node.mesh.leave", "Complete", NodeStep::MeshLeave, &[], true)],
             Self::Delete(_) => delete_rows(),
         }
     }
@@ -231,7 +226,7 @@ impl WorkflowKind {
     fn operation_matches(&self, prefix: &str, key: &rdm_core::OperationId) -> bool {
         match self {
             Self::Create => prefix == "node.create" && key.action == prefix,
-            Self::Stop(_) | Self::Start(_) | Self::DeleteConnections(_) | Self::LeaveMesh(_) => key.action == prefix && matches!(&key.subject, Some(rdm_core::OperationSubject::Node(_))),
+            Self::Stop(_) | Self::Start(_) | Self::DeleteConnections(_) => key.action == prefix && matches!(&key.subject, Some(rdm_core::OperationSubject::Node(_))),
             Self::Delete(ids) => key.action == prefix && matches!(&key.subject, Some(rdm_core::OperationSubject::Node(id)) if ids.contains(id)),
         }
     }
@@ -244,7 +239,6 @@ impl WorkflowKind {
             Self::Start(_) => NodeStep::Start,
             Self::Delete(_) => NodeStep::Delete,
             Self::DeleteConnections(_) => NodeStep::ConnectionsDelete,
-            Self::LeaveMesh(_) => NodeStep::MeshLeave,
         }
     }
 }
@@ -537,8 +531,6 @@ impl WorkflowStream {
                 // A standalone connections delete's terminal (node-connections-delete.md "Completion").
                 R::ConnectionsDeleted { .. } => vec![Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete],
                 R::NodeStopped => vec![Frame::Event(NodeEvent::Stopped), Frame::Complete],
-                // A standalone node.mesh.leave's terminal (node-mesh-leave.md).
-                R::MeshLeft { .. } => vec![Frame::Event(NodeEvent::MeshLeft), Frame::Complete],
                 R::NodeJoined => vec![Frame::Event(NodeEvent::Joined)],
                 R::NodeStarted => vec![Frame::Event(NodeEvent::Started), Frame::Complete],
                 R::Failed { step, reason, .. } => vec![Frame::Failed { step: self.kind.fallback_step(), reason: format!("{step}: {reason}") }],

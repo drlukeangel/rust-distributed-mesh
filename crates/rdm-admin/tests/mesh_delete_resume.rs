@@ -1495,8 +1495,8 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
     let runtime = |node_id: &NodeId| RuntimeIdentity::of(&handles[node_id].fact().unwrap());
     let (lost, created) = (birth(&final_admin), birth(&new_admin));
     let admitted_births: Vec<Node> = records.iter().filter(|n| n.node_id != new_admin.node_id).cloned().collect();
-    // The name: skip occupied pairs and reserved predecessor pairs, without decoding names.
-    let held = vec![PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh2.node-admin", "2-old").unwrap(), PathName::new("mesh2.node", "4").unwrap()];
+    // The name: skip occupied pairs, without decoding names.
+    let held = vec![PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh2.node-admin", "2").unwrap(), PathName::new("mesh2.node", "4").unwrap()];
     let path = rdm_admin::mesh_delete::leaving_mesh_admin_path("mesh2", &live_roster(&admitted_births).unwrap(), &held);
     let ran: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let (out, own_steps, verdict, trace_id) = cap.run(async {

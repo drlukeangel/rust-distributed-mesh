@@ -2,8 +2,8 @@
 //! its incarnation, and separate path/name fields. A rename preserves the path and identity;
 //! subsequent connection facts carry the new name, while earlier facts stay unchanged.
 //!
-//! CONTRACT: a node at path `mesh1.node`, name `1` deletes its connections, leaves its mesh,
-//! changes its name to `1-old`, stops, and starts. Both ends of subsequent data-plane connections
+//! CONTRACT: a node at path `mesh1.node`, name `1` deletes its connections, changes its name to
+//! `renamed`, stops, and starts. Both ends of subsequent data-plane connections
 //! carry its same node ID and incarnation and its updated name. Node RPC writes no connection fact.
 
 use crate::common::admin_side_serving;
@@ -44,9 +44,9 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
         let born: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let taken: PathName = born.renamed().unwrap();
+        let taken: PathName = born.with_name("renamed").unwrap();
         assert_eq!(taken.path, born.path, "a rename cannot change the path");
-        assert_eq!(taken.name, "1-old");
+        assert_eq!(taken.name, "renamed");
         let peer_name: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         let launch_of = |name: &PathName| {
             let node_id = NodeId::mint();
@@ -117,8 +117,8 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             "the data-plane connection is an entry naming the birth's name as its source: {before:#?}"
         );
 
-        // The rename (R-CR1a; node-replace.md steps 1-2): every connection deleted, off its mesh, the name
-        // taken live, then stopped, then started under the name it holds.
+        // The rename (R-CR1a; node-name-update.md): every connection deleted, the name taken live, then
+        // stopped, then started under the name it holds.
         let (d, _) = digest_view.get(renamed.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
@@ -144,10 +144,8 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             let early: Vec<_> = held.iter().filter(|(k, (n, _, _))| n == "rdm.node_rpc.connection.delete.via-hard-cut" && **k < deleted[0]).map(|(_, (_, _, f))| f.clone()).collect();
             assert!(early.is_empty(), "no pool is hard-cut before the All has deleted its connections: {early:#?}");
         }
-        let leave = StatusRequest::LeaveMesh { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 1, operation: rdm_core::OperationId::node("node.mesh.leave", &renamed.node_id) };
-        assert!(matches!(call(leave).await, StatusReply::MeshLeft { .. }), "the node leaves its mesh");
         let apply = StatusRequest::ApplyNodeName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.clone() };
-        assert_eq!(call(apply).await, StatusReply::Applied, "the node takes the name off its mesh");
+        assert_eq!(call(apply).await, StatusReply::Applied, "the node takes the name, holding no connection");
         let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &renamed.node_id) };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         admin.put_row(NodeRow { mesh: renamed.mesh.clone(), r#type: renamed.r#type.clone(), initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None });
@@ -256,22 +254,22 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
     }
 }
 
-/// CONTRACT: a node renamed off its mesh and then stopped records its next connection, after its start,
-/// under the name it holds (lifecycles/node-replace.md steps 1-2; node-start.md step 2: the node installs
+/// CONTRACT: a node renamed and then stopped records its next connection, after its start, under the
+/// name it holds (lifecycles/node-name-update.md; node-start.md step 2: the node installs
 /// the handed name before it publishes anything; node-identity-and-state.md §8: a row names the ends'
 /// separate path/name fields; R12: the node publishes only the row's name). name `1` at path `mesh1.node` originates a data-plane
-/// connection to its admin, has its connections deleted, leaves its mesh, takes name `1-old` at path `mesh1.node` live,
+/// connection to its admin, has its connections deleted, takes name `renamed` at path `mesh1.node` live,
 /// is stopped and starts: its start writes no entry (its join is Node RPC, which is no connection), and
-/// the next data-plane connection it originates to its admin names name `1-old` at path `mesh1.node` as its source,
+/// the next data-plane connection it originates to its admin names name `renamed` at path `mesh1.node` as its source,
 /// with its own node id and birth. What must NOT happen: an entry written after the start naming
 /// name `1` at path `mesh1.node`, the name the node gave up, or an entry written by the join itself.
 #[test]
-fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_the_name_it_holds() {
+fn a_node_renamed_then_stopped_records_its_next_connection_under_the_name_it_holds() {
     // The stop leaves the process stopped (its stop flag is process-wide): the cell runs in a process of its own.
-    if crate::own_process::delegated(module_path!(), "a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_the_name_it_holds") {
+    if crate::own_process::delegated(module_path!(), "a_node_renamed_then_stopped_records_its_next_connection_under_the_name_it_holds") {
         return;
     }
-    let cap = crate::common::capture("a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_the_name_it_holds");
+    let cap = crate::common::capture("a_node_renamed_then_stopped_records_its_next_connection_under_the_name_it_holds");
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, crate::common::serve_ping).await;
@@ -279,9 +277,9 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
         let born: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let taken: PathName = born.renamed().unwrap();
+        let taken: PathName = born.with_name("renamed").unwrap();
         assert_eq!(taken.path, born.path, "a rename cannot change the path");
-        assert_eq!(taken.name, "1-old");
+        assert_eq!(taken.name, "renamed");
         let node_id = NodeId::mint();
         let dir = root.join(node_id.as_str());
         std::fs::create_dir_all(&dir).unwrap();
@@ -335,7 +333,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
         };
         ping_admin(b"before the stop").await;
 
-        // Every connection deleted, off its mesh, the name taken live, then stopped.
+        // Every connection deleted, the name taken live, then stopped.
         let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
@@ -352,10 +350,8 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
         };
         let all = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
         assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
-        let leave = StatusRequest::LeaveMesh { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), attempt: 1, operation: rdm_core::OperationId::node("node.mesh.leave", &launch.node_id) };
-        assert!(matches!(call(leave).await, StatusReply::MeshLeft { .. }), "the node leaves its mesh");
         let apply = StatusRequest::ApplyNodeName { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), name: taken.clone() };
-        assert_eq!(call(apply).await, StatusReply::Applied, "the node takes the name off its mesh");
+        assert_eq!(call(apply).await, StatusReply::Applied, "the node takes the name, holding no connection");
         let stop = StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &launch.node_id) };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         seams.connections.observations_landed().await;

@@ -1689,8 +1689,7 @@ enum Write {
     /// A restart of the node: its `node.stop`, the next attempt of the accepted Build; [`Run::finish`]
     /// with [`Until::Restarted`] sends its `node.start` once the stop completed (Q183).
     Restart(PathName),
-    /// `node.delete` of the node: a new accepted Build, or, for the predecessor a replace left at
-    /// `<node>.old`, the next attempt of the accepted Build.
+    /// `node.delete` of the node: a new accepted Build.
     Delete(PathName),
     /// `node.create` of a node of `kind` in `mesh`: a new accepted Build.
     Create { mesh: String, kind: String },
@@ -2019,26 +2018,6 @@ impl Run {
         // A node command opens no attempt: the Build stays at the attempt the stop found.
         self.send_start(f, &st.fp_name(), node).await;
         want
-    }
-
-    /// The replace of `node` (lifecycles/node-replace.md): the node commands that free its name, then
-    /// the successor's Create, submitted to the fabric-primary over the `node` objects: the Build it
-    /// runs on. The attempt it opened is what [`Self::finish`] waits for. The caller's stream is read on
-    /// a task of its own.
-    async fn write_replace(&mut self, f: &Formed, st: &Stable, what: &str, node: &PathName) -> String {
-        use rdm_client::Nodes;
-        let t0 = now_ms();
-        let nodes = Nodes::new(f.estate.carrier_at(&st.fp_name()).await);
-        let subject = f.estate.node_view(node).await;
-        rdm_test::replace::free_the_name(&f.estate, node).await.unwrap_or_else(|e| panic!("{what}: the node commands that free {node:?}: {e}"));
-        let successor = rdm_core::build::Nodes { path: node.path.clone(), name: node.name.clone(), mesh: subject.mesh.clone(), r#type: subject.r#type.clone(), storage_persistence: None, executable: Some(f.estate.executables.of(&subject.r#type)), tags: Default::default(), config: Default::default() };
-        let mut stream = nodes.create(vec![successor]).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {:?} refused the successor's Create at {node:?}: {e}", st.fp_name()));
-        let (build_id, attempt) = (stream.accepted().expect("the call opened a Build").build_id.to_string(), stream.accepted().expect("the call opened a Build").attempt);
-        tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
-        self.attempts.insert(build_id.clone(), u64::from(attempt));
-        self.actions.push(json!({"t_ms": t0, "action": what, "via": format!("node commands, then build.create Create {node:?}"), "status": "started", "build_id": build_id, "accepted_by": st.fp["name"]}));
-        progress(&format!("{what}: the successor's Create at {node:?} accepted by {:?} as {build_id} attempt {attempt}", st.fp_name()));
-        build_id
     }
 
     /// Keep the seeded traffic going until the Build is complete and `until` holds in the view.
@@ -3667,9 +3646,8 @@ async fn admin_views_of(a: &mut Run, f: &Formed, name: &PathName) -> Vec<Value> 
 
 /// A topology write at an admin that is not the fabric-primary is refused by name, naming the
 /// fabric-primary, and executes nothing.
-async fn refused_by_a_non_writer(f: &Formed, a: &mut Run, st: &Stable, path: &PathName, how: Removal) -> Value {
+async fn refused_by_a_non_writer(f: &Formed, a: &mut Run, st: &Stable, path: &PathName) -> Value {
     let non_writer = st.admins.iter().find(|n| (rdm_test::estate::location(&n) != rdm_test::estate::location(&st.fp))).expect("an admin that is not the fabric-primary").clone();
-    let _ = how;
     let node_id = f.estate.node_view(path).await.node_id;
     let v = ask(&f.estate, &location(&non_writer), BuildChange::Delete { meshes: vec![], node_ids: vec![node_id] }).await;
     assert_eq!((v["reply"].as_str(), &v["fabric_primary"]), (Some("not-fabric-primary"), &st.fp["node_id"]), "a delete sent to {} is refused naming the fabric-primary: {v}", non_writer["name"]);
@@ -3678,22 +3656,11 @@ async fn refused_by_a_non_writer(f: &Formed, a: &mut Run, st: &Stable, path: &Pa
     rec
 }
 
-/// How a node's birth is ended through the rectifier: `node.delete` of the node (a deletion, the
-/// topology changes: a new accepted Build) or the replace steps (node-replace.md: one Build of node
-/// primitives, the next attempt of the accepted Build, no Build minted): the live birth's connections
-/// deleted, its mesh left, renamed `<node>.old` live and stopped, the successor created at the path it
-/// released, and the old birth deleted at `<node>.old` (its exit proven, NodeDeleted published).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Removal {
-    Delete,
-    Replace,
-}
-
 /// Delete `node` through the Build rectifier as the fabric-primary authorizes it, under seeded
 /// traffic aimed at it. The old birth's runtime is terminal as the provider reports it, its NodeId is
 /// in no admin's view after the removal is held for a full staleness window, and a call to the exact
 /// NodeId sends nothing. Leaves `a.roles` as the shape without the node.
-async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, label: &str, how: Removal, inv: &mut Invariants) -> (Value, Stable) {
+async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, label: &str, inv: &mut Invariants) -> (Value, Stable) {
     let n = st.nodes.iter().find(|n| location(n) == *node).unwrap_or_else(|| panic!("{node:?} is not in the settled view")).clone();
     let (r#type, mesh, node_id, old_inc) = (s(&n["type"]), s(&n["mesh"]), s(&n["node_id"]), s(&n["incarnation_id"]));
     assert!(matches!(r#type.as_str(), "broker" | "gateway" | "compute"), "{node:?}: only a role node is deleted here");
@@ -3706,7 +3673,7 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathN
         originate_op(f, a, &gw, &n, "before-delete");
         await_connection(&f.estate, &gw, &node_id, &old_inc, None).await;
     }
-    let refusal = refused_by_a_non_writer(f, a, st, node, how).await;
+    let refusal = refused_by_a_non_writer(f, a, st, node).await;
     let still = f.estate.node_value(node).await;
     assert_eq!((still["node_id"].clone(), still["incarnation_id"].clone(), still["status"].clone()), (n["node_id"].clone(), n["incarnation_id"].clone(), json!("ready")), "{node:?}: the refused delete executed nothing: {still}");
     let mut roles: BTreeSet<PathName> = a.roles.clone().unwrap_or_else(|| f.shape.names().into_iter().filter(|x| launch_id(x) != "node-admin").collect());
@@ -3715,31 +3682,13 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathN
     a.traffic.aim = matches!(r#type.as_str(), "broker" | "gateway").then(|| node.clone());
     let before_build = s(&st.fabric["build_id"]);
     let t0 = now_ns();
-    let (build_id, fin) = match how {
-        Removal::Delete => {
-            let build_id = a.write(f, st, &format!("{label}: delete at the fabric-primary"), Write::Delete(node.clone())).await;
-            assert_ne!(build_id, before_build, "{node:?}: a delete changes the topology, so it is a new accepted Build");
-            let fin = a.finish(f, &build_id, Until::Gone { node: node.clone() }, "during-delete").await;
-            (build_id, fin)
-        }
-        Removal::Replace => {
-            let build_id = a.write_replace(f, st, &format!("{label}: authorized replace"), node).await;
-            assert_eq!(build_id, before_build, "{node:?}: steps change no topology, so they are the next attempt of the accepted Build and mint none");
-            a.finish(f, &build_id, Until::Joined { node: node.clone(), not_node_id: node_id.clone() }, "during-replace").await;
-            // The Build's last step deleted the predecessor at `<node>.old` (its exit proven,
-            // NodeDeleted published): nothing is held at that path.
-            let fin = a.finish(f, &build_id, Until::Gone { node: node.renamed().unwrap() }, "during-delete-of-the-predecessor").await;
-            (build_id, fin)
-        }
-    };
+    let build_id = a.write(f, st, &format!("{label}: delete at the fabric-primary"), Write::Delete(node.clone())).await;
+    assert_ne!(build_id, before_build, "{node:?}: a delete changes the topology, so it is a new accepted Build");
+    let fin = a.finish(f, &build_id, Until::Gone { node: node.clone() }, "during-delete").await;
     a.traffic.aim = None;
-    if how == Removal::Replace {
-        // The node stands at its path again: the shape is whole.
-        a.roles = None;
-    }
     let st2 = a.stable(f, &format!("{label}: {node:?} deleted"), &both(2), inv).await;
     assert!(st2.nodes.iter().all(|x| x["node_id"] != n["node_id"]), "{node:?}: the deleted NodeId is in the settled view");
-    assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node:?}: the current build_id names the deleting Build (a replace leaves it as it was)");
+    assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node:?}: the current build_id names the deleting Build");
     let terminal = terminal_proof(node, &rt_before);
     // Terminal delete + held removal, then absence: a full staleness window with the removal held.
     let window = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
@@ -3760,7 +3709,7 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathN
     let rec = json!({
         "label": label, "node": node, "type": r#type, "mesh": mesh, "node_id": node_id, "old_incarnation_id": old_inc, "endpoint_id": n["endpoint_id"], "data_dir": n["data_dir"],
         "build_id": build_id, "fabric_build_id_before": before_build, "request_ns": t0, "wall_ms": fin["wall_ms"], "attempt_after": fin["build"]["attempt"], "executor_after": fin["build"]["executor"],
-        "opened_by": match how { Removal::Delete => "rdm.node_admin.build.create.via-node-rpc", Removal::Replace => "rdm.node_admin.build.update.via-steps" },
+        "opened_by": "rdm.node_admin.build.create.via-node-rpc",
         "runtime_before": rt_before.record(), "old_birth_terminal": terminal, "non_writer_refusal": refusal, "canary_key": ckey, "canary_value": cval,
         "absence": {"window_ms": window, "looks": looks, "views_at_end": views}, "call_after_removal": {"outcome": g["outcome"], "reason": g["reason"]},
     });
@@ -3772,22 +3721,16 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathN
     (rec, st2)
 }
 
-/// The spans of one deletion: build.create.via-node-rpc (a new accepted Build) -> reconcile (`node.delete:<node>`), or for
-/// a replace the Build's delete of the stopped predecessor (`node.delete:<node>.old`, node.delete's one
-/// key, a step of the Build's attempt of the accepted Build) -> node.delete.via-build -> pipeline -> the
-/// steps in their documented order; NodeDeleting and NodeDeleted naming the old birth; the receivers'
-/// removal; and no Ready span of the NodeId at or after its departure. A replace's whole set of steps is
-/// checked too (`step_ops_of`).
+/// The spans of one deletion: build.create.via-node-rpc (a new accepted Build) -> reconcile
+/// (`node.delete:<node>`) -> node.delete.via-build -> pipeline -> the steps in their documented order;
+/// NodeDeleting and NodeDeleted naming the old birth; the receivers' removal; and no Ready span of the
+/// NodeId at or after its departure.
 fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
     let node = node_of(rec);
     let (bid, id, old) = (s(&rec["build_id"]), s(&rec["node_id"]), s(&rec["old_incarnation_id"]));
-    // A removal is `node.delete:<path>`; a replace is the Build (node-replace.md), whose last step
-    // deletes the stopped predecessor at `<path>.old` under node.delete's one key, after the
-    // successor's Ready: the chain below follows that delete; the Build's own order is checked after
-    // (`step_ops_of`).
+    // A removal is `node.delete:<path>`.
     let opener = s(&rec["opened_by"]);
-    let replace = opener == "rdm.node_admin.build.update.via-steps";
-    let target = if replace { node.renamed().unwrap() } else { node.clone() };
+    let target = node.clone();
     let op = "node.delete";
     // The request that opened the deleting reconcile: an accepted Build (a deletion), or the
     // steps' attempt of the accepted Build.
@@ -3809,12 +3752,7 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
     steps.sort_by_key(|st| start_ns(st));
     let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
     let mut last = 0usize;
-    let wanted: &[&str] = if replace {
-        // node.delete of the stopped birth: its stop steps are done, nothing is released but its id and name.
-        &["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]
-    } else {
-        &["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
-    };
+    let wanted: &[&str] = &["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"];
     for want in wanted.iter().copied() {
         let at = names.iter().position(|x| x == want).unwrap_or_else(|| panic!("{node:?}: the delete pipeline has no `{want}` step: {names:?}"));
         assert!(at >= last, "{node:?}: delete steps out of order at `{want}`: {names:?}");
@@ -3827,51 +3765,14 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
     assert_eq!(deleted.len(), 1, "{node:?}: exactly one NodeDeleted for {id}: {deleted:?}");
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], old.as_str(), "{node:?}: NodeDeleted names the exact old birth");
     assert!(deleting.iter().all(|sp| sp["attributes"]["incarnation_id"].as_str().is_none_or(|i| i == old)), "{node:?}: NodeDeleting names the exact old birth");
-    if replace {
-        for never in ["SeatTransfer", "StopNode", "AwaitNodeLeft", "ReleaseStorage"] {
-            assert!(!names.iter().any(|x| x == never), "{node:?}: the delete of the stopped {target:?} runs no `{never}` step: {names:?}");
-        }
-    }
-    let step_ops = replace.then(|| step_ops_of(spans, &node, &id, &bid));
     let removed = named(spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str()).count();
     let ready = named(spans, "rdm.mesh.node.update.via-ready");
     let after: Vec<&&Value> = ready.iter().filter(|r| r["attributes"]["node_id"] == id.as_str() && start_ns(r) > start_ns(deleted[0])).collect();
     assert!(after.is_empty(), "{node:?}: the deleted NodeId {id} was Ready again after its departure: {after:?}");
     json!({"node": node, "op": op, "target": target, "rest_span": create["span_id"], "reconcile_span": reconcile["span_id"], "delete_span": del["span_id"], "pipeline_span": pipeline["span_id"], "steps": outcomes,
-        "node_deleting_spans": deleting.len(), "node_deleted_span": deleted[0]["span_id"], "receivers_removed": removed, "ready_after_departure": 0, "step_ops": step_ops})
+        "node_deleting_spans": deleting.len(), "node_deleted_span": deleted[0]["span_id"], "receivers_removed": removed, "ready_after_departure": 0})
 }
 
-/// The replace steps of `node` in `build_id` (node-replace.md "Numbered end-to-end sequence"): its
-/// reconciles executed the Build's six operations, each under its op's own key, in order, and no
-/// other operation of the node or its predecessor. Each operation on the predecessor names it by its
-/// node id (`old_id`); the create names the location its successor is born at.
-fn step_ops_of(spans: &[Value], node: &PathName, old_id: &str, build_id: &str) -> Vec<String> {
-    // A create is keyed by the node.id its record minted (D58): the successor's create is the one create.
-    let at = "action: \"node.create\"".to_string();
-    let on_old = format!("subject: Some(Node(NodeId({old_id:?})))");
-    // The steps are an attempt of the accepted Build (its via-steps span names the attempt it opened):
-    // the reconciles from that attempt on in the fabric lane are the steps'. The formation's earlier
-    // attempts of the same Build created the node at its path and are not the steps'.
-    let opened = named(spans, "rdm.node_admin.build.update.via-steps").into_iter().filter(|sp| sp["attributes"]["build_id"] == build_id).map(attempt_of).min().unwrap_or_else(|| panic!("{node:?}: no via-steps span opened the steps of Build {build_id}"));
-    let mut reconciles: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-reconcile")
-        .into_iter()
-        .filter(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["lane"].as_str().unwrap_or("").is_empty() && attempt_of(sp) >= opened)
-        .collect();
-    reconciles.sort_by_key(|sp| start_ns(sp));
-    let mut ops: Vec<String> = Vec::new();
-    for sp in reconciles {
-        for item in rdm_test::estate::planned_operations(sp) {
-            let Some(action) = item.split("action: \"").nth(1).and_then(|r| r.split('"').next()) else { continue };
-            let op = if item.contains(&at) { format!("{action}:{node:?}") } else if item.contains(&on_old) { format!("{action}:{old_id}") } else { continue };
-            if !ops.iter().any(|x| *x == op) {
-                ops.push(op);
-            }
-        }
-    }
-    let want = [format!("node.connection.delete:{old_id}"), format!("node.mesh.leave:{old_id}"), format!("node.update:{old_id}"), format!("node.stop:{old_id}"), format!("node.create:{node:?}"), format!("node.delete:{old_id}")];
-    assert_eq!(ops, want.to_vec(), "{node:?}: the Build's operations, in order");
-    ops
-}
 
 /// The node's own Stopped declarations a receiver decided after `t_apply` (its All began): `applied`,
 /// or `already-applied` when the stop's stream reached the mesh-primary first. Whichever of the
@@ -4131,29 +4032,6 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, i
     rec
 }
 
-/// The creating half of a replace: node.create of the successor at `<node>`, the name its predecessor
-/// released (`node.create:<node>`, node-replace.md step 3), ran `node.create.via-build` through the
-/// create pipeline (AllocateIdentity .. WaitForNodeReady), and the new NodeId's own ready span follows;
-/// the old identity's NodeDeleted comes later, from the Build's delete of `<node>.old`.
-fn check_replace_create_chain(spans: &[Value], node: &PathName, build_id: &str, node_id: &str, incarnation: &str) -> Value {
-    let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
-        .into_iter()
-        // The formation created the node at the same path under the same key: the steps' reconcile is
-        // the one whose action is the steps (`AttemptAction::Steps`, its journal tag `"recipe"`).
-        .find(|sp| sp["attributes"]["build_id"] == build_id && s(&sp["attributes"]["action"]).contains("\"recipe\"") && rdm_test::estate::plans_a_create(sp))
-        .cloned()
-        .unwrap_or_else(|| panic!("{node:?}: no reconcile of {build_id} carrying the steps executed node.create of {node:?}"));
-    let action = s(&reconcile["attributes"]["action"]);
-    assert!(action.contains("\"recipe\"") && action.contains(node.path.as_str()) && action.contains(node.name.as_str()), "{node:?}: the reconcile carries the steps: {action}");
-    let make = named(spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| at_location(sp, node) && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node:?}: no node.create.via-build of the successor under the steps' reconcile"));
-    let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == make["span_id"]).cloned().unwrap_or_else(|| panic!("{node:?}: no deployment pipeline under its node.create.via-build"));
-    let names: Vec<String> = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipeline["span_id"]).map(|st| s(&st["attributes"]["step"])).collect();
-    for want in ["AllocateIdentity", "DeployRuntime", "WaitForNodeReady"] {
-        assert!(names.iter().any(|x| x == want), "{node:?}: the create pipeline has no `{want}` step creating the successor: {names:?}");
-    }
-    let ready = named(spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == node_id && sp["attributes"]["incarnation_id"] == incarnation).cloned().unwrap_or_else(|| panic!("{node:?}: the new node {node_id} left no ready span"));
-    json!({"node": node, "reconcile_span": reconcile["span_id"], "action": action, "create_span": make["span_id"], "pipeline_span": pipeline["span_id"], "steps": names.len(), "ready_span": ready["span_id"], "new_node_id": node_id})
-}
 
 async fn replacement_run(cell: &str, shape: Shape) {
     let mut f = form(cell, shape).await;
@@ -4167,20 +4045,20 @@ async fn replacement_run(cell: &str, shape: Shape) {
     a.traffic.burst(&f, 12, "steady-before").await;
     let formation_build = f.build_id.clone();
 
-    // 1. A planned logical replacement: the replace steps of the broker (node-replace.md), one Build of
-    //    node primitives on the fabric-primary, opens the next attempt of the accepted Build: the live birth
-    //    leaves its mesh, takes `.old` live and is stopped, a successor is created at the path, and `.old` is
-    //    deleted. No Build is minted.
+    // 1. A new node at a path (Q345: a new executable is a new node, a Build that adds it): the broker
+    //    is deleted by one Build, then one Build creates a broker at the path it released.
     let victim = Estate::path("mesh2.broker", &f.shape.broker.to_string());
     let old = at(&st, &victim).clone();
     let old_id = s(&old["node_id"]);
-    let add_t0 = now_ns();
-    let (deleted, st_new) = delete_via_build(&mut f, &mut a, &st, &victim, "C8 planned replacement", Removal::Replace, &mut inv).await;
-    assert_eq!(s(&deleted["build_id"]), formation_build, "the replacement is an attempt of the formation's Build: none was minted");
+    let (deleted, st_del) = delete_via_build(&mut f, &mut a, &st, &victim, "C8 planned new node", &mut inv).await;
     a.traffic.burst(&f, 4, "steady-gap").await;
     let gw = Estate::path("mesh2.gateway", "1");
-    let add_build = formation_build.clone();
-    let add_fin = json!({"wall_ms": deleted["wall_ms"]});
+    let add_t0 = now_ns();
+    let add_build = a.write(&f, &st_del, "C8 planned new node: create a broker at the released path", Write::Create { mesh: "mesh2".to_string(), kind: "broker".to_string() }).await;
+    let add_fin = a.finish(&mut f, &add_build, Until::Joined { node: victim.clone(), not_node_id: old_id.clone() }, "during-create").await;
+    // The node stands at its path again: the shape is whole.
+    a.roles = None;
+    let st_new = a.stable(&mut f, "C8 planned new node: the broker is created", &both(2), &mut inv).await;
     let born = at(&st_new, &victim).clone();
     let (new_id, new_inc) = (s(&born["node_id"]), s(&born["incarnation_id"]));
     assert_ne!(born["node_id"], old["node_id"], "the successor is a new logical node: a new NodeId");
@@ -4286,10 +4164,9 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let elections = check_election_history(&a, &spans, &mut inv);
     let imported = check_imported_mechanism(&f, &spans, &mut inv);
     let delete_chain = check_delete_chain(&spans, &deleted);
-    let add_chain = check_replace_create_chain(&spans, &victim, &add_build, &new_id, &new_inc);
     let t_deleted = start_ns(named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| sp["attributes"]["node_id"] == old_id.as_str()).unwrap());
-    let t_ready = start_ns(named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == new_id.as_str()).unwrap());
-    assert!(t_ready < t_deleted, "the old identity's departure (the Build's delete of the stopped {:?}) is published only after the successor is admitted and ready (a replace is not a delete followed by a spawn)", victim.renamed().unwrap());
+    let t_ready = start_ns(named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == new_id.as_str() && sp["attributes"]["incarnation_id"] == new_inc.as_str()).unwrap());
+    assert!(t_deleted < t_ready, "the old identity's departure is published at its Delete, before the new node at {victim:?} is ready (Q345: a Build that adds it)");
     // The death's recovery (node-recovery.md): the dead gateway's mesh-primary proves the exit and submits
     // one recovery, an attempt of the same Build (its delete, create and update); the fabric-primary's drift opens
     // nothing for an ordinary member.
@@ -4307,8 +4184,8 @@ async fn replacement_run(cell: &str, shape: Shape) {
         "node_deleted_for_the_dead_identity": drift_deleted.iter().map(|sp| json!({"span": sp["span_id"], "incarnation_id": sp["attributes"]["incarnation_id"]})).collect::<Vec<_>>(),
     });
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
-    assert_eq!(all_creates, BTreeSet::from([formation_build.clone()]), "the only Build accepted is the formation: the planned replacement and the death's recovery are attempts of it");
-    inv.holds("no topology changed after the formation: the planned replacement (the replace's attempt: its seven node primitives) and the death's recovery (the mesh-primary's recovery attempt: its delete, create and update) are attempts of the formation's Build, and exactly one Build was ever accepted", true, json!({"delete": delete_chain, "add": add_chain, "drift": drift_chain}));
+    assert_eq!(all_creates, BTreeSet::from([formation_build.clone(), s(&deleted["build_id"]), add_build.clone()]), "the Builds accepted are the formation, the Delete and the Create: the death's recovery accepts none");
+    inv.holds("the planned new node is two Builds, the Delete then the Create; the death's recovery (the mesh-primary's recovery: its delete, create and update) accepts no Build", true, json!({"delete": delete_chain, "drift": drift_chain}));
     let services = check_services(&spans, &mut inv);
     let formation = check_formation_chain(&f, &spans, &mut inv);
     let mut runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
@@ -4336,9 +4213,9 @@ async fn replacement_run(cell: &str, shape: Shape) {
             inv,
             extra: json!({
                 "primaries_at_formation": primaries, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
-                "planned_replacement": {"deleted": deleted, "replacement": replacement, "delete_chain": delete_chain, "add_chain": add_chain},
+                "planned_new_node": {"deleted": deleted, "replacement": replacement, "delete_chain": delete_chain},
                 "drift_replacement": {"drift": drift, "chain": drift_chain,
-                    "planned_replace_operation": "the replace steps (lifecycles/node-replace.md) are one Build of node primitives submitted over the node objects to the fabric-primary: it opens the next attempt of the accepted Build, and the planned replacement above is that attempt; a runtime death of a member is its mesh-primary's recovery: one attempt keyed on the exited birth, its delete, create and update (node-recovery.md)"},
+                    "planned_new_node_operation": "a new node at a path is a Build that adds it, after the Build that deletes the node there (Q345); a runtime death of a member is its mesh-primary's recovery: its delete, create and update (node-recovery.md)"},
                 "scenario_events": a.events, "topology_writes": a.writes, "writer_probes": writes_checked, "attempts": attempts, "elections": elections, "imported_mechanism": imported, "final_launches": launches_end, "scenarios": ["C8"],
                 "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
                 "schedule": {"seed": f.seed, "generator": "rdm_test::model::Rng (SplitMix64)", "planned": victim, "drift": victim2},
@@ -4516,10 +4393,10 @@ async fn delete_run(cell: &str, shape: Shape) {
     // C15 + C16 on a broker, then on a gateway: the two routable work shapes. Traffic aimed at the node
     // runs through its stop; the deletion is the fabric-primary's Build.
     let broker = Estate::path("mesh1.broker", &f.shape.broker.to_string());
-    let (rb, st1) = delete_via_build(&mut f, &mut a, &st, &broker, "C15/C16 broker", Removal::Delete, &mut inv).await;
+    let (rb, st1) = delete_via_build(&mut f, &mut a, &st, &broker, "C15/C16 broker", &mut inv).await;
     a.traffic.burst(&f, 4, "steady-between").await;
     let gateway = Estate::path("mesh2.gateway", &f.shape.gateway.to_string());
-    let (rg, st2) = delete_via_build(&mut f, &mut a, &st1, &gateway, "C15/C16 gateway", Removal::Delete, &mut inv).await;
+    let (rg, st2) = delete_via_build(&mut f, &mut a, &st1, &gateway, "C15/C16 gateway", &mut inv).await;
     a.traffic.burst(&f, 4, "steady-between").await;
 
     // C17: a compute held by its exact runtime at a point the provider acknowledges: silence is not death.

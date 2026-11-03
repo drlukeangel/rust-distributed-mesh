@@ -200,7 +200,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         republish: Default::default(),
         pre_node_ready: Default::default(),
         rename: Default::default(),
-        row_moved: Default::default(),
+        row_moved: Default::default(), rejoin: Default::default(),
         loads: None,
         digest_view: None,
         unreachable: Default::default(),

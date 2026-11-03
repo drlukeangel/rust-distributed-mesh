@@ -262,15 +262,6 @@ impl Nodes {
         self.node_command(WorkflowKind::DeleteConnections(node.clone()), node, Some(scope)).await
     }
 
-    /// `node.mesh.leave` of `node` (`lifecycles/node-mesh-leave.md`): a node command, never a Build
-    /// (Q342), NodeCommand 0x22 `LeaveMesh` to the node's mesh-primary, directly, sent after the
-    /// node's connections are deleted ([`Self::delete_connections`]); the mesh-primary holds the node's
-    /// `node.mesh.left` for its rename. The process keeps running. The stream is `node.mesh.left`,
-    /// ending `Complete`; a leave the primary refuses before it runs is the call's `Rejected`, by name.
-    pub async fn leave_mesh(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        self.node_command(WorkflowKind::LeaveMesh(node.clone()), node, None).await
-    }
-
     /// The node command `kind` of the node at `node`, sent to the primary above it (D40): its exact
     /// birth and that primary read with `node.get` from the node the carrier starts at, then one direct
     /// NodeCommand 0x22 call, `scope` a connections delete's. A command the primary refuses before it
@@ -287,16 +278,11 @@ impl Nodes {
             // its own command, never a repeat of the last.
             let step = match kind {
                 WorkflowKind::Start(_) => rdm_core::names::NodeStep::Start,
-                WorkflowKind::LeaveMesh(_) => rdm_core::names::NodeStep::MeshLeave,
                 _ => rdm_core::names::NodeStep::Stop,
             };
             let operation = rdm_core::OperationId::node(step.name(), &target.node_id).in_occurrence(rdm_core::OperationOccurrenceId::mint());
             let sent = match &kind {
                 WorkflowKind::Start(_) => rpc.start(&target, &operation, &opts).await,
-                WorkflowKind::LeaveMesh(_) => {
-                    let req = rdm_core::node_command::NodeCommandRequest::LeaveMesh { node_id: target.node_id.clone(), incarnation: target.incarnation.clone(), operation: operation.clone() };
-                    self.carrier.client().call_stream::<rdm_core::node_command::NodeCommand>(&target.target, &req, &opts).await.map(|(stream, _)| stream).map_err(|(out, _)| out)
-                }
                 WorkflowKind::DeleteConnections(_) => {
                     let scope = scope.cloned().unwrap_or(rdm_core::status::ConnectionScope::All);
                     let req = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: target.node_id.clone(), incarnation: target.incarnation.clone(), scope };
@@ -648,7 +634,7 @@ mod tests {
     fn one_name_per_op_opens_its_one_literal_span() {
         use rdm_core::names::NodeEvent;
         let (_g, spans) = capture_spans();
-        let ops: [(tracing::Span, &str); 16] = [
+        let ops: [(tracing::Span, &str); 15] = [
             (NodeOp::Get.span(), "rdm.node_admin.node.resolve.via-call"),
             (NodeOp::NameUpdate.span(), "rdm.node_admin.name.update.via-call"),
             (NodeOp::TopologyGet.span(), "rdm.node_admin.topology.resolve.via-call"),
@@ -662,11 +648,10 @@ mod tests {
             (NodeOp::Stop.span(), "rdm.node_admin.node.update.via-stop-workflow"),
             (NodeOp::Start.span(), "rdm.node_admin.node.update.via-start-workflow"),
             (NodeOp::Delete.span(), "rdm.node_admin.node.delete.via-workflow"),
-            (NodeOp::MeshLeave.span(), "rdm.node_admin.node.remove.via-mesh-leave-call"),
             (NodeOp::PrimaryUpdate.span(), "rdm.node_admin.primary.update.via-call"),
             (NodeOp::FabricPrimaryUpdate.span(), "rdm.node_admin.primary.update.via-fabric-primary-call"),
         ];
-        let events: [(tracing::Span, &str); 8] = [
+        let events: [(tracing::Span, &str); 7] = [
             (NodeEvent::Created.span(), "rdm.node_admin.node.create.via-created-frame"),
             (NodeEvent::Joined.span(), "rdm.node_admin.node.update.via-joined-frame"),
             (NodeEvent::Started.span(), "rdm.node_admin.node.update.via-started-frame"),
@@ -674,7 +659,6 @@ mod tests {
             (NodeEvent::Stopped.span(), "rdm.node_admin.node.update.via-stopped-frame"),
             (NodeEvent::Deleted.span(), "rdm.node_admin.node.delete.via-deleted-frame"),
             (NodeEvent::Updated.span(), "rdm.node_admin.node.update.via-updated-frame"),
-            (NodeEvent::MeshLeft.span(), "rdm.node_admin.node.remove.via-mesh-left-frame"),
         ];
         let reads: [(tracing::Span, &str); 6] = [
             (BuildOp::Create.span(), "rdm.node_admin.build.create.via-call"),

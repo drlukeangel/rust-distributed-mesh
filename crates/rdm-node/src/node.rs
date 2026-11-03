@@ -1865,7 +1865,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // Every call addressed this birth from its endpoint: a hook blocked on its authority's word
             // counts it, whether or not a record names the caller.
             me.addressed.note(&peer.endpoint_id);
-            if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. }) {
+            if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::Reserved29 { .. }) {
                 let commander = sender.as_ref().map(|d| d.node.node_id.clone());
                 let reply = me.own.serve(commander.as_ref(), Some(peer.endpoint_id), &req).await.expect("a command");
                 tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.digest.node.node_id, op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")

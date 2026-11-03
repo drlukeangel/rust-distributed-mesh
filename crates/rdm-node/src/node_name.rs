@@ -79,11 +79,10 @@ mod tests {
     #[test]
     fn a_name_apply_never_changes_the_nodes_path() {
         let held = PathName::new("apps.east", "worker").unwrap();
-        let other = PathName::new("apps.west", "worker-old").unwrap();
+        let other = PathName::new("apps.west", "renamed").unwrap();
         assert_eq!(decide(&held, &other, &[]), NameApply::PathImmutable);
-        assert_eq!(decide(&held, &held.renamed().unwrap(), &[]), NameApply::Applied);
-        assert_eq!(held.renamed().unwrap().path, held.path);
-        assert_eq!(held.renamed().unwrap().name, "worker-old");
+        assert_eq!(decide(&held, &held.with_name("renamed").unwrap(), &[]), NameApply::Applied);
+        assert_eq!(held.with_name("renamed").unwrap().path, held.path);
     }
 
     use rdm_core::connections::{ConnectionEnd, ConnectionState};

@@ -3299,7 +3299,7 @@ mod tests {
             republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
-            row_moved: Default::default(),
+            row_moved: Default::default(), rejoin: Default::default(),
             loads: None,
             digest_view: None,
             unreachable: Default::default(),
@@ -3410,7 +3410,7 @@ mod tests {
             tracestate: None,
         }));
         // The mesh-primary's rename on the shared root, through the one writer of a row's move.
-        let to: PathName = held.node.location().renamed().unwrap();
+        let to: PathName = held.node.location().with_name("renamed").unwrap();
         let mut record = Node::allocated(held.node.location(), held.node.mesh.clone(), &held.node.r#type);
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
@@ -3828,7 +3828,7 @@ mod tests {
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         let (me, base) = (rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), rdm_core::PathName::new("mesh1.node", "1").unwrap());
         crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &held.node.location(), &base).await.unwrap();
-        crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &base, &base.renamed().unwrap()).await.unwrap();
+        crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &base, &base.with_name("renamed").unwrap()).await.unwrap();
         let view = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestView::default(), &Records::default())));
         let probed = Arc::new(ProbedRows {
             inner: Arc::new(crate::storage::FileNodesStorage::open(&d.join("200000000000"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap()),
@@ -3856,7 +3856,7 @@ mod tests {
         let t = view.read().await.clone();
         let names: Vec<PathName> = t.nodes.iter().map(|n| n.location()).collect();
         let moved: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let now = moved.renamed().unwrap();
+        let now = moved.with_name("renamed").unwrap();
         assert!(t.node(&now).is_some_and(|n| n.node_id == held.node.node_id && n.stopped), "the stopped birth is listed at its row's current name: {names:?}");
         assert!(t.node(&held.node.location()).is_none() && t.node(&moved).is_none(), "nothing is listed at a name the row moved from: {names:?}");
         assert_eq!((ProbedRows::count(&probed.key_reads), ProbedRows::count(&probed.id_reads)), (0, 1), "the birth's row is read once, by its node id, and no (path, name) key is tried");

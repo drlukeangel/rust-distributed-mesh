@@ -478,7 +478,7 @@ fn a_take_over_on_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_on
         let topology = Arc::new(RwLock::new(before.clone()));
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
         // The rename its mesh's former primary wrote while the node was stopped: the row moved to its `-old` name.
-        let renamed = NodeRow { r#type: rpc1.r#type.clone(), mesh: rpc1.mesh.clone().to_owned(), initial_properties: None, topology_storage_provider: None, path: rpc1.location().renamed().unwrap().path, name: rpc1.location().renamed().unwrap().name, node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let renamed = NodeRow { r#type: rpc1.r#type.clone(), mesh: rpc1.mesh.clone().to_owned(), initial_properties: None, topology_storage_provider: None, path: rpc1.location().with_name("renamed").unwrap().path, name: rpc1.location().with_name("renamed").unwrap().name, node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         storage.write_record(&renamed).await.unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
@@ -486,7 +486,7 @@ fn a_take_over_on_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_on
             }
         })
         .await;
-        (storage.record_at(&rpc1.location().renamed().unwrap()).await.unwrap(), storage.record_at(&rpc1.location()).await.unwrap(), storage.node(&rpc1.node_id).await.unwrap().map(|r| r.location()), renamed)
+        (storage.record_at(&rpc1.location().with_name("renamed").unwrap()).await.unwrap(), storage.record_at(&rpc1.location()).await.unwrap(), storage.node(&rpc1.node_id).await.unwrap().map(|r| r.location()), renamed)
     });
     assert_eq!(old_row, Some(once(&renamed)), "the renamed node's row stands at the retained name as written");
     assert_eq!(bare_row, None, "no second row of the stopped node holds its former name");
@@ -1847,7 +1847,7 @@ fn a_node_created_with_a_free_text_name_keeps_name_path_and_type_through_create_
         //    north-old`, and the successor is created at `mesh1.broker.north`, the name it released, its
         //    row a successor's naming the predecessor's exact birth; its `type` is its own create
         //    spec's.
-        let old_key = north_key.renamed().unwrap();
+        let old_key = north_key.with_name("renamed").unwrap();
         assert_eq!((old_key.path().as_str(), old_key.name().as_str()), (north_key.path().as_str(), "north-old"));
         assert_eq!(north_key.with_name("north-old").unwrap(), old_key);
 

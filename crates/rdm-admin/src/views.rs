@@ -555,7 +555,7 @@ mod tests {
             rpc_succ.status = ModelNodeStatus::Ready;
             rpc_succ.is_primary = true;
 
-            let rpc_pred_path = rpc_path.renamed().unwrap();
+            let rpc_pred_path = rpc_path.with_name("renamed").unwrap();
             let mut rpc_pred = Node::allocated(rpc_pred_path.clone(), "mesh1", "node");
             rpc_pred.node_id = rpc_pred_id.clone();
             rpc_pred.incarnation_id = Some(rpc_pred_inc.clone());

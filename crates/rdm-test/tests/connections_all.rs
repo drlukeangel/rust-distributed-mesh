@@ -480,19 +480,18 @@ fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
     })
 }
 
-/// CONTRACT: `node.mesh.leave` refuses `BusyHoldingConnections` (`rdm.node.mesh.reject.via-busy-holding-connections`)
-/// while an entry is open in the node's connections log; once `node.connection.delete { All }` closes
-/// the log's entries, `LeaveMesh` stops the mesh channel (`rdm.node.mesh.update.via-leaving`,
-/// `rdm.node.mesh.update.via-left` with `which = "own"`) and answers `MeshLeft { joined/left: [Own] }`.
-/// `JoinMesh` then reports back via `JoinNode` (`rdm.node.mesh.update.via-joining`), starts the mesh
-/// channel (`rdm.node.mesh.update.via-joined` with `which = "own"`), and answers `MeshJoined`. And
-/// `node.stop` shares the `node.mesh.leave` step after `node.connection.delete { All }`.
+/// CONTRACT (node-mesh-join.md, Commander: "Standalone: the node's mesh-primary"; node-name-update.md
+/// step 6: a renamed node rejoins its mesh by node.mesh.join): a node joined at its start
+/// (`rdm.node.mesh.update.via-joined` with `which = "own"`) holding an open connection has it closed by
+/// `node.connection.delete { All }`; a standalone `JoinMesh` then takes it off its mesh channel and back
+/// on: it reports via `JoinNode` (`rdm.node.mesh.update.via-joining`), starts the mesh channel again
+/// (`rdm.node.mesh.update.via-joined` with `which = "own"`), and answers `MeshJoined`.
 #[test]
-fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
-    let cap = crate::common::capture("node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop");
+fn node_mesh_join_standalone_after_its_connections_are_deleted() {
+    let cap = crate::common::capture("node_mesh_join_standalone_after_its_connections_are_deleted");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        if crate::own_process::delegated(module_path!(), "node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop") {
+        if crate::own_process::delegated(module_path!(), "node_mesh_join_standalone_after_its_connections_are_deleted") {
             return;
         }
         let fabric = FabricId::mint();
@@ -513,38 +512,9 @@ fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
         seams.connections.observations_landed().await;
         assert_eq!(seams.connections.held_routes().await.len(), 1, "one open route in log");
 
-        // Standalone `LeaveMesh` while holding an open connection is refused `BusyHoldingConnections`.
-        let leave_req = StatusRequest::LeaveMesh {
-            node_id: node_id.clone(),
-            incarnation: incarnation.clone(),
-            build_id: "4wd8hn3tqe6c".into(),
-            attempt: 1,
-            operation: rdm_core::OperationId::node("node.mesh.leave", &node_id).in_occurrence(rdm_core::OperationOccurrenceId::mint()),
-        };
-        let busy = call_on(&admin, &target, &leave_req, None).await;
-        assert!(matches!(&busy, StatusReply::BusyHoldingConnections { connections } if connections.len() == 1), "LeaveMesh refuses while holding a connection: {busy:?}");
-        let rejects = fields_of(&spans, "rdm.node.mesh.reject.via-busy-holding-connections");
-        assert_eq!(rejects.len(), 1, "one busy-holding-connections span: {rejects:#?}");
-        assert_eq!(rejects[0].get("operation").map(String::as_str), Some("node.mesh.leave"));
-
-        // Close all connections, then standalone `LeaveMesh` succeeds.
+        // Close all connections.
         let all = NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
         assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()));
-        let leave_ok = StatusRequest::LeaveMesh {
-            node_id: node_id.clone(),
-            incarnation: incarnation.clone(),
-            build_id: "4wd8hn3tqe6c".into(),
-            attempt: 1,
-            operation: rdm_core::OperationId::node("node.mesh.leave", &node_id).in_occurrence(rdm_core::OperationOccurrenceId::mint()),
-        };
-        let left_reply = call_on(&admin, &target, &leave_ok, None).await;
-        assert_eq!(left_reply, StatusReply::MeshLeft { node_id: node_id.clone(), incarnation: incarnation.clone(), left: vec![WhichMesh::Own] });
-        let leaving = fields_of(&spans, "rdm.node.mesh.update.via-leaving");
-        assert_eq!(leaving.len(), 1, "one via-leaving span: {leaving:#?}");
-        assert_eq!(leaving[0].get("operation").map(String::as_str), Some("node.mesh.leave"));
-        let left_spans = fields_of(&spans, "rdm.node.mesh.update.via-left");
-        assert_eq!(left_spans.len(), 1, "one via-left span: {left_spans:#?}");
-        assert_eq!(left_spans[0].get("which").map(String::as_str), Some("own"));
 
         // Standalone `JoinMesh` brings the node back onto the mesh channel.
         let join_req = StatusRequest::JoinMesh {

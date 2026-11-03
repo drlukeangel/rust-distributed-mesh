@@ -1924,7 +1924,7 @@ mod tests {
         let created: PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
         let (node_id, from) = (NodeId::mint(), IncarnationId::mint());
         let rows = crate::storage::MemoryNodesStorage::default();
-        let mut row = crate::storage::NodeRow::new(created.renamed().unwrap(), "mesh1", "node", node_id.clone(), NodeStatus::Leaving);
+        let mut row = crate::storage::NodeRow::new(created.with_name("renamed").unwrap(), "mesh1", "node", node_id.clone(), NodeStatus::Leaving);
         row.birth_mut(&from, &created);
         row.allocated = Some(crate::storage::Allocation { predecessor: None, build_id: Some(crate::build::BuildId::mint()), operation: rdm_core::OperationId::node("node.create", &node_id), incarnation: from.clone(), deployment_id: deployment.clone() });
         rows.put_node(&row).await.unwrap();
@@ -1946,7 +1946,7 @@ mod tests {
         fact.write_record(&dir).unwrap();
         let provider = crate::deployment::process::ProcessDeploymentProvider::new();
         let (record, handle) = rebuild_absent_birth(Some(&rows), &root, &provider, &created, &node_id, &from).await.unwrap_or_else(|e| panic!("the birth is rebuilt: {e}"));
-        assert_eq!((record.location(), record.node_id.clone(), record.incarnation_id.clone()), (created.renamed().unwrap(), node_id, Some(from)), "the exact birth: {record:?}");
+        assert_eq!((record.location(), record.node_id.clone(), record.incarnation_id.clone()), (created.with_name("renamed").unwrap(), node_id, Some(from)), "the exact birth: {record:?}");
         assert_eq!(record.data_dir.as_deref(), Some(dir.display().to_string().as_str()), "its data dir under the data root");
         assert_eq!((handle.deployment_id.to_string(), handle.pid), (deployment.to_string(), Some(std::process::id())), "the runtime its record names");
         assert!(record.stopped, "a stopped birth: its delete runs no stop");
@@ -1962,7 +1962,7 @@ mod tests {
         let deployment = crate::model::DeploymentId::mint();
         let (root, rows, created, node_id, from) = absent_birth("rebuilt-birth-refused", &deployment).await;
         let provider = crate::deployment::process::ProcessDeploymentProvider::new();
-        let old = created.renamed().unwrap();
+        let old = created.with_name("renamed").unwrap();
         // No record names another birth at the path.
         let other = IncarnationId::mint();
         let e = rebuild_absent_birth(Some(&rows), &root, &provider, &old, &node_id, &other).await.expect_err("a birth no record names is refused");
@@ -2320,7 +2320,7 @@ mod tests {
         let record = |n: &Node, at: &PathName| crate::storage::NodeRow::new(at.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
         runner.nodes_storage.put_node(&record(&successor, &location)).await.unwrap();
         assert_eq!(runner.current_node_at(&location).await.unwrap().unwrap().node_id, successor.node_id);
-        let renamed = location.renamed().unwrap();
+        let renamed = location.with_name("renamed").unwrap();
         runner.nodes_storage.put_node(&record(&predecessor, &renamed)).await.unwrap();
         { let at = renamed.clone(); predecessor.path = at.path; predecessor.name = at.name; }
         assert_eq!(runner.current_node_at(&renamed).await.unwrap().unwrap().node_id, predecessor.node_id);

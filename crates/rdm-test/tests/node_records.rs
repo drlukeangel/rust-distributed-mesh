@@ -312,63 +312,78 @@ fn now_ns() -> u64 {
 const KEPT: [&str; 11] =["node_id", "name", "type", "mesh", "mesh_id", "incarnation_id", "executable", "storage_persistence", "topology_storage_provider", "initial_properties", "allocated"];
 
 // @feature: node-records
-/// CONTRACT (i150 R1, e1; node-identity-and-state.md "A path is a path": "Replacement renames the
-/// predecessor to `<name>-old` at the same path"; node-replace.md steps 1-3): a move keeps the node's
-/// identity. `mesh1.node` / `2` is replaced keeping its predecessor: the predecessor is then listed at
-/// `mesh1.node` / `2-old` under the same node id, incarnation and process, stopped, and the successor
-/// is a new node id at `mesh1.node` / `2`. node.get by each separate pair names exactly one node, and
-/// by the predecessor's id names it at the moved pair. Its lifecycle record keeps its node id and
-/// incarnation and names the moved pair with the pair it came from; its own property record stays at
-/// its node id; the rename span names the two fields it moved to. Must NOT happen: a move minting an
-/// identity, or one pair naming two births.
+/// CONTRACT (i150 R1, e1; Q347: "node.name.update needs no connections, and the node rejoins its
+/// mesh under the new name. The command completes once the node is back on its mesh, publishing the
+/// new name"; node-name-update.md steps 1-6): `mesh1.node` / `2`, ready on its mesh, has its
+/// connections deleted (`node.connection.delete { All }`, a node command) and is renamed `moved` by
+/// the caller's `node.name.update`, answered `NameUpdated`. Once answered, with no wait, node.get by the
+/// moved pair names one node under the same node id, incarnation and process, not stopped, and none at
+/// the old pair; node.get by its id names it at the moved pair; its lifecycle record names the moved
+/// pair. The node is back on its mesh: it is listed ready again at the moved pair. The mesh-primary's
+/// rename span says `connections=deleted`, `rejoin=mesh-joined`; its `node.mesh.join` command span
+/// names the moved pair and answers `mesh-joined`; the mesh-primary admits the node's join report under
+/// the moved pair. Must NOT happen: the rename refused because the node is on its mesh, an identity
+/// minted, the answer before the node is back on its mesh, or a join refused `JoinMismatch("name")`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_path_move_preserves_the_node_identity() {
-    let test = "a_path_move_preserves_the_node_identity";
-    let mut estate = estate_at(Estate::bootstrap(owner_of(test, "path-move"), "fabric1", "mesh1").await, &[("mesh1", 1, 2)]).await;
+async fn a_node_with_no_connection_renamed_rejoins_its_mesh_under_the_new_name_keeping_its_identity() {
+    let test = "a_node_with_no_connection_renamed_rejoins_its_mesh_under_the_new_name_keeping_its_identity";
+    let mut estate = estate_at(Estate::bootstrap(owner_of(test, "name-update"), "fabric1", "mesh1").await, &[("mesh1", 1, 2)]).await;
     let subject = pair("mesh1.node", "2");
-    let moved = subject.renamed().expect("the reserved name fits");
+    let moved = pair("mesh1.node", "moved");
     let before = estate.node_view(&subject).await;
     let pid = estate.pid_of(&subject).await;
-    rdm_test::replace::replace_keeping_predecessor(&estate, &subject, &before.mesh, &before.r#type).await.unwrap_or_else(|e| panic!("the replace of {subject:?}: {e}"));
+    let nodes = estate.nodes_obj().await;
+    Estate::workflow(&format!("node.connection.delete {{ All }} of {subject:?}"), nodes.delete_connections(&subject, &rdm_core::status::ConnectionScope::All).await).await;
+    let mesh_primary = estate.node_views().await.into_iter().find(|n| n.mesh == before.mesh && n.is_primary && rdm_core::is_node_admin(&n.r#type)).expect("the view names mesh1's primary").node_id;
+    let renamed_at = now_ns();
+    let reply = nodes.name_update(&birth_of(&before), &mesh_primary, &rdm_transport::RouteChoice::Direct, &moved).await.unwrap_or_else(|e| panic!("node.name.update of {subject:?}: {e:?}"));
+    assert!(matches!(reply, rdm_core::status::StatusReply::NameUpdated { .. }), "a node with no connection is renamed on its mesh: {reply:?}");
+    // No wait: the reads the moment the caller is answered.
     let at_moved = at_pair(&estate, &moved).await;
     assert_eq!(at_moved.len(), 1, "node.get [path, name] names one node at the moved pair: {at_moved:#?}");
-    let predecessor = at_moved[0].clone();
-    assert_eq!((&predecessor.node_id, &predecessor.incarnation_id, predecessor.r#type.clone(), &predecessor.mesh), (&before.node_id, &before.incarnation_id, before.r#type.clone(), &before.mesh), "the move keeps the node's identity");
-    assert!(predecessor.stopped, "the moved predecessor is stopped: {predecessor:?}");
-    assert_eq!(estate.pid_of(&moved).await, pid, "the moved node is the same process");
-    let at_name = at_pair(&estate, &subject).await;
-    assert_eq!(at_name.len(), 1, "node.get [path, name] names one node at the original pair: {at_name:#?}");
-    let successor = at_name[0].clone();
-    assert_ne!(successor.node_id, before.node_id, "the successor at the original pair is a new node id");
-    assert_eq!(successor.status, NodeStatus::Ready, "{successor:?}");
+    let renamed = at_moved[0].clone();
+    assert_eq!((&renamed.node_id, &renamed.incarnation_id, renamed.r#type.clone(), &renamed.mesh), (&before.node_id, &before.incarnation_id, before.r#type.clone(), &before.mesh), "the rename keeps the node's identity");
+    assert!(!renamed.stopped, "the renamed node is live: {renamed:?}");
+    assert!(at_pair(&estate, &subject).await.is_empty(), "nothing is listed at the old pair");
     let named_by_id: Vec<PathName> = by_id(&estate, &before.node_id).await.into_iter().map(|n| n.location()).collect();
-    assert_eq!(named_by_id, vec![moved.clone()], "node.get by the moved node's id names it at the moved pair");
-    let record = latest(&estate, &before.node_id).await.expect("the moved node's record");
+    assert_eq!(named_by_id, vec![moved.clone()], "node.get by the node's id names it at the moved pair");
+    let record = latest(&estate, &before.node_id).await.expect("the renamed node's record");
     assert_eq!(
         (&record.node_id, record.newest_birth().map(|b| &b.incarnation_id), &record.location()),
         (&before.node_id, before.incarnation_id.as_ref(), &moved),
-        "the moved node's record keeps its identity and names the moved pair: {record:?}"
+        "the renamed node's record keeps its identity and names the moved pair: {record:?}"
     );
-    let own = estate.node_properties(&before.node_id).expect("the moved node's own property record stays at its node id");
-    assert_eq!(Some(&own.birth.incarnation_id), before.incarnation_id.as_ref(), "{own:?}");
-    estate.artifact("path-move.json", &json!({"before": before, "predecessor": predecessor, "successor": successor, "record": record}));
+    // Back on its mesh: ready again at the moved pair, the same process.
+    let back = estate.until_node(&moved, "the renamed node is ready on its mesh at the moved pair", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id == before.node_id).cloned()).await;
+    assert_eq!(estate.pid_of(&moved).await, pid, "the renamed node is the same process");
+    estate.artifact("name-update-rejoin.json", &json!({"before": before, "renamed": renamed, "back": back, "record": record}));
     estate.stop().await;
     let spans = estate.spans();
-    let renames: Vec<&Value> = named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().filter(|sp| attr(sp, "node_id") == before.node_id.as_str()).collect();
-    let moved_to = renames
-        .iter()
-        .find(|sp| attr(sp, "to_path") == moved.path && attr(sp, "to_name") == moved.name && attr(sp, "outcome") == "name-updated")
-        .unwrap_or_else(|| panic!("the rename of {} to the moved pair is recorded with its two fields: {renames:#?}", before.node_id));
-    estate.record_trace_url(moved_to["trace_id"].as_str().unwrap());
+    let rename = named(&spans, "rdm.node_admin.name.update.via-writer")
+        .into_iter()
+        .find(|sp| attr(sp, "node_id") == before.node_id.as_str() && attr(sp, "to_name") == moved.name && attr(sp, "outcome") == "name-updated")
+        .unwrap_or_else(|| panic!("the mesh-primary's rename of {} to {moved:?} is recorded", before.node_id));
+    assert_eq!((attr(rename, "connections"), attr(rename, "apply"), attr(rename, "answered"), attr(rename, "rejoin")), ("deleted".to_string(), "direct".to_string(), "applied".to_string(), "mesh-joined".to_string()), "{rename:#}");
+    let rejoin = named(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded")
+        .into_iter()
+        .find(|sp| attr(sp, "node_id") == before.node_id.as_str() && attr(sp, "cause") == "node.name.update" && start_ns(sp) >= renamed_at)
+        .unwrap_or_else(|| panic!("the mesh-primary commanded {}'s node.mesh.join after the rename", before.node_id));
+    assert_eq!((attr(rejoin, "node_path"), attr(rejoin, "node_name"), attr(rejoin, "outcome")), (moved.path.clone(), moved.name.clone(), "mesh-joined".to_string()), "{rejoin:#}");
+    assert_eq!(rejoin["trace_id"], rename["trace_id"], "the rejoin is the rename's own step, in its trace");
+    let admitted = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| attr(sp, "node_id") == before.node_id.as_str() && start_ns(sp) >= renamed_at && attr(sp, "outcome") == "installed");
+    assert!(admitted.is_some_and(|sp| rdm_test::estate::names_location(sp, "admitted", &moved)), "the mesh-primary admits the node's join report under the moved pair");
+    assert!(named(&spans, "rdm.node_admin.node.reject.via-join-mismatch").into_iter().all(|sp| attr(sp, "node_id") != before.node_id.as_str()), "no join of the renamed node is refused");
+    estate.record_trace_url(rename["trace_id"].as_str().unwrap());
 }
 
 // @feature: node-records
 /// CONTRACT (i150 R11, e5.s2; query.md §1: "Historical records, including Deleted nodes, remain
 /// queryable by their own IDs and matching properties; a history query does not redirect to the current
-/// pair's claimant"; Q323: the record's latest line is current): `mesh1.node` / `2` is replaced and its
-/// predecessor deleted. node.get by the predecessor's id answers that node's latest line, Deleted, under
-/// the same id and incarnation, and the successor is not in that answer; the shared resolver records the
-/// read of the predecessor's record. Must NOT happen: an empty answer for the deleted birth, or the read
+/// pair's claimant"; Q323: the record's latest line is current): `mesh1.node` / `2` is deleted and a new
+/// node created at the pair (Q345: a new node is a Build that adds it). node.get by the deleted node's
+/// id answers that node's latest line, Deleted, under the same id and incarnation, and the new node is
+/// not in that answer; the shared resolver records the
+/// read of the deleted node's record. Must NOT happen: an empty answer for the deleted birth, or the read
 /// redirected to the pair's claimant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_deleted_birth_is_read_by_its_id() {
@@ -376,22 +391,23 @@ async fn a_deleted_birth_is_read_by_its_id() {
     let mut estate = estate_at(Estate::bootstrap(owner_of(test, "deleted-history"), "fabric1", "mesh1").await, &[("mesh1", 1, 2)]).await;
     let subject = pair("mesh1.node", "2");
     let before = estate.node_view(&subject).await;
-    rdm_test::replace::replace(&estate, &subject, &before.mesh, &before.r#type).await.unwrap_or_else(|e| panic!("the replace of {subject:?}: {e}"));
-    let successor = estate.until_node(&subject, "the successor is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
-    let record = latest(&estate, &before.node_id).await.expect("the deleted predecessor's record");
-    assert_eq!(status_of(&record), "deleted", "the predecessor's latest line is Deleted: {record:?}");
+    Estate::workflow(&format!("the Delete of {subject:?}"), estate.delete_node(&subject).await).await;
+    Estate::workflow(&format!("the Create of a node at {subject:?}"), estate.create_node(&before.mesh, &before.r#type).await).await;
+    let successor = estate.until_node(&subject, "the new node is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
+    let record = latest(&estate, &before.node_id).await.expect("the deleted node's record");
+    assert_eq!(status_of(&record), "deleted", "the deleted node's latest line is Deleted: {record:?}");
     let read_at = now_ns();
     let listed = by_id(&estate, &before.node_id).await;
     assert_eq!(
         listed.iter().map(|n| (n.node_id.clone(), n.incarnation_id.clone(), n.status)).collect::<Vec<_>>(),
         vec![(before.node_id.clone(), before.incarnation_id.clone(), NodeStatus::Deleted)],
-        "node.get by the deleted predecessor's id answers its latest line, Deleted: {listed:#?}"
+        "node.get by the deleted node's id answers its latest line, Deleted: {listed:#?}"
     );
-    assert!(listed.iter().all(|n| n.node_id != successor.node_id), "the read by the predecessor's id is not redirected to the pair's claimant");
+    assert!(listed.iter().all(|n| n.node_id != successor.node_id), "the read by the deleted node's id is not redirected to the pair's claimant");
     estate.artifact("deleted-history.json", &json!({"before": before, "successor": successor, "record": record, "listed": listed}));
     estate.stop().await;
     let spans = estate.spans();
-    let read = *reads_of(&spans, &before.node_id, read_at).first().expect("the shared resolver records the read of the deleted predecessor's record");
+    let read = *reads_of(&spans, &before.node_id, read_at).first().expect("the shared resolver records the read of the deleted node's record");
     estate.record_trace_url(read["trace_id"].as_str().unwrap());
 }
 
@@ -569,7 +585,7 @@ async fn a_start_preserves_a_newer_owed_update() {
 // @feature: node-records
 /// CONTRACT (i150 R11, e5; query.md §1; fabric-recovery.md "Nothing alive": "Every node the store names
 /// is re-created through node recovery, never waited for"; Q335 item 4): mesh2's `mesh2.node` / `2` is
-/// replaced and its predecessor deleted. Every node-admin is then lost and one is started on the
+/// deleted and a new node created at the pair (Q345). Every node-admin is then lost and one is started on the
 /// fabric-primary's retained data dir and store. Its first node.get answer by the pair names the
 /// successor, read from the retained records; the current Build is unchanged, and an attempt it opens
 /// after the start is a node recovery of a lost node-admin (mesh2's, which no successor holds), never a
@@ -583,8 +599,9 @@ async fn current_node_reads_survive_fabric_primary_restart() {
     let mut estate = estate_at(Estate::bootstrap(owner_of(test, "fabric-primary-restart"), "fabric1", "mesh1").await, &shape).await;
     let subject = pair("mesh2.node", "2");
     let before = estate.node_view(&subject).await;
-    rdm_test::replace::replace(&estate, &subject, &before.mesh, &before.r#type).await.unwrap_or_else(|e| panic!("the replace of {subject:?}: {e}"));
-    let successor = estate.until_node(&subject, "the successor is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
+    Estate::workflow(&format!("the Delete of {subject:?}"), estate.delete_node(&subject).await).await;
+    Estate::workflow(&format!("the Create of a node at {subject:?}"), estate.create_node(&before.mesh, &before.r#type).await).await;
+    let successor = estate.until_node(&subject, "the new node is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
     let build = estate.accepted_build_id().await;
     let attempt = estate.attempt_of_build(&build).await;
     let admins: Vec<String> = estate.node_views().await.into_iter().filter(|n| n.r#type == "node-admin").map(|n| n.node_id.to_string()).collect();

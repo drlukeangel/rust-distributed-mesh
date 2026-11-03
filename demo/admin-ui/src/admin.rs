@@ -63,8 +63,7 @@ impl Admin {
 
     /// The topology a request is built from: the current Build `fabric.get` names, and every live
     /// path the rows hold (`node.get`) that the current Build's topology names (`build.get`), with the
-    /// executable its row records. A replaced predecessor renamed `<name>-old` is a row the topology
-    /// does not name (a name ending `-old` does not make a predecessor: lifecycles/node-replace.md).
+    /// executable its row records.
     async fn current(&self) -> Result<Current, CallEnd> {
         let fabric = self.fabric().await?;
         let unread = |reason: String| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason };
@@ -281,33 +280,6 @@ impl Admin {
         let nodes = self.resized(&current, std::slice::from_ref(&desired), false)?.into_iter().filter(|s| s.mesh == desired.name).map(nodes_of).collect();
         let s = self.carrier().create(Change::Create { meshes: vec![Meshes { name: desired.name.clone() }], nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
-    }
-
-    /// `node`'s replacement on the executable at `executable`, hashed here (lifecycles/node-replace.md):
-    /// node commands free its name (its connections deleted, it leaves its mesh, it is renamed
-    /// `<name>-old` and stopped, keeping its data), then one Create adds its successor at the same path and
-    /// name. A path the rows hold no live node at is refused `unknown-node`.
-    pub async fn replace(&self, node: &PathName, executable: PathBuf) -> Result<Accepted, CallEnd> {
-        let current = self.current().await?;
-        let sha256 = sha256_file(&executable).map_err(|e| missing(format!("{} could not be hashed: {e}", executable.display())))?;
-        let spec = current.paths.get(node).cloned().ok_or_else(|| unknown_node(node))?;
-        let row = current.rows.get(node).cloned().ok_or_else(|| unknown_node(node))?;
-        let primary = current.mesh_primaries.get(&spec.mesh).cloned().ok_or_else(|| CallEnd::Rejected { reason: "no-mesh-primary".into(), detail: format!("node.get names no primary of {}", spec.mesh) })?;
-        let old = node.renamed().map_err(|e| CallEnd::Rejected { reason: "invalid-name".into(), detail: format!("{node:?} has no <name>-old: {e:?}") })?;
-        let nodes = rdm_client::Nodes::new(self.carrier());
-        terminal(nodes.delete_connections(node, &rdm_core::status::ConnectionScope::All).await?).await?;
-        terminal(nodes.leave_mesh(node).await?).await?;
-        let incarnation = row.incarnation_id.clone().ok_or_else(|| unknown_node(node))?;
-        let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(row.node_id.clone()), node_id: row.node_id.clone(), incarnation };
-        match nodes.name_update(&birth, &primary, &rdm_transport::RouteChoice::Direct, &old).await {
-            Ok(rdm_core::status::StatusReply::NameUpdated { .. }) => {}
-            Ok(other) => return Err(CallEnd::Rejected { reason: "name-update-refused".into(), detail: format!("node.name.update of {node:?} to {old:?} ended {other:?}") }),
-            Err(e) => return Err(e),
-        }
-        terminal(nodes.stop(&old).await?).await?;
-        let binding = Binding { launch_id: spec.r#type.clone(), executable, sha256, image: current.image.clone() };
-        let successor = Nodes { executable: Some(binding), tags: Default::default(), config: Default::default(), ..nodes_of(spec) };
-        opened(nodes.create(vec![successor]).await?.accepted())
     }
 
     /// build.create removing the mesh `mesh`: a Delete of it by name.

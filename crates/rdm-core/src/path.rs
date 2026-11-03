@@ -96,10 +96,6 @@ impl PathName {
             .expect("count expansion supplies a valid path and name")
     }
 
-    /// The replacement predecessor's reserved name, preserving its immutable path.
-    /// Fails when appending `-old` exceeds the name limit.
-    pub fn renamed(&self) -> Result<Self, PathNameError> { self.with_name(&format!("{}-old", self.name)) }
-
     /// The path component.
     pub fn path(&self) -> String { self.path.clone() }
 
@@ -114,20 +110,6 @@ impl PathName {
 mod tests {
     use super::*;
 
-    #[test]
-    fn replacement_name_checks_limit_without_restricting_ordinary_names() {
-        let largest = PathName::new("apps", "a".repeat(60)).unwrap();
-        let retained = largest.renamed().unwrap();
-        assert_eq!(retained.path, largest.path);
-        assert_eq!(retained.name.len(), 64);
-        assert_eq!(serde_json::from_value::<PathName>(serde_json::to_value(&retained).unwrap()).unwrap(), retained);
-        for length in 61..=64 {
-            let valid = PathName::new("apps", "a".repeat(length)).unwrap();
-            assert!(matches!(valid.renamed(), Err(PathNameError::Name(_))));
-            assert_eq!(serde_json::from_value::<PathName>(serde_json::to_value(&valid).unwrap()).unwrap(), valid);
-        }
-    }
-
     /// CONTRACT: path and name are stored separately and do not encode mesh or type.
     #[test]
     fn separate_path_and_name_survive_serialization() {
@@ -136,7 +118,6 @@ mod tests {
         let json = serde_json::to_value(&pair).unwrap();
         assert_eq!(json, serde_json::json!({"path":"production.east.apps", "name":"north-1"}));
         assert_eq!(serde_json::from_value::<PathName>(json).unwrap(), pair);
-        assert_eq!(pair.renamed().unwrap(), PathName::new("production.east.apps", "north-1-old").unwrap());
         assert_eq!(pair.with_name("another").unwrap().path, pair.path);
         assert!(pair.with_name("another.name").is_err());
         assert!(serde_json::from_str::<PathName>(r#""production.east.apps.north-1""#).is_err());
@@ -146,13 +127,12 @@ mod tests {
     }
 
     /// CONTRACT (i150 R1, e1; node-identity-and-state.md "A path is a path": "A path has dotted
-    /// free-text segments with no mesh or type encoded in their meaning ... Replacement renames the
-    /// predecessor to `<name>-old` at the same path"): the pair is two fields in every shape that
+    /// free-text segments with no mesh or type encoded in their meaning"): the pair is two fields in every shape that
     /// carries it, and each shape gives back the same two fields: the pair's own JSON, an operation's
     /// `Location` subject, the node.get `path`/`name` filter and the launch environment's
     /// `RDM_NODE_PATH`/`RDM_NODE_NAME`. A free-text path is never parsed for a mesh, a type or an
-    /// ordinal; the dot-free name is refused by name when it holds a dot, is empty or is too long; the
-    /// replacement move keeps the path and changes only the name. Must NOT happen: a joined string read
+    /// ordinal; the dot-free name is refused by name when it holds a dot, is empty or is too long; a
+    /// rename keeps the path and changes only the name. Must NOT happen: a joined string read
     /// as a pair, or a pair whose path and name trade bytes across the dot.
     #[test]
     fn separate_path_and_name_read_back_as_written() {
@@ -195,9 +175,9 @@ mod tests {
             let written = launch.to_env();
             assert_eq!((written[crate::launch::ENV_NODE_PATH].as_str(), written[crate::launch::ENV_NODE_NAME].as_str()), (pair.path.as_str(), pair.name.as_str()), "the launch writes the two variables back unjoined");
             assert_eq!(crate::launch::Launch::from_env(|k| written.get(k).cloned()).unwrap().location(), *pair);
-            // The replacement move keeps the path and changes only the name.
-            let moved = pair.renamed().unwrap();
-            assert_eq!((moved.path.as_str(), moved.name.clone()), (pair.path.as_str(), format!("{}-old", pair.name)), "the predecessor moves to <name>-old at the same path");
+            // A rename keeps the path and changes only the name.
+            let moved = pair.with_name("renamed").unwrap();
+            assert_eq!((moved.path.as_str(), moved.name.as_str()), (pair.path.as_str(), "renamed"), "a rename keeps the path");
             assert_eq!(serde_json::from_value::<PathName>(serde_json::to_value(&moved).unwrap()).unwrap(), moved);
         }
         // The path is free text: nothing reads a mesh, a type or an ordinal out of it.

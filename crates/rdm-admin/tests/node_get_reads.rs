@@ -286,7 +286,7 @@ async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atla
         republish: Default::default(),
         pre_node_ready: Default::default(),
         rename: Default::default(),
-        row_moved: Default::default(),
+        row_moved: Default::default(), rejoin: Default::default(),
         loads: Some(loads),
         digest_view: None,
         unreachable: Default::default(),

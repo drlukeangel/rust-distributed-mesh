@@ -35,8 +35,6 @@ pub enum NodeOp {
     Start,
     /// `node.delete`.
     Delete,
-    /// `node.mesh.leave`: the node leaves its mesh and keeps running, a node command of its mesh-primary.
-    MeshLeave,
     /// `node.primary.update`: move a node-type primary's or mesh-primary's role (and the fabric-primary role
     /// with it when the primary holds both) to its same-mesh successor (`0x21`).
     PrimaryUpdate,
@@ -62,7 +60,6 @@ impl NodeOp {
             Self::Stop => "node.stop",
             Self::Start => "node.start",
             Self::Delete => "node.delete",
-            Self::MeshLeave => "node.mesh.leave",
             Self::PrimaryUpdate => "node.primary.update",
             Self::FabricPrimaryUpdate => "node.fabric-primary.update",
         }
@@ -91,7 +88,6 @@ impl NodeOp {
             Self::Stop => tracing::info_span!("rdm.node_admin.node.update.via-stop-workflow", op = "node.stop", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Start => tracing::info_span!("rdm.node_admin.node.update.via-start-workflow", op = "node.start", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Delete => tracing::info_span!("rdm.node_admin.node.delete.via-workflow", op = "node.delete", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
-            Self::MeshLeave => tracing::info_span!("rdm.node_admin.node.remove.via-mesh-leave-call", op = "node.mesh.leave", outcome = tracing::field::Empty),
             Self::PrimaryUpdate => tracing::info_span!("rdm.node_admin.primary.update.via-call", op = "node.primary.update", outcome = tracing::field::Empty),
             Self::FabricPrimaryUpdate => tracing::info_span!("rdm.node_admin.primary.update.via-fabric-primary-call", op = "node.fabric-primary.update", outcome = tracing::field::Empty),
         }
@@ -205,9 +201,6 @@ pub enum NodeEvent {
     Deleted,
     /// `node.updated`: the node's row holds what the update put (lifecycles/node-name-update.md).
     Updated,
-    /// `node.mesh.left`: the node left its mesh, and the backbone a node-admin, keeping its endpoint
-    /// (lifecycles/node-mesh-leave.md).
-    MeshLeft,
 }
 
 impl NodeEvent {
@@ -221,7 +214,6 @@ impl NodeEvent {
             Self::Stopped => "node.stopped",
             Self::Deleted => "node.deleted",
             Self::Updated => "node.updated",
-            Self::MeshLeft => "node.mesh.left",
         }
     }
 
@@ -235,7 +227,6 @@ impl NodeEvent {
             Self::Stopped => tracing::info_span!("rdm.node_admin.node.update.via-stopped-frame", event = "node.stopped"),
             Self::Deleted => tracing::info_span!("rdm.node_admin.node.delete.via-deleted-frame", event = "node.deleted"),
             Self::Updated => tracing::info_span!("rdm.node_admin.node.update.via-updated-frame", event = "node.updated"),
-            Self::MeshLeft => tracing::info_span!("rdm.node_admin.node.remove.via-mesh-left-frame", event = "node.mesh.left"),
         }
     }
 }
@@ -258,8 +249,6 @@ pub enum NodeStep {
     Delete,
     /// `node.update`.
     Update,
-    /// `node.mesh.leave`.
-    MeshLeave,
 }
 
 impl NodeStep {
@@ -273,7 +262,6 @@ impl NodeStep {
             Self::Stop => "node.stop",
             Self::Delete => "node.delete",
             Self::Update => "node.update",
-            Self::MeshLeave => "node.mesh.leave",
         }
     }
 }

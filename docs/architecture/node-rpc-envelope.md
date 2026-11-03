@@ -207,14 +207,14 @@ sees only the catalog.
 | `0x01` | ping | core | live | canonical | `Ping` |
 | `0x11` | echo | core | reserved | | |
 | `0x1A` | forward | core | live | canonical | `Forward` |
-| `0x1B` | status | rdm | live | canonical | the request and reply variants, in positional order, are on the rustdoc of [`Status`](../../api/rdm_core/status/struct.Status.html), each variant naming its position; `Reserved6`, `Reserved7`, `Reserved12`, `Reserved13` and `NodeLeft` are reserved positions, never sent; `LeaveMesh` and its reply `MeshLeft` keep their positions and are refused by name, node.mesh.leave being on 0x22 |
+| `0x1B` | status | rdm | live | canonical | the request and reply variants, in positional order, are on the rustdoc of [`Status`](../../api/rdm_core/status/struct.Status.html), each variant naming its position; `Reserved6`, `Reserved7`, `Reserved12`, `Reserved13` and `NodeLeft` are reserved positions, never sent; `Reserved29` and its reply `Reserved50` keep their positions and are refused by name, node.mesh.leave being a step of node.stop only |
 | `0x1C` | build-claim | rdm | live | canonical | `ClaimAttempt` |
 | `0x1D` | join | rdm | live | canonical | `JoinNode` |
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
 | `0x1F` | build-facts | rdm | reserved | | |
 | `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete |
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`, `AlreadyApplied` |
-| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `LeaveMesh`, `BlockMesh`, `UnblockMesh`: `StopNode`, `StartNode`, `DeleteConnections` and `LeaveMesh` from the caller to the node's mesh-primary, directly; every variant but `BlockMesh` and `UnblockMesh` from the mesh-primary to the exact node; `BlockMesh` and `UnblockMesh` from the fabric-primary to each mesh-primary; never forwarded; server-streaming; the request and reply variants are on the rustdoc of [`NodeCommand`](../../api/rdm_core/node_command/struct.NodeCommand.html) |
+| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `BlockMesh`, `UnblockMesh` (position 4 reserved): `StopNode`, `StartNode` and `DeleteConnections` from the caller to the node's mesh-primary, directly; every variant but `BlockMesh` and `UnblockMesh` from the mesh-primary to the exact node; `BlockMesh` and `UnblockMesh` from the fabric-primary to each mesh-primary; never forwarded; server-streaming; the request and reply variants are on the rustdoc of [`NodeCommand`](../../api/rdm_core/node_command/struct.NodeCommand.html) |
 | `0x23` | read | rdm | live | canonical | `Get`: fabric.get, mesh.get, node.get, server-streaming, never forwarded (Q285) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
 | `0x12` | data-frame | rafka | live | transitional | `DataFrame` broker operations |
@@ -342,12 +342,12 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [node.stop](lifecycles/node-stop.md) | a node command the primary above the node runs, never a Build: the caller sends NodeCommand 0x22 StopNode to the node's mesh-primary, directly; an unreachable mesh-primary ends the call `NotSent` by name; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → ConnectionsDeleting (Data) → StopConnectionsDeleted (Data) → Leaving (Data) → StopMeshLeft (Data) → NodeStopped (Terminal); the stop is a workflow that calls `node.connection.delete { scope: All }` then `node.mesh.leave` and streams each one's acknowledgement and completion, and the mesh-primary writes each status from its frame | node.connection.deleted, node.stopped | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.delete](lifecycles/node-delete.md) | [build.create 0x20](#build-op-0x20-rdm) `Delete { node_ids }` carries the workflow; the stop's ops, then provider inspection, which is not a Node RPC | every stop event, then node.deleted | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.mesh.join](lifecycles/node-mesh-join.md) | The report is [JoinNode 0x1D](#join-op-0x1d-rdm); standalone, [Status 0x1B](#status-op-0x1b-rdm) `JoinMesh`, answered `MeshJoined { joined }`; inside node.start a step of the start's stream | node.mesh.joined; a refused report fails the primitive by the report's refusal | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.mesh.leave](lifecycles/node-mesh-leave.md) | Standalone, [NodeCommand 0x22](#nodecommand-op-0x22-rdm) `LeaveMesh`, exact-node hop only, server-streaming: `CommandAccepted` (leaving), then `MeshLeft { node_id, incarnation, left }` (Terminal); node.stop and node.delete end their live part with it, and inside a stop its `Leaving` and `StopMeshLeft { left }` are Data frames on the stop's stream | node.mesh.left; `BusyHoldingConnections { connections }` while the node holds a connection | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.mesh.leave](lifecycles/node-mesh-leave.md) | A step of node.stop only, never a command of its own: node.stop and node.delete end their live part with it, and its `Leaving` and `StopMeshLeft { left }` are Data frames on the stop's stream | node.mesh.left | `OK` for served result/completion |
 | [node.tickle](lifecycles/node-tickle.md) | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) direct, and the same probe through up to two live peers of the node's mesh on [Forward 0x1A](#forward-op-0x1a-core) | `reached { answer }` or `unreached`; no event, and unreached is never death | `OK` for a served probe; unreached retains its typed delivery code |
 | [node.runtime.inspect](lifecycles/node-runtime-inspect.md) | The deployment provider's inspect of the runtime handle recorded at launch; not a Node RPC | `running`, `os-stopped`, `exited { code }` or `unavailable { reason }`, node investigation's provider verdict; no event | — (typed provider result; no Node RPC) |
 | node.get | [Read 0x23](#read-op-0x23-rdm) `Get { entity: Nodes, filter }`, streamed in `Nodes` frames: every node row the answering admin holds that matches every pair, by path and name; no pair is every node of the fabric, its topology; a pair names any field of the node-properties table by its name, config entries as `config.<key>`; `tags` matches a node carrying the value, repeated for all of; a node's tags, config and cert are fields of its row; node.get is answered by the fabric-primary from shared records: current pair resolution reads the node records by path and name, then the node's record at its node.id (Q323); a record read error is named, never a cached predecessor | the rows, `NodeView`; a stopped node answers `stopped`; no event | `OK`, the empty list when nothing matches; an unknown property, a value the field cannot take or an empty values list `INVALID_ARGUMENT` naming the pair; a row past one frame `RESOURCE_EXHAUSTED` naming it |
 | [node.topology.get](lifecycles/node-topology-get.md) | [GetTopology 0x1E](#topology-op-0x1e-rdm); complete source snapshot read | complete read result; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
-| [node.name.update](lifecycles/node-name-update.md) | Rename, to the node's mesh-primary; frames `UpdateName` and `ApplyNodeName` on [0x1B](#status-op-0x1b-rdm); the node admits no connection | node.name.updated; `NameHeld { by }`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation` | `OK`; NameHeld `ALREADY_EXISTS`, stale `ABORTED`, invalid name `INVALID_ARGUMENT`, other state refusal `FAILED_PRECONDITION` |
+| [node.name.update](lifecycles/node-name-update.md) | Rename, to the node's mesh-primary; frames `UpdateName` and `ApplyNodeName` on [0x1B](#status-op-0x1b-rdm), then a live node's `JoinMesh`; the node holds no connection, and a live node rejoins its mesh under the new name | node.name.updated; `NameHeld { by }`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation`, `NameNotApplied` | `OK`; NameHeld `ALREADY_EXISTS`, stale `ABORTED`, invalid name `INVALID_ARGUMENT`, other state refusal `FAILED_PRECONDITION` |
 | node.connection.get { node } / [node.connection.delete](lifecycles/node-connections-delete.md) | `node.connection.get { node }` answers the exact birth's own connections from its connections log, the node (id, incarnation) the read's address and the filter over id, destination, kind and state, [Read 0x23](#read-op-0x23-rdm) `GetConnections { node, incarnation, filter }`, streamed in `Connections` frames; `node.connection.delete { scope: All }` or `{ scope: Connections([connection id, …]) }`. `All` is graceful closure of every open connection of the node, each open Direct or Proxy entry of its connections log (gossip neighbours and the Node RPC pool are not connections), with status connections-deleting then connections-deleted and the [order and deadline](lifecycles/node-connections-delete.md#numbered-end-to-end-sequence) of that page; `Connections` closes exactly the named connections, by the minted id of their open entry as node.connection.get returns them; an empty list is refused by name. The endpoint and an active stop stream stay open; each drop is written under the node's current name; the caller sends it to the node's mesh-primary directly on [NodeCommand 0x22](#nodecommand-op-0x22-rdm) `DeleteConnections`, refused by name with `Rejected { reason, detail }`, reason `node-not-live`, `last-admin` or `rejected-connection-scope` for a scope that names nothing the node can cut; the mesh-primary carries it to the exact node on NodeCommand 0x22 | read result / node.connection.deleted, naming every id it closed and every id it did not know or found already closed; for `All`, carrying a `ConnectionsReceipt`: `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }` | call `OK` when served; closed `OK`, not_open `NOT_FOUND`; `All` Deadline `DEADLINE_EXCEEDED` |
 | node.tag.get/create/delete | A node's tags are its own property, not config. `node.tag.get` answers the node's labels; `node.tag.create { label \\| [labels] }` adds one label or a list; `node.tag.delete { All \\| [labels] }` removes every label or the named ones, the same scope shape as `node.connection.delete`. One item or a list, uniform: a single item is the same as a list of one. The node's serialized property writer adds or removes labels in its own part of its durable record. Adding an existing label is AlreadyApplied and creates no duplicate; deletion preserves other owned fields. A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.', and a node carries at most 32; a label outside that grammar, or one past the 32, is refused by name and nothing is written; frames `CreateTags { node_id, incarnation, labels }` and `DeleteTags { node_id, incarnation, scope: All \| Labels }` on 0x1B, replies `TagsCreated { node_id, incarnation, already_carried }` and `TagsDeleted { node_id, incarnation, not_carried }` | read result / create: the reply names each label the node already carried, AlreadyApplied for those | call `OK` when served; already_carried `ALREADY_EXISTS`, not_carried `NOT_FOUND`, applied label `OK`; invalid label `INVALID_ARGUMENT` |
 | node.config.get/update | Application config read / full-map put; the [config update sequence](lifecycles/node-config-update.md); dedicated request mapping is open | read result / node.config.updated | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
@@ -391,7 +391,7 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 | `node.id`, `incarnation`, `endpoint`, `transport_addr`, the runtime handle | RDM at birth | nothing | — | — |
 | `status` | RDM | [node status](lifecycles/node-status.md) only | — | that status's own completion |
 | `path`, `mesh`, `type` | the create spec | path, mesh and type are immutable; node.name.update changes only name and refuses a supplied path different from the registered path | — | — |
-| `name` | the create spec | **`node.name.update { node_id, incarnation, path, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1) | `node.name.updated` |
+| `name` | the create spec | **`node.name.update { node_id, incarnation, path, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node holds no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1); a live node rejoins its mesh under the new name | `node.name.updated` |
 | `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the create); on replace the successor applies its Build entry through its own property writer | `node.tag.create { label \| [labels] }` adds; `node.tag.delete { All \| [labels] }` removes. The node's property writer applies the label change to its own current tag set and persists it with its other owned fields | none | `node.tag.created` / `node.tag.deleted` |
 | `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own is a local durable property write; a Build applies config and tags together through ApplyNodeProperties; the same Build preserves later updates, and a later Build can supersede them (build.md §1, Q236) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
 | `types` | the birth's [JoinNode](#join-op-0x1d-rdm): what it declared; empty for a node-admin | nothing: a different declaration is a restart. `node.get` answers it whole | — | — |
@@ -814,7 +814,7 @@ pub enum StatusRequest {
     CreateTags { node_id: NodeId, incarnation: IncarnationId, labels: BTreeSet<String> },
     DeleteTags { node_id: NodeId, incarnation: IncarnationId, scope: TagScope },
     JoinMesh { node_id: NodeId, incarnation: IncarnationId, operation: String, primary: Option<Primary> }, // primary: the commander's held mesh-primary record of the node's mesh
-    LeaveMesh { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 29, refused by name: node.mesh.leave is on NodeCommand 0x22
+    Reserved29 { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 29, refused by name: node.mesh.leave is a step of node.stop only
     RenewCert { node_id: NodeId, incarnation: IncarnationId, cert: Vec<u8> },
     UpdateIssuer { node_id: NodeId, incarnation: IncarnationId, key: IssuingKeyHex, cert: String },
     GetAtlas,
@@ -933,7 +933,7 @@ pub enum StatusReply {
     RejectedName { reason: String },
     BusyHoldingConnections { connections: Vec<ConnectionId> },
     MeshJoined { node_id: NodeId, incarnation: IncarnationId, joined: Vec<WhichMesh> },
-    MeshLeft { node_id: NodeId, incarnation: IncarnationId, left: Vec<WhichMesh> }, // position 50, never sent: node.mesh.leave is on NodeCommand 0x22
+    Reserved50 { node_id: NodeId, incarnation: IncarnationId, left: Vec<WhichMesh> }, // position 50, never sent: node.mesh.leave is a step of node.stop only
     RequestNotHandled { request: String },
     CertRenewed { node_id: NodeId, incarnation: IncarnationId, expires_at: u64 },
     IssuerUpdated { node_id: NodeId, incarnation: IncarnationId, issuer_expires_at: u64 },
@@ -958,8 +958,8 @@ pub enum RetryOn {
 The caller contract is [node.stop / node.delete](#typed-object-contract). The mesh-primary's
 exact-node stop and start hops use [NodeCommand 0x22](#nodecommand-op-0x22-rdm); caller routing and
 the Build carrier are unchanged. StatusRequest positions 8 `StopNode` and 16 `StartNode` are reserved:
-a receiver refuses each by name and executes nothing; so is position 29 `LeaveMesh`, node.mesh.leave
-being on NodeCommand 0x22, and reply position 50 `MeshLeft` is never sent. Reply positions 17
+a receiver refuses each by name and executes nothing; so is position 29 `Reserved29`, node.mesh.leave
+being a step of node.stop only, and reply position 50 `Reserved50` is never sent. Reply positions 17
 `Stopped`, 18 `Started` and 19 `StartFailed` stand. Reserved6, Reserved7 and NodeLeft retain positions 6, 7 and 9 and are
 refused by name; Reserved12 and Reserved13 retain positions 12 and 13 (Q171), Reserved14 and
 Reserved15 positions 14 and 15 (Q174), and each is refused by name; Reserved2, Reserved22 and Reserved44 retain StatusReply positions 2, 22 (Q203) and 44. No position is reordered or
@@ -1638,7 +1638,7 @@ to these frames is `durable format moved`, with byte fixtures.
 
 RDM owns this family. It carries the mesh-primary → exact-node hop of
 [node.connection.delete](lifecycles/node-connections-delete.md), [node.stop](lifecycles/node-stop.md),
-[node.start](lifecycles/node-start.md), [node.mesh.leave](lifecycles/node-mesh-leave.md) and a
+[node.start](lifecycles/node-start.md) with its [node.mesh.leave](lifecycles/node-mesh-leave.md) step, and a
 [storage change](storage.md#changing-it)'s move of a node. The caller's hop and Build carrier are unchanged.
 Every call is server-streaming, never forwarded, and served while connections-deleting.
 Births are exact identities, never names. Every earlier byte and enum position stands; requests
@@ -1670,11 +1670,8 @@ StorageStep { node_id, incarnation, change_id, provider } (appended request 3)
   ← Failed { step, reason, code } (Terminal)
 before StorageStep acceptance:
   ← RejectedStaleChange { held } (Refusal; appended reply 18, ABORTED)
-LeaveMesh { node_id, incarnation, operation } (appended request 4)
-  ← CommandAccepted { node_id, incarnation } (Started; leaving)
-  ← MeshLeft { node_id, incarnation, left } (Terminal; appended reply 21)
-before LeaveMesh acceptance:
-  ← BusyHoldingConnections { connections } (Refusal; appended reply 22, UNAVAILABLE, as on 0x1B)
+Reserved4 { node_id, incarnation, operation } (request 4, reserved: refused by name, never executed)
+Reserved21, Reserved22 (replies 21 and 22, reserved: never sent)
 ```
 
 A storage change's `mesh.block` and `mesh.unblock` are commands of the fabric-primary's own workflow to each mesh-primary, never part of a Build ([storage.md](storage.md#changing-it)), `BlockMesh` and `UnblockMesh` on this op. In its `mesh.unblock` the mesh-primary moves each
@@ -1684,10 +1681,10 @@ records `provider` on the birth's row. A command of a change older than the one 
 refused `rejected-stale-change`, naming that change.
 
 A refusal before acceptance is one refusal frame. `CommandAccepted` is admission and carries no
-lifecycle state: on a stop it makes the mesh-primary record stopping, on a leave leaving.
+lifecycle state: on a stop it makes the mesh-primary record stopping.
 `ConnectionsDeleting` records connections-deleting, for node.connection.delete and inside a stop; a
 completion carrying `Established` (`ConnectionsDeleted`, `StopConnectionsDeleted`) records
-connections-deleted; `Leaving` records leaving; `MeshLeft` and `StopMeshLeft` record left;
+connections-deleted; `Leaving` records leaving; `StopMeshLeft` records left;
 `NodeStopped` records stopped, `NodeJoined`
 records pending, and `NodeStarted` records Ready after every start gate and before the
 outer Build's Complete. Starting stays the executor's overlay. Nothing is written

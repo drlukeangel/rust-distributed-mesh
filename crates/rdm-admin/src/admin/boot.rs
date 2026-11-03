@@ -1573,6 +1573,21 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let _ = moved.set(Arc::new(move |_from: PathName, _node_id: NodeId, _incarnation: IncarnationId, _to: PathName| project()));
                                         moved
                                     },
+                                    rejoin: {
+                                        // A renamed live birth's node.mesh.join, commanded by this admin once its runner is built.
+                                        let slot: crate::status_rpc::Rejoin = Default::default();
+                                        let heard_again = heard_again_slot.clone();
+                                        let _ = slot.set(Arc::new(move |node: crate::model::Node, incarnation: IncarnationId| {
+                                            let heard_again = heard_again.clone();
+                                            Box::pin(async move {
+                                                match heard_again.get() {
+                                                    Some(h) => h.rejoin(&node, &incarnation).await,
+                                                    None => Err("no-runner: this admin's runner is not built yet".to_string()),
+                                                }
+                                            })
+                                        }));
+                                        slot
+                                    },
                                     loads: control.loads.get().cloned(),
                                     digest_view: Some(digest_view.clone()),
                                     unreachable: records.unreachable.clone(),

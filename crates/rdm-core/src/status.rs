@@ -559,21 +559,21 @@ pub enum StatusRequest {
         /// by name and joins no one. Appended: no field before it moves.
         primary: Option<crate::Primary>,
     },
-    /// Reserved position (Q205): node.mesh.leave is a node command on NodeCommand 0x22
-    /// ([`crate::node_command::NodeCommandRequest::LeaveMesh`]). A receiver refuses this by name and
-    /// executes nothing; the position and its fields stay so no later variant moves.
+    /// Reserved position (Q205, Q345): never sent; node.mesh.leave is a step of node.stop only. A
+    /// receiver refuses this by name and executes nothing; the position and its fields stay so no
+    /// later variant moves.
     ///
     /// Position 29 on the wire.
-    LeaveMesh {
-        /// The birth commanded.
+    Reserved29 {
+        /// Never read.
         node_id: NodeId,
-        /// The incarnation of that birth.
+        /// Never read.
         incarnation: IncarnationId,
-        /// The Build the operation belongs to.
+        /// Never read.
         build_id: String,
-        /// The Build attempt that holds the operation.
+        /// Never read.
         attempt: u32,
-        /// The operation: `leave-mesh:<path and name>` or `node.stop:<path and name>`.
+        /// Never read.
         operation: crate::OperationId,
     },
     /// Downward (`node.cert.renew`; node-cert-renew.md): the birth's issuing authority installs a
@@ -1207,7 +1207,7 @@ impl StatusRequest {
             Self::CreateTags { .. } => "node.tag.create",
             Self::DeleteTags { .. } => "node.tag.delete",
             Self::JoinMesh { .. } => "node.mesh.join",
-            Self::LeaveMesh { .. } => "node.mesh.leave",
+            Self::Reserved29 { .. } => "reserved-29",
             Self::RenewCert { .. } => "node.cert.renew",
             Self::UpdateIssuer { .. } => "node.issuer.update",
             Self::UpdateRoots { .. } => "node.roots.update",
@@ -1771,7 +1771,7 @@ pub enum StatusReply {
         /// Why, by name, naming the name; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
-    /// The exact birth's answer to `ApplyNodeName` or `LeaveMesh` while it holds connections (R-CR1;
+    /// The exact birth's answer to `ApplyNodeName` while it holds connections (R-CR1;
     /// proposal node-properties-own-commands.md §2.2 step 6, "`Busy { connections }` naming each
     /// connection it still holds"): it keeps its name and holds nothing. Not [`StatusReply::Busy`],
     /// the protocol's admission bound.
@@ -1795,18 +1795,15 @@ pub enum StatusReply {
         /// The mesh channels joined, in order.
         joined: Vec<WhichMesh>,
     },
-    /// `node.mesh.left`: the exact birth left its mesh channel(s), its endpoint still bound
-    /// (`[Own]` for any other node, `[Own, Backbone]` for a node-admin). Never sent on
-    /// this op since node.mesh.leave moved to NodeCommand 0x22 (Q205): the mesh-primary's in-process
-    /// carry of the leave answers it ([`crate::node_command::NodeCommandReply::MeshLeft`] on the wire).
+    /// Reserved position (Q205, Q345): never sent; node.mesh.leave is a step of node.stop only.
     ///
     /// Position 50 on the wire.
-    MeshLeft {
-        /// The birth that left.
+    Reserved50 {
+        /// Never read.
         node_id: NodeId,
-        /// The incarnation of that birth.
+        /// Never read.
         incarnation: IncarnationId,
-        /// The mesh channels left, in order.
+        /// Never read.
         left: Vec<WhichMesh>,
     },
     /// The receiving endpoint has no handler for the request (R24, Luke Q11): decided by dispatch
@@ -2182,7 +2179,7 @@ impl StatusReply {
             Self::RejectedName { .. } => "rejected-name",
             Self::BusyHoldingConnections { .. } => "busy-holding-connections",
             Self::MeshJoined { .. } => "mesh-joined",
-            Self::MeshLeft { .. } => "mesh-left",
+            Self::Reserved50 { .. } => "reserved-50",
             Self::RequestNotHandled { .. } => "request-not-handled",
             Self::CertRenewed { .. } => "cert-renewed",
             Self::IssuerUpdated { .. } => "issuer-updated",
@@ -2288,7 +2285,7 @@ impl NodeProtocol for Status {
             StatusReply::RejectedName { .. } => "rejected-name",
             StatusReply::BusyHoldingConnections { .. } => "busy-holding-connections",
             StatusReply::MeshJoined { .. } => "mesh-joined",
-            StatusReply::MeshLeft { .. } => "mesh-left",
+            StatusReply::Reserved50 { .. } => "reserved50",
             StatusReply::RequestNotHandled { .. } => "request-not-handled",
             StatusReply::CertRenewed { .. } => "cert-renewed",
             StatusReply::IssuerUpdated { .. } => "issuer-updated",
@@ -2361,7 +2358,7 @@ impl NodeProtocol for Status {
             StatusReply::RejectedName { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
             StatusReply::BusyHoldingConnections { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
             StatusReply::MeshJoined { .. } => ReplyKind::Success,
-            StatusReply::MeshLeft { .. } => ReplyKind::Success,
+            StatusReply::Reserved50 { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::RequestNotHandled { .. } => ReplyKind::new(crate::outcome::Code::Unimplemented),
             StatusReply::CertRenewed { .. } => ReplyKind::Success,
             StatusReply::IssuerUpdated { .. } => ReplyKind::Success,
@@ -2503,7 +2500,7 @@ mod tests {
             (StatusReply::RejectedName { reason: "r".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] }, ReplyKind::new(crate::outcome::Code::Unavailable)),
             (StatusReply::MeshJoined { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), joined: vec![WhichMesh::Own, WhichMesh::Backbone] }, ReplyKind::Success),
-            (StatusReply::MeshLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), left: vec![WhichMesh::Own] }, ReplyKind::Success),
+            (StatusReply::Reserved50 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), left: vec![WhichMesh::Own] }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::RequestNotHandled { request: "declare-node-state".into() }, ReplyKind::new(crate::outcome::Code::Unimplemented)),
             (StatusReply::CertRenewed { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), expires_at: 7 }, ReplyKind::Success),
             (StatusReply::IssuerUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), issuer_expires_at: 7 }, ReplyKind::Success),
@@ -2567,7 +2564,7 @@ mod tests {
             StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: ["rabbit".to_string()].into() },
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(["rabbit".to_string()].into()) },
             StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), operation: crate::OperationId::unscoped("join-mesh:mesh1.node.1"), primary: None },
-            StatusRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("leave-mesh:mesh1.node.1") },
+            StatusRequest::Reserved29 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("leave-mesh:mesh1.node.1") },
             StatusRequest::RenewCert { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), cert: vec![1, 2, 3] },
             StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into(), ca_key: CaKeyHex("ef".into()) },
             StatusRequest::Get { entity: crate::filter::Entity::Nodes, node: None, filter: crate::filter::Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold", "silver"]) },

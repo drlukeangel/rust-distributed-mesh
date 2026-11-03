@@ -200,18 +200,17 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
     assert!(cuts.iter().any(|f| f.get("scope").map(String::as_str) == Some("all") && f.get("held").map(String::as_str) == Some("0") && f.get("outcome").map(String::as_str) == Some("connections-deleted")), "{cuts:#?}");
 }
 
-/// CONTRACT (R-CR1, node-rpc-envelope.md Node properties `name`: "the node admits no connection";
-/// node-mesh-leave.md step 2; Q169): a node decides its rename and its leave from the connections
-/// open now, never from the rows that have landed. `(path mesh1.node, name 7)`'s connections store refuses every
+/// CONTRACT (R-CR1, node-rpc-envelope.md Node properties `name`: "the node holds no connection";
+/// Q169): a node decides its rename from the connections open now, never from the rows that have
+/// landed. `(path mesh1.node, name 7)`'s connections store refuses every
 /// write, then the node opens a data-plane connection to its admin: the connection is open, its
 /// Connected row owed and not landed. `ApplyNodeName { (path mesh1.node, name 1) }` answers
-/// `BusyHoldingConnections` naming that connection, and `LeaveMesh` answers the same and leaves
-/// nothing; the name does not move. Once the store takes writes the row lands under the id the
-/// refusals named. What must NOT happen: a rename or a leave let through while a connection is
-/// open because its row is still queued.
+/// `BusyHoldingConnections` naming that connection; the name does not move. Once the store takes
+/// writes the row lands under the id the refusal named. What must NOT happen: a rename let through
+/// while a connection is open because its row is still queued.
 #[test]
-fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() {
-    let cap = crate::common::capture("a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave");
+fn a_node_whose_connected_row_is_still_owed_is_refused_its_name() {
+    let cap = crate::common::capture("a_node_whose_connected_row_is_still_owed_is_refused_its_name");
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, crate::common::serve_ping).await;
@@ -293,14 +292,12 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
         let StatusReply::BusyHoldingConnections { connections } = &busy else { panic!("a node with an open connection keeps its name, its row owed or not: {busy:?}") };
         assert_eq!(connections.len(), 1, "the one open connection is named: {busy:?}");
         assert_eq!(seams.connections.own().location(), born, "the node holds the name it had");
-        let leave = StatusRequest::LeaveMesh { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 1, operation: rdm_core::OperationId::node("node.mesh.leave", &renamed.node_id) };
-        assert_eq!(call(leave).await, busy, "the leave is refused naming the same open connection");
 
         // The store takes writes: the row lands under the id the refusals named.
         seams.fault.release();
         tokio::time::timeout(Duration::from_secs(30), seams.connections.observations_landed()).await.expect("the owed row is retried until it lands");
         let held: Vec<_> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
-        assert_eq!(&held, connections, "the landed entry is the connection the refusals named");
+        assert_eq!(&held, connections, "the landed entry is the connection the refusal named");
         let _ = std::fs::remove_dir_all(&root);
     });
 }

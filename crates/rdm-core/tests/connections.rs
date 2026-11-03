@@ -359,7 +359,7 @@ fn rename_preserves_routes_and_pair_reuse_keeps_births_independent() {
     { let at = own.location().with_name("source-renamed").unwrap(); own.path = at.path; own.name = at.name; }
     { let at = carrier.location().with_name("carrier-renamed").unwrap(); carrier.path = at.path; carrier.name = at.name; }
     let successor = ConnectionEnd { node_id: NodeId::mint(), ..dest.clone() };
-    { let at = dest.location().renamed().unwrap(); dest.path = at.path; dest.name = at.name; }
+    { let at = dest.location().with_name("renamed").unwrap(); dest.path = at.path; dest.name = at.name; }
     for endpoint in [&own, &carrier, &dest, &successor] {
         topology.set(endpoint.node_id.clone(), endpoint.location(), endpoint.incarnation.clone().unwrap());
     }

@@ -13,8 +13,6 @@
 //!                                                   shape (no body: the MN shape): a Create or a Delete
 //! POST   /api/meshes      {name, node_admin, gateway?, compute?, broker?} -> Create: the mesh and its nodes
 //! DELETE /api/meshes/{name}                      -> Delete: the mesh by name
-//! POST   /api/nodes/{path}/{name}/replace {executable} -> node commands free the name, then a Create of its
-//!                                                   successor on the executable at that file
 //! ```
 //!
 //! The counts are the UI's vocabulary: it expands them into named paths, each on its executable
@@ -71,12 +69,6 @@ struct BootstrapRequest {
 }
 
 #[derive(Deserialize)]
-struct ReplaceRequest {
-    /// The file the node's replacement runs, hashed by the UI.
-    executable: std::path::PathBuf,
-}
-
-#[derive(Deserialize)]
 struct SpawnRequest {
     mesh: String,
     r#type: String,
@@ -89,7 +81,6 @@ pub fn router(admin: Option<Arc<Admin>>, events: Arc<dyn BuildEvents>) -> Router
         .route("/api/nodes/spawn", post(spawn))
         .route("/api/nodes/{node_path}/{node_name}/stop", post(stop))
         .route("/api/nodes/{node_path}/{node_name}/start", post(start))
-        .route("/api/nodes/{node_path}/{node_name}/replace", post(replace))
         .route("/api/nodes/{node_path}/{node_name}", delete(remove))
         .route("/api/bootstrap", post(bootstrap))
         .route("/api/meshes", post(create_mesh))
@@ -168,16 +159,6 @@ async fn start(State(c): State<Control>, Path(name): Path<(String, String)>) -> 
     let mesh = admin.mesh_of(&node).await;
     let r = admin.start(&node).await;
     answer_command(&c, "start node", r, Some(&node), mesh.as_deref())
-}
-
-async fn replace(State(c): State<Control>, Path(name): Path<(String, String)>, Json(body): Json<ReplaceRequest>) -> Response {
-    let (admin, node) = match (client(&c), parse_node(name)) {
-        (Ok(a), Ok(n)) => (a, n),
-        (Err(r), _) | (_, Err(r)) => return r,
-    };
-    let mesh = admin.mesh_of(&node).await;
-    let r = admin.replace(&node, body.executable).await;
-    answer(&c, "replace executable", r, Some(&node), mesh.as_deref())
 }
 
 async fn remove(State(c): State<Control>, Path(name): Path<(String, String)>) -> Response {

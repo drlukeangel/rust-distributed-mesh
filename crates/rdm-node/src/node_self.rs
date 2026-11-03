@@ -19,8 +19,6 @@
 //!   `StopMeshLeft` (Data), and answer `NodeStopped` (Terminal) on that stream. A primitive the birth
 //!   already completed since it last started is answered at once and not run again. The process stays
 //!   alive, its endpoint bound.
-//! - `LeaveMesh`: standalone `node.mesh.leave`: `BusyHoldingConnections` while a connection is open,
-//!   else `CommandAccepted` (leaving), the leave, and `MeshLeft` (Terminal).
 //! - `StartNode`: a stopped birth rejoins as itself (same node id, incarnation, endpoint key and
 //!   port) through its [`Session`], and answers `Started`, or `StartFailed` naming the step.
 //! - `Reserved6` and `Reserved7` are reserved Status positions (R-CR4): refused by name.
@@ -721,8 +719,9 @@ impl NodeSelf {
         if let NodeCommandRequest::BlockMesh { .. } | NodeCommandRequest::UnblockMesh { .. } = req {
             return rdm_core::reply::node_command::not_ready(format!("{}: {} is a mesh-primary's command, and this birth serves none", self.node_id, req.op()));
         }
-        if let NodeCommandRequest::LeaveMesh { incarnation, operation, .. } = req {
-            return self.serve_leave_mesh(spare, incarnation, operation, frames).await;
+        // Position 4 is reserved (Q345): node.mesh.leave is node.stop's step only.
+        if let NodeCommandRequest::Reserved4 { .. } = req {
+            return rdm_core::reply::node_command::rejected("reserved-position", format!("{}: NodeCommand position 4 is reserved and never executed: node.mesh.leave is a step of node.stop", self.node_id));
         }
         if !matches!(req, NodeCommandRequest::DeleteConnections { .. }) {
             return self.serve_lifecycle_command(commander, spare, req, frames).await;
@@ -826,7 +825,7 @@ impl NodeSelf {
     /// call's own connection. A state command is served for `commander`, the primary of this birth's
     /// mesh, which its check-in goes to. `None` for any other request.
     pub async fn serve(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &StatusRequest) -> Option<StatusReply> {
-        if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::LeaveMesh { .. }) {
+        if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved29 { .. }) {
             return Some(refuse_reserved(&self.node_id.to_string(), &named(commander), req));
         }
         if let StatusRequest::JoinMesh { incarnation, operation, .. } = req {
@@ -887,55 +886,13 @@ impl NodeSelf {
         }
     }
 
-    /// Standalone `node.mesh.leave` (`LeaveMesh` on NodeCommand 0x22; node-mesh-leave.md, Q205): a
-    /// command naming another birth is refused stale; a birth already left since it last started
-    /// acknowledges and completes at once, leaving nothing again; otherwise it refuses
-    /// `BusyHoldingConnections` while it has a connection open, its row landed or still owed (Q169),
-    /// before acceptance. Accepted, it acknowledges (`CommandAccepted`: leaving), leaves its mesh
-    /// channel (and the backbone, a node-admin), cuts its Node RPC pool sparing the command's call,
-    /// and completes with `MeshLeft`.
-    async fn serve_leave_mesh(&self, spare: Option<iroh::PublicKey>, incarnation: &IncarnationId, operation: &rdm_core::OperationId, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
-        if *incarnation != self.incarnation {
-            return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
-        }
-        let already = self.completed.lock().unwrap().left.clone();
-        if already.is_none() {
-            if let Ok(open) = self.live_routes() {
-                if !open.is_empty() {
-                    let connections: Vec<rdm_core::ConnectionId> = open.into_iter().map(|r| r.id).collect();
-                    tracing::info_span!(
-                        "rdm.node.mesh.reject.via-busy-holding-connections",
-                        node = %self.node_id,
-                        node_id = %self.node_id,
-                        mesh = %self.topology_view.mesh_name(),
-                        mesh_id = %self.topology_view.mesh_id(),
-                        operation = %operation.action, operation_subject = ?operation.subject,
-                        connections = ?connections,
-                        "otel.kind" = "internal"
-                    )
-                    .in_scope(|| tracing::info!("node.mesh.leave refused: this birth still holds open connections"));
-                    return rdm_core::reply::node_command::busy_holding_connections(connections);
-                }
-            }
-        }
-        if let Err(e) = frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await {
-            return rdm_core::reply::node_command::not_ready(format!("{}: the command's caller is gone before its acceptance ({e}); nothing is left", self.node_id));
-        }
-        let left = match already {
-            Some(left) => left,
-            None => self.leave_mesh(spare.as_slice(), self.mesh_primary_endpoint(), &operation.action).await.1,
-        };
-        NodeCommandReply::MeshLeft { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), left }
-    }
-
     /// The endpoint of this birth's mesh-primary, when that is another node: the pooled connection to it
     /// its owed declarations ride stays open through a leave's cut (node-mesh-leave.md step 4, Q206).
     fn mesh_primary_endpoint(&self) -> Option<iroh::PublicKey> {
         self.topology_view.primaries().mesh(self.topology_view.mesh_name()).filter(|p| p.node_id != self.node_id).and_then(|p| self.client.endpoint_of(&p.node_id))
     }
 
-    /// The `node.mesh.leave` primitive (node-mesh-leave.md): shared by standalone `LeaveMesh` and
-    /// `node.stop` step 3. Emits `rdm.node.mesh.update.via-leaving`, leaves the mesh channel (and
+    /// The `node.mesh.leave` primitive (node-mesh-leave.md): `node.stop` step 3. Emits `rdm.node.mesh.update.via-leaving`, leaves the mesh channel (and
     /// the backbone for a node-admin, each emitting `rdm.node.mesh.update.via-left`), and cuts the
     /// Node RPC pool while sparing `spare`, and the pooled connection to `mesh_primary` its owed
     /// declarations ride.
@@ -1539,7 +1496,7 @@ pub async fn wait_for_own_record(dir: &std::path::Path, within: std::time::Durat
 pub const NODE_LEFT_IS_NEVER_A_CALL: &str = "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call";
 
 /// What a reserved Status position is refused with: none is ever a call (R-CR4).
-pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8 (StopNode), 12 to 15, 16 (StartNode), 29 (LeaveMesh) and 34 are reserved, never executed; lifecycle commands and node.mesh.leave use NodeCommand 0x22";
+pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8 (StopNode), 12 to 15, 16 (StartNode), 29 and 34 are reserved, never executed; lifecycle commands use NodeCommand 0x22";
 
 /// A reserved Status position at `receiver` (node-rpc-envelope.md "Node stop command
 /// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
@@ -1555,7 +1512,7 @@ pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> Sta
         .in_scope(|| tracing::info!("a reserved Status position was refused by name: it is never a call and starts nothing"));
         return rdm_core::reply::status::rejected_unmatched_completion("command".into(), RETIRED_PAIR_IS_RESERVED.into(), reported);
     }
-    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::LeaveMesh { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved12 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved13 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved14 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved15 { node_id, incarnation, build_id, attempt, operation, .. }) = req else {
+    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved29 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved12 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved13 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved14 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved15 { node_id, incarnation, build_id, attempt, operation, .. }) = req else {
         unreachable!("refuse_reserved is called for the reserved positions only")
     };
     let reported = format!("{} {operation:?} (build {build_id}, attempt {attempt})", req.op());

@@ -178,7 +178,7 @@ async fn connection_history_is_scoped_by_source_id_and_explicit_writer() {
     assert!(new_store.history().await.unwrap().is_empty());
     let new_fact = fact(successor, 2);
     new_store.put_connection(&new_fact).await.unwrap();
-    let retained = ConnectionEnd { path: location.path.clone(), name: location.renamed().unwrap().name, ..predecessor };
+    let retained = ConnectionEnd { path: location.path.clone(), name: location.with_name("renamed").unwrap().name, ..predecessor };
     let later = NodeConnection { id: ConnectionId::mint(), source: retained, logged_at_ms: 2, ..first.clone() };
     old_store.put_connection(&later).await.unwrap();
     let reopened = FileConnectionsStorage::open(&root, &old_writer).await.unwrap();

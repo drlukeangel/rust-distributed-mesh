@@ -1424,7 +1424,7 @@ mod tests {
     async fn deletion_proof_requires_the_exact_nodes_released_record() {
         let storage = MemoryNodesStorage::default();
         let location = PathName::new("arbitrary.location", "worker").unwrap();
-        let mut predecessor = NodeRow::new(location.renamed().unwrap(), "explicit-mesh", "node", NodeId::mint(), NodeStatus::Ready);
+        let mut predecessor = NodeRow::new(location.with_name("renamed").unwrap(), "explicit-mesh", "node", NodeId::mint(), NodeStatus::Ready);
         storage.put_node(&predecessor).await.unwrap();
         let successor = NodeRow::new(location.clone(), "explicit-mesh", "node", NodeId::mint(), NodeStatus::Ready);
         storage.put_node(&successor).await.unwrap();
@@ -1447,7 +1447,7 @@ mod tests {
                 let storage = MemoryNodesStorage::default();
                 let written = WrittenRows::default();
                 let name = PathName::new("opaque.path", "north").unwrap();
-                let old_name = if retained { name.renamed().unwrap() } else { name.clone() };
+                let old_name = if retained { name.with_name("renamed").unwrap() } else { name.clone() };
                 let mut old = NodeRow::new(old_name, "mesh1", "node", NodeId::mint(), if retained { NodeStatus::Stopped } else { NodeStatus::Deleted });
                 old.executable = Some(rdm_core::binding::Binding { launch_id: "old-launch".into(), executable: "/old-executable".into(), sha256: "old-sha".into(), image: None });
                 old.storage_persistence = Some(rdm_core::meta::StoragePersistence::Ephemeral);
@@ -1516,7 +1516,7 @@ mod tests {
         let storage = MemoryNodesStorage::default();
         let written = WrittenRows::default();
         let name = PathName::new("independent.path", "member").unwrap();
-        let unrelated = NodeRow::new(name.renamed().unwrap(), "another-mesh", "gateway", NodeId::mint(), NodeStatus::Ready);
+        let unrelated = NodeRow::new(name.with_name("renamed").unwrap(), "another-mesh", "gateway", NodeId::mint(), NodeStatus::Ready);
         check_name(&storage, None, &unrelated.location(), &unrelated.node_id).await.unwrap().unwrap();
         written.put(&storage, &unrelated).await.unwrap();
         let successor = NodeId::mint();
@@ -1542,7 +1542,7 @@ mod tests {
         // Even a stale caller whose two arguments agree cannot move the persisted path.
         let stale = Node { path: elsewhere.path.clone(), name: elsewhere.name.clone(), ..record.clone() };
         assert!(matches!(move_row(&storage, &written, &location, &stale, &elsewhere, &elsewhere.with_name("another").unwrap()).await, Err(RenameRefused::Unwritten(_))));
-        let renamed = location.renamed().unwrap();
+        let renamed = location.with_name("renamed").unwrap();
         move_row(&storage, &written, &location, &record, &location, &renamed).await.unwrap();
         let after = storage.node(&record.node_id).await.unwrap().unwrap();
         assert_eq!(after.path, location.path);

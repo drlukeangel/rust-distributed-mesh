@@ -28,8 +28,8 @@ Neither a Build nor the rectifier ever declares the fabric ready.
 | node ready | the node's mesh-primary | the node's node.started report, after every start gate ([`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) among them); the node then calls [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) |
 | node connections-deleting | the node's mesh-primary | the node's `ConnectionsDeleting` report on the command stream of `node.connection.delete { scope: All }`, its block on new application work in force, standalone or as the acknowledgement on node.stop's stream |
 | node connections-deleted | the node's mesh-primary | the node's node.connection.deleted completion carrying `Established`, standalone or `StopConnectionsDeleted` on node.stop's stream; a `Deadline` completion leaves the node connections-deleting |
-| node leaving | the node's mesh-primary | the acknowledgement of node.mesh.leave: `CommandAccepted` on the `LeaveMesh` command stream (0x22), or `Leaving` on node.stop's stream |
-| node left | the node's mesh-primary | node.mesh.leave's completion: `MeshLeft` on the `LeaveMesh` command stream, or `StopMeshLeft` on node.stop's stream |
+| node leaving | the node's mesh-primary | the acknowledgement of node.mesh.leave, `Leaving` on node.stop's stream |
+| node left | the node's mesh-primary | node.mesh.leave's completion, `StopMeshLeft` on node.stop's stream |
 | node stopping | the node's mesh-primary | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |
 | node stopped | the node's mesh-primary | the matching stopped frame on the stop call's stream |
 | node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's adopted claim, published as NodeDeleting |
