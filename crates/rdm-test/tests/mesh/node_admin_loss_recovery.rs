@@ -3,7 +3,7 @@
 //! (this cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the
 //! estate's manifest, rpc ledger and every process's spans, feature `i143-2803`).
 //!
-//! Loss of every node-admin of a mesh and recovery through the Build rectifier. The fabric-primary role is never in
+//! Loss of every node-admin of a mesh and its recovery, each primary's own workflow (Q342). The fabric-primary role is never in
 //! the lost mesh: the mesh lost is the one whose admins do not hold it (a fabric-primary's mesh is
 //! only ever lost after its authority was handed off; that is a separate cell).
 
@@ -67,18 +67,20 @@ async fn hand_fabric_primary_over(estate: &mut Estate, former: &PathName) -> Pat
 
 /// CONTRACT (#2803 acceptance 2, 3, 10, 13, 14, 15, 16, 19; node-admin-lifecycle.md 4.1-4.3): a peer
 /// mesh loses every node-admin (exact SIGKILL of both admin runtimes) and, while it has
-/// no admin, one ordinary member dies as well (`rpc.3`). The fabric primary's verdict on the lost
-/// mesh opens an attempt of the SAME accepted Build that runs node.create of a node-admin into the
-/// live mesh (node-create.md "A node-admin created into a live mesh"): it joins under the mesh's EXISTING MeshId (no id is
+/// no admin, one ordinary member dies as well (`node.3`). The fabric primary's investigation of the
+/// lost mesh-primary recovers it as its own workflow, never a Build or part of one (Q335, Q342;
+/// node-create.md "A node-admin created into a live mesh"): node.delete of the lost birth, then
+/// node.create of a node-admin at its path and name. It joins under the mesh's EXISTING MeshId (no id is
 /// minted) through its maker (JoinNode), adopts the mesh's held state as its successor primary (no
-/// Pending is handed: the mesh is not created again), and sweeps its own mesh once with a Ping: the
-/// two members that live answer, the one that died does not. The unreached member goes to
-/// node recovery (mesh-recovery.md step 6): the new mesh-primary's tickle, then the provider's exact
-/// exited verdict, then one recovery under the same Build (node.delete of the exited instance with no
-/// RPC to it, node.create at the same path.name, node.update); a missing Ping reply is the
-/// trigger, never the proof. The second admin is created by the NEW mesh primary. What must NOT
-/// happen: a new MeshId or Build id, a Pending handed to the joining node-admin, a surviving member
-/// re-created, a member that answered recovered, the fabric primary creating the second admin.
+/// state is handed to it: the mesh is not created again), and sweeps its own mesh once with a Ping: the
+/// two members that live answer, the one that died does not. The unreached member goes to node
+/// recovery (node-create.md step 5): the new mesh-primary's investigation, then the provider's exact
+/// exited verdict, then one recovery, its own workflow (node.delete of the exited instance with no
+/// RPC to it, node.create at the same path and name); a missing Ping reply is the trigger, never the
+/// proof. The second admin is recovered by the NEW mesh primary. The current Build stays current, at
+/// its attempt. What must NOT happen: a new MeshId or Build id or Build attempt, a state handed to the
+/// joining node-admin, a surviving member re-created, a member that answered recovered, the fabric
+/// primary recovering the second admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     let cell = "recovery_admin_restores_lost_node_admins_preserves_mesh_and_build";
@@ -100,6 +102,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     let survivors: Vec<PathName> = (1..=2).map(|i| Estate::path(&format!("{lost}.node"), &i.to_string())).collect();
     assert_eq!(estate.accepted_build_id().await, accepted, "the accepted Build names the topology");
     let attempt_before = estate.attempt_of_build(&accepted).await;
+    let lost_primary_id = before.iter().find(|n| n["mesh"] == lost && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("the lost mesh's primary");
     let lost_births: BTreeMap<PathName, String> = births(&before).into_iter().filter(|(n, _)| n.path == format!("{lost}.node-admin") || *n == window_victim).collect();
     // A runtime's data dir is named by its birth's node id.
     let lost_admin_ids: Vec<String> = before.iter().filter(|n| n["mesh"] == lost && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
@@ -133,20 +136,16 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     }
     assert_eq!(killed.len(), 3, "the member died in the admin-less window: {killed:?}");
 
-    // Recovery through the rectifier: the same Build, later attempts, the node-admins and the member back.
-    let done = wait_for("the accepted Build is complete past the fault and the lost births are re-born", Duration::from_secs(240), || {
+    // Recovery by each primary's own workflow (Q342): the node-admins and the member back, no Build.
+    wait_for("the lost births are re-born", Duration::from_secs(240), || {
         let estate = &estate;
-        let (accepted, lost_births) = (accepted.clone(), lost_births.clone());
-        async move {
-            let b = estate.carrier().await.build(&rdm_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get [id] of the accepted Build");
-            let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
-            let re_born = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() == lost_births.len();
-            (later && re_born).then_some(b)
-        }
+        let lost_births = lost_births.clone();
+        async move { (births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() == lost_births.len()).then_some(()) }
     })
     .await;
     let after = values(&estate.settled_views(&shape).await);
     assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build: the current build_id is unchanged");
+    assert_eq!(estate.attempt_of_build(&accepted).await, attempt_before, "no attempt of the current Build runs a repair (Q342)");
     assert_eq!(estate.mesh_view(lost).await.id.expect("the lost mesh still has its id").to_string(), lost_mesh_id, "{lost} recovered under its own MeshId");
     let (old, new) = (births(&before), births(&after));
     for (name, inc) in &old {
@@ -179,19 +178,21 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
 
-    // The fabric primary's verdict on the lost mesh runs node.create of a node-admin into the live
-    // mesh (node-create.md "A node-admin created into a live mesh" step 1): an attempt of the accepted Build past the fault, which the
-    // fabric primary executes. The node-admin joins under the mesh's EXISTING MeshId and adopts the
-    // mesh's held state (step 7); no Pending is handed to it.
-    // The admin it created: the create in that attempt's own trace, at a location of the lost mesh's admins.
+    // The fabric primary's investigation of the lost mesh-primary recovers it, its own workflow
+    // (node-create.md "A node-admin created into a live mesh" step 1; Q335, Q342): node.delete of the lost
+    // birth, then node.create of a node-admin at its path and name, under its recovery span. The
+    // node-admin joins under the mesh's EXISTING MeshId and adopts the mesh's held state (step 4); no
+    // state is handed to it.
     let lost_admins = format!("{lost}.node-admin");
-    let creates_admin = |r: &Value| named(&spans, "rdm.node_admin.node.create.via-build").into_iter().find(|c| c["trace_id"] == r["trace_id"] && attr(c, "node_path") == lost_admins).cloned();
-    let first = named(&spans, "rdm.node_admin.build.update.via-reconcile")
+    let first = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
-        .filter(|r| attr(r, "build_id") == accepted && attr(r, "executor_node_id") == fabric_primary_id && attr(r, "attempt").parse::<u64>().is_ok_and(|a| a > attempt_before) && creates_admin(r).is_some())
+        .filter(|r| attr(r, "submitter") == fabric_primary_id && attr(r, "mesh") == lost && attr(r, "node_id") == lost_primary_id)
         .min_by_key(|r| at(r))
-        .expect("the fabric primary created a node-admin into the lost mesh under the accepted Build");
-    let created = creates_admin(first).expect("the first attempt's create");
+        .expect("the fabric primary recovered the lost mesh-primary");
+    assert_eq!(attr(first, "outcome"), "complete", "the fabric primary's recovery of {lost}'s primary completed: {first}");
+    let under = |name: &str| named(&spans, name).into_iter().find(|c| c["parent_span_id"] == first["span_id"] && attr(c, "node_id") == lost_primary_id).cloned();
+    assert!(under("rdm.node_admin.node.delete.via-node-recovery").is_some(), "the lost birth is deleted under its recovery: {first}");
+    let created = under("rdm.node_admin.node.create.via-node-recovery").unwrap_or_else(|| panic!("a node-admin is created under the recovery: {first}"));
     let recovery_admin = PathName::new(attr(&created, "node_path"), attr(&created, "node_name")).expect("a create names its location");
     // Its node id is the one its create wrote its row for.
     let recovery_admin_id = named(&spans, "rdm.node_admin.node.create.via-node-row")
@@ -205,8 +206,8 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     // The adopter is the admin the span names; the held state's publisher is the mesh's lost primary.
     let adopted = named(&spans, "rdm.node_admin.mesh.update.via-held-state-adopted").into_iter().filter(|a| rdm_test::estate::at_location(a, &recovery_admin) && attr(a, "mesh_id") == lost_mesh_id && at(a) > at(first)).count();
     assert!(adopted > 0, "{recovery_admin:?} adopted {lost}'s held state as its successor primary");
-    let handed: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| attr(h, "mesh") == lost && at(h) > at(first)).collect();
-    assert!(handed.is_empty(), "no Pending is handed to a node-admin joining a live mesh: {handed:?}");
+    let handed: Vec<&Value> = ["rdm.node_admin.mesh.update.via-pending-handoff", "rdm.node_admin.mesh.update.via-state-handoff"].into_iter().flat_map(|name| named(&spans, name)).filter(|h| attr(h, "mesh") == lost && at(h) > at(first)).collect();
+    assert!(handed.is_empty(), "no state is handed to a node-admin joining a live mesh: {handed:?}");
 
     // Its own-mesh sweep: one, once, from the recovery admin; the members that live answered, the
     // one that died did not.
@@ -221,9 +222,9 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     for m in &survivors {
         assert!(!silent.contains(m), "{m:?} answered the sweep: {silent:?}");
     }
-    // Not reached goes to node recovery under the new mesh-primary (mesh-recovery.md step 6): its tickle,
-    // the provider's exact exited verdict, one recovery of the exited birth under the same Build. No
-    // decommission queue exists.
+    // Not reached goes to node recovery under the new mesh-primary (node-create.md step 5): its
+    // investigation, the provider's exact exited verdict, one recovery of the exited birth, its own
+    // workflow. No decommission queue exists.
     assert!(named(&spans, "rdm.node_admin.node.update.via-sweep-decommission").is_empty(), "no sweep decommission: the unreached member is node-recovered");
     let recovery: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
@@ -232,12 +233,10 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     assert_eq!(recovery.len(), 1, "the dead member is recovered once, keyed on its exited birth: {recovery:?}");
     let lost_admins_after: Vec<String> = after.iter().filter(|n| n["mesh"] == lost && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
     assert!(lost_admins_after.contains(&attr(recovery[0], "submitter")), "by its own mesh's new primary: {recovery:?}");
-    assert_eq!(attr(recovery[0], "build_id"), accepted, "under the same Build: {recovery:?}");
-    // The recovery's steps are the ones in its submit's own trace (R-BI7: the mesh-primary runs it in
-    // its mesh's drift lane, whose attempt number also names an attempt of the fabric lane).
+    // The recovery's steps are the ones in its own trace.
     let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
-        .filter(|sp| sp["trace_id"] == recovery[0]["trace_id"] && rdm_test::estate::at_location(sp, &window_victim) && attr(sp, "build_id") == accepted && attr(sp, "attempt") == attr(recovery[0], "attempt") && attr(sp, "outcome") == "complete")
+        .filter(|sp| sp["trace_id"] == recovery[0]["trace_id"] && rdm_test::estate::at_location(sp, &window_victim) && attr(sp, "outcome") == "complete")
         .map(|sp| attr(sp, "step"))
         .collect();
     for step in ["NodeDeleting", "NodeDeleted", "DeployRuntime", "WaitForNodeReady", "Complete"] {
@@ -249,30 +248,23 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     let gone = !std::path::Path::new(&format!("/proc/{victim_pid}")).exists() || std::fs::read_to_string(format!("/proc/{victim_pid}/stat")).unwrap_or_default().contains(") Z ");
     assert!(gone, "the member's exact runtime (pid {victim_pid}) exited");
     // The members that answered are never deleted or created again.
-    let touched: Vec<PathName> = named(&spans, "rdm.node_admin.node.create.via-build")
+    let touched: Vec<PathName> = ["rdm.node_admin.node.create.via-build", "rdm.node_admin.node.delete.via-build", "rdm.node_admin.node.create.via-node-recovery", "rdm.node_admin.node.delete.via-node-recovery"]
         .into_iter()
-        .chain(named(&spans, "rdm.node_admin.node.delete.via-build"))
-        .filter(|sp| attr(sp, "build_id") == accepted && survivors.iter().any(|m| rdm_test::estate::at_location(sp, m)) && at(sp) > at(first))
+        .flat_map(|name| named(&spans, name))
+        .filter(|sp| survivors.iter().any(|m| rdm_test::estate::at_location(sp, m)) && at(sp) > at(first))
         .map(|sp| swept(sp))
         .collect();
     assert!(touched.is_empty(), "members that answered are neither deleted nor created again: {touched:?}");
 
-    // The second admin was created by an attempt the NEW mesh primary executed, not the fabric primary.
-    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| attr(r, "build_id") == accepted).collect();
-    // The birth is an operation of the accepted Build: the fabric-primary's drift check replaces the
-    // proven-exited admin (`node.update.via-build`, node-replace.md), or the shape creates the missing
-    // one (`node.create.via-build`).
-    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
+    // The second admin is a member like any other (node-create.md step 6): the NEW mesh primary
+    // recovers it, its own workflow, not the fabric primary.
+    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
-        .chain(named(&spans, "rdm.node_admin.node.update.via-build"))
-        .filter(|c| attr(c, "build_id") == accepted && attr(c, "node_path") == lost_admins && !rdm_test::estate::at_location(c, &recovery_admin) && at(c) > at(first))
+        .filter(|c| attr(c, "node_path") == lost_admins && !rdm_test::estate::at_location(c, &recovery_admin) && attr(c, "outcome") == "complete" && at(c) > at(first))
         .collect();
-    assert!(!creates.is_empty(), "the second admin of {lost} was created after the first: {creates:?}");
+    assert!(!creates.is_empty(), "the second admin of {lost} was recovered after the first: {creates:?}");
     for c in &creates {
-        // The reconcile the create ran in is the one in its own trace: a drift lane's attempt number
-        // also names an attempt of the fabric lane (R-BI7).
-        let executor = reconciles.iter().find(|r| r["trace_id"] == c["trace_id"] && attr(r, "attempt") == attr(c, "attempt")).map(|r| attr(r, "executor_node_id")).expect("the create ran inside a reconcile");
-        assert_eq!(executor, recovery_admin_id, "{:?} was created by the new mesh primary, not by {fabric_primary:?}", swept(c));
+        assert_eq!(attr(c, "submitter"), recovery_admin_id, "{:?} was recovered by the new mesh primary, not by {fabric_primary:?}", swept(c));
     }
 
     let result = json!({
@@ -282,11 +274,10 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         "mesh_name": lost,
         "accepted_build_id": accepted,
         "attempt_before": attempt_before,
-        "attempt": done.attempt,
         "fabric_primary": fabric_primary,
         "killed": killed,
         "recovery_admin": recovery_admin,
-        "recovery_attempt": attr(first, "attempt"),
+        "recovery_trace": first["trace_id"],
         "provider": estate.owner.provider,
         "desired_shape": shape,
         "live_before": old.len(),
@@ -308,8 +299,8 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
 /// the same node (same NodeId, a new incarnation) with no maker, takes its durable map as the
 /// topology, connects to a local node of its own mesh, sweeps its own mesh once with a Ping (the
 /// dead sibling and the dead member do not answer), and sends them to the standard decommission.
-/// The other mesh's admins are restored by the fabric under the same Build with their existing
-/// MeshIds. What must NOT happen: a Day-0 start or a new Build or MeshId, a member that answered
+/// The other mesh's admins are restored by node recovery, each primary's own workflow (Q342), with their
+/// existing MeshIds. What must NOT happen: a Day-0 start or a new Build or MeshId, a member that answered
 /// created or deleted again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
@@ -421,8 +412,9 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     for m in &own_members {
         assert!(!silent.contains(m), "{m:?} answered the sweep: {silent:?}");
     }
-    let recreated: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
+    let recreated: Vec<&Value> = ["rdm.node_admin.node.create.via-build", "rdm.node_admin.node.create.via-node-recovery"]
         .into_iter()
+        .flat_map(|name| named(&spans, name))
         .filter(|c| at(c) >= t0 && own_members.iter().any(|m| rdm_test::estate::at_location(c, m)))
         .collect();
     assert!(recreated.is_empty(), "no member that answered is created again: {recreated:?}");
@@ -509,14 +501,12 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
 /// restarted on its own data dir as both primaries, resumes the Build and completes it. The stopped
 /// node's runtime exited with the fault: the completed stop's receipt is not taken into any view after
 /// the restart (no NodeStopped of it), and it is recovered (node-recovery.md step 3): node.delete of the
-/// exited birth, then node.create at its path.name under a new node id, and the view settles.
-/// The restarted fabric-primary's reconcile passes are held until its door has answered a member's
-/// recovery over the Build's lost attempt, so the door meets that attempt before the drive does, in
-/// every run. build.md §4: "An attempt lost with its executor ... leaves the Build in progress
+/// exited birth, then node.create at its path and name under a new node id, the mesh-primary's own
+/// workflow and never an attempt of the Build (Q342), and the view settles with `mesh1.node.3`
+/// created. build.md §4: "An attempt lost with its executor ... leaves the Build in progress
 /// (`Running`) ...; only an attempt that ends with a named terminal failure (`Failed { step, reason }`)
-/// makes the Build failed". The door releases the lost attempt's row and writes no verdict
-/// (`via-claimant-departure` `row-released`). Must NOT happen: the attempt ended `Failed` at the door,
-/// so no pass drives the Build and `mesh1.node.3` is never created (rdm#262).
+/// makes the Build failed". Must NOT happen: the lost attempt ended `Failed`, so no pass drives the
+/// Build and `mesh1.node.3` is never created (rdm#262), or the recovery run as an attempt of the Build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_recorded_stopped() {
     let cell = "a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_recorded_stopped";
@@ -548,21 +538,8 @@ async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_record
     assert!(estate.live_runtimes().is_empty(), "no runtime of the fabric is left: {:?}", estate.live_runtimes());
 
     let fp_dir = estate.bootstrap_data_dir("mesh1");
-    // The restarted fabric-primary's passes are held from its first: its drive claims nothing until the
-    // door has answered a recovery over the lost attempt.
-    let cuts = rdm_test::admin_faults::boot_cuts_file(&estate.root, &fp);
-    std::fs::create_dir_all(cuts.parent().expect("the boot cuts file is in the faults directory")).unwrap();
-    std::fs::write(&cuts, serde_json::to_vec(&json!([{"id": "drift-pass", "kind": "drift-pass"}])).unwrap()).unwrap();
     let restarted = estate.restart_admin_with(&fp_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
     estate.enter(&restarted).await;
-    let passes = rdm_test::faults::Door::at(&estate, &fp).await;
-    passes.wait_held("drift-pass").await;
-    let answered = wait_for("the restarted fabric-primary's door answers a recovery over the Build's lost fabric-lane attempt", Duration::from_secs(90), || async {
-        named(&estate.spans(), "rdm.node_admin.build.update.via-claimant-departure").into_iter().find(|sp| rdm_test::estate::at_location(sp, &fp) && s(&sp["attributes"]["lane"]) == "fabric").cloned()
-    })
-    .await;
-    passes.release("drift-pass").await;
-    assert_eq!(s(&answered["attributes"]["outcome"]), "row-released", "the door releases the lost attempt's row and writes no verdict: the Build stays in progress (build.md §4): {answered}");
     let after = values(&estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(240)).await);
     let back = after.iter().find(|n| location(n) == Estate::path("mesh1.node", "1")).cloned().unwrap_or_else(|| panic!("mesh1.node.1 is in the settled view: {after:#?}"));
     assert_ne!(s(&back["node_id"]), stopped_id, "mesh1.node.1 is re-created by recovery under a new node id: {back}");
@@ -575,5 +552,8 @@ async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_record
     let taken: Vec<&Value> = named(&spans, "rdm.mesh.topology.remove.via-node-stopped").into_iter().filter(|sp| at(sp) >= t0 && attr(sp, "node_id") == stopped_id).collect();
     assert!(taken.is_empty(), "no view takes a NodeStopped of the exited birth after the restart: {taken:#?}; the cut held {held}");
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| at(sp) >= t0 && attr(sp, "node_id") == stopped_id).collect();
-    assert_eq!(deleted.len(), 1, "the exited birth is recovered: node.delete of it once, then node.create at its path.name: {deleted:#?}");
+    assert_eq!(deleted.len(), 1, "the exited birth is recovered: node.delete of it once, then node.create at its path and name: {deleted:#?}");
+    let recovered: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| at(sp) >= t0 && attr(sp, "node_id") == stopped_id && attr(sp, "outcome") == "complete").collect();
+    assert_eq!(recovered.len(), 1, "the mesh-primary recovered the exited birth once, as its own workflow (Q342): {recovered:#?}");
+    estate.record_trace_url(&s(&recovered[0]["trace_id"]));
 }
