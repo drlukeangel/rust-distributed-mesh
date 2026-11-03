@@ -430,14 +430,14 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.mesh.update.via-block` | `crates/rdm-admin/src/storage_change.rs` | 744 |
 | `rdm.node_admin.mesh.update.via-checklist-complete` | `crates/rdm-admin/src/fabric_status.rs` | 520 |
 | `rdm.node_admin.mesh.update.via-checklist-held` | `crates/rdm-admin/src/fabric_status.rs` | 526 |
-| `rdm.node_admin.mesh.update.via-deleted-row` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 852 |
+| `rdm.node_admin.mesh.update.via-deleted-row` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 850 |
 | `rdm.node_admin.mesh.update.via-deleted-row` | `crates/rdm-admin/src/mesh_delete.rs` | 549 |
 | `rdm.node_admin.mesh.update.via-entry-sweep` | `crates/rdm-admin/src/reenter.rs` | 314 |
 | `rdm.node_admin.mesh.update.via-exit-manifest-recorded` | `crates/rdm-admin/src/mesh_delete.rs` | 461 |
 | `rdm.node_admin.mesh.update.via-final-birth-deleted` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 549 |
 | `rdm.node_admin.mesh.update.via-final-primary-lost` | `crates/rdm-admin/src/mesh_delete.rs` | 908 |
-| `rdm.node_admin.mesh.update.via-handoff-sent` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 900 |
-| `rdm.node_admin.mesh.update.via-handoff-validated` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 909 |
+| `rdm.node_admin.mesh.update.via-handoff-sent` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 898 |
+| `rdm.node_admin.mesh.update.via-handoff-validated` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 907 |
 | `rdm.node_admin.mesh.update.via-held-mesh-status` | `crates/rdm-admin/src/status_rpc.rs` | 2332 |
 | `rdm.node_admin.mesh.update.via-held-state-adopted` | `crates/rdm-admin/src/admin/reconcile.rs` | 311 |
 | `rdm.node_admin.mesh.update.via-leave-members` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 739 |
@@ -575,7 +575,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.update.via-row-status` | `crates/rdm-admin/src/status_rpc.rs` | 1665 |
 | `rdm.node_admin.node.update.via-row-status` | `crates/rdm-admin/src/status_rpc.rs` | 2494 |
 | `rdm.node_admin.node.update.via-rows-held` | `crates/rdm-admin/src/admin/rows_writer.rs` | 150 |
-| `rdm.node_admin.node.update.via-shutdown-member` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 805 |
+| `rdm.node_admin.node.update.via-shutdown-member` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 803 |
 | `rdm.node_admin.node.update.via-start-workflow` | `crates/rdm-core/src/names.rs` | 89 |
 | `rdm.node_admin.node.update.via-started-frame` | `crates/rdm-core/src/names.rs` | 224 |
 | `rdm.node_admin.node.update.via-stop-admitted` | `crates/rdm-admin/src/admin/runner.rs` | 242 |
