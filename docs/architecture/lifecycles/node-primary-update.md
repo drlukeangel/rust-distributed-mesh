@@ -19,7 +19,7 @@ fabric-primary move together and are never separated. A fabric-primary unheard p
 is not succeeded: [fabric recovery](fabric-recovery.md) re-creates it at its path and name (Q122). Under
 mesh.delete the fabric-primary hands over to another mesh first
 ([below](#the-fabric-primary-nodefabric-primaryupdate)). No other stored record of who is primary exists: no
-primary row, no move log, nothing to fold. The fabric-primary's atlas, its in-memory state, records an update's answer (Q355), until a later record of that mesh's primary replaces it.
+primary row, no move log, nothing to fold. The atlas of the node-admin that sent the update, the fabric-primary or the node's mesh-primary, its in-memory state, records the update's answer (Q355), until a later record of that role replaces it.
 
 ## Operation contract
 
@@ -33,7 +33,7 @@ primary row, no move log, nothing to fold. The fabric-primary's atlas, its in-me
 | Both primaries | When the mesh-primary is also the fabric-primary and the successor is in the same mesh, the successor becomes both and records both on its own row |
 | Precondition | None on the fabric's state (Q171) |
 | Completion | The primary answers its commander `node.primary.updating` (its acknowledgement, Started) once it admitted the command, then `node.primary.updated { node_id }` (its completion, Terminal), `node_id` the new primary; `node.fabric-primary.updating` and `node.fabric-primary.updated { node_id }` for the fabric-primary. The successor answers the primary's call `node.primary.updated { node_id }` |
-| The commander | The fabric-primary, when its `node.primary.update` of a mesh's mesh-primary is answered `node.primary.updated { node_id }`, changes its atlas: it sets `is_primary` on `node_id` and removes it from the node it sent `node.primary.update` to; it reads a node's mesh-primary from its atlas (Q355). Every other node learns the new primary from gossip (for a mesh-primary, also from the backbone). The action's next command goes to the node's mesh-primary as it stands after the update: the new primary `node_id` names, for a mesh-primary or the fabric-primary; its mesh-primary, for a node-type primary. No command spans two nodes (Q352) |
+| The commander | The fabric-primary, when its `node.primary.update` of a mesh's mesh-primary is answered `node.primary.updated { node_id }`, and the node's mesh-primary, when its `node.primary.update` of a node type's primary is answered, each change their atlas: it sets `is_primary` on `node_id` and removes it from the node the update was sent to. The fabric-primary records the same way the answer the mesh-primary streams back to it. Each reads a node's mesh-primary and every node type's primary from its atlas, from the answer streamed back, never waiting on gossip (Q355). Every other node learns the new primary from gossip (for a mesh-primary, also from the backbone). The action's next command goes to the node's mesh-primary as it stands after the update: the new primary `node_id` names, for a mesh-primary or the fabric-primary; its mesh-primary, for a node-type primary. No command spans two nodes (Q352) |
 | Wire | [PrimaryUpdate / PrimaryUpdated on 0x21](../node-rpc-envelope.md#primaryupdate-op-0x21-rdm) |
 
 ## Numbered end-to-end sequence
@@ -65,7 +65,7 @@ and recording it are separate for every type.
    records the successor's row from the successor's digest, the way it records every member fact it
    hears. The write records the role; it does not grant it. No frame of its own announces a primary
    change.
-6. The commander continues on the primary's `node.primary.updated { node_id }`, never on gossip: step 5 is the recording of a change that has already happened, and the commander waits for neither the digest nor the record. The fabric-primary records the answer in its atlas, as the Operation contract's commander row says (Q355). The action's next command goes to the old primary's mesh-primary as it stands now: for the `node-admin` type, the new mesh-primary `node_id` names, which runs the old primary's connections delete, stop or delete as for any node of its mesh; for any other type, the mesh-primary, which runs it itself.
+6. The commander continues on the primary's `node.primary.updated { node_id }`, never on gossip: step 5 is the recording of a change that has already happened, and the commander waits for neither the digest nor the record. The fabric-primary and the mesh-primary each record the answer in their atlas, for the update it sent or the answer streamed back to it (Q355). The action's next command goes to the old primary's mesh-primary as it stands now: for the `node-admin` type, the new mesh-primary `node_id` names, which runs the old primary's connections delete, stop or delete as for any node of its mesh; for any other type, the mesh-primary, which runs it itself.
 
 ## Failure contract
 
@@ -173,7 +173,7 @@ becomes fabric-primary and records `is_fabric_primary` on its own row, as its me
 departing fabric-primary records its own row with it cleared, and under mesh.delete stays mesh-primary
 until its own node.delete. The fabric row (`fabric/`) is the fabric's identity and never changes for
 this. No other stored record exists; every reader computes the election from the facts it holds and folds
-nothing, and the fabric-primary's atlas records an update's answer (Q355), until a later record of that mesh's primary replaces it.
+nothing, and the atlas of the node-admin that sent the update records its answer (Q355), until a later record of that role replaces it.
 
 ## Command, completion and gossip messages
 
