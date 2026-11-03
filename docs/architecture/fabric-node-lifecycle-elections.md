@@ -91,7 +91,7 @@ replacement does not inherit election rank. One exception, [fabric recovery](lif
 (Q122): while it restores the fabric-primary, no other node becomes fabric-primary or node-admin primary
 of that mesh; the fabric-primary stays assigned to the recovery target's path.name, and when the node
 re-created there is Ready the workflow restores it as mesh-primary and fabric-primary. The
-recovery attempt supplies the target; nothing about a lower id or a matching name displaces a primary
+recovery supplies the target; nothing about a lower id or a matching name displaces a primary
 anywhere else.
 
 ---
@@ -108,7 +108,7 @@ mesh-primary records on its row.
 Ordinary nodes publish current facts. They do not author election outcomes.
 
 A primary unheard past the staleness floor is superseded by the lowest Ready node of its type
-in its mesh; the mesh-primary announces and records it ([node.primary.update](lifecycles/node-primary-update.md)).
+in its mesh; the mesh-primary announces and records it ([node.primary.update](lifecycles/node-primary-update.md)). Its first act is to publish its mesh's aggregate on the backbone naming itself mesh-primary, and the update to its own mesh asynchronously; then it investigates the lost birth as any member of its mesh.
 For a node-admin the questions are, in order: am I a node-admin; am I the lowest Ready one;
 was the former mesh-primary also the fabric-primary? No: I am mesh-primary now. Yes: I take no primary
 role and run [fabric recovery](lifecycles/fabric-recovery.md) (Q122).
@@ -164,7 +164,7 @@ election's input: under mesh.delete the incumbent stays mesh-primary and is fabr
 hand-over needs no incumbent-mesh death, infers nothing from silence and turns no announcement into a
 fact.
 
-A Build that runs `node.connection.delete { scope: All }` on, stops or replaces a primary
+A node command or Build that deletes the connections of, stops or deletes a primary
 follows the [node.primary.update](lifecycles/node-primary-update.md) sequence: the primary, commanded
 from above, calls node.primary.update on its successor; the successor becomes primary and, for the
 `node-admin` type, the mesh's writer from that moment, and records the change itself. The record is the

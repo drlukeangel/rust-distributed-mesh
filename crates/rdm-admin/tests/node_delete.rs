@@ -434,7 +434,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         };
 
         let req_fail = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
-            build_id: build_fail_id.clone(),
+            build_id: Some(build_fail_id.clone()),
             attempt: 1,
             node: target_node.clone(),
             handle: handle.clone(),
@@ -523,7 +523,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         };
 
         let req_ok = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
-            build_id: build_ok_id.clone(),
+            build_id: Some(build_ok_id.clone()),
             attempt: 1,
             node: target_node.clone(),
             handle: handle.clone(),
@@ -903,7 +903,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .unwrap();
         let err1 = pipeline
             .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 1,
                 node: target_node.clone(),
                 handle: handle.clone(),
@@ -999,7 +999,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .unwrap();
         let out3 = pipeline
             .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 3,
                 node: target_node.clone(),
                 handle: handle.clone(),
@@ -1049,7 +1049,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .unwrap();
         let out_live = pipeline
             .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
-                build_id: build_id_live.clone(),
+                build_id: Some(build_id_live.clone()),
                 attempt: 1,
                 node: target_node.clone(),
                 handle: handle.clone(),

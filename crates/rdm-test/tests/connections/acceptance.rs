@@ -205,13 +205,15 @@ fn rows<'a>(history: &'a [Value], to: &PathName, kind: &str) -> Vec<&'a Value> {
 }
 
 /// `node.connection.delete { Connections(ids) }` of `node`'s exact birth through its mesh-primary.
-async fn connections_delete_ids(estate: &Estate, node: &PathName, ids: &[String]) -> rdm_core::status::StatusReply {
+async fn connections_delete_ids(estate: &Estate, node: &PathName, ids: &[String]) -> rdm_core::node_command::NodeCommandReply {
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     let primary = mesh.iter().find(|n| n.is_primary && rdm_core::is_node_admin(&n.r#type)).cloned().expect("node.get names mesh1's primary");
     let target = mesh.iter().find(|n| n.name == *node).cloned().unwrap_or_else(|| panic!("no {node:?} in mesh1"));
-    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(target.node_id.clone()), node_id: target.node_id.clone(), incarnation: target.incarnation_id.clone().expect("a live birth") };
     let ids = ids.iter().map(|i| rdm_core::ConnectionId::parse(i).unwrap_or_else(|e| panic!("{i} is not a connection id: {e:?}"))).collect();
-    estate.nodes_obj().await.connections_delete(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &rdm_core::status::ConnectionScope::Connections(ids)).await.expect("node.connection.delete answered")
+    let mut stream = estate.nodes_obj().await.delete_connections(&target.name, &rdm_core::status::ConnectionScope::Connections(ids)).await.unwrap_or_else(|e| panic!("node.connection.delete of {node:?} through {} refused: {e}", primary.node_id));
+    let frames = Estate::frames_of(&mut stream).await;
+    assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "{frames:?}");
+    stream.completion().cloned().expect("the door's terminal frame")
 }
 
 /// The carrier holds its own Direct connection to the destination on the app protocol: a stream it opened,
@@ -461,7 +463,7 @@ async fn a_carrier_that_lost_its_connection_refuses_by_name_and_the_source_disco
     // Disconnected landed and held by the carrier (a drop is no reconnect series: nothing re-dials it, §5.1).
     let connection = rows(&history(&estate, &CARRIER).await, &*DEST, "Direct").into_iter().rev().find(|r| r["state"] == "Connected").cloned().expect("the carrier's connection");
     let closed = connections_delete_ids(&estate, &*CARRIER, &[s(&connection["id"])]).await;
-    assert!(matches!(&closed, rdm_core::status::StatusReply::ConnectionsDeleted { closed, .. } if closed.iter().any(|c| c.to_string() == s(&connection["id"]))), "the carrier's connection is closed by id: {closed:?}");
+    assert!(matches!(&closed, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { closed, .. } if closed.iter().any(|c| c.to_string() == s(&connection["id"]))), "the carrier's connection is closed by id: {closed:?}");
     // The carrier refuses from what it holds (§8), and it holds the drop only once its write lands
     // (Q169); the drop's line is in the store file before its write lands (the write is then
     // fsynced), so the wait reads the carrier's held projection, never the file.
@@ -653,7 +655,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     let never = rdm_core::ConnectionId::mint().to_string();
 
     let reply = connections_delete_ids(&estate, &*SOURCE, &[to_carrier.clone(), never.clone()]).await;
-    let rdm_core::status::StatusReply::ConnectionsDeleted { closed, not_open, receipt, .. } = &reply else { panic!("node.connections.deleted: {reply:?}") };
+    let rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { closed, not_open, receipt, .. } = &reply else { panic!("node.connections.deleted: {reply:?}") };
     assert_eq!((closed.iter().map(ToString::to_string).collect::<Vec<_>>(), not_open.iter().map(ToString::to_string).collect::<Vec<_>>()), (vec![to_carrier.clone()], vec![never.clone()]), "{reply:?}");
     assert!(receipt.is_none(), "a scope of ids carries no node-wide receipt: {reply:?}");
     // The drop lands behind the answer (Q169); `node.connection.get` reads the held projection, which
@@ -671,12 +673,13 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     assert_eq!(drop["source"]["name"], json!(&*SOURCE), "{drop}");
     assert_ne!(s(&drop["id"]), to_carrier, "the drop is a new entry: {drop}");
     let again = connections_delete_ids(&estate, &*SOURCE, &[to_carrier.clone()]).await;
-    assert!(matches!(&again, rdm_core::status::StatusReply::ConnectionsDeleted { closed, not_open, .. } if closed.is_empty() && not_open.iter().any(|c| c.to_string() == to_carrier)), "the same id again is not open: {again:?}");
+    assert!(matches!(&again, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { closed, not_open, .. } if closed.is_empty() && not_open.iter().any(|c| c.to_string() == to_carrier)), "the same id again is not open: {again:?}");
     // An empty list, sent past the client's own refusal to the mesh-primary, is refused by name.
     let primary = mesh_primary(&estate).await;
     let carrier_client = estate.carrier().await;
-    let empty = rdm_client::NodeRpc::new(carrier_client.client()).connections_delete(&primary, &rdm_transport::RouteChoice::Direct, &birth, &rdm_core::status::ConnectionScope::Connections(vec![]), &rdm_transport::CallOptions::default()).await.expect("answered");
-    assert!(matches!(&empty, rdm_core::status::StatusReply::RejectedConnectionScope { reason } if reason.contains("at least one")), "an empty list is refused by name: {empty:?}");
+    let empty = rdm_client::NodeRpc::new(carrier_client.client()).connections_delete(&primary, &birth, &rdm_core::status::ConnectionScope::Connections(vec![]), &rdm_transport::CallOptions::default()).await.expect("answered");
+    // The primary's door refuses it with 0x22's `Rejected`, reason `rejected-connection-scope` (D18).
+    assert!(matches!(&empty, rdm_core::node_command::NodeCommandReply::Rejected { reason, detail } if reason == "rejected-connection-scope" && detail.contains("at least one")), "an empty list is refused by name: {empty:?}");
     assert!(listed(&estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.expect("node.connection.get"), &dest_id).contains(&to_dest), "the refused scope cut nothing");
     let source = estate.node_value(&*SOURCE).await;
     assert_eq!(s(&source["status"]), "ready", "a delete of named connections changes no status: {source}");
@@ -726,7 +729,7 @@ async fn an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work
     })
     .await;
 
-    let mut deleting = nodes.delete_connections(&SOURCE.clone()).await.unwrap_or_else(|e| panic!("node.connection.delete of {:?} refused: {e}", &*SOURCE));
+    let mut deleting = nodes.delete_connections(&SOURCE.clone(), &rdm_core::status::ConnectionScope::All).await.unwrap_or_else(|e| panic!("node.connection.delete of {:?} refused: {e}", &*SOURCE));
     let frames = Estate::frames_of(&mut deleting).await;
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "{frames:?}");
     assert!(frames.contains(&rdm_client::Frame::Event(rdm_client::NodeEvent::ConnectionsDeleted)), "{frames:?}");
@@ -747,13 +750,13 @@ async fn an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work
 }
 
 /// CONTRACT (node-connections-delete.md step 0: "For `All` only: if the target is the fabric-primary or
-/// a mesh-primary, it first runs node.primary.update ..., commanded from above; the Build continues
-/// once node.primary.updated is answered, under the new primary"; Primary row): mesh2's primary P (not
-/// the fabric-primary) is the target of a standalone `node.connection.delete`. The fabric-primary
-/// commands P's node.primary.update (`primary.update.via-command`), P's election names the other
-/// node-admin NA2 (`via-update-primary`, successor NA2), NA2 answers node.primary.updated; only then
-/// does the `DeleteConnections` step run on P, executed by NA2 as mesh2's primary. The Build completes
-/// on node.connections.deleted and every admin names NA2 mesh2's primary. Must NOT happen: a
+/// a mesh-primary, it first runs node.primary.update ..., commanded from above"; Primary row; D40): mesh2's
+/// primary P (not the fabric-primary) is the target of a caller's `node.connection.delete`, a node
+/// command at the primary above P, the fabric-primary. It commands P's node.primary.update
+/// (`primary.update.via-command`), P's election names the other node-admin NA2 (`via-update-primary`,
+/// successor NA2), NA2 answers node.primary.updated; only then does the command go on to NA2's door,
+/// and the `DeleteConnections` step runs on P under NA2 as mesh2's primary. The command completes on
+/// node.connections.deleted and every admin names NA2 mesh2's primary. Must NOT happen: a
 /// `DeleteConnections` step before NA2 answered, or P still named primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_all() {
@@ -767,7 +770,7 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     assert!(!p.is_fabric_primary, "mesh2's primary is not the fabric-primary");
     let (p_name, na2_name, p_id, na2_id) = (p.name.clone(), na2.name.clone(), p.node_id.to_string(), na2.node_id.to_string());
 
-    let mut deleting = estate.nodes_obj().await.delete_connections(&p.name).await.unwrap_or_else(|e| panic!("node.connection.delete of {p_name:?} refused: {e}"));
+    let mut deleting = estate.nodes_obj().await.delete_connections(&p.name, &rdm_core::status::ConnectionScope::All).await.unwrap_or_else(|e| panic!("node.connection.delete of {p_name:?} refused: {e}"));
     let frames = Estate::frames_of(&mut deleting).await;
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "{frames:?}");
     for admin in views.iter().filter(|n| n.r#type == "node-admin" && n.name != p.name) {
@@ -790,8 +793,8 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     let step = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| rdm_test::estate::at_location(sp, &p_name) && s(&sp["attributes"]["step"]) == "DeleteConnections").cloned().expect("the DeleteConnections step on P");
     assert_eq!(s(&step["attributes"]["outcome"]), "complete", "{step}");
     assert!(start(&step) >= answered["end_unix_nano"].as_u64().unwrap_or(u64::MAX), "the All ran after NA2 answered node.primary.updated: {step} {answered}");
-    let run = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| s(&sp["attributes"]["executor"]).starts_with(&format!("{na2_id}/"))).unwrap_or_else(|| panic!("NA2 executed the delete"));
-    assert!(cmd["end_unix_nano"].as_u64().unwrap_or(0) <= start(run), "the fabric-primary installed NA2's answer before it dispatched the delete");
+    let run = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| rdm_test::estate::at_location(sp, &na2_name) && s(&sp["attributes"]["subject_id"]) == p_id).cloned().unwrap_or_else(|| panic!("NA2's door ran the command"));
+    assert!(cmd["end_unix_nano"].as_u64().unwrap_or(0) <= start(&run), "the fabric-primary installed NA2's answer before it sent the command on: {run}");
     estate.record_trace_url(&s(&cmd["trace_id"]));
 }
 

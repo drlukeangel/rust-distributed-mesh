@@ -900,7 +900,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                         .await
                         .map_err(|e| format!("{node_id} cannot terminate the lost birth {} ({}) at path {:?}, name {:?}: {e}", lost.node_id, lost.incarnation_id.as_str(), lost.name.path, lost.name.name))?;
                 }
-                super::adoption::release_name(claimed, &node_id, &*nodes_storage, &caches.nodes, &*journal).await
+                super::adoption::release_name(claimed, &node_id, &*nodes_storage, &caches.nodes).await
             }
             .instrument(boot.clone())
             .await
@@ -1512,6 +1512,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 > = Arc::new(std::sync::OnceLock::new());
                                 let mesh_deleter: crate::mesh_delete::MeshDeleterSlot =
                                     Arc::new(std::sync::OnceLock::new());
+                                // The node commands this admin runs as the primary above a node (D40).
+                                let primary_commands: crate::node_commands::PrimaryCommandsSlot =
+                                    Arc::new(std::sync::OnceLock::new());
                                 let states_slot: Arc<
                                     std::sync::OnceLock<Arc<crate::fabric_status::FabricStates>>,
                                 > = Arc::new(std::sync::OnceLock::new());
@@ -1549,6 +1552,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     own: own_commands.clone(),
                                     certs: Some(issuer.clone()),
                                     mesh_deleter: mesh_deleter.clone(),
+                                    primary_commands: primary_commands.clone(),
                                     storage_changes: { let slot: Arc<std::sync::OnceLock<_>> = Default::default(); let _ = slot.set(storage_changes.clone()); slot }, hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                                     wake: records.wake.clone(),
                                     fabric_states: states_slot.clone(), atlas: Arc::new(std::sync::OnceLock::from(control.atlas.clone())), fabric_recovery: Arc::new(std::sync::OnceLock::from(crate::fabric_recovery::reader(digest_view.clone(), records.clone()))),
@@ -1747,6 +1751,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),
                                 handover: handover.clone(),
                                 issuer: issuer.clone(),
+                                node_work: Default::default(),
                             });
                             let _ = runner_slot.set(runner.clone());
                             // The storage change's wiring (storage.md §2 "Changing it"): this admin's status door, the Build
@@ -1777,6 +1782,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // Gate 5's verdict on a delete of a birth neither stopped nor heard live (Q219).
                             let _ = control.investigation.set(runner.clone());
                             let _ = mesh_deleter.set(Arc::new(MeshDeleteDoor { runner: runner.clone() }));
+                            // A caller's node.stop and node.start, run by this admin as the primary above the
+                            // node (node-stop.md, node-start.md; Q342, D40).
+                            let _ = primary_commands.set(Arc::new(super::primary_commands::PrimaryCommandDoor { runner: runner.clone(), control: control.clone() }));
                             // The Build family on `0x20`: the executor's door for `build.attempt.run` and the fabric-primary's
                             // drive of every Build. The same admin holds both; which one a call reaches depends on the role.
                             let drive_env = {
@@ -2258,7 +2266,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
                                         let rafka_time_at_apply = rafka_time.clone();
                                         // The adoption launch's attempt completes once it is Ready (Q156).
-                                        let adopted = adoption_claim.clone().map(|c| (c, journal.clone(), mesh_claims.clone()));
                                         let (hydrated, start_progress, entering_gate) = (builds_dyn.clone(), progress.clone(), entering.clone());
                                         // A launched admin's Ready names the current Build its log holds, reading no store (Q227).
                                         let held_log = cfg.launch.is_some().then(|| journal.clone());
@@ -2369,12 +2376,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         build_id = %held_build,
                                                     )
                                                     .in_scope(|| tracing::info!("ready: every held birth's runtime is adoptable"));
-                                                    // Under a delete the claimed attempt is the delete's own: the teardown ends it (Q159).
-                                                    if let Some((claimed, builds, claims)) = adopted.as_ref().filter(|(c, _, _)| c.under_delete.is_none()) {
-                                                        if let Err(e) = super::adoption::complete(claimed, &node_id, &**builds, &**claims).await {
-                                                            tracing::warn!(node_path = %me.path, node_name = %me.name, error = %e, "the adoption launch's attempt could not be completed");
-                                                        }
-                                                    }
                                                     break;
                                                 }
                                                 if reported.as_ref() != Some(&blocked) {
@@ -2561,6 +2562,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     provider: runner.provider.clone(),
                                                     nodes_storage: nodes_storage.clone(),
                                                     written: records.caches.nodes.clone(),
+                                                    runner: runner_slot.clone(),
                                                     door: build_slot.clone(),
                                                     client: Some(node_rpc.client.clone()),
                                                     builds: control.builds.clone(),
@@ -2571,6 +2573,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         .unwrap_or_else(|| cfg.data_dir.clone()),
                                                     gone_dirs: Arc::default(),
                                                     resubmits: Arc::default(),
+                                                    failed: Arc::default(),
                                                     investigated: investigated.clone(),
                                                 };
                                                 // A node that will not move in a storage change's mesh.unblock is re-created by this
@@ -2658,6 +2661,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         connections_storage.clone();
                                                     // The refused callers' atlas (Q207): a returned birth is decided from it.
                                                     let control_atlas = control.atlas.clone();
+                                                    // A successor investigates its mesh's silent births only after its first act,
+                                                    // its mesh's aggregate on the backbone naming it mesh-primary (elections §4.1).
+                                                    let tick_backbone = backbone.clone();
                                                     tasks.push(tokio::spawn(async move {
                                             // The births whose inspection or submitted recovery is in flight. The tick never waits
                                             // on it.
@@ -2676,6 +2682,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let offline_before = records.offline.lock().unwrap().clone();
                                                 let view = topology.read().await.clone();
                                                 let holds_role = view.is_mesh_primary(&mesh, &me_id);
+                                                // A mesh-primary investigates its silent births, a lost mesh-primary its election
+                                                // replaced among them, once it has published its mesh's aggregate on the backbone
+                                                // naming itself mesh-primary (elections §4.1; node-recovery.md step 2, Q335).
+                                                let investigates = holds_role && tick_backbone.published_as_primary();
                                                 // The births only a durable runtime row names: the mesh-primary's alone, from its mesh's
                                                 // rows read once as it takes the role (`TenureRows`); an admin that is no primary reads
                                                 // none. A birth the view holds is marked from this admin's own digest view, so a
@@ -2686,13 +2696,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     durable_births(&view, rows, &|p| planned.values().any(|m| m.contains(p)), &|id| recovery.digest_view.is_deleted(id))
                                                 };
                                                 *records.durable.lock().unwrap() = durable.clone();
+                                                // A lost mesh-primary the election replaced is a silent member of this mesh like any
+                                                // other, its successor's to investigate and recover (node-recovery.md step 2, Q335).
                                                 let mut watched = watched_births(&view, &me_id, &mesh, &durable);
-                                                // A node-admin the election replaced as this mesh's primary and unheard since is an
-                                                // unheard mesh-primary, the fabric-primary's to investigate and recover
-                                                // (node-recovery.md step 2), never this tick's; one heard after it was replaced is
-                                                // one more node-admin of this mesh, and its silence is this tick's.
-                                                let read_at = std::time::Instant::now();
-                                                watched.retain(|_, n| !(rdm_core::is_node_admin(&n.r#type) && n.incarnation_id.as_ref().is_some_and(|i| recovery.digest_view.unheard_since_replaced(&mesh, n.node_id.as_str(), i, read_at))));
                                                 // One reading of the clocks for the tick: each birth's mark is read from the view at it.
                                                 let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
                                                 // node-tickle.md step 1: a birth a command never reached for a reachability reason, or
@@ -2729,7 +2735,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let report = tickle
                                                     .tick(
                                                         now_ms,
-                                                        holds_role,
+                                                        investigates,
                                                         silent,
                                                         |id: &str| in_view.contains(id),
                                                         floor.as_millis() as u64 / 2,
@@ -2871,9 +2877,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 {
                                                     let offline = records.offline.lock().unwrap().clone();
                                                     let now = std::time::Instant::now();
-                                                    for n in recovery_due(holds_role, &mesh, &watched, &offline) {
+                                                    let failed_now = recovery.failed_recoveries(holds_role, &mesh);
+                                                    let failed_births: HashSet<(NodeId, IncarnationId)> = failed_now.iter().filter_map(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))).collect();
+                                                    for n in recovery_due(investigates, &mesh, &watched, &offline) {
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                                                         let birth = (n.node_id.clone(), incarnation);
+                                                        // A birth whose recovery failed here is that recovery's, run again below
+                                                        // on its backoff with no inspection: its verdict stands, and its own
+                                                        // NodeDeleting is no other workflow's removal (Q209; Q342).
+                                                        if failed_births.contains(&birth) {
+                                                            continue;
+                                                        }
                                                         if !recovery.take_eligible(&birth, now, &in_flight) {
                                                             continue;
                                                         }
@@ -2882,27 +2896,25 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             recovery.recover(&n).await;
                                                         });
                                                     }
-                                                    // node-recovery.md "Failure and receipts": a birth whose workflow in the
-                                                    // accepted Build stopped at a Failed attempt is submitted again, read from the
-                                                    // durable facts each tick, whether or not the view still holds it (a workflow
-                                                    // whose delete completed deleted it) and whoever submitted it before. One submit
-                                                    // per birth in flight, whichever way it is due, and on the same backoff.
-                                                    let owed_now = recovery.owed_submits(holds_role, &mesh).await;
-                                                    let owed_births: HashSet<(NodeId, IncarnationId)> = owed_now.iter().map(|o| (o.node_id.clone(), o.incarnation.clone())).collect();
-                                                    for owed in owed_now {
-                                                        let birth = (owed.node_id.clone(), owed.incarnation.clone());
+                                                    // node-recovery.md "Failure": a birth whose recovery failed is run again once its
+                                                    // backoff passed, whether or not the view still holds it (a recovery whose delete
+                                                    // completed deleted it). One recovery per birth in flight, whichever way it is
+                                                    // due, and on the same backoff.
+                                                    for n in failed_now {
+                                                        let Some(incarnation) = n.incarnation_id.clone() else { continue };
+                                                        let birth = (n.node_id.clone(), incarnation);
                                                         if !recovery.take_eligible(&birth, now, &in_flight) {
                                                             continue;
                                                         }
                                                         let recovery = recovery.clone();
                                                         crate::offline::spawn_recovery_follower(&stop, in_flight.clone(), birth, async move {
-                                                            let _ = recovery.submit_owed(&owed).await;
+                                                            let _ = recovery.recover_again(&n).await;
                                                         });
                                                     }
                                                     // A birth owed nothing now (heard again, gone from the view or replaced at its
                                                     // path and name, or this admin no longer its mesh-primary) keeps no backoff: unheard
                                                     // again, it is eligible at once (Q209).
-                                                    recovery.forget_resubmits(|birth| holds_role && (offline.contains(birth) || owed_births.contains(birth)));
+                                                    recovery.forget_resubmits(|birth| holds_role && (offline.contains(birth) || failed_births.contains(birth)));
                                                     // A second birth another executor made at a path and name of this mesh across a cut:
                                                     // superseded, its row written deleted and its NodeDeleted published, so its next
                                                     // digest is a deleted birth heard again (node-investigation.md, Q142).
@@ -2920,7 +2932,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
                                                             tokio::spawn(stop.until_stopped(async move {
                                                                 if let Some((_, outcome)) = callers.decide(&atlas, "digest", &d.node.node_id, &d.node.incarnation).await {
-                                                                    if outcome == "terminate-reported" || outcome.starts_with("mesh-join:") {
+                                                                    if outcome == "terminated" || outcome.starts_with("mesh-join:") {
                                                                         recovery.digest_view.returned_reported(d.node.node_id.as_str(), d.node.incarnation.as_str());
                                                                     }
                                                                 }
@@ -3367,7 +3379,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         }));
                                     }
                                     let executor;
-                                    // The reconcile loop: the drift check, and the fabric-primary's drive of every active Build
+                                    // The reconcile loop: the fabric-primary's drive of every active Build
                                     // (`build_drive`). Only the fabric-primary drives; an executor runs what it is called with
                                     // (`build_run`) and picks nothing up from its projection. A launched admin starts it only after
                                     // its entry pull, so its first view is its launcher's. Each pass after the first runs on an
@@ -3375,22 +3387,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     {
                                         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
                                         let (digest_view, records, fabric, fabric_id, provider) = (digest_view.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
-                                        let (me, me_id, deployer, drift_builds, drift_contexts) = (name.clone(), node_id.clone(), runner.provider.clone(), builds_dyn.clone(), attempt_contexts.clone());
-                                        let drift_admission = control.admission.clone();
-                                        let drift_control = control.clone();
+                                        let (me, me_id, deployer) = (name.clone(), node_id.clone(), runner.provider.clone());
                                         let (drives, drive_env) = (drives.clone(), drive_env.clone());
-                                        let drift_time = rafka_time.clone();
-                                        let drift_nodes = nodes_storage.clone();
-                                        let mesh_unheard = control.mesh_unheard.get().cloned().expect("the R-D1 reader is set before the reconcile loop");
                                         let stop = stop_gate.clone();
                                         let drift_seam = wiring.drift_seam.take();
                                         let mut wake = ReconcileWake::new(submitted, records.subscribe_view(), records.subscribe_fabric_state(), drives.subscribe_ended(), deployer.exits());
                                         executor = tokio::spawn(async move {
-                                            let mut started = HashSet::new();
-                                            let mut held = HashSet::new();
-                                            // Every mesh's durable runtime rows, read once as this admin takes the
-                                            // fabric-primary role and held while it keeps it (`FabricTenureRows`).
-                                            let mut fabric_rows = FabricTenureRows::default();
                                             loop {
                                                 let woken = wake.next().await;
                                                 // Each pass names the event that woke it: the count of these per admin is the
@@ -3413,24 +3415,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // Decide on, and plan from, the view as it is now: a cached view
                                                 // can predate the members that make another admin primary.
                                                 let now = records.install_read(&me, &topology, &digest_view, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &digest_view, &records, reads)).await;
-                                                // Every Build whose next operation this admin executes. The
-                                                // fabric authority first starts a reconciliation Build for
-                                                // proven drift.
-                                                {
-                                                    let durable_rows = fabric_rows.for_pass(now.is_fabric_primary(&me_id), &*drift_nodes, &me).await;
-                                                    // The births a rename moved off the entry the accepted topology names them by (their
-                                                    // current records' provenance, query.md §1): those entries' nodes, never surplus. Read
-                                                    // only by the drift's author, the fabric-primary (`reconcile_drift`); every other admin
-                                                    // reads no record for it (Q227).
-                                                    let moved = if now.is_fabric_primary(&me_id) { drift_control.moved_off_entries(&now).await } else { Default::default() };
-                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &digest_view, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, durable_rows, &mut started, &mut held, &|mesh| mesh_unheard(mesh), &moved).await;
-                                                    // The attempt is planned from the view as it is now.
-                                                    if opened.is_some() {
-                                                        records.install_read(&me, &topology, &digest_view, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &digest_view, &records, reads)).await;
-                                                    }
-                                                    if now.is_fabric_primary(&me_id) {
-                                                        crate::build_op::ensure_active(&drives, &drive_env).await;
-                                                    }
+                                                // Every Build whose next operation this admin executes.
+                                                if now.is_fabric_primary(&me_id) {
+                                                    crate::build_op::ensure_active(&drives, &drive_env).await;
                                                 }
                                                 drop(turn);
                                             }

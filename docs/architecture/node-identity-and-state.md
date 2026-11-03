@@ -524,9 +524,9 @@ counted ([gossip.md §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-
 | **Stopped** | the mesh-primary's `NodeStopped` overlay, from node.stop's `node.stopped` | on receipt |
 | **Stale** (observer) | unheard past the staleness floor (local receive-time, clock-skew-safe): held, not current | the staleness floor |
 | **Deleted** | the executor's `NodeDeleting`, then `NodeDeleted` after the provider's inspect answer | on receipt |
-| **Re-born** | the same `path.name` under a new node.id ([node recovery](lifecycles/node-recovery.md)): the predecessor is deleted by the recovery Build, so the projection holds one entry per `path.name` | on receipt |
+| **Re-born** | the same `path.name` under a new node.id ([node recovery](lifecycles/node-recovery.md)): the predecessor is deleted by node recovery, so the projection holds one entry per `path.name` | on receipt |
 
-The "Stale" row above is **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license destructive Build recovery. A retained Gone deletion is produced only by canonical exact deletion proof, published as `NodeDeleted` by the Mesh executor that holds the operation and retained in `MeshTopology.deleted`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.
+The "Stale" row above is **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license a destructive recovery. A retained Gone deletion is produced only by canonical exact deletion proof, published as `NodeDeleted` by the Mesh executor that holds the operation and retained in `MeshTopology.deleted`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.
 
 A removal by [node.delete](lifecycles/node-delete.md), [mesh.delete](lifecycles/mesh-delete.md)
 or [fabric.delete](lifecycles/fabric-delete.md) is its workflow's.
@@ -551,7 +551,7 @@ selects candidates and submits ordinary Builds.
 | Setting | `stopped_node_ttl` (`RDM_STOPPED_NODE_TTL`), read by the fabric-primary only. Blank means forever: no sweep, a stopped node stays until its own start or delete. RDM's shipped config sets 30 minutes; Rafka's deployment sets 1 hour |
 | Who | The fabric-primary, the sole Build driver. On a fabric-primary handover the successor sweeps from the same durable receipts |
 | Cadence | A sweep every ttl. A node is eligible after one ttl and is normally collected between one and two ttl, plus Build contention |
-| Age | The current stopped period's own stop receipt in the Build log, never an earlier stop before a later start. A birth whose receipt cannot be read is skipped by name, never treated as expired |
+| Age | The current stopped period's own stop, recorded on the node record, never an earlier stop before a later start. A birth whose receipt cannot be read is skipped by name, never treated as expired |
 | Selection | Every node stopped longer than the ttl, except a birth an open Build still references (a replace mid-transfer keeps its rollback point) |
 | Action | One ordinary node.delete Build per selected node, one at a time: one topology Build runs at a time, so the other candidates wait for the next sweep; a `BuildInProgress` refusal loses nothing, the candidate is seen again. The sweep itself deletes nothing |
 | Recheck | The stopped and open-Build checks run again at the delete Build's admission, serialized with it: a node started or referenced by a new Build after the scan is refused there, never deleted from a stale decision |

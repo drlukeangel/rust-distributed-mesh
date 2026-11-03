@@ -156,6 +156,7 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
         commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
         own: Arc::new(std::sync::OnceLock::new()),
         mesh_deleter: Arc::new(std::sync::OnceLock::new()),
+        primary_commands: Default::default(),
         storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
         fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
@@ -456,6 +457,8 @@ async fn a_connections_deleting_mesh_primary_accepts_upward_status_and_decides_i
 struct ServedNode {
     resolved: ResolvedNode,
     seen: Arc<Mutex<Vec<StatusRequest>>>,
+    /// Every `node.connection.delete` it is sent on the node command op 0x22, in order.
+    deletes: Arc<Mutex<Vec<rdm_core::node_command::NodeCommandRequest>>>,
     /// Notified once per request served (a permit is kept when nobody waits yet).
     heard: Arc<tokio::sync::Notify>,
     /// The endpoint it serves on: a cell's call made as this birth goes out on it.
@@ -476,22 +479,23 @@ async fn serve_node_answering(b: &Birth, reply: StatusReply) -> ServedNode {
 async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusReply + Send + Sync + 'static) -> ServedNode {
     use rdm_core::catalog::OpOwner;
     let seen: Arc<Mutex<Vec<StatusRequest>>> = Arc::default();
+    let deletes: Arc<Mutex<Vec<rdm_core::node_command::NodeCommandRequest>>> = Arc::default();
     let heard: Arc<tokio::sync::Notify> = Arc::default();
     let (s, h) = (seen.clone(), heard.clone());
     let answer = Arc::new(answer);
-    let (cs, ch, canswer) = (seen.clone(), heard.clone(), answer.clone());
+    let (cs, ch, canswer, cd) = (seen.clone(), heard.clone(), answer.clone(), deletes.clone());
     let writer = Arc::new(rdm_node::node_records::NodePropertyWriter::new(node_records(), || "memory".into()));
     let server = ServerBuilder::new()
-        // The node command op 0x22 (i144 R22): `node.connection.delete` reaches the birth here, answered
-        // through the same `answer` and logged as the request it carries, on the command's ordered stream.
+        // The node command op 0x22 (i144 R22): `node.connection.delete` reaches the birth here, logged in
+        // `deletes` and answered with every named connection cut, on the command's ordered stream.
         .serve_stream::<rdm_core::node_command::NodeCommand, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: rdm_core::node_command::NodeCommandRequest, sink| {
-            let (s, h, answer) = (cs.clone(), ch.clone(), canswer.clone());
+            let (s, h, answer, d) = (cs.clone(), ch.clone(), canswer.clone(), cd.clone());
             async move {
                 use rdm_core::node_command::{NodeCommandReply as N, NodeCommandRequest};
                 // node.mesh.leave reaches the birth here too (Q205): its acknowledgement, then its
                 // completion, or its refusal before acceptance.
-                if let NodeCommandRequest::LeaveMesh { node_id, incarnation, build_id, attempt, operation } = req {
-                    let carried = StatusRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id, attempt, operation };
+                if let NodeCommandRequest::LeaveMesh { node_id, incarnation, operation } = req {
+                    let carried = StatusRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: rdm_core::LifecycleOp::NO_BUILD.into(), attempt: rdm_core::LifecycleOp::NO_ATTEMPT, operation };
                     let reply = answer(&carried);
                     s.lock().unwrap().push(carried);
                     h.notify_one();
@@ -505,18 +509,11 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
                     sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
                     return Ok(N::MeshLeft { node_id, incarnation, left });
                 }
-                let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req else { panic!("expected DeleteConnections or LeaveMesh") };
-                let carried = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: scope.clone() };
-                let reply = answer(&carried);
-                s.lock().unwrap().push(carried);
+                let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req.clone() else { panic!("expected DeleteConnections or LeaveMesh") };
+                d.lock().unwrap().push(req);
                 h.notify_one();
-                let StatusReply::ConnectionsDeleted { closed, not_open, held, receipt } = reply else {
-                    return Ok(match reply {
-                        StatusReply::RejectedConnectionScope { reason } => N::RejectedConnectionScope { reason },
-                        StatusReply::RejectedStaleIncarnation { held } => N::RejectedStaleIncarnation { held },
-                        other => N::NotReady { reason: format!("{}: {other:?}", other.name()) },
-                    });
-                };
+                let closed = match &scope { rdm_core::status::ConnectionScope::Connections(ids) => ids.clone(), rdm_core::status::ConnectionScope::All => vec![] };
+                let (not_open, held, receipt) = (vec![], vec![], None);
                 let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
                 if matches!(scope, rdm_core::status::ConnectionScope::All) {
                     sink.data(N::ConnectionsDeleting { node_id, incarnation }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
@@ -544,7 +541,7 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep.clone()).accept(rdm_transport::ALPN, server).spawn();
     let resolved = ResolvedNode { mesh: b.node.mesh.clone(), r#type: b.node.r#type.clone(), node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() };
-    ServedNode { resolved, seen, heard, endpoint: ep, _router: router }
+    ServedNode { resolved, seen, deletes, heard, endpoint: ep, _router: router }
 }
 
 /// What a node's own writer answers `req` with once it is put on its own record in [`node_records`]:
@@ -1069,6 +1066,7 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
         commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
         own: Arc::new(std::sync::OnceLock::new()),
         mesh_deleter: Arc::new(std::sync::OnceLock::new()),
+        primary_commands: Default::default(),
         storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
         fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
@@ -1487,7 +1485,6 @@ async fn successor_connections_deleted(rig: &Rig) -> (Birth, ServedNode) {
     (b.node.status, b.node.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
     rig.topology.write().await.nodes.push(b.node.clone());
     let node = serve_node_with(&b, |req| match req {
-        StatusRequest::DeleteConnections { .. } => StatusReply::ConnectionsDeleted { closed: vec![rdm_core::ConnectionId::mint()], not_open: vec![], held: vec![], receipt: None },
         StatusRequest::LeaveMesh { node_id, incarnation, .. } => StatusReply::MeshLeft { node_id: node_id.clone(), incarnation: incarnation.clone(), left: vec![rdm_core::status::WhichMesh::Own] },
         _ => StatusReply::Applied,
     })
@@ -1496,8 +1493,14 @@ async fn successor_connections_deleted(rig: &Rig) -> (Birth, ServedNode) {
     (b, node)
 }
 
-fn delete_all(b: &Birth) -> StatusRequest {
-    StatusRequest::DeleteConnections { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), scope: rdm_core::status::ConnectionScope::All }
+fn delete_all(b: &Birth) -> rdm_core::node_command::NodeCommandRequest {
+    rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), scope: rdm_core::status::ConnectionScope::All }
+}
+
+/// The caller's `node.connection.delete { All }` of `b`, as the mesh-primary's door runs it: its carrier
+/// to the exact birth (D18).
+async fn deleted_all(rig: &Rig, b: &Birth) -> rdm_admin::status_rpc::CarryEnd {
+    rig.door.carry_connections_delete(&b.node.node_id, b.node.incarnation_id.as_ref().unwrap(), &rdm_core::status::ConnectionScope::All).await
 }
 
 fn update_name(b: &Birth, name: &str) -> StatusRequest {
@@ -1560,7 +1563,7 @@ fn apply_name(b: &Birth, to: &PathName) -> StatusRequest {
 }
 
 fn leave_mesh(b: &Birth) -> StatusRequest {
-    StatusRequest::LeaveMesh { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: rdm_core::OperationId::node("node.mesh.leave", &b.node.node_id) }
+    StatusRequest::LeaveMesh { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), build_id: rdm_core::LifecycleOp::NO_BUILD.into(), attempt: rdm_core::LifecycleOp::NO_ATTEMPT, operation: rdm_core::OperationId::node("node.mesh.leave", &b.node.node_id) }
 }
 
 /// Each span's `(outcome, connections)`.
@@ -1633,9 +1636,10 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_and_it_has_left_i
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
 
-        let deleted = reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await);
-        assert!(matches!(&deleted, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "the mesh-primary answers the birth's node.connections.deleted: {deleted:?}");
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ)], "the delete is carried to the exact birth");
+        let deleted = deleted_all(&rig, &succ).await;
+        assert!(matches!(&deleted, rdm_admin::status_rpc::CarryEnd::Deleted { held, .. } if held.is_empty()), "the mesh-primary holds the birth's node.connections.deleted: {deleted:?}");
+        assert_eq!(node.deletes.lock().unwrap().clone(), vec![delete_all(&succ)], "the delete is carried to the exact birth");
+        assert!(node.seen.lock().unwrap().is_empty(), "and nothing else");
         let on_mesh = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(on_mesh, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ConnectionsDeleting, held_connections: vec![] }, "a birth still on its mesh keeps its name");
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "nothing is claimed while the birth is on its mesh");
@@ -1755,7 +1759,7 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
     let carrier_id = cap.run(async {
         let (rig, b) = rig().await;
         let (succ, node) = successor_connections_deleted(&rig).await;
-        assert!(matches!(reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await), StatusReply::ConnectionsDeleted { .. }), "the successor's connections are deleted first");
+        assert!(matches!(deleted_all(&rig, &succ).await, rdm_admin::status_rpc::CarryEnd::Deleted { .. }), "the successor's connections are deleted first");
         let leave = leave_mesh(&succ);
         assert!(matches!(rig.door.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, &rdm_core::OperationId::node("node.mesh.leave", &succ.node.node_id)).await, Ok(StatusReply::MeshLeft { .. })), "then it leaves its mesh");
         let (carrier, _carrier_router) = carrier_admin(&b["admin2"], &rig.resolved).await;
@@ -1770,7 +1774,8 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
         assert_eq!(reply, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.record_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
         assert_eq!(row.node_id, succ.node.node_id);
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ), leave, apply_name(&succ, &taken)]);
+        assert_eq!(node.deletes.lock().unwrap().clone(), vec![delete_all(&succ)]);
+        assert_eq!(node.seen.lock().unwrap().clone(), vec![leave, apply_name(&succ, &taken)]);
         b["admin2"].node.node_id.to_string()
     });
     let updates = cap.spans(NAME_SPAN);
@@ -1899,14 +1904,13 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
         let applies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let a = applies.clone();
         let node = serve_node_with(&succ, move |req| match req {
-            StatusRequest::DeleteConnections { .. } => StatusReply::ConnectionsDeleted { closed: vec![], not_open: vec![], held: vec![], receipt: None },
             StatusRequest::LeaveMesh { node_id, incarnation, .. } => StatusReply::MeshLeft { node_id: node_id.clone(), incarnation: incarnation.clone(), left: vec![rdm_core::status::WhichMesh::Own] },
             StatusRequest::ApplyNodeName { .. } if a.fetch_add(1, Ordering::SeqCst) == 0 => StatusReply::NotReady { reason: "the node's digest does not exist yet".into() },
             _ => StatusReply::AlreadyApplied,
         })
         .await;
         configs_door(&rig, &node).await;
-        assert!(matches!(reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await), StatusReply::ConnectionsDeleted { .. }));
+        assert!(matches!(deleted_all(&rig, &succ).await, rdm_admin::status_rpc::CarryEnd::Deleted { .. }));
         let leave = leave_mesh(&succ);
         assert!(matches!(rig.door.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, &rdm_core::OperationId::node("node.mesh.leave", &succ.node.node_id)).await, Ok(StatusReply::MeshLeft { .. })));
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
@@ -1916,7 +1920,8 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
         let done = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(done, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         let apply = StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.clone() };
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ), leave, apply.clone(), apply], "the resubmit resent the apply");
+        assert_eq!(node.deletes.lock().unwrap().clone(), vec![delete_all(&succ)]);
+        assert_eq!(node.seen.lock().unwrap().clone(), vec![leave, apply.clone(), apply], "the resubmit resent the apply");
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("answered").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("name-not-applied".to_string(), "not-ready".to_string()), ("name-updated".to_string(), "already-applied".to_string())], "{spans:?}");
@@ -2248,6 +2253,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
                 commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
                 own: Arc::new(std::sync::OnceLock::new()),
                 mesh_deleter: Arc::new(std::sync::OnceLock::new()),
+                primary_commands: Default::default(),
                 storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 wake: Default::default(),
                 fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
@@ -2301,7 +2307,6 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
         let requests = [
             StatusRequest::UpdateNodeConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: [("zone".to_string(), "a".to_string())].into() },
             StatusRequest::UpdateName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: rdm_core::PathName::new("mesh1.node", "2").unwrap() },
-            StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All },
         ];
         for req in requests {
             let got = reply(&call(&rig, caller, &req).await);
@@ -2368,7 +2373,7 @@ fn a_replace_successor_takes_its_entrys_properties_keeps_its_later_updates_on_a_
         let create_operation = rdm_core::OperationId::location("node.create", &base_name);
         let allocation = rdm_admin::storage::Allocation {
             predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.node.node_id.clone(), incarnation_id: pred_incarnation.clone() }),
-            build_id: rdm_core::BuildId::mint(),
+            build_id: Some(rdm_core::BuildId::mint()),
             operation: create_operation.clone(),
             incarnation: succ.node.incarnation_id.clone().unwrap(),
             deployment_id: rdm_admin::model::DeploymentId::mint(),
@@ -2414,53 +2419,6 @@ fn a_replace_successor_takes_its_entrys_properties_keeps_its_later_updates_on_a_
     let marks = cap.spans("rdm.node_admin.node.update.via-inherited-row");
     assert_eq!(marks.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["inherited".to_string(), "already-inherited".to_string()], "{marks:?}");
     eprintln!("trace {}: rdm.node_admin.node.update.via-inherited-row subject=mesh1.node.2-old outcome=inherited", marks[0].0);
-}
-
-/// CONTRACT (i144 R22; Luke Q9: "Caller → mesh-primary: Status DeleteConnections, direct or forwarded,
-/// for either scope. Mesh-primary → subject node: streaming 0x22 NodeCommand"; "a forwarded caller
-/// request, and the Connections([ids]) scope, stay functional"): `mesh1.node.2` sends
-/// `node.connection.delete { Connections([one id]) }` of `mesh1.node.1` to mesh1's primary through a
-/// carrier (`ViaPeer` `mesh2.node-admin.1`, Forward 0x1A). The primary carries it to the exact birth on the
-/// node command op 0x22 (`carried=dialled`) and answers the birth's completion naming the id closed;
-/// the birth received the request once. A list of ids reports no connections-deleting, so nothing is
-/// recorded as connections-deleting. The caller's carried leg (`via-peer`, protocol status) and the
-/// primary's carrying are one trace.
-#[test]
-fn a_forwarded_callers_connections_delete_of_named_ids_is_carried_to_the_birth_on_its_command_op() {
-    let cap = capture();
-    let id = rdm_core::ConnectionId::mint();
-    let (subject, carrier) = cap.run(async {
-        let (rig, b) = rig().await;
-        let (rpc1, rpc2, m2admin) = (&b["rpc1"], &b["rpc2"], &b["m2admin"]);
-        let node = serve_node_with(rpc1, |req| match req {
-            StatusRequest::DeleteConnections { scope: rdm_core::status::ConnectionScope::Connections(ids), .. } => StatusReply::ConnectionsDeleted { closed: ids.clone(), not_open: vec![], held: vec![], receipt: None },
-            _ => StatusReply::Applied,
-        })
-        .await;
-        configs_door(&rig, &node).await;
-        let (carrier, _carrier_router) = carrier_admin(m2admin, &rig.resolved).await;
-        let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(carrier);
-        let ep = rdm_transport::endpoint::bind(rpc2.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
-        let route = rdm_transport::RouteChoice::ViaPeer { carrier: m2admin.node.node_id.clone() };
-        let scope = rdm_core::status::ConnectionScope::Connections(vec![id.clone()]);
-        let reply = rdm_client::NodeRpc::new(&client).connections_delete(&rig.admin.node.node_id, &route, &exact(rpc1), &scope, &CallOptions::default()).await.expect("a typed reply");
-        assert_eq!(reply, StatusReply::ConnectionsDeleted { closed: vec![id.clone()], not_open: vec![], held: vec![], receipt: None });
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![StatusRequest::DeleteConnections { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), scope }], "the birth received the request once, on its command op");
-        (rpc1.node.node_id.to_string(), m2admin.node.node_id.to_string())
-    });
-    let carried = cap.spans("rdm.node_admin.connection.delete.via-mesh-primary");
-    assert_eq!(carried.len(), 1, "{carried:?}");
-    let (trace_id, attrs) = &carried[0];
-    let attr = |k: &str| attrs.get(k).map(String::as_str);
-    assert_eq!((attr("node"), attr("subject"), attr("scope"), attr("carried"), attr("outcome")), (Some("mesh1.node-admin.1"), Some(subject.as_str()), Some("connections"), Some("dialled"), Some("connections-deleted")), "{attrs:?}");
-    assert!(cap.spans("rdm.node_admin.node.update.via-connections-deleting").is_empty(), "a list of ids records no connections-deleting");
-    let routes = cap.spans("rdm.node_rpc.route.resolve.via-connections");
-    let leg: Vec<_> = routes.iter().filter(|(t, a)| t == trace_id && a.get("route").map(String::as_str) == Some("via-peer")).collect();
-    assert_eq!(leg.len(), 1, "the caller's one carried leg is in the primary's carrying trace: {routes:?}");
-    assert_eq!((leg[0].1.get("carrier").map(String::as_str), leg[0].1.get("protocol").map(String::as_str)), (Some(carrier.as_str()), Some("status")), "{leg:?}");
-    eprintln!("trace {trace_id}: rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh2.node-admin.1 > rdm.node_admin.connection.delete.via-mesh-primary node=mesh1.node-admin.1 carried=dialled outcome=connections-deleted");
 }
 
 
@@ -2514,8 +2472,8 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
         caller_delivery.set(client.delivery().clone()).unwrap_or_else(|_| panic!("one caller"));
         assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
-        let answer = call(&rig, &b["rpc1"], &StatusRequest::DeleteConnections { node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation_id.clone().unwrap(), scope: rdm_core::status::ConnectionScope::All }).await;
-        assert!(matches!(reply(&answer), StatusReply::ConnectionsDeleted { .. }), "{answer:?}");
+        let answer = rig.door.carry_connections_delete(&rpc.node.node_id, rpc.node.incarnation_id.as_ref().unwrap(), &rdm_core::status::ConnectionScope::All).await;
+        assert!(matches!(&answer, rdm_admin::status_rpc::CarryEnd::Deleted { .. }), "{answer:?}");
         assert!(rdm_transport::DeliveryStats::get(&server_delivery.get().unwrap().stats().responses_resent) >= 1);
     });
     let records = cap.spans("rdm.node_admin.node.update.via-connections-deleting");
@@ -2840,7 +2798,7 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
     let server = ServerBuilder::new().serve_stream::<NodeCommand, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_, request: Q, sink| {
         let (server_slot, client_slot, primary) = (server_slot.clone(), client_slot.clone(), primary.clone());
         async move {
-            let Q::StopNode { node_id, incarnation, build_id, attempt, operation } = request else { panic!("a stop") };
+            let Q::StopNode { node_id, incarnation, operation } = request else { panic!("a stop") };
             let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.unwrap();
             sink.data(N::StopConnectionsDeleted { receipt: rdm_core::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } }).await.unwrap();
             let server = server_slot.get().unwrap();
@@ -2848,7 +2806,7 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
                 while rdm_transport::DeliveryStats::get(&server.delivery().stats().acks_received) < 2 { tokio::task::yield_now().await; }
             }).await.expect("the stop's acceptance and closure are recovered before the connection is cut");
             assert!(server.close_connections_except(&[], "the cell cuts the stop stream after closure") > 0);
-            let declaration = StatusRequest::DeclareNodeState { node_id, incarnation, state: NodeState::Stopped, operation: Some(rdm_core::status::DeclaredOperation { build_id, attempt, operation }) };
+            let declaration = StatusRequest::DeclareNodeState { node_id, incarnation, state: NodeState::Stopped, operation: Some(rdm_core::status::DeclaredOperation { operation }) };
             let (out, _) = client_slot.get().unwrap().call::<Status>(&NodeTarget::ExactNode(primary), &declaration, &CallOptions::default()).await;
             assert!(matches!(out, RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied)), "the owed stop declaration is applied before the terminal exists");
             Ok(N::NodeStopped)

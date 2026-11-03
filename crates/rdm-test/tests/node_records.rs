@@ -286,7 +286,7 @@ async fn tags_create(estate: &Estate, v: &NodeView, labels: &BTreeSet<String>) -
 /// `steps` as one Build of node primitives, followed to its Complete.
 async fn steps_to_complete(estate: &Estate, steps: Vec<rdm_core::build::Step>) -> rdm_client::Accepted {
     let mut stream = estate.nodes_obj().await.steps(steps).await.unwrap_or_else(|e| panic!("the steps were not accepted: {e}"));
-    Estate::complete(&mut stream).await
+    Estate::complete(&mut stream).await.expect("steps open a Build")
 }
 
 /// The own update of `v`'s config through the testkit probe: the node's own local durable write.

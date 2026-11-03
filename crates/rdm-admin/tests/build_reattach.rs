@@ -239,7 +239,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
         let carrier = BuildCarrier::at_node(client, node_id);
 
         let initial_stream = carrier
-            .create(BuildChange::Stop {
+            .create(BuildChange::RemoveNode {
                 node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             })
             .await

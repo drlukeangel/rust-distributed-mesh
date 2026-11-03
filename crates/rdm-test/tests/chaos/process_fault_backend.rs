@@ -295,7 +295,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     // Ready in the view is the new birth's own digest; the recovery is done when its mesh-primary's
     // submit followed the recovery's operations to the attempt's terminal frame.
     wait_for("the node-admin's recovery is followed to its terminal", Duration::from_secs(60), || async {
-        named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().any(|sp| rdm_test::estate::at_location(sp, &admin) && attr(sp, "outcome").starts_with("complete: attempt")).then_some(())
+        named(&estate.spans(), "rdm.node_admin.node.update.via-node-recovery").into_iter().any(|sp| rdm_test::estate::at_location(sp, &admin) && attr(sp, "outcome").starts_with("complete: attempt")).then_some(())
     })
     .await;
     estate.settled_views(&[("mesh1", 3, 3)]).await;
@@ -338,7 +338,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
             "the Fabric's drift never repairs {path:?}: its mesh-primary recovers it"
         );
         let mesh_primary = s(&nodes0.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh1's primary")["node_id"]);
-        let submits: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| rdm_test::estate::at_location(sp, path)).collect();
+        let submits: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| rdm_test::estate::at_location(sp, path)).collect();
         assert!(submits.iter().any(|sp| attr(sp, "submitter") == mesh_primary && attr(sp, "outcome").starts_with("complete: attempt")), "{path:?}: its mesh-primary {mesh_primary} submitted the recovery and followed it to its end: {submits:?}");
     }
     assert_eq!(attr(&rpc_rec, "build_id"), build_id);

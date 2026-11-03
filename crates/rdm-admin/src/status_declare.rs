@@ -906,7 +906,7 @@ mod tests {
         let inc = IncarnationId::parse(INC).unwrap();
         let v = view(1, 3);
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
-        let op = |operation: &rdm_core::OperationId, attempt: u32| DeclaredOperation { build_id: "b".into(), attempt, operation: operation.clone() };
+        let op = |operation: &rdm_core::OperationId| DeclaredOperation { operation: operation.clone() };
         let operation_of = |d: &Declarer, state: NodeState| match d.requests.lock().unwrap().get(&Key::OwnState(INC.into(), state)) {
             Some((_, StatusRequest::DeclareNodeState { operation, .. }, _, _)) => operation.clone(),
             other => panic!("no own {state:?} declaration: {other:?}"),
@@ -915,7 +915,7 @@ mod tests {
         owed_from_view(&d, &me, &me_id, &inc, M::Ready, false, None, |_| 0, &v, &ids);
         assert_eq!(operation_of(&d, NodeState::Ready), None, "its birth's node.started is a state it measured");
 
-        let stop = op(&rdm_core::OperationId::node("node.stop", &me_id), 1);
+        let stop = op(&rdm_core::OperationId::node("node.stop", &me_id));
         d.owe_own("mesh1", &me_id, &inc, NodeState::Stopped, Some(stop.clone()));
         assert_eq!(operation_of(&d, NodeState::Stopped), Some(stop), "its stop's Stopped names the stop");
         // Its node.started, owed first, is answered: the Stopped owed after it is sent (node-rpc.md §43, Q210).
@@ -924,7 +924,7 @@ mod tests {
         let due: Vec<(Key, String)> = d.due(&me_id, &v, &BTreeSet::new()).into_iter().map(|(p, to)| (p.key, to.node_id.to_string())).collect();
         assert!(due.contains(&(Key::OwnState(INC.into(), NodeState::Stopped), id_of(1).to_string())), "owed to its mesh's primary: {due:?}");
 
-        let start = op(&rdm_core::OperationId::node("node.start", &me_id), 2);
+        let start = op(&rdm_core::OperationId::node("node.start", &me_id));
         d.begin_own_cycle(&me, INC, &start);
         owed_from_view(&d, &me, &me_id, &inc, M::Ready, false, None, |_| 0, &v, &ids);
         assert_eq!(operation_of(&d, NodeState::Ready), Some(start), "the start's node.started names the start");

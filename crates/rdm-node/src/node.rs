@@ -2113,7 +2113,7 @@ mod primary_tests {
                 is_primary: None,
                 is_fabric_primary: None,
             };
-            let start = DeclaredOperation { build_id: "build-1".into(), attempt: 1, operation: rdm_core::OperationId::node("node.start", &node_id) };
+            let start = DeclaredOperation { operation: rdm_core::OperationId::node("node.start", &node_id) };
             let owed: Arc<OwedDeclarations> = Arc::default();
             let status = Arc::new(Mutex::new(MemberStatus::Pending));
             let becoming = Becoming {

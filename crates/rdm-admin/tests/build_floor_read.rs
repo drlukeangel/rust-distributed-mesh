@@ -31,7 +31,7 @@ async fn stored(store: &MemoryBuildStateAdapter, id: &BuildId, attempts: u32) {
     store.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
     for attempt in 1..=attempts {
         if attempt > 1 {
-            store.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Stop, action: None, opened_by: rdm_core::NodeId::parse("400000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
+            store.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Delete, action: None, opened_by: rdm_core::NodeId::parse("400000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
         }
         store.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt, executor: executor_birth.clone() }).await.unwrap();
         store.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
@@ -206,14 +206,8 @@ impl BuildStateAdapter for Unreadable {
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(id).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
-        self.inner.exits_owed(build_id, mesh).await
     }
 }
 

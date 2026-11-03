@@ -36,15 +36,15 @@ use crate::context::CallContext;
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::{DecodeFailure, NodeProtocol};
 use crate::streaming::{FrameKind, StreamingProtocol};
-use crate::{IncarnationId, NodeId, PathName};
+use crate::{NodeId, PathName};
 use serde::{Deserialize, Serialize};
 
 /// The Build protocol: Builds are created, driven, read and deleted through the fabric-primary.
 pub struct Build;
 
 /// What a caller submits. The fabric-primary compiles it once against the accepted topology (a
-/// topology change opens a new Build) or opens the next attempt of the accepted Build (a
-/// connections delete, stop, start, recovery or steps, targeted at the births it acts on).
+/// topology change opens a new Build) or opens the next attempt of the accepted Build (steps,
+/// targeted at the births they act on). A node command or a repair is never a Build (Q342).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildChange {
     /// Reserved position: the removed count form `ReconcileFabric` (proposal
@@ -85,41 +85,30 @@ pub enum BuildChange {
     ///
     /// Position 6 on the wire.
     Reserved6,
-    /// `node.connection.delete { All }` of the live birth at `node`; it keeps running.
+    /// Reserved position: the removed `DeleteConnections` (Q342: node.connection.delete is a node
+    /// command of the primary above the node, never a Build or part of one; node-connections-delete.md).
+    /// Never sent; a request at this position decodes as `UnknownVariant` ([`Build::decode_request`]).
+    /// Kept so every later change keeps its position.
     ///
     /// Position 7 on the wire.
-    DeleteConnections {
-        /// The node.
-        node: PathName,
-    },
-    /// Stop the live birth at `node` with no implicit connections delete and no departure.
+    Reserved7,
+    /// Reserved position: the removed `Stop` (Q342: node.stop is a node command of the primary above
+    /// the node, NodeCommand 0x22 `StopNode` to its mesh-primary, D40; node-stop.md), as
+    /// [`Self::Reserved7`].
     ///
     /// Position 8 on the wire.
-    Stop {
-        /// The node.
-        node: PathName,
-    },
-    /// Start the stopped birth at `node`: the same process rejoins as itself.
+    Reserved8,
+    /// Reserved position: the removed `Start` (Q342: node.start is a node command of the primary above
+    /// the node, NodeCommand 0x22 `StartNode` to its mesh-primary, D40; node-start.md), as
+    /// [`Self::Reserved7`].
     ///
     /// Position 9 on the wire.
-    Start {
-        /// The node.
-        node: PathName,
-    },
-    /// Recover the node at `node` whose exact birth `(node_id, incarnation)` its mesh-primary proved
-    /// exited (node-recovery.md): node.delete of that instance, then node.create at the same
-    /// path and name over the inherited data dir, with a new node.id. Keyed on the exited birth: a
-    /// repeat answers `AlreadyApplied` or `BuildInProgress`, never a second recovery.
+    Reserved9,
+    /// Reserved position: the removed `Recover` (Q342: node recovery is the primary's own workflow,
+    /// never a Build or part of one; node-recovery.md), as [`Self::Reserved7`].
     ///
     /// Position 10 on the wire.
-    Recover {
-        /// The node's `(path, name)`.
-        node: PathName,
-        /// The exited instance's node.id.
-        node_id: NodeId,
-        /// The exited instance's incarnation.
-        incarnation: IncarnationId,
-    },
+    Reserved10,
     /// Steps: one Build whose steps are node primitives, run in order (build.md §1: "Rafka's
     /// replace steps (one Build of node primitives ...)"; lifecycles/node-replace.md).
     /// The caller owns the steps; RDM executes each step as its op's own workflow and records the
@@ -138,20 +127,12 @@ pub enum BuildChange {
     ///
     /// Position 12 on the wire.
     DeleteFabric,
-    /// A deleted birth heard again (node-investigation.md: "A node that comes back after it was
-    /// re-created is refused ... The node that refused it reports it to the fabric-primary, which
-    /// terminates its runtime"): the report, keyed on the exact birth; the fabric-primary runs the
-    /// existing `TerminateRuntime` on its runtime (Q110, Q128).
+    /// Reserved position: the removed `Terminate` (Q342: the terminate of a deleted birth heard again
+    /// is the primary's own workflow, never a Build or part of one; node-investigation.md), as
+    /// [`Self::Reserved7`].
     ///
     /// Position 13 on the wire.
-    Terminate {
-        /// The `(path, name)` the birth held.
-        node: PathName,
-        /// The deleted birth's node.id.
-        node_id: NodeId,
-        /// The deleted birth's incarnation.
-        incarnation: IncarnationId,
-    },
+    Reserved13,
     /// Reserved position: the removed per-type executable-set change (proposal
     /// executable-bindings-at-create.md §1, Q157). Never sent; a request at this position decodes as
     /// `UnknownVariant` ([`Build::decode_request`]). A node's executable is replaced by a
@@ -179,11 +160,11 @@ pub enum BuildChange {
 }
 
 impl BuildChange {
-    /// Whether this is a reserved position (positions 0, 1, 2, 4, 6 and 14: the removed count forms, the
-    /// removed restart and the removed executable-set change): never sent, and a request at one is an
-    /// unknown variant.
+    /// Whether this is a reserved position (positions 0, 1, 2, 4, 6, 7 to 10, 13 and 14: the removed count
+    /// forms, the removed restart, the node commands and repairs that are never a Build (Q342) and the
+    /// removed executable-set change): never sent, and a request at one is an unknown variant.
     pub fn is_reserved(&self) -> bool {
-        matches!(self, Self::Reserved0 | Self::Reserved1 | Self::Reserved2 | Self::Reserved4 | Self::Reserved6 | Self::Reserved14)
+        matches!(self, Self::Reserved0 | Self::Reserved1 | Self::Reserved2 | Self::Reserved4 | Self::Reserved6 | Self::Reserved7 | Self::Reserved8 | Self::Reserved9 | Self::Reserved10 | Self::Reserved13 | Self::Reserved14)
     }
 }
 
@@ -1088,6 +1069,11 @@ mod tests {
             BuildChange::Reserved2,
             BuildChange::Reserved4,
             BuildChange::Reserved6,
+            BuildChange::Reserved7,
+            BuildChange::Reserved8,
+            BuildChange::Reserved9,
+            BuildChange::Reserved10,
+            BuildChange::Reserved13,
             BuildChange::Reserved14,
         ] {
             assert!(reserved.is_reserved());

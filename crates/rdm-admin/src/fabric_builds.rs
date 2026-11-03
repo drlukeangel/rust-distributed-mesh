@@ -293,14 +293,8 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn committed_facts(&self, build: Option<&crate::build::BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
         self.local.committed_facts(build).await
     }
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.local.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.local.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
-        self.local.exits_owed(build_id, mesh).await
     }
 
     fn held_name(&self) -> Option<crate::model::PathName> {

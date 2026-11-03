@@ -140,7 +140,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
         timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: Some("i143-3072-delete".into()) };
-    let req = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(node).node_id), build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), unreached: false };
+    let req = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(node).node_id), build_id: Some(build_id.clone()), attempt: 1, node, handle: handle.clone(), unreached: false };
     let out = pipeline.delete_node(&req).await;
     // The trace first: a red below still names the steps the delete ran, with their trace id.
     capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
@@ -377,7 +377,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
             .unwrap();
         let err_lost = pipeline
             .stop(&DeleteRequest { operation: rdm_core::OperationId::node("node.stop", &node.node_id),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 1,
                 node: node.clone(),
                 handle: handle.clone(),
@@ -406,7 +406,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         *provider.status.lock().unwrap() = DeploymentStatus::Exited { code: Some(137) };
         let err_kill = pipeline
             .stop(&DeleteRequest { operation: rdm_core::OperationId::node("node.stop", &node.node_id),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 2,
                 node: node.clone(),
                 handle: handle.clone(),
@@ -437,7 +437,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         *observer.completion.lock().unwrap() = Completion::Deadline {};
         let err_os_stop = pipeline
             .stop(&DeleteRequest { operation: rdm_core::OperationId::node("node.stop", &node.node_id),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 3,
                 node: node.clone(),
                 handle: handle.clone(),
@@ -498,7 +498,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         let sent_before_resume = *observer.commands_sent.lock().unwrap();
         pipeline
             .stop(&DeleteRequest { operation: rdm_core::OperationId::node("node.stop", &node.node_id),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 5,
                 node: node.clone(),
                 handle: handle.clone(),

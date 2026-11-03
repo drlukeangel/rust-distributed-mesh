@@ -16,23 +16,28 @@ pub(crate) struct RecoverySubmitter {
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
     /// The node records this admin writes, as it holds them: the data-dir facts are written on them.
     pub written: Arc<crate::node_rows::WrittenRows>,
-    /// This admin's Build door: its own control plane, where it opens and claims its mesh's drift
-    /// attempts, and its own executor, which runs them.
+    /// This admin's runner, once built: it runs the recovery and the terminate of a deleted birth
+    /// heard again, the primary's own workflow (Q342).
+    pub runner: Arc<std::sync::OnceLock<Arc<super::runner::AdminRunner>>>,
+    /// This admin's Build door: fabric recovery under an in-force fabric.delete claims the delete's next
+    /// attempt through its control plane (fabric-recovery.md step 4, Q155); a fabric.delete is a Build.
     pub door: crate::build_op::BuildSlot,
-    /// What this mesh-primary reports its drift to the fabric-primary through (Q118); none in a rig
-    /// that runs no Node RPC.
+    /// This admin's Node RPC client; none in a rig that runs no Node RPC.
     pub client: Option<Arc<rdm_transport::NodeRpcClient>>,
-    /// This admin's Build state: the fabric's Build facts as its own log holds them. The tick reads
-    /// from it which births of its mesh are owed a submit ([`RecoverySubmitter::owed_submits`]).
+    /// This admin's Build state: the current Build's paths a refused caller's decision reads (Q217).
     pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
     /// Parent directory under which birth data directories are allocated (`<data_root>/<name>-<node_id>`).
     pub data_root: PathBuf,
     /// Per exited birth whose inherited `data_dir` was observed absent (`Gone`, `R-FM2`):
     /// `(first_seen_ms, consecutive_observations)`.
     pub gone_dirs: Arc<Mutex<HashMap<(NodeId, IncarnationId), (u64, u64)>>>,
-    /// Per birth whose last submit ended without the recovery: when its next submit is due, under the
+    /// Per birth whose last recovery ended without completing: when it is eligible again, under the
     /// one backoff rule ([`RecoverySubmitter::submit_ended`]). A birth with none is due at once.
     pub resubmits: Arc<Mutex<HashMap<(NodeId, IncarnationId), Resubmit>>>,
+    /// The births whose recovery failed by a retryable cause, with the node each is of: run again once
+    /// eligible, whether or not the view still holds the birth (its delete may have completed)
+    /// (node-recovery.md "Detection and the verdict", "Failure"). Removed once a recovery of it completed.
+    pub failed: Arc<Mutex<HashMap<(NodeId, IncarnationId), Node>>>,
     /// Where a verdict that opens a re-create is written as its `rdm.node.investigated` event, and the
     /// application's `on_node_investigated`, sent from that write (Q312).
     pub investigated: crate::node_investigation::NodeInvestigatedWriter,
@@ -144,20 +149,8 @@ impl RecoverySubmitter {
         if let (Inspected::Exited(..), Some(inc), Some(dir)) = (&outcome, n.incarnation_id.clone(), self.birth_data_dir(n).await) {
             let facts = self.written.birth_facts(&*self.nodes_storage, &n.node_id, &inc).await.ok().flatten();
             if let Some(unreadable) = facts.as_ref().and_then(|f| f.data_dir_unreadable.clone()) {
-                match crate::deployment::pipeline::inspect_transport_key(&dir) {
-                    Ok(_) => {
-                        let _ = self.written.update_birth(&*self.nodes_storage, n, &inc, |b| b.data_dir_unreadable = None).await;
-                        tracing::info_span!(
-                            "rdm.node_admin.node.resolve.via-data-dir-repaired",
-                            node_path = %n.name.path, node_name = %n.name.name,
-                            node_id = %n.node_id,
-                            incarnation_id = %inc.as_str(),
-                            path = %unreadable.path,
-                            "otel.kind" = "internal",
-                        )
-                        .in_scope(|| tracing::info!("repaired unreadable inherited data dir"));
-                    }
-                    Err(_) => return outcome,
+                if self.holds_on_unreadable_dir(n, &inc, &dir, &unreadable).await {
+                    return outcome;
                 }
             } else if facts.as_ref().and_then(|f| f.data_dir_lost.as_ref()).is_none() {
                 match crate::deployment::pipeline::inspect_transport_key(&dir) {
@@ -193,7 +186,7 @@ impl RecoverySubmitter {
         }
         match n.incarnation_id.clone() {
             Some(incarnation) => {
-                let _ = self.submit_on_tick(n, &incarnation, verdict_name(&outcome), None).await;
+                let _ = self.submit_on_tick(n, &incarnation, verdict_name(&outcome), false).await;
             }
             None => {
                 let _ = self.submit(n, &outcome).await;
@@ -202,29 +195,32 @@ impl RecoverySubmitter {
         outcome
     }
 
-    /// One submit the tick makes of `node`'s birth at `incarnation` (node-recovery.md "Detection and
-    /// the verdict": the loop on every gossip interval), on the investigation's `verdict` or, after a
-    /// Failed attempt the Build holds, with none (`after_failed_attempt`). How it ends sets the birth's
-    /// backoff ([`Self::submit_ended`]), recorded on the submit's span as `backoff_ms`.
-    async fn submit_on_tick(&self, node: &Node, incarnation: &IncarnationId, verdict: &str, after_failed_attempt: Option<u32>) -> Result<(), String> {
+    /// One recovery the tick runs of `node`'s birth at `incarnation` (node-recovery.md "Detection and
+    /// the verdict": the loop on every gossip interval), on the investigation's `verdict`, or again after
+    /// it failed (`again`). How it ends sets the birth's backoff ([`Self::submit_ended`]), recorded on
+    /// the span as `backoff_ms`; a recovery that failed stays owed to the birth ([`Self::failed`]).
+    async fn submit_on_tick(&self, node: &Node, incarnation: &IncarnationId, verdict: &str, again: bool) -> Result<(), String> {
         let span = submit_span(&self.me_id, node, incarnation, verdict);
-        if let Some(attempt) = after_failed_attempt {
-            span.record("after_failed_attempt", attempt);
+        if again {
+            span.record("again", true);
         } else {
             // The verdict opens the re-create: it is written as its event, and the application is told
-            // once from that write, under the submit's span (fabric-node-hooks.md "on_node_investigated").
+            // once from that write, under the recovery's span (fabric-node-hooks.md "on_node_investigated").
             let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
             crate::node_investigation::write_node_investigated(&self.investigated, ids, node, incarnation, investigated_verdict(verdict), crate::wiring::NodeInvestigatedNext::Recreate).instrument(span.clone()).await;
         }
         let end = self.submit_in(&span, node, incarnation, "node-recovery").instrument(span.clone()).await;
         let ended = settled(&span, end);
-        // Answered build-in-progress, the recovery is owed to its mesh (node-recovery.md step 1, Q291):
-        // submitted again on the next tick, never backed off, so it is claimed within a tick of the end
-        // of the attempt holding the mesh.
-        if matches!(&ended, Err(e) if e.starts_with("build-in-progress")) {
-            self.resubmits.lock().unwrap().remove(&(node.node_id.clone(), incarnation.clone()));
-            span.record("backoff_ms", 0u64);
-        } else if let Some(backoff) = self.submit_ended(&(node.node_id.clone(), incarnation.clone()), &ended) {
+        let birth = (node.node_id.clone(), incarnation.clone());
+        match &ended {
+            Ok(()) => {
+                self.failed.lock().unwrap().remove(&birth);
+            }
+            Err(_) => {
+                self.failed.lock().unwrap().insert(birth.clone(), node.clone());
+            }
+        }
+        if let Some(backoff) = self.submit_ended(&birth, &ended) {
             span.record("backoff_ms", backoff.as_millis() as u64);
         }
         ended
@@ -331,174 +327,86 @@ impl RecoverySubmitter {
         settled(&span, end)
     }
 
-    /// The births the tick submits again (node-recovery.md "Failure and receipts": "the mesh-primary
-    /// is the submitter that resubmits by `build_id`"): none unless this admin holds its mesh's
-    /// primary role (as [`recovery_due`]); else every
-    /// birth of its own mesh whose node workflow in the accepted Build stopped at a Failed attempt and
-    /// is not done, read from the durable facts on every tick (the current Build, then the
-    /// Build log's index by that Build, `BuildStateAdapter::exits_owed`), whether or not the view still
-    /// holds the birth and whichever admin submitted it before. Nothing of it is held between ticks: an
-    /// admin that takes the role, or restarts, reads the same facts. A refused read is named on its
-    /// own span and owes nothing this tick.
-    pub(crate) async fn owed_submits(&self, holds_role: bool, mesh: &str) -> Vec<crate::build_state::OwedExit> {
+    /// The births whose recovery the tick runs again (node-recovery.md "Detection and the verdict":
+    /// "After a recovery step fails by a retryable cause, that exact birth becomes eligible again after a
+    /// backoff"): none unless this admin holds its mesh's primary role; else every birth of its own mesh
+    /// whose recovery failed here, whether or not the view still holds it.
+    pub(crate) fn failed_recoveries(&self, holds_role: bool, mesh: &str) -> Vec<Node> {
         if !holds_role {
             return Vec::new();
         }
-        let unreadable = |store: &str, build_id: &str, error: String| {
-            tracing::info_span!("rdm.node_admin.build.reject.via-owed-exits-unreadable", reader = %self.me_id, mesh, store, build_id, error = %error)
-                .in_scope(|| tracing::info!("the durable facts of the exits owed a submit could not be read: none is submitted this tick"));
-        };
-        let build_id = match self.builds.current_build().await {
-            Ok(current) => match current.into_build_id() {
-                Some(id) => id,
-                // No current Build is held: no attempt can have been opened on it.
-                None => return Vec::new(),
-            },
-            Err(e) => {
-                unreadable("builds.storage", "", e.to_string());
-                return Vec::new();
-            }
-        };
-        let owed = match self.builds.exits_owed(&build_id, mesh).await {
-            Ok(owed) => owed,
-            Err(e) => {
-                unreadable("builds.storage", &build_id.as_str(), e.to_string());
-                return Vec::new();
-            }
-        };
-        let mut ready = Vec::with_capacity(owed.len());
-        for o in owed {
-            if let Some(held) = self.written.birth_facts(&*self.nodes_storage, &o.node_id, &o.incarnation).await.ok().flatten().and_then(|f| f.data_dir_unreadable) {
-                match crate::deployment::pipeline::inspect_transport_key(std::path::Path::new(&held.path)) {
-                    Ok(_) => {
-                        let _ = self.written.update(&*self.nodes_storage, &o.node_id, None, |r| {
-                            if let Some(b) = r.births.iter_mut().find(|b| b.incarnation_id == o.incarnation) {
-                                b.data_dir_unreadable = None;
-                            }
-                        }).await;
-                        tracing::info_span!(
-                            "rdm.node_admin.node.resolve.via-data-dir-repaired",
-                            node_path = %o.path.path, node_name = %o.path.name,
-                            node_id = %o.node_id,
-                            incarnation_id = %o.incarnation.as_str(),
-                            path = %held.path,
-                            "otel.kind" = "internal",
-                        )
-                        .in_scope(|| tracing::info!("repaired unreadable inherited data dir"));
-                        ready.push(o);
-                    }
-                    Err(_) => continue,
+        self.failed.lock().unwrap().values().filter(|n| n.mesh == mesh).cloned().collect()
+    }
+
+    /// The recovery of a birth whose last recovery failed ([`Self::failed_recoveries`]), run again on the
+    /// tick: the same workflow, keyed on the birth; nothing is inspected again.
+    pub(crate) async fn recover_again(&self, node: &Node) -> Result<(), String> {
+        let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no birth to recover", node.node_id))?;
+        // A create that found the inherited data dir unreadable failed by no retryable cause: the
+        // recovery holds while the dir stays unreadable, owed still, and runs once it reads again
+        // (node-recovery.md "Lost data dir (R-FM2)").
+        if let Some(dir) = self.birth_data_dir(node).await {
+            let facts = self.written.birth_facts(&*self.nodes_storage, &node.node_id, &incarnation).await.ok().flatten();
+            if let Some(unreadable) = facts.and_then(|f| f.data_dir_unreadable) {
+                if self.holds_on_unreadable_dir(node, &incarnation, &dir, &unreadable).await {
+                    return Ok(());
                 }
-            } else {
-                ready.push(o);
             }
         }
-        ready
+        self.submit_on_tick(node, &incarnation, "", true).await
     }
 
-    /// The submit of a birth whose recovery stopped at a Failed attempt (node-recovery.md "Failure and
-    /// receipts"), on the tick: the same submit, keyed on the birth; nothing is inspected again. The
-    /// fabric-primary answers the submit as any repeat: AlreadyApplied once a workflow completed for
-    /// the birth, BuildInProgress while an attempt runs, else the next attempt of the Build with this
-    /// birth's action, whose plan runs only what the receipts leave (a delete that completed is never
-    /// run again).
-    pub(crate) async fn submit_owed(&self, owed: &crate::build_state::OwedExit) -> Result<(), String> {
-        let row = self.nodes_storage.node(&owed.node_id).await.map_err(|e| format!("{}: {e}", owed.node_id))?
-            .ok_or_else(|| format!("{}: lifecycle record absent", owed.node_id))?;
-        let mut node = Node::allocated(owed.path.clone(), row.mesh, &row.r#type);
-        node.node_id = owed.node_id.clone();
-        node.incarnation_id = Some(owed.incarnation.clone());
-        self.submit_on_tick(&node, &owed.incarnation, "", Some(owed.attempt)).await
-    }
-
-    /// The recovery of `node`'s exited birth at `incarnation`, submitted by this admin as its mesh's
-    /// primary (node-recovery.md "Execution", Q118): a mesh-primary that is not the fabric-primary
-    /// reports the drift up and runs the attempt the fabric-primary opens; one whose view names no
-    /// fabric-primary fails by name; the fabric-primary opens and claims it at its own door, runs it
-    /// through its own executor in its mesh's lane and follows it to the terminal
-    /// ([`crate::build_run::run_recovery`]). Fabric recovery's re-create is its executor's own.
-    pub(crate) async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId, route: &'static str) -> Result<RecoveryEnd, String> {
-        use crate::build_run::{Recovered, RecoveryNotRun};
-        use rdm_core::build::BuildReply;
-        let door = self.door.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary role but its Build door is not built yet", self.me_id))?;
-        let opened = |o: &crate::control_plane::Opened, disposition: &str| {
-            span.record("build_id", o.build_id.as_str());
-            span.record("mesh", o.mesh.as_deref().unwrap_or(""));
-            span.record("attempt", o.attempt);
-            span.record("disposition", disposition);
-        };
-        // A mesh-primary that is not the fabric-primary reports its drift up (node-recovery.md
-        // "Execution", Q118). Fabric recovery's re-create is its executor's own (fabric-recovery.md step 3).
-        let fabric_primary = self
-            .topology
-            .read()
-            .await
-            .fabric_primary()
-            .map(|n| n.node_id.clone());
-        let no_fabric_primary = fabric_primary.is_none();
-        if let Some(fp_id) = fabric_primary
-            .filter(|id| route == "node-recovery" && *id != door.env.door.node_id)
-        {
-            let client = self.client.clone().ok_or_else(|| {
-                format!(
-                    "{}: no Node RPC client to report {}'s drift to {fp_id}",
-                    self.me_id,
-                    node.node_id
-                )
-            })?;
-            return self
-                .report_drift(span, &door, &client, &fp_id, node, incarnation)
-                .await;
+    /// Whether `n`'s recovery holds on its inherited data dir `dir`, which its create found unreadable
+    /// (`unreadable`, recorded on the birth): it holds while the dir's transport key still does not
+    /// read; once it reads, the fact is cleared on the birth (`via-data-dir-repaired`) and the recovery
+    /// runs.
+    async fn holds_on_unreadable_dir(&self, n: &Node, inc: &IncarnationId, dir: &std::path::Path, unreadable: &crate::storage::DataDirUnreadable) -> bool {
+        if crate::deployment::pipeline::inspect_transport_key(dir).is_err() {
+            return true;
         }
-        // A mesh-primary whose view names no fabric-primary is behind a cut from it: the fabric-primary
-        // writes every Build record and a mesh behind a cut is not repaired locally until the heal, so its
-        // node's recovery fails by name and the tick submits it again, under the one backoff rule, while
-        // the birth stays unreached (node-recovery.md "Execution": "While the mesh is cut from the fabric-primary, its recoveries fail
-        // by name and run after the heal"; Q118). Only the fabric-primary opens and runs a recovery itself.
-        if route == "node-recovery" && no_fabric_primary {
-            return Err(format!(
-                "{}: its view names no fabric-primary to report {}'s drift to: the recovery runs after the heal (Q118)",
-                self.me_id,
-                node.node_id
-            ));
-        }
-        match crate::build_run::run_recovery(
-            &door.control,
-            &door.run,
-            route,
-            node.name.clone(),
-            node.node_id.clone(),
-            incarnation.clone(),
+        let _ = self.written.update_birth(&*self.nodes_storage, n, inc, |b| b.data_dir_unreadable = None).await;
+        tracing::info_span!(
+            "rdm.node_admin.node.resolve.via-data-dir-repaired",
+            node_path = %n.name.path, node_name = %n.name.name,
+            node_id = %n.node_id,
+            incarnation_id = %inc.as_str(),
+            path = %unreadable.path,
+            "otel.kind" = "internal",
         )
-        .await
-        {
-            Ok(Recovered::Ran {
-                opened: o,
-                terminal,
-            }) => {
-                opened(&o, "created");
-                match terminal {
-                    BuildReply::Complete { attempt, .. } => Ok(RecoveryEnd::Complete { attempt }),
-                    BuildReply::Failed { attempt, operation, step, reason, .. } => Ok(RecoveryEnd::Failed { attempt, operation, step, reason }),
-                    other => Err(format!("attempt {} of {} in mesh {}'s lane ended {}: {other:?}", o.attempt, o.build_id, node.mesh, other.name())),
-                }
-            }
-            Ok(Recovered::AlreadyApplied(o)) => {
-                opened(&o, "already-applied");
-                Ok(RecoveryEnd::Complete { attempt: o.attempt })
-            }
-            Err(RecoveryNotRun::Refused(r)) => {
-                let reply = crate::build_op::refusal_reply(r);
-                Err(format!("{}: {reply:?}", reply.name()))
-            }
-            Err(RecoveryNotRun::RunRefused { opened: o, reply }) => {
-                opened(&o, "created");
-                Err(format!("attempt {} of {} in mesh {}'s lane was opened and its run refused: {}: {reply:?}", o.attempt, o.build_id, node.mesh, reply.name()))
-            }
-            Err(RecoveryNotRun::Broke { opened: o, why }) => {
-                opened(&o, "created");
-                Err(why)
-            }
+        .in_scope(|| tracing::info!("repaired unreadable inherited data dir"));
+        false
+    }
+
+    /// The recovery of `node`'s unreached birth at `incarnation`, run by this admin, the primary above
+    /// the node (node-recovery.md "Execution"): the mesh-primary for its own members, the fabric-primary
+    /// for a mesh-primary (Q335), and fabric recovery's executor for the node-admin at the lost
+    /// fabric-primary's path and name (`route` `fabric-recovery`, fabric-recovery.md step 3). The primary's
+    /// own workflow, never a Build or part of one (Q342): node.delete then node.create, each step recorded
+    /// on the node record. It runs on the node's work turn: a node command or a Build's step on the same
+    /// node runs before or after it, never beside it; a Build in flight elsewhere neither holds it nor is
+    /// held by it.
+    pub(crate) async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId, route: &'static str) -> Result<RecoveryEnd, String> {
+        let runner = self.runner.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary role but its runner is not built yet", self.me_id))?;
+        span.record("route", route);
+        // Under an in-force fabric.delete nothing is recovered for being absent and nothing is re-created
+        // (fabric-delete.md "Failure": "its executor continues the delete as fabric-primary and
+        // re-creates nothing"; fabric-recovery.md step 4, Q155): the delete's own node.delete of the
+        // birth is its end. Refused naming the delete before anything is read or written.
+        if let Some((delete, _)) = crate::build_state::fabric_delete_in_force(&*self.builds).await.map_err(|e| format!("{}: the Build store could not be read for an in-force fabric.delete: {e}", self.me_id))? {
+            span.in_scope(|| {
+                tracing::info_span!("rdm.node_admin.build.reject.via-fabric-delete-in-force", route, build_id = %delete.build_id.log(), node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str())
+                    .in_scope(|| tracing::info!("a fabric.delete is in force: nothing is recovered and nothing is re-created"))
+            });
+            return Ok(RecoveryEnd::Failed { reason: format!("fabric.delete {} is in force: nothing is recovered and nothing is re-created", delete.build_id) });
+        }
+        // From the verdict the investigated birth is a deleted birth here (node-recovery.md step 3,
+        // Q342): its digests are refused by name while its replacement is born, as after it.
+        self.digest_view.hold_recovering(&node.node_id, incarnation);
+        let _turn = runner.node_work(&node.node_id).await;
+        let from = crate::build::ExitedBirth { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+        match runner.recover(&node.name, &from, route == "fabric-recovery-backbone").await {
+            Ok(()) => Ok(RecoveryEnd::Complete),
+            Err(end) => Ok(RecoveryEnd::Failed { reason: end.reason().to_string() }),
         }
     }
 }
@@ -507,7 +415,7 @@ impl RecoverySubmitter {
 pub(crate) fn settled(span: &tracing::Span, end: Result<RecoveryEnd, String>) -> Result<(), String> {
     let (outcome, r) = settle(end);
     span.record("outcome", outcome.as_str());
-    span.in_scope(|| tracing::info!("the mesh primary opens and runs the recovery of its unreached member itself"));
+    span.in_scope(|| tracing::info!("the primary above the unreached node runs its recovery itself, never a Build"));
     r
 }
 
@@ -518,17 +426,15 @@ pub(crate) fn settled(span: &tracing::Span, end: Result<RecoveryEnd, String>) ->
 /// without the recovery: the delay before its birth is eligible again (Q209).
 pub(crate) fn submit_span(me: &NodeId, node: &Node, incarnation: &IncarnationId, verdict: &str) -> tracing::Span {
     tracing::info_span!(
-        "rdm.node_admin.build.update.via-node-recovery",
+        "rdm.node_admin.node.update.via-node-recovery",
         node_path = %node.name.path, node_name = %node.name.name,
         node_id = %node.node_id,
         incarnation_id = %incarnation.as_str(),
         submitter = %me,
         verdict,
-        mesh = tracing::field::Empty,
-        build_id = tracing::field::Empty,
-        attempt = tracing::field::Empty,
-        disposition = tracing::field::Empty,
-        after_failed_attempt = tracing::field::Empty,
+        mesh = %node.mesh,
+        again = tracing::field::Empty,
+        route = tracing::field::Empty,
         outcome = tracing::field::Empty,
         backoff_ms = tracing::field::Empty,
     )
@@ -663,24 +569,23 @@ pub(crate) fn clear_unwatched(watched: &BTreeMap<String, Node>, offline: &mut Ha
     written.retain(|node_id, _| watched.contains_key(node_id.as_str()));
 }
 
-/// How a followed recovery Build ended: its terminal frame.
+/// How a recovery ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RecoveryEnd {
-    /// The Build converged at this attempt.
-    Complete { attempt: u32 },
-    /// A step of the attempt failed (node-recovery.md "Failure and receipts": `Failed { step, reason }`).
-    Failed { attempt: u32, operation: rdm_core::OperationId, step: String, reason: String },
+    /// The node was re-created and is ready.
+    Complete,
+    /// A step failed, named in `reason` (node-recovery.md "Failure").
+    Failed { reason: String },
 }
 
-/// The submit span's `outcome` and the submit's result, from how the followed recovery ended.
-/// A Failed recovery ends the submit in an error: the Build holds the Failed attempt, and the next
-/// tick reads it and submits the birth again (node-recovery.md "Failure and receipts",
-/// `RecoverySubmitter::owed_submits`).
+/// The recovery span's `outcome` and the recovery's result, from how it ended. A failed recovery ends
+/// in an error: the birth stays owed its recovery ([`RecoverySubmitter::failed_recoveries`]) and the
+/// tick runs it again once its backoff passed (node-recovery.md "Failure").
 pub(crate) fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), String>) {
     match end {
-        Ok(RecoveryEnd::Complete { attempt }) => (format!("complete: attempt {attempt}"), Ok(())),
-        Ok(RecoveryEnd::Failed { attempt, operation, step, reason }) => {
-            let failed = format!("failed: attempt {attempt} {operation:?} step {step}: {reason}");
+        Ok(RecoveryEnd::Complete) => ("complete".to_string(), Ok(())),
+        Ok(RecoveryEnd::Failed { reason }) => {
+            let failed = format!("failed: {reason}");
             (failed.clone(), Err(failed))
         }
         Err(e) => (e.clone(), Err(e)),
@@ -696,11 +601,8 @@ impl RecoverySubmitter {
     /// `NodeDeleted`; its next digest is then a deleted birth heard again, refused and reported to the
     /// fabric-primary, which terminates its runtime ([`Self::report_terminate`], Q207).
     pub(crate) async fn superseded_births(&self, view: &Topology, mesh: &str) -> Vec<rdm_core::LifecycleOp> {
-        let build_id = match self.builds.current_build().await {
-            Ok(current) => current.into_build_id().map(|b| b.to_string()).unwrap_or_default(),
-            Err(_) => String::new(),
-        };
-        superseded_births(&self.me, view, mesh, &*self.nodes_storage, &self.written, &build_id).await
+        // The mesh-primary's own repair, never a Build or part of one (Q342).
+        superseded_births(&self.me, view, mesh, &*self.nodes_storage, &self.written, rdm_core::LifecycleOp::NO_BUILD).await
     }
 }
 
@@ -741,278 +643,30 @@ pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str
 }
 
 impl RecoverySubmitter {
-    /// The caller birth `(node_id, incarnation)` at `path` Q207's decision deletes, reported to the
-    /// fabric-primary, which terminates its runtime under `node.terminate:<path>@<incarnation>`
-    /// (node-investigation.md): `build.create { Change(Terminate) }`, opened here when this admin is the
-    /// fabric-primary, through its own Build door; any other admin sends it up through `client` and reads
-    /// the fabric-primary's answer, its stream's first frame. `Ok` once the fabric-primary answered
-    /// (opened, or already applied).
-    ///
-    /// The report is one `Resend::default()` call addressed to the fabric-primary role
-    /// (`NodeTarget::Primary`), sent again only on the fabric-primary's own answer (node-recovery.md
-    /// "Failure and receipts": the submitter submits again after its backoff; rdm#179): a
-    /// `BuildInProgress` answer (an attempt still holds the birth's mesh, as the recovery that
-    /// re-created it does) is sent again on the resend schedule; a view naming no fabric-primary, or a
-    /// `NotFabricPrimary` answer, is sent again to the fabric-primary the view names next, when `views`
-    /// (the tick of this admin's installed view) moves or after the schedule's next delay. A call that
-    /// ends with no answer, its attempts spent, ends the report by name: the owner never resends
-    /// (node-rpc.md §43). Any other refusal ends the report by name.
-    pub(crate) async fn report_terminate(&self, client: Option<&Arc<rdm_transport::NodeRpcClient>>, mut views: Option<tokio::sync::watch::Receiver<u64>>, path: PathName, node_id: NodeId, incarnation: IncarnationId) -> Result<(), String> {
+    /// The caller birth `(node_id, incarnation)` at `path` Q207's decision deletes: its runtime
+    /// terminated under `node.terminate:<path>@<incarnation>` by this admin, the primary whose atlas
+    /// decided it (node-investigation.md), its own workflow and never a Build or part of one (Q342). One
+    /// `rdm.node_admin.node.update.via-returned-reported` span; it runs on the node's work turn.
+    pub(crate) async fn terminate(&self, path: PathName, node_id: NodeId, incarnation: IncarnationId) -> Result<(), String> {
         let me = self.held_name();
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-returned-reported",
             node_path = %me.path, node_name = %me.name, returned_path = %path.path, returned_name = %path.name, node_id = %node_id, incarnation_id = %incarnation.as_str(),
-            outcome = tracing::field::Empty, sends = tracing::field::Empty, fabric_primary = tracing::field::Empty,
-            build_id = tracing::field::Empty, attempt = tracing::field::Empty, detail = tracing::field::Empty,
+            outcome = tracing::field::Empty, detail = tracing::field::Empty,
         );
-        // A clone remembers the version its source last saw: only a view installed from now on wakes a resend.
-        if let Some(rx) = views.as_mut() {
-            rx.borrow_and_update();
+        let r = async {
+            let runner = self.runner.get().cloned().ok_or_else(|| format!("{}: its runner is not built yet", self.me_id))?;
+            let _turn = runner.node_work(&node_id).await;
+            runner.terminate(&path, &node_id, &incarnation).await.map_err(|e| e.reason().to_string())
         }
-        let pacing = client.map(|c| c.delivery().pacing()).unwrap_or_else(rdm_transport::Pacing::from_cadences);
-        let mut sends: u32 = 0;
-        let mut waits: u32 = 0;
-        let r = loop {
-            let turn = tracing::Instrument::instrument(self.terminate_once(client, &path, &node_id, &incarnation, &mut sends), span.clone()).await;
-            let (why, wake) = match turn {
-                TerminateTurn::Answered(outcome, opened) => {
-                    if let Some((build_id, attempt)) = opened {
-                        span.record("build_id", build_id.as_str()).record("attempt", attempt);
-                    }
-                    break Ok(outcome);
-                }
-                TerminateTurn::Refused(e) => break Err(e),
-                TerminateTurn::Owed(why, wake) => (why, wake),
-            };
-            waits += 1;
-            let delay = pacing.after(waits);
-            span.record("sends", sends).record("detail", why.as_str());
-            span.in_scope(|| tracing::info!(detail = %why, wait_ms = delay.as_millis() as u64, "the termination of a deleted birth stays owed: sent again to the fabric-primary the view names"));
-            match (wake, views.as_mut()) {
-                (OwedWake::View, Some(rx)) => {
-                    if let Ok(Err(_)) = tokio::time::timeout(delay, rx.changed()).await {
-                        // The view's sender is gone: the resend schedule alone wakes the report.
-                        views = None;
-                        tokio::time::sleep(delay).await;
-                    }
-                }
-                _ => tokio::time::sleep(delay).await,
-            }
-        };
-        span.record("sends", sends);
+        .instrument(span.clone())
+        .await;
         match &r {
-            Ok(outcome) => span.record("outcome", *outcome),
+            Ok(()) => span.record("outcome", "terminated"),
             Err(e) => span.record("outcome", "failed").record("detail", e.as_str()),
         };
-        span.in_scope(|| tracing::info!("a deleted birth heard again, reported to the fabric-primary"));
-        r.map(|_| ())
-    }
-
-    /// One send of [`Self::report_terminate`] to the fabric-primary the view names now.
-    async fn terminate_once(&self, client: Option<&Arc<rdm_transport::NodeRpcClient>>, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId, sends: &mut u32) -> TerminateTurn {
-        use rdm_core::build::{Build, BuildChange, BuildReply, BuildRequest, BuildSubmit, Disposition};
-        use rdm_transport::stream::StreamItem;
-        let fabric_primary = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone());
-        let Some(fp_id) = fabric_primary else {
-            return TerminateTurn::Owed(format!("{}: no fabric-primary in this view to report {node_id} to", self.me_id), OwedWake::View);
-        };
-        tracing::Span::current().record("fabric_primary", fp_id.to_string().as_str());
-        // The fabric-primary's answer that is not an open: an attempt holding the mesh, or another
-        // fabric-primary, keeps the report owed; so does `unknown-node`: this admin reports only a birth
-        // whose record it holds deleted or another birth holds the path of, and the fabric-primary learns
-        // of the delete with its receipt, which the deleting attempt's run carries up after this admin
-        // wrote the row (the one delivery rule: owed until answered). Any other refusal ends it by name.
-        let answered = |reply: BuildReply| match reply {
-            BuildReply::BuildInProgress { .. } => TerminateTurn::Owed(format!("{fp_id} answered build-in-progress: {reply:?}"), OwedWake::Schedule),
-            BuildReply::Rejected { ref reason, .. } if reason == "unknown-node" => TerminateTurn::Owed(format!("{fp_id} does not hold the delete yet: {reply:?}"), OwedWake::Schedule),
-            BuildReply::NotFabricPrimary { .. } => TerminateTurn::Owed(format!("{fp_id} answered not-fabric-primary: {reply:?}"), OwedWake::View),
-            other => TerminateTurn::Refused(format!("{}: the termination of {node_id} was refused: {other:?}", self.me_id)),
-        };
-        if fp_id == self.me_id {
-            let Some(door) = self.door.get().cloned() else {
-                return TerminateTurn::Refused(format!("{}: its Build door is not built yet", self.me_id));
-            };
-            *sends += 1;
-            let opened = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "returned-birth", node_path = %path.path, node_name = %path.name, node_id = %node_id, incarnation_id = %incarnation.as_str());
-            return match door.control.open_terminate(opened, "returned-birth", path.clone(), node_id.clone(), incarnation.clone()).await {
-                Ok(crate::control_plane::Recovery::Opened(o) | crate::control_plane::Recovery::Reported { opened: o, .. }) => {
-                    door.drives.ensure(&door.env, &o.build_id, o.attempt);
-                    TerminateTurn::Answered("opened", Some((o.build_id.to_string(), o.attempt)))
-                }
-                Ok(crate::control_plane::Recovery::AlreadyApplied(o)) => TerminateTurn::Answered("already-applied", Some((o.build_id.to_string(), o.attempt))),
-                Err(r) => answered(crate::build_op::refusal_reply(r)),
-            };
-        }
-        let Some(client) = client else {
-            return TerminateTurn::Refused(format!("{}: no node-RPC client to report {node_id} to {fp_id}", self.me_id));
-        };
-        let req = BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Terminate { node: path.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }) };
-        let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::default(), ..rdm_transport::CallOptions::default() };
-        *sends += 1;
-        match client.call_stream::<Build>(&rdm_transport::NodeTarget::Primary { mesh: None }, &req, &opts).await {
-            Ok((stream, _)) => {
-                // The fabric-primary's answer is the stream's first frame; the termination it opens runs
-                // on its own drive, whoever reads the stream.
-                let mut stream = stream.read_only();
-                match stream.next().await {
-                    Some(StreamItem::Frame(_, BuildReply::Started { build_id, attempt, disposition })) => {
-                        TerminateTurn::Answered(if disposition == Disposition::AlreadyApplied { "already-applied" } else { "opened" }, Some((build_id, attempt)))
-                    }
-                    Some(StreamItem::Frame(_, other)) => answered(other),
-                    Some(StreamItem::Failed(f)) => TerminateTurn::Refused(format!("{}: the termination report of {node_id} to {fp_id} broke before its answer: {f:?}", self.me_id)),
-                    None => TerminateTurn::Refused(format!("{}: the termination report of {node_id} to {fp_id} ended without its answer", self.me_id)),
-                }
-            }
-            Err((rdm_core::outcome::RpcOutcome::Reply(r), _)) => answered(r.into_value()),
-            // No answer, the call's attempts spent: the owner never resends it (node-rpc.md §43).
-            Err((other, _)) => TerminateTurn::Refused(format!("{}: the termination report of {node_id} to {fp_id} ended {} with no answer", self.me_id, other.name())),
-        }
-    }
-}
-
-/// One send of a deleted birth's termination report ([`RecoverySubmitter::report_terminate`]).
-enum TerminateTurn {
-    /// The fabric-primary opened the termination, or had applied it: the outcome, with its Build and attempt.
-    Answered(&'static str, Option<(String, u32)>),
-    /// The fabric-primary's answer keeps it: why, and what wakes the next send.
-    Owed(String, OwedWake),
-    /// Refused by name, or ended with no answer: the report ends.
-    Refused(String),
-}
-
-/// What wakes an owed termination report's next send.
-#[derive(Clone, Copy)]
-enum OwedWake {
-    /// A view installed, or the resend schedule's next delay: the fabric-primary is to be found again.
-    View,
-    /// The resend schedule's next delay: the attempt holding the birth's mesh ends on its own.
-    Schedule,
-}
-
-impl RecoverySubmitter {
-    /// The drift of `node`'s exited birth at `incarnation`, reported to the fabric-primary `fp`
-    /// (node-recovery.md "Execution", Q118): `build.create { Change(Recover) }`; at its `Started` this
-    /// mesh-primary claims the attempt through BuildClaim, and the fabric-primary runs it here with
-    /// `build.attempt.run` naming the mesh and writes its records. Followed to its terminal.
-    #[allow(clippy::too_many_arguments)]
-    async fn report_drift(
-        &self,
-        span: &tracing::Span,
-        door: &crate::build_op::BuildDoor,
-        client: &Arc<rdm_transport::NodeRpcClient>,
-        fp_id: &NodeId,
-        node: &Node,
-        incarnation: &IncarnationId,
-    ) -> Result<RecoveryEnd, String> {
-        use rdm_core::build::{
-            Build, BuildChange, BuildReply, BuildRequest, BuildSubmit, Disposition,
-        };
-        use rdm_core::build_claim::{BuildClaim, BuildClaimReply, BuildClaimRequest};
-        use rdm_core::outcome::RpcOutcome;
-        use rdm_transport::stream::StreamItem;
-        let target = rdm_transport::NodeTarget::ExactNode(fp_id.clone());
-        let req = BuildRequest::Create {
-            submit: BuildSubmit::Change(BuildChange::Recover {
-                node: node.name.clone(),
-                node_id: node.node_id.clone(),
-                incarnation: incarnation.clone(),
-            }),
-        };
-        let opts = rdm_transport::CallOptions {
-            resend: rdm_transport::Resend::with_time_limit(crate::build_op::DISPATCH_SEND),
-            ..rdm_transport::CallOptions::default()
-        };
-        let mut stream = match client.call_stream::<Build>(&target, &req, &opts).await {
-            Ok((s, _)) => s.read_only(),
-            Err((RpcOutcome::Reply(r), _)) => {
-                return Err(format!("{}: {:?}", r.value().name(), r.value()))
-            }
-            Err((other, _)) => {
-                return Err(format!(
-                    "the report of {}'s drift to {fp_id} ended {}",
-                    node.node_id,
-                    other.name()
-                ))
-            }
-        };
-        loop {
-            match stream.next().await {
-                Some(StreamItem::Frame(
-                    _,
-                    BuildReply::Started {
-                        build_id,
-                        attempt,
-                        disposition,
-                    },
-                )) => {
-                    span.record("build_id", build_id.as_str());
-                    span.record("mesh", node.mesh.as_str());
-                    span.record("attempt", attempt);
-                    span.record(
-                        "disposition",
-                        if disposition == Disposition::AlreadyApplied {
-                            "already-applied"
-                        } else {
-                            "created"
-                        },
-                    );
-                    if disposition == Disposition::AlreadyApplied {
-                        continue;
-                    }
-                    let claim = BuildClaimRequest::ClaimAttempt {
-                        build_id: build_id.clone(),
-                        attempt,
-                        executor_node_id: door.env.door.node_id.clone(),
-                        executor_incarnation: door.incarnation.clone(),
-                        mesh: Some(node.mesh.clone()),
-                    };
-                    match client.call::<BuildClaim>(&target, &claim, &rdm_transport::CallOptions::default()).await.0 {
-                        RpcOutcome::Reply(r) if matches!(r.value(), BuildClaimReply::Won { .. }) => {}
-                        RpcOutcome::Reply(r) => return Err(format!("the claim of attempt {attempt} of {build_id} in mesh {}'s lane was answered {}: {:?}", node.mesh, r.value().name(), r.value())),
-                        other => return Err(format!("the claim of attempt {attempt} of {build_id} in mesh {}'s lane ended {}", node.mesh, other.name())),
-                    }
-                }
-                Some(StreamItem::Frame(_, BuildReply::Complete { attempt, .. })) => {
-                    return Ok(RecoveryEnd::Complete { attempt })
-                }
-                Some(StreamItem::Frame(
-                    _,
-                    BuildReply::Failed {
-                        attempt,
-                        operation,
-                        step,
-                        reason,
-                        ..
-                    },
-                )) => {
-                    return Ok(RecoveryEnd::Failed {
-                        attempt,
-                        operation,
-                        step,
-                        reason,
-                    })
-                }
-                Some(StreamItem::Frame(
-                    _,
-                    BuildReply::Step { .. } | BuildReply::Blocked { .. },
-                )) => {}
-                Some(StreamItem::Frame(_, other)) => {
-                    return Err(format!("{}: {other:?}", other.name()))
-                }
-                Some(StreamItem::Failed(f)) => {
-                    return Err(format!(
-                        "the report of {}'s drift to {fp_id} broke: {f:?}",
-                        node.node_id
-                    ))
-                }
-                None => {
-                    return Err(format!(
-                        "the report of {}'s drift to {fp_id} ended without its terminal",
-                        node.node_id
-                    ))
-                }
-            }
-        }
+        span.in_scope(|| tracing::info!("a deleted birth heard again: its runtime is terminated by the primary that decided it"));
+        r
     }
 }
 

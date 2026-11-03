@@ -86,7 +86,7 @@ fn tier(t: &str) -> BTreeMap<String, String> {
 /// A create's allocation at `at` naming the exited birth `(node_id, incarnation)` as its predecessor:
 /// the explicit replacement provenance a recovery's or a replacement's row is admitted with.
 fn provenance(node_id: &NodeId, incarnation: &IncarnationId, at: &PathName) -> rdm_admin::storage::Allocation {
-    rdm_admin::storage::Allocation { predecessor: Some(rdm_admin::storage::BirthRef { node_id: node_id.clone(), incarnation_id: incarnation.clone() }), build_id: BuildId::mint(), operation: rdm_core::OperationId::location("node.create", at), incarnation: IncarnationId::mint(), deployment_id: DeploymentId::mint() }
+    rdm_admin::storage::Allocation { predecessor: Some(rdm_admin::storage::BirthRef { node_id: node_id.clone(), incarnation_id: incarnation.clone() }), build_id: Some(BuildId::mint()), operation: rdm_core::OperationId::location("node.create", at), incarnation: IncarnationId::mint(), deployment_id: DeploymentId::mint() }
 }
 
 fn view() -> Topology {
@@ -321,7 +321,7 @@ fn a_replacement_launches_from_its_entry_and_a_recovery_from_its_predecessors_ac
             let rows = NodeRows::new(me, me_id, Arc::new(RwLock::new(t)), storage.clone()).with_configs(slot);
             let build_b = BuildId::mint();
             let predecessor = rdm_admin::storage::BirthRef { node_id: old.clone(), incarnation_id: acknowledged.birth.incarnation_id.clone() };
-            let allocated = rdm_admin::storage::Allocation { predecessor: Some(predecessor), build_id: build_b.clone(), operation: rdm_core::OperationId::location("node.create", &name), incarnation: IncarnationId::mint(), deployment_id: DeploymentId::mint() };
+            let allocated = rdm_admin::storage::Allocation { predecessor: Some(predecessor), build_id: Some(build_b.clone()), operation: rdm_core::OperationId::location("node.create", &name), incarnation: IncarnationId::mint(), deployment_id: DeploymentId::mint() };
             let born = NodeId::mint();
             let row = match rows.create_row_with_spec(&name, "mesh1", "gateway", &born, &rdm_core::OperationId::location("node.create", &name), Some(&allocated), None, &Default::default(), &BTreeMap::new(), None, of).await.expect("the Deleted row holds no name") {
                 rdm_admin::node_rows::RowCreated::Written { row, .. } => row,
@@ -526,7 +526,7 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         // Each later birth's row names its predecessor's exact birth.
         let created = |n: &Node, pred: &NodeId, inc: &IncarnationId| {
             let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Starting);
-            row.allocated = Some(rdm_admin::storage::Allocation { predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.clone(), incarnation_id: inc.clone() }), build_id: BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &n.name), incarnation: n.incarnation_id.clone().unwrap(), deployment_id: DeploymentId::mint() });
+            row.allocated = Some(rdm_admin::storage::Allocation { predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.clone(), incarnation_id: inc.clone() }), build_id: Some(BuildId::mint()), operation: rdm_core::OperationId::location("node.create", &n.name), incarnation: n.incarnation_id.clone().unwrap(), deployment_id: DeploymentId::mint() });
             row
         };
         for row in [live, renamed, deleted, created(&successor, &old_pred, &old_inc), created(&fresh, &deleted_pred, &deleted_inc)] {
@@ -820,7 +820,7 @@ mod writer {
         let accepted = rdm_admin::build_state::BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
         rdm_admin::build_state::BuildStateAdapter::publish_accepted(&builds, &accepted).await.unwrap();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(name.clone())), mesh: "mesh1".into(), r#type: "node".into(), build_id, attempt: 1, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(name.clone())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id), attempt: 1, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let r = pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string());
         let _ = std::fs::remove_dir_all(&data_root);
         r
@@ -930,14 +930,8 @@ mod writer {
             let facts = self.facts().await?;
             Ok(match build { Some(b) => facts.into_iter().filter(|f| f.build_id() == b).collect(), None => facts })
         }
-        async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, rdm_admin::build_state::BuildStateError> {
-            self.inner.recovery_of(path, node_id, incarnation).await
-        }
         async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, rdm_admin::build_state::BuildStateError> {
             self.inner.mesh_deleted_of(node_id, incarnation).await
-        }
-        async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, rdm_admin::build_state::BuildStateError> {
-            self.inner.exits_owed(build_id, mesh).await
         }
         async fn forget(&self, id: &BuildId) -> Result<(), rdm_admin::build_state::BuildStateError> {
             self.inner.forget(id).await
@@ -964,7 +958,7 @@ mod writer {
         };
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(name.clone())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build.clone(), attempt, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(name.clone())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build.clone()), attempt, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let r = pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string());
         let _ = std::fs::remove_dir_all(&data_root);
         r
@@ -1123,7 +1117,7 @@ mod writer {
         };
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(name.clone())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build.clone(), attempt, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(name.clone())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build.clone()), attempt, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
@@ -1631,7 +1625,7 @@ async fn recovered(new_created_first: bool) -> (Option<NodeRow>, NodeId, NodeId,
     storage.write_record(&row).await.unwrap();
     let born = NodeId::mint();
     let birth = rdm_admin::storage::BirthRef { node_id: exited.node_id.clone(), incarnation_id: exited.incarnation_id.clone().unwrap() };
-    let allocation = rdm_admin::storage::Allocation { predecessor: Some(birth.clone()), build_id: BuildId::mint(), operation: create.clone(), incarnation: IncarnationId::mint(), deployment_id: DeploymentId::mint() };
+    let allocation = rdm_admin::storage::Allocation { predecessor: Some(birth.clone()), build_id: Some(BuildId::mint()), operation: create.clone(), incarnation: IncarnationId::mint(), deployment_id: DeploymentId::mint() };
     if new_created_first {
         mp.rows.create_row(&exited.name, &exited.mesh.clone(), &exited.r#type, &born, create, Some(&allocation), None, RowFor::Recovery).await.expect_err("the exited node's live row holds the name");
     }
@@ -1763,7 +1757,7 @@ fn a_node_created_with_a_free_text_name_keeps_name_path_and_type_through_create_
         };
         let provenance = |pred: &Node, at: &PathName| rdm_admin::storage::Allocation {
             predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.node_id.clone(), incarnation_id: pred.incarnation_id.clone().unwrap() }),
-            build_id: rdm_core::BuildId::mint(),
+            build_id: Some(rdm_core::BuildId::mint()),
             operation: rdm_core::OperationId::location("node.create", at),
             incarnation: IncarnationId::mint(),
             deployment_id: rdm_admin::model::DeploymentId::mint(),

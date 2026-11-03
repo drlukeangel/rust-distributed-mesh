@@ -86,7 +86,7 @@ async fn an_os_stopped_member_is_recovered_at_once_over_a_new_data_dir_and_its_r
     let of_birth = |name: &str| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect() };
     let inspected = of_birth("rdm.node_admin.node.resolve.via-provider-inspection");
     let verdict = inspected.iter().find(|sp| attr(sp, "verdict") == "os-stopped" && attr(sp, "inspector") == primary.node_id.as_str()).cloned().unwrap_or_else(|| panic!("the mesh-primary's inspection names os-stopped: {inspected:#?}"));
-    let submit = of_birth("rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| attr(sp, "verdict") == "os-stopped").expect("the recovery is submitted on the os-stopped verdict");
+    let submit = of_birth("rdm.node_admin.node.update.via-node-recovery").into_iter().find(|sp| attr(sp, "verdict") == "os-stopped").expect("the recovery is submitted on the os-stopped verdict");
     assert!(start_ns(&submit) >= start_ns(&verdict), "the submit follows the verdict");
     let terminate: Vec<Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "step") == "TerminateRuntime" && at_node(sp, &member)).cloned().collect();
     assert!(terminate.iter().any(|sp| attr(sp, "outcome") == "complete"), "the delete's TerminateRuntime completes: {terminate:#?}");
@@ -127,24 +127,25 @@ async fn hold_until_recovered(estate: &Estate, path: &PathName) -> Held {
     Held { path: path.clone(), node_id, rt, birth, successor }
 }
 
-/// CONTRACT (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs it"; step 3:
+/// CONTRACT (node-recovery.md "Execution": "A lost mesh-primary is investigated and recovered by the
+/// successor its election names, as any member of its mesh, its own workflow; the fabric-primary
+/// investigates and recovers it only when no successor takes the role (Q335)"; step 3:
 /// "Any other verdict (`running`, `os-stopped`, `exited`, `unproven`): the recovery below, at once" and
 /// TerminateRuntime "never skipped for what it reads, except `os-stopped`, which recovery leaves as it
 /// is"; node-delete.md: the immediate terminate is "Explicit delete only, never recovery, which respects
 /// suspension"; node-investigation.md "Spans": node.runtime.inspect's own; node-runtime-inspect.md "Its
 /// span is the evidence"): two meshes, the fabric-primary in mesh1, mesh2 with two node-admins and one
 /// node. mesh2's mesh-primary mesh2.node-admin.1 is held by the operating system (SIGSTOP, acknowledged
-/// `T`) and stays held through the fabric-primary's investigation of it: the investigation ends
-/// `os-stopped` (`rdm.node_admin.primary.update.via-investigation`), the fabric-primary's own inspection
-/// of the held runtime is a `rdm.node_admin.node.resolve.via-provider-inspection` span naming
-/// `os-stopped`, and the path is re-created as a new birth over a newly allocated data dir while the
-/// held runtime is sent nothing: still `T`, no CPU used, its TerminateRuntime reading `os-stopped`. Then
-/// mesh2.node-admin.2 is held the same way, so each of mesh2's admins runs one recovery's create: the create
-/// runs under the `node.create` operation with a structured location subject of the deleted birth's own create and finds no claim of
-/// that birth: its row stands Deleted (node-delete.md step 3), written by mesh2's one row writer
-/// (node-identity-and-state.md §4.3). Must NOT happen:
-/// a `running` finding of the held runtime, an investigation with no inspection span, a signal to a held
-/// runtime (`via-lost-executor` naming its deployment), or the new birth over its data dir.
+/// `T`) and stays held through its successor's investigation of it, mesh2.node-admin.2, as any member: its
+/// inspection of the held runtime is a `rdm.node_admin.node.resolve.via-provider-inspection` span naming
+/// `os-stopped`, its recovery is submitted on that verdict, and the path is re-created as a new birth
+/// over a newly allocated data dir while the held runtime is sent nothing: still `T`, no CPU used, its
+/// TerminateRuntime reading `os-stopped`. Then mesh2.node-admin.2 is held the same way, so each of mesh2's
+/// admins runs one recovery: the create finds no allocation of the deleted birth, whose row stands Deleted
+/// (node-delete.md step 3), written by mesh2's one row writer (node-identity-and-state.md §4.3). No Build
+/// is opened and the fabric-primary investigates neither. Must NOT happen: a `running` finding of the
+/// held runtime, a recovery with no inspection span, a signal to a held runtime (`via-lost-executor`
+/// naming its deployment), or the new birth over its data dir.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_and_its_runtime_is_sent_nothing() {
     let test = "an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_and_its_runtime_is_sent_nothing";
@@ -161,38 +162,38 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
     let fp_name = fp.name.clone();
     let first = hold_until_recovered(&estate, &mp.name).await;
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
-    // The second hold begins once the first recovery has its terminal at the fabric-primary (the
-    // build.attempt.run of an attempt the fabric-primary opened for it, to mesh2.node-admin.2, answered
-    // complete): the cell holds an admin between recoveries, never the executor of one still reporting
-    // its receipts. Any attempt of the recovery: one that ended Failed is opened again (node-recovery.md
-    // "Failure and receipts"), and the one that completes is the recovery's.
-    let fp_view = fp_name.clone();
+    // The second hold begins once the first recovery has ended complete at its runner, mesh2.node-admin.2:
+    // the cell holds an admin between recoveries, never the runner of one still writing.
     let first_id = first.node_id.clone();
-    wait_for("the first recovery's attempt complete at the fabric-primary", crate::node_recovery_due(), || async {
-        let spans = estate.spans();
-        let attempts: Vec<(String, String)> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == first_id && attr(sp, "outcome") == "admitted").map(|sp| (attr(sp, "build_id"), attr(sp, "attempt"))).collect();
-        named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().any(|sp| at_node(sp, &fp_view) && attempts.contains(&(attr(sp, "build_id"), attr(sp, "attempt"))) && attr(sp, "outcome") == "complete").then_some(())
+    wait_for("the first recovery complete at mesh2.node-admin.2", crate::node_recovery_due(), || async {
+        named(&estate.spans(), "rdm.node_admin.node.update.via-node-recovery").into_iter().any(|sp| attr(sp, "node_id") == first_id && attr(sp, "outcome") == "complete").then_some(())
     })
     .await;
     let second = hold_until_recovered(&estate, &other.name).await;
+    // Its recovery's span closes once its runner has it complete: read before the estate stops.
+    let second_id = second.node_id.clone();
+    wait_for("the second recovery complete at the re-created mesh2.node-admin.1", crate::node_recovery_due(), || async {
+        named(&estate.spans(), "rdm.node_admin.node.update.via-node-recovery").into_iter().any(|sp| attr(sp, "node_id") == second_id && attr(sp, "outcome") == "complete").then_some(())
+    })
+    .await;
 
     estate.stop().await;
     let spans = estate.spans();
-    // The fabric-primary's investigation of the held mesh-primary, and its inspection under it.
-    let investigations: Vec<Value> = named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(|sp| at_node(sp, &fp_name) && attr(sp, "suspect_node_id") == first.node_id).cloned().collect();
-    let investigation = investigations.first().cloned().unwrap_or_else(|| panic!("the fabric-primary investigates the unheard mesh-primary: {investigations:#?}"));
-    assert_eq!(attr(&investigation, "finding"), "os-stopped", "the fabric-primary's investigation finds the held mesh-primary os-stopped: {investigation}");
+    // The successor's recovery of the held mesh-primary, on its own inspection's os-stopped verdict; the
+    // fabric-primary does not investigate it (Q335).
+    let fp_looks: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(|sp| at_node(sp, &fp_name) && attr(sp, "suspect_node_id") == first.node_id).collect();
+    assert!(fp_looks.is_empty(), "the fabric-primary does not investigate mesh2's held primary: {fp_looks:#?}");
     let inspections = |held: &Held| -> Vec<Value> { named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id).cloned().collect() };
     let of_first = inspections(&first);
     let inspection = of_first
         .iter()
-        .find(|sp| attr(sp, "inspector") == fp.node_id.as_str() && attr(sp, "caller").is_empty() && sp["trace_id"] == investigation["trace_id"])
+        .find(|sp| attr(sp, "inspector") == other.node_id.as_str() && attr(sp, "caller").is_empty())
         .cloned()
-        .unwrap_or_else(|| panic!("the fabric-primary's investigation inspects the held runtime under its own span: {of_first:#?}"));
+        .unwrap_or_else(|| panic!("the successor's investigation inspects the held runtime: {of_first:#?}"));
     assert_eq!(attr(&inspection, "verdict"), "os-stopped", "{inspection}");
     assert!(attr(&inspection, "handle").contains(&first.rt.pid.to_string()), "the inspection names the exact runtime handle: {inspection}");
     // Each held birth: its recovery's TerminateRuntime reads it os-stopped and leaves it, and the
-    // recovery's create, run by the other node-admin of mesh2, takes its claim for none of its own.
+    // recovery, run by the other node-admin of mesh2, finds no allocation of the deleted birth.
     let mut creators = Vec::new();
     for held in [&first, &second] {
         let read = inspections(held);
@@ -202,25 +203,19 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
         assert!(stopped.is_empty(), "{:?}: the recovery's create stops no runtime as a lost executor's launch: {stopped:#?}", held.path);
         let claimed: Vec<&Value> = named(&spans, "rdm.node_admin.node.resolve.via-row-allocation").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id).collect();
         assert!(claimed.is_empty(), "{:?}: the deleted birth's row stands Deleted, so the recovery's create finds no claim of it: {claimed:#?}", held.path);
-        // The fabric-primary opened the recovery of the unheard mesh-primary and claimed every attempt of
-        // it for the admin the election named in its place (node-recovery.md step 2 and "Execution"): its
-        // own spans name both, as the held birth's executor is killed by this cell before its spans are
-        // flushed. An attempt claimed for any other admin is a writer its mesh's rows refuse.
-        let opened: Vec<(String, String)> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id && attr(sp, "outcome") == "admitted").map(|sp| (attr(sp, "build_id"), attr(sp, "attempt"))).collect();
-        assert!(!opened.is_empty(), "{:?}: the fabric-primary opens the recovery", held.path);
-        let executors: std::collections::BTreeSet<String> = named(&spans, "rdm.node_admin.build.update.via-claim-decision")
-            .into_iter()
-            .filter(|sp| at_node(sp, &fp_name) && attr(sp, "lane") == "fabric" && opened.contains(&(attr(sp, "build_id"), attr(sp, "attempt"))) && attr(sp, "outcome") == "won")
-            .map(|sp| attr(sp, "executor"))
-            .collect();
-        assert_eq!(executors.len(), 1, "{:?}: every attempt {opened:?} of the recovery is claimed in the fabric lane for one executor: {executors:?}", held.path);
-        creators.push((held.path.clone(), executors.into_iter().next().unwrap_or_default()));
+        // The recovery is its runner's own workflow, on the os-stopped verdict, with no Build (Q342).
+        let submits: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id && attr(sp, "outcome") == "complete").collect();
+        let submit = submits.first().copied().unwrap_or_else(|| panic!("{:?}: its recovery completes", held.path));
+        assert_eq!(attr(submit, "verdict"), "os-stopped", "{submit}");
+        let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id).collect();
+        assert!(opened.is_empty(), "{:?}: no Build is opened for its recovery: {opened:#?}", held.path);
+        creators.push((held.path.clone(), attr(submit, "submitter")));
         let deleted = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id && attr(sp, "outcome") == "row-deleted").map(|sp| (attr(sp, "node_path"), attr(sp, "node_name"))).collect::<Vec<_>>();
         assert!(!deleted.iter().any(|w| w.0 == fp_name.path && w.1 == fp_name.name), "{:?}: the fabric-primary writes no row of a mesh with a primary: {deleted:?}", held.path);
     }
     println!("recovery creates: {creators:?}");
-    assert_eq!(creators[0].1, second.birth.to_string(), "mesh2.node-admin.1's recovery is run by the other node-admin of mesh2, its elected mesh-primary: {creators:?}");
-    assert_eq!(creators[1].1, rdm_core::framing::Birth { node_id: first.successor.node_id.clone(), incarnation: first.successor.incarnation_id.clone().expect("recovered birth") }.to_string(), "mesh2.node-admin.2's recovery is run by the re-created mesh2.node-admin.1: {creators:?}");
+    assert_eq!(creators[0].1, second.node_id, "mesh2.node-admin.1's recovery is run by the other node-admin of mesh2, its elected mesh-primary: {creators:?}");
+    assert_eq!(creators[1].1, first.successor.node_id.as_str(), "mesh2.node-admin.2's recovery is run by the re-created mesh2.node-admin.1: {creators:?}");
     // The delete written by mesh2's primary, and the held runtime left as it was: the second recovery's
     // trace, whose executor this cell does not kill.
     let written = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().find(|sp| attr(sp, "node_id") == second.node_id && attr(sp, "outcome") == "row-deleted").cloned().unwrap_or_else(|| panic!("{:?}: its Deleted row is written", second.path));

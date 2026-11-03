@@ -263,10 +263,9 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     estate.enter(&entry.name).await;
     let lost_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let mut stop = estate.nodes_obj().await.stop(&location(&fp)).await.expect("node.stop of fp_name");
-    let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
-        estate.resume(&accepted.build_id, accepted.attempt).await;
-    }
+    // A stop is a node command, never a Build (Q342): its stream ends with the stop's own completion.
+    let frames = Estate::frames_of(&mut stop).await;
+    assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "the stop completes: {frames:?}");
     if location(&fp) == PathName::new("mesh1.node-admin", "1").unwrap() {
         estate.kill_bootstrap();
     } else {
@@ -473,14 +472,14 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     })
     .await;
     // A recovery through cut and heal follows node investigation's verdict, never `reached`.
-    for sp in named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| start(sp) >= cut_at) {
+    for sp in named(&estate.spans(), "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| start(sp) >= cut_at) {
         assert_ne!(attr(sp, "verdict"), "reached", "a recovery follows node investigation's verdict, never `reached`: {sp}");
     }
     // fabric-recovery.md (Q111): a lost fabric-primary the investigation reached is commanded back, never
     // re-created: a fabric recovery whose verdict is `reached` submits no re-create in its run.
     let spans = estate.spans();
     for run in named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| attr(sp, "verdict") == "reached") {
-        let recreated: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["trace_id"] == run["trace_id"]).collect();
+        let recreated: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["trace_id"] == run["trace_id"]).collect();
         assert!(recreated.is_empty(), "fabric recovery reached the lost fabric-primary and re-created it anyway: {run} {recreated:#?}");
     }
     // The Build submitted at the fabric-primary the healed fabric names completes.

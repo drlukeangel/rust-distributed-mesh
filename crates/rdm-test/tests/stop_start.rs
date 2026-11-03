@@ -166,11 +166,12 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         // predecessor was lost after the node started) settles as AlreadyApplied: the command is
         // keyed by its build and operation, not its attempt (node-rpc-envelope.md: "Reissuing a
         // naturally idempotent uncertain step can settle it"). Another command's start of this live
-        // node is still refused naming its state.
+        // node, another occurrence of its operation (a command's identity is its operation, Q342), is
+        // still refused naming its state.
         let reissued = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 3, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
         assert_eq!(call(&admin, &target, &reissued).await, StatusReply::AlreadyApplied, "the reissued start settles as already applied");
-        let other = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7kq2m9vx4pzr".into(), attempt: 1, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
-        assert!(matches!(call(&admin, &target, &other).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Ready }), "another Build's start of the live node is refused naming its state");
+        let other = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7kq2m9vx4pzr".into(), attempt: 1, operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.node", "1").unwrap()).in_occurrence(rdm_core::OperationOccurrenceId::mint()) };
+        assert!(matches!(call(&admin, &target, &other).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Ready }), "another command's start of the live node is refused naming its state");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

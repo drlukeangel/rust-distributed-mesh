@@ -140,12 +140,12 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Grow and shrink mesh2 from its own endpoint: the fabric-primary accepts the call, mesh2's primary executes the Build.
     let mut growing = estate.create_node("mesh2", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node in mesh2: {e}"));
-    let grow = Estate::complete(&mut growing).await.build_id.to_string();
+    let grow = Estate::complete(&mut growing).await.expect("the call opened a Build").build_id.to_string();
     let b = built(&estate, &grow).await;
     assert_eq!(last_run_executor(&b), mesh2_primary, "{b:#}");
     estate.until_node(&rdm_core::PathName::new("mesh2.node", "4").unwrap(), "mesh2.node.4 ready", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
     let mut shrinking = estate.nodes_obj().await.delete(&rdm_core::PathName::new("mesh2.node", "4").unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh2.node.4: {e}"));
-    let shrink = Estate::complete(&mut shrinking).await.build_id.to_string();
+    let shrink = Estate::complete(&mut shrinking).await.expect("the call opened a Build").build_id.to_string();
     let b = built(&estate, &shrink).await;
     assert_eq!(last_run_executor(&b), mesh2_primary, "{b:#}");
     estate.until_node(&rdm_core::PathName::new("mesh2.node", "4").unwrap(), "mesh2.node.4 deleted", Duration::from_secs(30), |n| n.is_none().then_some(())).await;

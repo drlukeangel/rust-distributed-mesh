@@ -113,7 +113,7 @@ async fn an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_mark
         });
     // Its recovery was submitted by its mesh-primary, on that mark's view (the new birth, ready at its
     // path.name under a new node id, is what the wait above read).
-    let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+    let recovery = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
         .filter(|sp| at(sp) >= killed_at && attr(sp, "node_id") == victim_id)
         .min_by_key(|sp| at(sp))

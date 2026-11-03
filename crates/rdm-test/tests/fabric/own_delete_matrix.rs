@@ -94,7 +94,7 @@ async fn pid_of(estate: &Estate, node: &PathName) -> u32 {
 /// replies.
 async fn deleted_inside_the_bound(estate: &mut Estate, node: &PathName, target: &rdm_core::NodeId, pid: u32) -> (rdm_client::Accepted, Vec<String>) {
     let mut stream = estate.nodes_obj().await.delete(node).await.unwrap_or_else(|end| panic!("node.delete of {node:?} was refused: {end}"));
-    let accepted = stream.accepted().clone();
+    let accepted = stream.accepted().cloned().expect("the call opened a Build");
     let begun = tokio::time::Instant::now();
     let (mut replies, moved) = tokio::time::timeout(DELETE_BOUND, async {
         let mut replies = Vec::new();
@@ -170,7 +170,7 @@ async fn fabric_deleted(estate: &Estate) {
 /// beside the cell's artifact.
 fn refused_by_name(what: &str, reason: &str, call: Result<rdm_client::WorkflowStream, CallEnd>) -> String {
     let refused = match call {
-        Ok(stream) => panic!("{what} was admitted (Build {}), where it is refused by name", stream.accepted().build_id),
+        Ok(stream) => panic!("{what} was admitted ({:?}), where it is refused by name", stream.accepted().map(|a| a.build_id.clone())),
         Err(end) => end,
     };
     let CallEnd::Rejected { reason: named, detail } = &refused else { panic!("{what} ends Rejected: {refused:?}") };
@@ -213,10 +213,11 @@ async fn a_two_mesh_fabrics_primary_left_after_fabric_deleted_is_deleted_by_its_
 /// CONTRACT (node-stop.md "Primary": "A target that is a primary hands over first ... With no successor
 /// the stop is refused by name before anything moves"; fabric-delete.md "After completion": the one call
 /// left is the fabric-primary's own node.delete): a one-mesh fabric {1 node-admin, 1 node} completes
-/// fabric.delete, the fabric-primary alive and alone. Its node.stop, node.restart and
-/// node.connection.delete are each refused by name, `unknown-node` (the delete took it out of the
-/// accepted topology): none is run by itself as its own executor, which would leave a stopped
-/// fabric-primary that nothing is left to start or delete; its node.delete, step 4's call, is the one
+/// fabric.delete, the fabric-primary alive and alone. Its node.stop and node.connection.delete, node
+/// commands to the primary above the node (Q342), are each refused by name, `last-admin`: a primary
+/// hands over first, and with no successor "the stop is refused by name before anything moves" (node-stop.md
+/// "Primary"). None is run, which would leave a stopped fabric-primary that nothing is left to start or
+/// delete; its node.delete, step 4's call, is the one
 /// admitted. Then its own node.delete from outside answers node.deleted and its runtime exits
 /// inside the stop's bound. What must NOT happen: a stop or connections delete of the
 /// fabric-primary admitted after fabric.deleted, or its own delete failing after the refusals.
@@ -229,8 +230,8 @@ async fn after_fabric_deleted_the_fabric_primarys_own_stop_and_connections_delet
     let nodes = estate.nodes_obj().await;
     let fp = path("mesh1.node-admin", "1");
     let mut refusals = Vec::new();
-    refusals.push(refused_by_name("node.stop of the fabric-primary after fabric.deleted", "unknown-node", nodes.stop(&fp).await));
-    refusals.push(refused_by_name("node.connection.delete of the fabric-primary after fabric.deleted", "unknown-node", nodes.delete_connections(&fp).await));
+    refusals.push(refused_by_name("node.stop of the fabric-primary after fabric.deleted", "last-admin", nodes.stop(&fp).await));
+    refusals.push(refused_by_name("node.connection.delete of the fabric-primary after fabric.deleted", "last-admin", nodes.delete_connections(&fp, &rdm_core::status::ConnectionScope::All).await));
     let pid = pid_of(&estate, &path("mesh1.node-admin", "1")).await;
     assert!(running(pid), "the refusals moved nothing: the fabric-primary runs");
     let (_, replies) = deleted_inside_the_bound(&mut estate, &path("mesh1.node-admin", "1"), &fp_id, pid).await;
@@ -314,11 +315,14 @@ async fn in_a_two_mesh_fabric_a_primarys_delete_with_no_successor_is_refused_by_
 /// a stream ending `FabricPrimaryMoved` is resumed at the admin it names (estate_teardown's pattern).
 async fn followed(estate: &mut Estate, what: &str, call: Result<rdm_client::WorkflowStream, CallEnd>) -> Vec<Frame> {
     let mut stream = call.unwrap_or_else(|end| panic!("{what} was refused: {end}"));
-    let accepted = stream.accepted().clone();
+    // A Build's stream (a delete) may end at the fabric-primary's move; a node command's (a stop, a
+    // start: never a Build, Q342) ends with its own completion.
+    let accepted = stream.accepted().cloned();
     let frames = Estate::frames_of(&mut stream).await;
     match frames.last() {
         Some(Frame::Complete) => frames,
         Some(Frame::FabricPrimaryMoved { fabric_primary }) => {
+            let accepted = accepted.unwrap_or_else(|| panic!("{what}: only a Build's stream ends at the fabric-primary's move: {frames:?}"));
             if let Some(fp) = fabric_primary.as_ref() {
                 estate.enter_by_id(fp).await;
             }

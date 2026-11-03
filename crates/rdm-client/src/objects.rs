@@ -214,21 +214,6 @@ impl Nodes {
         crate::NodeRpc::new(self.carrier.client()).tags_delete(mesh_primary, route, birth, scope, &rdm_transport::CallOptions::default()).await
     }
 
-    /// `node.connection.delete`: the hard cut of the connections of the exact birth `birth`,
-    /// `scope` `All` (the stop's cut) or `Connections` naming open entries by id, a single call to the
-    /// node's mesh-primary `mesh_primary` over `route` (R-CR2, R-CR3; [`crate::NodeRpc::connections_delete`]).
-    /// A scope that names nothing to cut is refused here by name, `RejectedConnectionScope`, and
-    /// nothing is sent.
-    pub async fn connections_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rdm_transport::RouteChoice, scope: &rdm_core::status::ConnectionScope) -> Result<rdm_core::status::StatusReply, CallEnd> {
-        if let Some(reason) = scope.refusal() {
-            let span = NodeOp::ConnectionsDelete.span();
-            span.record("outcome", "rejected-connection-scope");
-            span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), reason = %reason, "the scope names nothing to cut; nothing is sent"));
-            return Ok(rdm_core::reply::status::rejected_connection_scope(format!("node {} ({}): {reason}", birth.node_id, birth.incarnation.as_str())));
-        }
-        crate::NodeRpc::new(self.carrier.client()).connections_delete(mesh_primary, route, birth, scope, &rdm_transport::CallOptions::default()).await
-    }
-
     /// `node.config.get`: no request of its own (Q167 R-RD4: a property's read is its row's field);
     /// [`Self::get`] answers the whole node, its config included.
     pub fn config_get(&self) -> CallEnd {
@@ -244,23 +229,116 @@ impl Nodes {
     }
 
     /// `node.stop` of `node` (`lifecycles/node-stop.md`): delete its connections, leave its mesh and stop, keeping its `node.id`, `incarnation`, `(path, name)` and data dir.
-    /// The stream is `Started`, then `node.connections.deleted` and `node.stopped`, ending `Complete` or `Failed { step, reason }`.
+    /// A node command, never a Build (Q342): NodeCommand 0x22 `StopNode` to the node's mesh-primary (the
+    /// fabric-primary for a mesh-primary), which runs it (D40). The stream is `node.connections.deleted`
+    /// and `node.stopped`, ending `Complete` or `Failed { step, reason }`; a stop the primary refuses
+    /// before it runs is the call's `Rejected`, by name (`node-not-live`, `no-secondary`).
     pub async fn stop(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Stop(node.clone()), BuildChange::Stop { node: node.clone() }).await
+        self.node_command(WorkflowKind::Stop(node.clone()), node, None).await
     }
 
     /// `node.start` of the stopped `node`: the same process rejoins as itself (same node id,
-    /// incarnation, endpoint key and port). The stream is `Started`, then `node.joined` and
+    /// incarnation, endpoint key and port). A node command, never a Build (Q342), as [`Self::stop`]:
+    /// NodeCommand 0x22 `StartNode` to the node's mesh-primary. The stream is `node.joined` and
     /// `node.started`, ending `Complete` or `Failed { step, reason }`.
     pub async fn start(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Start(node.clone()), BuildChange::Start { node: node.clone() }).await
+        self.node_command(WorkflowKind::Start(node.clone()), node, None).await
     }
 
-    /// `node.connection.delete { All }` of `node` as a Build (`lifecycles/node-connections-delete.md`: a
-    /// target that is a primary runs `node.primary.update` first). The stream is `Started`, then `node.connections.deleted`,
-    /// ending `Complete`; the process keeps running.
-    pub async fn delete_connections(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::DeleteConnections(node.clone()), BuildChange::DeleteConnections { node: node.clone() }).await
+    /// `node.connection.delete { scope }` of `node` (`lifecycles/node-connections-delete.md`): a node
+    /// command, never a Build (Q342), NodeCommand 0x22 `DeleteConnections { scope }` to the node's
+    /// mesh-primary (the fabric-primary for a mesh-primary), directly (R-CR2, R-CR3, D18), which for
+    /// `All` moves a primary's roles first, then commands the exact birth. `All` is graceful closure of
+    /// every open connection; `Connections` cuts exactly the named ones. The process keeps running. The
+    /// stream is `node.connections.deleted`, ending `Complete`, and [`WorkflowStream::completion`] holds
+    /// the door's `ConnectionsDeleted` (what was closed, not open and held); a refusal is the call's
+    /// `Rejected`, by name. A scope that names nothing to cut is refused here as the primary's door
+    /// refuses it, `rejected-connection-scope`, and nothing is sent.
+    pub async fn delete_connections(&self, node: &PathName, scope: &rdm_core::status::ConnectionScope) -> Result<WorkflowStream, CallEnd> {
+        if let Some(reason) = scope.refusal() {
+            let span = NodeOp::ConnectionsDelete.span();
+            span.record("outcome", "rejected-connection-scope");
+            span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), reason = %reason, "the scope names nothing to cut; nothing is sent"));
+            return Err(CallEnd::Rejected { reason: "rejected-connection-scope".into(), detail: format!("path {:?}, name {:?}: {reason}", node.path, node.name) });
+        }
+        self.node_command(WorkflowKind::DeleteConnections(node.clone()), node, Some(scope)).await
+    }
+
+    /// The node command `kind` of the node at `node`, sent to the primary above it (D40): its exact
+    /// birth and that primary read with `node.get` from the node the carrier starts at, then one direct
+    /// NodeCommand 0x22 call, `scope` a connections delete's. A command the primary refuses before it
+    /// runs ends here, by name.
+    async fn node_command(&self, kind: WorkflowKind, node: &PathName, scope: Option<&rdm_core::status::ConnectionScope>) -> Result<WorkflowStream, CallEnd> {
+        let span = kind.span();
+        let call = async {
+            let (birth, primary) = self.primary_above(node).await?;
+            let target = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(primary.clone()), ..birth };
+            let rpc = crate::NodeRpc::new(self.carrier.client());
+            let opts = rdm_transport::CallOptions::default();
+            // The command's identity: its operation, keyed on the node.id, with an occurrence minted once
+            // for this command (every resend of it carries it): each stop and each start of one node is
+            // its own command, never a repeat of the last.
+            let step = if matches!(kind, WorkflowKind::Start(_)) { rdm_core::names::NodeStep::Start } else { rdm_core::names::NodeStep::Stop };
+            let operation = rdm_core::OperationId::node(step.name(), &target.node_id).in_occurrence(rdm_core::OperationOccurrenceId::mint());
+            let sent = match &kind {
+                WorkflowKind::Start(_) => rpc.start(&target, &operation, &opts).await,
+                WorkflowKind::DeleteConnections(_) => {
+                    let scope = scope.cloned().unwrap_or(rdm_core::status::ConnectionScope::All);
+                    let req = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: target.node_id.clone(), incarnation: target.incarnation.clone(), scope };
+                    self.carrier.client().call_stream::<rdm_core::node_command::NodeCommand>(&target.target, &req, &opts).await.map(|(stream, _)| stream).map_err(|(out, _)| out)
+                }
+                _ => rpc.stop(&target, &operation, &opts).await,
+            };
+            // A refusal, as the Build carrier names it: the reason before the refusal's own text.
+            let refused = |reply: rdm_core::node_command::NodeCommandReply| match reply {
+                rdm_core::node_command::NodeCommandReply::Rejected { reason, detail } => CallEnd::Rejected { detail: format!("{reason}: {detail}"), reason },
+                other => CallEnd::Rejected { reason: other.name().into(), detail: format!("node {primary} refused {} of node {}: {other:?}", kind.name(), target.node_id) },
+            };
+            let mut stream = sent.map_err(|out| match crate::calls::ended(out) {
+                Ok(reply) => refused(reply),
+                Err(end) => end,
+            })?;
+            // The primary's answer is the stream's first frame: a refusal before the command ran is the
+            // call's end, by name; anything else is the stream's first frame.
+            use rdm_core::streaming::StreamingProtocol as _;
+            let first = match stream.next().await {
+                Some(rdm_transport::stream::StreamItem::Frame(_, f)) => f,
+                Some(rdm_transport::stream::StreamItem::Failed(f)) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the node command's stream to {primary} broke before its first frame: {f:?}") }),
+                None => return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("the node command's stream to {primary} ended before its first frame") }),
+            };
+            stream.accepted().await;
+            if matches!(rdm_core::node_command::NodeCommand::frame_kind(&first), rdm_core::streaming::FrameKind::Refusal(_)) {
+                return Err(refused(first));
+            }
+            Ok((stream, first))
+        };
+        match tracing::Instrument::instrument(call, span.clone()).await {
+            Ok((inner, first)) => Ok(WorkflowStream::of_command(inner, first, kind, span)),
+            Err(end) => {
+                span.record("outcome", end.outcome());
+                span.in_scope(|| tracing::info!(op = kind.name(), reason = %end, "the node command was not run"));
+                Err(end)
+            }
+        }
+    }
+
+    /// The exact birth at `node` and the primary above it (D40): its mesh-primary, or the
+    /// fabric-primary for a mesh-primary, read with `node.get`. No node at `node` is `unknown-node`.
+    async fn primary_above(&self, node: &PathName) -> Result<(ExactBirth, NodeId), CallEnd> {
+        let found = self.get(&Filter::new().eq("path", [node.path.as_str()]).eq("name", [node.name.as_str()])).await?;
+        let Some(view) = found.into_iter().next() else {
+            return Err(CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("node.get names no node at path {:?}, name {:?}", node.path, node.name) });
+        };
+        let Some(incarnation) = view.incarnation_id.clone() else {
+            return Err(CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("node {} at path {:?}, name {:?} has no known birth", view.node_id, node.path, node.name) });
+        };
+        let mesh_primary = rdm_core::is_node_admin(&view.r#type) && view.is_primary;
+        let above = if mesh_primary { Filter::new().eq("is_fabric_primary", ["true"]) } else { Filter::new().eq("mesh", [view.mesh.as_str()]).eq("type", [rdm_core::meta::NODE_ADMIN]).eq("is_primary", ["true"]) };
+        let primary = self.get(&above).await?.into_iter().next().map(|p| p.node_id).ok_or_else(|| CallEnd::Rejected {
+            reason: "no-primary".into(),
+            detail: format!("node.get names no {} above node {} at path {:?}, name {:?}", if mesh_primary { "fabric-primary" } else { "mesh-primary" }, view.node_id, node.path, node.name),
+        })?;
+        Ok((ExactBirth { target: rdm_transport::NodeTarget::ExactNode(view.node_id.clone()), node_id: view.node_id, incarnation }, primary))
     }
 
     /// `node.delete` of `node` (`lifecycles/node-delete.md`): compose `node.stop` when the process is live, terminate its exact runtime through the provider, and release `node.id` and `(path, name)`.

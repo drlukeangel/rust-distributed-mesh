@@ -192,6 +192,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
         own: Arc::new(OnceLock::new()),
         mesh_deleter: Arc::new(OnceLock::new()),
+        primary_commands: Default::default(),
         storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
         fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
@@ -355,7 +356,7 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     let rig = rig(subject, &[&executor], BTreeMap::new()).await;
     // The exact-birth Status command control is JoinMesh; StopNode is now reserved (Q47).
     // This cell still proves the admitted status door, its refusal and transport certainty arms.
-    let command = |inc: IncarnationId| StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation: inc, build_id: "8pe1w1tk1f0n".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()) };
+    let command = |inc: IncarnationId| StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation: inc, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()), primary: None };
 
     // Healthy control before connections-deleting: a ping is served.
     let c = client_of(&rig, &executor).await;
@@ -524,7 +525,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         container: None,
         domain: Some("i143-2805".into()),
     };
-    let req = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(node).node_id), build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
+    let req = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(node).node_id), build_id: Some(build_id.clone()), attempt: 1, node, handle, unreached: false };
     let _ = pipeline.delete_node(&req).await;
     // The drawing's order, as far as this birth lets the delete go: NodeDeleting, the stop
     // command (StopNode), its completion wait (AwaitNodeLeft: the deadline arm); and never
@@ -1276,7 +1277,6 @@ async fn carried_connections_delete_ends(capture: &Capture) {
     assert!(matches!(&ends[2], CarryEnd::Incomplete { reported: true, .. }), "a break after the acceptance is incomplete, the node's report standing: {:?}", ends[2]);
     assert!(matches!(&ends[3], CarryEnd::RefusedByNode(N::RejectedStaleIncarnation { .. })), "{:?}", ends[3]);
     assert!(matches!(&ends[4], CarryEnd::NotSent(_)), "a member that cannot be resolved is never sent the command: {:?}", ends[4]);
-    assert!(matches!(ends[4].status_reply(), StatusReply::NotReady { reason } if reason.contains("not-sent")), "the Status answer names it: {:?}", ends[4].status_reply());
     let held = rig.door.declared.lock().unwrap().connections_deleted.keys().map(|(n, _)| n.clone()).collect::<Vec<_>>();
     assert!(held.contains(&members[0].node.node_id) && held.contains(&members[1].node.node_id), "both completions are held for the births' rename: {held:?}");
     for b in &members[2..] {

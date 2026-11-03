@@ -9,10 +9,8 @@
 //! completion inbox of the executing admin: it reads no gossip and writes nothing durable (the
 //! pipeline's step receipt is the durable record).
 
-use crate::deployment::pipeline::{CommandAdmission, CommandContext, Completion};
+use crate::deployment::pipeline::{CommandContext, Completion};
 use crate::model::{IncarnationId, Node, NodeId};
-use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
-use rdm_core::status::{StatusReply, StatusRequest};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -99,6 +97,22 @@ pub struct CommandView {
     /// Held by a row writer while it writes (the rows writer's sweep, a node's declared-state row):
     /// `mesh.block` waits for a write in progress, so none lands after it replied `blocked`.
     row_writes: tokio::sync::Mutex<()>,
+    /// The caller's stream each frame of a command to a birth is sent on to, while the primary above it
+    /// runs a caller's node command on it ([`Self::caller_stream`]; node-stop.md "Upward": two one-hop streams).
+    caller_streams: Mutex<HashMap<(NodeId, IncarnationId), tokio::sync::mpsc::UnboundedSender<rdm_core::node_command::NodeCommandReply>>>,
+}
+
+/// A caller's node command's hold on the frames of its birth ([`CommandView::caller_stream`]): released when
+/// the command ends, however it ends.
+pub struct CallerStream {
+    commands: std::sync::Arc<CommandView>,
+    birth: (NodeId, IncarnationId),
+}
+
+impl Drop for CallerStream {
+    fn drop(&mut self) {
+        self.commands.caller_streams.lock().unwrap().remove(&self.birth);
+    }
 }
 
 /// A tracked command: open from its send until its call ends, its caller's cancellation included.
@@ -123,7 +137,26 @@ impl Default for CommandView {
 impl CommandView {
     /// A view whose commanded births run their `node.connection.delete { All }` under `connections_delete_deadline`.
     pub fn new(connections_delete_deadline: Duration) -> Self {
-        Self { open: Mutex::new(HashMap::new()), connections_delete_deadline, blocked: watch::channel(false).0, rows_held: watch::channel(false).0, row_writes: tokio::sync::Mutex::new(()) }
+        Self { open: Mutex::new(HashMap::new()), connections_delete_deadline, blocked: watch::channel(false).0, rows_held: watch::channel(false).0, row_writes: tokio::sync::Mutex::new(()), caller_streams: Mutex::new(HashMap::new()) }
+    }
+
+    /// Send every frame of the commands this admin carries to the birth `(node_id, incarnation)` on to
+    /// the receiver answered here, until the returned hold is dropped: the frames of the caller's node
+    /// command the primary above the node runs (node-stop.md "Upward"). Work on one node is serialized
+    /// at its primary, so one caller holds a birth's frames at a time.
+    pub fn caller_stream(self: &std::sync::Arc<Self>, node_id: &NodeId, incarnation: &IncarnationId) -> (CallerStream, tokio::sync::mpsc::UnboundedReceiver<rdm_core::node_command::NodeCommandReply>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let birth = (node_id.clone(), incarnation.clone());
+        self.caller_streams.lock().unwrap().insert(birth.clone(), tx);
+        (CallerStream { commands: self.clone(), birth }, rx)
+    }
+
+    /// The frame `frame` of a command to the birth `(node_id, incarnation)`, recorded by this admin:
+    /// sent on to the caller whose node command holds the birth's frames, if one does.
+    pub fn on_to_caller(&self, node_id: &NodeId, incarnation: &IncarnationId, frame: &rdm_core::node_command::NodeCommandReply) {
+        if let Some(tx) = self.caller_streams.lock().unwrap().get(&(node_id.clone(), incarnation.clone())) {
+            let _ = tx.send(frame.clone());
+        }
     }
 
     /// `mesh.block`: from here no new command is issued and no row is written; resolves once every
@@ -270,142 +303,6 @@ pub fn unreachable_of(cause: &rdm_core::outcome::NotSentReason) -> Option<Unreac
     Some(Unreachable { reason, detail: format!("{cause:?}") })
 }
 
-/// Send `cmd` to the exact birth `node` through `client` at `target`, opening the command before
-/// the send so a completion that races the reply finds it. The outcome is admission, not
-/// completion.
-pub async fn send_command(client: &NodeRpcClient, commands: &CommandView, target: &NodeTarget, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> CommandAdmission {
-    send_command_reaching(client, commands, target, node, cmd, ctx).await.0
-}
-
-/// [`send_command`], with the reachability cause of a command that was never sent ([`unreachable_of`]).
-pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandView, target: &NodeTarget, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> (CommandAdmission, Option<Unreachable>) {
-    let Some(incarnation) = node.incarnation_id.clone() else {
-        return (CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.node_id) , code: rdm_core::outcome::Code::FailedPrecondition }, None);
-    };
-    let build_id = match rdm_client::BuildId::parse(&ctx.build_id) {
-        Ok(build_id) => build_id,
-        Err(e) => return (CommandAdmission::NotSent { reason: format!("{}: the command names Build {:?}, which is not a Crockford id: {e}", node.node_id, ctx.build_id) , code: rdm_core::outcome::Code::FailedPrecondition }, None),
-    };
-    let key = CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-    // A mesh-primary that replied `blocked` issues no new command until it is unblocked (storage.md §2).
-    commands.admitted().await;
-    let _ = commands.open(key.clone());
-    let (node_id, attempt) = (node.node_id.clone(), ctx.attempt);
-    let mut unreachable = None;
-    let admission = match cmd {
-        // The executor's own status authority carries it (status_rpc.rs `carry_delete_connections`):
-        // see `AdminObserver::send_command`; a client alone has no mesh-primary to set the status.
-        NodeCommand::DeleteConnections => {
-            let req = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
-            let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(commands.connections_delete_reply() + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
-            crate::deployment::pipeline::command_admission(&client.call::<rdm_core::status::Status>(target, &req, &opts).await.0)
-        }
-        NodeCommand::Stop => {
-            let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
-            let stop = rdm_client::StopContext::new(build_id, attempt, ctx.operation.clone());
-            let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(commands.connections_delete_reply() + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
-            let end = rdm_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await;
-            unreachable = not_sent_cause(&end);
-            admission_of_stream(end).await
-        }
-        NodeCommand::Start => {
-            let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
-            let start = rdm_client::StartContext::new(build_id, attempt, ctx.operation.clone());
-            let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(60) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
-            let end = rdm_client::NodeRpc::new(client).start(&birth, &start, &opts).await;
-            unreachable = not_sent_cause(&end);
-            admission_of_stream(end).await
-        }
-    };
-    // The reply of a stop is its completion. The connection it rode is closed now: the node cut every
-    // other one, so its start reaches the stopped node on a fresh dial.
-    if matches!(admission, CommandAdmission::Stopped { .. }) {
-        if let Some(peer) = node.endpoint_id.as_ref().and_then(|e| e.0.parse::<iroh::PublicKey>().ok()) {
-            client.close_pooled_to(&peer, "node.stopped");
-        }
-        let _ = commands.complete(&CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().expect("checked above") });
-    }
-    // The command is over with its reply, admitted or not: its step receipt is the record.
-    commands.close(&key);
-    // A command not admitted names why on its span (the reply, or why no reply came), as its step's
-    // receipt does: the refusal is read where it happened.
-    let detail = match &admission {
-        CommandAdmission::Refused { .. } | CommandAdmission::NotSent { .. } | CommandAdmission::Indeterminate { .. } | CommandAdmission::StartFailed { .. } => format!("{admission:?}"),
-        _ => String::new(),
-    };
-    tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node_path = %node.name.path, node_name = %node.name.name, command = cmd.operation_prefix(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal")
-        .in_scope(|| tracing::info!("the command was sent to the exact birth"));
-    (admission, unreachable)
-}
-
-/// Read a command's stream; lifecycle state recording belongs to StatusAuthority's owner path.
-async fn admission_of_stream(end: Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, rdm_core::outcome::RpcOutcome<rdm_core::node_command::NodeCommandReply>>) -> CommandAdmission {
-    use rdm_core::node_command::{NodeCommand as P, NodeCommandReply as R};
-    use rdm_core::protocol::NodeProtocol;
-    use rdm_core::outcome::Code;
-    let mut stream = match end {
-        Ok(s) => s,
-        Err(out) => return match out {
-            rdm_core::outcome::RpcOutcome::Reply(r) => { let r = r.into_value(); CommandAdmission::Refused { code: P::classify_reply(&r).code(), reply: format!("{}: {r:?}", r.name()) } },
-            rdm_core::outcome::RpcOutcome::NotSent(n) => CommandAdmission::NotSent { code: n.reason().code(), reason: format!("{:?}", n.reason()) },
-            other @ (rdm_core::outcome::RpcOutcome::Unserved(_) | rdm_core::outcome::RpcOutcome::RejectedStale(_)) => CommandAdmission::Refused { code: other.code(), reply: format!("{}: {other:?}", other.name()) },
-            other => CommandAdmission::Indeterminate { code: other.code(), reason: format!("{}: {other:?}", other.name()) },
-        },
-    };
-    let mut receipt = None;
-    while let Some(item) = stream.next().await {
-        let frame = match item {
-            rdm_transport::stream::StreamItem::Frame(_, frame) => frame,
-            rdm_transport::stream::StreamItem::Failed(f @ rdm_transport::stream::StreamFailure::Unserved(_)) => return CommandAdmission::Refused { code: f.code(), reply: format!("Unserved: {f:?}") },
-            rdm_transport::stream::StreamItem::Failed(f) => return CommandAdmission::Indeterminate { code: f.code(), reason: format!("{f:?}") },
-        };
-        let result = match &frame {
-            // A stop's primitives' acknowledgements and node.mesh.left (Q205): progress, recorded by the
-            // owner path, never this stream's end.
-            R::CommandAccepted { .. } | R::NodeJoined | R::ConnectionsDeleting { .. } | R::Leaving { .. } | R::StopMeshLeft { .. } => None,
-            R::StopConnectionsDeleted { receipt: r } => { receipt = Some(r.clone()); None }
-            R::NodeStopped => Some(match receipt.clone() { Some(receipt) => CommandAdmission::Stopped { receipt }, None => CommandAdmission::Indeterminate { code: Code::Internal, reason: "NodeStopped without its closure receipt".into() } }),
-            R::NodeStarted => Some(CommandAdmission::Started {}),
-            R::Failed { step, reason, code } => Some(CommandAdmission::StartFailed { step: step.clone(), reason: reason.clone(), code: *code }),
-            r => Some(CommandAdmission::Refused { code: P::classify_reply(r).code(), reply: format!("{}: {r:?}", r.name()) }),
-        };
-        stream.accepted().await;
-        if let Some(result) = result { return result; }
-    }
-    CommandAdmission::Indeterminate { code: Code::Unknown, reason: "command stream ended before its terminal".into() }
-}
-
-/// The reachability cause of a call that ended never sent.
-fn not_sent_cause<T>(end: &Result<T, rdm_core::outcome::RpcOutcome<rdm_core::node_command::NodeCommandReply>>) -> Option<Unreachable> {
-    match end {
-        Err(rdm_core::outcome::RpcOutcome::NotSent(n)) => unreachable_of(n.reason()),
-        _ => None,
-    }
-}
-
-/// The arm a `node.stop` or `node.start` object call ended as: only `Applied` and `AlreadyApplied` admit it; every
-/// other reply is `Refused` by its name, an unsent call `NotSent`, an unanswered one `Indeterminate`.
-fn admission_of(r: Result<StatusReply, rdm_client::CallEnd>) -> CommandAdmission {
-    use rdm_client::CallEnd;
-    let code = match &r {
-        Ok(reply) => <rdm_core::status::Status as rdm_core::protocol::NodeProtocol>::classify_reply(reply).code(),
-        Err(end) => end.code(),
-    };
-    match r {
-        Ok(StatusReply::Applied) => CommandAdmission::Admitted {},
-        Ok(StatusReply::AlreadyApplied) => CommandAdmission::AlreadyAdmitted {},
-        Ok(StatusReply::Stopped { receipt }) => CommandAdmission::Stopped { receipt },
-        Ok(StatusReply::Started) => CommandAdmission::Started {},
-        Ok(StatusReply::StartFailed { step, reason }) => CommandAdmission::StartFailed { step, reason , code },
-        Ok(other) => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) , code },
-        Err(CallEnd::NotSent { reason, .. }) => CommandAdmission::NotSent { reason , code },
-        Err(CallEnd::Indeterminate { reason, .. }) => CommandAdmission::Indeterminate { reason , code },
-        Err(CallEnd::Unserved { op }) => CommandAdmission::Refused { reply: format!("unserved op {op:#04x}") , code },
-        Err(CallEnd::RejectedStale { target_node_id }) => CommandAdmission::Refused { reply: format!("stale target {target_node_id}") , code },
-        Err(other) => CommandAdmission::Refused { reply: other.to_string() , code },
-    }
-}
-
 /// The completion of the command `ctx` names for `node`, received or not: the span every completion
 /// a step reads writes, whether a wait received it or the command's own reply carried it (a stop's
 /// `Stopped`, node-stop.md).
@@ -434,6 +331,21 @@ pub async fn await_completion(commands: &CommandView, node: &Node, cmd: NodeComm
 pub use rdm_node::node_self::{
     refuse_node_left, refuse_reserved, NODE_LEFT_IS_NEVER_A_CALL, RETIRED_PAIR_IS_RESERVED,
 };
+
+/// The node commands the primary above a node runs for a caller (node-stop.md, node-start.md: never a
+/// Build or part of one, Q342; D40): a caller's NodeCommand 0x22 `StopNode` or `StartNode` reaches the
+/// node's mesh-primary (the fabric-primary for a mesh-primary), which admits it, runs it on the node and
+/// sends the node's frames on to the caller.
+#[async_trait::async_trait]
+pub trait PrimaryCommands: Send + Sync {
+    /// Run the caller's `req` on the node it names, `caller` the calling birth as this admin resolved
+    /// it: every frame before the terminal goes on `frames`, and the terminal (or the refusal, before
+    /// anything ran) is the answer.
+    async fn run(&self, caller: Option<NodeId>, req: rdm_core::node_command::NodeCommandRequest, frames: Box<dyn crate::node_self::CommandFrames>) -> rdm_core::node_command::NodeCommandReply;
+}
+
+/// The primary's node command door, set once the admin's runner is built.
+pub type PrimaryCommandsSlot = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<dyn PrimaryCommands>>>;
 
 #[cfg(test)]
 mod tests {

@@ -510,7 +510,7 @@ impl Run {
 
     /// The Build a workflow call opened or joined.
     fn id_of(stream: &WorkflowStream) -> String {
-        stream.accepted().build_id.to_string()
+        stream.accepted().expect("the call opened a Build").build_id.to_string()
     }
 
     /// `node.create` of a `kind` node in mesh1, accepted: the stream of the Build that runs it.

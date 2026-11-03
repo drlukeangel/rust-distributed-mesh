@@ -1208,7 +1208,7 @@ async fn restart_with_traffic(
     // completion source (the Build log read below is, between the traffic it issues), so it is let go.
     // Once the stop's attempt is complete and the node stopped, `node.start` the same way.
     let stream = e.nodes_obj().await.stop(node).await.unwrap_or_else(|end| panic!("{node:?}: node.stop was not accepted: {end}"));
-    let (build_id, mut attempt) = (stream.accepted().build_id.to_string(), u64::from(stream.accepted().attempt));
+    let (build_id, mut attempt) = (stream.accepted().expect("the call opened a Build").build_id.to_string(), u64::from(stream.accepted().expect("the call opened a Build").attempt));
     drop(stream);
     actions.push(json!({"t_ms": t0, "action": "node.stop", "via": "node.stop", "node": node, "attempt": attempt, "build_id": build_id, "incarnation_id": before["incarnation_id"]}));
     let started = Instant::now();
@@ -1220,7 +1220,7 @@ async fn restart_with_traffic(
         let now = e.node_value_opt(node).await;
         if !start_sent && b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= attempt && now.as_ref().is_some_and(|n| n["stopped"] == true) {
             let stream = e.nodes_obj().await.start(node).await.unwrap_or_else(|end| panic!("{node:?}: node.start was not accepted: {end}"));
-            attempt = u64::from(stream.accepted().attempt);
+            attempt = u64::from(stream.accepted().expect("the call opened a Build").attempt);
             drop(stream);
             start_sent = true;
             actions.push(json!({"t_ms": now_ms(), "action": "node.start", "via": "node.start", "node": node, "attempt": attempt, "build_id": build_id}));
@@ -1718,7 +1718,7 @@ impl Write {
     /// the path added on its executable, read there now (proposal executable-bindings-at-create.md rule 1).
     async fn change(&self, e: &Estate, admin: &PathName) -> BuildChange {
         match self {
-            Self::Restart(n) => BuildChange::Stop { node: n.clone() },
+            Self::Restart(n) => unreachable!("a restart is node commands, never a Build change (Q342): {n:?}"),
             Self::Delete(n) => BuildChange::RemoveNode { node: n.clone() },
             Self::Create { mesh, kind } => created(e, admin, mesh, kind.clone()).await,
         }
@@ -1956,6 +1956,9 @@ impl Run {
     /// never followed). Anything but `Started` is the finding; nothing retries it.
     async fn write(&mut self, f: &Formed, st: &Stable, what: &str, w: Write) -> String {
         let t0 = now_ms();
+        if let Write::Restart(node) = &w {
+            return self.restart(f, st, what, node, t0).await;
+        }
         let v = ask(&f.estate, &st.fp_name(), w.change(&f.estate, &st.fp_name()).await).await;
         assert_eq!(v["reply"], "started", "{what}: the fabric-primary {:?} refused {} {}: {v}", st.fp_name(), w.op(), w.subject());
         let build_id = s(&v["build_id"]);
@@ -1966,6 +1969,33 @@ impl Run {
         self.actions.push(json!({"t_ms": t0, "action": what, "via": w.op(), "subject": w.subject(), "attempt": attempt, "build_id": build_id, "accepted_by": st.fp["name"]}));
         progress(&format!("{what}: {} {} accepted by {:?} as {build_id} attempt {attempt}", w.op(), w.subject(), st.fp_name()));
         build_id
+    }
+
+    /// The `node.stop` of a restart (Q183: node.stop then node.start): a node command of the primary above
+    /// the node, never a Build (Q342), sent through the `node` objects at the fabric-primary `st` names and
+    /// read to its end on a task of its own. The Build is the current one, unchanged: its id is what
+    /// [`Self::finish`] waits on, at the attempt it stands at.
+    async fn restart(&mut self, f: &Formed, st: &Stable, what: &str, node: &PathName, t0: u64) -> String {
+        let nodes = rdm_client::Nodes::new(f.estate.carrier_at(&st.fp_name()).await);
+        let mut stream = nodes.stop(node).await.unwrap_or_else(|e| panic!("{what}: node.stop of {node:?} was refused: {e}"));
+        tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
+        let build_id = s(&st.fabric["build_id"]);
+        let attempt = build_attempt(&f.estate, st, &build_id).await["attempt"].as_u64().unwrap_or(0);
+        self.attempts.insert(build_id.clone(), attempt);
+        self.writes.push(json!({"what": what, "op": "node.stop", "subject": node, "accepted_by": st.fp["name"], "accepted_by_node_id": st.fp["node_id"], "build_id": Value::Null, "t_ms": t0}));
+        self.actions.push(json!({"t_ms": t0, "action": what, "via": "node.stop", "subject": node, "accepted_by": st.fp["name"]}));
+        progress(&format!("{what}: node.stop of {node:?} sent through {:?}, a node command: no Build", st.fp_name()));
+        build_id
+    }
+
+    /// The `node.start` of a restart, a node command of the primary above the node (Q342), sent through
+    /// the `node` objects at `fp` and read to its end on a task of its own.
+    async fn send_start(&mut self, f: &Formed, fp: &PathName, node: &PathName) {
+        let nodes = rdm_client::Nodes::new(f.estate.carrier_at(fp).await);
+        let mut stream = nodes.start(node).await.unwrap_or_else(|e| panic!("the restart's node.start of {node:?} at {fp:?} was refused: {e}"));
+        tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
+        self.actions.push(json!({"t_ms": now_ms(), "action": format!("node.start of {node:?}"), "via": "node.start", "subject": node, "accepted_by": fp}));
+        self.writes.push(json!({"what": format!("node.start of {node:?}"), "op": "node.start", "subject": node, "accepted_by": fp, "build_id": Value::Null, "t_ms": now_ms()}));
     }
 
     /// The `node.start` of a restart (Q183: node.stop then node.start) whose `node.stop` [`Self::write`]
@@ -1984,14 +2014,9 @@ impl Run {
             assert!(Instant::now() < until, "{node:?}: the restart's node.stop of {build_id} attempt {want} did not complete with the node stopped within 120 s: {b}");
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        let v = ask(&f.estate, &st.fp_name(), BuildChange::Start { node: node.clone() }).await;
-        assert_eq!(v["reply"], "started", "the restart's node.start of {node:?} at {:?}: {v}", st.fp_name());
-        let attempt = v["attempt"].as_u64().unwrap_or_else(|| panic!("Started names the attempt it opened: {v}"));
-        self.attempts.insert(build_id.to_string(), attempt);
-        self.actions.push(json!({"t_ms": now_ms(), "action": format!("node.start of {node:?}"), "via": "node.start", "subject": node, "attempt": attempt, "build_id": build_id, "accepted_by": st.fp["name"]}));
-        // The start is an accepted write of its own: it opens the Build's next attempt, as the stop did (Q183).
-        self.writes.push(json!({"what": format!("node.start of {node:?}"), "op": "node.start", "subject": node, "accepted_by": st.fp["name"], "accepted_by_node_id": st.fp["node_id"], "build_id": build_id, "attempt": attempt, "t_ms": now_ms()}));
-        attempt
+        // A node command opens no attempt: the Build stays at the attempt the stop found.
+        self.send_start(f, &st.fp_name(), node).await;
+        want
     }
 
     /// Submit the replace steps of `node` (lifecycles/node-replace.md: one Build of node primitives)
@@ -2003,7 +2028,7 @@ impl Run {
         let nodes = Nodes::new(f.estate.carrier_at(&st.fp_name()).await);
         let subject = f.estate.node_view(node).await;
         let mut stream = nodes.steps(rdm_test::steps::replace(node, &subject.mesh, &subject.r#type).expect("valid replacement fixture name")).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {:?} refused the replace steps of {node:?}: {e}", st.fp_name()));
-        let (build_id, attempt) = (stream.accepted().build_id.to_string(), stream.accepted().attempt);
+        let (build_id, attempt) = (stream.accepted().expect("the call opened a Build").build_id.to_string(), stream.accepted().expect("the call opened a Build").attempt);
         tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
         self.attempts.insert(build_id.clone(), u64::from(attempt));
         self.actions.push(json!({"t_ms": t0, "action": what, "via": format!("build.create steps {node:?}"), "status": "started", "build_id": build_id, "accepted_by": st.fp["name"]}));
@@ -2034,22 +2059,9 @@ impl Run {
                 if b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= attempt && stopped {
                     let fp_id = self.fabric(f).await.map(|v| v["fabric_primary"].clone()).unwrap_or_default();
                     let Some(fp) = nodes.iter().find(|n| n["node_id"] == fp_id).map(location) else { continue };
-                    let v = ask(&f.estate, &fp, BuildChange::Start { node: node.clone() }).await;
-                    // A mesh whose own attempt is open (a recovery the mesh-primary opened on the same
-                    // Build as the stop completed) refuses the start by name (build.md §4.4: "The node's
-                    // mesh holds no attempt of its own | build-in-progress, naming the mesh"): the start
-                    // is sent again once the Build reads complete past that attempt.
-                    if v["reply"] == "build-in-progress" && v["current_build_id"] == build_id {
-                        progress(&format!("the restart's node.start of {node:?} at {fp:?} refused while mesh {} holds an attempt of {build_id}: sent again once it ends", s(&v["mesh"])));
-                        self.refused_writes.push(json!({"sent_to": fp, "reply": v["reply"], "path": node, "route": "node.start", "held_by": v["held_by"], "mesh": v["mesh"], "t_ms": now_ms()}));
-                        attempt = b["attempt"].as_u64().unwrap_or(attempt) + 1;
-                        continue;
-                    }
-                    assert_eq!(v["reply"], "started", "the restart's node.start of {node:?} at {fp:?}: {v}");
-                    attempt = v["attempt"].as_u64().unwrap_or_else(|| panic!("Started names the attempt it opened: {v}"));
-                    self.actions.push(json!({"t_ms": now_ms(), "action": format!("node.start of {node:?}"), "via": "node.start", "subject": node, "attempt": attempt, "build_id": build_id, "accepted_by": fp}));
-                    // The start is an accepted write of its own: it opens the Build's next attempt, as the stop did (Q183).
-                    self.writes.push(json!({"what": format!("node.start of {node:?}"), "op": "node.start", "subject": node, "accepted_by": fp, "build_id": build_id, "attempt": attempt, "t_ms": now_ms()}));
+                    // A node command of the primary above the node (Q342): no Build holds it and none
+                    // refuses it build-in-progress.
+                    self.send_start(f, &fp, node).await;
                     start_sent = true;
                     continue;
                 }
@@ -2282,7 +2294,12 @@ async fn replace_deleted(f: &mut Formed, a: &mut Run, after_delete: &Stable, del
     let mesh = s(&deleted["old_mesh"]);
     let path = location(&json!({"name": deleted["old_fabric_primary"]}));
     let fabric_build = s(&after_delete.fabric["build_id"]);
-    let v = ask(&f.estate, &after_delete.fp_name(), BuildChange::Stop { node: path.clone() }).await;
+    // node.stop is a node command (Q342): the deleted path is refused by name at its caller, nothing sent.
+    let v = match rdm_client::Nodes::new(f.estate.carrier_at(&after_delete.fp_name()).await).stop(&path).await {
+        Err(rdm_client::CallEnd::Rejected { reason, detail }) => json!({"reply": reason, "detail": detail}),
+        Err(other) => json!({"reply": "ended", "detail": other.to_string()}),
+        Ok(_) => json!({"reply": "admitted"}),
+    };
     assert_eq!(v["reply"].as_str(), Some("unknown-node"), "{scenario}: a deleted path cannot be stopped: {v}");
     a.events.push(json!({"event": "deleted.restart-refused", "scenario": scenario, "node": path, "reply": v["reply"], "detail": v["detail"]}));
     a.actions.push(json!({"t_ms": now_ms(), "action": format!("{scenario}: node.stop of the deleted path"), "via": "node.stop", "subject": path, "reply": v["reply"]}));
@@ -4271,7 +4288,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     // The death's recovery (node-recovery.md): the dead gateway's mesh-primary proves the exit and submits
     // one recovery, an attempt of the same Build (its delete, create and update); the fabric-primary's drift opens
     // nothing for an ordinary member.
-    let drift_spans: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| at_location(sp, &victim2) && sp["attributes"]["node_id"] == id2.as_str() && s(&sp["attributes"]["outcome"]).starts_with("complete")).collect();
+    let drift_spans: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| at_location(sp, &victim2) && sp["attributes"]["node_id"] == id2.as_str() && s(&sp["attributes"]["outcome"]).starts_with("complete")).collect();
     assert_eq!(drift_spans.len(), 1, "one completed recovery of {victim2:?}'s exited birth: {drift_spans:?}");
     assert_eq!(s(&drift_spans[0]["attributes"]["build_id"]), drift_build, "the recovery is an attempt of {drift_build}");
     let proven: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(&id2)).collect();
@@ -4597,7 +4614,7 @@ async fn delete_run(cell: &str, shape: Shape) {
     // C17 post hoc (Q111): the held birth was recovered on node investigation's verdict, never `reached`.
     let (h0, h1) = (hold["hold_ns"].as_u64().unwrap(), hold["recreated_ns"].as_u64().unwrap());
     let hid = s(&hold["node_id"]);
-    let recoveries: Vec<Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+    let recoveries: Vec<Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
         .filter(|sp| start_ns(sp) >= h0 && start_ns(sp) <= h1 && sp["attributes"]["node_id"] == hid.as_str())
         .map(|sp| sp["attributes"].clone())
@@ -5596,7 +5613,7 @@ async fn one_live_birth_per_path(f: &Formed, admins: &[PathName], paths: &[PathN
 /// Recovery follows node investigation's verdict (Q111; fabric-recovery.md step 3): every recovery submitted
 /// between `from` and `to`, and every create's target, names a verdict other than `reached`.
 fn recovery_follows_the_verdict(spans: &[Value], from: u64, to: u64) {
-    for sp in spans.iter().filter(|sp| start_ns(sp) >= from && start_ns(sp) <= to && (sp["name"] == "rdm.node_admin.build.update.via-node-recovery" || (sp["name"] == "rdm.node_admin.deployment.delete.via-path-investigation" && sp["attributes"]["outcome"] == "unreached"))) {
+    for sp in spans.iter().filter(|sp| start_ns(sp) >= from && start_ns(sp) <= to && (sp["name"] == "rdm.node_admin.node.update.via-node-recovery" || (sp["name"] == "rdm.node_admin.deployment.delete.via-path-investigation" && sp["attributes"]["outcome"] == "unreached"))) {
         assert_ne!(sp["attributes"]["verdict"], "reached", "a recovery follows node investigation's verdict, never `reached`: {sp}");
     }
 }
@@ -5796,7 +5813,7 @@ async fn control_run(cell: &str, shape: Shape) {
         // run was re-created on a verdict other than `reached` about the birth it was formed with.
         recovery_follows_the_verdict(spans, marks.0, verified_at);
         for (path, old_id) in &renewed_ids {
-            let verdicts: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == old_id.as_str() && sp["attributes"]["disposition"] == "created").collect();
+            let verdicts: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == old_id.as_str() && sp["attributes"]["disposition"] == "created").collect();
             assert!(!verdicts.is_empty() && verdicts.iter().all(|sp| sp["attributes"]["verdict"] != "reached"), "{path:?} ({old_id}) holds a new node.id only after a recovery opened on a verdict other than `reached` (node-recovery.md step 3): {verdicts:?}");
         }
         // Status frames are event-driven: every message is five identical sends (one changed_at) and nothing else.
@@ -6171,7 +6188,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
             assert_eq!(created_at_victim, 0, "a restart created no birth at {victim_c:?}");
         } else {
             assert_eq!(created_at_victim, 1, "exactly one birth was created at {victim_c:?}");
-            let near_repair: Vec<&Value> = since("rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| at_location(sp, &victim_c) && sp["attributes"]["node_id"] == vid.as_str() && s(&sp["attributes"]["outcome"]).starts_with("complete")).collect();
+            let near_repair: Vec<&Value> = since("rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| at_location(sp, &victim_c) && sp["attributes"]["node_id"] == vid.as_str() && s(&sp["attributes"]["outcome"]).starts_with("complete")).collect();
             assert_eq!(near_repair.len(), 1, "the near mesh's mesh-primary recovered the killed gateway with one completed submit: {near_repair:?}");
             assert!(start_ns(near_repair[0]) < healed_at, "the near gateway was recovered under the cut: {near_repair:?}");
             assert_eq!(near_repair[0]["attributes"]["submitter"], near_primary_c.as_str(), "the near mesh's own mesh-primary submitted it");

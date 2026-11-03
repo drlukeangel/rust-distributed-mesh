@@ -5,9 +5,10 @@
 //! one tickle ladder (node-tickle.md: one probe direct, then the same probe through up to two live
 //! members of its mesh at once), and on `unreached` the provider's inspection of the birth's exact
 //! runtime. An answer from the exact birth is `reached`: the fabric-primary commands it back (Q87).
-//! Any other verdict of an unheard mesh-primary is the fabric-primary's recovery of it, at once
-//! (node-recovery.md step 3, Q111); the fabric-primary itself is superseded by its successor
-//! (`takeover_due`).
+//! A lost mesh-primary is investigated and recovered by the successor its election names, as any member
+//! of its mesh; the fabric-primary looks at it, and recovers it at once on any other verdict
+//! (node-recovery.md step 3, Q111), only when no successor takes the role (Q335). The fabric-primary
+//! itself is superseded by its successor (`takeover_due`).
 //!
 //! [`plan`] decides what a pass owes, from the view and births already inspected; [`run`] drives it.
 
@@ -75,8 +76,10 @@ fn primary_record(which: &str, record: Option<&Primary>, me: &Birth, lost: &Hash
 /// The pass uses only this admin's mesh and exact birth, its view, the silent births already inspected,
 /// `was_mesh_primary`: whether this admin's primary view holds a silent node-admin as its mesh's primary
 /// replaced by another birth (the election named a new mesh-primary past the floor), and `marked`:
-/// whether this admin holds a standing mark of the exact birth for a call whose attempts are spent.
-pub fn plan(view: &Topology, mesh: &str, me_birth: &Birth, said: &mut Said, was_mesh_primary: &dyn Fn(&Node) -> bool, marked: &dyn Fn(&Node) -> bool) -> Plan {
+/// whether this admin holds a standing mark of the exact birth for a call whose attempts are spent, and
+/// `aggregate_unheard`: whether a peer mesh's aggregate has stayed unheard on the backbone past the
+/// staleness floor (no successor took its primary role).
+pub fn plan(view: &Topology, mesh: &str, me_birth: &Birth, said: &mut Said, was_mesh_primary: &dyn Fn(&Node) -> bool, marked: &dyn Fn(&Node) -> bool, aggregate_unheard: &dyn Fn(&str) -> bool) -> Plan {
     // Silent by its gossip, or marked at once for a call whose attempts are spent (node-investigation.md:
     // "A node that does not answer a call is silent, whatever it gossips"; Q332, Q338).
     let silent_of = |n: &Node| rdm_core::is_node_admin(&n.r#type) && (n.status == NodeStatus::PendingReconnect || marked(n));
@@ -86,17 +89,21 @@ pub fn plan(view: &Topology, mesh: &str, me_birth: &Birth, said: &mut Said, was_
 
     // What this admin sees itself: a silent primary of its own mesh, any silent node-admin
     // of the mesh that holds the fabric-primary role (a standby, or a candidate looking from outside),
-    // and, when this admin holds the fabric-primary role, any silent primary node-admin of a peer mesh, the one
-    // the election has replaced as mesh-primary included (node-recovery.md step 2: "For an unheard
-    // mesh-primary the fabric-primary runs it, without the half-floor wait, after the election has named
-    // the new mesh-primary"). The fabric-primary looks at no other silent node-admin of its own mesh:
-    // step 2's "Only the mesh-primary acts" makes a secondary node-admin its mesh-primary's tick's.
+    // and, when this admin holds the fabric-primary role, a silent primary node-admin of a peer mesh, the one
+    // the election has replaced as mesh-primary included, only when that mesh's aggregate stays unheard
+    // on the backbone past the staleness floor: no successor took the role (node-recovery.md step 2: "For
+    // a lost mesh-primary the successor its election names runs it as for any member; the fabric-primary
+    // runs it, without the half-floor wait, only when the mesh's aggregate stays unheard past the
+    // staleness floor", Q335). In its own mesh a replaced mesh-primary always has a successor, Ready (the
+    // fabric-primary itself at least), whose tick investigates it as any member.
+    // The fabric-primary looks at no other silent node-admin of its own mesh: step 2's "Only the
+    // mesh-primary acts" makes a secondary node-admin its mesh-primary's tick's.
     let fabric_mesh = view.members().find(|n| n.is_fabric_primary).map(|n| n.mesh.clone());
     let holds_fabric = view.is_fabric_primary(&me_birth.0);
     for n in view.members().filter(|n| silent_of(n) && n.node_id != me_birth.0) {
-        let own_primary = n.mesh == mesh && (n.is_primary || n.is_fabric_primary || (holds_fabric && was_mesh_primary(n)));
+        let own_primary = n.mesh == mesh && (n.is_primary || n.is_fabric_primary);
         let incumbent = !holds_fabric && fabric_mesh.as_ref() == Some(&n.mesh);
-        let peer_primary = holds_fabric && n.mesh != mesh && (n.is_primary || was_mesh_primary(n));
+        let peer_primary = holds_fabric && n.mesh != mesh && (n.is_primary || was_mesh_primary(n)) && aggregate_unheard(&n.mesh);
         if !(own_primary || incumbent || peer_primary) {
             continue;
         }
@@ -208,7 +215,7 @@ pub struct Watch {
     pub records: Arc<Records>,
     /// What it looks at a birth with.
     pub looker: Looker,
-    /// The recovery submitter: the fabric-primary's recovery of an unheard peer-mesh primary (node-recovery.md step 3).
+    /// The recovery submitter: the fabric-primary's recovery of a lost peer-mesh primary no successor takes the role of (node-recovery.md step 3, Q335).
     pub recovery: Option<crate::admin::RecoverySubmitter>,
     /// Fabric recovery (Q122): this watch starts it at the first tick after the fabric-primary's mark when
     /// this admin is the lowest Ready node-admin of its mesh.
@@ -260,7 +267,7 @@ pub async fn run(w: Watch) {
         // lowest Ready node-admin, or with none the lowest Ready mesh-primary on the backbone, starts fabric
         // recovery at the first tick after the mark, once the record has named the unheard birth for a floor
         // in its own view (a record learned after a heal names a birth whose silence here began before it).
-        // It takes no primary role; the workflow's node investigation of the lost birth decides.
+        // It takes no primary role; this watch's node investigation of the lost birth, below, decides (Q337).
         let held_a_floor = w.topology_view.primaries().fabric_held_for() >= w.topology_view.digest_view.staleness_floor();
         w.fabric_recovery.start_if_mine(held_a_floor).await;
         // An unheard mesh-primary: replaced by the election and unheard since (node-recovery.md step 2), or,
@@ -277,7 +284,21 @@ pub async fn run(w: Watch) {
         // call whose attempts are spent, its own or one reported to it (Q338), is silent from the mark.
         let marks = crate::offline::held_marks(&w.records.unreachable, &view, &w.topology_view.digest_view, now);
         let marked = |n: &Node| marks.get(&n.node_id).is_some_and(|m| n.incarnation_id.as_ref() == Some(&m.incarnation));
-        let plan = plan(&view, &w.mesh, &me_birth, &mut said, &was_mesh_primary, &marked);
+        // A peer mesh's aggregate unheard on the backbone past the floor: no successor took its role.
+        let floor = w.topology_view.digest_view.staleness_floor();
+        let aggregate_unheard = |m: &str| w.topology_view.digest_view.mesh_unheard(m, now).is_none_or(|unheard| unheard >= floor);
+        let mut plan = plan(&view, &w.mesh, &me_birth, &mut said, &was_mesh_primary, &marked, &aggregate_unheard);
+        // The lost birth fabric recovery runs for here, when the workflow asks for a verdict on it: it is
+        // unheard past the floor in the fabric record's eyes (fabric-recovery.md step 2), whatever status
+        // and role its view row holds, and this watch's node investigation of it is the workflow's
+        // verdict, its one look (Q337).
+        if let Some(asked) = w.fabric_recovery.asked() {
+            if let Some(n) = view.members().find(|n| n.node_id == asked.node_id && n.incarnation_id.as_ref() == Some(&asked.incarnation)) {
+                if !plan.investigate.iter().any(|p| p.node_id == n.node_id) {
+                    plan.investigate.push(n.clone());
+                }
+            }
+        }
         for node in plan.investigate {
             let trigger = if marked(&node) { "call-failed" } else { "silence" };
             let span = tracing::info_span!(
@@ -300,6 +321,9 @@ pub async fn run(w: Watch) {
             span.record("iroh_known_addrs", seen.known_addrs.as_str());
             span.record("iroh_active_addrs", seen.active_addrs.as_str());
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;
+            // The verdict on the fabric-primary's lost birth is fabric recovery's input (Q337): the
+            // workflow running here for that birth acts on it, with no look of its own.
+            w.fabric_recovery.take_verdict(&node, &finding);
             span.record("finding", finding.name());
             span.record("detail", finding.detail().as_str());
             // A birth that answered its tickle ends its mark (node-recovery.md step 1).
@@ -315,21 +339,21 @@ pub async fn run(w: Watch) {
                     said.unreachable.remove(&b);
                 }
             }
-            // Any verdict but `reached` of an unheard mesh-primary is this fabric-primary's recovery of it,
-            // at once (node-recovery.md steps 2-3, Q111): nothing holds and nothing waits for a proof.
-            // Submitted once per silence and owed until it is opened ([`submit_recovery`]). A recovery that
-            // ends Failed is the drift pass's to open again.
-            let recovers = !matches!(finding, Finding::Reached { .. }) && w.recovery.is_some() && finding.inspected().is_some() && !node.is_fabric_primary && view.is_fabric_primary(&me_birth.0) && (node.is_primary || was_mesh_primary(&node));
-            // With no successor named (no other node-admin of its mesh Ready in this view, which a cut
-            // empties), the fabric-primary executes only when the mesh has no node-admin left (Q335 item 4;
-            // fabric-recovery.md "When the mesh has no node-admin left"; Q153): one with a node-admin left
-            // elects it, and it recovers the lost birth. Nothing is written here; the birth is not looked at
-            // again in this silence.
-            let no_successor = !view.nodes_of_type(&node.mesh, "node-admin").any(|n| n.node_id != node.node_id && n.status == NodeStatus::Ready);
-            let left = if recovers && no_successor { w.looker.node_admin_left(&view, &node.mesh, &node.node_id).await } else { None };
+            // Any verdict but `reached` of a lost mesh-primary no successor took the role of is recovered at
+            // once (node-recovery.md steps 2-3, Q111): nothing holds and nothing waits for a proof. A lost
+            // mesh-primary with a successor is the successor's, as any member of its mesh (Q335); this watch
+            // looks at one only when its mesh's aggregate stays unheard past the floor ([`plan`]). Of those,
+            // the fabric-primary recovers it itself only when the mesh has no node-admin left (Q335 item 4;
+            // fabric-recovery.md "When the mesh has no node-admin left"; Q153); one with a node-admin left
+            // (unheard here, which a cut makes) elects it, and its mesh-primary recovers the lost birth:
+            // nothing is written here, and the birth is not looked at again in this silence. The recovery is
+            // submitted once per silence and owed until it runs ([`submit_recovery`]).
+            let unheard_primary = !matches!(finding, Finding::Reached { .. }) && finding.inspected().is_some() && !node.is_fabric_primary && view.is_fabric_primary(&me_birth.0) && (node.is_primary || was_mesh_primary(&node));
+            let left = if unheard_primary { w.looker.node_admin_left(&view, &node.mesh, &node.node_id).await } else { None };
+            let recovers = unheard_primary && w.recovery.is_some() && left.is_none();
             let submitted = match (&finding, w.recovery.clone(), finding.inspected()) {
                 (Finding::Reached { .. }, _, _) => false,
-                _ if left.is_some() => true,
+                _ if unheard_primary && left.is_some() => true,
                 (_, Some(recovery), Some(inspected)) if recovers => {
                     let (node, topology, me_id, digest_view) = (node.clone(), w.topology.clone(), me_birth.0.clone(), w.topology_view.digest_view.clone());
                     // Owed until opened, and ended at this admin's stop where it stands (the stop gate's
@@ -351,8 +375,9 @@ pub async fn run(w: Watch) {
     }
 }
 
-/// The fabric-primary's recovery of an unheard mesh-primary (node-recovery.md step 3), submitted at
-/// once and owed until it is opened: a submit refused (an attempt still holds the mesh) is made again
+/// The fabric-primary's recovery of a lost mesh-primary no successor takes the role of, its mesh with no
+/// node-admin left (node-recovery.md step 3, Q335), submitted at once and owed until it runs: a submit
+/// that ends without the recovery is made again
 /// after a delay that doubles, once per silence. The silence the verdict was read in lasts while this
 /// admin's view holds the exact birth silent (`PendingReconnect` or `Dead`: the mark never replaces a
 /// lifecycle state the mesh-primary recorded, `stopped` among them), this admin is the fabric-primary,
@@ -430,7 +455,7 @@ mod tests {
     fn an_admin_investigates_a_silent_fabric_primary_from_its_own_view() {
         let (t, primary, standby, outsider) = world();
         for admin in [&standby, &outsider] {
-            let p = plan(&t, &admin.mesh, &me_of(admin), &mut Said::default(), &|_| false, &|_| false);
+            let p = plan(&t, &admin.mesh, &me_of(admin), &mut Said::default(), &|_| false, &|_| false, &|_| true);
             assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&primary)]);
         }
     }
@@ -440,9 +465,9 @@ mod tests {
     #[test]
     fn an_admin_investigates_neither_a_ready_fabric_primary_nor_its_own_birth() {
         let (mut t, primary, standby, _) = world();
-        assert!(plan(&t, &primary.mesh, &me_of(&primary), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty());
+        assert!(plan(&t, &primary.mesh, &me_of(&primary), &mut Said::default(), &|_| false, &|_| false, &|_| true).investigate.is_empty());
         t.nodes[0].status = NodeStatus::Ready;
-        assert!(plan(&t, &standby.mesh, &me_of(&standby), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty());
+        assert!(plan(&t, &standby.mesh, &me_of(&standby), &mut Said::default(), &|_| false, &|_| false, &|_| true).investigate.is_empty());
     }
 
     /// CONTRACT (node-investigation.md: "A node that does not answer a call is silent, whatever it
@@ -459,16 +484,16 @@ mod tests {
         t.nodes[0].status = NodeStatus::Ready;
         let mesh2_primary_marked = |n: &Node| n.node_id == outsider.node_id;
         let mut said = Said::default();
-        let none = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &|_| false);
+        let none = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &|_| false, &|_| true);
         assert!(none.investigate.is_empty(), "a gossiping mesh-primary with no mark: nothing to investigate");
-        let p = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &mesh2_primary_marked);
+        let p = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &mesh2_primary_marked, &|_| true);
         assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&outsider)], "gossiping, and silent from the mark");
-        let again = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &mesh2_primary_marked);
+        let again = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &mesh2_primary_marked, &|_| true);
         assert!(again.investigate.is_empty(), "once per mark");
-        let _ = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &|_| false);
-        let back = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &mesh2_primary_marked);
+        let _ = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &|_| false, &|_| true);
+        let back = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &mesh2_primary_marked, &|_| true);
         assert_eq!(back.investigate.len(), 1, "the mark ended; a later mark is silence again");
-        let standby_look = plan(&t, &standby.mesh, &me_of(&standby), &mut Said::default(), &|_| false, &mesh2_primary_marked);
+        let standby_look = plan(&t, &standby.mesh, &me_of(&standby), &mut Said::default(), &|_| false, &mesh2_primary_marked, &|_| true);
         assert!(standby_look.investigate.is_empty(), "a peer mesh-primary is the fabric-primary's to investigate");
     }
 
@@ -479,12 +504,12 @@ mod tests {
     fn a_silent_incumbent_birth_is_looked_at_once_per_mark_and_other_silence_is_not() {
         let (mut t, primary, standby, _) = world();
         let mut said = Said::default();
-        let own = plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false);
+        let own = plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false, &|_| true);
         assert_eq!(own.investigate.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), vec![rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()]);
-        assert!(plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false).investigate.is_empty(), "once per mark");
+        assert!(plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false, &|_| true).investigate.is_empty(), "once per mark");
         // A silent admin of a third mesh that holds nothing.
         t.nodes.push(admin(rdm_core::PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", "500000000000", "x1", NodeStatus::PendingReconnect));
-        assert!(plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false).investigate.is_empty());
+        assert!(plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false, &|_| true).investigate.is_empty());
         let _ = primary;
     }
 
@@ -494,17 +519,19 @@ mod tests {
     fn an_admin_does_not_treat_a_former_birth_at_its_path_as_itself() {
         let (t, primary, _, _) = world();
         let successor = admin(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "600000000000", "r2", NodeStatus::Ready);
-        let p = plan(&t, &successor.mesh, &me_of(&successor), &mut Said::default(), &|_| false, &|_| false);
+        let p = plan(&t, &successor.mesh, &me_of(&successor), &mut Said::default(), &|_| false, &|_| false, &|_| true);
         assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&primary)]);
     }
 
-    /// CONTRACT (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs it,
-    /// without the half-floor wait, after the election has named the new mesh-primary"): the
-    /// fabric-primary investigates a silent node-admin of a peer mesh that its primary view holds as that
-    /// mesh's primary replaced by the election, though the view no longer names it primary; a silent
-    /// node-admin of a peer mesh that was never its primary is that mesh's primary's to investigate.
+    /// CONTRACT (node-recovery.md step 2: "the fabric-primary runs it, without the half-floor wait, only
+    /// when the mesh's aggregate stays unheard past the staleness floor: no successor took the role"):
+    /// the fabric-primary investigates a silent node-admin of a peer mesh that its primary view holds as
+    /// that mesh's primary replaced by the election, though the view no longer names it primary, only
+    /// while that mesh's aggregate is unheard; with the aggregate heard, the successor that publishes it
+    /// investigates it. A silent node-admin of a peer mesh that was never its primary is that mesh's
+    /// primary's to investigate.
     #[test]
-    fn the_fabric_primary_investigates_a_peer_meshs_former_primary_after_the_election_replaced_it() {
+    fn the_fabric_primary_investigates_a_peer_meshs_former_primary_only_while_its_meshs_aggregate_is_unheard() {
         let mut fp = admin(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "300000000000", "h1", NodeStatus::Ready);
         fp.is_primary = true;
         fp.is_fabric_primary = true;
@@ -514,9 +541,10 @@ mod tests {
         let member = admin(rdm_core::PathName::new("mesh2.node-admin", "3").unwrap(), "mesh2", "node-admin", "500000000000", "o3", NodeStatus::PendingReconnect);
         let t = view(vec![fp.clone(), former.clone(), elected, member]);
         let replaced = |n: &Node| n.node_id == former.node_id;
-        let p = plan(&t, &fp.mesh, &me_of(&fp), &mut Said::default(), &replaced, &|_| false);
+        let p = plan(&t, &fp.mesh, &me_of(&fp), &mut Said::default(), &replaced, &|_| false, &|_| true);
         assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&former)], "the replaced mesh-primary only");
-        assert!(plan(&t, &fp.mesh, &me_of(&fp), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty(), "no silent primary of a peer mesh");
+        assert!(plan(&t, &fp.mesh, &me_of(&fp), &mut Said::default(), &replaced, &|_| false, &|_| false).investigate.is_empty(), "mesh2's aggregate heard: its successor took the role, and investigates it");
+        assert!(plan(&t, &fp.mesh, &me_of(&fp), &mut Said::default(), &|_| false, &|_| false, &|_| true).investigate.is_empty(), "no silent primary of a peer mesh");
     }
 
     fn digest_of(n: &Node) -> rdm_core::MeshDigest {
@@ -622,11 +650,13 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3, "submitted until a submit opens it");
     }
 
-    /// CONTRACT (node-recovery.md step 2: "Only the mesh-primary acts. ... For an unheard mesh-primary
-    /// the fabric-primary runs it"): the fabric-primary opens no investigation of a silent secondary
+    /// CONTRACT (node-recovery.md step 2: "Only the mesh-primary acts. ... For a lost mesh-primary the
+    /// successor its election names runs it as for any member; the fabric-primary runs it ... only when
+    /// ... no successor took the role"): the fabric-primary opens no investigation of a silent secondary
     /// node-admin of its own mesh (its mesh-primary's tick looks at it); an admin that is not the
-    /// fabric-primary still looks at it, and a fabric-primary that is not its mesh's primary looks at
-    /// that mesh-primary when it is unheard.
+    /// fabric-primary still looks at it; a fabric-primary that is not its mesh's primary looks at that
+    /// mesh-primary when it is unheard, and never at a replaced one, its successor's (the successor is
+    /// Ready in the fabric-primary's own mesh, the fabric-primary itself at least).
     #[test]
     fn the_fabric_primary_leaves_a_silent_secondary_admin_of_its_own_mesh_to_its_mesh_primary() {
         let mut fp = admin(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "300000000000", "h1", NodeStatus::Ready);
@@ -635,20 +665,20 @@ mod tests {
         let secondary = admin(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "400000000000", "s1", NodeStatus::PendingReconnect);
         let other = admin(rdm_core::PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", "500000000000", "s3", NodeStatus::Ready);
         let t = view(vec![fp.clone(), secondary.clone(), other.clone()]);
-        assert!(plan(&t, &fp.mesh, &me_of(&fp), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty(), "the fabric-primary opens no investigation of a secondary node-admin of its own mesh");
-        assert_eq!(plan(&t, &other.mesh, &me_of(&other), &mut Said::default(), &|_| false, &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&secondary)], "an admin that is not the fabric-primary still looks");
+        assert!(plan(&t, &fp.mesh, &me_of(&fp), &mut Said::default(), &|_| false, &|_| false, &|_| true).investigate.is_empty(), "the fabric-primary opens no investigation of a secondary node-admin of its own mesh");
+        assert_eq!(plan(&t, &other.mesh, &me_of(&other), &mut Said::default(), &|_| false, &|_| false, &|_| true).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&secondary)], "an admin that is not the fabric-primary still looks");
         let mut fp_only = admin(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "300000000000", "h1", NodeStatus::Ready);
         fp_only.is_fabric_primary = true;
         let mut primary = admin(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "400000000000", "s1", NodeStatus::PendingReconnect);
         primary.is_primary = true;
         let t = view(vec![fp_only.clone(), primary.clone(), other.clone()]);
-        assert_eq!(plan(&t, &fp_only.mesh, &me_of(&fp_only), &mut Said::default(), &|_| false, &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&primary)], "an unheard mesh-primary of its own mesh is the fabric-primary's");
+        assert_eq!(plan(&t, &fp_only.mesh, &me_of(&fp_only), &mut Said::default(), &|_| false, &|_| false, &|_| true).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&primary)], "an unheard mesh-primary of its own mesh is the fabric-primary's");
         // The election replaced it: the view names another mesh-primary, the primary view the replaced birth.
         let former = Node { is_primary: false, ..primary.clone() };
         let elected = Node { is_primary: true, ..other };
         let never = admin(rdm_core::PathName::new("mesh1.node-admin", "4").unwrap(), "mesh1", "node-admin", "600000000000", "s4", NodeStatus::PendingReconnect);
         let t = view(vec![fp_only.clone(), former.clone(), elected, never]);
         let replaced = |n: &Node| n.node_id == former.node_id;
-        assert_eq!(plan(&t, &fp_only.mesh, &me_of(&fp_only), &mut Said::default(), &replaced, &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&former)], "the replaced mesh-primary of its own mesh only, never a secondary node-admin");
+        assert!(plan(&t, &fp_only.mesh, &me_of(&fp_only), &mut Said::default(), &replaced, &|_| false, &|_| true).investigate.is_empty(), "a replaced mesh-primary of its own mesh is its successor's, as any member (Q335): the fabric-primary's watch looks at neither it nor a secondary node-admin");
     }
 }

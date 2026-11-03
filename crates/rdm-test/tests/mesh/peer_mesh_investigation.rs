@@ -163,9 +163,16 @@ fn result(dir: &std::path::Path, v: Value) {
 /// The birth `node_id` as the fabric's shared store root holds it: its row's status, and the node id the
 /// path.name `node`'s name is held by (`None`: released).
 fn stored_birth(root: &std::path::Path, node: &PathName, node_id: &str) -> (Option<String>, Option<String>) {
-    let status = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id)).map(|r| s(&r["record"]["status"]));
-    let name = std::fs::read(root.join(rdm_admin::store_root::LOCKS_DIR).join("name").join(node.physical_index_key())).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).map(|r| s(&r["record"]["node_id"]));
+    let record = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id));
+    let status = record.as_ref().map(|r| s(&r["record"]["status"]));
+    // The name is read from the record (i152 s5: no name claim): the node id whose live record holds the pair.
+    let name = record.filter(|r| r["record"]["name"]["path"] == node.path.as_str() && r["record"]["name"]["name"] == node.name.as_str() && r["record"]["status"] != "deleted").map(|r| s(&r["record"]["node_id"]));
     (status, name)
+}
+
+/// The ready span of the start whose trace is `run`.
+fn ready_of<'a>(run: &[&'a Value], trace: &str) -> &'a Value {
+    run.iter().copied().find(|sp| sp["name"] == "rdm.mesh.node.update.via-ready").unwrap_or_else(|| panic!("the start ends ready: trace {trace}"))
 }
 
 /// The pid of the runtime of the birth `node_id`: a runtime's data dir is named by its birth's node id.
@@ -177,8 +184,8 @@ fn runtime_of(estate: &Estate, node_id: &str) -> u32 {
 const REMOVED_SPANS: [&str; 5] = ["rdm.node_admin.mesh.update.via-probe", "rdm.node_admin.mesh.update.via-probe-verdict", "rdm.node_admin.mesh.update.via-unheard", "rdm.node_admin.mesh.create.via-recovery", "rdm.node_admin.mesh.update.via-recovered"];
 
 /// CONTRACT: docs/architecture/lifecycles/node-recovery.md step 2
-/// "For an unheard mesh-primary the fabric-primary runs it, without the half-floor wait, after the
-/// election has named the new mesh-primary ... with no ladder of its own (Q335)."
+/// "the fabric-primary runs it, without the half-floor wait, only when the mesh's aggregate stays
+/// unheard past the staleness floor: no successor took the role (Q335)."
 /// CONTRACT: docs/architecture/lifecycles/node-recovery.md
 /// "(A mesh none of whose node-admins can be reached is this page's case with no successor named: the
 /// fabric-primary investigates the lost mesh-primary and re-creates it at its path.name, Q335.)"
@@ -229,7 +236,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     let look = looked.first().copied().unwrap_or_else(|| panic!("the fabric-primary ran node investigation on {lost:?}'s lost birth"));
     assert_eq!(attr(look, "suspect_incarnation"), lost_inc, "the exact lost birth: {look}");
     assert_ne!(attr(look, "finding"), "reached", "the killed birth is not reached: {look}");
-    let submitted: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(story).filter(|sp| attr(sp, "node_id") == lost_id && attr(sp, "submitter") == fp_id).collect();
+    let submitted: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(story).filter(|sp| attr(sp, "node_id") == lost_id && attr(sp, "submitter") == fp_id).collect();
     assert!(!submitted.is_empty(), "the fabric-primary submitted the node recovery of {lost:?} on the verdict");
     assert!(submitted.iter().all(|sp| at_ns(sp) >= at_ns(look)), "the recovery follows the investigation's verdict");
     estate.record_trace_url(&s(&look["trace_id"]));
@@ -239,7 +246,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     let degraded: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "status") == "degraded").collect();
     assert!(degraded.is_empty(), "no degraded status is sent: {degraded:#?}");
     assert_eq!(mesh2_after.id.map(|id| id.to_string()), Some(mesh2_id.clone()), "mesh2 keeps its MeshId");
-    assert!(attempt_after > attempt_before, "the recovery is an attempt of the same Build: {attempt_before} -> {attempt_after}");
+    assert_eq!(attempt_after, attempt_before, "the recovery is the fabric-primary's own workflow, never a Build attempt (Q342): {attempt_before} -> {attempt_after}");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "lost": lost, "lost_node_id": lost_id, "recreated_node_id": recreated["node_id"], "finding": attr(look, "finding"), "trace_id": look["trace_id"], "mesh_id": mesh2_id}));
 }
 
@@ -315,7 +322,7 @@ async fn a_mesh_primary_heard_again_before_the_floor_is_never_investigated_and_n
     let story = |sp: &&Value| at_ns(sp) < stop_at && at_ns(sp) >= cut_ns;
     let looked: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(story).filter(|sp| attr(sp, "suspect_node_id") == first_id).collect();
     assert!(looked.is_empty(), "nothing investigated {first:?}: it was never marked silent: {looked:#?}");
-    let submitted: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(story).filter(|sp| attr(sp, "node_id") == first_id).collect();
+    let submitted: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(story).filter(|sp| attr(sp, "node_id") == first_id).collect();
     assert!(submitted.is_empty(), "nothing submitted {first:?}'s recovery: {submitted:#?}");
     let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(story).filter(|sp| rdm_test::estate::at_location(sp, &first) && attr(sp, "step") == "TerminateRuntime").collect();
     assert!(terminated.is_empty(), "{first:?}'s runtime was never terminated: {terminated:#?}");
@@ -333,6 +340,114 @@ async fn a_mesh_primary_heard_again_before_the_floor_is_never_investigated_and_n
     }
     eprintln!("{fp:?} ({fp_id}): cut {} ms, {first:?} never marked", (healed_ns - cut_ns) / 1_000_000);
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": lost, "primary": first, "cut_ms": (healed_ns - cut_ns) / 1_000_000}));
+}
+
+/// CONTRACT (node-mesh-join.md Wire: "`primary` is the commander's held mesh-primary record of the node's
+/// mesh, which a commanded node-admin takes by the supersedes rule before it runs its election: not named,
+/// it drops its primary role and its own record, then joins; named, it refuses the command by name ... and
+/// joins no one"; Q335: "once they hear each other, both run the one election over the same ids and
+/// primary records and get the same answer; the one it does not name removes its primary role, its own
+/// held primary record included, and rejoins"): the peer mesh's primary is cut from every other node past
+/// the staleness floor while it runs. Its mesh's other node-admin, the successor its election names,
+/// publishes its aggregate on the backbone naming itself, and the cut heals then, inside the successor's
+/// ladder on the lost birth. The two node-admins hear each other and the one election decides, whichever
+/// way: a partition case, held to what the standing rules do with it (inbox 0030). Every node-admin
+/// commanded back runs its election over the commander's record; not named, it drops its primary role
+/// before node.mesh.join; named, it refuses by name. Exactly one mesh-primary of the mesh, one of the two
+/// same births, is left in every view. Nothing recovers, terminates or deletes either, and the
+/// fabric-primary does not investigate the lost birth. Must NOT happen: two mesh-primaries of the mesh in
+/// a view after the heal, a rejoin before its drop, a named admin's rejoin, a recovery or a
+/// TerminateRuntime of either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_mesh_primary_heard_again_and_its_successor_settle_on_one_mesh_primary_each_commanded_one_dropping_its_role_before_it_rejoins() {
+    let cell = "a_lost_mesh_primary_heard_again_and_its_successor_settle_on_one_mesh_primary_each_commanded_one_dropping_its_role_before_it_rejoins";
+    let mut f = fixture(cell).await;
+    let (fp, fp_id, lost) = (f.fabric_primary.clone(), f.fabric_primary_id.clone(), f.lost.clone());
+    let first_row = f.before.iter().find(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("the peer mesh's primary");
+    let (first, first_id) = (location(&first_row), s(&first_row["node_id"]));
+    let successor_row = f.before.iter().find(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["node_id"] != first_row["node_id"]).cloned().expect("the peer mesh's other node-admin");
+    let (successor, successor_id) = (location(&successor_row), s(&successor_row["node_id"]));
+    let births: Vec<(PathName, String, String)> = [&first_row, &successor_row].iter().map(|r| (location(r), s(&r["node_id"]), s(&r["incarnation_id"]))).collect();
+    let others: Vec<PathName> = f.before.iter().map(location).filter(|l| *l != first).collect();
+    let (floor, gossip) = (rdm_transport::topology::staleness_floor(), rdm_transport::topology::gossip_interval());
+    let before = f.before.clone();
+    let Some(cut) = cut_between(&mut f.estate, &before, &[first.clone()], &others).await else { return };
+    let cut_ns = now_ns();
+    // The successor's first act: its mesh's aggregate on the backbone naming it mesh-primary. The cut heals
+    // then, before its ladder on the lost birth answers.
+    let first_aggregate = wait_for(&format!("{successor:?} publishes {lost}'s aggregate naming itself"), floor * 4 + Duration::from_secs(30), || async {
+        named(&f.estate.spans(), "rdm.mesh.backbone.update.via-primary-aggregate").into_iter().find(|sp| at_ns(sp) >= cut_ns && attr(sp, "mesh") == lost && attr(sp, "publisher").contains(&successor_id)).cloned()
+    })
+    .await;
+    drop(cut);
+    let healed_ns = now_ns();
+    // Every view converges on both births, the same births, and one mesh-primary of the mesh: the one
+    // election's, whichever it names.
+    let mut named_by_view = Vec::new();
+    for at in [&fp, &first, &successor] {
+        let primary = f
+            .estate
+            .until_view_at(at, &format!("{at:?}'s view holds {first:?} and {successor:?} as the same births and one primary of {lost}"), floor * 3 + gossip * 4, |v| {
+                let v = Estate::values(v);
+                let same = births.iter().all(|(l, id, inc)| v.iter().any(|n| location(n) == *l && s(&n["node_id"]) == *id && s(&n["incarnation_id"]) == *inc));
+                let primaries: Vec<String> = v.iter().filter(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).collect();
+                (same && primaries.len() == 1 && births.iter().any(|(_, id, _)| *id == primaries[0])).then(|| primaries[0].clone())
+            })
+            .await;
+        named_by_view.push(primary);
+    }
+    assert!(named_by_view.windows(2).all(|w| w[0] == w[1]), "every view holds the same one primary of {lost}: {named_by_view:?}");
+    let winner_id = named_by_view[0].clone();
+    let loser = births.iter().find(|(_, id, _)| *id != winner_id).map(|(l, _, _)| l.clone()).expect("the one the election does not name");
+    let winner = births.iter().find(|(_, id, _)| *id == winner_id).map(|(l, _, _)| l.clone()).expect("the one the election names");
+    let stop_at = now_ns();
+    f.estate.stop().await;
+    let spans = f.estate.spans();
+    let story = |sp: &&Value| at_ns(sp) < stop_at && at_ns(sp) >= cut_ns;
+    let after_heal = |sp: &&Value| at_ns(sp) < stop_at && at_ns(sp) >= healed_ns;
+    let truthy = |sp: &Value, k: &str| sp["attributes"][k] == true || sp["attributes"][k] == "true";
+    // Every commanded rejoin of either admin after the heal: its election over the commander's record did
+    // not name it, and it dropped its primary role before node.mesh.join.
+    let elections: Vec<&Value> = named(&spans, "rdm.mesh.election.resolve.via-commanded-join").into_iter().filter(after_heal).filter(|sp| births.iter().any(|(_, id, _)| attr(sp, "node_id") == *id)).collect();
+    let starts: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-start").into_iter().filter(after_heal).filter(|sp| births.iter().any(|(_, id, _)| attr(sp, "node_id") == *id)).collect();
+    // The race may settle before any command reaches either (the old primary takes the successor's record
+    // from gossip and yields): then no rejoin follows, and the views alone hold the one election's answer.
+    eprintln!("{loser:?}, not named: {} commanded rejoin(s) after the heal", starts.len());
+    let mut flame = Vec::new();
+    for start in &starts {
+        let (id, trace) = (attr(start, "node_id"), s(&start["trace_id"]));
+        let run: Vec<&Value> = spans.iter().filter(|sp| s(&sp["trace_id"]) == trace).collect();
+        let election = elections.iter().copied().filter(|sp| attr(sp, "node_id") == id && at_ns(sp) <= at_ns(start)).max_by_key(|sp| at_ns(sp)).unwrap_or_else(|| panic!("{id} runs its election over the commander's record before its start: {elections:#?}"));
+        assert!(!truthy(election, "named"), "{id}'s election before its rejoin does not name it: {election:#?}");
+        let dropped = run.iter().copied().find(|sp| sp["name"] == "rdm.mesh.primary.remove.via-commanded-join").unwrap_or_else(|| panic!("{id} drops its primary role in its commanded start: trace {trace}"));
+        let joined = run.iter().copied().filter(|sp| sp["name"] == "rdm.mesh.node.update.via-join-admitted").min_by_key(|sp| at_ns(sp));
+        assert!(joined.is_none_or(|j| at_ns(dropped) <= at_ns(j)), "{id}'s drop precedes its node.mesh.join: {dropped:#?} {joined:#?}");
+        flame.push(format!("{id}: election {} drop {} trace {trace}", s(&election["span_id"]), s(&dropped["span_id"])));
+    }
+    // A named admin refuses by name: no rejoin of it follows its named election in the same command.
+    let refusals: Vec<&Value> = elections.iter().copied().filter(|sp| truthy(sp, "named")).collect();
+    for sp in &refusals {
+        let id = attr(sp, "node_id");
+        assert!(!starts.iter().any(|st| attr(st, "node_id") == id && s(&st["trace_id"]) == s(&sp["trace_id"])), "{id}, named, starts no rejoin on that command: {sp:#?}");
+    }
+    // Reached: nothing recovers or terminates either, and the fabric-primary does not look at the lost birth.
+    for (l, id, _) in &births {
+        let submitted: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(story).filter(|sp| attr(sp, "node_id") == *id).collect();
+        assert!(submitted.is_empty(), "nothing recovers {l:?}: {submitted:#?}");
+        let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(story).filter(|sp| rdm_test::estate::at_location(sp, l) && attr(sp, "step") == "TerminateRuntime").collect();
+        assert!(terminated.is_empty(), "{l:?}'s runtime was never terminated: {terminated:#?}");
+    }
+    let fp_looks: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(story).filter(|sp| rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "suspect_node_id") == first_id).collect();
+    assert!(fp_looks.is_empty(), "the fabric-primary does not investigate {first:?}: {fp_looks:#?}");
+    let refusal = refusals.first().map(|sp| format!("{} (trace {})", s(&sp["span_id"]), s(&sp["trace_id"]))).unwrap_or_else(|| "none".into());
+    eprintln!(
+        "one-election cell: {first:?} ({first_id}) cut {} ms, healed after {successor:?}'s first aggregate (trace {}); the one primary {winner:?}; refusal {refusal}; rejoins {flame:?}",
+        (healed_ns - cut_ns) / 1_000_000,
+        s(&first_aggregate["trace_id"]),
+    );
+    if let Some(start) = starts.first() {
+        f.estate.record_trace_url(&s(&start["trace_id"]));
+    }
 }
 
 /// CONTRACT (R-S3, same status, fresh proof): a peer mesh loses its primary node-admin (exact SIGKILL)

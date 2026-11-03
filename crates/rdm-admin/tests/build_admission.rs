@@ -110,14 +110,8 @@ impl BuildStateAdapter for Held {
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
-        self.inner.exits_owed(build_id, mesh).await
     }
 }
 

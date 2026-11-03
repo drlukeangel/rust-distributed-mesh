@@ -115,8 +115,10 @@ async fn stop_then_start(test: &str, node: &PathName) {
     assert!(alive(pid));
 
     // The stop: the reply stream carries its node.connections.deleted and stopped.
+    let builds = estate.build_ids().await;
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
-    assert!(matches!(stopped.first(), Some(Frame::Started { .. })), "{stopped:?}");
+    // A node command of the primary above the node, never a Build (Q342): no Build's Started frame.
+    assert!(!stopped.iter().any(|f| matches!(f, Frame::Started { .. })), "{stopped:?}");
     assert_eq!(events(&stopped), vec![NodeEvent::ConnectionsDeleted, NodeEvent::Stopped], "{stopped:?}");
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     // Every other node reports that it dropped the stopped birth and holds the stop overlay.
@@ -135,6 +137,7 @@ async fn stop_then_start(test: &str, node: &PathName) {
     let started = frames(nodes.start(&path).await.expect("the start was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
+    assert_eq!(estate.build_ids().await, builds, "a stop and a start write no Build");
     for peer in &others {
         peers
             .fact(peer, "mesh1", "the rejoined birth is held again as the same incarnation and the stop overlay is gone", |v| {
@@ -618,68 +621,53 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
     estate.record_trace_url(sent["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT: `node.stop` opens the next attempt of the accepted Build (reason
-/// stop, action stop targeted to the live birth, no Build minted). The operation is exactly
-/// `node.stop:<path>`: stop-node to the birth, whose reply is `left`, then Complete. The runtime is
-/// not terminated and no NodeDeleted is published; the accepted topology still names the path and no
-/// repair attempt follows.
+/// CONTRACT (node-stop.md; build.md §1, Q342): `node.stop` is a node command of the primary above the
+/// node, never a Build or part of one: no Build is written and none is reopened. The operation is
+/// exactly `node.stop` keyed on the node.id: stop-node to the birth, whose reply is `left`, then
+/// Complete. The runtime is not terminated and no NodeDeleted is published; no repair follows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_node_deleted() {
     let test = "a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_node_deleted";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    let birth_build = estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await.build_id.to_string();
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     let before = estate.node_value(&node_at()).await;
     let pid = estate.pid_of(&node_at()).await;
-    let mut stop = estate.nodes_obj().await.stop(&node_at()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {:?}: {e}", node_at()));
-    let r = stop.accepted().clone();
-    assert_eq!(r.build_id.to_string(), birth_build, "no Build is minted: {r:?}");
-    let attempt_no = u64::from(r.attempt) + u64::from(before["is_primary"] == true);
-    let opened = build_log::build_fact(&estate, &birth_build, "the stop attempt is the Build's current attempt", Duration::from_secs(30), |b| serde_json::to_value(b).is_ok_and(|b| b["reason"] == "stop")).await.unwrap_or_else(|end| panic!("{end}"));
-    let opened = serde_json::to_value(opened).expect("a Build view serializes");
-    assert_eq!((s(&opened["action"]["action"]).as_str(), &opened["action"]["path"]), ("stop", &json!(node_at())), "{opened}");
-    assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "targeted to the live birth: {opened}");
-    Estate::complete(&mut stop).await;
-    build_log::attempt_complete(&estate, &birth_build, attempt_no, SETTLE).await;
+    let builds = estate.build_ids().await;
+    let stopped = frames(estate.nodes_obj().await.stop(&node_at()).await.unwrap_or_else(|e| panic!("the mesh-primary refused node.stop of {:?}: {e}", node_at()))).await;
+    assert!(!stopped.iter().any(|f| matches!(f, Frame::Started { .. })), "a node command opens no Build: {stopped:?}");
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     assert!(alive(pid), "the stopped process {pid} is stopped, alive");
-    // No repair attempt follows the stop: the Build's attempt is the stop's after the reconciler's checklists have passed.
+    // No repair follows the stop: the birth stays, stopped, and no Build is written.
     tokio::time::sleep(Duration::from_secs(15)).await;
-    let b = build_log::build_value(&estate, &birth_build).await;
-    assert_eq!(b["attempt"].as_u64(), Some(attempt_no), "no repair attempt followed the stop: {b}");
+    assert_eq!(estate.build_ids().await, builds, "a stop writes no Build");
     let n = estate.node_value(&node_at()).await;
     assert_eq!(n["incarnation_id"], before["incarnation_id"], "no new birth at {:?}: {n}", node_at());
     assert_eq!(n["stopped"], true, "{n}");
 
     // Every process flushes its spans on exit.
-    let attempt = attempt_no.to_string();
-    let shutdown_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop().await;
     let spans = estate.spans();
-    let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt).unwrap();
-    let stopped_id: rdm_core::NodeId = serde_json::from_value(before["node_id"].clone()).expect("a node id");
-    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("{:?}", vec![rdm_core::OperationId::node("node.stop", &stopped_id)]), "one stop operation and nothing else: {reconcile}");
+    let none = rdm_core::LifecycleOp::NO_BUILD;
+    let attempt = rdm_core::LifecycleOp::NO_ATTEMPT.to_string();
     let mut last = 0u64;
     for step in ["StopNode", "AwaitNodeLeft", "Complete"] {
-        let sp = step_span(&spans, &birth_build, &attempt, &node_at(), step).unwrap_or_else(|| panic!("step {step} ran"));
+        let sp = step_span(&spans, none, &attempt, &node_at(), step).unwrap_or_else(|| panic!("step {step} ran"));
         assert_eq!(s(&sp["attributes"]["outcome"]), "complete", "{sp}");
         let at = sp["start_unix_nano"].as_u64().unwrap();
         assert!(at >= last, "{step} starts before the step it follows");
         last = at;
     }
     for step in ["DeleteConnections", "TerminateRuntime", "NodeDeleting", "NodeDeleted", "RemoveTopologyMembership"] {
-        assert!(step_span(&spans, &birth_build, &attempt, &node_at(), step).is_none(), "a standalone stop runs no {step}");
+        assert!(step_span(&spans, none, &attempt, &node_at(), step).is_none(), "a standalone stop runs no {step}");
     }
     assert!(named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().all(|sp| sp["attributes"]["node_id"] != before["node_id"]), "a stop publishes no NodeDeleted");
-
-    assert!(
-        named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().all(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= shutdown_at || s(&sp["attributes"]["build_id"]) != birth_build || !s(&sp["attributes"]["scope"]).contains(before["node_id"].as_str().unwrap_or("-"))),
-        "the drift reconciler did not treat the stop as drift"
-    );
-    let op = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && at_location(sp, &node_at())).expect("the node operation span");
-    estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
+    let command = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| sp["attributes"]["subject_id"] == before["node_id"] && s(&sp["attributes"]["command"]).contains("stop")).expect("the node command's span at the primary above the node");
+    assert_eq!(s(&command["attributes"]["outcome"]), "node-stopped", "{command}");
+    estate.record_trace_url(command["trace_id"].as_str().unwrap_or(""));
 }
 
 /// CONTRACT (i146 Q29, Q36; node-stop.md step 5): `node.stop` of `mesh1.node.1` runs and the birth stops;
@@ -851,7 +839,7 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
         .unwrap_or_else(|| panic!("mesh2 lists another node that is not its primary: {mesh2:?}"));
     let (other, other_id) = other;
     let mut stream = nodes.delete(&other).await.expect("the delete was accepted");
-    let build_id = stream.accepted().build_id.to_string();
+    let build_id = stream.accepted().expect("the call opened a Build").build_id.to_string();
     // Read until the Build ends, bounded and without a panic: a Build that does not end is asserted below
     // from its spans, which name the operations every attempt planned.
     let mut deleted = Vec::new();
@@ -1032,8 +1020,9 @@ async fn settled_two_meshes(estate: Estate, admins: u32) -> (Estate, Vec<NodeVie
 ///    `held`, the mesh-primary entry P -> NA2, under P's update).
 /// 5. NA2, the mesh's writer from that moment, records `is_primary` on its own row ("The write records
 ///    the role; it does not grant it").
-/// 6. The fabric-primary installs NA2's answer and dispatches the stop, which NA2 executes as mesh2's
-///    primary; every admin still answering names NA2 mesh2's primary (`node.get`).
+/// 6. The fabric-primary installs NA2's answer and hands the caller's node command on to NA2, which runs
+///    it as mesh2's primary, a node command and never a Build (Q342); every admin still answering names
+///    NA2 mesh2's primary (`node.get`).
 /// Must NOT happen: a refusal of node.primary.update, a 0x21 call to P the fabric-primary did not make
 /// or one to NA2 P did not make, a stop step before NA2 answered, or a view still naming P.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1084,12 +1073,11 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
     assert!(named(&spans, "rdm.node_admin.primary.reject.via-primary-update").is_empty(), "no node.primary.update was refused");
     // The order of the sequence (steps 3, 4, 6).
     assert!(end_ns(&finished) <= start_ns(&installed_at_na2), "P finished its issued writes before NA2 installed");
-    // The stop ran after NA2 answered, executed by NA2 as mesh2's primary.
-    let stop_run = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| attr(sp, "executor").starts_with(&format!("{na2_id}/"))).unwrap_or_else(|| panic!("NA2 executed the stop"));
-    assert!(end_ns(&cmd) <= start_ns(stop_run), "the fabric-primary installed NA2's answer before it dispatched the stop");
-    // The stop is an attempt of the Build that birthed P: its steps are that attempt's, never P's birth's.
-    assert!(attr(&cmd, "attempt") != "1" && attr(stop_run, "attempt") != "1", "neither the command nor the stop dispatch is P's birth attempt");
-    let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &p.name) && attr(sp, "build_id") == attr(&cmd, "build_id") && attr(sp, "attempt") == attr(stop_run, "attempt")).collect();
+    // The stop ran after NA2 answered, run by NA2 as mesh2's primary: the node command handed on to it.
+    let stop_run = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| at_location(sp, &na2.name) && attr(sp, "subject_id") == p_id).unwrap_or_else(|| panic!("NA2 ran the stop"));
+    assert!(end_ns(&cmd) <= start_ns(stop_run), "the fabric-primary installed NA2's answer before it handed the stop on");
+    // The stop belongs to no Build: its steps run under no build_id and attempt.
+    let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &p.name) && attr(sp, "build_id") == rdm_core::LifecycleOp::NO_BUILD && attr(sp, "attempt") == rdm_core::LifecycleOp::NO_ATTEMPT.to_string()).collect();
     assert!(steps.iter().any(|sp| attr(sp, "step") == "StopNode"), "the stop's steps are read: {steps:#?}");
     assert!(steps.iter().all(|sp| start_ns(sp) >= end_ns(&installed_at_na2)), "no stop step ran before NA2 answered: {steps:#?}");
     // Commands only go down: every 0x21 call to P is the fabric-primary's command, every one to NA2 P's.
@@ -1291,12 +1279,10 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
 /// old primary is cancelled (`via-primary-changed`) and it declares to the new primary, which applies it
 /// once; the old primary decides nothing of it (its cut holds the one call it took). The create's next
 /// attempt deletes the unready birth and creates it again (Q245, Q252), which fails too and ends the
-/// create's Build failed; its birth is surplus to the accepted topology, so the fabric-primary's drift
-/// pass is held at its drift seam until the declaration is delivered; released, drift's attempt deletes
-/// the surplus node as a removal does: the provider's exited verdict, then NodeDeleted, one per birth. Must NOT happen: the
-/// node.started applied twice, applied by the old primary, or addressed to an admin that does not hold
-/// the role; a second declaration call to the old primary (a declaration loop of the node's own, which
-/// Q52 deleted); a drift attempt before the release, or a second one.
+/// create's Build failed. No drift pass repairs or removes anything after it (Q342). Must NOT happen:
+/// the node.started applied twice, applied by the old primary, or addressed to an admin that does not
+/// hold the role; a second declaration call to the old primary (a declaration loop of the node's own,
+/// which Q52 deleted).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_to_the_new_mesh_primary() {
     let test = "a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_to_the_new_mesh_primary";
@@ -1311,13 +1297,8 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     let node: PathName = rdm_core::PathName::new("mesh2.node", "2").unwrap();
     let id_at = |at: &PathName| views.iter().find(|n| &n.name == at).map(|n| n.node_id.to_string()).expect("a settled view");
     let (primary_s, successor_s) = (id_at(&primary), id_at(&successor));
-    let fp = views.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).expect("a fabric-primary");
     let nodes = estate.nodes_obj().await;
 
-    // The fabric-primary's drift pass is held: the failed create leaves its node surplus, and drift's
-    // removal of it waits for the release.
-    let drift = Door::at(&estate, &fp).await;
-    drift.arm("drift-pass", serde_json::json!({"kind": "drift-pass", "node": id_at(&fp)})).await;
     // The old primary holds the node's node.started at its status door: the declaration stays owed.
     let door = Door::at(&estate, &primary).await;
     door.arm("declaration", serde_json::json!({"kind": "declaration", "node": node, "state": "Ready"})).await;
@@ -1342,52 +1323,11 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
         assert!(std::time::Instant::now() < until, "the new primary sets the node ready from its declaration within 30 s: {v:?}");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    // Released: drift's attempt deletes the node the failed create left surplus.
-    drift.wait_held("drift-pass").await;
-    let released_at = unix_nanos();
-    drift.release("drift-pass").await;
-    estate.until_node(&node, "drift deletes the surplus node", SETTLE, |n| n.is_none().then_some(())).await;
-
     estate.stop().await;
     let spans = estate.spans();
-    // The hold is the drift pass's own span on the fabric-primary, naming the cut, as long as the hold.
-    let held: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drift-held").into_iter().filter(|sp| at_location(sp, &fp)).collect();
-    assert!(!held.is_empty() && held.iter().all(|sp| attr(sp, "by") == "the testkit cut drift-pass"), "the fabric-primary's held drift pass names the cut: {held:#?}");
-    let bare = |id: String| id.trim_start_matches("bid_").replace('-', "");
     // Every birth at the node's path.name, by its row: the create's, and its next attempt's (Q245,
     // Q252: the next attempt deletes the unready birth the failed create left and creates it again).
     let births: std::collections::BTreeSet<String> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| names_location(sp, "subject", &node) && attr(sp, "moment") == "create").map(|sp| attr(sp, "node_id")).collect();
-    let removal: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| attr(sp, "scope").starts_with("surplus: ") && births.iter().any(|id| attr(sp, "scope").contains(id.as_str()))).collect();
-    assert_eq!(removal.len(), 1, "one drift attempt removes the surplus node: {removal:#?}");
-    assert!(start_ns(removal[0]) >= released_at, "the drift attempt opened after the release, never before: {:#?}", removal[0]);
-    let (build, attempt) = (bare(attr(removal[0], "build_id")), attr(removal[0], "attempt"));
-    // The failed create leaves the birth Build accepted: the stop ran as its attempt, and so does drift's removal.
-    let (Some(Frame::Started { build_id: birth, .. }), Some(Frame::Started { build_id: create, .. })) = (moved.first(), restarted.first()) else { panic!("{moved:?} {restarted:?}") };
-    assert_eq!(build, birth.to_string(), "drift's attempt is of the accepted birth Build the stop ran on, never of the failed create's {create}: {:#?}", removal[0]);
-    let exit =named(&spans, "rdm.node_admin.deployment.update.via-step")
-        .into_iter()
-        .find(|sp| bare(attr(sp, "build_id")) == build && attr(sp, "attempt") == attempt && at_location(sp, &node) && attr(sp, "step") == "TerminateRuntime")
-        .unwrap_or_else(|| panic!("drift's attempt {attempt} of {build} proves {node:?} exited"));
-    assert_eq!(attr(exit, "outcome"), "complete", "{exit:#?}");
-    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| at_location(sp, &node)).collect();
-    // One NodeDeleted per exact birth (node_id, incarnation), and every birth deleted.
-    let mut per_birth: std::collections::BTreeMap<(String, String), Vec<&Value>> = std::collections::BTreeMap::new();
-    for sp in &deleted {
-        per_birth.entry((attr(sp, "node_id"), attr(sp, "incarnation_id"))).or_default().push(sp);
-    }
-    assert!(per_birth.values().all(|d| d.len() == 1), "NodeDeleted once per birth of {node:?}: {per_birth:#?}");
-    assert_eq!(per_birth.keys().map(|(id, _)| id.clone()).collect::<std::collections::BTreeSet<_>>(), births, "every birth the creates wrote a row for is deleted, and no other: {per_birth:#?}");
-    // Each deletion is explained: drift's attempt deletes the surplus birth; every other one is the
-    // create's next attempt deleting the unready birth its failed first attempt left.
-    let by_drift: Vec<&&Value> = deleted.iter().filter(|sp| (bare(attr(sp, "build_id")), attr(sp, "attempt")) == (build.clone(), attempt.clone())).collect();
-    assert_eq!(by_drift.len(), 1, "drift's attempt deletes one birth, the surplus one: {deleted:#?}");
-    let by_drift = by_drift[0];
-    for sp in deleted.iter().filter(|sp| !std::ptr::eq(**sp, *by_drift)) {
-        assert_eq!(bare(attr(sp, "build_id")), create.to_string(), "a birth drift did not delete is deleted by the create's next attempt: {sp:#?}");
-        assert_eq!(attr(sp, "operation"), "node.delete".to_string(), "{sp:#?}");
-        assert!(attr(sp, "attempt") != "1", "the create's first attempt deleted nothing: {sp:#?}");
-    }
-    assert!(end_ns(exit) <= start_ns(by_drift), "NodeDeleted follows the exited verdict: {exit:#?} vs {by_drift:#?}");
     let ready: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
         // A first start names no operation; its measured Ready remains owed without an open command stream.
@@ -1410,13 +1350,12 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     assert!(cancelled.len() + to_old.len() >= 1, "the declaration was sent to the old primary across the hold: cancelled {cancelled:#?}, ended {to_old:#?}");
     assert!(cancelled.len() <= 1, "at most the one call in flight at the move is cancelled: {cancelled:#?}");
     assert!(to_old.iter().all(|sp| attr(sp, "outcome").starts_with("Indeterminate")), "the old primary held the declaration unanswered, each call spent: {to_old:#?}");
+    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "no drift pass runs (Q342)");
     println!(
-        "declaration across a role move: applied by {} (route {}); flame http://192.168.68.99:16687/trace/{}; drift held {} pass(es), then attempt {attempt} of {build} deleted {node:?}: flame http://192.168.68.99:16687/trace/{}",
+        "declaration across a role move: applied by {} (route {}); flame http://192.168.68.99:16687/trace/{}",
         attr(applied[0], "to"),
         attr(applied[0], "route"),
         s(&applied[0]["trace_id"]),
-        held.len(),
-        s(&removal[0]["trace_id"])
     );
     estate.record_trace_url(applied[0]["trace_id"].as_str().unwrap_or(""));
 }
@@ -1455,16 +1394,17 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
     let door = Door::at(&estate, &primary).await;
     door.arm("declaration", serde_json::json!({"kind": "declaration", "node_id": before.node_id, "state": "Stopped"})).await;
     door.arm("stopped-held", serde_json::json!({"kind": "event", "event": "stopped", "node": before.node_id})).await;
+    let builds = estate.build_ids().await;
     let stop = nodes.stop(&node).await.unwrap_or_else(|e| panic!("the stop of {node_s:?} was accepted: {e:?}"));
-    let build = stop.accepted().build_id.clone();
     drop(stop);
     let hit = door.wait_held("declaration").await;
     assert_eq!(hit["hit"]["node_id"], before.node_id.as_str(), "mesh2's primary holds the node's Stopped declaration: {hit}");
     // The primary dies holding it: the role moves to mesh2's other admin.
     estate.kill_node(&primary).await;
 
-    // The Build's next attempt stops the birth again: admitted, the Build completes and the birth reads
-    // stopped. A stop step that ends on its deadline ends the cell, naming it.
+    // The caller sends its node.stop again, to mesh2's new mesh-primary (a node command, never a Build,
+    // Q342): admitted, it completes and the birth reads stopped. A stop step that ends on its deadline
+    // ends the cell, naming it.
     let until = std::time::Instant::now() + SETTLE;
     loop {
         let unadmitted: Vec<Value> = named(&estate.spans(), "rdm.node_admin.deployment.update.via-step")
@@ -1473,16 +1413,18 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
             .cloned()
             .collect();
         assert!(unadmitted.is_empty(), "the next attempt's stop of {node_s:?} was never admitted: the birth held its stop in Stopping on its owed declaration: {unadmitted:#?}");
-        let receipts = estate.carrier().await.build(&build).await;
-        let complete = receipts.as_ref().is_ok_and(|b| b.phase == rdm_core::build::BuildPhase::Complete);
         let v = view_of(&estate.nodes_obj().await, &node).await;
-        if complete && v.stopped {
+        if v.stopped {
             assert_eq!((v.status, &v.node_id, &v.incarnation_id), (NodeStatus::Stopped, &before.node_id, &before.incarnation_id), "the same birth, stopped: {v:?}");
             break;
         }
-        assert!(std::time::Instant::now() < until, "the stop's Build {build:?} completes and {node_s:?} reads stopped within {SETTLE:?}: {receipts:?}, {v:?}");
+        assert!(std::time::Instant::now() < until, "the caller's stop completes and {node_s:?} reads stopped within {SETTLE:?}: {v:?}");
+        if let Ok(mut again) = estate.nodes_obj().await.stop(&node).await {
+            let _ = tokio::time::timeout(SETTLE, async { while let Some(Ok(_)) = again.next().await {} }).await;
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+    assert_eq!(estate.build_ids().await, builds, "the stop writes no Build");
 
     estate.stop().await;
     let spans = estate.spans();
@@ -1493,7 +1435,7 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
     let steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &node) && attr(sp, "step") == "StopNode").map(|sp| format!("{} attempt {}", attr(sp, "outcome"), attr(sp, "attempt"))).collect();
     assert!(steps.iter().any(|s| s.starts_with("complete")), "a stop step of {node_s:?} completed: {steps:?}");
     estate.record_trace_url(&s(&owed[0]["trace_id"]));
-    println!("{node_s:?} stopped under {build:?}; its stop steps: {steps:?}");
+    println!("{node_s:?} stopped; its stop steps: {steps:?}");
 }
 
 /// CONTRACT (node-stop.md steps 2-4; node-mesh-leave.md; i146 Q55: "a signal stop is node.stop's own
@@ -1782,17 +1724,14 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
     // The own-mesh arm is open: its node investigation of the fabric-primary has started its direct tickle.
     // The signal is sent at that start, while the probe is in flight: the fabric-primary's own recovery of
     // the isolated admin, a floor or two on, ends it otherwise, before a probe sent on a connection pooled
-    // at the cut has ended at its time limit. The tickle's own span closes only when the probe ends, so its
-    // start is read from the provider inspection the investigation closes right before it, the arm's child:
-    // a sibling of the arm's fold of the Build log (`caller` names the arm), under the same open parent.
+    // at the cut has ended at its time limit. The arm acts on the primary watch's verdict (Q337): it is
+    // open while the watch investigates the fabric-primary, whose tickle's own span closes only when the
+    // probe ends, so its start is read from the provider inspection the investigation closes right before it.
     let floor = rdm_transport::topology::staleness_floor();
-    let arm_name = "rdm.node_admin.fabric.update.via-fabric-recovery";
-    wait_for(&format!("{victim:?}'s own-mesh arm starts its direct tickle of {fp:?}"), floor * 6 + Duration::from_secs(60), || async {
-        let spans = estate.spans();
-        let folds = named(&spans, "rdm.node.store.resolve.via-fold").into_iter().filter(|sp| attr(sp, "caller") == arm_name).collect::<Vec<_>>();
-        named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection")
+    wait_for(&format!("{victim:?}'s watch starts its direct tickle of {fp:?} while its own-mesh arm waits on it"), floor * 6 + Duration::from_secs(60), || async {
+        named(&estate.spans(), "rdm.node_admin.node.resolve.via-provider-inspection")
             .into_iter()
-            .find(|sp| start_ns(sp) >= cut_at && attr(sp, "inspector") == victim_id && attr(sp, "node_id") == fp_id && folds.iter().any(|f| f["parent_span_id"] == sp["parent_span_id"] && f["trace_id"] == sp["trace_id"]))
+            .find(|sp| start_ns(sp) >= cut_at && attr(sp, "inspector") == victim_id && attr(sp, "node_id") == fp_id)
             .map(|_| ())
     })
     .await;
@@ -1810,7 +1749,7 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
     let arm = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().find(|sp| at_location(sp, &victim) && start_ns(sp) >= cut_at).cloned().unwrap_or_else(|| panic!("{victim:?}'s fabric recovery arm, open at its signal, ended and was written before its process left"));
     assert!(end_ns(&arm) <= start_ns(&tasks), "{victim:?}'s arm ended at its stop, before its leave aborted its tasks: arm {arm}, leave-tasks {tasks}");
     assert!(attr(&arm, "outcome").contains("stop"), "the arm's end names the stop: {arm}");
-    let after: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "executor").starts_with(&format!("{victim_id}/")) && start_ns(sp) >= stop_began).collect();
+    let after: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| attr(sp, "submitter") == victim_id && start_ns(sp) >= stop_began).collect();
     assert!(after.is_empty(), "{victim:?} opened no recovery after its signal stop began: {after:#?}");
     estate.record_trace_url(&s(&signal["trace_id"]));
 }
@@ -1819,8 +1758,8 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
 /// node.connection.delete's own rules; its receipt is ... `Deadline { last_in_flight, closed, held }` at its
 /// bound (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`)"; CLAUDE.md, that env var: the bound "on a signal stop alike:
 /// how long in-flight handlers may finish before the node leaves"): the fabric-primary serves mesh2's
-/// primary's claim of the drift attempt it opened for a killed mesh2 node, and the testkit's
-/// claimed-attempt cut holds that claim, so the call it serves never ends. The fabric-primary receives
+/// primary's claim of the attempt of a Build that adds a node to mesh2 (a repair is no Build's attempt,
+/// Q342), and the testkit's claimed-attempt cut holds that claim, so the call it serves never ends. The fabric-primary receives
 /// SIGTERM. It leaves by its own signal stop within the bound's steps: its connections delete ends at the
 /// bound, its leave waits for the unsettled call at most the bound, names it, and closes, and its
 /// `via-signal` span is written as the process ends. Must NOT happen: the process held past its bound by the
@@ -1842,10 +1781,12 @@ async fn a_fabric_primary_serving_a_held_claim_leaves_on_its_signal_within_the_b
     let rows = estate.node_values().await;
     let (fp_id, mesh2_primary_id) = (id_of(&rows, &fp), id_of(&rows, &Estate::path("mesh2.node-admin", "1")));
     fp_door.arm("held-claim", serde_json::json!({"kind": "claimed-attempt"})).await;
-    // mesh2's primary reads its killed node exited and submits its recovery; the fabric-primary opens the
-    // attempt, and mesh2's primary's claim of it is held at the fabric-primary.
-    estate.kill_node(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).await;
+    // A Build adds a node to mesh2; mesh2's primary's claim of its attempt is held at the fabric-primary.
+    let (based_on, request) = estate.create_node_request("mesh2", "node").await;
+    let nodes = estate.nodes_obj().await;
+    let create = tokio::spawn(async move { nodes.create_named(based_on, request).await.map(|_| ()) });
     let claimed = fp_door.wait_held("held-claim").await;
+    create.abort();
     assert_eq!(s(&claimed["hit"]["executor"]["node_id"]), mesh2_primary_id, "the held claim is mesh2's primary's, served by the fabric-primary: {claimed}");
     let signalled = std::time::Instant::now();
     assert!(std::process::Command::new("kill").args(["-TERM", &fp_pid.to_string()]).status().unwrap().success(), "kill -TERM {fp_pid}");

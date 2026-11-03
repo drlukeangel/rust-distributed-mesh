@@ -190,7 +190,7 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     assert!(on(&recovered, "get", "value"), "the recovered birth served the inherited value");
     // 3: the mesh-primary proved the killed birth's exit and submitted its recovery, keyed on that
     // exact birth, and followed it to its terminal.
-    let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+    let recovery = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
         .find(|sp| sp["attributes"]["node_id"] == first["node_id"] && sp["attributes"]["incarnation_id"] == first["incarnation_id"])
         .expect("the mesh-primary's recovery submit for the killed birth");

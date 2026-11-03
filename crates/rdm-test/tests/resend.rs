@@ -159,7 +159,7 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
         .unwrap_or_else(|| panic!("the mesh-primary's investigation of {path:?} is exported"));
     assert!(at(&investigation) > at(&mark), "the investigation follows the mark: mark {}, investigation {}", at(&mark), at(&investigation));
     assert!(at(&investigation) < held_at + FLOOR.as_nanos() as u64 + FLOOR.as_nanos() as u64 / 2, "the spent call's mark started it, before silence alone would have: hang {held_at}, investigation {}", at(&investigation));
-    let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+    let recovery = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
         .filter(|sp| attr(sp, "node_id") == node_id && at(sp) >= held_at)
         .min_by_key(|sp| at(sp))

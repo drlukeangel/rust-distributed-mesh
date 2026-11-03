@@ -415,8 +415,6 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         let leave_req = NodeCommandRequest::LeaveMesh {
             node_id: node_id.clone(),
             incarnation: incarnation.clone(),
-            build_id: build_id.to_string(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.mesh.leave", &node_id),
         };
 
@@ -480,7 +478,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             .await
             .unwrap();
 
-        let leave_req = NodeCommandRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.to_string(), attempt: 2, operation: leave_operation.clone() };
+        let leave_req = NodeCommandRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), operation: leave_operation.clone() };
         pipeline
             .leave_mesh(&build_id, 2, &node_name, &leave_operation, async {
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -683,8 +681,6 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
                 &NodeCommandRequest::LeaveMesh {
                     node_id: admin_id.clone(),
                     incarnation: admin_inc.clone(),
-                    build_id: build_id.to_string(),
-                    attempt: 2,
                     operation: rdm_core::OperationId::location("node.mesh.leave", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()),
                 },
                 Box::new(ChannelFrames(tx_admin_leave)),

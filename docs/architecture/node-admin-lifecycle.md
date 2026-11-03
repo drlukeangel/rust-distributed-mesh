@@ -75,7 +75,7 @@ The parameters select one of these modes:
 |---|---|---|---|
 | **Day 0** | no mesh and no durable topology | a person | Starts the fabric as its fabric primary ([fabric.create](lifecycles/fabric-create.md)), then waits for the next node or mesh deployment request (a Build). |
 | **Create** | mesh, seed | a node-admin executing a Build | Runs [node.start](lifecycles/node-start.md) with FirstStart, its maker the accepting primary; once ready it takes part in elections. |
-| **Recover** | mesh, seed, the exited node's data dir | a node-admin executing the recovery Build | node.create at the same path.name over the inherited data dir: same endpoint key, new NodeId, incarnation and port ([node recovery](lifecycles/node-recovery.md)). |
+| **Recover** | mesh, seed, the exited node's data dir | a node-admin executing node recovery | node.create at the same path.name over the inherited data dir: same endpoint key, new NodeId, incarnation and port ([node recovery](lifecycles/node-recovery.md)). |
 | **Create as mesh primary** | mesh, seed, mesh primary | the fabric primary | A live peer mesh lost all its node-admins: [node recovery](lifecycles/node-recovery.md) of its lost mesh-primary re-creates a node-admin into it (Q335), then the entry sequence (§4) and the mesh's missing node-admins (§4.3). |
 | **Fabric recovery** | mesh, seed, mesh primary, fabric primary | a person | Every node-admin is lost (catastrophic): the entry sequence (§4), then every mesh's missing node-admins. The launched node-admin is a new node over its inherited data dir: new node.id and incarnation, same path.name and endpoint key, new port. |
 
@@ -86,7 +86,7 @@ node.stop and node.start launch nothing: the same process stops and rejoins
 
 A node-admin created into a live mesh is node.create's
 [mesh-present arm](lifecycles/node-create.md#mesh-absent) with the mesh's own MeshId: it joins the
-mesh and never mints its id. It runs as an attempt of the SAME accepted Build. The steps are
+mesh and never mints its id. It is node recovery, the fabric-primary's own workflow, never a Build. The steps are
 [a node-admin created into a live mesh](lifecycles/node-create.md#a-node-admin-created-into-a-live-mesh) and
 [fabric recovery](lifecycles/fabric-recovery.md).
 
@@ -114,7 +114,7 @@ The sequence a launched fabric-primary runs from its durable map is
 | a live peer mesh loses every node-admin | fabric-primary, same accepted Build, the mesh's own MeshId | node.create into the live mesh, maker admission/read, local topology read, own-mesh sweep, node recovery, restore own admins |
 | fabric-primary is launched again into its own mesh | a person's launch on its durable data dir; the launched node-admin is a new node over the inherited data dir (new node.id, incarnation and port; same path.name and endpoint key); a launch that finds a living admin before its first mutation is refused NameHeld, never an ordinary admin at the primary's name (Q156, Q199) | no maker; durable-map topology read, own mesh first, same entry flow |
 | the fabric-primary's mesh loses every node-admin while other meshes live | [fabric recovery](lifecycles/fabric-recovery.md), run by the backbone's lowest Ready mesh-primary on node investigation's verdict (Q335), exactly as a node-admin of the mesh would; same accepted Build, the mesh's own MeshId | no node-admin takes a primary role; the node-admin at the fabric-primary's path.name is re-created (inherited data dir when `exited`, else a new one, R-FM2) and is mesh-primary and fabric-primary when Ready |
-| every node-admin of every mesh is lost, nothing alive included ([fabric recovery](lifecycles/fabric-recovery.md#nothing-alive)) | person or script: the adoption launch at the lost fabric-primary's path.name, with no launcher and no primary flag, given the fabric id, its mesh and the store root, over the lost fabric-primary's data dir or a new one (Q156; the [runbook](../eng/fabric-recovery-runbook.md)); or a launch on the fabric-primary's data dir with mesh, seed and both primary flags | no Day 0; no maker; the adoption launch claims the fabric-recovery attempt of the current Build before any other write and is restored as mesh-primary and fabric-primary by step 4 once Ready; durable-map reads while a node is alive, own mesh first, then [node investigation](lifecycles/node-investigation.md) of each other mesh's lost mesh-primary (Q335) |
+| every node-admin of every mesh is lost, nothing alive included ([fabric recovery](lifecycles/fabric-recovery.md#nothing-alive)) | person or script: the adoption launch at the lost fabric-primary's path.name, with no launcher and no primary flag, given the fabric id, its mesh and the store root, over the lost fabric-primary's data dir or a new one (Q156; the [runbook](../eng/fabric-recovery-runbook.md)); or a launch on the fabric-primary's data dir with mesh, seed and both primary flags | no Day 0; no maker; the adoption launch is restored as mesh-primary and fabric-primary by step 4 once Ready; durable-map reads while a node is alive, own mesh first, then [node investigation](lifecycles/node-investigation.md) of each other mesh's lost mesh-primary (Q335) |
 
 ## 5. Join admission and topology reads
 

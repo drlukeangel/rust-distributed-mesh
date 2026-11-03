@@ -513,51 +513,6 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_it_is_heard_again()
     assert_eq!(dispatched.last().map(|(x, _)| x), Some(&r.birth("mesh2.node-admin", "1").await), "the mesh reconciles its own nodes once heard: {dispatched:?}");
 }
 
-/// CONTRACT (R-BI7 caveat 3: one attempt in flight per mesh, the mesh's in-flight row on the store
-/// root, released by the attempt's end): a node recovery takes the in-flight row of the mesh the
-/// recovered node is in, whoever executes it (control_plane.rs, `decide_claim` on the node's mesh). The
-/// fabric-primary `mesh1.node-admin.1` claims the recovery of `mesh2.node.1`, which takes mesh2's row,
-/// and the drive runs the attempt to its terminal: mesh2's row is released with it. Must NOT happen:
-/// the end releasing only its executor's mesh (mesh1), leaving mesh2 held by an attempt that ended,
-/// so every later attempt in mesh2 is refused build-in-progress naming it (the authority soak,
-/// 14034530d: Build nbw0yxzwgfg0 stalled 120 s on mesh2's row left by attempt 6 of 7z548bear6nj).
-#[tokio::test]
-async fn a_recovery_the_fabric_primary_executes_in_another_mesh_releases_that_meshs_in_flight_row_at_its_end() {
-    use rdm_admin::accepted::AttemptAction;
-    use rdm_admin::build_state::{AttemptOpened, AttemptReason, BuildAttemptClaim};
-    let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
-    for (n, r#type, primary) in [(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", true), (rdm_core::PathName::new("mesh2.node", "1").unwrap(), "node", false)] {
-        t.nodes.push(node(n, "mesh2", r#type, primary, false));
-    }
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [("node-admin", 2), ("node", 2)]) };
-    let r = rig_for(t, change, |ran, topology| Arc::new(Lands { ran, topology, lands: true })).await;
-    let first = Drive::detached(r.build.clone());
-    let end = r.env.run(&first).await;
-    assert!(matches!(end, DriveEnd::Terminal), "the Build's own attempt ends: {end:?}");
-
-    // The recovery of mesh2.node.1, opened and claimed by the fabric-primary on mesh2's row.
-    let recovered = r.env.topology.read().await.node(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).unwrap().clone();
-    let attempt = r.builds.read_build(&r.build).await.unwrap().attempt + 1;
-    let action = AttemptAction::Recover { r#type: "node".into(), mesh: "mesh2".to_owned(), path: recovered.name.clone(), node_id: recovered.node_id.clone(), from_incarnation: recovered.incarnation_id.clone().unwrap(), backbone: false };
-    r.builds
-        .open_attempt(&AttemptOpened { build_id: r.build.clone(), attempt, reason: AttemptReason::Recovery, action: Some(action), opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, mesh: None, context: None })
-        .await
-        .unwrap();
-    let claim = BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), build_id: r.build.clone(), attempt, executor: r.birth("mesh1.node-admin", "1").await, claimant: Some(r.birth("mesh1.node-admin", "1").await.node_id), mesh: None };
-    let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-    let won = rdm_admin::build_claim::decide_claim(&me, &*r.builds, &*r.env.door.claims, &r.env.door.contexts, &claim, "mesh2", None).await;
-    assert!(matches!(won, rdm_core::build_claim::BuildClaimReply::Won { .. }), "{won:?}");
-    assert_eq!(r.env.door.claims.in_flight("mesh2").await.unwrap().map(|h| h.attempt), Some(attempt), "the recovery holds mesh2's row");
-
-    let second = Drive::detached(r.build.clone());
-    let _ = r.env.run(&second).await;
-    let ended = r.builds.read_build(&r.build).await.unwrap();
-    assert!(ended.attempt >= attempt, "the recovery attempt ran: {:?}", ended.attempt);
-    let held = r.env.door.claims.in_flight("mesh2").await.unwrap();
-    assert!(held.as_ref().is_none_or(|h| h.attempt != attempt), "mesh2's row is released at the recovery's end, not left naming attempt {attempt}: {held:?}");
-}
-
 /// Commits each operation's receipt and, when `lands`, puts the created node in the view live, as a
 /// create's launch and join do.
 struct Lands {
@@ -1112,7 +1067,7 @@ async fn a_completed_drive_is_kept_for_its_own_attempt_and_replaced_once_the_bui
     let stale = drives.ensure(&r.env, &r.build, done);
     assert!(Arc::ptr_eq(&stale, &first), "a read that showed attempt {done} running is handed the drive that completed it");
     r.builds
-        .open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: done + 1, reason: AttemptReason::Stop, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 0, context: None })
+        .open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: done + 1, reason: AttemptReason::Delete, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 0, context: None })
         .await
         .unwrap();
     let reopened = drives.ensure(&r.env, &r.build, done + 1);
@@ -2477,7 +2432,7 @@ fn a_build_whose_later_attempt_failed_claims_no_next_attempt_without_a_resubmit(
         let r = rig().await;
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal, "attempt 1 completes the Build");
         // A later attempt of it (a restart) is opened, claimed and fails at its executor.
-        r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Stop, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 5, context: None }).await.unwrap();
+        r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Delete, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 5, context: None }).await.unwrap();
         r.builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: r.build.clone(), attempt: 2, executor: r.birth("mesh1.node-admin", "2").await }).await.unwrap();
         let failed = AttemptOutcome::Failed { reason: "the restart's stop was not admitted".into(), code: rdm_core::outcome::Code::FailedPrecondition };
         r.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: r.build.clone(), attempt: 2, outcome: failed }).await.unwrap();
@@ -2591,58 +2546,6 @@ async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_na
     let done = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Build is Complete after its own ready: {done:?}");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran: {:?}", r.ran.0.lock().unwrap());
-}
-
-/// CONTRACT (states.md "The check-in checklist": "Individual lifecycle status changes do not wait for
-/// the entire check-in checklist"; build.md §1: node.stop is an attempt of the current Build, never a
-/// new Build; node-stop.md: the stop's completion is its stopped frame; Q154 holds the Build's own
-/// topology change, states.md "Resize and executable replacement"): a Build that put the fabric back
-/// to pending and completed once, after its own ready, takes a node.stop as its next
-/// attempt while the fabric is changing again. The stop runs, and its attempt ends `Complete` at the
-/// stop: the caller's stream ends there. Must NOT happen: the stop's attempt handed back and its
-/// stream left `Blocked` on `fabric-change`, waiting for a ready the stopped node itself
-/// keeps from being set.
-#[tokio::test]
-async fn a_stop_attempt_of_a_build_that_completed_ends_at_its_stop_while_the_fabric_changes() {
-    use rdm_admin::accepted::AttemptAction;
-    use rdm_admin::build_state::{AttemptOpened, AttemptReason};
-    let r = rig().await;
-    let gate = Arc::new(FabricChange { view: Some(r.env.topology.clone()), ..Default::default() });
-    gate.ready.store(true, Ordering::SeqCst);
-    let e = &r.env;
-    let env = Arc::new(DriveEnv { me_mesh: e.me_mesh.clone(),
-        me: e.me.clone(),
-        topology: e.topology.clone(),
-        builds: e.builds.clone(),
-        door: e.door.clone(),
-        dispatcher: e.dispatcher.clone(),
-        gate: gate.clone(),
-        departure: e.departure.clone(),
-        verdicts: e.verdicts.clone(),
-        notices: e.notices.clone(),
-        turns: e.turns.clone(),
-    });
-    // The Build's topology change ran and the fabric held ready from it: Complete.
-    assert_eq!(tokio::time::timeout(Duration::from_secs(10), env.run(&Drive::detached(r.build.clone()))).await.expect("the Build's own change completes"), DriveEnd::Terminal);
-    assert_eq!(r.builds.read_build(&r.build).await.unwrap().state, rdm_admin::build_state::BuildState::Complete);
-    // The fabric is changing again, and a node.stop opens the Build's next attempt.
-    gate.ready.store(false, Ordering::SeqCst);
-    let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-    let (node_id, from_incarnation) = r.env.topology.read().await.node(&path).and_then(|n| n.incarnation_id.clone().map(|i| (n.node_id.clone(), i))).expect("mesh1.node.1 has a birth");
-    let expected_stop = rdm_core::OperationId::node("node.stop", &node_id);
-    let action = AttemptAction::Stop { r#type: "node".into(), mesh: "mesh1".into(), path: path.clone(), node_id, from_incarnation };
-    r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Stop, action: Some(action), opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 5, context: None }).await.unwrap();
-    let drive = Drive::detached(r.build.clone());
-    let mut reader = drive.reader(2);
-    let end = tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await;
-    let mut frames = Vec::new();
-    while let Some(read) = next_within(&mut reader).await {
-        frames.push(read);
-    }
-    assert_eq!(end.ok(), Some(DriveEnd::Terminal), "the stop's attempt ends at its stop, whatever the fabric's change: {frames:?}");
-    assert!(r.ran.0.lock().unwrap().iter().any(|op| op == &expected_stop), "the stop ran: {:?}", r.ran.0.lock().unwrap());
-    assert!(!frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, .. }) if step == "fabric-change")), "a lifecycle attempt never waits on the fabric's change: {frames:?}");
-    assert!(frames.iter().any(|f| matches!(f, Read::Terminal(BuildReply::Complete { attempt: 2, .. }))), "the stop's stream ends Complete for its attempt: {frames:?}");
 }
 
 /// The fixture's dispatcher, the fabric's change setting ready while the attempt it calls runs:
@@ -2786,14 +2689,8 @@ impl BuildStateAdapter for LedgerBuilds {
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(id).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
-        self.inner.exits_owed(build_id, mesh).await
     }
 }
 
@@ -3013,62 +2910,6 @@ async fn a_fabric_primary_whose_attempt_another_admin_superseded_mid_run_sends_n
     let read = capture.spans("rdm.node_admin.build.reject.via-superseded-attempt");
     assert_eq!(read.len(), 1, "the read that stopped the drive is named: {read:?}");
     assert_eq!((read[0].1.get("attempt").map(String::as_str), read[0].1.get("current_attempt").map(String::as_str), read[0].1.get("to").map(String::as_str)), (Some("1"), Some("2"), Some(successor.node_id.as_str())), "{:?}", read[0].1);
-}
-
-/// CONTRACT (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs it, without
-/// the half-floor wait, after the election has named the new mesh-primary"; "Execution": "the
-/// mesh-primary claims it ... the mesh-primary runs it"; node-identity-and-state.md: "The
-/// fabric-primary writes a row only as acting primary of a mesh with no primary"): the drive's claim of
-/// an unheard mesh-primary's recovery attempt, opened in the fabric lane and claimed by no one, follows
-/// the election's result as the claim at its open does. While the fabric-primary's view still names the
-/// unheard `mesh2.node-admin.1` mesh2's primary and mesh2 holds another node-admin the election can name
-/// (`mesh2.node-admin.2`, Ready in that view; Q335), the drive claims nothing and stalls naming the mesh and that admin
-/// on its span, framing nothing to the caller (node-rpc-envelope.md: Blocked's only source is the
-/// subject's Status `Blocked`);
-/// once the view names `mesh2.node-admin.2` mesh2's primary, the attempt is claimed for it. Must NOT happen:
-/// the attempt claimed for the fabric-primary itself while mesh2 holds another node-admin.
-#[tokio::test]
-async fn the_drive_claims_an_unheard_mesh_primarys_recovery_for_the_mesh_primary_the_election_names() {
-    use rdm_admin::accepted::AttemptAction;
-    use rdm_admin::build_state::{AttemptOpened, AttemptReason};
-    let mut t = view();
-    for n in t.nodes.iter_mut() {
-        n.is_primary = n.name == rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-    }
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
-    for (n, r#type, primary) in [(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", true), (rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "node-admin", false), (rdm_core::PathName::new("mesh2.node", "1").unwrap(), "node", false)] {
-        t.nodes.push(node(n, "mesh2", r#type, primary, false));
-    }
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [("node-admin", 2), ("node", 2)]) };
-    let r = rig_for(t, change, |ran, topology| Arc::new(Lands { ran, topology, lands: true })).await;
-    let first = Drive::detached(r.build.clone());
-    let end = r.env.run(&first).await;
-    assert!(matches!(end, DriveEnd::Terminal), "the Build's own attempt ends: {end:?}");
-
-    // mesh2's primary goes unheard in the fabric-primary's view, still named there; its second node-admin
-    // is heard, the election's candidate.
-    r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.name != rdm_core::PathName::new("mesh2.node-admin", "2").unwrap()).for_each(|n| n.status = NodeStatus::PendingReconnect);
-    let unheard = r.env.topology.read().await.node(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).unwrap().clone();
-    let attempt = r.builds.read_build(&r.build).await.unwrap().attempt + 1;
-    let action = AttemptAction::Recover { r#type: "node-admin".into(), mesh: "mesh2".to_owned(), path: unheard.name.clone(), node_id: unheard.node_id.clone(), from_incarnation: unheard.incarnation_id.clone().unwrap(), backbone: false };
-    r.builds
-        .open_attempt(&AttemptOpened { build_id: r.build.clone(), attempt, reason: AttemptReason::Recovery, action: Some(action), opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, mesh: None, context: None })
-        .await
-        .unwrap();
-    let unnamed = Drive::detached(r.build.clone());
-    let mut reader = unnamed.reader(attempt);
-    let end = tokio::time::timeout(Duration::from_secs(5), r.env.run(&unnamed)).await.expect("the drive ends");
-    let claimed = r.builds.read_build(&r.build).await.unwrap().attempt_executors;
-    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("mesh2") && why.contains(&r.birth("mesh2.node-admin", "2").await.node_id.to_string())), "the drive stalls naming the mesh and the node-admin the election names here: {end:?}; claims: {claimed:?}");
-    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the wait for the election's mesh-primary frames no Blocked to the caller");
-    assert_eq!(claimed.get(&attempt), None, "nothing is claimed before the view names mesh2's primary: {claimed:?}");
-
-    // The election named mesh2.node-admin.2: the view names it mesh2's primary.
-    r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.r#type == "node-admin").for_each(|n| n.is_primary = n.name == rdm_core::PathName::new("mesh2.node-admin", "2").unwrap());
-    let named = Drive::detached(r.build.clone());
-    let _ = tokio::time::timeout(Duration::from_secs(5), r.env.run(&named)).await.expect("the drive ends");
-    let claimed = r.builds.read_build(&r.build).await.unwrap().attempt_executors;
-    assert_eq!(claimed.get(&attempt), Some(&r.birth("mesh2.node-admin", "2").await), "claimed for the mesh-primary the election named: {claimed:?}");
 }
 
 /// CONTRACT (build.md: the Build facts are "written by the fabric-primary", and "a call carrying a claim
@@ -4096,7 +3937,7 @@ async fn build_drive_fires_on_build_started_on_opening_and_reopening_skips_takeo
     }
     assert_eq!(r.env.run(&drive1).await, DriveEnd::Terminal);
 
-    // 2. Reopen the completed Build at attempt 3 with `AttemptReason::Stop` and `AttemptAction::Stop`
+    // 2. Reopen the completed Build at attempt 3 with `AttemptReason::Delete` and `AttemptAction::Stop`
     //    and run to failure.
     let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
     let (node_id, from_incarnation) = r
@@ -4107,7 +3948,7 @@ async fn build_drive_fires_on_build_started_on_opening_and_reopening_skips_takeo
         .node(&path)
         .and_then(|n| n.incarnation_id.clone().map(|i| (n.node_id.clone(), i)))
         .expect("mesh1.node.1 has a birth");
-    let action = rdm_admin::accepted::AttemptAction::Stop { r#type: "node".into(), mesh: "mesh1".into(),
+    let action = rdm_admin::accepted::AttemptAction::Delete { r#type: "node".into(), mesh: "mesh1".into(),
         path,
         node_id,
         from_incarnation,
@@ -4117,7 +3958,7 @@ async fn build_drive_fires_on_build_started_on_opening_and_reopening_skips_takeo
             mesh: None,
             build_id: r.build.clone(),
             attempt: 3,
-            reason: rdm_admin::build_state::AttemptReason::Stop,
+            reason: rdm_admin::build_state::AttemptReason::Delete,
             action: Some(action),
             opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
             opened_at_ms: 2_000,
@@ -4148,13 +3989,13 @@ async fn build_drive_fires_on_build_started_on_opening_and_reopening_skips_takeo
     }
     match &told[2] {
         crate::Notice::Started(c) => {
-            assert_eq!(c.reason, rdm_admin::build_state::AttemptReason::Stop);
+            assert_eq!(c.reason, rdm_admin::build_state::AttemptReason::Delete);
         }
         other => panic!("expected Started at index 2, got {other:?}"),
     }
     match &told[3] {
         crate::Notice::Ended(c) => {
-            assert_eq!(c.reason, rdm_admin::build_state::AttemptReason::Stop);
+            assert_eq!(c.reason, rdm_admin::build_state::AttemptReason::Delete);
             assert!(
                 matches!(&c.state, rdm_admin::wiring::BuildEndedState::Failed { reason, .. } if reason.contains("reopened stop attempt failed")),
                 "expected Failed state on attempt 3, got {:?}",
@@ -4271,8 +4112,8 @@ async fn build_drive_step_faults_recover_or_fail_as_the_page_specifies() {
             mesh: None,
             build_id: r.build.clone(),
             attempt: 4,
-            reason: rdm_admin::build_state::AttemptReason::Stop,
-            action: Some(rdm_admin::accepted::AttemptAction::Stop { r#type: "node".into(), mesh: "mesh1".into(),
+            reason: rdm_admin::build_state::AttemptReason::Delete,
+            action: Some(rdm_admin::accepted::AttemptAction::Delete { r#type: "node".into(), mesh: "mesh1".into(),
                 path,
                 node_id,
                 from_incarnation,

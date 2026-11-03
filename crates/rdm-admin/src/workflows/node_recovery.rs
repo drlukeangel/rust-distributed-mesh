@@ -1,10 +1,8 @@
 //! Node recovery workflow (`docs/architecture/lifecycles/node-recovery.md`).
 //!
 //! Reconciles an unheard or failed node: detecting silence, running the one tickle ladder
-//! ([`crate::workflows::node_tickle`]), proving runtime exit, and initiating recovery attempts.
+//! ([`crate::workflows::node_tickle`]), proving runtime exit, and running the recovery, the primary's own workflow.
 
-/// Recovery attempt runners and verdicts (`docs/architecture/lifecycles/node-recovery.md`).
-pub use crate::build_run::{run_opened_recovery, run_recovery, Recovered, RecoveryNotRun};
 /// Reach ladder budget and peer fan-out constants (`docs/architecture/lifecycles/node-tickle.md`).
 pub use crate::offline::{tickle_ladder, tickle_ladder_at_default_budget, VIA_PEER_TICKLE_FANOUT};
 /// Watched births, durable births, and recovery due checks (`docs/architecture/lifecycles/node-recovery.md`).

@@ -10,8 +10,8 @@
 use rdm_admin::accepted::{plan_for_build, AcceptedStore, FabricTopology, TopologyChange};
 use rdm_admin::build::{BuildOperation, PinnedBirth};
 use rdm_admin::build_claim::AttemptContexts;
-use rdm_admin::build_state::{AttemptReason, BuildStateAdapter, LocalBuildLog, MemoryBuildStateAdapter};
-use rdm_admin::control_plane::{ActionKind, ControlPlane};
+use rdm_admin::build_state::{BuildStateAdapter, LocalBuildLog, MemoryBuildStateAdapter};
+use rdm_admin::control_plane::ControlPlane;
 use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
 use std::sync::Arc;
@@ -68,25 +68,6 @@ fn json_birth(v: &serde_json::Value) -> (serde_json::Value, serde_json::Value) {
 
 fn as_json(b: &PinnedBirth) -> (serde_json::Value, serde_json::Value) {
     json_birth(&serde_json::to_value(b).unwrap())
-}
-
-/// CONTRACT (build.md §4.4): a standalone node.stop accepted on a birth carries that birth's node id
-/// and incarnation in its attempt's action and in the operation the plan hands the executor.
-/// Must NOT happen: an action or an operation carrying the incarnation alone, which another birth at
-/// the path may hold.
-#[tokio::test]
-async fn a_stop_carries_the_node_id_and_incarnation_the_gates_pinned() {
-    let t = view();
-    let pinned = birth(&t, &PathName::new("mesh1.node", "1").unwrap());
-    let (builds, cp) = control_plane(&t).await;
-    let opened = cp.open_attempt_in(tracing::info_span!("pinned-stop"), "pinned-stop", AttemptReason::Stop, rdm_core::PathName::new("mesh1.node", "1").unwrap(), ActionKind::Stop).await.expect("the stop is admitted");
-    let build = builds.read_build(&opened.build_id).await.unwrap();
-    let action = serde_json::to_value(build.action.as_ref().expect("the attempt carries its action")).unwrap();
-    assert_eq!((action["node_id"].clone(), action["from_incarnation"].clone()), as_json(&pinned), "the stop's action carries the pinned birth: {action}");
-    let ops = plan_for_build(&build, &t).operations;
-    let stop = ops.iter().find(|op| op.key() == rdm_core::OperationId::node("node.stop", &pinned.node_id)).unwrap_or_else(|| panic!("the stop is planned: {ops:?}"));
-    let stop = serde_json::to_value(stop).unwrap();
-    assert_eq!((stop["node_id"].clone(), stop["from_incarnation"].clone()), as_json(&pinned), "the operation the executor runs carries the pinned birth: {stop}");
 }
 
 /// CONTRACT (build.md §4.4; Q218: "a Build's node delete ... acts on whatever birth the view holds at
@@ -225,111 +206,5 @@ impl rdm_admin::executor::OperationRunner for PinnedRunner {
         }
         Ok(())
     }
-}
-
-/// CONTRACT (build.md:338, Q274): a pinned birth the executor's view does not hold yet ends the
-/// step incomplete (`RunEnd::Incomplete`), hands the attempt back to the fabric-primary leaving the
-/// Build in progress, claims no new attempt while the view is unchanged, and resumes on that same
-/// pinned birth once the view moves to hold it; another birth at the name is still refused
-/// `birth-replaced`, and a permanent error on the held birth is still `Failed`.
-#[tokio::test]
-async fn a_not_yet_held_pinned_birth_ends_incomplete_and_resumes_on_that_birth_once_the_view_holds_it() {
-    use rdm_admin::build_claim::ClaimDoor;
-    use rdm_admin::build_drive::{Drive, DriveEnd, DriveEnv};
-    use rdm_admin::build_state::{AttemptOutcome, BuildFact, BuildState};
-
-    let full = view();
-    let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-    let pinned = birth(&full, &PathName::new("mesh1.node", "1").unwrap());
-    let (builds, cp) = control_plane(&full).await;
-    let opened = cp
-        .open_attempt_in(tracing::info_span!("pinned-resume"), "pinned-resume", AttemptReason::Stop, path.clone(), ActionKind::Stop)
-        .await
-        .expect("the stop is admitted");
-
-    // Start with the executor's view missing `mesh1.node.1`.
-    let mut missing = full.clone();
-    missing.nodes.retain(|n| n.name != path);
-    let topology = Arc::new(tokio::sync::RwLock::new(missing));
-    let runner = Arc::new(PinnedRunner {
-        topology: topology.clone(),
-        builds: builds.clone(),
-        permanent_error: std::sync::atomic::AtomicBool::new(false),
-        acted_on: std::sync::Mutex::new(Vec::new()),
-    });
-    let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-    let fp_id = full.node(&me).unwrap().node_id.clone();
-    let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner.clone());
-    let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
-        me: me.clone(),
-        topology: topology.clone(),
-        builds: builds.clone(),
-        door: Arc::new(ClaimDoor {
-            node_id: fp_id.clone(),
-            incarnation: full.node(&me).unwrap().incarnation_id.clone().unwrap(),
-            me,
-            topology: topology.clone(),
-            builds: builds.clone(),
-            contexts: Arc::new(AttemptContexts::in_memory()),
-            claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
-            claimed: Default::default(),
-        }),
-        dispatcher: dispatch.clone(),
-        gate: Arc::new(AtlasGate(Some(pinned.clone()))),
-        departure: Arc::new(crate::loopback::Exits::default()),
-        verdicts: Arc::new(crate::loopback::NoVerdicts),
-        notices: crate::Told::default().notices(),
-        turns: rdm_admin::stop_gate::StopGate::new(),
-    });
-
-    // Pass 1: the view does not hold the pinned birth yet -> the opened attempt ends Incomplete
-    // and hands back to the fabric-primary; the Build stays in progress (`BuildState::Pending`).
-    let drive = Drive::detached(opened.build_id.clone());
-    let first = env.run(&drive).await;
-    assert!(matches!(&first, DriveEnd::Stalled(why) if why.contains("ended incomplete")), "the opened attempt stalls on incomplete evidence: {first:?}");
-    let p1 = builds.read_build(&opened.build_id).await.unwrap();
-    assert_eq!((p1.attempt, p1.state), (opened.attempt, BuildState::Pending), "the Build stays in progress after incomplete hand-back");
-    let verdict1 = builds.facts().await.unwrap().into_iter().find_map(|f| match f {
-        BuildFact::Attempt(a) if a.build_id == opened.build_id && a.attempt == opened.attempt => Some(a.outcome),
-        _ => None,
-    });
-    assert_eq!(verdict1, Some(AttemptOutcome::HandedOff { to: fp_id.clone() }));
-
-    // Pass 2 with nothing moved in the view: no new attempt is claimed or dispatched.
-    let second = env.run(&drive).await;
-    assert!(matches!(second, DriveEnd::Stalled(_)), "unchanged view stalls without claiming: {second:?}");
-    assert_eq!(builds.read_build(&opened.build_id).await.unwrap().attempt, opened.attempt);
-    assert_eq!(dispatch.dispatched.lock().unwrap().len(), 1);
-
-    // Pass 3: the view moves to hold the exact pinned birth -> the next attempt is claimed,
-    // resumes on that same pinned birth, and completes the Build.
-    let records = rdm_admin::admin::Records::default();
-    records.install_projected(&topology, || full.clone()).await;
-    assert_eq!(env.run(&drive).await, DriveEnd::Terminal);
-    let p2 = builds.read_build(&opened.build_id).await.unwrap();
-    assert_eq!((p2.attempt, p2.state), (opened.attempt + 1, BuildState::Complete));
-    assert_eq!(*runner.acted_on.lock().unwrap(), vec![pinned.clone()], "resumed on the exact pinned birth");
-
-    // Reopen with another birth at the name -> refused `birth-replaced` (`BuildState::Failed`).
-    let replaced_view = replaced(&full, &PathName::new("mesh1.node", "1").unwrap(), false);
-    records.install_projected(&topology, || replaced_view).await;
-    let reopened = cp
-        .open_attempt_in(tracing::info_span!("pinned-replaced"), "pinned-replaced", AttemptReason::Stop, path.clone(), ActionKind::Stop)
-        .await
-        .unwrap();
-    let drive_replaced = Drive::detached(reopened.build_id.clone());
-    assert_eq!(env.run(&drive_replaced).await, DriveEnd::Terminal);
-    assert_eq!(builds.read_build(&reopened.build_id).await.unwrap().state, BuildState::Failed, "another birth at the name fails the Build with birth-replaced");
-
-    // Reopen with the exact pinned birth held, but a permanent error on execution -> `BuildState::Failed`.
-    records.install_projected(&topology, || full.clone()).await;
-    runner.permanent_error.store(true, std::sync::atomic::Ordering::SeqCst);
-    let reopened_err = cp
-        .open_attempt_in(tracing::info_span!("pinned-perm-err"), "pinned-perm-err", AttemptReason::Stop, path, ActionKind::Stop)
-        .await
-        .unwrap();
-    let drive_err = Drive::detached(reopened_err.build_id.clone());
-    assert_eq!(env.run(&drive_err).await, DriveEnd::Terminal);
-    assert_eq!(builds.read_build(&reopened_err.build_id).await.unwrap().state, BuildState::Failed, "a permanent error on the held birth fails the Build");
 }
 

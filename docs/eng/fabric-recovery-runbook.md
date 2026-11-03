@@ -65,18 +65,17 @@ Nothing more is commanded. In order:
 1. **Reads the store with nothing written.** The store root must hold the Fabric record with its
    provider, the mesh row, a fabric-primary at `RDM_NODE_NAME` and a current Build. It mints no fabric
    id and no mesh id.
-2. **Claims the fabric-recovery attempt** of the current Build for the mesh, before any other write.
-   The claim is the mesh's in-flight row on the store root. A second launch's claim loses, and that
-   launch exits.
+2. **Claims nothing.** The adoption is fabric recovery, the primary's own workflow, never a Build: it
+   opens no attempt and writes no in-flight row, and nothing on the store orders two adoption launches,
+   so start one launch at a time.
 3. **Installs the recorded primaries** (Q149) and runs node investigation on the lost birth. If the
-   lost birth is reached, or any node-admin answers, the launch is refused `NameHeld` and exits, and the
-   attempt closes through the failure path.
+   lost birth is reached, or any node-admin answers, the launch is refused `NameHeld` and exits.
 4. **Releases the lost birth's name** and re-creates the birth as itself: same path.name, new node.id
    and incarnation, and its own member cert as its own maker.
 5. **Joins the live nodes** and adopts rafka-time from them. With no other node alive, its own clock is
    rafka-time.
 6. **Becomes fabric-primary and mesh-primary.** Once it is Ready, step 4 of fabric
-   recovery restores it to both roles, and the attempt completes.
+   recovery restores it to both roles.
 7. **Heals the mesh by itself**, as mesh-primary:
    - A node that kept serving keeps its birth (node.id and incarnation) and stays
      ready. It is never re-created.
@@ -91,8 +90,8 @@ Nothing more is commanded. In order:
 
 | Span | What it shows |
 |---|---|
-| `rdm.node_admin.fabric.update.via-adoption-claim` | the claim; `outcome=won` and `lost_node_id` = the lost birth |
-| `rdm.node_admin.node.delete.via-node-row` with the lost `node_id` | the lost birth's name released, after the claim |
+| `rdm.node_admin.fabric.update.via-adoption-claim` | under an in-force fabric.delete only: the claim of the delete's next attempt; `outcome=won` and `lost_node_id` = the lost birth |
+| `rdm.node_admin.node.delete.via-node-row` with the lost `node_id` | the lost birth's name released, after its node investigation |
 | `rdm.mesh.entry.update.via-rafka-time-adopted` with `source=pull` | rafka-time adopted from a live node |
 | `rdm.node_rpc.status.update.via-declare-own` from the mesh's other nodes | each serving node stays ready |
 
@@ -111,5 +110,5 @@ Each refusal is a line on stderr naming the input; nothing is written to the sto
 | `RDM_DATA_DIR` is another birth's data dir | an inherited data dir must be the lost birth's own |
 | a node-admin is alive (`NameHeld`, Q159) | the fabric moves the fabric-primary itself; no launch is needed |
 
-If the launch passes all of these, its claim and step 4 make it the fabric-primary. A second launch
-started by mistake loses the claim and exits.
+If the launch passes all of these, step 4 makes it the fabric-primary. Nothing on the store orders two
+launches, so start one at a time.

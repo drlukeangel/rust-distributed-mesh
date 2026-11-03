@@ -29,7 +29,7 @@ Those pages link here and restate nothing.
 | Completion | `node.mesh.joined` on the commanding stream once the report is accepted and the mesh holds (and the backbone, a node-admin): the first `Digest` heartbeat follows it; the mesh-primary's one Pending publish for this join came before it, when the report was accepted (step 10) |
 | Refusals | The report's: `JoinMismatch { field, deployed, reported }`, `NotPrimary { primary }`, `DeploymentAbandoned { build_id, attempt, node_id, incarnation }`, `CertRefused { name, detail }`, `NotReady`, `Busy`, `ConnectionsDeleting`, `Malformed`; a refused report fails the primitive by that name and the node joins nothing. `PeerUnresolved` and `Unauthorized` are codec positions only: a mesh receiver never sends either ([node-rpc.md](../node-rpc.md#40-error-truth-table) refusal table) |
 | Gossip | No new frame. The join's visible effect is the node's first Digest and, from the mesh-primary, the node's status recorded `pending` on its row when it accepts the node's join report, before it answers it, carried by its MeshTopology projection like every status; never a view-side mark; NodeStopped for that birth is cleared at `node.mesh.joined` |
-| Wire | The report is [Join, op `0x1D`](../node-rpc-envelope.md#join-op-0x1d-rdm). The standalone command is `JoinMesh { node_id, incarnation, build_id, attempt, operation }` on 0x1B, answered `MeshJoined` on completion; an appended variant pair, `durable format moved`, retiring the legacy `Rejoin` control frame |
+| Wire | The report is [Join, op `0x1D`](../node-rpc-envelope.md#join-op-0x1d-rdm). The standalone command is `JoinMesh { node_id, incarnation, operation, primary }` on 0x1B, answered `MeshJoined` on completion; `primary` is the commander's held mesh-primary record of the node's mesh, which a commanded node-admin takes by the supersedes rule before it runs its election: not named, it drops its primary role and its own record, then joins; named, it refuses the command by name, `RejectedNotPrimary { ReceiverNotPrimary }`, and joins no one; an appended variant pair, `durable format moved`, retiring the legacy `Rejoin` control frame |
 | Spans | `rdm.node.mesh.update.via-joining` at the report, `via-joined` once per mesh joined, each naming mesh, MeshId and which (`own` or `backbone`); the primary's `rdm.node_admin.node.update.via-join` on acceptance |
 
 ## Numbered end-to-end sequence
@@ -97,9 +97,8 @@ The standalone command, from the mesh-primary to a node its tickle reached off i
     "JoinMesh": {
       "node_id": "k8pag1qx95gw",
       "incarnation": "0000000000000008",
-      "build_id": "3f9a1c7e5b2d",
-      "attempt": 3,
-      "operation": "node.mesh.join:mesh1.node.1"
+      "operation": "node.mesh.join:mesh1.node.1",
+      "primary": null
     }
   }
 }

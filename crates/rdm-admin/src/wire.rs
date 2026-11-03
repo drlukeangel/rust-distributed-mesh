@@ -193,16 +193,14 @@ enum WireAction {
     /// Reserved position: the removed node.restart's action (Q183). Never sent; a fact carrying it is
     /// refused by name ([`fact_from_wire`]). Kept so every later action keeps its position.
     Reserved0 { path: PathName, from_incarnation: IncarnationId },
-    DeleteConnections { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
-    Stop { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
-    Start { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
-    Recover { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
+    /// Reserved positions: the removed connections delete, stop, start and recovery actions, never a
+    /// Build's attempt (Q342). Never sent; a fact carrying one is refused by name.
+    Reserved1 { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
+    Reserved2 { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
+    Reserved3 { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
+    Reserved4 { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
     Delete { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
     Steps { steps: Vec<rdm_core::build::Step>, pinned: Vec<(PathName, crate::build::PinnedBirth)>, rename_intents: std::collections::BTreeMap<u32, crate::accepted::RenameIntent> },
-    Terminate { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
-    /// Fabric recovery's backbone re-create, a node.create alone (Q142); appended, so every earlier
-    /// variant keeps its position.
-    RecoverFromBackbone { path: PathName, mesh: String, r#type: String, node_id: NodeId, from_incarnation: IncarnationId },
 }
 
 impl From<&MeshDesired> for WireMeshDesired {
@@ -258,32 +256,23 @@ impl From<WireChange> for TopologyChange {
 impl From<&AttemptAction> for WireAction {
     fn from(a: &AttemptAction) -> Self {
         match a {
-            AttemptAction::DeleteConnections { r#type, mesh: mesh, path, node_id, from_incarnation } => Self::DeleteConnections { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Stop { r#type, mesh: mesh, path, node_id, from_incarnation } => Self::Stop { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Start { r#type, mesh: mesh, path, node_id, from_incarnation } => Self::Start { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Recover { r#type, mesh: mesh, path, node_id, from_incarnation, backbone: false } => Self::Recover { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Recover { r#type, mesh: mesh, path, node_id, from_incarnation, backbone: true } => Self::RecoverFromBackbone { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Delete { r#type, mesh: mesh, path, node_id, from_incarnation } => Self::Delete { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Delete { r#type, mesh, path, node_id, from_incarnation } => Self::Delete { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Steps { steps, pinned, rename_intents } => Self::Steps { steps: steps.clone(), pinned: pinned.clone(), rename_intents: rename_intents.clone() },
-            AttemptAction::Terminate { r#type, mesh: mesh, path, node_id, from_incarnation } => Self::Terminate { r#type: r#type.clone(), mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
         }
     }
 }
 impl TryFrom<WireAction> for AttemptAction {
     type Error = String;
-    /// The action a wire action carries; the reserved position of the removed node.restart is refused
-    /// by name.
+    /// The action a wire action carries; a reserved position (the removed node.restart, a node command
+    /// or a repair) is refused by name.
     fn try_from(a: WireAction) -> Result<Self, String> {
         Ok(match a {
             WireAction::Reserved0 { path, .. } => return Err(format!("the attempt's action is node.restart of {path:?}, a reserved position: node.restart is removed (Q183)")),
-            WireAction::DeleteConnections { r#type, mesh, path, node_id, from_incarnation } => Self::DeleteConnections { r#type, mesh, path, node_id, from_incarnation },
-            WireAction::Stop { r#type, mesh, path, node_id, from_incarnation } => Self::Stop { r#type, mesh, path, node_id, from_incarnation },
-            WireAction::Start { r#type, mesh, path, node_id, from_incarnation } => Self::Start { r#type, mesh, path, node_id, from_incarnation },
-            WireAction::Recover { r#type, mesh, path, node_id, from_incarnation } => Self::Recover { r#type, mesh, path, node_id, from_incarnation, backbone: false },
-            WireAction::RecoverFromBackbone { r#type, mesh, path, node_id, from_incarnation } => Self::Recover { r#type, mesh, path, node_id, from_incarnation, backbone: true },
+            WireAction::Reserved1 { path, .. } | WireAction::Reserved2 { path, .. } | WireAction::Reserved3 { path, .. } | WireAction::Reserved4 { path, .. } => {
+                return Err(format!("the attempt's action on {path:?} is a reserved position: a node command or a repair is never a Build's attempt (Q342)"))
+            }
             WireAction::Delete { r#type, mesh, path, node_id, from_incarnation } => Self::Delete { r#type, mesh, path, node_id, from_incarnation },
             WireAction::Steps { steps, pinned, rename_intents } => Self::Steps { steps, pinned, rename_intents },
-            WireAction::Terminate { r#type, mesh, path, node_id, from_incarnation } => Self::Terminate { r#type, mesh, path, node_id, from_incarnation },
         })
     }
 }
@@ -732,8 +721,8 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
         WireFact::Opened(o) => BuildFact::Opened(AttemptOpened {
             action: {
                 let refuse = |reason: String| WireRefusal { build_id: o.build_id.clone(), attempt: o.attempt, step: "Opened".into(), reason };
-                if o.reason == AttemptReason::Reserved2 {
-                    return Err(refuse("the attempt's reason is node.restart's, a reserved position: node.restart is removed (Q183)".into()));
+                if o.reason.is_reserved() {
+                    return Err(refuse(format!("the attempt's reason {} is a reserved position: a node command, a repair or drift is never a Build's attempt (Q183, Q342)", o.reason.as_str())));
                 }
                 o.action.map(AttemptAction::try_from).transpose().map_err(refuse)?
             },

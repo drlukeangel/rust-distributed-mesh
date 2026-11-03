@@ -463,7 +463,7 @@ impl Rig {
             template: &self.template,
             timeouts: Timeouts { bind: join, join, ..Timeouts::default() },
         };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", name), mesh: "mesh1".into(), r#type: "node".into(), build_id: build.clone(), attempt, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", name), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build.clone()), attempt, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
@@ -624,7 +624,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
-        let build = stream.accepted().build_id.clone();
+        let build = stream.accepted().expect("the call opened a Build").build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
@@ -667,7 +667,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
-        let build = stream.accepted().build_id.clone();
+        let build = stream.accepted().expect("the call opened a Build").build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
@@ -698,8 +698,8 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         let served = serve(door.clone()).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
-        let build = stream.accepted().build_id.clone();
-        let accepted = stream.accepted().clone();
+        let build = stream.accepted().expect("the call opened a Build").build_id.clone();
+        let accepted = stream.accepted().cloned().expect("the call opened a Build");
         let mut frames = Vec::new();
         // The cut: the caller's wire is severed while the create waits for the birth's report, which
         // is not heard yet. The wait is where it is cut once the step before it has its receipt.
@@ -747,7 +747,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     assert_eq!(completed_steps(&receipts_after_cut, 1), ATTEMPT_ONE_STEPS);
     assert_eq!(resume.from, Some((rdm_core::OperationId::location("node.create", &PathName::new("mesh1.node", "3").unwrap()), "WaitForBind".to_string())), "the resume starts at the first step without a Complete receipt");
     assert_eq!(resume.completed.len(), ATTEMPT_ONE_STEPS.len());
-    assert_eq!(disposition, rdm_core::build::Disposition::Attached, "the re-submit attached to the Build the cut left running");
+    assert_eq!(disposition, Some(rdm_core::build::Disposition::Attached), "the re-submit attached to the Build the cut left running");
 
     for step in ATTEMPT_ONE_STEPS {
         assert_eq!(receipts_after.steps.iter().filter(|s| s.step == step).count(), 1, "{step} was not run again: one receipt, from attempt 1");
@@ -784,8 +784,8 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
         let served = serve(door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
-        let build = stream.accepted().build_id.clone();
-        let accepted = stream.accepted().clone();
+        let build = stream.accepted().expect("the call opened a Build").build_id.clone();
+        let accepted = stream.accepted().cloned().expect("the call opened a Build");
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
@@ -800,7 +800,7 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
         (first, again, disposition)
     });
     assert_eq!(first[1..], [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete], "{first:?}");
-    assert_eq!(disposition, rdm_core::build::Disposition::AlreadyApplied);
+    assert_eq!(disposition, Some(rdm_core::build::Disposition::AlreadyApplied));
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
 }
 
@@ -822,8 +822,8 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         let served = serve(door.clone()).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
-        let build = stream.accepted().build_id.clone();
-        let accepted = stream.accepted().clone();
+        let build = stream.accepted().expect("the call opened a Build").build_id.clone();
+        let accepted = stream.accepted().cloned().expect("the call opened a Build");
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
@@ -843,7 +843,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         (build, kept, first, again, disposition)
     });
     assert!(kept, "the reconcile tick is handed the completed drive, never a new one in its place");
-    assert_eq!(disposition, rdm_core::build::Disposition::AlreadyApplied);
+    assert_eq!(disposition, Some(rdm_core::build::Disposition::AlreadyApplied));
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
     let spans = cap.spans();
     let dispatches: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["build_id"] == build.log().to_string().as_str()).collect();
@@ -897,14 +897,8 @@ impl BuildStateAdapter for ReadBeforeTheVerdict {
     async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
         self.inner.committed_facts(build).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, rdm_admin::build_state::BuildStateError> {
-        self.inner.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, rdm_admin::build_state::BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, rdm_admin::build_state::BuildStateError> {
-        self.inner.exits_owed(build_id, mesh).await
     }
     async fn forget(&self, id: &BuildId) -> Result<(), rdm_admin::build_state::BuildStateError> {
         self.inner.forget(id).await
@@ -932,8 +926,8 @@ fn a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothi
         let claim = |attempt: u32| BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: executor_birth.clone() };
         rig.builds.claim_attempt(&claim(1)).await.unwrap();
         rig.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
-        // A stop reopens the completed Build; its attempt is claimed and running.
-        rig.builds.open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Stop, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, mesh: None, context: None }).await.unwrap();
+        // A delete reopens the completed Build; its attempt is claimed and running.
+        rig.builds.open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Delete, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, mesh: None, context: None }).await.unwrap();
         rig.builds.claim_attempt(&claim(2)).await.unwrap();
         // The tick's current-Build read, taken now; the attempt's verdict lands before its Build read.
         let before = rig.builds.current_build().await.unwrap();
@@ -964,74 +958,6 @@ fn a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothi
     eprintln!("span rdm.node_admin.build.reject.via-not-in-progress-when-read {}", told[0]);
 }
 
-/// CONTRACT (node-recovery.md "Numbered end-to-end sequence" step 1: "A repeat submit answers
-/// AlreadyApplied or BuildInProgress, never a second recovery"): over op `0x20`, a recovery submit
-/// for an exited birth already recovered answers `Started { AlreadyApplied }` naming the Build and
-/// attempt whose recovery (its delete, then its create) recovered it, then the terminal `Complete` of that attempt
-/// and nothing else. Must NOT happen: a drive made or started for the Build (a drive of an ended
-/// Build claims its next attempt), or an attempt opened.
-#[test]
-fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_the_wire_and_drives_nothing() {
-    use rdm_admin::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, StepOutcome};
-    let cap = capture();
-    let (opened_before, opened_after, b0, recovering, stream, frames, drive) = cap.run(async {
-        let rig = Arc::new(Rig::new());
-        let door = door(&rig, Duration::from_secs(30)).await;
-        let cp = door.control.clone();
-        let path: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
-        let exited = cp.topology.read().await.node(&path).unwrap().clone();
-        let (node_id, birth) = (exited.node_id.clone(), exited.incarnation_id.clone().unwrap());
-        let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
-        let executor_birth = cp.topology.read().await.node(&door.me).unwrap().birth().unwrap();
-        let settle = |attempt: u32| {
-            let executor_birth = executor_birth.clone();
-            let (builds, b0) = (rig.builds.clone(), b0.clone());
-            async move {
-                builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: executor_birth.clone() }).await.unwrap();
-                builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
-            }
-        };
-        settle(1).await;
-        let recovering = match cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await {
-            Ok(rdm_admin::control_plane::Recovery::Opened(o)) => o,
-            other => panic!("the first recovery is admitted: {other:?}"),
-        };
-        // The recovery's receipts as its two workflows write them, in the lane its door opened it in
-        // (R-BI7: the member's mesh's lane): the delete's NodeDeleted names the exited birth, and
-        // each operation's Complete commits no output; the create is the last.
-        let deleted = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".to_owned(), build_id: b0.to_string(), attempt: recovering.attempt, operation: rdm_core::OperationId::node("node.delete", &node_id), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
-        for (operation, step, output) in [("node.delete", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("node.delete", "Complete", None), ("node.create", "Complete", None)] {
-            rig.builds
-                .append_step_receipt(&BuildStepReceipt { mesh: recovering.mesh.clone(), build_id: b0.clone(), attempt: recovering.attempt, operation: if operation == "node.create" { rdm_core::OperationId::location(operation, &path) } else { rdm_core::OperationId::node(operation, &node_id) }, step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor_birth.clone()) })
-                .await
-                .unwrap();
-        }
-        // The recovery's verdict in its own lane: its door opened and claimed it there (R-BI7).
-        rig.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: recovering.mesh.clone(), build_id: b0.clone(), attempt: recovering.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
-        let opened = |facts: Vec<BuildFact>| facts.iter().filter(|f| matches!(f, BuildFact::Opened(_))).count();
-        let opened_before = opened(rig.builds.facts().await.unwrap());
-        let served = serve(door.clone()).await;
-        let mut stream = served.carrier.create(rdm_core::build::BuildChange::Recover { node: path.clone(), node_id: node_id.clone(), incarnation: birth.clone() }).await.expect("the repeat is answered with a stream");
-        let head = (stream.build_id().to_string(), stream.attempt(), stream.disposition());
-        let mut frames = Vec::new();
-        while let Some(f) = tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("the answer ends") {
-            frames.push(f);
-        }
-        let opened_after = opened(rig.builds.facts().await.unwrap());
-        let drive = door.drives.get(&b0).is_some();
-        (opened_before, opened_after, b0, recovering, head, frames, drive)
-    });
-    assert_eq!(stream, (b0.to_string(), recovering.attempt, rdm_core::build::Disposition::AlreadyApplied), "Started names the Build and attempt that recovered the birth");
-    assert_eq!(frames.len(), 1, "one terminal and nothing else: {frames:?}");
-    assert!(matches!(&frames[0], Ok(rdm_client::BuildFrame::Complete { attempt }) if *attempt == recovering.attempt), "{frames:?}");
-    assert_eq!(opened_after, opened_before, "no attempt is opened");
-    assert!(!drive, "no drive is made for the Build");
-    let spans = cap.spans();
-    let applied = spans_named(&spans, "rdm.node_admin.build.reject.via-recovery-already-applied");
-    assert_eq!(applied.len(), 1, "the repeat is answered from the receipt that recovered the birth");
-    eprintln!("span rdm.node_admin.build.reject.via-recovery-already-applied {}", applied[0]);
-}
-
 /// CONTRACT (R-ON8): a fabric-primary that took the role after a Build ended holds no frame of it.
 /// Its re-submit is `AlreadyApplied` and the frames are read from the executor of the last attempt
 /// (`build.attempt.run` attaches to what that admin wrote itself), not from step facts the new
@@ -1045,8 +971,8 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         let before = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
         let served = serve(before.clone()).await;
         let mut stream = create_rpc(&nodes_over(&served.carrier), &served).await.unwrap();
-        let build = stream.accepted().build_id.clone();
-        let accepted = stream.accepted().clone();
+        let build = stream.accepted().expect("the call opened a Build").build_id.clone();
+        let accepted = stream.accepted().cloned().expect("the call opened a Build");
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
@@ -1062,7 +988,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         assert!(end.is_none(), "{end:?}");
         (first, again, disposition)
     });
-    assert_eq!(disposition, rdm_core::build::Disposition::AlreadyApplied);
+    assert_eq!(disposition, Some(rdm_core::build::Disposition::AlreadyApplied));
     assert_eq!(again[1..], first[1..], "every event again, replayed by the executor of the last attempt: {again:?}");
 }
 
@@ -1086,8 +1012,8 @@ fn a_build_sends_started_at_its_first_claim_then_ended_and_a_successor_that_adop
         let before = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
         let served = serve(before.clone()).await;
         let mut stream = create_rpc(&nodes_over(&served.carrier), &served).await.unwrap();
-        let build = stream.accepted().build_id.clone();
-        let accepted = stream.accepted().clone();
+        let build = stream.accepted().expect("the call opened a Build").build_id.clone();
+        let accepted = stream.accepted().cloned().expect("the call opened a Build");
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, &PathName::new("mesh1.node", "3").unwrap()).await }
@@ -1123,7 +1049,7 @@ fn a_build_sends_started_at_its_first_claim_then_ended_and_a_successor_that_adop
     assert_eq!(started.reason, rdm_admin::build_state::AttemptReason::Requested, "the first attempt's reason: {started:?}");
     let crate::Notice::Ended(ended) = &after_complete[1] else { unreachable!() };
     assert_eq!((ended.reason, &ended.state), (rdm_admin::build_state::AttemptReason::Requested, &rdm_admin::wiring::BuildEndedState::Complete), "{ended:?}");
-    assert_eq!(disposition, rdm_core::build::Disposition::AlreadyApplied, "the successor adopted the ended Build");
+    assert_eq!(disposition, Some(rdm_core::build::Disposition::AlreadyApplied), "the successor adopted the ended Build");
     assert_eq!(after_adoption.len(), 2, "the successor that adopted the ended Build sends nothing: {after_adoption:?}");
     assert_eq!(state, rdm_admin::build_state::BuildState::Complete, "build.get reads the terminal");
     let spans = cap.spans();
@@ -1217,7 +1143,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
         }
         // node.connection.delete naming no connection is refused by name, and nothing is sent.
         assert!(
-            matches!(nodes.connections_delete(&birth, &mp, &route, &rdm_core::status::ConnectionScope::Connections(vec![])).await, Ok(rdm_core::status::StatusReply::RejectedConnectionScope { reason }) if reason.contains("at least one")),
+            matches!(nodes.delete_connections(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), &rdm_core::status::ConnectionScope::Connections(vec![])).await, Err(CallEnd::Rejected { reason, detail }) if reason == "rejected-connection-scope" && detail.contains("at least one")),
             "an empty Connections list is refused by name"
         );
         let end = nodes.config_get();
@@ -1317,86 +1243,6 @@ impl InnerStream for Script {
     }
 }
 
-/// The executor of a stop of `mesh1.node.1`, attempt by attempt. The first run is lost once its
-/// `StopNode` frame has reached the fabric-primary: the receipt lived in the lost executor's own
-/// log alone (its broadcast never left), so no Build log the successor reads holds it, and the
-/// executor's exact runtime is proven exited. The next run holds no `StopNode` receipt: it
-/// reissues that uncertain step (node-rpc-envelope.md "Caller execution and certainty") and runs
-/// the stop to its end.
-struct LostAfterStopNode {
-    runs: Mutex<u32>,
-    exits: Arc<crate::loopback::Exits>,
-}
-
-#[async_trait::async_trait]
-impl Dispatcher for LostAfterStopNode {
-    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &rdm_core::framing::Birth, build_id: &BuildId, attempt: u32, _context: rdm_core::context::CallContext, plan: rdm_admin::executor::RunPlan) -> Dispatched {
-        use rdm_core::build::BuildReply;
-        let step = |operation: &str, step: &str| {
-            InnerItem::Frame(BuildReply::Step {
-                build_id: build_id.to_string(),
-                attempt,
-                operation: plan.operations.iter().find(|op| op.key().action == operation).expect("the admitted stop operation").key(),
-                step: step.into(),
-                receipt: None,
-            })
-        };
-        let run = {
-            let mut runs = self.runs.lock().unwrap();
-            *runs += 1;
-            *runs
-        };
-        let items = if run == 1 {
-            self.exits.exited.lock().unwrap().insert(executor.clone());
-            vec![step("node.stop", "StopNode"), InnerItem::Broke(format!("node {} was lost after its StopNode receipt", executor.node_id))]
-        } else {
-            vec![
-                step("node.stop", "StopNode"),
-                step("node.stop", "AwaitNodeLeft"),
-                step("node.stop", "Complete"),
-                InnerItem::Frame(BuildReply::Complete { build_id: build_id.to_string(), attempt }),
-            ]
-        };
-        Dispatched::Stream(Box::new(Script(items.into())))
-    }
-}
-
-/// CONTRACT (node-rpc-envelope.md "Caller execution and certainty": a changing call streams each
-/// completed step's event once): the executor of a stop is lost after its `StopNode` frame
-/// reached the caller and before that receipt reached any Build log the successor reads. The
-/// successor's attempt reissues `StopNode` (an uncertain step to it) and writes its own receipt:
-/// two receipts of one step, one per attempt, each a frame under its own receipt key. The caller's
-/// stream reads them as the client's receipt fold does, per step the latest attempt deciding, so
-/// `node.connections.deleted` is delivered once and every other event of the stop once, in order.
-#[test]
-fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one_event_to_the_caller() {
-    let cap = capture();
-    let frames = cap.run(async {
-        let rig = Arc::new(Rig::new());
-        let exits = Arc::new(crate::loopback::Exits::default());
-        let script = Arc::new(LostAfterStopNode { runs: Mutex::new(0), exits: exits.clone() });
-        let door = door_via(&rig, Duration::from_secs(60), move |_| script, exits).await;
-        let served = serve(door).await;
-        let mut stream = nodes_over(&served.carrier).stop(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await.expect("the fabric-primary accepts the stop");
-        let (frames, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
-        assert!(end.is_none(), "the stream ends with its terminal frame: {end:?} after {frames:?}");
-        frames
-    });
-    let events: Vec<NodeEvent> = frames.iter().filter_map(|f| if let Frame::Event(e) = f { Some(*e) } else { None }).collect();
-    assert_eq!(
-        events,
-        [NodeEvent::ConnectionsDeleted, NodeEvent::Stopped],
-        "every event of the stop once, in order: {frames:?}"
-    );
-    assert_eq!(frames.last(), Some(&Frame::Complete));
-
-    let spans = cap.spans();
-    let lost: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["outcome"] == "executor-lost").collect();
-    assert_eq!(lost.len(), 1, "the first attempt's executor was lost: {spans:?}");
-    assert_eq!(spans_named(&spans, "rdm.node_admin.build.update.via-executor-exited-or-os-stopped").len(), 1, "its departure was proven before the successor's attempt");
-    assert_eq!(spans_named(&spans, "rdm.node_admin.connection.delete.via-deleted-frame").len(), 1, "node.connections.deleted was delivered once");
-}
-
 /// CONTRACT: a Build call asked of a node-admin that does not hold the fabric-primary role is refused
 /// `not-fabric-primary`, naming the fabric-primary that admin sees, before either door admits anything,
 /// and the refusal has its own span as every other Build refusal has (one honest name per reason,
@@ -1409,7 +1255,7 @@ fn a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_
     let end = cap.run(async {
         let rig = Arc::new(Rig::new());
         let served = serve(door_not_fabric_primary(&rig).await).await;
-        served.carrier.create(rdm_core::build::BuildChange::Stop { node: rdm_core::PathName::new("mesh1.node", "1").unwrap() }).await.err()
+        served.carrier.create(rdm_core::build::BuildChange::RemoveNode { node: rdm_core::PathName::new("mesh1.node", "1").unwrap() }).await.err()
     });
     match &end {
         Some(CallEnd::Rejected { reason, detail }) => {

@@ -102,17 +102,18 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // A restart, node.stop then node.start (Q183), keeps NodeId, FabricId and the incarnation: the
     // process is stopped and started.
     let before = nodes.iter().find(|n| location(n) == PathName::new("mesh2.node", "2").unwrap()).unwrap().clone();
-    let (a, _) = estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "2").unwrap()).await;
+    let builds = estate.build_ids().await;
+    estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "2").unwrap()).await;
     let after = estate
         .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).map(json_of))
         .await;
     assert_eq!(after["node_id"], before["node_id"], "restart keeps the node id");
     assert_eq!(after["incarnation_id"], before["incarnation_id"], "restart keeps the incarnation");
 
-    // A second stop and start of the same node are later attempts of the same Build: the first
-    // start's finished run hands them nothing, so they stop and start the node again.
-    let (_, again) = estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "2").unwrap()).await;
-    assert_eq!(again.build_id, a.build_id, "a restart is an attempt of the accepted Build: {again:?}");
+    // A second stop and start of the same node are node commands of their own: the first start's
+    // finished run hands them nothing, so they stop and start the node again, and no Build is written.
+    estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "2").unwrap()).await;
+    assert_eq!(estate.build_ids().await, builds, "a restart writes no Build (Q342)");
     let third = estate
         .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).map(json_of))
         .await;
@@ -133,7 +134,8 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .await;
     canonical("heard Digest incarnation_id", &held["incarnation_id"]);
     canonical("heard Digest node_id", &held["node_id"]);
-    let restart_build = again.build_id.to_string();
+    // A restart belongs to no Build: its steps name none (D44).
+    let restart_build = String::new();
 
     // Replacement of a node: removed, then created again at the same path.
     let replaced = node_ids[&PathName::new("mesh1.node", "2").unwrap()].clone();

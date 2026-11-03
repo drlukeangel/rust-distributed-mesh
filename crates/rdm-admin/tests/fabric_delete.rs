@@ -29,7 +29,7 @@ use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rdm_admin::accepted::{compile, plan_for_build, AcceptedStore, FabricTopology, TopologyChange};
 use rdm_admin::admin::Records;
 use rdm_admin::build::{BuildId, BuildOperation};
-use rdm_admin::build_state::{AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
+use rdm_admin::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
 use rdm_admin::control_plane::ControlPlane;
 use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RuntimeIdentity, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
@@ -291,7 +291,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
         async move {
             let name = n.node_id.clone();
-            pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+            pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: Some(build_id.clone()), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
         }
     })
     .await
@@ -320,7 +320,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
 
     // Execute DeleteLiveNode(mesh2.node-admin.1) as fabric-primary: mesh2.node-admin.1 stops, its row is written
     // Deleted by FP as acting primary, and MeshLeft + mesh_left_rows write mesh2 Dead.
-    let term_m2_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m2_a1).node_id), build_id: build_id.clone(), attempt: 1, node: m2_a1.clone(), handle: handles[&m2_a1.node_id].clone(), unreached: false }).await.unwrap();
+    let term_m2_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m2_a1).node_id), build_id: Some(build_id.clone()), attempt: 1, node: m2_a1.clone(), handle: handles[&m2_a1.node_id].clone(), unreached: false }).await.unwrap();
     observed.write().await.nodes.iter_mut().filter(|n| n.name == m2_a1.name).for_each(|n| {
         n.status = NodeStatus::Leaving;
         n.stopped = true;
@@ -372,7 +372,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
         async move {
             let name = n.node_id.clone();
-            pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+            pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: Some(build_id.clone()), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
         }
     })
     .await
@@ -410,7 +410,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Step 4: a separate call from outside the fabric runs `node.delete` of the fabric-primary.
     assert!(cp.of_deleted_mesh(&m1_a1.name).await.unwrap(), "the fabric-primary's mesh is deleted after fabric.deleted");
     let fp_delete = cp
-        .open_attempt_in(tracing::info_span!("cell.fp-delete"), "build.create", AttemptReason::Delete, m1_a1.name.clone(), rdm_admin::control_plane::ActionKind::Delete)
+        .open_delete_in(tracing::info_span!("cell.fp-delete"), "build.create", m1_a1.name.clone())
         .await
         .expect("the separate node.delete of the fabric-primary is admitted");
     assert_eq!(fp_delete.attempt, 2);
@@ -420,7 +420,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     assert_eq!(role_move(&fp_ops[0], &*observed.read().await), None, "the last node of the last mesh moves no role on its separate node.delete");
     assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.node_id.clone()), "the fabric-primary executes its own final node.delete");
 
-    let term_m1_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m1_a1).node_id), build_id: build_id.clone(), attempt: 2, node: m1_a1.clone(), handle: handles[&m1_a1.node_id].clone(), unreached: false }).await.unwrap();
+    let term_m1_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m1_a1).node_id), build_id: Some(build_id.clone()), attempt: 2, node: m1_a1.clone(), handle: handles[&m1_a1.node_id].clone(), unreached: false }).await.unwrap();
     observed.write().await.nodes.iter_mut().filter(|n| n.name == m1_a1.name).for_each(|n| {
         n.status = NodeStatus::Leaving;
         n.stopped = true;
@@ -531,7 +531,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             let (pipeline, handles, build_id, m2_nodes) = (&pipeline, &handles, &build_id, &m2_nodes);
             async move {
                 let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node_id))?;
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(record).node_id), build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&NodeId::parse(&b.node_id).unwrap()].clone(), unreached: true }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(record).node_id), build_id: Some(build_id.clone()), attempt: 1, node: record, handle: handles[&NodeId::parse(&b.node_id).unwrap()].clone(), unreached: true }).await.map_err(|e| e.to_string())
             }
         };
 
@@ -627,7 +627,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             let (pipeline, handles, build_id, m2_nodes) = (&fp_pipeline, &handles, &build_id, &m2_nodes);
             async move {
                 let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node_id))?;
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(record).node_id), build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&NodeId::parse(&b.node_id).unwrap()].clone(), unreached: true }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(record).node_id), build_id: Some(build_id.clone()), attempt: 1, node: record, handle: handles[&NodeId::parse(&b.node_id).unwrap()].clone(), unreached: true }).await.map_err(|e| e.to_string())
             }
         };
         let outcome = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &mesh_storage, &*nodes_storage, &key_m2, fp.node_id.as_str(), "mesh2", &m2_nodes, &held_paths, &delete)
@@ -689,14 +689,14 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
                 let name = n.node_id.clone();
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: Some(build_id.clone()), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         })
         .await
         .expect("created admin mesh2.node-admin.2 completes mesh.delete of mesh2");
 
         record_completion(&builds, &key_m2, fp.node_id.as_str(), &manifest).await.unwrap();
-        let term_a2 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m2_a2).node_id), build_id: build_id.clone(), attempt: 1, node: m2_a2.clone(), handle: h_a2, unreached: false }).await.unwrap();
+        let term_a2 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m2_a2).node_id), build_id: Some(build_id.clone()), attempt: 1, node: m2_a2.clone(), handle: h_a2, unreached: false }).await.unwrap();
         view.write().await.nodes.iter_mut().filter(|n| n.name == m2_a2.name).for_each(|n| {
             n.status = NodeStatus::Leaving;
             n.stopped = true;
@@ -831,22 +831,6 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         cp.topology = observed.clone();
         crate::bind_store(&cp, nodes_storage.clone(), &*observed.read().await).await;
 
-        // Step 42: a node stop is node lifecycle and starts no fabric.delete.
-        let stop_opened = cp
-            .open_attempt_in(
-                tracing::info_span!("cell.node-stop"),
-                "node.stop",
-                AttemptReason::Stop,
-                m1_r1.name.clone(),
-                rdm_admin::control_plane::ActionKind::Stop,
-            )
-            .await
-            .expect("node.stop opens an attempt on the existing topology Build");
-        assert!(
-            !builds.read_build(&stop_opened.build_id).await.unwrap().deletes_fabric(),
-            "a node stop starts no fabric.delete"
-        );
-
         // Caller & Driver: typed caller submits DeleteFabric; the fabric-primary drives it as one Build.
         let opened = cp.submit("POST /api/build", TopologyChange::DeleteFabric).await.expect("DeleteFabric is accepted as one Build");
         let build_id = opened.build_id;
@@ -861,14 +845,6 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .await
             .unwrap();
 
-        // Failure & recovery under fabric.delete: while fabric.delete is in force, an absent node is
-        // never recovered or re-created (`rdm.node_admin.build.reject.via-fabric-delete-in-force`).
-        let m1_r1_inc = m1_r1.incarnation_id.clone().unwrap();
-        let in_force_err = cp
-            .open_recovery("test", m1_r1.name.clone(), m1_r1.node_id.clone(), m1_r1_inc.clone())
-            .await
-            .expect_err("recovery is refused while fabric.delete is in force");
-        assert!(matches!(in_force_err, rdm_admin::control_plane::Refusal::BuildInProgress(_)));
         let joins = Joins::default();
         let view_sink = View::default();
         view_sink.writes_through(rows_fp.clone());
@@ -949,7 +925,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                     .ok_or_else(|| format!("{} is not a mesh3 record", b.node_id))?;
                 pipeline
                     .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(record).node_id),
-                        build_id: build_id.clone(),
+                        build_id: Some(build_id.clone()),
                         attempt: 1,
                         node: record,
                         handle: handles[&NodeId::parse(&b.node_id).unwrap()].clone(),
@@ -1002,7 +978,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                     .ok_or_else(|| format!("{} is not a mesh2 record", b.node_id))?;
                 pipeline
                     .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(record).node_id),
-                        build_id: build_id.clone(),
+                        build_id: Some(build_id.clone()),
                         attempt: 1,
                         node: record,
                         handle: handles[&NodeId::parse(&b.node_id).unwrap()].clone(),
@@ -1080,7 +1056,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                 let name = n.node_id.clone();
                 pipeline
                     .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id),
-                        build_id: build_id.clone(),
+                        build_id: Some(build_id.clone()),
                         attempt: 1,
                         node: n,
                         handle: handles[&name].clone(),
@@ -1095,7 +1071,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         record_completion(&*builds, &key_m2, fp.node_id.as_str(), &manifest_m2).await.unwrap();
         let term_a2 = pipeline
             .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m2_a2).node_id),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 1,
                 node: m2_a2.clone(),
                 handle: h_a2,
@@ -1145,7 +1121,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                 let name = n.node_id.clone();
                 pipeline
                     .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id),
-                        build_id: build_id.clone(),
+                        build_id: Some(build_id.clone()),
                         attempt: 1,
                         node: n,
                         handle: handles[&name].clone(),
@@ -1169,13 +1145,6 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         };
         record_completion(&*builds, &key_m1, fp.node_id.as_str(), &manifest_m1).await.unwrap();
         assert_eq!(owner_resume(&builds.read_build(&build_id).await.unwrap().steps, &op_m1), Ok(OwnerResume::Deleted(manifest_m1.clone())));
-
-        // Once a runtime's deletion receipt is durable, nothing recovers it for being absent (`fabric-delete.md:73`).
-        let already_deleted = cp
-            .open_recovery("test", m1_r1.name.clone(), m1_r1.node_id.clone(), m1_r1_inc)
-            .await
-            .expect("durable deletion receipt answers AlreadyApplied");
-        assert!(matches!(already_deleted, rdm_admin::control_plane::Recovery::AlreadyApplied(_)));
 
         complete_fabric_delete(&*builds, &build_id, 1, &fabric_id, fp.node_id.as_str())
             .await
@@ -1202,8 +1171,6 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
     };
     assert!(!named("rdm.node_admin.mesh.update.via-mesh-deleted-receipt").is_empty());
     assert!(!named("rdm.node_admin.mesh.update.via-deleted-row").is_empty());
-    assert!(!named("rdm.node_admin.build.reject.via-fabric-delete-in-force").is_empty());
-    assert!(!named("rdm.node_admin.build.reject.via-recovery-already-applied").is_empty());
     let completed = named("rdm.node_admin.fabric.delete.via-build");
     assert!(!completed.is_empty(), "expected rdm.node_admin.fabric.delete.via-build span");
     assert_eq!(completed[0]["attributes"]["outcome"], "fabric-deleted");

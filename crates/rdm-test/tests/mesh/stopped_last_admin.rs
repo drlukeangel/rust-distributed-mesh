@@ -111,7 +111,7 @@ async fn delete_mesh1(test: &str) -> Deleted {
     let last_incarnation = left[0].incarnation_id.clone().expect("the ready last admin has an incarnation");
     estate.enter_fabric_primary().await;
     let mut delete = estate.nodes_obj().await.delete(&last).await.unwrap_or_else(|e| panic!("the node.delete of mesh1's last admin {last:?} was refused: {e}"));
-    let c = Estate::complete(&mut delete).await.build_id.to_string();
+    let c = Estate::complete(&mut delete).await.expect("the call opened a Build").build_id.to_string();
     estate.settled_views(&[mesh("mesh2")]).await;
     for (name, pid) in &pids {
         assert!(!alive(*pid), "{name}'s runtime is gone once the mesh.delete and the last admin's node.delete are complete");

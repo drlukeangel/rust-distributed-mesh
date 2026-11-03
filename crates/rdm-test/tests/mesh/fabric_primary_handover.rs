@@ -167,7 +167,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
             estate.stop().await;
             let spans = estate.spans();
             let deleted: Vec<String> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["build_id"] == b.as_str()).map(|sp| s(&sp["attributes"]["node"])).collect();
-            let recoveries: Vec<String> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().map(|sp| format!("{} by {}: {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["submitter"]), s(&sp["attributes"]["outcome"]))).collect();
+            let recoveries: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().map(|sp| format!("{} by {}: {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["submitter"]), s(&sp["attributes"]["outcome"]))).collect();
             panic!("the view never settled on mesh2, mesh3 and at most mesh1's final primary within 60 s after build {b}: {held:?}; NodeDeleted published under {b}: {deleted:?}; recovery submissions ({}): {:?}", recoveries.len(), recoveries.iter().take(3).collect::<Vec<_>>());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -228,7 +228,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // executor. The topology names no mesh1, so the call opens its own targeted attempt of the accepted
     // Build (as a delete of a stopped `.old` does), with its own trace.
     let mut removal = estate.nodes_obj().await.delete(&final_name).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {final_name:?}: {e}"));
-    let accepted = Estate::complete(&mut removal).await;
+    let accepted = Estate::complete(&mut removal).await.expect("a delete opens a Build");
     let (c, c_attempt) = (accepted.build_id.to_string(), u64::from(accepted.attempt));
     let after = Estate::values(&estate.settles_to_named(&names(&["mesh2", "mesh3"]), Duration::from_secs(60)).await);
     ids.extend(after.iter().map(|n| (location(n), s(&n["node_id"]))));
@@ -338,7 +338,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     for name in &members {
         assert!(deleted_member.iter().any(|sp| on(sp, &ids, name) && keyed(sp, "node.delete", &ids[name])), "mesh1's primary published NodeDeleted for {name:?} under {b}: {deleted_member:?}");
     }
-    let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| s(&sp["attributes"]["submitter"]) == final_id).collect();
+    let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| s(&sp["attributes"]["submitter"]) == final_id).collect();
     assert!(recoveries.is_empty(), "the deleted mesh's last admin {final_name:?} submits no recovery of its deleted members: {} submissions, first {:?}", recoveries.len(), recoveries.first());
     // 1. mesh.deleted ends the mesh.delete: nothing of the final primary is stopped under B.
     assert!(order_in(&final_name, false).is_empty(), "the mesh.delete runs no step on its final primary {final_name:?} (its node.delete is attempt {c_attempt}): {:?}", order_in(&final_name, false));

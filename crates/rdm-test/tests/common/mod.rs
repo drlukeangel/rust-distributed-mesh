@@ -422,7 +422,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     };
 
     let created = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node_name)), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt: 1, node: node_name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node_name)), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, node: node_name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await;
     let created = match created {
         Ok(c) => c,
@@ -576,10 +576,10 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
     use rdm_core::status::{StatusReply as R, StatusRequest as S};
     use rdm_transport::stream::StreamItem;
     let command = match req {
-        S::StopNode { node_id, incarnation, build_id, attempt, operation } => Q::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() },
-        S::StartNode { node_id, incarnation, build_id, attempt, operation } => Q::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() },
+        S::StopNode { node_id, incarnation, build_id, attempt, operation } => Q::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone() },
+        S::StartNode { node_id, incarnation, build_id, attempt, operation } => Q::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone() },
         // node.mesh.leave is a node command on 0x22 (Q205): its Status position is reserved.
-        S::LeaveMesh { node_id, incarnation, build_id, attempt, operation } => Q::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() },
+        S::LeaveMesh { node_id, incarnation, build_id, attempt, operation } => Q::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone() },
         _ => return None,
     };
     let (node_id, incarnation) = command.subject();

@@ -13,10 +13,10 @@ one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its ste
 
 Only an answer from the exact birth counts as `reached`.
 
-An unheard mesh-primary is investigated by the fabric-primary the same way, after the election has
-named its successor ([node recovery](node-recovery.md) step 2; Q335); a mesh with no node-admin
-left is the same case with no successor named, and the re-created node-admin is that mesh's primary
-by the same election.
+A lost mesh-primary is investigated by the successor its election names, as any member of its
+mesh ([node recovery](node-recovery.md) step 2; Q335). When the mesh's aggregate stays unheard past the staleness floor (no successor took the role), the
+fabric-primary investigates it the same way, and the re-created node-admin is that mesh's primary by
+the same election.
 
 A node that does not answer a call is silent, whatever it gossips (Q182): a call whose attempts end
 unanswered marks its birth at the primary above it (the caller itself when it is that primary; any
@@ -45,10 +45,9 @@ needed is recovered by re-create (Q217). A
 node-admin's atlas is its topology and its in-flight commands over the meshes it is primary for, its own
 mesh as a mesh-primary and every mesh as the fabric-primary, taken as it takes that primary and narrowed off as it hands it away; the caller's record and the record at its path.name are read through the current-pair lookup ([query.md §1](../query.md#1-external-a-query-to-the-fabric-primary)). A node-admin that is not the fabric-primary
 verifies its decision at the root with `fabric.atlas.get` before it acts, and the root's answer wins, except that a caller whose record it holds deleted stays deleted (Q217). A
-deleted caller is reported to the fabric-primary (`rdm.node_admin.node.update.via-returned-reported`),
-which terminates its runtime under `node.terminate:<path>@<incarnation>`; each decision is one
-`rdm.node_admin.node.update.via-refused-caller` span. A node that comes back after it was re-created is
-such a caller: its re-created birth is at its path.name, and it is deleted. A second birth another
+deleted caller's runtime is terminated by the primary whose atlas decided it, its own workflow, under `node.terminate:<path>@<incarnation>` (`rdm.node_admin.node.update.via-returned-reported`); each decision is one
+`rdm.node_admin.node.update.via-refused-caller` span. A node that comes back once its verdict is not `reached`, during its replacement's birth or after it, is
+such a caller: its recovery or its re-created birth holds its path.name, and it is deleted. A second birth another
 executor made at the path.name across a cut is made a deleted birth by its mesh-primary, which writes its
 row deleted ([node.delete](node-delete.md), releasing the name) and reports it the same way (Q142).
 

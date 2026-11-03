@@ -43,13 +43,9 @@ mod tests {
         current_birth.declared.insert(NodeState::Pending);
         current_birth.declared.insert(NodeState::Ready);
         let start_op = DeclaredOperation {
-            build_id: "build-status-1".to_string(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.start", &node_id),
         };
         let stop_op = DeclaredOperation {
-            build_id: "build-status-2".to_string(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.stop", &node_id),
         };
         current_birth.operations.push(NodeOperation {
@@ -91,7 +87,7 @@ mod tests {
         let effects = OperationEffect::of_records([&row]);
         assert_eq!(effects.len(), 2);
         assert_ne!(effects[0].key(), effects[1].key());
-        // OperationEffect::key depends on (node_id, incarnation, build_id, attempt, operation), never state.
+        // OperationEffect::key depends on (node_id, incarnation, operation), never state.
         let mut pending_same_op = effects[0].clone();
         pending_same_op.state = NodeState::Pending;
         assert_eq!(effects[0].key(), pending_same_op.key());
@@ -279,8 +275,6 @@ mod tests {
         // Declarer: owed report to mesh-primary, unreachable schedules nothing, down call re-schedules.
         let declarer = Declarer::new();
         let start_op = DeclaredOperation {
-            build_id: "build-1".to_string(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.start", &rpc_id),
         };
         declarer.owe_own("mesh1", &rpc_id, &rpc_inc, NodeState::Ready, Some(start_op.clone()));
@@ -328,6 +322,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(std::sync::OnceLock::new()),
             mesh_deleter: Arc::new(std::sync::OnceLock::new()),
+            primary_commands: Default::default(),
             storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             fabric_states: Default::default(),
@@ -403,8 +398,6 @@ mod tests {
         assert_eq!(door.declared.lock().unwrap().node(&rpc_id, &rpc_inc), Some(NodeState::Ready));
 
         let stop_op = DeclaredOperation {
-            build_id: "build-2".to_string(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.stop", &rpc_id),
         };
         let stop_req = StatusRequest::DeclareNodeState {

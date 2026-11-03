@@ -157,17 +157,6 @@ fn node_delete_has_bounded_failure_arms_fails_the_older_four_arm_draft() {
 }
 
 #[test]
-fn drift_silence_never_deletes_a_node_fails_without_its_proof() {
-    let t = Planted::of_tree();
-    t.edit(
-        "crates/rdm-admin/tests/drift_convergence.rs",
-        "fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced",
-        "fn a_silent_node_is_replaced",
-    );
-    only(check(t.root()), Ratchet::DriftSilenceIsNotDeleteProof);
-}
-
-#[test]
 fn node_delete_receipt_names_command_arm_fails_an_untagged_outcome() {
     let t = Planted::of_tree();
     t.edit(
@@ -237,7 +226,7 @@ fn forward_wire_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
 #[test]
 fn node_command_wire_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-core/src/node_command.rs", "const REPLY_VARIANTS: u32 = 26;", "const REPLY_VARIANTS: u32 = 27;");
+    t.edit("crates/rdm-core/src/node_command.rs", "const REPLY_VARIANTS: u32 = 27;", "const REPLY_VARIANTS: u32 = 28;");
     only(check(t.root()), Ratchet::NodeCommandWireIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rdm-core/tests/node_command_wire.rs");

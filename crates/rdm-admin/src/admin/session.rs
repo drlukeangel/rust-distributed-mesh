@@ -244,23 +244,13 @@ impl NodeObserver for TopologyObserver {
         }
         // node.connection.delete { All } goes through this admin's own Status door, the birth's
         // mesh-primary: it commands the birth and holds its node.connections.deleted for a rename.
-        if cmd == crate::node_commands::NodeCommand::DeleteConnections {
-            let (Some(door), Some(incarnation)) = (self.status_door.get(), node.incarnation_id.clone()) else {
-                return crate::deployment::pipeline::CommandAdmission::NotSent { reason: format!("this admin holds no status authority yet to carry node.connection.delete to {}", node.node_id), code: rdm_core::outcome::Code::Unavailable };
-            };
-            // The carrier's end, in-process (i144 R22): a command never sent reaches the never-sent mark
-            // as `NotSent` (node-recovery.md step 1); one broken after the node accepted it is
-            // incomplete, never a completion.
-            let (admission, unreachable) = carried_admission(door.carry_connections_delete(&node.node_id, &incarnation, &rdm_core::status::ConnectionScope::All).await);
-            if let Some(why) = &unreachable {
-                self.mark_unreachable(node, cmd, ctx, why);
-            }
-            return admission;
-        }
-        let Some(client) = self.client.as_ref() else {
-            return crate::deployment::pipeline::CommandAdmission::NotSent { reason: "this admin holds no Node RPC client".into(), code: rdm_core::outcome::Code::Unavailable };
+        let (Some(door), Some(incarnation)) = (self.status_door.get(), node.incarnation_id.clone()) else {
+            return crate::deployment::pipeline::CommandAdmission::NotSent { reason: format!("this admin holds no status authority yet to carry node.connection.delete to {}", node.node_id), code: rdm_core::outcome::Code::Unavailable };
         };
-        let (admission, unreachable) = crate::node_commands::send_command_reaching(client, &self.commands, &rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node, cmd, ctx).await;
+        // The carrier's end, in-process (i144 R22): a command never sent reaches the never-sent mark
+        // as `NotSent` (node-recovery.md step 1); one broken after the node accepted it is
+        // incomplete, never a completion.
+        let (admission, unreachable) = carried_admission(door.carry_connections_delete(&node.node_id, &incarnation, &rdm_core::status::ConnectionScope::All).await);
         if let Some(why) = &unreachable {
             self.mark_unreachable(node, cmd, ctx, why);
         }
@@ -277,7 +267,7 @@ impl NodeObserver for TopologyObserver {
 /// cause of one never sent (node-recovery.md step 1: it marks the birth `PendingReconnect` at once).
 /// The node's completion is the step's receipt; a command lost before the node accepted it, or broken
 /// after it did (incomplete), is indeterminate, never a completion; a refusal is named.
-pub(crate) fn carried_admission(end: crate::status_rpc::CarryEnd) -> (crate::deployment::pipeline::CommandAdmission, Option<crate::node_commands::Unreachable>) {
+pub fn carried_admission(end: crate::status_rpc::CarryEnd) -> (crate::deployment::pipeline::CommandAdmission, Option<crate::node_commands::Unreachable>) {
     use crate::deployment::pipeline::CommandAdmission;
     use crate::status_rpc::CarryEnd;
     let code = end.code();
@@ -365,6 +355,16 @@ impl crate::node_self::Session for AdminSession {
         // presents and what it is named by until the join answer hands it the row's (R12).
         let held = self.digest.lock().unwrap().node.name.clone();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node_path = %held.path, node_name = %held.name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
+        // A commanded node.mesh.join's first step (D57; Q335): the commanded admin, which its election
+        // over the commander's record does not name, drops its primary role before it joins, commands
+        // or publishes anything. It stops publishing its mesh's aggregate and forwarding; the
+        // commander's records, taken from the join answer, name the mesh's primary.
+        if operation.operation.action == "node.mesh.join" {
+            let was = self.backbone.is_mesh_primary();
+            self.backbone.set_mesh_primary(false);
+            tracing::info_span!(parent: &root, "rdm.mesh.primary.remove.via-commanded-join", node_path = %held.path, node_name = %held.name, node_id = %self.node_id, mesh = %self.topology_view.mesh_name(), was_publishing = was, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("the commanded node-admin drops its primary role before node.mesh.join"));
+        }
         let mut start = AdminAfterStop { session: self, root, commander, birth_cancel: Some(birth_cancel), rows, operation, progress, held_again };
         crate::workflows::node_start::node_start(&mut start, crate::node_hooks::StartKind::AfterStop).await
     }

@@ -100,10 +100,10 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     let is_born = |sp: &&Value| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["incarnation_id"] == after["incarnation_id"];
     let spans = wait_for("the recovery attempt's spans and the re-created container's own boot span are exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        (named(&spans, "rdm.node_admin.build.update.via-node-recovery").iter().any(is_recovery) && named(&spans, "rdm.mesh.node.create.via-deployment").iter().any(is_born)).then_some(spans)
+        (named(&spans, "rdm.node_admin.node.update.via-node-recovery").iter().any(is_recovery) && named(&spans, "rdm.mesh.node.create.via-deployment").iter().any(is_born)).then_some(spans)
     })
     .await;
-    let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| is_recovery(sp)).unwrap();
+    let recovery = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().find(|sp| is_recovery(sp)).unwrap();
     assert_eq!(s(&recovery["attributes"]["verdict"]), "exited", "node investigation's provider step read the killed container's exact id exited: {recovery}");
     let attempt = s(&recovery["attributes"]["attempt"]);
     let deployed = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|sp| {

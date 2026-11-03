@@ -23,7 +23,6 @@ pub enum Ratchet {
     NoTransportTagVocabulary,
     DeleteAttemptsRpcStopFirst,
     DeleteHasBoundedFailureArms,
-    DriftSilenceIsNotDeleteProof,
     DeleteReceiptNamesCommandArm,
     ConnectionsDeletedIsNotRefusal,
     ForwardPreservesContext,
@@ -46,7 +45,7 @@ pub enum Ratchet {
 }
 
 impl Ratchet {
-    pub const ALL: [Ratchet; 28] = [
+    pub const ALL: [Ratchet; 27] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
         Self::AcceptedBuildHasExplicitNodeSpec,
@@ -55,7 +54,6 @@ impl Ratchet {
         Self::NoTransportTagVocabulary,
         Self::DeleteAttemptsRpcStopFirst,
         Self::DeleteHasBoundedFailureArms,
-        Self::DriftSilenceIsNotDeleteProof,
         Self::DeleteReceiptNamesCommandArm,
         Self::ConnectionsDeletedIsNotRefusal,
         Self::ForwardPreservesContext,
@@ -88,7 +86,6 @@ impl Ratchet {
             Self::NoTransportTagVocabulary => "no_transport_tag_vocabulary",
             Self::DeleteAttemptsRpcStopFirst => "delete_attempts_rpc_stop_first",
             Self::DeleteHasBoundedFailureArms => "delete_has_bounded_failure_arms",
-            Self::DriftSilenceIsNotDeleteProof => "drift_silence_is_not_delete_proof",
             Self::DeleteReceiptNamesCommandArm => "delete_receipt_names_command_arm",
             Self::ConnectionsDeletedIsNotRefusal => "connections_deleted_is_not_refusal",
             Self::ForwardPreservesContext => "forward_preserves_context",
@@ -279,7 +276,7 @@ pub const NODE_COMMAND: &str = "crates/rdm-core/src/node_command.rs";
 pub const NODE_COMMAND_WIRE: &str = "crates/rdm-core/tests/node_command_wire.rs";
 /// The frozen 0x22 counts.
 pub const NODE_COMMAND_REQUESTS: u32 = 8;
-pub const NODE_COMMAND_REPLIES: u32 = 26;
+pub const NODE_COMMAND_REPLIES: u32 = 27;
 pub const STATUS_WIRE: &str = "crates/rdm-core/tests/status_wire.rs";
 pub const FRAMING: &str = "crates/rdm-core/src/framing.rs";
 /// The frozen transport-header goldens (node-rpc-envelope.md "Transport frames"): Request kind 0,
@@ -291,7 +288,6 @@ pub const TRANSPORT_HEADER_LARGEST: &str = "(47, 88, 37)";
 pub const CATALOG: &str = "crates/rdm-core/src/catalog.rs";
 pub const CONTEXT_CELLS: &str = "crates/rdm-transport/tests/context.rs";
 pub const DELETE_CELLS: &str = "crates/rdm-test/tests/node_delete_pipeline.rs";
-pub const DRIFT_CELLS: &str = "crates/rdm-admin/tests/drift_convergence.rs";
 pub const PROBE_APPLY_CELLS: &str = "crates/rdm-test/tests/status_probe_apply.rs";
 
 /// The typed arms of the landed `CommandAdmission` (what a directed `node.connection.delete`,
@@ -571,9 +567,6 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             Some(found) => out.push(Violation::Arms { ratchet, file: PIPELINE.into(), expected: COMMAND_ARMS.iter().map(|s| s.to_string()).collect(), found }),
             None => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "`pub enum CommandAdmission`".into() }),
         },
-        Ratchet::DriftSilenceIsNotDeleteProof => {
-            require(root, DRIFT_CELLS, &["fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced"], ratchet, &mut out);
-        }
         Ratchet::DeleteReceiptNamesCommandArm => {
             require(root, PIPELINE, &["#[serde(tag = \"arm\", rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission"], ratchet, &mut out);
             require(root, DELETE_CELLS, &["StopNode"], ratchet, &mut out);
@@ -733,7 +726,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 NODE_COMMAND_WIRE,
                 &[
                     "fn the_requests_match_the_frozen_eight_variant_wire_schema",
-                    "fn replies_match_the_frozen_twenty_six_variant_wire_schema",
+                    "fn replies_match_the_frozen_twenty_seven_variant_wire_schema",
                     "NodeCommand::REQUEST_VARIANTS",
                     "NodeCommand::REPLY_VARIANTS",
                 ],

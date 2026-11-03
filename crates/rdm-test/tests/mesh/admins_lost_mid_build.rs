@@ -15,7 +15,7 @@
 //!
 //! Evidence: the fabric-primary's primary watch runs node investigation on mesh2's lost mesh-primary
 //! (`rdm.node_admin.primary.update.via-investigation`), and on its verdict submits that birth's node
-//! recovery (`rdm.node_admin.build.update.via-node-recovery`): no node-admin of mesh2 is left for the
+//! recovery (`rdm.node_admin.node.update.via-node-recovery`): no node-admin of mesh2 is left for the
 //! election to name, so the fabric-primary executes it; a reconcile of B by a mesh1 admin names mesh2's
 //! admin primary as the previous executor.
 
@@ -153,7 +153,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
     // node recovery on it (Q335).
     let look = named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().find(|sp| attr(sp, "suspect_node_id") == mesh2_primary.as_str() && attr(sp, "node_path") == "mesh1.node-admin" && at(sp) > killed_ns).cloned().unwrap_or_else(|| panic!("a mesh1 admin ran node investigation on mesh2's lost mesh-primary {mesh2_primary}"));
     assert_ne!(attr(&look, "finding"), "reached", "the killed mesh-primary is not reached: {look}");
-    let create = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| attr(sp, "node_id") == mesh2_primary.as_str() && at(sp) >= at(&look)).cloned().unwrap_or_else(|| panic!("the fabric-primary submitted the node recovery of mesh2's lost mesh-primary on the verdict"));
+    let create = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().find(|sp| attr(sp, "node_id") == mesh2_primary.as_str() && at(sp) >= at(&look)).cloned().unwrap_or_else(|| panic!("the fabric-primary submitted the node recovery of mesh2's lost mesh-primary on the verdict"));
     // The target held: no node of mesh2 was created by B before the recovery.
     let early: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()

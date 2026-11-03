@@ -130,8 +130,8 @@ async fn replace_by_steps(estate: &Estate, entry: &rdm_client::PathName, p: &Pat
     let node = p.clone();
     let subject = estate.node_view(p).await;
     let mut stream = nodes.steps(rdm_test::steps::replace(&node, &subject.mesh, &subject.r#type).expect("valid replacement fixture name")).await.expect("the replace steps were accepted");
-    let build = stream.accepted().build_id.to_string();
-    let caller = Caller { peers, entry: entry.clone(), kind: stream.kind().clone(), accepted: stream.accepted().clone() };
+    let build = stream.accepted().expect("the call opened a Build").build_id.to_string();
+    let caller = Caller { peers, entry: entry.clone(), kind: stream.kind().clone(), accepted: stream.accepted().cloned().expect("the call opened a Build") };
     let frames = tokio::spawn(async move {
         let mut out = Vec::new();
         loop {
@@ -230,10 +230,9 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter(&heir).await;
     let mut stop = estate.nodes_obj().await.stop(&old).await.expect("node.stop of old");
-    let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
-        estate.resume(&accepted.build_id, accepted.attempt).await;
-    }
+    // A stop is a node command, never a Build (Q342): its stream ends with the stop's own completion.
+    let frames = Estate::frames_of(&mut stop).await;
+    assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "the stop completes: {frames:?}");
     kill(&mut estate, &old).await;
     let seen = estate
         .until_view("the surviving admin of the fabric-primary's mesh is fabric-primary", Duration::from_secs(90), |views| {
@@ -340,10 +339,9 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     // The hand-over: the fabric-primary is stopped and killed; the surviving admin of its mesh becomes the fabric-primary.
     estate.enter(&successor).await;
     let mut stop = estate.nodes_obj().await.stop(&old).await.expect("node.stop of the fabric-primary");
-    let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
-        estate.resume(&accepted.build_id, accepted.attempt).await;
-    }
+    // A stop is a node command, never a Build (Q342): its stream ends with the stop's own completion.
+    let frames = Estate::frames_of(&mut stop).await;
+    assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "the stop completes: {frames:?}");
     kill(&mut estate, &old).await;
     estate
         .until_view("the surviving admin of the fabric-primary's mesh is fabric-primary", Duration::from_secs(90), |views| {

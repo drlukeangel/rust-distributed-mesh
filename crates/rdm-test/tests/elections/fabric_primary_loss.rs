@@ -104,7 +104,9 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     assert!(ran.iter().all(|sp| actor_is(sp, &standby)), "nobody else ran it: {ran:#?}");
     let verdict = ran.iter().find_map(|sp| sp["attributes"]["verdict"].as_str().map(str::to_string)).unwrap_or_default();
     assert!(!verdict.is_empty() && verdict != "reached", "node investigation decided the re-create: verdict {verdict:?}");
-    let created = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| actor_is(sp, &fp) && at(sp) >= held_at).count();
+    // A recovery's re-create is the primary's own workflow, never a Build (Q342): its create span is the
+    // recovery's.
+    let created = named(&spans, "rdm.node_admin.node.create.via-node-recovery").into_iter().filter(|sp| actor_is(sp, &fp) && at(sp) >= held_at).count();
     assert!(created >= 1, "node recovery re-created the node-admin at {fp:?}");
     let installed = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| actor_is(sp, &fp) && at(sp) >= held_at).count();
     assert!(installed >= 1, "the restored node installed both roles on the workflow's call");

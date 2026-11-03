@@ -299,9 +299,10 @@ async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_r
 /// The fabric-primary's birth as the store root holds it: whether its row is written `deleted`, and
 /// which node id the path.name's name is held by (`None`: released).
 fn stored_birth(root: &std::path::Path, _mesh: &str, node: &PathName, node_id: &str) -> (Option<String>, Option<String>) {
-    let read = |p: std::path::PathBuf| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-    let status = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id)).map(|r| s(&r["record"]["status"]));
-    let name = read(root.join(rdm_admin::store_root::LOCKS_DIR).join("name").join(node.physical_index_key())).map(|r| s(&r["record"]["node_id"]));
+    let record = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id));
+    let status = record.as_ref().map(|r| s(&r["record"]["status"]));
+    // The name is read from the record (i152 s5: no name claim): the node id whose live record holds the pair.
+    let name = record.filter(|r| r["record"]["name"]["path"] == node.path.as_str() && r["record"]["name"]["name"] == node.name.as_str() && r["record"]["status"] != "deleted").map(|r| s(&r["record"]["node_id"]));
     (status, name)
 }
 
@@ -318,13 +319,12 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &PathName, node_id: &
 /// written deleted or its name released, a `via-deleted-birth` / `via-node-deleted` for its birth, a
 /// re-create Build of it, or a view without it after the heal.
 ///
-/// The cut admin is kept from being re-created by the testkit's claimed-attempt cut on the fabric-primary:
-/// mesh2's primary, which reaches it through no peer, reads its runtime `running` and submits its recovery
-/// at once (node-recovery.md step 3, Q111); the drift goes up and the fabric-primary opens the attempt
-/// (Q118), and its claim by mesh2's primary is held before its dispatch, so the cut admin is not re-created
-/// (Q181) while the cut holds. What the cut admin, mesh2's primary in its own view, does to mesh2's rpc
-/// nodes is the own-mesh arm's (Q111): with no fabric-primary in its view its recoveries fail by name
-/// (Q118). The views are read for mesh1 and the fabric-primary.
+/// The cut admin is a lost node of mesh2 (Q335; Q342): mesh2's primary, which reaches it through no peer,
+/// investigates it and recovers it on its verdict as its own workflow, with no Build (node-recovery.md
+/// step 3, Q111). The cut admin, mesh2's primary in its own view, recovers mesh2's rpc nodes it cannot
+/// hear; its provider is armed with the testkit's provider-terminate door, the shared-host rig's limit, so
+/// it terminates no live runtime and each of those recoveries fails by name. The views are read for mesh1 and
+/// the fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh_left_writes_nothing() {
     let test = "a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh_left_writes_nothing";
@@ -366,9 +366,8 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
         named(&estate.spans(), "rdm.mesh.topology.update.via-snapshot-installed").into_iter().find(|sp| attr(sp, "node") == victim_id && attr(sp, "channel") == "backbone" && attr(sp, "mesh") == "mesh1").map(|_| ())
     })
     .await;
-    // The first attempt claimed after the cut, the cut admin's recovery, is held before its dispatch.
-    let fp_door = Door::at(&estate, fp).await;
-    fp_door.arm("cut-admin-recovery", json!({"kind": "claimed-attempt"})).await;
+    // The cut admin reaches no live runtime: its own-mesh recoveries under the cut fail by name.
+    Door::at(&estate, &victim).await.arm("cut-admin-provider", json!({"kind": "provider-terminate"})).await;
     let cut = match Partition::start(&udp_ports(&nodes, &[victim.clone()]), &udp_ports(&nodes, &others)) {
         Ok(p) => p,
         Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
@@ -397,16 +396,9 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
         intact();
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // What kept the cut admin alive: mesh2's primary's recovery of it, opened by the fabric-primary and
-    // claimed by mesh2's primary, held before its dispatch.
-    let claimed = fp_door.wait_held("cut-admin-recovery").await;
-    assert_eq!(s(&claimed["hit"]["executor"]["node_id"]), mesh2_primary_id, "the held claim is mesh2's primary's: {claimed}");
-    let bare = |id: String| id.replace('-', "").trim_start_matches("bid_").to_string();
-    // The open's span is written once it closes: read until it is there.
-    wait_for(&format!("the held attempt is the recovery of {victim:?} the fabric-primary opened: {claimed}"), gossip * 10, || {
-        let found = named(&estate.spans(), "rdm.node_admin.build.update.via-recovery")
-            .into_iter()
-            .any(|sp| at(sp) >= cut_at && attr(sp, "node_id") == victim_id && bare(attr(sp, "build_id")) == bare(s(&claimed["hit"]["build_id"])) && attr(sp, "attempt") == claimed["hit"]["attempt"].to_string());
+    // mesh2's primary recovers the cut admin, a lost node of its mesh, as its own workflow (Q335; Q342).
+    wait_for(&format!("{mesh2_primary:?} recovers the cut admin {victim:?}"), floor * 4 + Duration::from_secs(30), || {
+        let found = named(&estate.spans(), "rdm.node_admin.node.update.via-node-recovery").into_iter().any(|sp| at(sp) >= cut_at && attr(sp, "submitter") == mesh2_primary_id && attr(sp, "node_id") == victim_id);
         async move { found.then_some(()) }
     })
     .await;
@@ -445,7 +437,9 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
         .iter()
         .filter(|sp| before_stop(sp))
         .filter(|sp| sp["name"].as_str().is_some_and(|n| n.ends_with(".via-deleted-birth") || n.ends_with(".via-node-deleted") || n.ends_with(".via-node-deleting")))
-        .filter(|sp| sp["attributes"].to_string().contains(&fp_id) || sp["attributes"].to_string().contains(&fp_inc))
+        // The subject is the fabric-primary's birth; the fabric-primary observing another birth's deletion (the
+        // cut admin's, mesh2's primary's recovery of it) is not a mark against it.
+        .filter(|sp| ["node_id", "subject_id", "incarnation_id"].iter().any(|k| attr(sp, k) == fp_id || attr(sp, k) == fp_inc))
         .collect();
     assert!(marks.is_empty(), "no view marks the running fabric-primary's birth: {marks:#?}");
     // The cut admin's backbone arm found mesh1 with a node-admin left and started no fabric recovery
@@ -466,7 +460,7 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
     let end = |sp: &Value| sp["end_unix_nano"].as_u64().unwrap_or(0);
     let in_cut = |sp: &&Value| at(sp) >= cut_at && at(sp) <= healed_ns;
     let mut cut_submits: std::collections::BTreeMap<String, Vec<&Value>> = std::collections::BTreeMap::new();
-    for sp in named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(in_cut).filter(|sp| attr(sp, "submitter") == victim_id && attr(sp, "node_path").starts_with("mesh2.")) {
+    for sp in named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(in_cut).filter(|sp| attr(sp, "submitter") == victim_id && attr(sp, "node_path").starts_with("mesh2.")) {
         cut_submits.entry(attr(sp, "node_id")).or_default().push(sp);
     }
     let mut paced = 0usize;
@@ -479,16 +473,17 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
             assert!(gap_ms + 2 >= backoff_ms, "{victim:?} submitted {node_id} again {gap_ms} ms after a failed submit whose backoff was {backoff_ms} ms: {} then {}", pair[0], pair[1]);
             paced += 1;
         }
-        let inspections = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(in_cut).filter(|sp| attr(sp, "inspector") == victim_id && attr(sp, "node_id") == *node_id).count();
+        // The tick's inspections: a submit's own TerminateRuntime step inspects the runtime it terminates
+        // (`caller` "terminate"), which is that submit's, not a look of the tick.
+        let inspections = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(in_cut).filter(|sp| attr(sp, "inspector") == victim_id && attr(sp, "node_id") == *node_id && attr(sp, "caller") != "terminate").count();
         assert!(inspections <= submits.len() + 1, "{victim:?} inspected {node_id} only for a submit: {inspections} inspections, {} submits", submits.len());
         eprintln!("Q209: {victim:?} under the {held_ms} ms cut: {node_id} submitted {} times (every tick: {}), inspected {inspections} times, backoffs {:?} ms", submits.len(), held_ms / gossip.as_millis().max(1) as u64, submits.iter().map(|sp| attr(sp, "backoff_ms")).collect::<Vec<_>>());
     }
     assert!(paced > 0, "{victim:?} failed a recovery of a mesh2 birth and submitted it again under the cut, so the backoff was read: {cut_submits:?}");
-    // The held recovery of the cut admin is accepted and unfinished: mesh2's primary follows it and never
-    // submits it as competing work (Q209); every open the fabric-primary makes for that birth names one attempt.
-    let attempts: std::collections::BTreeSet<(String, String)> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| at(sp) >= cut_at && before_stop(sp) && attr(sp, "node_id") == victim_id).map(|sp| (bare(attr(sp, "build_id")), attr(sp, "attempt"))).collect();
-    assert_eq!(attempts.len(), 1, "one attempt for {victim:?}'s accepted, unfinished recovery: {attempts:?}");
-    let mut followed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| at(sp) >= cut_at && before_stop(sp) && attr(sp, "submitter") == mesh2_primary_id && attr(sp, "node_id") == victim_id).collect();
+    // mesh2's primary's recovery of the cut admin is its own workflow: no Build is opened for it (Q342).
+    let opened_for_victim: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| at(sp) >= cut_at && before_stop(sp) && attr(sp, "node_id") == victim_id).collect();
+    assert!(opened_for_victim.is_empty(), "no Build is opened for {victim:?}'s recovery: {opened_for_victim:#?}");
+    let mut followed: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| at(sp) >= cut_at && before_stop(sp) && attr(sp, "submitter") == mesh2_primary_id && attr(sp, "node_id") == victim_id).collect();
     followed.sort_by_key(|sp| at(sp));
     assert!(followed.windows(2).all(|p| at(p[1]) >= end(p[0])), "{mesh2_primary:?} never submits {victim:?} while its submit is in flight: {followed:#?}");
     if let Some(run) = ran.first() {
@@ -676,10 +671,11 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     let spans = estate.spans();
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    // The adoption is fabric recovery, the primary's own workflow, never a Build (Q342): it claims nothing.
     let claims: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-adoption-claim").into_iter().filter(|sp| at(sp) >= lost_at).collect();
-    assert!(claims.len() == 1 && attr(claims[0], "outcome") == "won" && attr(claims[0], "lost_node_id") == lost_id, "one claim of the fabric-recovery attempt for the lost birth, won: {claims:#?}");
-    let first_write = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| at(sp) >= lost_at && attr(sp, "node_id") == lost_id).map(at).min().expect("the lost birth's name released");
-    assert!(at(claims[0]) < first_write, "the claim precedes the release of the lost birth's name");
+    assert!(claims.is_empty(), "the adoption claims no attempt: {claims:#?}");
+    let released: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| at(sp) >= lost_at && attr(sp, "node_id") == lost_id).collect();
+    let release = released.iter().copied().min_by_key(|sp| at(sp)).expect("the lost birth's name released");
     let pulled: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-rafka-time-adopted").into_iter().filter(|sp| at(sp) >= lost_at && attr(sp, "node") == s(&new["node_id"])).collect();
     assert!(pulled.len() == 1 && attr(pulled[0], "source") == "pull", "rafka-time adopted from a live member: {pulled:#?}");
     let left: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
@@ -687,5 +683,5 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
         .filter(|sp| at(sp) >= lost_at && at(sp) < stopped_at && member_ids.contains(&attr(sp, "node")) && !attr(sp, "state").contains("Ready"))
         .collect();
     assert!(left.is_empty(), "no member left ready: {left:#?}");
-    println!("trace_id={}", claims[0]["trace_id"].as_str().unwrap_or(""));
+    println!("trace_id={}", release["trace_id"].as_str().unwrap_or(""));
 }

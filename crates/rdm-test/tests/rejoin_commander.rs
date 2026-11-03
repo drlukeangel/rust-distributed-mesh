@@ -296,7 +296,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
         let lost_short = lost_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
         let first_req = start(2);
         let first_req = match first_req {
-            StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } => rdm_core::node_command::NodeCommandRequest::StartNode { node_id, incarnation, build_id, attempt, operation },
+            StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } => rdm_core::node_command::NodeCommandRequest::StartNode { node_id, incarnation, operation },
             _ => unreachable!("the first command is a start"),
         };
         let first = async { crate::common::node_command(&lost.observer.client, &target, &first_req, &CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(60) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() }).await };
@@ -470,7 +470,7 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
         lost.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
         // The lost commander's own call breaks with its endpoint: what it ends in is not this cell's.
         let first_req = match start(2) {
-            StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } => rdm_core::node_command::NodeCommandRequest::StartNode { node_id, incarnation, build_id, attempt, operation },
+            StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } => rdm_core::node_command::NodeCommandRequest::StartNode { node_id, incarnation, operation },
             _ => unreachable!("the first command is a start"),
         };
         let first = async { crate::common::node_command(&lost.observer.client, &target, &first_req, &CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(60) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() }).await };

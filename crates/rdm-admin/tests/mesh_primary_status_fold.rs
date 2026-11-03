@@ -281,6 +281,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                     commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
                     own: Arc::new(std::sync::OnceLock::new()),
                     mesh_deleter: Arc::new(std::sync::OnceLock::new()),
+                    primary_commands: Default::default(),
                     storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     wake: Default::default(),
                     fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
@@ -321,7 +322,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
 }
 
 /// Q49: cycle state rows may be cleared, but an applied operation survives a disk reopen and
-/// a successor writer. Attempts have separate identities; only forgetting the birth removes them.
+/// a successor writer. Two occurrences have separate identities; only forgetting the birth removes them.
 #[tokio::test]
 async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_store() {
     use rdm_admin::status_rpc::OperationEffect;
@@ -331,9 +332,9 @@ async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_
     let incarnation = IncarnationId::mint();
     let row = OperationEffect {
         node_id: node_id.clone(), incarnation_id: incarnation.clone(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap(), state: NodeState::Stopped,
-        operation: rdm_core::status::DeclaredOperation { build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) },
+        operation: rdm_core::status::DeclaredOperation { operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) },
     };
-    let next = OperationEffect { operation: rdm_core::status::DeclaredOperation { attempt: 2, ..row.operation.clone() }, ..row.clone() };
+    let next = OperationEffect { operation: rdm_core::status::DeclaredOperation { operation: row.operation.operation.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint()) }, ..row.clone() };
     {
         let store = stores(&root, &IncarnationId::mint()).await;
         let w = rdm_admin::node_rows::WrittenRows::default();
@@ -393,7 +394,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                     caches: Default::default(),
                     mesh_ids: Arc::new(std::collections::BTreeMap::new), durable: Default::default(),
                     commands: Arc::new(rdm_admin::node_commands::CommandView::default()), own: Default::default(),
-                    mesh_deleter: Default::default(), storage_changes: Default::default(), hold_next_reply: Default::default(), wake: Default::default(),
+                    mesh_deleter: Default::default(), primary_commands: Default::default(), storage_changes: Default::default(), hold_next_reply: Default::default(), wake: Default::default(),
                     fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(), configs: Default::default(), republish: Default::default(),
                     pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(),
                     loads: None, digest_view: None, unreachable: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),

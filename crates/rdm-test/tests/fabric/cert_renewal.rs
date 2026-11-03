@@ -644,10 +644,9 @@ async fn a_successor_mesh_primary_continues_the_schedule_from_the_rows() {
 
     estate.enter(&Estate::path("mesh1.node-admin", "2")).await;
     let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.node-admin", "1")).await.expect("node.stop of mesh1.node-admin.1 is accepted");
-    let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
-        estate.resume(&accepted.build_id, accepted.attempt).await;
-    }
+    // A stop is a node command, never a Build (Q342): its stream ends with the stop's own completion.
+    let frames = Estate::frames_of(&mut stop).await;
+    assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "the stop completes: {frames:?}");
     estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1.node-admin.2 holds both roles", Duration::from_secs(90), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     let moved_at_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 

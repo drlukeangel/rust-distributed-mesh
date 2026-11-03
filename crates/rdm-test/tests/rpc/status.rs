@@ -192,10 +192,9 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     let (a1, a2, rpc1) = (Estate::path("mesh1.node-admin", "1"), Estate::path("mesh1.node-admin", "2"), Estate::path("mesh1.node", "1"));
     estate.enter(&a2).await;
     let mut stop = estate.nodes_obj().await.stop(&a1).await.expect("node.stop of mesh1.node-admin.1");
-    let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
-        estate.resume(&accepted.build_id, accepted.attempt).await;
-    }
+    // A stop is a node command, never a Build (Q342): its stream ends with the stop's own completion.
+    let frames = Estate::frames_of(&mut stop).await;
+    assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "the stop completes: {frames:?}");
     estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1.node-admin.2 holds the roles", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     Estate::workflow("node.start of mesh1.node-admin.1", estate.nodes_obj().await.start(&a1).await).await;
     estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1.node-admin.1 runs again holding no primary role", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped && !n.is_primary).map(|_| ())).await;

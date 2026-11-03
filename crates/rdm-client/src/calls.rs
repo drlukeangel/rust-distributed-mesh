@@ -224,48 +224,6 @@ impl HeldView {
     }
 }
 
-/// The Build, attempt and node a `node.stop` belongs to. The operation key (`node.stop:<path and name>`)
-/// is derived here and never written by a caller.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StopContext {
-    build_id: BuildId,
-    attempt: u32,
-    operation: rdm_core::OperationId,
-}
-
-impl StopContext {
-    /// The stop of `node` that attempt `attempt` of Build `build_id` holds.
-    pub fn new(build_id: BuildId, attempt: u32, operation: rdm_core::OperationId) -> Self {
-        Self { build_id, attempt, operation }
-    }
-
-    /// The operation key the Build records the stop under.
-    pub fn operation(&self) -> rdm_core::OperationId {
-        self.operation.clone()
-    }
-}
-
-/// The Build, attempt and node a `node.start` belongs to. The operation key (`node.start:<path and name>`)
-/// is derived here and never written by a caller.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StartContext {
-    build_id: BuildId,
-    attempt: u32,
-    operation: rdm_core::OperationId,
-}
-
-impl StartContext {
-    /// The start of `node` that attempt `attempt` of Build `build_id` holds.
-    pub fn new(build_id: BuildId, attempt: u32, operation: rdm_core::OperationId) -> Self {
-        Self { build_id, attempt, operation }
-    }
-
-    /// The operation key the Build records the start under.
-    pub fn operation(&self) -> rdm_core::OperationId {
-        self.operation.clone()
-    }
-}
-
 /// The node-RPC half of the `node` objects: single calls to one exact birth.
 pub struct NodeRpc<'a> {
     client: &'a NodeRpcClient,
@@ -290,16 +248,16 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
-    /// `node.stop`: tell the exact birth to delete its connections, cut its transport and stop. The
-    /// command stream reports acceptance, the All closure's receipt as Data, then NodeStopped.
-    /// A birth already stopped reports its held closure and completion on the new invocation.
-    pub async fn stop(&self, birth: &ExactBirth, ctx: &StopContext, opts: &CallOptions) -> Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, RpcOutcome<rdm_core::node_command::NodeCommandReply>> {
+    /// `node.stop` (NodeCommand 0x22 `StopNode`) of the exact birth `birth`, sent to `birth.target`:
+    /// the birth itself, from its mesh-primary, or the node's mesh-primary (the fabric-primary for a
+    /// mesh-primary), from a caller (D40). `operation` is the stop's identity, keyed on the node.id. The
+    /// command stream reports acceptance, the All closure's receipt as Data, then NodeStopped. A birth
+    /// already stopped reports its held closure and completion on the new invocation.
+    pub async fn stop(&self, birth: &ExactBirth, operation: &rdm_core::OperationId, opts: &CallOptions) -> Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, RpcOutcome<rdm_core::node_command::NodeCommandReply>> {
         let req = rdm_core::node_command::NodeCommandRequest::StopNode {
             node_id: birth.node_id.clone(),
             incarnation: birth.incarnation.clone(),
-            build_id: ctx.build_id.to_string(),
-            attempt: ctx.attempt,
-            operation: ctx.operation(),
+            operation: operation.clone(),
         };
         match self.client.call_stream::<rdm_core::node_command::NodeCommand>(&birth.target, &req, opts).await {
             Ok((stream, _)) => Ok(stream),
@@ -307,16 +265,15 @@ impl<'a> NodeRpc<'a> {
         }
     }
 
-    /// `node.start`: tell the stopped exact birth to rejoin as itself. The call is held until the
-    /// birth reports NodeJoined after joining, then NodeStarted after every gate, or Failed with
-    /// its step, reason and code. This is only the exact-node hop, never the caller's Build carrier.
-    pub async fn start(&self, birth: &ExactBirth, ctx: &StartContext, opts: &CallOptions) -> Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, RpcOutcome<rdm_core::node_command::NodeCommandReply>> {
+    /// `node.start` (NodeCommand 0x22 `StartNode`) of the stopped exact birth `birth`, sent to
+    /// `birth.target` as [`Self::stop`]: the birth rejoins as itself. The call is held until the birth
+    /// reports NodeJoined after joining, then NodeStarted after every gate, or Failed with its step,
+    /// reason and code.
+    pub async fn start(&self, birth: &ExactBirth, operation: &rdm_core::OperationId, opts: &CallOptions) -> Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, RpcOutcome<rdm_core::node_command::NodeCommandReply>> {
         let req = rdm_core::node_command::NodeCommandRequest::StartNode {
             node_id: birth.node_id.clone(),
             incarnation: birth.incarnation.clone(),
-            build_id: ctx.build_id.to_string(),
-            attempt: ctx.attempt,
-            operation: ctx.operation(),
+            operation: operation.clone(),
         };
         match self.client.call_stream::<rdm_core::node_command::NodeCommand>(&birth.target, &req, opts).await {
             Ok((stream, _)) => Ok(stream),
@@ -403,19 +360,41 @@ impl<'a> NodeRpc<'a> {
     }
 
     /// `node.connection.delete` of the exact birth's connections named by `scope`, the caller's single
-    /// call to the node's mesh-primary `mesh_primary` (R-CR2, R-CR3): it carries the cut to the exact
-    /// birth and holds the birth's `node.connections.deleted` for its rename precondition, answering the
-    /// birth's reply. `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).
-    pub async fn connections_delete(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, scope: &rdm_core::status::ConnectionScope, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::DeleteConnections { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), scope: scope.clone() };
+    /// call to the node's mesh-primary `mesh_primary`, directly (R-CR2, R-CR3; D18): NodeCommand 0x22
+    /// `DeleteConnections` at the primary's door, which carries the cut to the exact birth and holds the
+    /// birth's `node.connections.deleted` for its rename precondition. The answer is the stream's
+    /// terminal frame (`ConnectionsDeleted`) or its refusal, by name (`RejectedConnectionScope`,
+    /// `Rejected { reason }`).
+    pub async fn connections_delete(&self, mesh_primary: &NodeId, birth: &ExactBirth, scope: &rdm_core::status::ConnectionScope, opts: &CallOptions) -> Result<rdm_core::node_command::NodeCommandReply, CallEnd> {
+        use rdm_core::node_command::{NodeCommand, NodeCommandRequest};
+        use rdm_core::streaming::StreamingProtocol as _;
+        let req = NodeCommandRequest::DeleteConnections { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), scope: scope.clone() };
         let span = NodeOp::ConnectionsDelete.span();
-        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(mesh_primary, route, &req, opts), span.clone()).await;
-        let r = ended(out);
+        let call = async {
+            let mut stream = match self.client.call_stream::<NodeCommand>(&NodeTarget::ExactNode(mesh_primary.clone()), &req, opts).await {
+                Ok((stream, _)) => stream,
+                Err((out, _)) => return ended(out),
+            };
+            while let Some(item) = stream.next().await {
+                match item {
+                    StreamItem::Frame(_, frame) => {
+                        let ends = matches!(NodeCommand::frame_kind(&frame), FrameKind::Terminal | FrameKind::Refusal(_));
+                        stream.accepted().await;
+                        if ends {
+                            return Ok(frame);
+                        }
+                    }
+                    StreamItem::Failed(f) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the node.connection.delete stream to {mesh_primary} broke before its completion: {f:?}") }),
+                }
+            }
+            Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("the node.connection.delete stream to {mesh_primary} ended before its completion") })
+        };
+        let r = tracing::Instrument::instrument(call, span.clone()).await;
         span.record("outcome", match &r {
             Ok(reply) => reply.name(),
             Err(e) => e.outcome(),
         });
-        span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), route = route.token(), scope = scope.name(), "an object call ended"));
+        span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), scope = scope.name(), "an object call ended"));
         r
     }
 

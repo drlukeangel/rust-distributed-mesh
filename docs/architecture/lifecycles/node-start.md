@@ -11,7 +11,7 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
 |---|---|
 | Identity | Same node.id, incarnation, path/name, endpoint key, bound port and bin |
 | Entry | A just-created process or a live process in stopped |
-| Admission | The fabric-primary admits a start from its view, where a stopped node of a peer mesh is the mesh-primary's NodeStopped ([Build §4.4](../build.md#44-the-gates-before-an-operation)); the mesh-primary verifies the exact birth (node id and incarnation) when it runs the start |
+| Admission | The caller sends NodeCommand 0x22 `StartNode` to the node's mesh-primary (the fabric-primary for a mesh-primary; directly; an unreachable mesh-primary ends the call `NotSent` by name), which admits a start of a stopped exact birth (node id and incarnation) and runs it; any other state is refused `node-not-live` by name. node.start is a node command of the primary above the node, never a Build or part of one (Q342) |
 | Stopped reachability | Fresh Node RPC dial to its still-bound endpoint ([stopped nodes](states.md#stopped-nodes)) |
 | Context | `start_kind = FirstStart` or `AfterStop`; the spec says whether the data dir is inherited |
 | Hooks | [`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready), blocking, with joined channel, cert and current rafka-time; topology follows the hook. [`on_node_ready`](../fabric-node-hooks.md#on_node_ready), a notice, once after `node.started` |
@@ -66,18 +66,17 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
 
 ## Command, completion and gossip messages
 
-The mesh-primary → exact-node hop uses NodeCommand 0x22. The caller's hop and Build carrier
-are unchanged:
+The mesh-primary → exact-node hop uses NodeCommand 0x22:
 
 ```text
-StartNode { node_id, incarnation, build_id, attempt, operation }
+StartNode { node_id, incarnation, operation }
   ← CommandAccepted (Started; admission, no lifecycle state)
   ← NodeJoined (Data; mesh-primary records pending)
   [pre_node_ready]
   [required Build floor, one final node.topology.get with current Rafka-time]
   ← NodeStarted (Terminal; mesh-primary records Ready)
   [on_node_ready, a notice]
-  [outer Build Complete only after the Ready record]
+  [the caller's node.start completes only after the Ready record]
 ```
 
 If join fails after start:

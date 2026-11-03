@@ -69,7 +69,7 @@ async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_f
     estate.stop().await;
 
     let spans = estate.spans();
-    let submit = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| sp["attributes"]["node_id"] == old_id.as_str()).cloned().unwrap_or_else(|| panic!("{path:?}'s recovery was never submitted"));
+    let submit = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().find(|sp| sp["attributes"]["node_id"] == old_id.as_str()).cloned().unwrap_or_else(|| panic!("{path:?}'s recovery was never submitted"));
     assert_eq!(s(&submit["attributes"]["verdict"]), "os-stopped", "the provider read the wedged runtime suspended: {submit}");
     assert_ne!(s(&back["data_dir"]), s(&target["data_dir"]), "an os-stopped runtime's re-create runs over a newly allocated data dir (R-FM2): {back}");
     estate.record_trace_url(submit["trace_id"].as_str().unwrap_or(""));

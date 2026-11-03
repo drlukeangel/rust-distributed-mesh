@@ -1,9 +1,11 @@
 //! The node command protocol on op `0x22` (i144 R22; Luke's rulings Q6 and Q7, 2026-10-16): the
 //! mesh-primary's command to a node of its own mesh, answered on that command's own ordered reply
 //! stream, so the node reports what it accepted, the state it entered and its completion, in order,
-//! on one channel. Server-streaming and never forwarded: the hop is the mesh-primary's direct call to
-//! the node, the hop its carrier makes; the caller-to-mesh-primary routing is the Build carrier's,
-//! unchanged. Nothing checks who sent a command (node-rpc.md §14).
+//! on one channel. Server-streaming and never forwarded. `StopNode` and `StartNode` take two hops,
+//! each one direct call (D40): the caller's to the node's mesh-primary (the fabric-primary for a
+//! mesh-primary), which admits and runs the node command, never a Build or part of one (Q342), and
+//! the mesh-primary's to the exact node, whose frames it writes as the node's status and sends on as
+//! live frames of the caller's stream. Nothing checks who sent a command (node-rpc.md §14).
 //!
 //! `node.connection.delete` (node-connections-delete.md) is its first command:
 //!
@@ -73,11 +75,7 @@ pub enum NodeCommandRequest {
         node_id: NodeId,
         /// Its exact incarnation.
         incarnation: IncarnationId,
-        /// The Build that owns this operation.
-        build_id: String,
-        /// Its executing attempt.
-        attempt: u32,
-        /// The operation's declared identity.
+        /// The command's identity, keyed on the node.id.
         operation: crate::OperationId,
     },
     /// Start this stopped exact birth, reporting join and readiness on this stream (Q47).
@@ -88,11 +86,7 @@ pub enum NodeCommandRequest {
         node_id: NodeId,
         /// Its exact incarnation.
         incarnation: IncarnationId,
-        /// The Build that owns this operation.
-        build_id: String,
-        /// Its executing attempt.
-        attempt: u32,
-        /// The operation's declared identity.
+        /// The command's identity, keyed on the node.id.
         operation: crate::OperationId,
     },
     /// A storage change's move of the exact birth to the provider its change decided (storage.md §2
@@ -122,11 +116,7 @@ pub enum NodeCommandRequest {
         node_id: NodeId,
         /// Its exact incarnation.
         incarnation: IncarnationId,
-        /// The Build that owns this operation.
-        build_id: String,
-        /// Its executing attempt.
-        attempt: u32,
-        /// The operation's declared identity.
+        /// The command's identity, keyed on the node.id.
         operation: crate::OperationId,
     },
     /// Freeze this exact birth's property writer before a storage copy.
@@ -408,6 +398,19 @@ pub enum NodeCommandReply {
         /// The provider the change decided, which every node of the mesh writes.
         provider: String,
     },
+    /// A caller's `StopNode` or `StartNode` refused by the primary above the node before anything is
+    /// sent to the node, by name (node-stop.md, node-start.md "Entry"): `node-not-live` (a stop needs
+    /// a live birth, a start a stopped one), `no-secondary` (a primary's stop has no successor),
+    /// `receiver-not-primary` (the receiver is not the primary above the node). Nothing is written.
+    /// Appended: no variant before it moves.
+    ///
+    /// Position 26 on the wire.
+    Rejected {
+        /// The refusal's name.
+        reason: String,
+        /// What it refused, for the reader.
+        detail: String,
+    },
 }
 
 impl NodeCommandReply {
@@ -440,6 +443,7 @@ impl NodeCommandReply {
             Self::BusyHoldingConnections { .. } => "busy-holding-connections",
             Self::MeshBlocked => "mesh-blocked",
             Self::MeshUnblocked { .. } => "mesh-unblocked",
+            Self::Rejected { .. } => "rejected",
         }
     }
 }
@@ -468,7 +472,7 @@ impl NodeProtocol for NodeCommand {
     /// closure (node-connections-delete.md step 5).
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
     const REQUEST_VARIANTS: u32 = 8;
-    const REPLY_VARIANTS: u32 = 26;
+    const REPLY_VARIANTS: u32 = 27;
 
     type Request = NodeCommandRequest;
     type Reply = NodeCommandReply;
@@ -501,6 +505,7 @@ impl NodeProtocol for NodeCommand {
             NodeCommandReply::BusyHoldingConnections { .. } => "busy-holding-connections",
             NodeCommandReply::MeshBlocked => "mesh-blocked",
             NodeCommandReply::MeshUnblocked { .. } => "mesh-unblocked",
+            NodeCommandReply::Rejected { .. } => "rejected",
         }
     }
 
@@ -512,7 +517,7 @@ impl NodeProtocol for NodeCommand {
             NodeCommandReply::BusyHoldingConnections { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
             NodeCommandReply::RejectedStaleChange { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             NodeCommandReply::Failed { code, .. } => ReplyKind::new(*code),
-            NodeCommandReply::RejectedInvalidNodeTransition { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodeCommandReply::RejectedInvalidNodeTransition { .. } | NodeCommandReply::Rejected { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             NodeCommandReply::StopConnectionsDeleted { receipt: ConnectionsReceipt::Deadline { .. } } => ReplyKind::new(crate::outcome::Code::DeadlineExceeded),
             NodeCommandReply::StopConnectionsDeleted { .. } => ReplyKind::Success,
             NodeCommandReply::ConnectionsDeleting { .. } => ReplyKind::Success,
@@ -630,7 +635,7 @@ mod tests {
         for f in [NodeCommandReply::Leaving { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, NodeCommandReply::StopMeshLeft { left: vec![WhichMesh::Own] }, left, NodeCommandReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] }] {
             assert_eq!(NodeCommand::decode_reply(&NodeCommand::encode_reply(&f).unwrap()).unwrap(), f, "{}", f.name());
         }
-        let req = NodeCommandRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: crate::OperationId::location("node.mesh.leave", &crate::PathName::new("mesh1.node", "1").unwrap()) };
+        let req = NodeCommandRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), operation: crate::OperationId::location("node.mesh.leave", &crate::PathName::new("mesh1.node", "1").unwrap()) };
         assert_eq!(NodeCommand::decode_request(&NodeCommand::encode_request(&req).unwrap()).unwrap(), req);
     }
 

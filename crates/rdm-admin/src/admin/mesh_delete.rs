@@ -413,7 +413,7 @@ impl AdminRunner {
         let hand_off = self.mesh_state_hook(mesh, state)?;
         let template = self.with_issuing_material(self.template_bound(path, mesh, "node-admin", executable, "row").await?, mesh).await?;
         let held_runtimes = self.held_runtimes().await;
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(path)), mesh: mesh.to_string(), r#type: "node-admin".into(), build_id: build_id.clone(), attempt, node: path.clone(), spec: self.listeners.spec_for("node-admin"), data_dir: None, held_runtimes, entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(path)), mesh: mesh.to_string(), r#type: "node-admin".into(), build_id: Some(build_id.clone()), attempt, node: path.clone(), spec: self.listeners.spec_for("node-admin"), data_dir: None, held_runtimes, entry: None };
         let created = self.pipeline(&template).create_with(&req, Some(hand_off), None).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(created.node.node_id.clone(), (created.node, created.handle));
@@ -529,7 +529,7 @@ impl AdminRunner {
         // An explicit node.delete (fabric-delete.md "Receipts"; mesh-delete.md "Resume after the primary's
         // loss"): an os-stopped runtime is terminated Immediate, never left as node recovery leaves it.
         let operation = rdm_core::OperationId::node("node.delete", &node_id);
-        self.delete_unreached_as(&*self.builds, build_id, attempt, &path, &crate::build::ExitedBirth { node_id, incarnation }, true, &operation).await
+        self.delete_unreached_as(&*self.builds, Some(build_id), attempt, &path, &crate::build::ExitedBirth { node_id, incarnation }, true, false, &operation).await
     }
 
     /// Steps 2-5 of the owner's workflow, for the leave `key` opened at admission: `mesh.deleting`,
@@ -897,7 +897,7 @@ impl AdminRunner {
                 Err(e) => {
                     let from = n.incarnation_id.clone().map(|incarnation| crate::build::ExitedBirth { node_id: n.node_id.clone(), incarnation });
                     match from {
-                        Some(from) => super::runner::receipted_exit(&*self.builds, &key.build_id, &n, &from, &rdm_core::OperationId::node("node.delete", &from.node_id)).await.ok_or(e)?,
+                        Some(from) => super::runner::receipted_exit(&*self.builds, Some(&key.build_id), &n, &from, &rdm_core::OperationId::node("node.delete", &from.node_id)).await.ok_or(e)?,
                         None => return Err(e),
                     }
                 }
@@ -1282,6 +1282,7 @@ mod tests {
             mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),
             handover,
             issuer: Arc::new(crate::certs::CertIssuer::no_certs(time)),
+            node_work: Default::default(),
         });
 
         // Set up a Build with `mesh.delete:<mesh2_id>` and its `MeshDeleted` completion receipt.

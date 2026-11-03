@@ -89,7 +89,7 @@ async fn build(estate: &Estate, meshes: &[(&str, u32, u32)]) {
 /// The workflow `call` was accepted by the fabric-primary: await its reply stream to `Complete`.
 async fn complete(what: &str, call: Result<WorkflowStream, CallEnd>) -> rdm_core::BuildId {
     let mut stream = call.unwrap_or_else(|end| panic!("the fabric-primary refused {what}: {end}"));
-    Estate::complete(&mut stream).await.build_id
+    Estate::complete(&mut stream).await.expect("the call opened a Build").build_id
 }
 
 /// The view without the rows of births proven dead: drift recovery restores a killed birth's
@@ -394,7 +394,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
                 assert!(!winner.contains(','), "one primary per node type in every view: {sp}");
             }
             // Recovery follows node investigation's verdict: nothing was re-created on `reached`.
-            for sp in named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(after) {
+            for sp in named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(after) {
                 assert_ne!(s(&sp["attributes"]["verdict"]), "reached", "a reached birth is commanded back, never re-created: {sp}");
             }
             for sp in named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(after) {

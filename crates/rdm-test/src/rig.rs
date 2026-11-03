@@ -92,12 +92,12 @@ impl NodeObserver for LiveMesh {
     }
 
     async fn send_command(&self, node: &Node, cmd: rdm_admin::node_commands::NodeCommand, ctx: &rdm_admin::deployment::pipeline::CommandContext) -> rdm_admin::deployment::pipeline::CommandAdmission {
-        let target = match self.echo_target(node) {
-            Ok(t) => t,
-            Err(reason) => return rdm_admin::deployment::pipeline::CommandAdmission::NotSent { reason, code: rdm_core::outcome::Code::Unavailable },
-        };
-        if matches!(cmd, rdm_admin::node_commands::NodeCommand::Stop | rdm_admin::node_commands::NodeCommand::Start) {
-            // Use the real mesh-primary frame owner; the fixture supplies its held view and stores.
+        if let Err(reason) = self.echo_target(node) {
+            return rdm_admin::deployment::pipeline::CommandAdmission::NotSent { reason, code: rdm_core::outcome::Code::Unavailable };
+        }
+        {
+            // Use the real mesh-primary frame owner and its carrier; the fixture supplies its held view
+            // and stores.
             let birth = self.client.delivery().me().clone();
             let mut me = Node::allocated(self.location.clone(), self.topology_view.mesh_name(), "node-admin");
             me.node_id = birth.node_id.clone();
@@ -116,15 +116,20 @@ impl NodeObserver for LiveMesh {
                 declared: Default::default(), meshes_storage: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), fabric_storage: Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()),
                 nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), mesh_ids: Arc::new(Default::default), durable: Default::default(),
                 caches: Default::default(),
-                commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(),
+                commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(), primary_commands: Default::default(),
                 storage_changes: Default::default(), hold_next_reply: Default::default(), wake: Default::default(), fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(), configs: Default::default(),
                 republish: Default::default(), pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
                 digest_view: Some(self.topology_view.digest_view.clone()), unreachable: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
             };
             assert!(door.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default()))).is_ok());
-            return door.carry_lifecycle(node, cmd == rdm_admin::node_commands::NodeCommand::Start, ctx).await;
+            if cmd == rdm_admin::node_commands::NodeCommand::DeleteConnections {
+                let Some(incarnation) = node.incarnation_id.clone() else {
+                    return rdm_admin::deployment::pipeline::CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.node_id), code: rdm_core::outcome::Code::FailedPrecondition };
+                };
+                return rdm_admin::admin::carried_admission(door.carry_connections_delete(&node.node_id, &incarnation, &rdm_core::status::ConnectionScope::All).await).0;
+            }
+            door.carry_lifecycle(node, cmd == rdm_admin::node_commands::NodeCommand::Start, ctx).await
         }
-        rdm_admin::node_commands::send_command(&self.client, &self.commands, &target, node, cmd, ctx).await
     }
 
     async fn await_completion(&self, node: &Node, cmd: rdm_admin::node_commands::NodeCommand, ctx: &rdm_admin::deployment::pipeline::CommandContext, within: Duration) -> rdm_admin::deployment::pipeline::Completion {

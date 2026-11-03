@@ -31,13 +31,13 @@ pub(crate) fn check<P: NodeProtocol>(reply: &P::Reply) {
     let expected: &[u8] = match P::OP {
         0x01 => &[0,5,14,14,14,15,7],
         0x1A => &[0,14,12,10,2,9,5,14,14,14,15,7,14,14],
-        0x1B => &[0,6,0,0,10,10,10,9,9,9,5,14,14,14,15,7,9,0,0,9,0,0,9,9,9,0,0,9,6,9,9,0,3,0,0,0,0,5,8,10,9,9,9,3,9,0,0,3,14,0,0,12,0,0,3,0,0,3,0,9,0,9,9,0,9,9],
+        0x1B => &[0,6,0,0,10,10,10,9,9,9,5,14,14,14,15,7,9,0,0,9,0,0,9,9,9,0,0,9,6,9,9,9,9,0,0,0,0,5,8,10,9,9,9,3,9,0,0,3,14,0,0,12,0,0,3,0,0,3,0,9,0,9,9,0,9,9],
         0x1C => &[0,10,9,9,5,14,14,14,15,7,14],
         0x1D => &[0,9,9,5,14,14,14,15,7,9,9],
         0x1E => &[0,0,0,14,5,5,14,14,15,7,0,0,0,0,0],
         0x20 => &[0,0,0,0,0,9,0,0,0,9,9,10,5,9,14,10,9,9,5,14,14,14,15,7,0,9,0,0,0,3],
         0x21 => &[0,10,9,9,10,14,15,5,14,14,7,9,6],
-        0x22 => &[0,0,0,3,10,14,5,14,14,15,7,0,0,0,0,13,9,0,10,0,0,0,14,0,0,0],
+        0x22 => &[0,0,0,3,10,14,5,14,14,15,7,0,0,0,0,13,9,0,10,0,0,0,14,0,0,0,9],
         0x23 => &[0,0,0,0,0,3,8,9,14,5,14,14,15,7,0],
         op => panic!("no expected-code fixture for {op:#x}"),
     };
@@ -48,8 +48,7 @@ pub(crate) fn check<P: NodeProtocol>(reply: &P::Reply) {
         0x1B => match rdm_core::status::Status::decode_reply(&wire).unwrap() {
             StatusReply::RejectedNotPrimary { why: rdm_core::status::NotPrimary::SubjectUnknown { .. } } => 5,
             StatusReply::RejectedNotPrimary { why: rdm_core::status::NotPrimary::SenderNotSubject { .. } } => 7,
-            StatusReply::Stopped { receipt: rdm_core::status::ConnectionsReceipt::Deadline { .. } }
-            | StatusReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Deadline { .. }), .. } => 4,
+            StatusReply::Stopped { receipt: rdm_core::status::ConnectionsReceipt::Deadline { .. } } => 4,
             _ => n,
         },
         0x20 => match rdm_core::build::Build::decode_reply(&wire).unwrap() {
@@ -201,17 +200,14 @@ fn the_standard_code_view_keeps_the_protocols_exact_typed_detail() {
 }
 
 #[test]
-fn served_named_connections_have_per_element_codes_in_both_protocols() {
+fn served_named_connections_have_per_element_codes() {
     use rdm_core::ConnectionId;
     use rdm_core::node_command::{NodeCommand, NodeCommandReply};
     let closed = ConnectionId::parse("0123456789ab").unwrap();
     let absent = ConnectionId::parse("1123456789ab").unwrap();
-    let status = StatusReply::ConnectionsDeleted { closed: vec![closed.clone()], not_open: vec![absent.clone()], held: vec![], receipt: None };
     let command = NodeCommandReply::ConnectionsDeleted { closed: vec![closed], not_open: vec![absent], held: vec![], receipt: None };
-    assert_eq!(Status::classify_reply(&status).code(), Code::Ok);
     assert_eq!(NodeCommand::classify_reply(&command).code(), Code::Ok);
-    assert_eq!(status.connection_outcomes(), command.connection_outcomes());
-    let outcomes = status.connection_outcomes();
+    let outcomes = command.connection_outcomes();
     assert_eq!(outcomes[0].code, Code::Ok);
     assert_eq!(outcomes[1].code, Code::NotFound);
 }

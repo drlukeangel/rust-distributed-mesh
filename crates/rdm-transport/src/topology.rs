@@ -3077,6 +3077,12 @@ impl TopologyView {
         &self.view.digest_view.primaries
     }
 
+    /// Whether the exact birth is held deleted from its node recovery's verdict
+    /// ([`DigestView::hold_recovering`]).
+    pub fn is_recovering(&self, node_id: &str, incarnation: &IncarnationId) -> bool {
+        self.view.digest_view.is_recovering(node_id, incarnation)
+    }
+
     /// Hold the primary records an entry read named (`topology_read`): each only if it supersedes what
     /// this node holds.
     pub fn learn_primaries(&self, records: &[(PrimaryRole, Primary, bool)], via: &'static str) {
@@ -3579,6 +3585,12 @@ pub struct Backbone {
     publisher: PublisherId,
     /// Set when the role is taken: the next publication puts the full of every source into the Mesh.
     full_due: Arc<AtomicBool>,
+    /// Whether this admin, holding its mesh's primary role, has published its mesh's aggregate on the
+    /// backbone since it took the role: a successor's first act (elections §4.1), before it
+    /// investigates a lost birth of its mesh. Cleared when the role moves.
+    published_as_primary: Arc<AtomicBool>,
+    /// Wakes those waiting for [`Self::published_as_primary`].
+    published_wake: Arc<tokio::sync::Notify>,
     /// The version counter of this Mesh's topology, and the complete projection it was last bumped on.
     version: Arc<Mutex<SourceVersion>>,
     /// This Mesh as the mesh topology last published it (publisher, version, full): the forwarder's
@@ -3746,6 +3758,8 @@ impl Backbone {
             wake: Arc::default(),
             publisher: author,
             full_due: topology_view.forward_path.owes_full(),
+            published_as_primary: Arc::default(),
+            published_wake: Arc::default(),
             version: Arc::new(Mutex::new(SourceVersion::with_publication_counter(topology_view.view.forwarder.lock().unwrap().publication_counter()))),
             own: Arc::default(),
             withhold: Arc::default(),
@@ -3874,6 +3888,7 @@ impl Backbone {
         let forwarder_changed = self.topology_view.forward_path.set_role(primary);
         self.mesh_status.lock().unwrap().set_role(primary);
         if let Some(role) = Self::role(&self.publishing, primary) {
+            self.published_as_primary.store(false, Ordering::Relaxed);
             tracing::info_span!("rdm.mesh.backbone.update.via-aggregate-publisher", node = %self.current_name(), mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("mesh topology publication"));
         }
@@ -3881,6 +3896,24 @@ impl Backbone {
             let role = if primary { "start" } else { "stop" };
             tracing::info_span!("rdm.mesh.backbone.update.via-forwarder", node = %self.current_name(), mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("peer meshes forwarded onto this mesh's channel"));
+        }
+    }
+
+    /// Whether this admin holds its mesh's primary role and has published its mesh's aggregate on the
+    /// backbone since it took it (elections §4.1: a successor's first act, before it investigates a lost
+    /// birth of its mesh as any member).
+    pub fn published_as_primary(&self) -> bool {
+        self.publishing.load(Ordering::Relaxed) && self.published_as_primary.load(Ordering::Relaxed)
+    }
+
+    /// Resolves once [`Self::published_as_primary`] holds.
+    pub async fn until_published_as_primary(&self) {
+        loop {
+            let woken = self.published_wake.notified();
+            if self.published_as_primary() {
+                return;
+            }
+            woken.await;
         }
     }
 
@@ -3962,6 +3995,14 @@ impl Backbone {
         .filter(|_| !withheld)
         {
             let _ = self.channel.broadcast(&frame).await;
+        }
+        // The first publication after the role was taken is the successor's first act (elections §4.1):
+        // its mesh's aggregate on the backbone names it mesh-primary; its own mesh's update was queued
+        // above and goes out asynchronously.
+        if !self.published_as_primary.swap(true, Ordering::Relaxed) {
+            tracing::info_span!("rdm.mesh.backbone.update.via-primary-aggregate", node = %me_name, mesh = %self.mesh, publisher = %publisher, topology_version = version, withheld)
+                .in_scope(|| tracing::info!("the mesh-primary's first aggregate on the backbone since it took the role"));
+            self.published_wake.notify_waiters();
         }
         true
     }
@@ -4326,6 +4367,11 @@ pub struct DigestView {
     /// Proven departures by NodeId, with when this view accepted each: held
     /// for `retention` of local age, then forgotten.
     deleted: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
+    /// The exact births this admin's node recovery holds deleted from its verdict until their
+    /// `NodeDeleted` is applied here, by NodeId (node-recovery.md step 3: "A birth that comes back once
+    /// its verdict is not `reached`, during its replacement's birth or after it, is a deleted birth").
+    /// Local to this view: refused on receipt, never projected or published.
+    recovering: Arc<Mutex<HashMap<String, IncarnationId>>>,
     /// The deletions this process executed and published as `NodeDeleted`, by the deleted NodeId: its
     /// mesh's topology carries each in `MeshTopology.deleted` for the retention, whatever mesh the deleted
     /// birth was in (gossip.md §3.1 `NodeDeleted`: the "executor's own mesh channel; backbone
@@ -4549,6 +4595,7 @@ impl DigestView {
             silence: Arc::new(tokio::sync::watch::Sender::new(0)),
             silent: Arc::default(),
             deleted: Arc::default(),
+            recovering: Arc::default(),
             executed_deletions: Arc::default(),
             refused_departures: Arc::default(),
             in_flight: Arc::default(),
@@ -4604,6 +4651,36 @@ impl DigestView {
         self.is_deleted_at(node_id, Instant::now())
     }
 
+    /// Hold the exact birth `(node_id, incarnation)` deleted at this view from its node recovery's
+    /// verdict (node-recovery.md step 3; Q342): its digests are refused by name on every channel, as a
+    /// deleted birth's are, until the recovery's `NodeDeleted` is applied here. Nothing is published.
+    pub fn hold_recovering(&self, node_id: &NodeId, incarnation: &IncarnationId) {
+        let held = self.recovering.lock().unwrap().insert(node_id.to_string(), incarnation.clone());
+        if held.as_ref() != Some(incarnation) {
+            tracing::info_span!(
+                "rdm.mesh.topology.update.via-recovering-held",
+                observer = %self.observer_name.lock().unwrap(),
+                node_id = %node_id,
+                incarnation_id = %incarnation.as_str(),
+            )
+            .in_scope(|| tracing::info!("the birth's verdict is not reached: held deleted at this view from its recovery's start"));
+        }
+    }
+
+    /// Whether the exact birth is held deleted from its recovery's verdict ([`Self::hold_recovering`]).
+    pub fn is_recovering(&self, node_id: &str, incarnation: &IncarnationId) -> bool {
+        self.recovering.lock().unwrap().get(node_id) == Some(incarnation)
+    }
+
+    /// `d` refused by name when its birth is held deleted from its recovery's verdict.
+    fn refuses_recovering(&self, d: &MeshDigest, via: &'static str) -> bool {
+        if !self.is_recovering(d.node.node_id.as_str(), &d.node.incarnation) {
+            return false;
+        }
+        reject_deleted(d, via);
+        true
+    }
+
     /// Is `node_id` held as deleted at `now`?
     pub(crate) fn is_deleted_at(&self, node_id: &str, now: Instant) -> bool {
         self.expire_deleted_at(now);
@@ -4637,6 +4714,7 @@ impl DigestView {
             }
             deleted.insert(id.clone(), (op.clone(), now));
         }
+        self.recovering.lock().unwrap().remove(&id);
         delete_incarnation(&op.node_id, &op.incarnation);
         self.end_stop(op.node_id.as_str());
         self.in_flight.lock().unwrap().remove(&op.key());
@@ -5498,6 +5576,9 @@ impl DigestView {
             }
             return false;
         }
+        if self.refuses_recovering(&d, "mesh-channel") {
+            return false;
+        }
         if self.stopped_refuses(&d, "heartbeat", now) {
             return false;
         }
@@ -5584,6 +5665,9 @@ impl DigestView {
             reject_deleted(&d, "forwarded");
             return false;
         }
+        if self.refuses_recovering(&d, "forwarded") {
+            return false;
+        }
         if self.stopped_refuses(&d, "topology", now) {
             return false;
         }
@@ -5637,6 +5721,9 @@ impl DigestView {
     fn record_forwarded_inner(&self, d: MeshDigest, now: Instant, carried: Carried) -> bool {
         if self.is_deleted_at(d.node.node_id.as_str(), now) {
             reject_deleted(&d, "forwarded");
+            return false;
+        }
+        if self.refuses_recovering(&d, if carried == Carried::Status { "forwarded" } else { "join" }) {
             return false;
         }
         if self.stopped_refuses(&d, if carried == Carried::Status { "forwarded" } else { "join" }, now) {

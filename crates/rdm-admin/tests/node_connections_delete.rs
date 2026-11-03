@@ -371,6 +371,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
+            primary_commands: Default::default(),
             storage_changes: Default::default(), hold_next_reply: Arc::new(AtomicBool::new(false)),
             wake: Default::default(),
             fabric_states: Default::default(),
@@ -393,9 +394,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             .await;
         assert!(matches!(
             unknown_subject,
-            CarryEnd::Refused(StatusReply::RejectedNotPrimary {
-                why: NotPrimary::SubjectUnknown
-            })
+            CarryEnd::Refused(rdm_core::node_command::NodeCommandReply::Rejected { ref reason, .. }) if reason == "unknown-node"
         ));
 
         let stale_birth = door
@@ -403,7 +402,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             .await;
         assert!(matches!(
             stale_birth,
-            CarryEnd::Refused(StatusReply::RejectedStaleIncarnation { ref held }) if *held == subject_inc
+            CarryEnd::Refused(rdm_core::node_command::NodeCommandReply::RejectedStaleIncarnation { ref held }) if *held == subject_inc
         ));
 
         let empty_scope = door
@@ -413,9 +412,11 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
                 &ConnectionScope::Connections(Vec::new()),
             )
             .await;
+        // The door refuses a scope that names nothing to cut by name, with 0x22's `Rejected`
+        // (node-connections-delete.md "Wire").
         assert!(matches!(
             empty_scope,
-            CarryEnd::Refused(StatusReply::RejectedConnectionScope { .. })
+            CarryEnd::Refused(rdm_core::node_command::NodeCommandReply::Rejected { ref reason, .. }) if reason == "rejected-connection-scope"
         ));
 
         // 2. Open a live Direct connection on `subject`, then delete it by id alongside an unknown id.

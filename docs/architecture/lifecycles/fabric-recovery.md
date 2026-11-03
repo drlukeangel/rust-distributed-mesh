@@ -23,7 +23,7 @@ The sequence below reads topology from a node that is alive; when no node is,
 
 ## The loss of the fabric-primary while a node-admin lives
 
-Fabric recovery is one workflow, an attempt of the current Build, and one mechanism wherever it starts
+Fabric recovery is one workflow, never a Build or part of one (Q342), and one mechanism wherever it starts
 (Q122). At the staleness floor each node-admin of the fabric-primary's mesh asks: am I a node-admin; am I
 the lowest Ready one; was the former mesh-primary also the fabric-primary? If not, it is
 mesh-primary now ([elections §4.1](../fabric-node-lifecycle-elections.md#41-the-nodes-of-one-type-in-one-mesh)).
@@ -34,18 +34,17 @@ does exactly the same. The workflow re-creates the node-admin at the fabric-prim
 found the old runtime exited, otherwise over a newly allocated one, R-FM2). When that node is
 Ready the workflow restores it as mesh-primary and fabric-primary (step 4) and completes. Nothing is
 taken over and nothing is handed back; the fabric-primary's path.name never changed, so a replacement
-executor starting the workflow over knows it. The attempt names what it recovers, as every recovery
-attempt does, and its executor writes this attempt's Build records while the fabric-primary is
-unavailable, and, while the target mesh has no active mesh-primary, the mesh and node records its own operations
-require, nothing else; this makes it no primary, and ordinary mesh writing passes to the restored
+executor starting the workflow over knows it. The workflow names the birth it recovers, and its
+executor writes, while the target mesh has no active mesh-primary, the mesh and node records its own
+operations require, nothing else; this makes it no primary, and ordinary mesh writing passes to the restored
 mesh-primary when it assumes the role ([build.md §5.3](../build.md#53-node-admin-storage-boundaries)). If the executor is lost, the next one in
-the same order starts the workflow again, resuming the attempt from its recorded progress.
+the same order starts the workflow again, resuming from the progress recorded on the node record.
 
 1. **Unheard past the staleness floor.** Every admin marks the fabric-primary `PendingReconnect` at the
    floor ([node recovery](node-recovery.md) step 1). Silence is the trigger; no provider verdict stands
    between the mark and the row.
-2. **Fabric recovery starts.** The executor names itself by the four questions on its own view, opens
-   the attempt and broadcasts it. Any other admin that notices tells it; it acts only when its own view
+2. **Fabric recovery starts.** The executor names itself by the four questions on its own view, starts
+   the workflow and broadcasts it. Any other admin that notices tells it; it acts only when its own view
    agrees; repeats answer `AlreadyApplied`.
    - *Its own mesh*: the lowest Ready node-admin starts fabric recovery at the first tick after
      the mark, once the record has named the unheard primary for one staleness floor in its own view: a
@@ -61,10 +60,9 @@ the same order starts the workflow again, resuming the attempt from its recorded
    hook, cert and rafka-time (Q87). Any other verdict, node recovery re-creates it at the same path.name
    with a new node.id: over the inherited data dir with the same endpoint key when the investigation's
    provider step found the old runtime exited, over a newly allocated data dir, `inherited = false`,
-   otherwise (`R-FM2`). An old birth that comes back after that is a deleted birth: every view refuses its
+   otherwise (`R-FM2`). An old birth that comes back once its verdict is not `reached`, during its replacement's birth or after it, is a deleted birth: every view refuses its
    Digest by name, and its mesh-primary decides it by its path.name and its atlas
-   ([node investigation](node-investigation.md), Q207): its re-created birth is there, so it is reported
-   and the fabric-primary terminates its runtime (Q110).
+   ([node investigation](node-investigation.md), Q207): its recovery or its re-created birth is there, so the primary whose atlas decided it terminates its runtime (Q110).
    Nothing holds, and nothing waits for evidence. From the backbone the re-create terminates nothing in the
    mesh. On `exited`, `os-stopped` or `unproven`, its node.delete of the exact lost birth writes that
    birth's row deleted with no `TerminateRuntime`, which frees the name, then node.create at the
@@ -94,7 +92,7 @@ the same order starts the workflow again, resuming the attempt from its recorded
 | outside its mesh: the row, on the verdict | at the verdict | at the verdict |
 | the workflow completes, when the node at the fabric-primary's path.name is Ready | — | — |
 
-1. Load the durable topology and the accepted Build map; bind port 0 and retain the OS-assigned
+1. Load the durable topology and the accepted Build's topology; bind port 0 and retain the OS-assigned
    endpoint. The first GetTopology targets a node from that durable map: OWN MESH first,
    install only complete source snapshots. Stabilize the own mesh before investigating peers.
 2. Obtain current own-mesh topology, join the mesh channel from its member addresses, recover
@@ -102,8 +100,7 @@ the same order starts the workflow again, resuming the attempt from its recorded
 3. Run the single bounded own-mesh Ping sweep
    ([a node-admin created into a live mesh](node-create.md#a-node-admin-created-into-a-live-mesh) steps 4–5); a
    non-answering member goes to [node recovery](node-recovery.md).
-4. Restore the own mesh's secondary admin as executor under that SAME accepted Build, with the
-   claim the recovered fabric-primary's. Reach the other meshes through
+4. Restore the own mesh's secondary admin, the recovered fabric-primary's own workflow. Reach the other meshes through
    [node investigation](node-investigation.md) of each lost mesh-primary: its verdict runs
    [node recovery](node-recovery.md), a node-admin re-created into each mesh that has none, under
    that mesh's own MeshId. Each such
@@ -123,7 +120,6 @@ sequenceDiagram
     FP->>FP: complete snapshots; join own mesh; ready / election
     FP->>L: one bounded own-mesh 0x01 Ping
     FP->>P: node investigation for non-answers
-    FP->>FP: same Build claim; execute only when won
     FP->>P: restore own secondary admin
     Note over FP: own mesh stabilized before peer investigation
     FP->>O: probe via live connection into peer mesh; Ping / Forward ladder
@@ -138,22 +134,19 @@ sequenceDiagram
 |---|---|---|---|
 | Recovered fabric-primary | GetTopology to durable-map node | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); own mesh first, no maker calls | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read-install` |
 | Recovered own-mesh primary | Ping / node recovery | same own-mesh sweep and node investigation as a node-admin joining a live mesh | `rdm.node_rpc.request.update.via-call`, `rdm.node_admin.deployment.update.via-step` |
-| Recovered fabric-primary | accepted Build / claim | same Build, each mesh's own MeshId, claims as fabric-primary | `rdm.node_rpc.request.update.via-call` on the claimant, `rdm.node_admin.build.update.via-claim-decision` on the fabric-primary |
 
 ## Command, completion and gossip messages
 
-Recovery composes deployment, topology reads, Ping, Build claims and readiness; it has no
+Recovery composes deployment, topology reads, Ping and readiness; it has no
 recovery opcode. A provider creates the process.
 
 ```text
 recovered fabric-primary → durable-map node of its own mesh   GetTopology        ← Started, Snapshot chunks, End
 recovered fabric-primary → each own-mesh member               Ping, once         ← Pong | no answer: node recovery
-recovered fabric-primary                                      ClaimAttempt for the attempt restoring its own mesh's secondary admin ← Won
 ```
 
-The bodies are the envelope's [Topology](../node-rpc-envelope.md#topology-op-0x1e-rdm),
-[Ping](../node-rpc-envelope.md#ping-op-0x01-core) and [BuildClaim](../node-rpc-envelope.md#buildclaim-op-0x1c-rdm)
-execution. A Ping non-answer decides nothing: [node investigation](node-recovery.md) decides, and no RPC is
+The bodies are the envelope's [Topology](../node-rpc-envelope.md#topology-op-0x1e-rdm) and
+[Ping](../node-rpc-envelope.md#ping-op-0x01-core). A Ping non-answer decides nothing: [node investigation](node-recovery.md) decides, and no RPC is
 sent to a birth it has re-created. Restored members report status
 under [node status](node-status.md#node-status-declaration) and publish their own Digest under the
 [frame catalog](../gossip.md#31-frame-catalog).
@@ -169,7 +162,7 @@ correlates admission, completion and the subject's action to the exact birth and
 
 ## Nothing alive
 
-No node-admin is alive, the fabric's other nodes alive or not. Nothing inside the fabric brings an admin back: a person or a script launches a node-admin at the lost fabric-primary's path.name, with no launcher, given the fabric id, its mesh and the store root, which must hold that fabric or the start is refused by name. It adopts what the store holds and mints no fabric or mesh id; it is a new birth with its own node.id. It is given the fabric root and CA, from its environment or an inherited data dir, and the declared values (Q150), and refuses to start without them. Before any recovery mutation other than the claim itself, it claims the fabric-recovery attempt of the current Build for that mesh; a second launch's claim loses and it exits. Concurrent adoption launches resolve to the same recovery attempt for the exact lost birth, read from the Build journal on the store; while that attempt is active, no other launch opens a competing attempt for that birth. It installs the recorded primaries before electing (Q149) and runs node investigation on the lost birth: reached, or any node-admin answering before its first mutation, it is refused NameHeld and exits, closing the attempt through the failure path. Otherwise the claimed attempt releases the name, re-creates the birth as itself, adopts rafka-time from live members, and restores it as fabric-primary by step 4 once Ready; with nothing alive it is the only node, below (Q156).
+No node-admin is alive, the fabric's other nodes alive or not. Nothing inside the fabric brings an admin back: a person or a script launches a node-admin at the lost fabric-primary's path.name, with no launcher, given the fabric id, its mesh and the store root, which must hold that fabric or the start is refused by name. It adopts what the store holds and mints no fabric or mesh id; it is a new birth with its own node.id. It is given the fabric root and CA, from its environment or an inherited data dir, and the declared values (Q150), and refuses to start without them. It installs the recorded primaries before electing (Q149) and runs node investigation on the lost birth: reached, or any node-admin answering before its first mutation, it is refused NameHeld and exits, its adoption recorded failed. Otherwise it releases the name, re-creates the birth as itself, adopts rafka-time from live members, and restores it as fabric-primary by step 4 once Ready; with nothing alive it is the only node, below (Q156).
 
 - A store that names no node but the launching admin's own lost birth holds no fabric to recover: the launch deletes that storage and starts as Day 0, a new fabric-primary.
 - Nothing ran mesh.delete or fabric.delete, so the fabric and its meshes were never deleted.
@@ -191,7 +184,7 @@ No node-admin is alive, the fabric's other nodes alive or not. Nothing inside th
   same path.name, with a new node.id over the inherited data dir. The members of any mesh with
   no mesh-primary run in process at the fabric-primary
   ([Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm)), so each other mesh gets its
-  node-admin there, on the same accepted Build and that mesh's own MeshId.
+  node-admin there, under that mesh's own MeshId.
 - The fabric id keeps the fabric's name
   ([a fabric is an entity](../node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it))
   and each MeshId keeps its mesh's name

@@ -740,7 +740,7 @@ mod tests {
     async fn claim(builds: &crate::build_state::MemoryBuildStateAdapter, id: &crate::build::BuildId, attempt: u32, executor: &rdm_core::framing::Birth) {
         use crate::build_state::{AttemptOpened, AttemptReason, BuildAttemptClaim};
         if attempt > 1 {
-            builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Stop, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
+            builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Delete, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
         }
         builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt, executor: executor.clone() }).await.unwrap();
     }
@@ -822,14 +822,8 @@ mod tests {
         async fn committed_facts(&self, build: Option<&crate::build::BuildId>) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
             self.inner.committed_facts(build).await
         }
-        async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, rdm_core::OperationId)>, crate::build_state::BuildStateError> {
-            self.inner.recovery_of(path, node_id, incarnation).await
-        }
         async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, crate::build_state::BuildStateError> {
             self.inner.mesh_deleted_of(node_id, incarnation).await
-        }
-        async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, crate::build_state::BuildStateError> {
-            self.inner.exits_owed(build_id, mesh).await
         }
         async fn forget(&self, id: &crate::build::BuildId) -> Result<(), crate::build_state::BuildStateError> {
             self.inner.forget(id).await

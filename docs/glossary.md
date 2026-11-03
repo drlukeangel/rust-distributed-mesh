@@ -78,7 +78,7 @@ Every term below links to the architecture pages that define it.
   starts at `1` and increments when an incomplete Build is reopened or taken over by a successor
   `fabric-primary`).
 - **claim** ([Build](architecture/build.md)): The record that opens an attempt of a Build. An
-  attempt lost with its executor leaves the Build `Running`, and a successor or drift pass claims
+  attempt lost with its executor leaves the Build `Running`, and a successor claims
   the next attempt (`attempt + 1`).
 - **step** ([Build](architecture/build.md)): One unit of work inside a Build (for example,
   `node.create:<path.name>` or `node.replace:<path.name>:cutover`), assigned by the

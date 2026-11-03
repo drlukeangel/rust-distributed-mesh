@@ -132,7 +132,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
 
         let provenance = |pred: &Node, at: &PathName| Allocation {
             predecessor: Some(BirthRef { node_id: pred.node_id.clone(), incarnation_id: pred.incarnation_id.clone().unwrap() }),
-            build_id: rdm_core::BuildId::mint(),
+            build_id: Some(rdm_core::BuildId::mint()),
             operation: rdm_core::OperationId::location("node.create", at),
             incarnation: IncarnationId::mint(),
             deployment_id: rdm_admin::model::DeploymentId::mint(),

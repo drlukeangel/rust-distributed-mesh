@@ -221,14 +221,9 @@ pub struct Atlas {
 
 /// The births and operation keys an action is accepted on.
 fn accepted_on(action: &AttemptAction) -> Vec<rdm_core::OperationId> {
-    use rdm_core::{OperationId, OperationSubject};
+    use rdm_core::OperationId;
     match action {
-        AttemptAction::DeleteConnections { node_id, .. } => vec![OperationId::node("node.connection.delete", node_id)],
-        AttemptAction::Stop { node_id, .. } => vec![OperationId::node("node.stop", node_id)],
-        AttemptAction::Start { node_id, .. } => vec![OperationId::node("node.start", node_id)],
         AttemptAction::Delete { node_id, .. } => vec![OperationId::node("node.delete", node_id)],
-        AttemptAction::Recover { path, .. } => vec![OperationId::location("node.create", path)],
-        AttemptAction::Terminate { node_id, from_incarnation, .. } => vec![OperationId::new("node.terminate", OperationSubject::Birth { node_id: node_id.clone(), incarnation: from_incarnation.clone() })],
         AttemptAction::Steps { steps, pinned, .. } => {
             let births = crate::accepted::step_births(steps, pinned).expect("accepted steps have validated births");
             steps.iter().zip(births.iter()).enumerate().map(|(i, (step, (birth, _, _)))| crate::build::admitted_step_key(step, birth.as_ref(), Some(i as u32 + 1))).collect()
@@ -242,7 +237,7 @@ fn birth_of_step(rows: &[NodeRow], p: &BuildProjection, receipt: &crate::build_s
     use rdm_core::OperationSubject;
     let (attempt, operation) = (receipt.attempt, &receipt.operation);
     let expected = match p.attempt_actions.get(&attempt) {
-        Some(AttemptAction::DeleteConnections { node_id, from_incarnation, .. } | AttemptAction::Stop { node_id, from_incarnation, .. } | AttemptAction::Start { node_id, from_incarnation, .. } | AttemptAction::Delete { node_id, from_incarnation, .. } | AttemptAction::Recover { node_id, from_incarnation, .. } | AttemptAction::Terminate { node_id, from_incarnation, .. }) => {
+        Some(AttemptAction::Delete { node_id, from_incarnation, .. }) => {
             match &operation.subject {
                 Some(OperationSubject::Node(id)) if id == node_id => Some((node_id.clone(), from_incarnation.clone())),
                 Some(OperationSubject::Birth { node_id: id, incarnation }) if id == node_id && incarnation == from_incarnation => Some((id.clone(), incarnation.clone())),
@@ -270,8 +265,8 @@ fn birth_of_step(rows: &[NodeRow], p: &BuildProjection, receipt: &crate::build_s
             Some(OperationSubject::Location(_)) => true,
             _ => false,
         };
-        let mut targets = rows.iter().filter(|row| subject_matches(&row.node_id)).flat_map(|row| row.births.iter().map(move |birth| (row, birth))).filter(|(row, birth)| {
-            birth.operations.iter().any(|op| crate::build_state::validate_carried_declaration(p, receipt, &op.operation, (&row.node_id, &birth.incarnation_id)).is_some())
+        let mut targets = rows.iter().filter(|row| subject_matches(&row.node_id)).flat_map(|row| row.births.iter().map(move |birth| (row, birth))).filter(|(_, birth)| {
+            birth.operations.iter().any(|op| crate::build_state::declaration_names_receipt(p, receipt, &op.operation))
         }).map(|(row, birth)| (row.node_id.clone(), birth.incarnation_id.clone()));
         let target = targets.next()?;
         targets.all(|other| other == target).then_some(target)
@@ -373,14 +368,6 @@ impl Atlas {
 
     pub(crate) fn callers(&self) -> Option<&Arc<crate::refused_caller::RefusedCallers>> {
         self.callers.get()
-    }
-
-    /// Whether the atlas holds the birth `(node_id, incarnation)` deleted: `row`, its node's record at its
-    /// node id (query.md §1), deleted or withdrawn with that birth, or a node.delete of that
-    /// birth completed (Q217: such a birth that comes back is deleted, its runtime terminated).
-    pub(crate) fn holds_deleted(&self, node_id: &NodeId, incarnation: &IncarnationId, row: Option<&NodeRow>) -> bool {
-        let recorded = row.is_some_and(|r| r.node_id == *node_id && matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn) && r.birth(incarnation).is_some());
-        recorded || self.deleted_by_op(node_id, incarnation)
     }
 
     /// Whether `row` (its node's current record) is `Deleted` with the birth `(node_id, incarnation)`, or
@@ -534,7 +521,7 @@ impl Atlas {
             let pinned = match p.attempt_actions.get(&attempt) {
                 Some(AttemptAction::Steps { pinned, .. }) => pinned.iter().find(|(at, _)| at == path).map(|(_, b)| b.node_id.clone()),
                 // The node id the gates pinned (build.md §4.4).
-                Some(AttemptAction::DeleteConnections { path: at, node_id, .. } | AttemptAction::Stop { path: at, node_id, .. } | AttemptAction::Start { path: at, node_id, .. } | AttemptAction::Delete { path: at, node_id, .. }) if at == path => Some(node_id.clone()),
+                Some(AttemptAction::Delete { path: at, node_id, .. }) if at == path => Some(node_id.clone()),
                 _ => None,
             };
             pinned
@@ -704,21 +691,15 @@ impl Atlas {
 
     /// The effect the node row records last of `row`'s birth `incarnation`, with its stamp: a stop's
     /// `Stopped`, a start's `Ready`; any other effect leaves the lifecycle where it is.
-    async fn row_effect(row: &NodeRow, incarnation: &IncarnationId, builds: &dyn BuildStateAdapter, held: Option<&Effect>) -> Option<Effect> {
+    fn row_effect(row: &NodeRow, incarnation: &IncarnationId) -> Option<Effect> {
         let op = row.birth(incarnation)?.operations.iter().rev().find(|o| match o.state {
             rdm_core::status::NodeState::Stopped => o.operation.operation.action == "node.stop",
             rdm_core::status::NodeState::Ready => o.operation.operation.action == "node.start",
             _ => false,
         })?;
         let lifecycle = if op.state == rdm_core::status::NodeState::Stopped { Lifecycle::Stopped } else { Lifecycle::Started };
-        let submitted_at_ms = match held {
-            Some(h) if h.stamp.build_id == op.operation.build_id => h.stamp.submitted_at_ms,
-            _ => match crate::build::BuildId::parse(&op.operation.build_id) {
-                Ok(id) => builds.read_build(&id).await.ok()?.submitted_at_ms,
-                Err(_) => return None,
-            },
-        };
-        Some(Effect { lifecycle, stamp: Stamp { submitted_at_ms, build_id: op.operation.build_id.clone(), recipe_step: op.operation.operation.recipe_step, attempt: op.operation.attempt } })
+        // A node command belongs to no Build (Q342): its effect is the record's, read from no Build.
+        Some(Effect { lifecycle, stamp: Stamp { submitted_at_ms: 0, build_id: rdm_core::LifecycleOp::NO_BUILD.into(), recipe_step: op.operation.operation.recipe_step, attempt: rdm_core::LifecycleOp::NO_ATTEMPT } })
     }
 
     /// The atlas row of `path`: the birth the current-pair lookup names (query.md §1: the pair's name
@@ -726,19 +707,19 @@ impl Atlas {
     /// newest of the fabric-primary's own receipts and the record's effects, and the operation accepted on
     /// it. `None` when no claim holds the pair or its claimant's record stands at another: the gossip
     /// view never stands in for one (Q197).
-    pub(crate) async fn row(&self, path: &PathName, records: &crate::current_record::CurrentRecords<'_>, builds: &dyn BuildStateAdapter, observed: &Topology) -> Result<Option<AtlasRow>, String> {
+    pub(crate) async fn row(&self, path: &PathName, records: &crate::current_record::CurrentRecords<'_>, observed: &Topology) -> Result<Option<AtlasRow>, String> {
         let row = records.row_at(path).await?;
-        self.project_row(row, builds, observed).await
+        self.project_row(row, observed).await
     }
 
     /// Read an admitted node directly by its globally unique ID, its record at that id (query.md §1),
     /// never through a location index.
-    pub(crate) async fn row_id(&self, node_id: &NodeId, records: &crate::current_record::CurrentRecords<'_>, builds: &dyn BuildStateAdapter, observed: &Topology) -> Result<Option<AtlasRow>, String> {
+    pub(crate) async fn row_id(&self, node_id: &NodeId, records: &crate::current_record::CurrentRecords<'_>, observed: &Topology) -> Result<Option<AtlasRow>, String> {
         let row = records.row(node_id).await?;
-        self.project_row(row, builds, observed).await
+        self.project_row(row, observed).await
     }
 
-    async fn project_row(&self, row: Option<NodeRow>, builds: &dyn BuildStateAdapter, observed: &Topology) -> Result<Option<AtlasRow>, String> {
+    async fn project_row(&self, row: Option<NodeRow>, observed: &Topology) -> Result<Option<AtlasRow>, String> {
         let Some(row) = row else { return Ok(None) };
         let birth = row.newest_birth().map(|b| b.incarnation_id.clone());
         let accepted = {
@@ -751,12 +732,13 @@ impl Atlas {
         let observed_status = observed.births().find(|n| n.node_id == row.node_id && n.incarnation_id == birth).map(|n| n.status);
         let held = birth.as_ref().and_then(|i| self.held.lock().unwrap().effects.get(&Birth { node_id: row.node_id.clone(), incarnation: i.clone() }).cloned());
         let from_row = match &birth {
-            Some(i) => Self::row_effect(&row, i, builds, held.as_ref()).await,
+            Some(i) => Self::row_effect(&row, i),
             None => None,
         };
         let effect = match (held, from_row) {
-            (Some(h), Some(r)) => Some(if r.stamp > h.stamp { r } else { h }),
-            (h, r) => h.or(r),
+            // The row's newest stop or start, a node command's, is the record: the newest effect (Q342).
+            (_, Some(r)) => Some(r),
+            (h, None) => h,
         };
         let deleted = matches!(row.status, NodeStatus::Deleted | NodeStatus::Withdrawn) || effect.as_ref().is_some_and(|e| e.lifecycle == Lifecycle::Deleted);
         let (status, stopped) = if deleted {
@@ -785,13 +767,13 @@ impl Atlas {
 
     /// `fabric.atlas.get`: one row for every node `paths` names (the current Build's topology), in
     /// `(path, name)` order.
-    pub(crate) async fn view(&self, paths: impl IntoIterator<Item = PathName>, records: &crate::current_record::CurrentRecords<'_>, builds: &dyn BuildStateAdapter, observed: &Topology) -> Result<rdm_core::views::AtlasView, String> {
+    pub(crate) async fn view(&self, paths: impl IntoIterator<Item = PathName>, records: &crate::current_record::CurrentRecords<'_>, observed: &Topology) -> Result<rdm_core::views::AtlasView, String> {
         let mut paths: Vec<PathName> = paths.into_iter().collect();
         paths.sort();
         paths.dedup();
         let mut nodes = Vec::new();
         for path in paths {
-            if let Some(r) = self.row(&path, records, builds, observed).await? {
+            if let Some(r) = self.row(&path, records, observed).await? {
                 if r.status == NodeStatus::Deleted {
                     continue;
                 }
@@ -848,34 +830,9 @@ impl crate::control_plane::ControlPlane {
     /// The current stored record for the exact node admitted by a standalone action.
     pub(crate) async fn atlas_row_id(&self, node_id: &NodeId, observed: &Topology) -> Result<Option<AtlasRow>, crate::control_plane::Refusal> {
         match self.current_records() {
-            Some(records) => self.atlas.row_id(node_id, &records, &*self.builds, observed).await.map_err(crate::control_plane::Refusal::Unavailable),
+            Some(records) => self.atlas.row_id(node_id, &records, observed).await.map_err(crate::control_plane::Refusal::Unavailable),
             None => Ok(None),
         }
-    }
-
-    /// The births of `observed` the current Build's topology names by an entry a rename moved them off:
-    /// each live birth at a pair the topology does not name whose current record ([`Self::atlas_row_id`])
-    /// names an entry the topology does name ([`AtlasRow::entry_left`]). What drift never counts as
-    /// surplus. A birth whose record could not be read is in the set, named by one
-    /// `rdm.node_admin.fabric.resolve.via-atlas-row` span: an unread record is not evidence of surplus.
-    pub(crate) async fn moved_off_entries(&self, observed: &Topology) -> std::collections::HashSet<NodeId> {
-        let mut moved = std::collections::HashSet::new();
-        let Ok(Some(current)) = self.builds.current().await else { return moved };
-        let candidates: Vec<NodeId> = observed.members().filter(|n| n.status.is_live() && !current.topology.contains(&n.name)).map(|n| n.node_id.clone()).collect();
-        for node_id in candidates {
-            match self.atlas_row_id(&node_id, observed).await {
-                Ok(Some(row)) if row.entry_left(&current.topology).is_some() => {
-                    moved.insert(node_id);
-                }
-                Ok(_) => {}
-                Err(refusal) => {
-                    tracing::info_span!("rdm.node_admin.fabric.resolve.via-atlas-row", node_id = %node_id, outcome = "unread", detail = %format!("{refusal:?}"))
-                        .in_scope(|| tracing::info!("a birth at a pair the topology does not name has no readable current record: it is not counted surplus"));
-                    moved.insert(node_id);
-                }
-            }
-        }
-        moved
     }
 
     /// The reader of the current records (query.md §1), once this admin's nodes.storage is open: each
@@ -902,7 +859,7 @@ impl crate::control_plane::ControlPlane {
         let span = tracing::info_span!("rdm.node_admin.fabric.resolve.via-atlas-row", node_path = %path.path, node_name = %path.name, birth_source = tracing::field::Empty, status = tracing::field::Empty, stopped = tracing::field::Empty, accepted = tracing::field::Empty);
         // Before this admin's nodes.storage and node records are open it holds no record of any path.
         let row = match self.current_records() {
-            Some(records) => self.atlas.row(path, &records, &*self.builds, observed).await.map_err(crate::control_plane::Refusal::Unavailable)?,
+            Some(records) => self.atlas.row(path, &records, observed).await.map_err(crate::control_plane::Refusal::Unavailable)?,
             None => None,
         };
         if let Some(r) = &row {
@@ -942,8 +899,8 @@ mod tests {
             lifecycle: Lifecycle::Deleted,
             stamp: Stamp { submitted_at_ms: 1, build_id: "fixture".into(), recipe_step: None, attempt: 1 },
         });
-        assert!(atlas.holds_deleted(&first, &incarnation, None));
-        assert!(!atlas.holds_deleted(&second, &incarnation, None));
+        assert!(atlas.holds_deleted_by_delete(&first, &incarnation, None));
+        assert!(!atlas.holds_deleted_by_delete(&second, &incarnation, None));
     }
 
 
@@ -952,7 +909,7 @@ mod tests {
         let atlas = TestAtlas::new();
         let build = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("accepted-refresh")).unwrap();
         let node_id = NodeId::mint();
-        let action = AttemptAction::Stop {
+        let action = AttemptAction::Delete {
             path: PathName::new("unrelated.location", "north").unwrap(),
             mesh: "mesh1".into(), r#type: "node".into(),
             node_id: node_id.clone(), from_incarnation: IncarnationId::mint(),
@@ -964,7 +921,7 @@ mod tests {
         let held = atlas.held.lock().unwrap();
         let accepted = held.accepted.get(&rdm_core::OperationSubject::Node(node_id.clone())).unwrap();
         assert_eq!(accepted.attempt, 2);
-        assert_eq!(accepted.operation, rdm_core::OperationId::node("node.stop", &node_id));
+        assert_eq!(accepted.operation, rdm_core::OperationId::node("node.delete", &node_id));
     }
 
     #[test]
@@ -1082,11 +1039,10 @@ mod tests {
         claims.put_node(&late).await.unwrap();
         // The re-creation's live record holds the path.
         let reader = crate::current_record::CurrentRecords { nodes: &claims };
-        let builds = crate::build_state::MemoryBuildStateAdapter::new();
-        let row = atlas.row(&at, &reader, &builds, &observed).await.unwrap().expect("a record is current at the path");
+        let row = atlas.row(&at, &reader, &observed).await.unwrap().expect("a record is current at the path");
         assert_eq!((row.node_id.clone(), row.status, row.live), (new.node_id.clone(), NodeStatus::Ready, true), "the re-created birth is the path's, live: {row:?}");
         // By its own id, the deleted birth answers its own latest line (Q323: one record per node, latest wins).
-        let by_id = atlas.row_id(&old.node_id, &reader, &builds, &observed).await.unwrap().expect("the deleted birth's record");
+        let by_id = atlas.row_id(&old.node_id, &reader, &observed).await.unwrap().expect("the deleted birth's record");
         assert_eq!(by_id.node_id, old.node_id, "the deleted birth's own record: {by_id:?}");
     }
 
@@ -1145,7 +1101,7 @@ mod tests {
         let (gone, gone_inc) = record(path("mesh1.node", "2"), "mesh1", "node", NodeStatus::Deleted);
         let atlas = atlas_of(&[&gone], &["mesh1"]).await;
         let build = crate::build::BuildId::parse("66h8qrqvaajk").unwrap();
-        atlas.note_accepted(&build, 1, &AttemptAction::Recover { r#type: "node".into(), mesh: "mesh1".into(), path: path("mesh1.node", "2"), from_incarnation: gone_inc.clone(), node_id: gone.node_id.clone(), backbone: false });
+        atlas.note_accepted(&build, 1, &AttemptAction::Steps { steps: vec![rdm_core::build::Step::Create { node: path("mesh1.node", "2"), mesh: "mesh1".into(), r#type: "node".into(), executable: None }], pinned: Vec::new(), rename_intents: Default::default() });
         assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.node", "2"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.node", "2"), by: format!("Build {} attempt 1 action node.create", build) });
     }
 
@@ -1157,7 +1113,7 @@ mod tests {
         let (born, born_inc) = record(path("mesh1.node", "2"), "mesh1", "node", NodeStatus::Pending);
         let atlas = atlas_of(&[&born], &["mesh1"]).await;
         let build = crate::build::BuildId::parse("66h8qrqvaajk").unwrap();
-        atlas.note_accepted(&build, 1, &AttemptAction::Recover { r#type: "node".into(), mesh: "mesh1".into(), path: path("mesh1.node", "2"), from_incarnation: IncarnationId::mint(), node_id: NodeId::mint(), backbone: false });
+        atlas.note_accepted(&build, 1, &AttemptAction::Steps { steps: vec![rdm_core::build::Step::Create { node: path("mesh1.node", "2"), mesh: "mesh1".into(), r#type: "node".into(), executable: None }], pinned: Vec::new(), rename_intents: Default::default() });
         assert_eq!(atlas.refused_caller(Some(&born), claimant(&[&born], &born.name), &born_inc, &planned(&[(path("mesh1.node", "2"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.node", "2") });
     }
 
@@ -1239,7 +1195,7 @@ mod tests {
         // hand-over and written by each op after that"
         use crate::accepted::FabricTopology;
         use crate::build_state::{
-            AttemptReason, BuildProjection, BuildState, BuildStepReceipt, MemoryBuildStateAdapter,
+            AttemptReason, BuildProjection, BuildState, BuildStepReceipt,
         };
         use crate::model::{Fabric, FabricId, Node, ProviderKind, ScopeStatus};
         use crate::span_capture::Capture;
@@ -1262,7 +1218,6 @@ mod tests {
                 .declared
                 .insert(rdm_core::status::NodeState::Ready);
 
-            let builds = MemoryBuildStateAdapter::new();
 
             let mut node1 = Node::allocated(path("mesh1.node", "1"), "mesh1", "node");
             node1.node_id = row1.node_id.clone();
@@ -1288,11 +1243,8 @@ mod tests {
 
             let atlas = atlas_of(&[&row1, &row2], &["mesh1"]).await;
             let build_stop = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b-stop")).unwrap();
-            let stop_action = AttemptAction::Stop { r#type: "node".into(), mesh: "mesh1".into(),
-                path: path("mesh1.node", "1"),
-                node_id: row1.node_id.clone(),
-                from_incarnation: inc1.clone(),
-            };
+            let pin1 = crate::build::PinnedBirth { r#type: "node".into(), mesh: "mesh1".into(), node_id: row1.node_id.clone(), incarnation: inc1.clone() };
+            let stop_action = AttemptAction::Steps { steps: vec![rdm_core::build::Step::Stop { node: path("mesh1.node", "1") }], pinned: vec![(path("mesh1.node", "1"), pin1.clone())], rename_intents: Default::default() };
             atlas.note_accepted(&build_stop, 1, &stop_action);
 
             // 1. In-flight stop command appears in `accepted` while the birth is still Ready.
@@ -1300,7 +1252,6 @@ mod tests {
                 .view(
                     [path("mesh1.node", "2"), path("mesh1.node", "1")],
                     &current.reader(),
-                    &builds,
                     &observed,
                 )
                 .await
@@ -1309,7 +1260,7 @@ mod tests {
             assert_eq!(view_in_flight.nodes[0].name, path("mesh1.node", "1"));
             assert_eq!(
                 view_in_flight.nodes[0].accepted.as_ref(),
-                Some(&rdm_core::OperationId::node("node.stop", &row1.node_id))
+                Some(&rdm_core::OperationId::node("node.stop", &row1.node_id).at_step(Some(1)))
             );
             assert_eq!(
                 view_in_flight.nodes[0].status,
@@ -1337,14 +1288,14 @@ mod tests {
                     mesh: None,
                     build_id: build_stop,
                     attempt: 1,
-                    operation: rdm_core::OperationId::node("node.stop", &row1.node_id),
+                    operation: rdm_core::OperationId::node("node.stop", &row1.node_id).at_step(Some(1)),
                     step: "Complete".into(),
                     outcome: StepOutcome::Complete,
                     output: None,
                     executor: None,
                 }],
                 last_failure: None,
-                reason: AttemptReason::Stop,
+                reason: AttemptReason::Steps,
                 action: Some(stop_action.clone()),
                 attempt_actions: [(1, stop_action)].into_iter().collect(),
                 attempt_executors: Default::default(), attempt_executor_meshes: Default::default(), attempt_claimed_meshes: Default::default(),
@@ -1358,7 +1309,7 @@ mod tests {
             let mut payload = rdm_core::LifecycleOp {
                 r#type: row1.r#type.clone(), mesh: row1.mesh.clone(), name: row1.name.clone(),
                 build_id: stop_proj.build_id.to_string(), attempt: 1,
-                operation: rdm_core::OperationId::node("node.stop", &row1.node_id),
+                operation: rdm_core::OperationId::node("node.stop", &row1.node_id).at_step(Some(1)),
                 node_id: row1.node_id.clone(), incarnation: IncarnationId::mint(),
                 event_at_rafka_ms: 0, traceparent: None, tracestate: None,
             };
@@ -1389,7 +1340,7 @@ mod tests {
                 assert_eq!(birth_of_step(&[], &topology_action, &topology_action.steps[0]), Some(Birth { node_id: row1.node_id.clone(), incarnation: inc1.clone() }), "topology-driven operations retain their pinned birth without an AttemptAction");
             }
             assert_eq!(
-                atlas.take_receipt(&stop_proj, 1, &rdm_core::OperationId::node("node.stop", &row1.node_id), &None, &[]),
+                atlas.take_receipt(&stop_proj, 1, &rdm_core::OperationId::node("node.stop", &row1.node_id).at_step(Some(1)), &None, &[]),
                 Taken::Status(NodeStatus::Stopped)
             );
             atlas.receipts(&stop_proj, 1, &[]);
@@ -1398,7 +1349,6 @@ mod tests {
                 .view(
                     [path("mesh1.node", "1"), path("mesh1.node", "2")],
                     &current.reader(),
-                    &builds,
                     &observed,
                 )
                 .await
@@ -1418,11 +1368,7 @@ mod tests {
             //    Complete receipt of node.delete on mesh1.node.2 omits mesh1.node.2 from the view.
             let build_start =
                 crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b-start")).unwrap();
-            let start_action = AttemptAction::Start { r#type: "node".into(), mesh: "mesh1".into(),
-                path: path("mesh1.node", "1"),
-                node_id: row1.node_id.clone(),
-                from_incarnation: inc1.clone(),
-            };
+            let start_action = AttemptAction::Steps { steps: vec![rdm_core::build::Step::Start { node: path("mesh1.node", "1") }], pinned: vec![(path("mesh1.node", "1"), pin1.clone())], rename_intents: Default::default() };
             let start_proj = BuildProjection {
                 build_id: build_start.clone(),
                 submitted_at_ms: 200,
@@ -1430,19 +1376,19 @@ mod tests {
                     mesh: None,
                     build_id: build_start,
                     attempt: 1,
-                    operation: rdm_core::OperationId::node("node.start", &row1.node_id),
+                    operation: rdm_core::OperationId::node("node.start", &row1.node_id).at_step(Some(1)),
                     step: "Complete".into(),
                     outcome: StepOutcome::Complete,
                     output: None,
                     executor: None,
                 }],
-                reason: AttemptReason::Start,
+                reason: AttemptReason::Steps,
                 action: Some(start_action.clone()),
                 attempt_actions: [(1, start_action)].into_iter().collect(),
                 ..stop_proj.clone()
             };
             assert_eq!(
-                atlas.take_receipt(&start_proj, 1, &rdm_core::OperationId::node("node.start", &row1.node_id), &None, &[]),
+                atlas.take_receipt(&start_proj, 1, &rdm_core::OperationId::node("node.start", &row1.node_id).at_step(Some(1)), &None, &[]),
                 Taken::Effect(Some("started"))
             );
 
@@ -1482,7 +1428,6 @@ mod tests {
                 .view(
                     [path("mesh1.node", "1"), path("mesh1.node", "2")],
                     &current.reader(),
-                    &builds,
                     &observed,
                 )
                 .await

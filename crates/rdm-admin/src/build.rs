@@ -241,19 +241,6 @@ pub enum BuildOperation {
         /// The fabric's minted id.
         fabric_id: rdm_core::FabricId,
     },
-    /// `TerminateRuntime` of a deleted birth heard again, on its exact runtime (Q128).
-    TerminateNode {
-        /// The path and name the birth held.
-        node: PathName,
-        /// The explicitly declared mesh owning this operation.
-        mesh: String,
-        /// The admitted subject kind, independent of the current pair occupant.
-        r#type: String,
-        /// The birth's node.id.
-        node_id: rdm_core::NodeId,
-        /// The birth.
-        from_incarnation: rdm_core::IncarnationId,
-    },
     /// The node's create spec names another `config` or `storage` than its row records
     /// (build.md §1, "The Build applies the diff"): `node.config.update` of the entry's map at the
     /// node's mesh-primary, row first, then the node (a live one sent `ApplyNodeConfig`, a stopped one
@@ -313,8 +300,7 @@ impl BuildOperation {
             Self::DeleteConnections { node_id, from_incarnation, .. }
             | Self::StopNode { node_id, from_incarnation, .. }
             | Self::StartNode { node_id, from_incarnation, .. }
-            | Self::DeleteNode { node_id, from_incarnation, .. }
-            | Self::TerminateNode { node_id, from_incarnation, .. } => Some((node_id, from_incarnation)),
+            | Self::DeleteNode { node_id, from_incarnation, .. } => Some((node_id, from_incarnation)),
             Self::Step { birth: Some(birth), .. }
             | Self::DeleteLiveNode { birth: Some(birth), .. } => Some((&birth.node_id, &birth.incarnation)),
             Self::DeleteLiveNode { exited: Some(birth), .. } => Some((&birth.node_id, &birth.incarnation)),
@@ -328,7 +314,7 @@ impl BuildOperation {
         match self {
             Self::CreateNode { node, .. } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::DeleteLiveNode { node, .. } => Some(node),
             Self::Step { step, .. } => Some(step.node()),
-            Self::TerminateNode { node, .. } | Self::UpdateConfig { node, .. } | Self::CreateTags { node, .. } | Self::DeleteTags { node, .. } => Some(node),
+            Self::UpdateConfig { node, .. } | Self::CreateTags { node, .. } | Self::DeleteTags { node, .. } => Some(node),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } => None,
         }
     }
@@ -341,7 +327,7 @@ impl BuildOperation {
             | Self::CreateNode { mesh, .. } | Self::DeleteConnections { mesh, .. }
             | Self::StopNode { mesh, .. } | Self::StartNode { mesh, .. }
             | Self::DeleteNode { mesh, .. } | Self::DeleteLiveNode { mesh, .. }
-            | Self::TerminateNode { mesh, .. } | Self::UpdateConfig { mesh, .. }
+            | Self::UpdateConfig { mesh, .. }
             | Self::CreateTags { mesh, .. } | Self::DeleteTags { mesh, .. }
             | Self::Step { mesh, .. } => Some(mesh),
             Self::DeleteFabric { .. } => None,
@@ -354,7 +340,7 @@ impl BuildOperation {
             Self::CreateNode { r#type, .. } | Self::DeleteConnections { r#type, .. }
             | Self::StopNode { r#type, .. } | Self::StartNode { r#type, .. }
             | Self::DeleteNode { r#type, .. } | Self::DeleteLiveNode { r#type, .. }
-            | Self::TerminateNode { r#type, .. } | Self::UpdateConfig { r#type, .. }
+            | Self::UpdateConfig { r#type, .. }
             | Self::CreateTags { r#type, .. } | Self::DeleteTags { r#type, .. }
             | Self::Step { r#type, .. } => Some(r#type.clone()),
             _ => None,
@@ -385,8 +371,6 @@ impl BuildOperation {
             Self::DeleteLiveNode { node, birth, exited, .. } => birth.as_ref().map(|b| &b.node_id).or_else(|| exited.as_ref().map(|b| &b.node_id)).map_or_else(|| rdm_core::OperationId::location("node.delete", node), |id| rdm_core::OperationId::node("node.delete", id)),
             Self::ShutdownMesh { mesh_id, .. } => rdm_core::OperationId::new("mesh.delete", rdm_core::OperationSubject::Mesh(mesh_id.clone())),
             Self::DeleteFabric { fabric_id } => rdm_core::OperationId::new("fabric.delete", rdm_core::OperationSubject::Fabric(fabric_id.clone())),
-            // One key per birth: a birth heard again after another termination is a new run of it.
-            Self::TerminateNode { node_id, from_incarnation, .. } => rdm_core::OperationId::new("node.terminate", rdm_core::OperationSubject::Birth { node_id: node_id.clone(), incarnation: from_incarnation.clone() }),
             Self::UpdateConfig { node_id, .. } => rdm_core::OperationId::node("node.config.update", node_id),
             Self::CreateTags { node_id, .. } => rdm_core::OperationId::node("node.tag.create", node_id),
             Self::DeleteTags { node_id, .. } => rdm_core::OperationId::node("node.tag.delete", node_id),

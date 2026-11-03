@@ -123,7 +123,7 @@ fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_
             tokio::time::sleep(HELD).await;
             release_tx.send(()).unwrap();
         });
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "3").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "3").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "3").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "3").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let err = pipeline.create(&req).await.map(|_| ()).expect_err("the provider launches nothing: the create fails at DeployRuntime");
         release.await.unwrap();
         holder.await.unwrap();
@@ -239,7 +239,7 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
             .unwrap();
         builds1.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build1.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
         let pipeline1 = DeploymentPipeline { provider: &LaunchesNothing, joins: &joins, observer: &NoBirth, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds1, template: &template, timeouts: Timeouts::default() };
-        let req1 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "3").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build1.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "3").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req1 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "3").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build1.clone()), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "3").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         // Pre-seed AllocateIdentity so `create` enters `PrepareStorage` without calling `row_allocation`.
         builds1
             .append_step_receipt(&rdm_admin::build_state::BuildStepReceipt {
@@ -280,7 +280,7 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
             let _ = release_rx.recv();
         });
         held_rx.await.unwrap();
-        let req2 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "4").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build2.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "4").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req2 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "4").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build2.clone()), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "4").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let timed_out2 = tokio::time::timeout(Duration::from_millis(120), pipeline2.create(&req2)).await;
         assert!(timed_out2.is_err(), "the create waits at transport-key while the blocking thread is held");
         release_tx.send(()).unwrap();

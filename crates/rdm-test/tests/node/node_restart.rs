@@ -56,11 +56,12 @@ async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_ro
     let (first, second) = (admin(true), admin(false));
     let name = |n: &Value| serde_json::from_value::<PathName>(n["name"].clone()).expect("structured location");
     let nodes = estate.nodes_obj().await;
-    let mut operations = Vec::new();
+    // Each stop is a node command, never a Build (Q342): the second one's hand-back is read from when it began.
+    let mut stops_at = Vec::new();
     for target in [&first, &second] {
         let path = name(target);
+        stops_at.push(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64);
         let mut stream = nodes.stop(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {path:?}: {e}"));
-        operations.push(stream.accepted().clone());
         Estate::complete(&mut stream).await;
         estate.until_stopped_at_the_fabric_primary(&path).await;
         let mut stream = nodes.start(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.start of {path:?}: {e}"));
@@ -76,7 +77,8 @@ async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_ro
 
     estate.stop().await;
     let spans = estate.spans();
-    let back: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "build_id") == operations[1].build_id.to_string() && attr(sp, "run") == operations[1].attempt.to_string()).collect();
+    let first_id = first["node_id"].as_str().unwrap_or_default().to_string();
+    let back: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= stops_at[1] && sp["attributes"].to_string().contains(&first_id)).collect();
     assert_eq!(back.len(), 1, "the second stop's successor, {:?}, installed itself once: {back:#?}", name(&first));
     let trace = back[0]["trace_id"].as_str().unwrap_or_default().to_string();
     println!("role given back: http://192.168.68.99:16687/trace/{trace}");

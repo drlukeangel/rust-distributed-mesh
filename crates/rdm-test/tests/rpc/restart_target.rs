@@ -65,7 +65,7 @@ async fn a_gateway_reaches_the_brokers_same_birth_after_its_restart() {
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 2. The broker restarts, node.stop then node.start (Q183): the same node, birth and port.
-    let (restart, _) = estate.stop_then_start(&broker_location).await;
+    estate.stop_then_start(&broker_location).await;
     let restarted = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await).into_iter().find(|n| n["node_id"] == broker["node_id"]).unwrap();
     assert_eq!(s(&restarted["node_id"]), broker_id, "a restart keeps the NodeId: {restarted}");
     assert_eq!(s(&restarted["incarnation_id"]), old_birth, "a restart keeps the birth: {restarted}");
@@ -78,7 +78,7 @@ async fn a_gateway_reaches_the_brokers_same_birth_after_its_restart() {
     assert_eq!((after["outcome"].as_str(), after["route"].as_str()), (Some("Reply"), Some("via-peer")), "{after}");
     assert_eq!(after["reply"]["executing_node"], broker_id, "{after}");
     assert_eq!(after["reply"]["result"], json!({"found": true, "value": "before-restart"}));
-    estate.artifact("calls.json", &json!({"put": put, "by_path": by_path, "restart": {"build_id": restart.build_id.to_string(), "attempt": restart.attempt}, "restarted": restarted, "after": after}));
+    estate.artifact("calls.json", &json!({"put": put, "by_path": by_path, "restarted": restarted, "after": after}));
 
     estate.stop().await;
     let spans = estate.spans();

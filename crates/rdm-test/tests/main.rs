@@ -48,8 +48,6 @@ mod estate_handover;
 mod estate_teardown;
 #[path = "build/accepted_topology.rs"]
 mod accepted_topology;
-#[path = "build/await_attempt.rs"]
-mod await_attempt;
 #[path = "build/build_op.rs"]
 mod build_op;
 #[path = "build/executables.rs"]
@@ -212,6 +210,8 @@ mod mesh_primary_reads;
 mod non_primary_reads;
 #[path = "node/node_delete.rs"]
 mod node_delete;
+#[path = "node/node_commands_beside_a_build.rs"]
+mod node_commands_beside_a_build;
 #[path = "node/node_connections_delete.rs"]
 mod node_connections_delete;
 #[path = "connections/acceptance.rs"]

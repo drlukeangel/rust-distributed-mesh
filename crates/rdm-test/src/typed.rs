@@ -851,29 +851,35 @@ impl Estate {
         frames
     }
 
-    /// A workflow stream to its `Complete`; a failed step is a defect of the cell, named. The attempt
-    /// the call opened.
-    pub async fn complete(stream: &mut WorkflowStream) -> Accepted {
-        let accepted = stream.accepted().clone();
+    /// A workflow stream to its `Complete`; a failed step is a defect of the cell, named. The Build and
+    /// attempt the call opened; `None` for a node command (node.stop, node.start), which belongs to no
+    /// Build (Q342).
+    pub async fn complete(stream: &mut WorkflowStream) -> Option<Accepted> {
+        let accepted = stream.accepted().cloned();
         let frames = Self::frames_of(stream).await;
         match frames.last() {
             Some(Frame::Complete) => accepted,
-            other => panic!("Build {} attempt {}: the workflow did not complete: {other:?} of {frames:?}", accepted.build_id, accepted.attempt),
+            other => panic!("{:?} ({:?}): the workflow did not complete: {other:?} of {frames:?}", stream.kind(), accepted),
         }
     }
 
     /// `node.stop` of `node`, then `node.start` of it, each awaited to its `Complete` (Q183: callers run
-    /// node.stop then node.start; the same birth, node.id and incarnation, rejoins). The start is asked
-    /// once the fabric-primary's own view lists the node stopped: the fabric-primary admits a start of a
-    /// stopped node only (node-start.md "Entry"), and a stop executed in another mesh reaches its view by
-    /// that mesh's projection. The two attempts the calls opened, the stop's first; a refusal is a
-    /// defect of the cell.
-    pub async fn stop_then_start(&self, node: &PathName) -> (Accepted, Accepted) {
+    /// node.stop then node.start; the same birth, node.id and incarnation, rejoins). Each is a node command
+    /// of the primary above the node, never a Build (Q342). The start is asked once the fabric-primary's
+    /// own view lists the node stopped, as a caller reading its view would. A refusal is a defect of the
+    /// cell.
+    pub async fn stop_then_start(&self, node: &PathName) {
         let nodes = self.nodes_obj().await;
         let stopped = Self::workflow(&format!("node.stop of {node:?}"), nodes.stop(node).await).await;
         self.until_stopped_at_the_fabric_primary(node).await;
         let started = Self::workflow(&format!("node.start of {node:?}"), self.nodes_obj().await.start(node).await).await;
-        (stopped, started)
+        assert!(stopped.is_none() && started.is_none(), "node.stop and node.start of {node:?} open no Build: {stopped:?} {started:?}");
+    }
+
+    /// The id of every Build `build.get` answers, in its order: what a node command or a repair leaves as it
+    /// was (Q342: never a Build or part of one).
+    pub async fn build_ids(&self) -> Vec<String> {
+        self.carrier().await.builds(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("build.get: {e}")).iter().map(|b| b.build_id.to_string()).collect()
     }
 
     /// Wait, bounded at 60 s, until the fabric-primary's own view lists `node` stopped: what its
@@ -894,10 +900,10 @@ impl Estate {
         }
     }
 
-    /// A workflow call the fabric-primary accepted, awaited to its `Complete`: a refusal is a defect of the
-    /// cell and `what` names the call.
-    pub async fn workflow(what: &str, call: Result<WorkflowStream, CallEnd>) -> Accepted {
-        let mut stream = call.unwrap_or_else(|end| panic!("the fabric-primary refused {what}: {end}"));
+    /// A workflow call accepted, awaited to its `Complete`: a refusal is a defect of the cell and `what`
+    /// names the call. The Build and attempt it opened; `None` for a node command.
+    pub async fn workflow(what: &str, call: Result<WorkflowStream, CallEnd>) -> Option<Accepted> {
+        let mut stream = call.unwrap_or_else(|end| panic!("{what} was refused: {end}"));
         Self::complete(&mut stream).await
     }
 

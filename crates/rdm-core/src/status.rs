@@ -117,14 +117,11 @@ impl FabricEvent {
     }
 }
 
-/// The operation that produced a declared state (i146 Q36): the Build, its attempt and the
-/// operation's idempotency key, as the command that produced the state named them.
+/// The operation that produced a declared state (i146 Q36), as the command that produced the state
+/// named it. Its identity is unique per occurrence: a node command's is occurrence-minted, a Build
+/// step's carries its Build ([`crate::OperationId::build_id`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeclaredOperation {
-    /// The Build the operation belongs to.
-    pub build_id: String,
-    /// The attempt of the Build.
-    pub attempt: u32,
     /// The structured operation identity; node references use NodeId, with path/name kept separate.
     pub operation: crate::OperationId,
 }
@@ -204,8 +201,8 @@ pub enum StatusRequest {
         /// The event applied.
         event: FabricEvent,
     },
-    /// Reserved position (R-CR4): never sent. A node's connections are deleted by
-    /// [`Self::DeleteConnections`]; a receiver refuses this by name.
+    /// Reserved position (R-CR4): never sent. A node's connections are deleted on NodeCommand 0x22
+    /// `DeleteConnections`; a receiver refuses this by name.
     ///
     /// Position 6 on the wire.
     Reserved6 {
@@ -459,21 +456,16 @@ pub enum StatusRequest {
         #[serde(deserialize_with = "crate::PathName::deserialize_asked")]
         name: crate::PathName,
     },
-    /// `node.connection.delete` (R-CR3; node-stop.md step 3 is its `All`): a caller asks the exact
-    /// birth's mesh-primary, which commands the birth with the same request and holds its completion
-    /// for the birth's rename precondition (R-CR2); the birth itself hard-cuts the connections the
-    /// scope names, writing each drop under the name it holds, and answers
-    /// [`StatusReply::ConnectionsDeleted`] (`node.connections.deleted`). Its endpoint stays bound and
-    /// the call's own stream stays open. An empty `Connections` list is refused by name
-    /// ([`StatusReply::RejectedConnectionScope`]).
+    /// Reserved position (D18): the caller's `node.connection.delete` goes to the node's mesh-primary
+    /// on NodeCommand 0x22 `DeleteConnections`, never on Status. Refused by name, never executed.
     ///
     /// Position 21 on the wire.
-    DeleteConnections {
-        /// The birth whose connections are cut.
+    Reserved21 {
+        /// Never read.
         node_id: NodeId,
-        /// The incarnation of that birth.
+        /// Never read.
         incarnation: IncarnationId,
-        /// Which connections.
+        /// Never read.
         scope: ConnectionScope,
     },
     /// The node reads (node-rpc-envelope.md "Typed objects mapped to wire and execution owners",
@@ -558,12 +550,14 @@ pub enum StatusRequest {
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The Build the operation belongs to.
-        build_id: String,
-        /// The Build attempt that holds the operation.
-        attempt: u32,
-        /// The operation: `join-mesh:<path and name>` or `node.start:<path and name>`.
+        /// The command's identity, keyed on the node.id: `join-mesh` or `node.start`.
         operation: crate::OperationId,
+        /// The commander's held mesh-primary record of the commanded birth's mesh, `None` when it holds
+        /// none (D57; Q335): a commanded node-admin takes it by the supersedes rule
+        /// ([`crate::Primary::supersedes`]) and runs its election over it before it joins. Not named,
+        /// it drops its primary role and its own held record, then joins; named, it refuses the command
+        /// by name and joins no one. Appended: no field before it moves.
+        primary: Option<crate::Primary>,
     },
     /// Reserved position (Q205): node.mesh.leave is a node command on NodeCommand 0x22
     /// ([`crate::node_command::NodeCommandRequest::LeaveMesh`]). A receiver refuses this by name and
@@ -1176,10 +1170,6 @@ pub const MAX_RECEIPT_MANIFEST_BYTES: usize = 128;
 /// `Malformed(TooLarge)` before its body is read.
 const MAX_STATUS_REQUEST_BYTES: usize = 4 * 1024;
 
-/// The bound a declaration fits in, well within [`MAX_STATUS_REQUEST_BYTES`].
-#[cfg(test)]
-const MAX_DECLARATION_REQUEST_BYTES: usize = 1024;
-
 impl StatusRequest {
     /// The request's operation name as it appears in spans and replies.
     pub fn op(&self) -> &'static str {
@@ -1206,7 +1196,7 @@ impl StatusRequest {
             Self::ApplyNodeProperties { .. } => "apply-node-properties",
             Self::ApplyNodeName { .. } => "apply-node-name",
             Self::UpdateName { .. } => "node.name.update",
-            Self::DeleteConnections { .. } => "delete-connections",
+            Self::Reserved21 { .. } => "reserved-21",
             Self::GetNodes { select } => select.read(),
             Self::GetMeshes { .. } => "mesh.get",
             Self::GetFabric => "fabric.get",
@@ -1603,28 +1593,26 @@ pub enum StatusReply {
         /// Its detail.
         reason: String,
     },
-    /// `node.connections.deleted`: the cut is complete. Every connection named is accounted for by
-    /// its entry id: `closed` were open and are cut, their drops written under the name the birth
-    /// holds; `not_open` were named and are unknown or already closed; `held` are the connections
-    /// the birth still holds after the cut (none after `All`).
+    /// Reserved position (D18): never sent. `node.connections.deleted` is NodeCommand 0x22's
+    /// `ConnectionsDeleted`.
     ///
     /// Position 31 on the wire.
-    ConnectionsDeleted {
-        /// The open entries cut.
+    Reserved31 {
+        /// Never read.
         closed: Vec<ConnectionId>,
-        /// The ids named that are no open entry of the birth: unknown, or already closed.
+        /// Never read.
         not_open: Vec<ConnectionId>,
-        /// The open entries the birth still holds.
+        /// Never read.
         held: Vec<ConnectionId>,
-        /// For `All`, what the closure established; `None` for `Connections`.
+        /// Never read.
         receipt: Option<ConnectionsReceipt>,
     },
-    /// The `DeleteConnections` scope names nothing the birth can cut (an empty list, or more ids
-    /// than one request carries); nothing is cut.
+    /// Reserved position (D18): never sent. A scope that names nothing the birth can cut is refused
+    /// at the primary's door with NodeCommand 0x22's `Rejected`, reason `rejected-connection-scope`.
     ///
     /// Position 32 on the wire.
-    RejectedConnectionScope {
-        /// Why, by name.
+    Reserved32 {
+        /// Never read.
         reason: String,
     },
     /// The answer to a `GetNodes`: the nodes the answering admin's view holds that the request
@@ -2174,8 +2162,8 @@ impl StatusReply {
             Self::NameHeld { .. } => "name-held",
             Self::NodeRowRefused { .. } => "node-row-refused",
             Self::NameNotApplied { .. } => "name-not-applied",
-            Self::ConnectionsDeleted { .. } => "connections-deleted",
-            Self::RejectedConnectionScope { .. } => "rejected-connection-scope",
+            Self::Reserved31 { .. } => "reserved-31",
+            Self::Reserved32 { .. } => "reserved-32",
             Self::Nodes { .. } => "nodes",
             Self::Meshes { .. } => "meshes",
             Self::Fabric { .. } => "fabric",
@@ -2225,14 +2213,6 @@ impl StatusReply {
             _ => return None,
         };
         Some(ElementOutcome { element: label, code, detail })
-    }
-
-    /// Codes for the ids the served named-connection answer accounts for, in its existing lists.
-    pub fn connection_outcomes(&self) -> Vec<crate::outcome::ElementOutcome<'_, ConnectionId>> {
-        match self {
-            Self::ConnectionsDeleted { closed, not_open, .. } => crate::outcome::connection_outcomes(closed, not_open),
-            _ => Vec::new(),
-        }
     }
 }
 
@@ -2288,8 +2268,8 @@ impl NodeProtocol for Status {
             StatusReply::NameHeld { .. } => "name-held",
             StatusReply::NodeRowRefused { .. } => "node-row-refused",
             StatusReply::NameNotApplied { .. } => "name-not-applied",
-            StatusReply::ConnectionsDeleted { .. } => "connections-deleted",
-            StatusReply::RejectedConnectionScope { .. } => "rejected-connection-scope",
+            StatusReply::Reserved31 { .. } => "reserved31",
+            StatusReply::Reserved32 { .. } => "reserved32",
             StatusReply::Nodes { .. } => "nodes",
             StatusReply::Meshes { .. } => "meshes",
             StatusReply::Fabric { .. } => "fabric",
@@ -2347,8 +2327,7 @@ impl NodeProtocol for Status {
             StatusReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             StatusReply::Unauthorized { .. } => ReplyKind::Unauthorized,
             StatusReply::RejectedUnmatchedCompletion { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            StatusReply::Stopped { receipt: ConnectionsReceipt::Deadline { .. } }
-            | StatusReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Deadline { .. }), .. } => ReplyKind::new(crate::outcome::Code::DeadlineExceeded),
+            StatusReply::Stopped { receipt: ConnectionsReceipt::Deadline { .. } } => ReplyKind::new(crate::outcome::Code::DeadlineExceeded),
             StatusReply::Stopped { .. } => ReplyKind::Success,
             StatusReply::Started  => ReplyKind::Success,
             StatusReply::StartFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
@@ -2363,8 +2342,7 @@ impl NodeProtocol for Status {
             StatusReply::NameHeld { .. } => ReplyKind::new(crate::outcome::Code::AlreadyExists),
             StatusReply::NodeRowRefused { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::NameNotApplied { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            StatusReply::ConnectionsDeleted { .. } => ReplyKind::Success,
-            StatusReply::RejectedConnectionScope { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
+            StatusReply::Reserved31 { .. } | StatusReply::Reserved32 { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::Nodes { .. } => ReplyKind::Success,
             StatusReply::Meshes { .. } => ReplyKind::Success,
             StatusReply::Fabric { .. } => ReplyKind::Success,
@@ -2506,8 +2484,8 @@ mod tests {
             (StatusReply::NameHeld { path: "mesh1.node".into(), name: "1".into(), by: NodeId::mint() }, ReplyKind::new(crate::outcome::Code::AlreadyExists)),
             (StatusReply::NodeRowRefused { node: "mesh1.node.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::NameNotApplied { node: "100000000001".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::ConnectionsDeleted { closed: vec![ConnectionId::mint()], not_open: vec![ConnectionId::mint()], held: vec![], receipt: None }, ReplyKind::Success),
-            (StatusReply::RejectedConnectionScope { reason: "empty".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
+            (StatusReply::Reserved31 { closed: vec![], not_open: vec![], held: vec![], receipt: None }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::Reserved32 { reason: String::new() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::Nodes { nodes: vec![node_view()] }, ReplyKind::Success),
             (StatusReply::Meshes { meshes: vec![mesh_view()] }, ReplyKind::Success),
             (StatusReply::Fabric { fabric: crate::views::FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::Pending, provider: crate::views::ProviderKind::Process, fabric_primary: Some(NodeId::mint()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()) } }, ReplyKind::Success),
@@ -2580,7 +2558,7 @@ mod tests {
             StatusRequest::Reserved34 { node_id: NodeId::mint(), config: Default::default(), revision: 1 },
             StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node", "1").unwrap() },
             StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node.old", "1").unwrap() },
-            StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(vec![ConnectionId::mint()]) },
+            StatusRequest::Reserved21 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(vec![ConnectionId::mint()]) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::All(["rabbit".to_string(), "red".to_string()].into())) },
             StatusRequest::GetMeshes { mesh: None },
             StatusRequest::GetFabric,
@@ -2588,7 +2566,7 @@ mod tests {
             StatusRequest::GetConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: ["rabbit".to_string()].into() },
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(["rabbit".to_string()].into()) },
-            StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("join-mesh:mesh1.node.1") },
+            StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), operation: crate::OperationId::unscoped("join-mesh:mesh1.node.1"), primary: None },
             StatusRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("leave-mesh:mesh1.node.1") },
             StatusRequest::RenewCert { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), cert: vec![1, 2, 3] },
             StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into(), ca_key: CaKeyHex("ef".into()) },
@@ -2610,7 +2588,7 @@ mod tests {
             assert_eq!(Status::decode_request(&Status::encode_request(&q).unwrap()).unwrap(), q);
         }
         // A declaration naming the operation that produced its state (i146 Q36).
-        let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: Some(DeclaredOperation { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.node", "1").unwrap()) }) };
+        let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: Some(DeclaredOperation { operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.node", "1").unwrap()) }) };
         assert_eq!(Status::decode_request(&Status::encode_request(&named).unwrap()).unwrap(), named);
     }
 
@@ -2708,18 +2686,19 @@ mod tests {
     }
 
     /// CONTRACT (R-CR3: the completion names every id it accounts for; a request names at most
-    /// `MAX_CONNECTION_IDS`): a `DeleteConnections` naming the most ids one request carries fits the
-    /// Status request bound, and a `ConnectionsDeleted` naming `MAX_REPORTED_CONNECTIONS` ids fits the
+    /// `MAX_CONNECTION_IDS`): a NodeCommand `DeleteConnections` naming the most ids one request carries
+    /// fits the request bound, and a `ConnectionsDeleted` naming `MAX_REPORTED_CONNECTIONS` ids fits the
     /// reply bound. An empty list and one past the cap are refused by name; `All` never is.
     #[test]
-    fn a_connections_delete_at_its_caps_encodes_within_the_status_bounds() {
+    fn a_connections_delete_at_its_caps_encodes_within_the_command_bounds() {
+        use crate::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
         let ids = |n: usize| (0..n).map(|_| ConnectionId::mint()).collect::<Vec<_>>();
-        let q = StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(ids(MAX_CONNECTION_IDS)) };
-        let len = Status::encode_request(&q).unwrap().len();
-        assert!(len <= MAX_DECLARATION_REQUEST_BYTES, "{MAX_CONNECTION_IDS} ids encode to {len}, over {MAX_DECLARATION_REQUEST_BYTES}");
-        let r = StatusReply::ConnectionsDeleted { closed: ids(MAX_REPORTED_CONNECTIONS - 2), not_open: ids(1), held: ids(1), receipt: None };
-        let len = Status::encode_reply(&r).unwrap().len();
-        assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "{MAX_REPORTED_CONNECTIONS} ids encode to {len}, over {}", Status::MAX_REPLY_FRAME_BYTES);
+        let q = NodeCommandRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(ids(MAX_CONNECTION_IDS)) };
+        let len = NodeCommand::encode_request(&q).unwrap().len();
+        assert!(len <= NodeCommand::MAX_REQUEST_FRAME_BYTES, "{MAX_CONNECTION_IDS} ids encode to {len}, over {}", NodeCommand::MAX_REQUEST_FRAME_BYTES);
+        let r = NodeCommandReply::ConnectionsDeleted { closed: ids(MAX_REPORTED_CONNECTIONS - 2), not_open: ids(1), held: ids(1), receipt: None };
+        let len = NodeCommand::encode_reply(&r).unwrap().len();
+        assert!(len <= NodeCommand::MAX_REPLY_FRAME_BYTES, "{MAX_REPORTED_CONNECTIONS} ids encode to {len}, over {}", NodeCommand::MAX_REPLY_FRAME_BYTES);
         // The rename's two refusals naming held connections are capped at the same count.
         for r in [StatusReply::rejected_admitting_connections(crate::views::NodeStatus::PendingReconnect, &ids(MAX_REPORTED_CONNECTIONS + 1)), StatusReply::busy_holding_connections(&ids(MAX_REPORTED_CONNECTIONS + 1))] {
             let len = Status::encode_reply(&r).unwrap().len();

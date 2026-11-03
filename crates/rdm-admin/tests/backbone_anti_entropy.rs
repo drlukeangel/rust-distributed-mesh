@@ -20,7 +20,7 @@ use rdm_transport::topology::{gossip_addr, learn_addresses, Backbone, TopologyVi
 use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_core::PathName;
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, CurrentBuild, OwedExit};
+use rdm_admin::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, CurrentBuild};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -108,14 +108,8 @@ impl BuildStateAdapter for HeldBuilds {
     async fn note_blocked(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, operation: &rdm_core::OperationId, step: &str, reason: &str) {
         self.inner.note_blocked(build_id, lane, attempt, operation, step, reason).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
-        self.inner.exits_owed(build_id, mesh).await
     }
 }
 

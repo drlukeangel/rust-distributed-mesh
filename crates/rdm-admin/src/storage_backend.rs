@@ -690,14 +690,8 @@ impl crate::build_state::BuildStateAdapter for Through {
     async fn note_blocked(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, operation: &rdm_core::OperationId, step: &str, reason: &str) {
         self.read().stores().boundaries.builds.note_blocked(build_id, lane, attempt, operation, step, reason).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &crate::model::NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, rdm_core::OperationId)>, crate::build_state::BuildStateError> {
-        self.read().stores().boundaries.builds.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, crate::build_state::BuildStateError> {
-        self.read().stores().boundaries.builds.exits_owed(build_id, mesh).await
     }
     fn held_name(&self) -> Option<PathName> {
         self.read().stores().boundaries.builds.held_name()

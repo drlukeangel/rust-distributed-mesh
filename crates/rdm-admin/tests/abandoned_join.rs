@@ -148,7 +148,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             timeouts: Timeouts { bind: Duration::from_millis(300), ..Timeouts::default() },
         };
         let name: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let err = pipeline.create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(name)), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt: 3, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None }).await.unwrap_err();
+        let err = pipeline.create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(name)), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 3, node: name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None }).await.unwrap_err();
         assert_eq!(err.step, "WaitForBind", "{err}");
 
         // The exact birth the create deployed, from its own receipts and data dir.

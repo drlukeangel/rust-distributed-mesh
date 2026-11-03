@@ -215,8 +215,6 @@ mod tests {
                     &NodeCommandRequest::StopNode {
                         node_id: node_id.clone(),
                         incarnation: stale_inc,
-                        build_id: "b-stop-1".into(),
-                        attempt: 1,
                         operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
                     },
                     Box::new(ChannelFrames(stale_tx)),
@@ -235,8 +233,6 @@ mod tests {
             let stop_req = NodeCommandRequest::StopNode {
                 node_id: node_id.clone(),
                 incarnation: incarnation.clone(),
-                build_id: "b-stop-1".into(),
-                attempt: 2,
                 operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
             };
             let terminal1 = own
@@ -285,8 +281,6 @@ mod tests {
                 vec![(
                     NodeState::Stopped,
                     Some(DeclaredOperation {
-                        build_id: "b-stop-1".into(),
-                        attempt: 2,
                         operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()),
                     })
                 )],

@@ -56,11 +56,11 @@ fn births(nodes: &[Value]) -> BTreeMap<PathName, String> {
 async fn hand_fabric_primary_over(estate: &mut Estate, former: &PathName) -> PathName {
     let successor = former.with_name(if former.name == "1" { "2" } else { "1" }).expect("a sibling admin's location");
     estate.enter(&successor).await;
+    // A stop is a node command to the primary above the node, never a Build (Q342): its stream ends
+    // with the stop's own completion.
     let mut stream = estate.nodes_obj().await.stop(former).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {former:?}: {e}"));
-    let accepted = stream.accepted().clone();
-    if matches!(Estate::frames_of(&mut stream).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
-        estate.resume(&accepted.build_id, accepted.attempt).await;
-    }
+    let frames = Estate::frames_of(&mut stream).await;
+    assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "node.stop of {former:?} completes: {frames:?}");
     estate.until_node(&successor, &format!("{successor:?} holds the fabric-primary role {former:?} handed over"), Duration::from_secs(60), |n| n.filter(|n| n.is_fabric_primary).map(|_| ())).await;
     successor
 }
@@ -166,7 +166,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         let (victim, id) = (window_victim.clone(), victim_id.clone());
         async move {
             let spans = estate.spans();
-            named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+            named(&spans, "rdm.node_admin.node.update.via-node-recovery")
                 .into_iter()
                 .any(|sp| rdm_test::estate::at_location(sp, &victim) && s(&sp["attributes"]["node_id"]) == id && s(&sp["attributes"]["outcome"]).starts_with("complete"))
                 .then_some(())
@@ -225,7 +225,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     // the provider's exact exited verdict, one recovery of the exited birth under the same Build. No
     // decommission queue exists.
     assert!(named(&spans, "rdm.node_admin.node.update.via-sweep-decommission").is_empty(), "no sweep decommission: the unreached member is node-recovered");
-    let recovery: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+    let recovery: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
         .filter(|sp| rdm_test::estate::at_location(sp, &window_victim) && attr(sp, "node_id") == victim_id && attr(sp, "outcome").starts_with("complete"))
         .collect();

@@ -76,7 +76,6 @@ pub fn node_row_refused(node: String, reason: String) -> StatusReply { StatusRep
 /// Construct the typed name-not-applied outcome.
 pub fn name_not_applied(node: String, answered: String, reason: String) -> StatusReply { StatusReply::NameNotApplied { node, answered, reason } }
 /// Construct the typed rejected-connection-scope outcome.
-pub fn rejected_connection_scope(reason: String) -> StatusReply { StatusReply::RejectedConnectionScope { reason } }
 /// Construct the typed unknown-mesh outcome.
 pub fn unknown_mesh(mesh: String) -> StatusReply { StatusReply::UnknownMesh { mesh } }
 /// Construct the typed read-over-bound outcome.
@@ -147,6 +146,8 @@ pub fn rejected_stale_incarnation(held: IncarnationId) -> NodeCommandReply { Nod
 pub fn rejected_stale_change(held: crate::ChangeId) -> NodeCommandReply { NodeCommandReply::RejectedStaleChange { held } }
 /// Construct the typed not-ready outcome.
 pub fn not_ready(reason: String) -> NodeCommandReply { NodeCommandReply::NotReady { reason } }
+/// A caller's node command refused by the primary above the node before anything is sent, by name.
+pub fn rejected(reason: &str, detail: String) -> NodeCommandReply { NodeCommandReply::Rejected { reason: reason.into(), detail } }
 /// Construct the typed peer-unresolved outcome.
 pub fn peer_unresolved(reason: String) -> NodeCommandReply { NodeCommandReply::PeerUnresolved { reason } }
 /// Construct the typed busy outcome.

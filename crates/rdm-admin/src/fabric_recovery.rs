@@ -1,7 +1,7 @@
 //! Fabric recovery (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives";
 //! elections §3, §4.1, §4.3; build.md §5.3; Q122). Unheard past the staleness floor, the fabric-primary is
 //! taken by nobody: the lowest Ready node-admin of its mesh, or when the mesh has none the
-//! lowest Ready mesh-primary on the backbone, runs one workflow, started at the mark on either arm. It takes no primary role. Node investigation decides what becomes of the lost birth (Q111):
+//! lowest Ready mesh-primary on the backbone, runs one workflow, started at the mark on either arm. It takes no primary role. The primary watch's node investigation decides what becomes of the lost birth (Q111, Q337):
 //! reached, it is commanded back through node.mesh.join; any other verdict, node recovery re-creates the
 //! node-admin at its path and name, an attempt of the current Build that names the lost birth, except from the
 //! backbone on `running`, where the report stands and nothing is written (Q153). When the node
@@ -275,6 +275,12 @@ pub struct FabricRecoveryDoor {
     launched_at_new_path: bool,
     /// The birth whose workflow runs here now.
     running: Mutex<Option<rdm_core::framing::Birth>>,
+    /// The birth the workflow running here asks the primary watch's verdict on (Q337), until the watch
+    /// hands it over.
+    asked: Mutex<Option<rdm_core::framing::Birth>>,
+    /// The primary watch's verdict on that birth: node investigation's finding, which the workflow acts
+    /// on; it takes no look of its own.
+    verdict: Mutex<Option<(rdm_core::framing::Birth, crate::node_investigation::Finding)>>,
     /// The admin's stop gate: the workflow is work a stop deletes with the birth
     /// ([`crate::stop_gate::StopGate::until_stopped`]), ended where it stands at this admin's stop.
     gate: crate::stop_gate::StopGate,
@@ -284,7 +290,7 @@ impl FabricRecoveryDoor {
     /// A door for the admin these name.
     #[allow(clippy::too_many_arguments)]
     pub fn new(me: PathName, me_id: NodeId, me_incarnation: crate::model::IncarnationId, topology: Arc<tokio::sync::RwLock<Topology>>, digest_view: DigestView, records: Arc<crate::admin::Records>, looker: crate::primary_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot, launched_to_recover: bool, gate: crate::stop_gate::StopGate) -> Self {
-        Self { me, me_id, me_incarnation, topology, digest_view, records, looker, recovery, handover, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None), gate }
+        Self { me, me_id, me_incarnation, topology, digest_view, records, looker, recovery, handover, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None), asked: Mutex::new(None), verdict: Mutex::new(None), gate }
     }
 
     /// This door's admin is the adoption launch under an in-force fabric.delete, at its own new path and name
@@ -307,6 +313,28 @@ impl FabricRecoveryDoor {
         self.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
     }
 
+    /// The primary watch's verdict `finding` on `node`'s exact birth (Q337): held for the workflow that
+    /// asked for it, which acts on it; a verdict on any other birth is no input of it.
+    pub fn take_verdict(&self, node: &Node, finding: &crate::node_investigation::Finding) {
+        let Some(incarnation) = node.incarnation_id.clone() else { return };
+        let birth = rdm_core::framing::Birth { node_id: node.node_id.clone(), incarnation };
+        let mut asked = self.asked.lock().unwrap();
+        if asked.as_ref() == Some(&birth) {
+            *asked = None;
+            *self.verdict.lock().unwrap() = Some((birth, finding.clone()));
+        }
+    }
+
+    /// The birth the workflow running here asks the primary watch to investigate, if it asks (Q337).
+    pub fn asked(&self) -> Option<rdm_core::framing::Birth> {
+        self.asked.lock().unwrap().clone()
+    }
+
+    /// The watch's verdict on `node`'s exact birth, taken once.
+    fn verdict_on(&self, node: &Node) -> Option<crate::node_investigation::Finding> {
+        self.verdict.lock().unwrap().take().filter(|(birth, _)| birth.node_id == node.node_id && node.incarnation_id.as_ref() == Some(&birth.incarnation)).map(|(_, f)| f)
+    }
+
     /// Fabric recovery in this admin's view now.
     pub async fn read(&self) -> Option<FabricRecovery> {
         let t = self.topology.read().await.clone();
@@ -315,8 +343,8 @@ impl FabricRecoveryDoor {
 
     /// Start the workflow when this admin runs it, from its own mesh or from the backbone alike: at the
     /// first tick after the mark, once the fabric record has named the unheard birth for a floor
-    /// (`held_a_floor`). The workflow's own node investigation of the lost birth is the verdict that
-    /// decides (fabric-recovery.md step 3, Q335). Once per lost birth while it runs here.
+    /// (`held_a_floor`). The primary watch's node investigation of the lost birth is the verdict that
+    /// decides (fabric-recovery.md step 3, Q335, Q337). Once per lost birth while it runs here.
     pub async fn start_if_mine(self: &Arc<Self>, held_a_floor: bool) {
         let Some(fr) = self.read().await else { return };
         let launched = fr.executor.is_none() && self.runs(&fr);
@@ -443,10 +471,18 @@ impl FabricRecoveryDoor {
                     };
                 }
                 (_, Some(_)) => return "the lost birth is heard again: its record names it".into(),
-                // The lost birth is still in the view: node investigation decides (Q111).
+                // The lost birth is still in the view: the primary watch's node investigation decides
+                // (Q111), its verdict taken as it is: the workflow takes no look of its own (Q337).
                 (Some(node), None) if !investigated && std::time::Instant::now() >= next_look => {
+                    let Some(finding) = self.verdict_on(&node) else {
+                        // Asked of the watch, whose next pass investigates the birth and hands the verdict here.
+                        if let Some(incarnation) = node.incarnation_id.clone() {
+                            *self.asked.lock().unwrap() = Some(rdm_core::framing::Birth { node_id: node.node_id.clone(), incarnation });
+                        }
+                        tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
+                        continue;
+                    };
                     investigated = true;
-                    let finding = self.looker.look(&view, &node).await;
                     span.record("verdict", finding.name());
                     match (&finding, finding.inspected()) {
                         (crate::node_investigation::Finding::Reached { .. }, _) => {
@@ -651,8 +687,7 @@ mod tests {
     /// while the fabric-primary record names a heard Ready primary, `of` returns `None`. Once silence marks
     /// the fabric-primary `PendingReconnect` (no provider verdict required), `of` names the lowest Ready
     /// node-admin in its own mesh (`own_mesh = true`), or the lowest Ready mesh-primary on the backbone when
-    /// its own mesh has none (`own_mesh = false`), taking no primary role, and opening the attempt on the
-    /// Build log is idempotent on repeats.
+    /// its own mesh has none (`own_mesh = false`), taking no primary role.
     #[tokio::test]
     async fn unheard_fabric_primary_is_marked_pending_reconnect_and_executor_names_itself_by_four_questions() {
         let mut fp = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
@@ -752,57 +787,6 @@ mod tests {
         assert_eq!(fr_bb.at, Some(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()));
         assert_eq!(fr_bb.executor, bb_low.birth());
 
-        // Opening the recovery attempt is idempotent on repeats (AlreadyApplied).
-        let builds = MemoryBuildStateAdapter::new();
-        let build_id = crate::build::BuildId::mint();
-        builds
-            .publish_accepted(&BuildAccepted {
-                build_id: build_id.clone(),
-                topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::mint()),
-                submitted_change: None,
-                submitted_at_ms: 1,
-            })
-            .await
-            .unwrap();
-        builds
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                build_id: build_id.clone(),
-                attempt: 1,
-                executor: fp.birth().unwrap(),
-                claimant: Some(fp.node_id.clone()),
-                mesh: None,
-            })
-            .await
-            .unwrap();
-        builds
-            .append_attempt_receipt(&crate::build_state::BuildAttemptReceipt {
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 1,
-                outcome: crate::build_state::AttemptOutcome::Converged,
-            })
-            .await
-            .unwrap();
-        let opened = crate::build_state::AttemptOpened {
-            mesh: None,
-            build_id: build_id.clone(),
-            attempt: 2,
-            reason: crate::build_state::AttemptReason::Recovery,
-            action: None,
-            opened_by: rdm_core::NodeId::parse("200000000000").unwrap(),
-            opened_at_ms: 2,
-            context: None,
-        };
-        builds.open_attempt(&opened).await.expect("first open succeeds");
-        builds.open_attempt(&opened).await.expect("repeat open is idempotent (AlreadyApplied)");
-        let opened_count = builds
-            .facts()
-            .await
-            .unwrap()
-            .iter()
-            .filter(|f| matches!(f, crate::build_state::BuildFact::Opened(_)))
-            .count();
-        assert_eq!(opened_count, 1, "repeat open records only one Opened fact");
     }
 
     /// CONTRACT (fabric-recovery.md step 4, Q155, Q160; mesh-delete.md "Resume after the primary's loss"

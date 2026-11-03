@@ -147,3 +147,15 @@ pub fn build_read<'a>(estate: &'a Estate, id: &'a str) -> std::pin::Pin<Box<dyn 
         }
     })
 }
+
+/// The `rdm.node.investigated` events of `node_id` on the estate's fabric store root, `events.jsonl`,
+/// in file order (build.md §5): each as JSON, the CloudEvents envelope with its `data`.
+pub fn node_investigated(estate: &Estate, node_id: &str) -> Vec<serde_json::Value> {
+    let file = estate.fabric_store_root().join(rdm_admin::store_root::EVENTS_FILE);
+    rdm_admin::store_log::read_file(&file)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| l.record)
+        .filter(|e| e["type"] == "rdm.node.investigated" && e["subject"] == node_id)
+        .collect()
+}

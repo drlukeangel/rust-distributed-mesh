@@ -133,7 +133,7 @@ async fn node_get_answers_data_dir_facts_from_the_records_at_their_path_name() {
     status.write_record(&exited).await.unwrap();
     rows.deleted_unreached(&exited_node, &rdm_core::OperationId::node("node.delete", &exited_id)).await.unwrap();
     // The recovery names the exited birth by its admitted provenance, never by the location.
-    let recovery = rdm_admin::storage::Allocation { predecessor: Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }), build_id: rdm_core::BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &recovered.name), incarnation: recovered.incarnation_id.clone().unwrap(), deployment_id: rdm_admin::model::DeploymentId::mint() };
+    let recovery = rdm_admin::storage::Allocation { predecessor: Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }), build_id: Some(rdm_core::BuildId::mint()), operation: rdm_core::OperationId::location("node.create", &recovered.name), incarnation: recovered.incarnation_id.clone().unwrap(), deployment_id: rdm_admin::model::DeploymentId::mint() };
     let claimed = rows.create_row(&path("mesh1.node", "2"), "mesh1", "node", &recovered.node_id, &recovery.operation, Some(&recovery), None, rdm_admin::node_rows::RowFor::Recovery).await.unwrap();
     match claimed {
         rdm_admin::node_rows::RowCreated::Written { row, seeded_from } => {
@@ -294,6 +294,7 @@ async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atla
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
     rdm_admin::status_rpc::StatusDoor {
         certs: None,
+        primary_commands: Default::default(),
         app_channels: None,
         declaration_seam: None,
         command_frame_seam: None,

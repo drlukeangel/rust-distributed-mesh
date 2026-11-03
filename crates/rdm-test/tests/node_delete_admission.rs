@@ -126,7 +126,7 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
         };
         let created = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(),
-                build_id: publish_build(&builds, add_node()).await,
+                build_id: Some(publish_build(&builds, add_node()).await),
                 attempt: 1,
                 node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
                 spec: &NODE_SPEC,
@@ -143,7 +143,7 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
         .await;
         let deleted = pipeline
             .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(created.node).node_id),
-                build_id: build,
+                build_id: Some(build),
                 attempt: 1,
                 node: created.node.clone(),
                 handle: created.handle.clone(),
@@ -185,7 +185,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             timeouts: timeouts(),
         };
         let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(),
-            build_id,
+            build_id: Some(build_id),
             attempt: 1,
             node: rdm_core::PathName::new("mesh1.node", "1").unwrap(),
             spec: &NODE_SPEC,
@@ -220,7 +220,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         .await;
         let deleted = pipeline
             .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(b.node).node_id),
-                build_id: build.clone(),
+                build_id: Some(build.clone()),
                 attempt: 1,
                 node: b.node.clone(),
                 handle: b.handle.clone(),

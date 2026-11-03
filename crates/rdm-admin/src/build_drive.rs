@@ -1239,11 +1239,10 @@ impl DriveEnv {
         Some((node.clone(), self.gate.mesh_unheard_ms(op.mesh()?)?))
     }
 
-    /// The target on `op` (R-D1): a node of a peer mesh held unheard is not claimed or dispatched for,
-    /// except an unheard mesh-primary's own recovery, the delete of its exact birth and the create over it
-    /// on node investigation's verdict ([`mesh_primary_recovery_admits`], Q335). `Some` names the target.
+    /// The target on `op` (R-D1): a node of a peer mesh held unheard is not claimed or dispatched for.
+    /// `Some` names the target.
     fn peer_mesh_held(&self, p: &BuildProjection, op: &BuildOperation) -> Option<(PathName, u64)> {
-        if p.topology.meshes.is_empty() || mesh_primary_recovery_admits(p, op) {
+        if p.topology.meshes.is_empty() {
             return None;
         }
         self.unheard_peer(op)
@@ -1477,23 +1476,7 @@ impl DriveEnv {
                 let t = self.topology.read().await.clone();
                 match self.plan_dispatch(&me, drive, &p, &t, &executor) {
                     Ok(plan) => plan,
-                    Err((op, f)) => {
-                        // An attempt this drive holds that stops on R-D1 in a mesh left with no node-admin
-                        // Ready for the election to name ends HandedOff, the existing hand-back (Q253):
-                        // nothing Failed, nothing framed to the caller. The node recovery owed to that
-                        // mesh's lost mesh-primary takes the mesh's next attempt on the freed in-flight row
-                        // (Q291; Q335 item 4: with no successor the fabric-primary recovers it), and this
-                        // Build resumes once the mesh is heard. Only while the claim record still names this
-                        // attempt and its executor: a drive resumed after a later attempt's claim writes
-                        // nothing of its superseded attempt (build.md, `StaleClaim`).
-                        let mesh = op.mesh().unwrap_or_default();
-                        let held = self.builds.read_build(&id).await.is_ok_and(|p| p.attempt == attempt && p.executor.as_ref() == Some(&executor));
-                        if held && !t.nodes_of_type(mesh, "node-admin").any(|n| n.status == crate::model::NodeStatus::Ready) {
-                            self.verdict(&me, &executor, BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: self.door.node_id.clone() } }, None).await;
-                            self.release_mesh(&id, attempt, &executor).await;
-                        }
-                        return self.stop_at_peer_mesh_held(&me, drive, attempt, &op, f);
-                    }
+                    Err((op, f)) => return self.stop_at_peer_mesh_held(&me, drive, attempt, &op, f),
                 }
             };
             // A node.primary.update that precedes an operation of this run is acknowledged first,
@@ -1921,46 +1904,11 @@ impl DriveEnv {
         if let Some((op, f)) = first.as_ref().and_then(|op| self.peer_mesh_held(p, op).map(|f| (op, f))) {
             return Err(self.stop_at_peer_mesh_held(me, drive, attempt, op, f));
         }
-        // A recovery owed to the mesh this attempt acts in, open in the mesh's lane and claimed by no one,
-        // takes the mesh first: nothing is claimed here until it ran or its birth is no longer at its
-        // path and name (node-recovery.md step 1, Q291).
-        if let Some((mesh, owed, path)) = first.as_ref().and_then(|op| op.mesh()).and_then(|mesh| owed_recovery(p, mesh, &view).map(|(a, path)| (mesh.to_owned(), a, path))) {
-            return Err(self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: attempt {attempt} of Build {id} acts in mesh {mesh}, where the recovery of path {recovery_path:?}, name {recovery_name:?} owed to it is attempt {owed} of its lane, open and claimed by no one: it runs first", recovery_path = &path.path, recovery_name = &path.name, me_path = &me.path, me_name = &me.name)));
-        }
         // A run handed back to this admin (its own cut, or an executor whose view names this admin) is
         // claimed for the admin this view names for what is left: an operation no admin executes waits
         // for its mesh's own role, and one another admin executes is claimed for that admin, never for
         // this one to hand on unrun.
-        // An unheard mesh-primary's recovery, its delete and the create over its birth, is claimed for the
-        // admin its mesh elects in the birth's place once one is primary: "the fabric-primary opens the
-        // attempt ...; the mesh-primary claims it through BuildClaim, and the fabric-primary calls
-        // build.attempt.run naming the mesh; the mesh-primary runs it and reports each receipt up that
-        // stream, and the fabric-primary writes every Build record" (node-recovery.md "Execution"), and
-        // "The fabric-primary writes a row only as acting primary of a mesh with no primary. No other
-        // process writes a Node row" (node-identity-and-state.md §4.3). It is this admin's only while no
-        // admin of that mesh executes it: the acting primary of a mesh with no primary.
-        // A node-admin's is claimed for the mesh-primary the election named in its place, read from this
-        // view as the claim at its open reads it ([`crate::executor::unheard_mesh_primary_executor`]):
-        // while the view names none and the mesh holds another node-admin, nothing is claimed and the
-        // attempt waits, named, for the election's result.
-        let recovery = first.as_ref().filter(|op| matches!(op, BuildOperation::CreateNode { .. } | BuildOperation::DeleteLiveNode { .. }) && mesh_primary_recovery_admits(p, op));
-        let next_primary = match (recovery, p.action.as_ref()) {
-            (Some(op), Some(crate::accepted::AttemptAction::Recover { path, mesh, node_id, .. })) if op.r#type().as_deref().is_some_and(rdm_core::is_node_admin) => match crate::executor::unheard_mesh_primary_executor(path, mesh, node_id, &view) {
-                Some(to) => Some(to),
-                None => {
-                    let admins: Vec<String> = crate::executor::held_admins(mesh, Some(path), &view).into_iter().map(|n| format!("node {} ({:?})", n.node_id, n.status)).collect();
-                    let why = format!("path {me_path:?}, name {me_name:?}: attempt {attempt} of Build {id} recovers path {recovery_path:?}, name {recovery_name:?}, mesh {}'s unheard mesh-primary: this view names no mesh-primary of mesh {} in its place and the mesh holds node-admin(s) {}, so the election has not named it here; nothing is claimed for operation {:?}", mesh, mesh, admins.join(", "), op.key(), recovery_path = &path.path, recovery_name = &path.name, me_path = &me.path, me_name = &me.name);
-                    return Err(self.stalled(me, drive, why));
-                }
-            },
-            (Some(op), _) => crate::executor::executor_for(op, &view),
-            (None, _) => None,
-        }
-        .filter(|to| to != &self.door.node_id);
-        let forced = match next_primary {
-            Some(to) => Some(to),
-            None => forced.filter(|to| to != &self.door.node_id),
-        };
+        let forced = forced.filter(|to| to != &self.door.node_id);
         let lead = match forced {
             Some(to) => Some(to),
             None => {
@@ -2488,35 +2436,6 @@ pub fn describe(r: &BuildReply) -> String {
     }
 }
 
-/// An unheard mesh-primary's recovery (node-recovery.md sequence step 1: "for an unheard mesh-primary,
-/// the fabric-primary opens it", in the fabric lane): `op` is one of the attempt's own operations on the
-/// exact birth its `Recover` action names, the delete of that birth (`TerminateRuntime` first when its
-/// runtime runs, nothing sent to it) or the create over it at the same path and name. They act on node
-/// investigation's verdict, so R-D1's target does not hold them; nothing else of the unheard mesh
-/// crosses it.
-fn mesh_primary_recovery_admits(p: &BuildProjection, op: &BuildOperation) -> bool {
-    let Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) = p.action.as_ref() else { return false };
-    let birth = |b: &crate::build::ExitedBirth| &b.node_id == node_id && &b.incarnation == from_incarnation;
-    match op {
-        BuildOperation::DeleteLiveNode { node, exited: Some(b), .. } | BuildOperation::CreateNode { node, over: Some(b), .. } => node == path && birth(b),
-        _ => false,
-    }
-}
-
-/// The recovery owed to `mesh` in `p` (node-recovery.md step 1, Q291): its lane's attempt opened with a
-/// recovery and claimed by no one, while `view` holds the birth it recovers at its path and name; a birth
-/// deleted or replaced there owes nothing. Its attempt and the path and name.
-fn owed_recovery(p: &BuildProjection, mesh: &str, view: &Topology) -> Option<(u32, PathName)> {
-    let lane = p.lanes.get(mesh).filter(|l| l.state == crate::build_state::BuildState::Pending && l.opened == l.attempt + 1)?;
-    match lane.action.as_ref()? {
-        crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. } => {
-            let held = view.node(path).is_some_and(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(from_incarnation));
-            held.then(|| (lane.opened, path.clone()))
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2687,7 +2606,7 @@ mod tests {
                 &contexts,
                 &build_id,
                 2,
-                crate::build_state::AttemptReason::ProvenDrift,
+                crate::build_state::AttemptReason::Steps,
                 crate::wiring::BuildEndedState::Failed {
                     step: "node.create".into(),
                     reason: "spawn refused".into(),
@@ -2727,7 +2646,7 @@ mod tests {
         assert_eq!(ended_complete.context.baggage.as_deref(), Some("k=v"));
 
         assert_eq!(ended_failed.attempt, 2);
-        assert_eq!(ended_failed.reason, crate::build_state::AttemptReason::ProvenDrift);
+        assert_eq!(ended_failed.reason, crate::build_state::AttemptReason::Steps);
         assert_eq!(
             ended_failed.state,
             crate::wiring::BuildEndedState::Failed {
@@ -2770,9 +2689,9 @@ mod tests {
             ended_spans.iter().any(|s| {
                 s.attributes.get("outcome").map(String::as_str) == Some("sent")
                     && s.attributes.get("state").map(String::as_str) == Some("failed")
-                    && s.attributes.get("reason").map(String::as_str) == Some("proven-drift")
+                    && s.attributes.get("reason").map(String::as_str) == Some("steps")
             }),
-            "expected via-on-build-ended with outcome=sent, state=failed, and reason=proven-drift"
+            "expected via-on-build-ended with outcome=sent, state=failed, and reason=steps"
         );
     }
 }

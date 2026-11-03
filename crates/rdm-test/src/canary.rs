@@ -1,8 +1,9 @@
-//! The restart canary (i143 PRD §5): a node restarted by node.stop then node.start through Build
-//! (Q183: node.restart is removed) is the same node, the same process, under the same incarnation,
-//! endpoint key and port (nothing is deployed), serves the value written before the stop from its own
-//! data dir, resets an unfinished request with 499, and leaves a Build -> deployment -> node chain
-//! linked by ParentSpanId for each call. `restart_canary` is run by `node_restart` and by the
+//! The restart canary (i143 PRD §5): a node restarted by node.stop then node.start (Q183:
+//! node.restart is removed), each a node command of the primary above the node and never a Build
+//! (Q342), is the same node, the same process, under the same incarnation, endpoint key and port
+//! (nothing is deployed), serves the value written before the stop from its own data dir, resets an
+//! unfinished request with 499, writes no Build, and leaves a node command -> deployment step -> node
+//! chain linked by ParentSpanId for each call. `restart_canary` is run by `node_restart` and by the
 //! registered cells of `i143_acceptance_2777`, each under its own `Owner`.
 
 use crate::estate::{descends_from, named, wait_for, Estate, Owner};
@@ -55,24 +56,22 @@ pub async fn restart_canary(owner: Owner) -> Value {
 
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    // 4. Restart: node.stop, then node.start; each answers with an attempt of the accepted Build and
-    // does no bespoke work.
+    // 4. Restart: node.stop, then node.start, node commands of the primary above the node (D40):
+    // neither opens, reads or writes a Build (Q342).
     let node = node_name.clone();
     let nodes = estate.nodes_obj().await;
-    let mut stream = nodes.stop(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop {node_name:?}: {e}"));
-    let restart_build = stream.accepted().build_id.to_string();
-    assert_eq!(restart_build, birth_build, "a stop changes no topology: it is an attempt of the accepted Build");
-    // The attempt is opened by the fabric-primary, the one admin the Build family answers at: build.get reads it there at once.
-    let submitted = estate.carrier().await.build(&stream.accepted().build_id).await.unwrap_or_else(|e| panic!("build.get [id: {restart_build}]: {e}"));
-    assert_eq!(submitted.build_id.to_string(), restart_build, "the Build is visible by id: {submitted:?}");
-    assert_eq!(submitted.reason, "stop", "{submitted:?}");
-    let stop = Estate::complete(&mut stream).await;
+    let builds_before = estate.carrier().await.builds(&rdm_client::Filter::new()).await.expect("build.get");
+    let mut stream = nodes.stop(&node).await.unwrap_or_else(|e| panic!("node.stop {node_name:?} was refused: {e}"));
+    assert!(stream.accepted().is_none(), "a stop opens no Build");
+    assert!(Estate::complete(&mut stream).await.is_none());
     estate.until_stopped_at_the_fabric_primary(&node).await;
-    let mut stream = nodes.start(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.start {node_name:?}: {e}"));
-    assert_eq!(stream.accepted().build_id.to_string(), birth_build, "a start changes no topology: it is an attempt of the accepted Build");
-    let start = Estate::complete(&mut stream).await;
-    let status_after = estate.carrier().await.build(&start.build_id).await.unwrap_or_else(|e| panic!("build.get [id: {restart_build}]: {e}"));
-    estate.artifact("build-status.json", &json!({"birth": birth_build, "restart": format!("{status_after:?}")}));
+    let mut stream = nodes.start(&node).await.unwrap_or_else(|e| panic!("node.start {node_name:?} was refused: {e}"));
+    assert!(stream.accepted().is_none(), "a start opens no Build");
+    assert!(Estate::complete(&mut stream).await.is_none());
+    let builds_after = estate.carrier().await.builds(&rdm_client::Filter::new()).await.expect("build.get");
+    let ids = |b: &[rdm_client::Build]| b.iter().map(|b| b.build_id.to_string()).collect::<Vec<_>>();
+    assert_eq!(ids(&builds_after), ids(&builds_before), "a stop and a start write no Build");
+    estate.artifact("build-status.json", &json!({"birth": birth_build, "builds": ids(&builds_after)}));
 
     // The node is ready again (observed, not slept on), and no longer stopped.
     let after = estate
@@ -116,97 +115,50 @@ pub async fn restart_canary(owner: Owner) -> Value {
 
     assert_eq!(estate.node_views().await.iter().filter(|n| n.name == node).count(), 1, "the path holds exactly one birth");
 
-    // 11. OTLP evidence: Build -> node operation -> step -> the node's own span, linked by ParentSpanId,
-    // for the stop and for the start. A span is exported once it ends, by each process's own exporter:
-    // the chain is exported when the node's start (the node's span), each call's request span and
-    // each call's reconcile (the executor's outermost span, ending after the node operation and every
-    // step under it) are.
-    let (stop_op, start_op) = ("node.stop", "node.start");
+    // 11. OTLP evidence: the primary's node command -> its steps -> the node's own span, linked by
+    // ParentSpanId, for the stop and for the start. A span is exported once it ends, by each process's
+    // own exporter.
+    let (stop_op, start_op) = ("stop-node", "start-node");
     let at_location = |s: &Value| s["attributes"]["node_path"] == node.path && s["attributes"]["node_name"] == node.name;
-    let executed = |spans: &[Value], reconcile: &Value, step: &str| {
-        named(spans, "rdm.node_admin.node.update.via-build").into_iter().any(|n| {
-            n["attributes"]["node_id"] == node_id.as_str()
-                && descends_from(spans, n, reconcile)
-                && named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|s| {
-                    at_location(s) && s["attributes"]["step"] == step && descends_from(spans, s, n)
-                })
-        })
-    };
-    let reconciled = |spans: &[Value], step: &str| named(spans, "rdm.node_admin.build.update.via-reconcile").into_iter().any(|s| s["attributes"]["build_id"] == restart_build.as_str() && executed(spans, s, step));
+    let command = |spans: &[Value], op: &str, outcome: &str| named(spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|s| s["attributes"]["command"] == op && s["attributes"]["subject_id"] == node_id.as_str() && s["attributes"]["outcome"] == outcome).cloned();
     let spans = wait_for("stop and start span chains exported", SETTLE, || async {
         let spans = estate.spans();
         let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().any(|s| s["attributes"]["node"] == node_id.as_str() && s["attributes"]["outcome"] == "started");
-        let called = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().filter(|s| s["attributes"]["build_id"] == restart_build.as_str() && at_location(s)).count() >= 2;
-        (served && called && reconciled(&spans, "StopNode") && reconciled(&spans, "StartNode")).then_some(spans)
+        (served && command(&spans, stop_op, "node-stopped").is_some() && command(&spans, start_op, "node-started").is_some()).then_some(spans)
     })
     .await;
-    // node-stop.md step 5: the stop's stopped is published as NodeStopped, once, and node.start clears
-    // it at node.joined (gossip.md "Node-stopped lifecycle overlay").
-    let published: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|s| s["attributes"]["node_id"] == node_id.as_str() && s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["operation"] == stop_op).collect();
+    // node-stop.md step 5: the stop's stopped is published as NodeStopped, once, under no Build, and
+    // node.start clears it at node.joined (gossip.md "Node-stopped lifecycle overlay").
+    let published: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|s| s["attributes"]["node_id"] == node_id.as_str() && s["attributes"]["build_id"] == "" && s["attributes"]["operation"] == "node.stop").collect();
     assert_eq!(published.len(), 1, "the stop's stopped is published as NodeStopped once: {published:#?}");
-    // Each attempt is the call that opened it: its reconcile is a child of that call's request span
-    // (the claim returns the attempt's context), never of the span that accepted the Build. The
-    // request span names the node the attempt acts on.
-    let created = named(&spans, "rdm.node_admin.build.create.via-node-rpc")
-        .into_iter()
-        .find(|s| s["attributes"]["build_id"] == birth_build.as_str())
-        .expect("rdm.node_admin.build.create.via-node-rpc for the accepted Build");
-    let call_of = |attempt: u32| {
-        named(&spans, "rdm.node_admin.build.update.via-node-rpc")
-            .into_iter()
-            .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && at_location(s) && s["attributes"]["attempt"] == attempt.to_string().as_str())
-            .unwrap_or_else(|| panic!("rdm.node_admin.build.update.via-node-rpc for attempt {attempt}"))
-    };
-    let rest = call_of(stop.attempt);
-    let opened_attempt = stop.attempt.to_string();
-    let handoff_dispatch = named(&spans, "rdm.node_admin.build.update.via-dispatch")
-        .into_iter()
-        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["attempt"] == opened_attempt.as_str())
-        .expect("the attempt opened by the stop call dispatched the node primary's node.primary.update");
-    assert_eq!(handoff_dispatch["attributes"]["outcome"], "handed-off", "the node primary's node.primary.update attempt ended handed-off: {handoff_dispatch}");
-    assert_eq!(handoff_dispatch["parent_span_id"], rest["span_id"], "the hand-off dispatch is a child of the stop call's request span: {handoff_dispatch}");
+    let stop_command = command(&spans, stop_op, "node-stopped").expect("the stop's node command span");
+    // The canary's node is the rpc-node primary: its role moves by node.primary.update before its stop,
+    // under the stop's node command (R-MT1).
     let primary_update = named(&spans, "rdm.node_admin.primary.update.via-command")
         .into_iter()
-        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["run"] == opened_attempt.as_str() && s["attributes"]["primary_node_id"] == node_id.as_str())
-        .expect("rdm.node_admin.primary.update.via-command for the stopped node primary");
+        .find(|s| s["attributes"]["primary_node_id"] == node_id.as_str() && descends_from(&spans, s, &stop_command))
+        .expect("rdm.node_admin.primary.update.via-command for the stopped node primary, under its stop");
     assert_eq!(primary_update["attributes"]["outcome"], "updated", "node.primary.update moved the node primary before the stop: {primary_update}");
-    assert!(descends_from(&spans, primary_update, handoff_dispatch), "node.primary.update descends from the hand-off attempt's dispatch span");
     let chain = |call: &Value, op: &str, steps: &[&str]| {
-        let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile")
-            .into_iter()
-            .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && executed(&spans, s, steps[0]) && descends_from(&spans, s, call))
-            .unwrap_or_else(|| panic!("the reconcile that executed {op}"));
-        assert_eq!(reconcile["parent_span_id"], call["span_id"], "{op}'s reconcile is the child of its call's request span: {reconcile}");
-        assert_eq!(reconcile["trace_id"], call["trace_id"], "one trace: the {op} call and its reconcile");
-        assert_ne!(reconcile["trace_id"], created["trace_id"], "{op} is not under the Build's original create span");
-        let attempt = reconcile["attributes"]["attempt"].as_str().expect("the reconcile span carries its attempt").to_string();
-        let node_op = named(&spans, "rdm.node_admin.node.update.via-build")
-            .into_iter()
-            .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node_id"] == node_id.as_str() && s["attributes"]["attempt"] == attempt.as_str() && descends_from(&spans, s, reconcile))
-            .unwrap_or_else(|| panic!("rdm.node_admin.node.update.via-build of {op}"));
-        assert!(descends_from(&spans, node_op, call), "{op}'s node.update.via-build descends from its call's build.update.via-node-rpc");
-        assert!(!descends_from(&spans, node_op, created), "and not from the Build's original create span");
         let step = |name: &str| {
             named(&spans, "rdm.node_admin.deployment.update.via-step")
                 .into_iter()
-                .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["step"] == name && at_location(s) && s["attributes"]["attempt"] == attempt.as_str() && descends_from(&spans, s, node_op))
-                .unwrap_or_else(|| panic!("the {name} step span of {op}'s attempt for {node_name:?}"))
+                .find(|s| s["attributes"]["step"] == name && at_location(s) && descends_from(&spans, s, call))
+                .unwrap_or_else(|| panic!("the {name} step span of {op} for {node_name:?}"))
         };
         for name in steps {
-            assert!(descends_from(&spans, step(name), node_op), "the {name} step descends from {op}'s node Build operation");
             assert_eq!(step(name)["attributes"]["outcome"], "complete", "{name}");
+            assert_eq!(step(name)["attributes"]["build_id"], "", "{op}'s {name} step belongs to no Build");
         }
-        assert!(named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().all(|s| s["attributes"]["build_id"] != restart_build.as_str() || s["attributes"]["attempt"] != attempt.as_str() || !matches!(s["attributes"]["step"].as_str(), Some("DeployRuntime" | "TerminateRuntime"))), "{op} deploys nothing and terminates nothing");
-        let first = step(steps[0]);
-        (reconcile, node_op, attempt, first)
+        assert!(named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().all(|s| !descends_from(&spans, s, call) || !matches!(s["attributes"]["step"].as_str(), Some("DeployRuntime" | "TerminateRuntime"))), "{op} deploys nothing and terminates nothing");
+        step(steps[0])
     };
-    let (reconcile, node_op, attempt, _) = chain(rest, stop_op, &["StopNode", "AwaitNodeLeft"]);
-    assert_eq!(attempt, (stop.attempt + 1).to_string(), "the stop executes under the attempt after the role hand-off");
-    let start_call = call_of(start.attempt);
-    let (_, _, _, start_step) = chain(start_call, start_op, &["StartNode", "WaitForNodeReady"]);
+    chain(&stop_command, stop_op, &["StopNode", "AwaitNodeLeft"]);
+    let start_command = command(&spans, start_op, "node-started").expect("the start's node command span");
+    let start_step = chain(&start_command, start_op, &["StartNode", "WaitForNodeReady"]);
     let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().filter(|s| s["attributes"]["node"] == node_id.as_str()).find(|s| descends_from(&spans, s, start_step)).expect("the node's start served under the start's StartNode step");
     assert!(descends_from(&spans, served, start_step), "the node's start descends from the start's StartNode step");
-    estate.record_trace_url(rest["trace_id"].as_str().unwrap());
+    estate.record_trace_url(stop_command["trace_id"].as_str().unwrap());
     let facts = json!({
         "node": node_name,
         "node_id": node_id,
@@ -216,21 +168,15 @@ pub async fn restart_canary(owner: Owner) -> Value {
         "transport_before": transport_before,
         "transport_after": after["transport_addr"],
         "birth_build": birth_build,
-        "restart_build": restart_build,
-        "restart_attempt": stop.attempt,
-        "executing_attempt": attempt,
-        "start_attempt": start.attempt,
         "process_before": process_before,
         "process_after": process_after,
         "get_after_restart": get,
         "cut": cut,
         "cut_key_absent": absent,
-        "trace_id": rest["trace_id"],
-        "build_update_via_node_rpc_span": rest["span_id"],
-        "handoff_dispatch_span": handoff_dispatch["span_id"],
+        "trace_id": stop_command["trace_id"],
+        "stop_command_span": stop_command["span_id"],
+        "start_command_span": start_command["span_id"],
         "primary_update_span": primary_update["span_id"],
-        "reconcile_span": reconcile["span_id"],
-        "node_update_via_build_span": node_op["span_id"],
         "start_step_span": start_step["span_id"],
         "start_served_span": served["span_id"],
     });

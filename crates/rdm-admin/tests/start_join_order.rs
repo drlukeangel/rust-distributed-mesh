@@ -208,7 +208,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
     };
     let operation = rdm_core::OperationId::node("node.start", &node.node_id);
-    let out = pipeline.start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id.clone(), attempt: 1, node, handle, deployed }).await;
+    let out = pipeline.start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id.clone()), attempt: 1, node, handle, deployed }).await;
     assert!(out.is_ok(), "{out:?}");
     let published = events.published.lock().unwrap().clone();
     assert!(published.iter().all(|(_, recorded)| recorded == &operation), "each event retains the admitted node ID: {published:?}");
@@ -382,7 +382,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
         // 1. Attempt 1: lost reply at `StartNode` -> fails at `StartNode` with no downstream steps.
         builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
         let err1 = pipeline
-            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id.clone(), attempt: 1, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
+            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id.clone()), attempt: 1, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
             .await
             .expect_err("lost reply at StartNode must fail");
         assert_eq!(err1.step, StartStep::StartNode.name());
@@ -393,7 +393,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
         // no `WaitForNodeReady` or `Complete` receipt follows (node-start.md:88-96).
         builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 2, executor: executor_birth.clone() }).await.unwrap();
         let err2 = pipeline
-            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id.clone(), attempt: 2, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
+            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id.clone()), attempt: 2, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
             .await
             .expect_err("join failure at StartNode must fail");
         assert_eq!(err2.step, StartStep::StartNode.name());
@@ -404,7 +404,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
         // the executor is cut at `WaitForNodeReady` before any terminal receipt.
         *observer.ready_err.lock().unwrap() = Some("birth is os-stopped before readiness".into());
         builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 3, executor: executor_birth.clone() }).await.unwrap();
-        let req3 = StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id.clone(), attempt: 3, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() };
+        let req3 = StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id.clone()), attempt: 3, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() };
         tokio::select! {
             res = pipeline.start(&req3) => panic!("attempt 3 should be cut while suspended at WaitForNodeReady, got {res:?}"),
             _ = observer.ready_entered.notified() => {}
@@ -416,7 +416,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
         *observer.ready_err.lock().unwrap() = None;
         builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 4, executor: executor_birth.clone() }).await.unwrap();
         pipeline
-            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id.clone(), attempt: 4, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
+            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id.clone()), attempt: 4, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
             .await
             .expect("attempt 4 must reuse StartNode receipt and complete once resumed");
         assert_eq!(observer.send_calls.load(Ordering::SeqCst), 3, "attempt 4 must reuse StartNode without re-sending");
@@ -435,7 +435,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
             .unwrap();
         builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id_2.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
         pipeline
-            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id_2.clone(), attempt: 1, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
+            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id_2.clone()), attempt: 1, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
             .await
             .expect("replayed start answered AlreadyAdmitted must complete");
         assert_eq!(observer.send_calls.load(Ordering::SeqCst), 4);

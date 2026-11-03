@@ -70,11 +70,10 @@ async fn a_successor_manages_births_it_never_launched() {
     // Stop the launching admin (`node.stop` runs `node.primary.update` to `mesh1.node-admin.2` first and
     // takes `mesh1.node-admin.1` down only after the confirmed transfer).
     estate.enter(&successor.name).await;
+    // A stop is a node command, never a Build (Q342): its stream ends with the stop's own completion.
     let mut stop = estate.nodes_obj().await.stop(&launcher.name).await.expect("node.stop of mesh1.node-admin.1");
-    let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
-        estate.resume(&accepted.build_id, accepted.attempt).await;
-    }
+    let frames = Estate::frames_of(&mut stop).await;
+    assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "node.stop of mesh1.node-admin.1 completes: {frames:?}");
     estate.kill_bootstrap();
     let view = estate
         .until_view("the successor holds the mesh and the fabric", Duration::from_secs(30), |v| {
@@ -98,7 +97,6 @@ async fn a_successor_manages_births_it_never_launched() {
     // The admins that hold mesh1 now: the successor, and the drift recovery's rebirth of the
     // killed launcher's path, a new NodeId that may take the role back by NodeId order.
     let admins_now: Vec<String> = estate.node_views().await.iter().filter(|n| n.r#type == "node-admin" && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|n| n.node_id.to_string()).collect();
-    let recovery_scope = format!("mesh1.node_admin: 1 present of 2 accepted (unheard: {:?})", vec![(launcher.node_id.clone(), launcher.incarnation_id.clone().expect("launched birth"))]);
     let (launcher, restarted, deleted) = (serde_json::to_value(&launcher).unwrap(), serde_json::to_value(&restarted).unwrap(), serde_json::to_value(&deleted).unwrap());
     estate.stop().await;
     let spans = estate.spans();
@@ -117,7 +115,9 @@ async fn a_successor_manages_births_it_never_launched() {
         v
     };
     // Day 0: the adoption, step by step, before Ready.
-    let day0 = steps_of(&PathName::new("mesh1.node-admin", "1").unwrap(), &|sp| sp["attributes"]["build_id"] == "");
+    // Its steps of no Build that began before its Ready: the later stop of the launcher is a node command,
+    // which belongs to no Build either (Q342).
+    let day0 = steps_of(&PathName::new("mesh1.node-admin", "1").unwrap(), &|sp| sp["attributes"]["build_id"] == "" && sp["start_unix_nano"].as_u64().unwrap_or(u64::MAX) <= boot["start_unix_nano"].as_u64().unwrap_or(0));
     let names: Vec<&str> = day0.iter().map(|sp| sp["attributes"]["step"].as_str().unwrap()).collect();
     assert_eq!(names, ["AdoptCurrentRuntime", "RegisterExactRuntimeHandle", "ResolveProviderControlDomain", "PublishRuntimeFactAndCurrentRuntimeMetadata"]);
     for sp in &day0 {
@@ -129,14 +129,11 @@ async fn a_successor_manages_births_it_never_launched() {
     const PREREQUISITES: [&str; 4] =
         ["RegisterExactRuntimeHandle", "ResolveProviderControlDomain", "MakeRuntimeFactAvailableToBirth", "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata"];
     let launched: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "WaitForNodeReady").collect();
-    // The killed bootstrap admin is desired (2 node-admins): once its exact
-    // runtime is proven exited, the successor may recreate it under a new
-    // proven-drift Build before the test stops.
-    let recoveries = named(&spans, "rdm.node_admin.build.update.via-proven-drift");
-    assert!(recoveries.len() <= 1, "one recovery at most for one exited birth");
-    for r in &recoveries {
-        assert_eq!(r["attributes"]["scope"], recovery_scope);
-    }
+    // The killed bootstrap admin is desired (2 node-admins): once its exact runtime is proven exited, the
+    // successor, its mesh's primary, may recover it as its own workflow before the test stops, never a
+    // Build (Q342): one completed recovery at most for one exited birth.
+    let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == launcher["node_id"] && sp["attributes"]["outcome"] == "complete").collect();
+    assert!(recoveries.len() <= 1, "one recovery at most for one exited birth: {recoveries:#?}");
     // A restart, node.stop then node.start, deploys nothing (node-start.md: the same process rejoins):
     // its start's WaitForNodeReady follows StartNode and none of the launch steps. Every other wait is a
     // launch.

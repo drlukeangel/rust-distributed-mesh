@@ -50,6 +50,7 @@ use tokio::sync::RwLock;
 pub(crate) mod adoption;
 mod boot;
 mod mesh_delete;
+mod primary_commands;
 mod projection;
 mod reconcile;
 mod records;
@@ -129,21 +130,20 @@ mod tests {
         assert!(watched.is_empty() && marks.is_empty(), "a heard node-admin that answers its commands is not watched: {watched:?} {marks:?}");
         let silent = crate::offline::silent_set(view.members().filter(|n| n.node_id == member.node.node_id), &digest_view, now, now_ms, floor);
         assert!(silent.iter().all(|s| s.marked_at_ms.is_none()), "heard within the floor: no mark: {silent:?}");
-        let plan = crate::primary_watch::plan(&view, "mesh1", &(me_id, primary.node.incarnation.clone()), &mut crate::primary_watch::Said::default(), &|_| false, &|_| false);
+        let plan = crate::primary_watch::plan(&view, "mesh1", &(me_id, primary.node.incarnation.clone()), &mut crate::primary_watch::Said::default(), &|_| false, &|_| false, &|_| true);
         assert_eq!(plan, crate::primary_watch::Plan::default(), "the primary watch investigates no live node-admin");
     }
 
     #[tokio::test]
-    async fn a_recovery_that_ends_failed_is_recorded_as_its_failed_step_never_as_submitted() {
-        let operation = rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.node", "1").unwrap());
-        let failed = RecoveryEnd::Failed { attempt: 3, operation: operation.clone(), step: "NodeDeleted".into(), reason: "the exited-verdict row is missing".into() };
+    async fn a_recovery_that_ends_failed_is_recorded_as_its_failed_step_never_as_complete() {
+        let failed = RecoveryEnd::Failed { reason: "NodeDeleted: the exited-verdict row is missing".into() };
         let (outcome, r) = settle(Ok(failed));
-        assert_eq!(outcome, format!("failed: attempt 3 {operation:?} step NodeDeleted: the exited-verdict row is missing"));
-        assert_eq!(r, Err(outcome.clone()), "a failed recovery is not a submitted one: the next tick submits again");
-        let (outcome, r) = settle(Ok(RecoveryEnd::Complete { attempt: 3 }));
-        assert_eq!((outcome.as_str(), r), ("complete: attempt 3", Ok(())));
-        let (outcome, r) = settle(Err("the run of attempt 3 ended without its terminal".into()));
-        assert_eq!(outcome, "the run of attempt 3 ended without its terminal");
+        assert_eq!(outcome, "failed: NodeDeleted: the exited-verdict row is missing");
+        assert_eq!(r, Err(outcome.clone()), "a failed recovery is not a complete one: the tick runs it again");
+        let (outcome, r) = settle(Ok(RecoveryEnd::Complete));
+        assert_eq!((outcome.as_str(), r), ("complete", Ok(())));
+        let (outcome, r) = settle(Err("its runner is not built yet".into()));
+        assert_eq!(outcome, "its runner is not built yet");
         assert!(r.is_err());
     }
 
@@ -1111,7 +1111,7 @@ mod tests {
         create_mesh_step(&Records::default(), &meshes, &builds, &fixture_actor(false), "100000000000", &build_id, 1, &op).await.expect("the first run");
         builds.append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { mesh: None, build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged }).await.unwrap();
         builds
-            .open_attempt(&crate::build_state::AttemptOpened { mesh: None, build_id: build_id.clone(), attempt: 2, reason: crate::build_state::AttemptReason::ProvenDrift, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, context: None })
+            .open_attempt(&crate::build_state::AttemptOpened { mesh: None, build_id: build_id.clone(), attempt: 2, reason: crate::build_state::AttemptReason::Requested, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, context: None })
             .await
             .expect("the Build is reopened");
         assert_eq!(builds.read_build(&build_id).await.unwrap().opened, 2, "attempt 2 begins the Build's current run");
@@ -1192,14 +1192,8 @@ mod tests {
         async fn forget(&self, id: &crate::build::BuildId) -> Result<(), crate::build_state::BuildStateError> {
             self.0.forget(id).await
         }
-        async fn recovery_of(&self, p: &crate::model::PathName, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, rdm_core::OperationId)>, crate::build_state::BuildStateError> {
-            self.0.recovery_of(p, n, i).await
-        }
         async fn mesh_deleted_of(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, crate::build_state::BuildStateError> {
             self.0.mesh_deleted_of(n, i).await
-        }
-        async fn exits_owed(&self, id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, crate::build_state::BuildStateError> {
-            self.0.exits_owed(id, mesh).await
         }
     }
 
@@ -1629,12 +1623,14 @@ mod tests {
             provider,
             nodes_storage: nodes_storage.clone(),
             written: Default::default(),
+            runner: Arc::default(),
             door: Default::default(),
             client: None,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
             resubmits: Arc::default(),
+            failed: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&view.fabric.id, &view.node(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).unwrap().node_id),
         };
         (recovery, nodes_storage, member)
@@ -1651,7 +1647,7 @@ mod tests {
             assert_eq!(first, second, "the same birth, the same verdict on the next tick");
             first
         };
-        (outcome, capture.named("rdm.node_admin.node.resolve.via-provider-inspection"), capture.named("rdm.node_admin.build.update.via-node-recovery"))
+        (outcome, capture.named("rdm.node_admin.node.resolve.via-provider-inspection"), capture.named("rdm.node_admin.node.update.via-node-recovery"))
     }
 
     /// CONTRACT (node-recovery.md step 3: "Any other verdict (`running`, `os-stopped`, `exited`,
@@ -1684,7 +1680,7 @@ mod tests {
             let a = &submits[0].attributes;
             let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
             assert_eq!((attr("node_path"), attr("node_name"), attr("node_id"), attr("incarnation_id"), attr("verdict")), ("mesh2.node".to_string(), "1".to_string(), node.node_id.to_string(), member.node.incarnation.to_string(), verdict.to_string()), "{verdict}: keyed on the exact birth: {a:?}");
-            eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {a:?}", submits[0].trace_id);
+            eprintln!("span rdm.node_admin.node.update.via-node-recovery trace_id={} {a:?}", submits[0].trace_id);
         }
     }
 
@@ -1722,7 +1718,7 @@ mod tests {
         let held = recovery.resubmits.lock().unwrap().get(&birth).copied().expect("a submit that ended without the recovery is owed again later");
         assert_eq!(held.failures, 1, "{held:?}");
         assert!(!recovery.submit_due(&birth, std::time::Instant::now()), "not due again on the next instant: {held:?}");
-        let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+        let submits = capture.named("rdm.node_admin.node.update.via-node-recovery");
         assert_eq!(submits.len(), 1, "one submit span: {submits:?}");
         let backoff: u64 = submits[0].attributes.get("backoff_ms").and_then(|v| v.parse().ok()).unwrap_or_else(|| panic!("the failed submit's span records its backoff: {:?}", submits[0].attributes));
         let gossip = rdm_core::cadence::gossip_interval().as_millis() as u64;
@@ -1812,93 +1808,63 @@ mod tests {
         assert!(!recovery.take_eligible(&replacement, last, &in_flight), "a birth the tick still owes keeps its backoff");
     }
 
-    /// CONTRACT (node-recovery.md "Failure and receipts": "the mesh-primary is the submitter that
-    /// resubmits by `build_id`"; CLAUDE.md read rule: node-local state that should be the durable
-    /// answer is replaced by the read): a submitter that holds nothing in memory (an admin that just
-    /// took the role, or restarted) is owed the birth mesh2.node.1 by the durable facts alone: the
-    /// current Build holds that birth's run, whose attempt ended Failed after its delete, and the birth
-    /// is in no view. Nothing is owed while this admin does not hold the role, nor to another mesh. The
-    /// submit span names the Failed attempt it follows, and nothing is inspected again. Must NOT
-    /// happen: an owed recovery found only in a previous submitter's memory.
+    /// CONTRACT (node-recovery.md "Detection and the verdict": "After a recovery step fails by a
+    /// retryable cause, that exact birth becomes eligible again after a backoff"; "Failure": the
+    /// mesh-primary's next tick after its backoff runs the recovery; Q342: the recovery is the primary's
+    /// own workflow, never a Build): a recovery of mesh2.node.1 that fails stays owed to that exact birth,
+    /// whether or not any view still holds it, to the admin that holds mesh2's primary role, and to no
+    /// other mesh; once eligible it runs again, keyed on the birth, its span marked `again`. Must NOT
+    /// happen: a failed recovery read from a Build, or forgotten because its birth left the view.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn a_submitter_that_holds_nothing_in_memory_reads_the_failed_recovery_from_the_durable_facts() {
+    async fn a_failed_recovery_stays_owed_to_its_birth_and_runs_again_on_the_tick() {
         let digest_view = DigestView::default();
         digest_view.record(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready));
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
         let (path, node_id, incarnation): (PathName, _, _) = (rdm_core::PathName::new("mesh2.node", "1").unwrap(), NodeId::mint(), IncarnationId::mint());
         assert!(view.node(&path).is_none(), "the exited birth deleted: no view holds it");
-        let b1 = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
-        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        let deleted = |step: &str| crate::build_state::BuildStepReceipt {
-            mesh: None,
-            build_id: b1.clone(),
-            attempt: 2,
-            operation: rdm_core::OperationId::node("node.delete", &node_id),
-            step: step.into(),
-            outcome: crate::build_state::StepOutcome::Complete,
-            output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh2".into(), build_id: "b1".into(), attempt: 2, operation: rdm_core::OperationId::node("node.delete", &node_id), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
-            }),
-            executor: None,
-        };
-        builds.absorb(&[
-            crate::build_state::BuildFact::Accepted(crate::build_state::BuildAccepted { build_id: b1.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 1 }),
-            crate::build_state::BuildFact::Opened(crate::build_state::AttemptOpened {
-                mesh: None,
-                build_id: b1.clone(),
-                attempt: 2,
-                reason: crate::build_state::AttemptReason::Recovery,
-                action: Some(crate::accepted::AttemptAction::Recover { r#type: "node".into(), mesh: "mesh2".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: false }),
-                opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
-                opened_at_ms: 1,
-                context: None,
-            }),
-            crate::build_state::BuildFact::Claim(crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh2".into(), claimant: None, mesh: None, build_id: b1.clone(), attempt: 2, executor: fixture_actor(true) }),
-            crate::build_state::BuildFact::Step(deleted("NodeDeleted")),
-            crate::build_state::BuildFact::Step(deleted("Complete")),
-            crate::build_state::BuildFact::Attempt(crate::build_state::BuildAttemptReceipt { mesh: None, build_id: b1.clone(), attempt: 2, outcome: crate::build_state::AttemptOutcome::Failed { reason: "node.create: PrepareStorage".into() , code: rdm_core::outcome::Code::FailedPrecondition } }),
-        ]).await;
-        let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
-        crate::fabric_storage::write_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is written");
-        // The exited birth's node record stays in the store, Deleted (a delete appends its status, never removes it).
-        let nodes_storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let row = crate::storage::NodeRow { replacement_from: None, r#type: "node".into(), mesh: "mesh2".into(), initial_properties: None, topology_storage_provider: None, name: path.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
-        crate::node_rows::write_record(&*nodes_storage, &row).await.unwrap().unwrap();
         let recovery = RecoverySubmitter {
             me: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
             me_id: view.node(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).unwrap().node_id.clone(),
             topology: Arc::new(RwLock::new(view)),
             digest_view,
             provider: Arc::new(Answers { domain: String::new(), status: crate::deployment::provider::DeploymentStatus::Unknown, inspected: Default::default() }),
-            nodes_storage,
+            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             written: Default::default(),
+            runner: Arc::default(),
             door: Default::default(),
             client: None,
-            builds,
+            builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
             resubmits: Arc::default(),
+            failed: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&rdm_core::FabricId::mint(), &rdm_core::NodeId::mint()),
         };
-        assert_eq!(recovery.owed_submits(false, "mesh2").await, vec![], "nothing is owed by an admin that does not hold the role");
-        assert_eq!(recovery.owed_submits(true, "mesh1").await, vec![], "another mesh's primary is owed none of mesh2's exits");
-        let owed = recovery.owed_submits(true, "mesh2").await;
-        assert_eq!(owed, vec![crate::build_state::OwedExit { path: path.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), attempt: 2, reason: "node.create: PrepareStorage".into() }], "read from the durable facts alone");
-
-        let capture = crate::span_capture::Capture::new("i143-3088-owed-exit-from-durable-facts");
-        let submitted = {
+        let mut member = Node::allocated(path.clone(), "mesh2", "node");
+        member.node_id = node_id.clone();
+        member.incarnation_id = Some(incarnation.clone());
+        // The first run fails: this cell builds no runner.
+        let capture = crate::span_capture::Capture::new("i152-s2-failed-recovery-owed");
+        let first = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            recovery.submit_owed(&owed[0]).await
+            recovery.submit_route(&member, &Inspected::Exited(None), "node-recovery").await
         };
-        let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
-        assert_eq!(submits.len(), 1, "the owed recovery reached the submit span: {submits:?}");
-        let s = &submits[0].attributes;
+        assert!(first.is_err(), "this cell builds no runner: the recovery fails by name: {first:?}");
+        recovery.failed.lock().unwrap().insert((node_id.clone(), incarnation.clone()), member.clone());
+        assert_eq!(recovery.failed_recoveries(false, "mesh2"), vec![], "nothing is owed by an admin that does not hold the role");
+        assert_eq!(recovery.failed_recoveries(true, "mesh1"), vec![], "another mesh's primary is owed none of mesh2's recoveries");
+        assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![member.clone()], "the failed recovery stays owed to its exact birth, no view holding it");
+        let again = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            recovery.recover_again(&member).await
+        };
+        assert!(again.is_err(), "it runs again and fails again by name: {again:?}");
+        let runs = capture.named("rdm.node_admin.node.update.via-node-recovery");
+        let s = &runs.last().expect("the recovery's span").attributes;
         let sattr = |k: &str| s.get(k).cloned().unwrap_or_default();
-        assert_eq!((sattr("node_path"), sattr("node_name"), sattr("node_id"), sattr("incarnation_id"), sattr("submitter")), (path.path.clone(), path.name.clone(), node_id.to_string(), incarnation.to_string(), recovery.me_id.to_string()), "keyed on the exact birth: {s:?}");
-        assert_eq!(sattr("after_failed_attempt"), "2", "the Failed attempt it follows: {s:?}");
-        assert!(submitted.is_err() && !sattr("outcome").is_empty(), "this cell has no fabric-primary door: the submit ends named: {s:?}");
-        eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {s:?}", submits[0].trace_id);
+        assert_eq!((sattr("node_path"), sattr("node_name"), sattr("node_id"), sattr("incarnation_id"), sattr("again")), (path.path.clone(), path.name.clone(), node_id.to_string(), incarnation.to_string(), "true".to_string()), "keyed on the exact birth, run again: {s:?}");
+        assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![member], "still owed after a second failure");
     }
 
     /// CONTRACT (node-recovery.md: "Node recovery is RDM's drift reconciliation for a member that
@@ -1951,7 +1917,7 @@ mod tests {
                 recovery.recover(&node).await
             };
             assert_eq!(outcome, Inspected::Exited(Some(137)), "{case}: the provider read the exact runtime exited");
-            let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+            let submits = capture.named("rdm.node_admin.node.update.via-node-recovery");
             let rejects = capture.named("rdm.node_admin.build.reject.via-removal-announced");
             assert_eq!(submits.len(), 0, "{case}: no recovery submit for a birth whose removal was announced: {submits:?}");
             assert_eq!(rejects.len(), 1, "{case}: the refusal is spanned once: {rejects:?}");
@@ -1996,7 +1962,7 @@ mod tests {
                 recovery.recover(&node).await
             };
             assert_eq!(outcome, Inspected::Exited(Some(137)), "{status}: the provider read the exact runtime exited");
-            let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+            let submits = capture.named("rdm.node_admin.node.update.via-node-recovery");
             let rejects = capture.named("rdm.node_admin.build.reject.via-removal-announced");
             assert_eq!(submits.len(), 0, "{status}: no recovery of a member of a mesh being deleted: {submits:?}");
             assert_eq!(rejects.len(), 1, "{status}: the refusal is spanned once: {rejects:?}");
@@ -2070,7 +2036,7 @@ mod tests {
             let a = &notices[0].attributes;
             let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
             assert_eq!((attr("verdict"), attr("next"), attr("outcome"), attr("node_id")), (verdict.as_str().to_string(), "recreate".to_string(), "sent".to_string(), member.node.node_id.to_string()), "{a:?}");
-            let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+            let submits = capture.named("rdm.node_admin.node.update.via-node-recovery");
             assert_eq!(submits.len(), 1, "the verdict's one submit: {submits:?}");
             assert_eq!(notices[0].trace_id, submits[0].trace_id, "the notice is in the submit's trace");
             assert!(ctx.context.traceparent.as_deref().is_some_and(|tp| tp.contains(&submits[0].trace_id)), "the notice carries the investigation's trace context: {:?}", ctx.context);
@@ -2163,82 +2129,9 @@ mod tests {
         assert_eq!(outcome, Inspected::Exited(Some(137)), "the provider read the exact runtime exited");
         let rejects = capture.named("rdm.node_admin.build.reject.via-removal-announced");
         assert!(rejects.is_empty(), "no workflow holds the member: its failed attempt is over: {rejects:?}");
-        let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+        let submits = capture.named("rdm.node_admin.node.update.via-node-recovery");
         assert_eq!(submits.len(), 1, "the recovery is submitted: {submits:?}");
-        eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {:?}", submits[0].trace_id, submits[0].attributes);
-    }
-
-    /// CONTRACT (node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that
-    /// workflow: its Build ends Failed, and the mesh-primary's next tick finds the member still proven
-    /// exited and submits the recovery"; R-BI7 caveat 2: a mesh's drift attempts are numbered in its
-    /// own lane, so an attempt number names one attempt per lane): a recovery's `NodeDeleting` hold,
-    /// opened from attempt 1 of mesh2's lane, closes when that attempt's verdict in mesh2's lane is
-    /// `Failed` (one `rdm.mesh.topology.update.via-deleting-closed-by-facts` span, by
-    /// `attempt-failed`). In another Build, the fabric lane's attempt 1 failing closes nothing of
-    /// mesh2's attempt 1, which still runs: its hold stays open. Must NOT happen: a drift attempt's
-    /// hold held after its attempt failed (the tick then refuses the member
-    /// `via-exit-inside-workflow` for good), or one lane's verdict closing another lane's hold.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn a_drift_attempts_removal_hold_closes_on_its_own_verdict_and_never_on_another_attempts() {
-        use crate::build_state::{AttemptOutcome, AttemptReason, AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, StepOutcome};
-        let member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
-        let digest_view = DigestView::default();
-        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
-            digest_view.record(d);
-        }
-        let mesh = || Some("mesh2".to_string());
-        let recovery = |build: &str| rdm_core::LifecycleOp { r#type: member.node.r#type.clone(), mesh: member.node.mesh.clone(),
-            build_id: build.into(),
-            attempt: 1,
-            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.node", "1").unwrap()),
-            node_id: member.node.node_id.clone(),
-            incarnation: member.node.incarnation.clone(),
-            name: member.node.name.clone(),
-            event_at_rafka_ms: 1,
-            traceparent: None,
-            tracestate: None,
-        };
-        // mesh2's lane runs attempt 1, the member's recovery; its node.delete published NodeDeleting.
-        let lane_attempt = |build: &crate::build::BuildId, op: &rdm_core::LifecycleOp| {
-            vec![
-                BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2", crate::model::MeshId::parse("meshd0000002").unwrap()), submitted_change: None, submitted_at_ms: 1 }),
-                BuildFact::Opened(AttemptOpened { mesh: mesh(), build_id: build.clone(), attempt: 1, reason: AttemptReason::Recovery, action: None, opened_by: rdm_core::NodeId::parse("300000000000").unwrap(), opened_at_ms: 1, context: None }),
-                BuildFact::Claim(BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh2".into(), mesh: mesh(), build_id: build.clone(), attempt: 1, executor: fixture_actor(false), claimant: Some(fixture_actor(false).node_id) }),
-                BuildFact::Step(BuildStepReceipt { mesh: mesh(), build_id: build.clone(), attempt: 1, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: Some(serde_json::to_value(op).unwrap()), executor: None }),
-            ]
-        };
-        let capture = crate::span_capture::Capture::new("i143-s78-drift-lane-hold");
-        let mut named = NamedSteps::new();
-        let derive = |facts: &[BuildFact], named: &mut NamedSteps| {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            overlays_from_facts(facts, &digest_view, named);
-        };
-
-        let op = recovery("9r7cpewghdkk");
-        let build = crate::build::BuildId::parse(&op.build_id).unwrap();
-        let mut facts = lane_attempt(&build, &op);
-        derive(&facts, &mut named);
-        assert_eq!(digest_view.in_flight(), vec![op.clone()], "mesh2's attempt 1 holds the member");
-        // The attempt's verdict in mesh2's lane: Failed (its claimant exited with it unfinished).
-        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: mesh(), build_id: build.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "mesh2.node-admin.1 exited with attempt 1 of mesh2's lane unfinished".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
-        derive(&facts, &mut named);
-        assert_eq!(digest_view.in_flight(), Vec::<rdm_core::LifecycleOp>::new(), "the failed drift attempt's hold closes: the member's exit belongs to no workflow now");
-        let closed = capture.named("rdm.mesh.topology.update.via-deleting-closed-by-facts");
-        assert_eq!(closed.len(), 1, "the close is spanned once: {closed:?}");
-        let a = &closed[0].attributes;
-        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-        assert_eq!((attr("operation"), attr("attempt"), attr("by")), ("node.delete".to_string(), "1".to_string(), "attempt-failed".to_string()), "{a:?}");
-        eprintln!("span rdm.mesh.topology.update.via-deleting-closed-by-facts trace_id={} {a:?}", closed[0].trace_id);
-
-        // Another Build: the fabric lane's attempt 1 failed; mesh2's attempt 1 still runs.
-        let op = recovery("7k2qm4xw9bdc");
-        let build = crate::build::BuildId::parse(&op.build_id).unwrap();
-        let mut facts = lane_attempt(&build, &op);
-        facts.insert(1, BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: build.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "a topology operation failed".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
-        derive(&facts, &mut named);
-        assert_eq!(digest_view.in_flight(), vec![op], "the fabric lane's verdict closes nothing of mesh2's running attempt");
-        assert_eq!(capture.named("rdm.mesh.topology.update.via-deleting-closed-by-facts").len(), 1, "no second close");
+        eprintln!("span rdm.node_admin.node.update.via-node-recovery trace_id={} {:?}", submits[0].trace_id, submits[0].attributes);
     }
 
     /// CONTRACT (node-recovery.md "Detection and proof": the mesh primary watches its own mesh's
@@ -2622,7 +2515,7 @@ mod tests {
         assert!(crate::offline::held_marks(&never_sent, &view, &digest_view, now).is_empty(), "a silence mark ends on a digest after it, as before");
         let marked = |n: &crate::model::Node| held.get(&n.node_id).is_some_and(|m| n.incarnation_id.as_ref() == Some(&m.incarnation));
         let me = (fp.node.node_id.clone(), fp.node.incarnation.clone());
-        let plan = crate::primary_watch::plan(&view, "mesh1", &me, &mut crate::primary_watch::Said::default(), &|_| false, &marked);
+        let plan = crate::primary_watch::plan(&view, "mesh1", &me, &mut crate::primary_watch::Said::default(), &|_| false, &marked, &|_| true);
         assert_eq!(plan.investigate.iter().map(|n| n.node_id.clone()).collect::<Vec<_>>(), vec![node.node_id.clone()], "the fabric-primary investigates the gossiping mesh-primary from its mark");
         // The view no longer holds the birth: the mark ends.
         let gone = Topology { nodes: view.nodes.iter().filter(|n| n.node_id != node.node_id).cloned().collect(), ..view.clone() };
@@ -3324,7 +3217,7 @@ mod tests {
         assert!(blocked.contains(&format!("holds attempt 0 of Build {id}")) && blocked.contains("held attempt 2"), "{blocked}");
         for attempt in 1..=2 {
             if attempt > 1 {
-                builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Stop, action: None, opened_by: rdm_core::NodeId::parse("400000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
+                builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Delete, action: None, opened_by: rdm_core::NodeId::parse("400000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
             }
             builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt, executor: fixture_actor(false) }).await.unwrap();
         }
@@ -3397,6 +3290,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(std::sync::OnceLock::new()),
             mesh_deleter: Arc::new(std::sync::OnceLock::new()),
+            primary_commands: Default::default(),
             storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),

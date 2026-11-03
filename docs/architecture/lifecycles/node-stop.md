@@ -5,7 +5,8 @@
 `node.stop` is a workflow: it calls [node.connection.delete](node-connections-delete.md) with `{ scope: All }`,
 then [node.mesh.leave](node-mesh-leave.md), streaming each one's acknowledgement and completion on the
 stop's own stream, then stops the live process. The mesh-primary writes each frame as the node's
-status and streams it on to the fabric-primary on the attempt's stream as it arrives.
+status as it arrives. node.stop is a node command of the primary above the node, never a Build or part
+of one (Q342).
 The node keeps its identity, endpoint key, bound port, bin, name and data dir.
 Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
 
@@ -13,23 +14,23 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
 
 | Field | Contract |
 |---|---|
-| Caller / executor | Mesh-primary through the typed object; exact node executes the stop |
-| Entry | Live exact `(node.id, incarnation)` |
+| Caller / executor | The caller, through the typed object, sends NodeCommand 0x22 `StopNode` to the node's mesh-primary (the fabric-primary for a mesh-primary; directly; an unreachable mesh-primary ends the call `NotSent` by name), which runs it; exact node executes the stop |
+| Entry | Live exact `(node.id, incarnation)`; any other state is refused `node-not-live` by name, nothing written |
 | Steps | Whole `node.connection.delete { scope: All }` → `node.mesh.leave` → node.stopped; each primitive's acknowledgement and completion is a Data frame on the stop's stream, and the mesh-primary writes each status from its frame |
 | Primary | A target that is a primary hands over first by [node.primary.update](node-primary-update.md) ([node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) for the fabric-primary) and is stopped by its successor. With no successor the stop is refused by name before anything moves: `cannot transfer: no secondary of type <type> in mesh <mesh>`, or `cannot transfer fabric-primary: no other node-admin Ready in mesh <mesh>, no other mesh-primary Ready`; the primary stays primary and no row is written. A single-admin single-mesh fabric's primary cannot be stopped until a secondary is Ready. A standalone node.stop never hands over without a successor. This refusal does not apply to [fabric.delete](fabric-delete.md), which keeps every primary until it is deleted ([elections §6](../fabric-node-lifecycle-elections.md#6-fabric-shutdown-does-not-invent-another-election)), or to the final-admin deletion after mesh.delete's confirmed fabric handover ([mesh-delete.md step 7](mesh-delete.md#numbered-end-to-end-sequence)) |
 | Transport cut | [node.mesh.leave](node-mesh-leave.md), called after the connections are deleted: its gossip neighbours and its Node RPC pool, which are not connections; never its own endpoint, the stop call's stream, or the connection to its mesh-primary its owed declarations ride |
 | Reply | `node.stopped` on the stop call's reply stream |
 | Peer publication | Mesh-primary authors NodeStopped from the matching stopped frame, in its in-flight overlay |
-| Upward | Each frame the node sends on the stop stream, the mesh-primary writes as the node's status and sends on as a live frame of the attempt's stream to the fabric-primary ([build.attempt.run](../node-rpc-envelope.md#build-op-0x20-rdm): receipt replay, the current Blocked, then live frames), which records each receipt on the Build; two one-hop streams, never a forwarded one |
+| Upward | Each frame the node sends on the stop stream, the mesh-primary writes as the node's status and sends on as a live frame of the caller's node.stop stream; two one-hop streams, never a forwarded one |
 | Status | stopping from the stop's admission, then connections-deleting, connections-deleted, leaving and left from its primitives' frames, then stopped with a live process: the [stopped node](states.md#stopped-nodes) |
-| Completion | The matching `node.stopped` on the stop stream and the recorded stop receipt; no runtime Exited receipt is required |
+| Completion | The matching `node.stopped` on the stop stream and the stop recorded on the node record; no runtime Exited receipt is required |
 | Kept | node.id, incarnation, endpoint key, port, bin, path/name and storage |
 | Reachability | Endpoint stays bound; fresh Node RPC dials reach start/update/delete |
 
 ## Numbered end-to-end sequence
 
-1. The mesh-primary sends NodeCommand `StopNode { node_id, incarnation, build_id, attempt,
-   operation }` to the exact birth. The caller's hop and Build carrier are unchanged. The node
+1. The mesh-primary sends NodeCommand `StopNode { node_id, incarnation, operation }` to the exact
+   birth; `operation` is the stop's identity, keyed on the node.id. The node
    validates the command and sends `CommandAccepted`; only this admission makes the mesh-primary
    record stopping. A never-sent command writes no state.
 2. Call the entire [node.connection.delete](node-connections-delete.md) with `{ scope: All }`:
@@ -54,8 +55,7 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
 5. The mesh-primary takes the matching stopped frame, or the node's declaration of `Stopped`
    naming the stop's operation, whichever reaches it first, and publishes
    [NodeStopped](../gossip.md#node-stopped-lifecycle-overlay) with that operation in its in-flight
-   overlay, once. The mesh-primary blindly puts the applied effect under `(birth, build_id, attempt,
-   operation)`; a cycle begin never clears that row, which is forgotten only with the birth (Q49).
+   overlay, once. The mesh-primary blindly puts the applied effect under `(birth, operation)`; a cycle begin never clears that row, which is forgotten only with the birth (Q49).
    A declaration or frame naming that applied operation answers `AlreadyApplied` and applies nothing
    again. A report naming no operation follows the state transition rule.
    NodeStopped is retained as that section states; for the last node-admin of a deleted mesh the
@@ -82,7 +82,7 @@ node.stop (mesh-primary → exact node, NodeCommand 0x22)
   or, after acceptance: Failed { step, reason, code } (Terminal)
 ```
 
-These are reply frames on one call; each step has its own span and Build receipt. The mesh-primary
+These are reply frames on one call; each step has its own span and is recorded on the node record. The mesh-primary
 writes the status each frame names above on the node's row from that frame; a status whose frame
 reaches it after the node's owed `Stopped` declaration (step 5) finds the row already stopped and moves
 it nowhere.

@@ -453,21 +453,35 @@ impl Resume {
     }
 }
 
-/// The reply stream of one accepted workflow call.
+/// A workflow's reply stream: the frames of a Build (`node.create`, `node.delete`, steps), of a node
+/// command the primary above the node runs (`node.stop`, `node.start`: NodeCommand 0x22, D40), or the
+/// one answer of a `node.connection.delete` (its Status hop), each read as the same [`Frame`]s.
 pub struct WorkflowStream {
-    inner: BuildStream,
+    source: Source,
     kind: WorkflowKind,
-    accepted: Accepted,
     span: tracing::Span,
     started: bool,
     ended: bool,
-    /// The events of one receipt after the first, delivered before the next frame is read.
-    queued: std::collections::VecDeque<NodeEvent>,
+    /// The frames of one receipt or command frame after the first, delivered before the next is read.
+    queued: std::collections::VecDeque<Frame>,
     /// The `(operation, step)` of every step whose event this stream delivered. A step is one event
     /// to the caller whichever attempts completed it, as in [`fold`]: a successor attempt that
     /// reissues a step whose receipt the lost executor alone held completes it again under its own
     /// receipt key, and that frame announces nothing new.
     delivered: std::collections::HashSet<(rdm_core::OperationId, String)>,
+    /// A node command's terminal frame from the primary above the node, once delivered.
+    completion: Option<rdm_core::node_command::NodeCommandReply>,
+}
+
+/// Where a workflow's frames come from.
+enum Source {
+    /// The Build the call opened, and the attempt that runs it.
+    Build { inner: BuildStream, accepted: Accepted },
+    /// The node command's reply stream from the primary above the node (D40): it belongs to no Build.
+    /// `first` is its first frame, read when the call was made, not yet delivered.
+    Command { inner: rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, first: Option<rdm_core::node_command::NodeCommandReply> },
+    /// The call's one answer, already read into the queued frames.
+    Answered,
 }
 
 impl WorkflowStream {
@@ -477,12 +491,34 @@ impl WorkflowStream {
         let accepted = Accepted { build_id: inner.build_id().clone(), attempt: inner.attempt() };
         span.record("build_id", accepted.build_id.as_str());
         span.record("attempt", accepted.attempt);
-        Self { inner, kind, accepted, span, started: false, ended: false, queued: Default::default(), delivered: Default::default() }
+        Self { source: Source::Build { inner, accepted }, kind, span, started: false, ended: false, queued: Default::default(), delivered: Default::default(), completion: None }
     }
 
-    /// The Build and attempt the call opened.
-    pub fn accepted(&self) -> &Accepted {
-        &self.accepted
+    /// The stream of the node command `inner` the primary above the node accepted (NodeCommand 0x22,
+    /// D40): no Build, so no `Started` frame; its frames as the same events, ending `Complete` or
+    /// `Failed { step, reason }`.
+    pub(crate) fn of_command(inner: rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, first: rdm_core::node_command::NodeCommandReply, kind: WorkflowKind, span: tracing::Span) -> Self {
+        Self { source: Source::Command { inner, first: Some(first) }, kind, span, started: true, ended: false, queued: Default::default(), delivered: Default::default(), completion: None }
+    }
+
+    /// The stream of a call already answered whole: `frames`, in order, the last its terminal.
+    pub(crate) fn answered(frames: Vec<Frame>, kind: WorkflowKind, span: tracing::Span) -> Self {
+        Self { source: Source::Answered, kind, span, started: true, ended: false, queued: frames.into(), delivered: Default::default(), completion: None }
+    }
+
+    /// The Build and attempt the call opened; `None` for a node command, which belongs to no Build.
+    pub fn accepted(&self) -> Option<&Accepted> {
+        match &self.source {
+            Source::Build { accepted, .. } => Some(accepted),
+            Source::Command { .. } | Source::Answered => None,
+        }
+    }
+
+    /// A node command's terminal frame as the primary above the node sent it (for a connections delete,
+    /// its `ConnectionsDeleted`: the ids closed, not open and held, and `All`'s receipt), once the
+    /// stream delivered its terminal; `None` before, and for a Build.
+    pub fn completion(&self) -> Option<&rdm_core::node_command::NodeCommandReply> {
+        self.completion.as_ref()
     }
 
     /// The workflow.
@@ -491,9 +527,12 @@ impl WorkflowStream {
     }
 
     /// How the call came to its Build: a new one, an attach to a running one, the next attempt of a
-    /// failed one, or a complete one (`AlreadyApplied`).
-    pub fn disposition(&self) -> rdm_core::build::Disposition {
-        self.inner.disposition()
+    /// failed one, or a complete one (`AlreadyApplied`); `None` for a node command.
+    pub fn disposition(&self) -> Option<rdm_core::build::Disposition> {
+        match &self.source {
+            Source::Build { inner, .. } => Some(inner.disposition()),
+            Source::Command { .. } | Source::Answered => None,
+        }
     }
 
     /// The next frame, `None` after the terminal one, or the way the stream broke. A broken stream
@@ -503,25 +542,97 @@ impl WorkflowStream {
         if self.ended {
             return None;
         }
+        if let Some(f) = self.queued.pop_front() {
+            return Some(Ok(self.deliver(f)));
+        }
+        match &self.source {
+            Source::Build { .. } => self.next_of_build().await,
+            Source::Command { .. } => self.next_of_command().await,
+            Source::Answered => Some(Err(self.broke(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the answer carried no terminal frame".into() }))),
+        }
+    }
+
+    /// `frame` delivered: its event spanned, its terminal recorded on the call's span.
+    fn deliver(&mut self, frame: Frame) -> Frame {
+        match &frame {
+            Frame::Event(e) => e.span().in_scope(|| tracing::info!(op = self.kind.name(), "a step event was delivered on the reply stream")),
+            Frame::Complete => {
+                self.ended = true;
+                self.span.record("outcome", "complete");
+                self.span.in_scope(|| tracing::info!("the workflow completed"));
+            }
+            Frame::Failed { step, reason } => {
+                self.ended = true;
+                self.span.record("outcome", "failed");
+                self.span.record("failed_step", step.name());
+                self.span.in_scope(|| tracing::info!(step = step.name(), reason = %reason, "the workflow failed at a step"));
+            }
+            _ => {}
+        }
+        frame
+    }
+
+    /// The next frame of the node command's stream: the node's frames, sent on by the primary above
+    /// it, as the events they report (node-stop.md, node-start.md).
+    async fn next_of_command(&mut self) -> Option<Result<Frame, CallEnd>> {
+        use rdm_core::node_command::NodeCommandReply as R;
+        use rdm_transport::stream::StreamItem;
+        loop {
+            let Source::Command { inner, first } = &mut self.source else { unreachable!("a command source") };
+            let frame = match first.take() {
+                Some(f) => f,
+                None => {
+                    let f = match inner.next().await {
+                        None => return Some(Err(self.broke(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the node command's stream ended without a terminal frame".into() }))),
+                        Some(StreamItem::Failed(f)) => return Some(Err(self.broke(CallEnd::Indeterminate { code: f.code(), reason: format!("the node command's stream broke: {f:?}") }))),
+                        Some(StreamItem::Frame(_, f)) => f,
+                    };
+                    inner.accepted().await;
+                    f
+                }
+            };
+            if <rdm_core::node_command::NodeCommand as rdm_core::streaming::StreamingProtocol>::frame_kind(&frame) == rdm_core::streaming::FrameKind::Terminal {
+                self.completion = Some(frame.clone());
+            }
+            let frames: Vec<Frame> = match frame {
+                R::CommandAccepted { .. } | R::ConnectionsDeleting { .. } | R::Leaving { .. } | R::StopMeshLeft { .. } => continue,
+                R::StopConnectionsDeleted { .. } => vec![Frame::Event(NodeEvent::ConnectionsDeleted)],
+                // A standalone connections delete's terminal (node-connections-delete.md "Completion").
+                R::ConnectionsDeleted { .. } => vec![Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete],
+                R::NodeStopped => vec![Frame::Event(NodeEvent::Stopped), Frame::Complete],
+                R::NodeJoined => vec![Frame::Event(NodeEvent::Joined)],
+                R::NodeStarted => vec![Frame::Event(NodeEvent::Started), Frame::Complete],
+                R::Failed { step, reason, .. } => vec![Frame::Failed { step: self.kind.fallback_step(&rdm_core::OperationId::unscoped(step.as_str())), reason: format!("{step}: {reason}") }],
+                other => return Some(Err(self.broke(CallEnd::Rejected { reason: other.name().into(), detail: format!("{} after the command was accepted: {other:?}", self.kind.name()) }))),
+            };
+            self.queued.extend(frames);
+            let first = self.queued.pop_front().expect("a frame");
+            return Some(Ok(self.deliver(first)));
+        }
+    }
+
+    /// The next frame of the Build's stream.
+    async fn next_of_build(&mut self) -> Option<Result<Frame, CallEnd>> {
+        let accepted = match &self.source {
+            Source::Build { accepted, .. } => accepted.clone(),
+            _ => unreachable!("a Build source"),
+        };
         if !self.started {
             self.started = true;
-            self.span.in_scope(|| tracing::info!(build_id = %self.accepted.build_id.log(), attempt = self.accepted.attempt, "the workflow call was accepted"));
-            return Some(Ok(Frame::Started { build_id: self.accepted.build_id.clone(), attempt: self.accepted.attempt }));
-        }
-        if let Some(e) = self.queued.pop_front() {
-            e.span().in_scope(|| tracing::info!(build_id = %self.accepted.build_id.log(), "a step event was delivered on the reply stream"));
-            return Some(Ok(Frame::Event(e)));
+            self.span.in_scope(|| tracing::info!(build_id = %accepted.build_id.log(), attempt = accepted.attempt, "the workflow call was accepted"));
+            return Some(Ok(Frame::Started { build_id: accepted.build_id.clone(), attempt: accepted.attempt }));
         }
         let rows = self.kind.rows();
         loop {
-            let frame = match self.inner.next().await {
+            let Source::Build { inner, .. } = &mut self.source else { unreachable!("a Build source") };
+            let frame = match inner.next().await {
                 None => return Some(Err(self.broke(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the stream ended without a terminal frame".into() }))),
                 Some(Err(e)) => return Some(Err(self.broke(e))),
                 Some(Ok(f)) => f,
             };
             match frame {
                 BuildFrame::Step { attempt, operation, step } => {
-                    if attempt < self.accepted.attempt {
+                    if attempt < accepted.attempt {
                         continue;
                     }
                     if !rows.iter().any(|r| r.matches(&self.kind, &operation)) {
@@ -536,30 +647,20 @@ impl WorkflowStream {
                     }
                     let mut events = row.events.iter().copied();
                     let Some(e) = events.next() else { continue };
-                    self.queued.extend(events);
-                    e.span().in_scope(|| tracing::info!(build_id = %self.accepted.build_id.log(), "a step event was delivered on the reply stream"));
-                    return Some(Ok(Frame::Event(e)));
+                    self.queued.extend(events.map(Frame::Event));
+                    return Some(Ok(self.deliver(Frame::Event(e))));
                 }
                 BuildFrame::Blocked { attempt, operation, step, reason } => {
-                    if attempt < self.accepted.attempt {
+                    if attempt < accepted.attempt {
                         continue;
                     }
                     self.span.in_scope(|| tracing::info!(operation = %operation.action, operation_subject = ?operation.subject, recipe_step = ?operation.recipe_step, step = %step, reason = %reason, "the step in flight is blocked"));
                     return Some(Ok(Frame::Blocked { operation, step, reason }));
                 }
-                BuildFrame::Complete { .. } => {
-                    self.ended = true;
-                    self.span.record("outcome", "complete");
-                    self.span.in_scope(|| tracing::info!("the workflow completed"));
-                    return Some(Ok(Frame::Complete));
-                }
+                BuildFrame::Complete { .. } => return Some(Ok(self.deliver(Frame::Complete))),
                 BuildFrame::Failed { operation, step, reason, .. } => {
-                    self.ended = true;
                     let node_step = rows.iter().find(|r| r.step == step && r.matches(&self.kind, &operation)).map(|r| r.node_step).unwrap_or_else(|| self.kind.fallback_step(&operation));
-                    self.span.record("outcome", "failed");
-                    self.span.record("failed_step", node_step.name());
-                    self.span.in_scope(|| tracing::info!(step = node_step.name(), reason = %reason, "the workflow failed at a step"));
-                    return Some(Ok(Frame::Failed { step: node_step, reason }));
+                    return Some(Ok(self.deliver(Frame::Failed { step: node_step, reason })));
                 }
                 BuildFrame::FabricPrimaryMoved { fabric_primary } => {
                     self.ended = true;

@@ -225,8 +225,9 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
 
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    // The restart, node.stop then node.start through the rectifier (Q183): attempts of the accepted Build.
-    let restart_build = estate.stop_then_start(&target).await.0.build_id.to_string();
+    // The restart, node.stop then node.start (Q183): node commands, which belong to no Build (Q342).
+    estate.stop_then_start(&target).await;
+    let restart_build = String::new();
     let after = estate.settled_views(&shape).await;
     let after = after.iter().find(|n| n.name == target).cloned().expect("the restarted admin in the view");
     let mesh_name = after.mesh.clone();
@@ -343,7 +344,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
 
     // The decision: the fabric primary's node recovery of the lost mesh-primary, on its node investigation's
     // verdict (Q335).
-    let decision = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+    let decision = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
         .filter(|sp| sp["attributes"]["node_id"] == admin_before.node_id.as_str() && start(sp) >= fault_ns)
         .min_by_key(|sp| start(sp))

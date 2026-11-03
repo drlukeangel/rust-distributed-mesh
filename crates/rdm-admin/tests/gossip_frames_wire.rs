@@ -201,9 +201,9 @@ fn facts() -> Vec<BuildFact> {
     for change in changes() {
         out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), submitted_change: change, submitted_at_ms: 55 }));
     }
-    let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Stop, action: a, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 56, context: None });
+    let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Delete, action: a, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 56, context: None });
     out.push(action(None));
-    out.push(action(Some(AttemptAction::Stop { r#type: "node".into(), mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() })));
+    out.push(action(Some(AttemptAction::Delete { r#type: "node".into(), mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() })));
     // Steps (build.md §1; lifecycles/node-replace.md): the steps and the births they pinned.
     {
         use rdm_core::build::Step;
@@ -231,18 +231,6 @@ fn facts() -> Vec<BuildFact> {
             context: None,
         }));
     }
-    // A member's recovery (node-recovery.md): the attempt the mesh-primary's submit opens.
-    out.push(BuildFact::Opened(AttemptOpened {
-        mesh: None,
-        build_id: bid("3qcfk1kq47m9"),
-        attempt: 2,
-        reason: AttemptReason::Recovery,
-        action: Some(AttemptAction::Recover { r#type: "node".into(), mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint(), backbone: false }),
-        opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
-        opened_at_ms: 56,
-        context: None,
-    }));
-
     out.push(BuildFact::Claim(BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, executor: executor() }));
     out.push(step("PrepareNetwork", None));
     out.push(BuildFact::Step(BuildStepReceipt {

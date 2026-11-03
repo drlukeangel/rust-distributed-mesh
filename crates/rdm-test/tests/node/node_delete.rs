@@ -91,7 +91,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // The pre-notice is read from each receiver's overlay span below, not from a poll: the window
     // in which the node is live and not routable is the stop leg, and a poll's cadence
     // is not evidence of it.
-    let build_id = Estate::complete(&mut removal).await.build_id.to_string();
+    let build_id = Estate::complete(&mut removal).await.expect("the call opened a Build").build_id.to_string();
     let after = Estate::values(&estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 1, 1)]).await);
     assert!(after.iter().all(|n| location(n) != victim_at), "the current topology no longer lists the node: {after:#?}");
     estate.artifact("nodes-after.json", &json!(after));
@@ -341,7 +341,7 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
     .await;
     assert_eq!((s(&published["attributes"]["incarnation_id"]), s(&published["attributes"]["build_id"])), (victim_inc.clone(), build.clone()), "the departure names the exact birth and the removal's Build: {published}");
     estate.holds_departure(&witness_at, "mesh2", &victim_id).await;
-    let end = Estate::complete(&mut removal).await;
+    let end = Estate::complete(&mut removal).await.expect("a delete opens a Build");
     eprintln!(
         "s78 B: {p_name:?} held at the deleted cut of {victim_at:?} (attempt {attempt} of {build}) and killed; {na2:?} survives; NodeDeleted published trace {} span {} attempt {}; {witness_at:?} holds the departure; removal complete {:?}",
         s(&published["trace_id"]), s(&published["span_id"]), s(&published["attributes"]["attempt"]), end.build_id,

@@ -30,6 +30,9 @@ const FABRIC: &str = "fabric1";
 const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 1), ("mesh2", 2, 2)];
 /// The events a stop's stream carries, in order.
 const STOP_EVENTS: [NodeEvent; 2] = [NodeEvent::ConnectionsDeleted, NodeEvent::Stopped];
+/// A live node's `node.delete` (node-delete.md): its composed stop's events, then its deletion. A node
+/// command (a stop, a start) is never a Build (Q342), so the Build cells' one-node vehicle is the delete.
+const DELETE_EVENTS: [NodeEvent; 3] = [NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted];
 
 fn owner(test: &str) -> Owner {
     Owner { product: "mesh".into(), feature: "fabric-build".into(), subfeature: "build-op".into(), rung: "MM".into(), provider: "process".into(), test: test.into() }
@@ -151,14 +154,15 @@ async fn secondary_node(estate: &Estate) -> PathName {
     estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary).map(|n| n.name).min().expect("a node of mesh2 holding no primary role")
 }
 
-/// CONTRACT (acceptance 1): `node.stop` over `0x20` is one call. The stream is `Started`, a frame
+/// CONTRACT (acceptance 1): `node.delete` over `0x20` is one call. The stream is `Started`, a frame
 /// per step as its `Complete` receipt becomes durable on the admin that wrote it, and `Complete`,
 /// pushed by the executor through the fabric-primary: the node is executed by `mesh2`'s own primary,
 /// so the Build crosses a real `build.attempt.run`. Every event the stop names arrives once, in
-/// order, and nothing polls a Build to learn it.
+/// order, and nothing polls a Build to learn it. A stop is a node command, never a Build (Q342): the
+/// one-node Build is the delete.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stop_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes() {
-    let test = "a_stop_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes";
+async fn a_delete_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes() {
+    let test = "a_delete_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
@@ -168,14 +172,14 @@ async fn a_stop_over_the_build_family_is_one_call_that_pushes_every_step_frame_a
     let executor_birth = birth_of(executor);
     let fabric_primary = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
 
-    let mut stream = caller.nodes(&carrier).stop(&node).await.expect("the fabric-primary accepts the stop");
-    let accepted = stream.accepted().clone();
+    let mut stream = caller.nodes(&carrier).delete(&node).await.expect("the fabric-primary accepts the delete");
+    let accepted = stream.accepted().cloned().expect("the call opened a Build");
     let frames = frames_of(&mut stream).await;
     assert_eq!(frames.first(), Some(&Frame::Started { build_id: accepted.build_id.clone(), attempt: accepted.attempt }));
     assert_eq!(frames.last(), Some(&Frame::Complete), "the stream ends with its terminal frame: {frames:?}");
-    assert_eq!(events(&frames), STOP_EVENTS, "every step event, once, in order: {frames:?}");
+    assert_eq!(events(&frames), DELETE_EVENTS, "every step event, once, in order: {frames:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Failed { .. } | Frame::Blocked { .. })), "{frames:?}");
-    assert_eq!(stream.disposition(), StartDisposition::Created);
+    assert_eq!(stream.disposition(), Some(StartDisposition::Created));
 
     estate.stop().await;
     let spans = estate.spans();
@@ -216,24 +220,24 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
     let node = secondary_node(&estate).await;
     let nodes = caller.nodes(&carrier);
 
-    let mut cut = nodes.stop(&node).await.expect("the fabric-primary accepts the stop");
-    let accepted = cut.accepted().clone();
+    let mut cut = nodes.delete(&node).await.expect("the fabric-primary accepts the delete");
+    let accepted = cut.accepted().cloned().expect("the call opened a Build");
     // The first frame is the call's `Started`; the cut follows it, before any step is reported.
     assert!(matches!(cut.next().await, Some(Ok(Frame::Started { .. }))));
     drop(cut);
 
-    let mut attached = nodes.resume(WorkflowKind::Stop(node.clone()), &accepted).await.expect("the re-submit is accepted");
-    assert_eq!(attached.disposition(), StartDisposition::Attached, "the Build the cut left running is the one the re-submit attaches to");
-    assert_eq!(attached.accepted().build_id, accepted.build_id, "never a second Build");
+    let mut attached = nodes.resume(WorkflowKind::Delete(node.clone()), &accepted).await.expect("the re-submit is accepted");
+    assert_eq!(attached.disposition(), Some(StartDisposition::Attached), "the Build the cut left running is the one the re-submit attaches to");
+    assert_eq!(attached.accepted().expect("the call opened a Build").build_id, accepted.build_id, "never a second Build");
     let first = frames_of(&mut attached).await;
     assert_eq!(first.last(), Some(&Frame::Complete));
-    assert_eq!(events(&first), STOP_EVENTS, "{first:?}");
+    assert_eq!(events(&first), DELETE_EVENTS, "{first:?}");
 
-    let mut again = nodes.resume(WorkflowKind::Stop(node), &accepted).await.expect("the second re-submit is accepted");
-    assert_eq!(again.disposition(), StartDisposition::AlreadyApplied);
+    let mut again = nodes.resume(WorkflowKind::Delete(node), &accepted).await.expect("the second re-submit is accepted");
+    assert_eq!(again.disposition(), Some(StartDisposition::AlreadyApplied));
     let second = frames_of(&mut again).await;
     assert_eq!(second.last(), Some(&Frame::Complete), "the terminal frame follows AlreadyApplied");
-    assert_eq!(events(&second), STOP_EVENTS, "the receipts held are replayed as frames: {second:?}");
+    assert_eq!(events(&second), DELETE_EVENTS, "the receipts held are replayed as frames: {second:?}");
 
     let receipts = carrier.clone().build(&accepted.build_id).await.expect("build.get [id]");
     let mut keys: Vec<(u32, rdm_core::OperationId, String)> = receipts.steps.iter().filter(|r| r.attempt >= accepted.attempt).map(|r| (r.attempt, r.operation.clone(), r.step.clone())).collect();
@@ -356,11 +360,11 @@ async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
-    let mut stream = caller.nodes(&carrier).stop(&node).await.expect("the fabric-primary accepts the stop");
-    let accepted = stream.accepted().clone();
+    let mut stream = caller.nodes(&carrier).delete(&node).await.expect("the fabric-primary accepts the delete");
+    let accepted = stream.accepted().cloned().expect("the call opened a Build");
     assert_eq!(frames_of(&mut stream).await.last(), Some(&Frame::Complete));
 
-    let facts = crate::build_log::log_read(&estate, accepted.build_id.as_str()).await.expect("completed stop facts");
+    let facts = crate::build_log::log_read(&estate, accepted.build_id.as_str()).await.expect("completed delete facts");
     let projection = crate::build_log::projection(&facts, accepted.build_id.as_str()).expect("accepted Build");
     let executor = projection.attempt_executors.get(&accepted.attempt).expect("accepted attempt's executor").clone();
     let views = estate.node_views().await;
@@ -394,6 +398,7 @@ async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_
 /// its `StartNode` receipt not yet durable, and it is killed while held. The successor reissues the
 /// start, which the node settles `AlreadyApplied`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "i152 s2 (rdm#296): a stop and a start are node commands, never a Build (Q342), so this cell's vehicle is gone; its contract (attempt claims, executor loss) is removed by i152 s4 (rdm#298)"]
 async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_its_exit_is_inspected() {
     let test = "a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_its_exit_is_inspected";
     let sha = candidate_sha();
@@ -414,7 +419,7 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     let door = Door::at(&estate, &executor.name).await;
     door.arm("lost", json!({"kind": "receipt", "step": "StartNode", "operation": "node.start", "node": rdm_core::OperationSubject::Node(subject_id.clone())})).await;
     let mut stream = caller.nodes(&carrier).start(&node).await.expect("the fabric-primary accepts the start");
-    let accepted = stream.accepted().clone();
+    let accepted = stream.accepted().cloned().expect("the call opened a Build");
     let held = door.wait_held("lost").await;
     assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.as_str(), "{held}");
     assert_eq!(held["hit"]["attempt"], json!(accepted.attempt), "the executor is held in the attempt the start was accepted at: {held}");
@@ -494,7 +499,7 @@ async fn suspended_executor_withholding(test: &str, withhold: bool) -> Suspended
     }
     door.arm("held", json!({"kind": "receipt", "step": "StartNode", "operation": "node.start", "node": rdm_core::OperationSubject::Node(subject_id.clone())})).await;
     let stream = caller.nodes(&carrier).start(&node).await.expect("the fabric-primary accepts the start");
-    let accepted = stream.accepted().clone();
+    let accepted = stream.accepted().cloned().expect("the call opened a Build");
     let held = door.wait_held("held").await;
     assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.as_str(), "{held}");
     assert_eq!(held["hit"]["attempt"], json!(accepted.attempt), "the executor is held in the attempt the start was accepted at: {held}");
@@ -502,34 +507,6 @@ async fn suspended_executor_withholding(test: &str, withhold: bool) -> Suspended
     assert_eq!(stop.state_after, Some('T'), "the OS holds {node_id}: {stop:?}");
     let ticks = rdm_test::process_faults::cpu_ticks(rt.pid);
     Suspended { estate, carrier, node, subject_id, executor, successor, fabric_primary, accepted, stream, door, rt, node_id, data_dir, ticks }
-}
-
-/// CONTRACT (node-start.md step 2, Q249): mesh2's primary carries a start of the stopped mesh2 node,
-/// clears the birth's stop mark at the start's join, and is held before it publishes the clear (it
-/// withholds its mesh's topology while it carries the start), then os-stopped. The next attempt's
-/// executor, (path mesh2.node-admin, name 2), reissues the start; the birth answers it `AlreadyApplied` (no `NodeJoined`),
-/// and the executor, whose overlay holds the birth stopped, clears the mark at that answer and publishes
-/// it as the mesh's primary: the birth's digests are taken again, the start completes, and the Build
-/// with it. Must NOT happen: the birth held stopped by every view but the held executor's, its digests
-/// refused `via-stopped-birth` until the start fails waiting for one.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replayed_start_clears_the_stop_mark_its_held_executor_never_published() {
-    let test = "a_replayed_start_clears_the_stop_mark_its_held_executor_never_published";
-    let Suspended { mut estate, mut stream, rt, node, subject_id, successor, .. } = suspended_executor_withholding(test, true).await;
-    started_to_the_end(&mut stream, "the replayed start completes at the next executor").await;
-    rt.apply(rdm_test::process_faults::Fault::Kill(estate.fabric_ready())).expect("the cell kills the suspended runtime it made");
-    estate.stop().await;
-    let spans = estate.spans();
-    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
-    let cleared = spans_named(&spans, "rdm.node_admin.node.update.via-command-frame")
-        .into_iter()
-        .find(|sp| attr(sp, "recorder_node_id") == successor.node_id.as_str() && attr(sp, "node_id") == subject_id.as_str() && attr(sp, "outcome") == "stop-mark-cleared")
-        .cloned()
-        .unwrap_or_else(|| panic!("mesh2.node-admin.2 clears {node:?}'s stop mark at the replayed start's answer"));
-    let birth = attr(&cleared, "incarnation_id");
-    let at = cleared["start_unix_nano"].as_u64().unwrap_or(0);
-    let late: Vec<&Value> = spans_named(&spans, "rdm.mesh.topology.reject.via-stopped-birth").into_iter().filter(|sp| attr(sp, "node_id") == subject_id.as_str() && attr(sp, "incarnation_id") == birth && sp["start_unix_nano"].as_u64().unwrap_or(0) > at + 5_000_000_000).collect();
-    assert!(late.is_empty(), "no view refuses {node:?}'s digests as a stopped birth once the clear is published: {late:#?}");
 }
 
 /// The caller's stream of the start read to its end within the bound of a node recovery: `Complete`,
@@ -582,6 +559,7 @@ fn now_ns() -> u64 {
 /// behind it (gate run gates-4-41c1b4003: attempt 4 executor-lost, then fourteen refusals), a signal to
 /// the suspended runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "i152 s2 (rdm#296): a stop and a start are node commands, never a Build (Q342), so this cell's vehicle is gone; its contract (attempt claims, executor loss) is removed by i152 s4 (rdm#298)"]
 async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_its_mesh_recovered_leaving_the_runtime_stopped() {
     let test = "an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_its_mesh_recovered_leaving_the_runtime_stopped";
     let Suspended { mut estate, carrier, accepted, mut stream, rt, node_id, executor, successor, fabric_primary, data_dir, ticks, .. } = suspended_executor(test).await;
@@ -790,6 +768,7 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_r
 /// by the Build id streams it to `Complete`. No step has a second receipt, and no attempt beyond the
 /// claimed one is opened.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "i152 s2 (rdm#296): a stop and a start are node commands, never a Build (Q342), so this cell's vehicle is gone; its contract (attempt claims, executor loss) is removed by i152 s4 (rdm#298)"]
 async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_and_no_step_runs_twice() {
     let test = "a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_and_no_step_runs_twice";
     let sha = candidate_sha();
@@ -807,7 +786,7 @@ async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_an
     let door = Door::at(&estate, &caller.location(&fp)).await;
     door.arm("claimed", json!({"kind": "claimed-attempt", "attempt": null})).await;
     let mut stream = caller.nodes(&carrier).stop(&node).await.expect("the fabric-primary accepts the stop");
-    let accepted = stream.accepted().clone();
+    let accepted = stream.accepted().cloned().expect("the call opened a Build");
     let held = door.wait_held("claimed").await;
     assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.as_str(), "{held}");
     assert_eq!(held["hit"]["executor"], json!(executor_birth), "the claim names mesh2's primary, which is alive");
@@ -827,7 +806,7 @@ async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_an
     let restored = caller.restored_fabric_primary(&fp).await;
     let carrier = caller.carrier_at(&restored);
     let mut resumed = caller.nodes(&carrier).resume(WorkflowKind::Stop(node), &accepted).await.expect("the restored fabric-primary accepts the re-submit");
-    assert_eq!(resumed.accepted().build_id, accepted.build_id, "never a second Build");
+    assert_eq!(resumed.accepted().expect("the call opened a Build").build_id, accepted.build_id, "never a second Build");
     let frames = frames_of(&mut resumed).await;
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
     assert_eq!(events(&frames), STOP_EVENTS, "{frames:?}");
@@ -1289,8 +1268,11 @@ async fn a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_co
 
 
 /// i146 e2b: an uncertain closure is a new invocation on resumption; a closure with its Build
-/// receipt is reused. Neither case depends on a receipt on the subject node.
+/// receipt is reused. Neither case depends on a receipt on the subject node. The closure is a
+/// node.delete Build's `DeleteConnections` step (a standalone connections delete is a node command,
+/// never a Build, Q342).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "i152 s2 (rdm#296): a connections delete is a node command, never a Build (Q342, D18), and node.delete's Build has no DeleteConnections step, so this cell's vehicle is gone; its contract (executor loss, attempt claims) is removed by i152 s4 (rdm#298)"]
 async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_its_reissue_settles_it() {
     async fn at_cut(cut: &str) {
         let test = format!("an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_its_reissue_settles_it_{cut}");
@@ -1303,16 +1285,16 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
         let subject_id: rdm_core::NodeId = s(&before["node_id"]).parse().expect("subject ID");
         let executor = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
         let door = Door::at(&estate, &executor.name).await;
-        door.arm("closure", json!({"kind": "receipt", "step": cut, "operation": "node.connection.delete", "node": rdm_core::OperationSubject::Node(subject_id.clone())})).await;
-        let mut stream = caller.nodes(&carrier).delete_connections(&node).await.expect("the Build accepts the closure");
-        let accepted = stream.accepted().clone();
+        door.arm("closure", json!({"kind": "receipt", "step": cut, "operation": "node.delete", "node": rdm_core::OperationSubject::Node(subject_id.clone())})).await;
+        let mut stream = caller.nodes(&carrier).delete(&node).await.expect("the Build accepts the delete");
+        let accepted = stream.accepted().cloned().expect("the call opened a Build");
         let held = door.wait_held("closure").await;
         assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.to_string());
         // The surviving executor has heard all receipts that precede this cut.
         let subject = rdm_core::OperationSubject::Node(subject_id.clone());
         if cut == "Complete" {
             crate::build_log::build_fact(&estate, accepted.build_id.as_str(), "the completed closure is recoverable on the successor before its executor is lost", Duration::from_secs(30), |b| {
-                b.steps.iter().any(|r| r.operation.action == "node.connection.delete" && r.operation.subject.as_ref() == Some(&subject) && r.step == "DeleteConnections" && serde_json::to_value(r).unwrap()["outcome"] == "complete")
+                b.steps.iter().any(|r| r.operation.action == "node.delete" && r.operation.subject.as_ref() == Some(&subject) && r.step == "DeleteConnections" && serde_json::to_value(r).unwrap()["outcome"] == "complete")
             }).await.unwrap_or_else(|e| panic!("{e}"));
         }
         wait_for("the held executor exported the progress record before it is killed", Duration::from_secs(30), || async {
@@ -1322,13 +1304,8 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
         let frames = frames_of(&mut stream).await;
         assert_eq!(frames.last(), Some(&Frame::Complete), "the successor settles the closure at {cut}: {frames:?}");
         let receipts = carrier.build(&accepted.build_id).await.expect("Build receipts");
-        let closure: Vec<_> = receipts.steps.iter().filter(|r| r.operation.action == "node.connection.delete" && r.operation.subject.as_ref() == Some(&subject) && r.step == "DeleteConnections" && matches!(r.result, StepResult::Complete)).collect();
+        let closure: Vec<_> = receipts.steps.iter().filter(|r| r.operation.action == "node.delete" && r.operation.subject.as_ref() == Some(&subject) && r.step == "DeleteConnections" && matches!(r.result, StepResult::Complete)).collect();
         assert_eq!(closure.len(), 1, "one durable completed step across attempts: {closure:?}");
-        let after = estate.node_value(&node).await;
-        assert_eq!((after["node_id"].clone(), after["incarnation_id"].clone()), (before["node_id"].clone(), before["incarnation_id"].clone()), "the same subject birth executes the reissue");
-        // states.md "Who sets each state": the completion carrying `Established` sets connections-deleted,
-        // and a read answers the row's status as written (Q233).
-        assert_eq!(after["status"], "connections-deleted", "a completed closure leaves its row connections-deleted");
         estate.stop().await;
         let spans = estate.spans();
         let executions: Vec<_> = named(&spans, "rdm.node_admin.connection.delete.via-delete-connections").into_iter().filter(|s| s["attributes"]["node"] == subject_id.as_str()).collect();
@@ -1417,63 +1394,4 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
         .cloned()
         .expect("the fabric-primary opens the resumed birth's termination");
     estate.record_trace_url(&s(&terminated["trace_id"]));
-}
-
-/// CONTRACT (docs/architecture/build.md: "A stop, a start or a recovery opens the next attempt of the
-/// current Build with its action"; Q292: `build.attempt.run` names the Build and the claim and never
-/// carries a copy of it, the executor reading the Build's committed records from storage): a Build that lives through 100
-/// `node.stop` / `node.start` pairs on `mesh2` (200 attempts dispatched across `build.attempt.run` to
-/// `(path mesh2.node-admin, name 1)`) dispatches and completes every attempt within the Build op's 256 KiB request
-/// ceiling, with zero `Malformed(TooLarge)` refusals.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_build_that_lives_through_one_hundred_stop_and_start_pairs_dispatches_every_attempt_run() {
-    let test = "a_build_that_lives_through_one_hundred_stop_and_start_pairs_dispatches_every_attempt_run";
-    let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
-    let caller = Caller::of(&estate).await;
-    let carrier = born(&estate, &caller, &SHAPE).await;
-    let node = secondary_node(&estate).await;
-    let views = estate.node_views().await;
-    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 primary");
-    let executor_birth = birth_of(executor);
-    let nodes = caller.nodes(&carrier);
-
-    let mut build_id = None;
-    let mut last_attempt = 0;
-    for pair in 1..=100 {
-        let mut stop_stream = nodes.stop(&node).await.unwrap_or_else(|e| panic!("pair {pair} stop accepted: {e:?}"));
-        let stop_acc = stop_stream.accepted().clone();
-        if let Some(ref id) = build_id {
-            assert_eq!(&stop_acc.build_id, id, "pair {pair} stop stays on the one Build");
-        } else {
-            build_id = Some(stop_acc.build_id.clone());
-        }
-        assert!(stop_acc.attempt > last_attempt, "pair {pair} stop advances the attempt ({} > {last_attempt})", stop_acc.attempt);
-        last_attempt = stop_acc.attempt;
-        let stop_frames = frames_of(&mut stop_stream).await;
-        assert_eq!(stop_frames.last(), Some(&Frame::Complete), "pair {pair} stop completes: {stop_frames:?}");
-
-        let mut start_stream = nodes.start(&node).await.unwrap_or_else(|e| panic!("pair {pair} start accepted: {e:?}"));
-        let start_acc = start_stream.accepted().clone();
-        assert_eq!(Some(&start_acc.build_id), build_id.as_ref(), "pair {pair} start stays on the one Build");
-        assert!(start_acc.attempt > last_attempt, "pair {pair} start advances the attempt ({} > {last_attempt})", start_acc.attempt);
-        last_attempt = start_acc.attempt;
-        let start_frames = frames_of(&mut start_stream).await;
-        assert_eq!(start_frames.last(), Some(&Frame::Complete), "pair {pair} start completes: {start_frames:?}");
-    }
-
-    estate.stop().await;
-    let spans = estate.spans();
-    let build = build_id.expect("100 pairs ran").to_string();
-    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
-    let dispatches: Vec<&Value> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch")
-        .into_iter()
-        .filter(|sp| attr(sp, "build_id") == build && attr(sp, "executor") == executor_birth.to_string() && attr(sp, "outcome") == "complete")
-        .collect();
-    assert!(dispatches.len() >= 200, "every stop and start attempt on mesh2 dispatched and completed at the selected mesh primary: {}", dispatches.len());
-    let malformed: Vec<&Value> = spans
-        .iter()
-        .filter(|sp| s(&sp["attributes"]["outcome"]).contains("malformed") || s(&sp["attributes"]["reason"]).contains("too-large") || s(&sp["attributes"]["detail"]).contains("TooLarge"))
-        .collect();
-    assert!(malformed.is_empty(), "no AttemptRun was refused Malformed(TooLarge): {malformed:#?}");
-    estate.record_trace_url(&attr(dispatches.last().unwrap(), "trace_id"));
 }

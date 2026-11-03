@@ -561,7 +561,7 @@ mod tests {
         resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id, name: fp.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation });
         let cep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let carrier = BuildCarrier::new(Arc::new(NodeRpcClient::new(cep, resolver).with_caller_system("rdm")), fp);
-        let mut stream = carrier.create(BuildChange::Stop { node: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap() }).await.expect("the call was accepted");
+        let mut stream = carrier.create(BuildChange::RemoveNode { node: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap() }).await.expect("the call was accepted");
         assert_eq!((stream.build_id().as_str(), stream.attempt()), ("cq2tyb03krac", 3));
         drop(carrier);
         go.notify_one();

@@ -119,12 +119,17 @@ pub struct BirthFacts {
     /// fabric-primary that is its own mesh's primary, itself), as [`Self::is_primary`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_fabric_primary: Option<u64>,
+    /// When the birth's current stopped period began, in rafka-time milliseconds: recorded by its
+    /// mesh-primary when it writes the birth `stopped`, cleared when it writes the start's `ready`
+    /// (node-identity-and-state.md §6.9 "Age", D50). What the stopped-node TTL ages the birth from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_at_rafka_ms: Option<u64>,
 }
 
 impl BirthFacts {
     /// A birth that holds no fact yet.
     pub fn new(incarnation_id: IncarnationId, name: PathName) -> Self {
-        Self { incarnation_id, name, declared: BTreeSet::new(), operations: Vec::new(), silence: None, data_dir_lost: None, data_dir_unreadable: None, cert: None, signing_cert: None, is_primary: None, is_fabric_primary: None }
+        Self { incarnation_id, name, declared: BTreeSet::new(), operations: Vec::new(), silence: None, data_dir_lost: None, data_dir_unreadable: None, cert: None, signing_cert: None, is_primary: None, is_fabric_primary: None, stopped_at_rafka_ms: None }
     }
 
     /// The greatest state declared in the birth's current cycle.
@@ -296,8 +301,10 @@ pub struct AppTypes {
 pub struct Allocation {
     /// The exact predecessor admitted for this create, independent of successor ownership.
     pub predecessor: Option<BirthRef>,
-    /// The Build whose operation claimed the name.
-    pub build_id: rdm_core::BuildId,
+    /// The Build whose operation claimed the name; `None` for a create that belongs to no Build, a node
+    /// recovery's (the primary's own workflow, Q342). A row written before it held a Build reads `Some`.
+    #[serde(default)]
+    pub build_id: Option<rdm_core::BuildId>,
     /// The operation that claimed it (`node.create:<path>`).
     pub operation: rdm_core::OperationId,
     /// The incarnation minted for the birth.

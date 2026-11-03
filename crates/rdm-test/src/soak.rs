@@ -550,8 +550,13 @@ where
 }
 
 /// The Build and attempt a workflow call opened, as a round row records them.
-fn accepted_json(a: &Accepted) -> Value {
-    json!({"build_id": a.build_id.to_string(), "attempt": a.attempt})
+/// The Build and attempt a call opened, as a round row records them; `null` for a node command
+/// (node.stop, node.start), which belongs to no Build (Q342).
+fn accepted_json(a: Option<&Accepted>) -> Value {
+    match a {
+        Some(a) => json!({"build_id": a.build_id.to_string(), "attempt": a.attempt}),
+        None => Value::Null,
+    }
 }
 
 /// The node count of every class per mesh the model holds.
@@ -1636,21 +1641,28 @@ impl Driver {
     /// A workflow stream to its `Complete`, within 120 s; a stream that ends `FabricPrimaryMoved` (a planned fabric-primary
     /// hand-off) is followed at the new role. The Build and attempt the call opened, as the round row records them.
     async fn await_build(&mut self, mut stream: WorkflowStream) -> Result<Value, Broken> {
-        let accepted = stream.accepted().clone();
+        let accepted = stream.accepted().cloned();
+        let what = match &accepted {
+            Some(a) => format!("Build {} attempt {}", a.build_id, a.attempt),
+            None => format!("the node command {:?}", stream.kind()),
+        };
         let until = tokio::time::Instant::now() + Duration::from_secs(120);
         loop {
             match tokio::time::timeout_at(until, stream.next()).await {
-                Err(_) => return Err(broken("build-completes", format!("Build {} did not complete within 120s", accepted.build_id))),
-                Ok(None) => return Err(broken("build-completes", format!("the stream of Build {} attempt {} ended with no terminal frame", accepted.build_id, accepted.attempt))),
-                Ok(Some(Err(end))) => return Err(broken("build-completes", format!("the stream of Build {} attempt {} broke: {end}", accepted.build_id, accepted.attempt))),
-                Ok(Some(Ok(Frame::Complete))) => return Ok(accepted_json(&accepted)),
-                Ok(Some(Ok(Frame::Failed { step, reason }))) => return Err(broken("build-completes", format!("Build {} failed at {step:?}: {reason}", accepted.build_id))),
+                Err(_) => return Err(broken("build-completes", format!("{what} did not complete within 120s"))),
+                Ok(None) => return Err(broken("build-completes", format!("the stream of {what} ended with no terminal frame"))),
+                Ok(Some(Err(end))) => return Err(broken("build-completes", format!("the stream of {what} broke: {end}"))),
+                Ok(Some(Ok(Frame::Complete))) => return Ok(accepted_json(accepted.as_ref())),
+                Ok(Some(Ok(Frame::Failed { step, reason }))) => return Err(broken("build-completes", format!("{what} failed at {step:?}: {reason}"))),
                 Ok(Some(Ok(Frame::FabricPrimaryMoved { fabric_primary }))) => {
+                    let Some(accepted) = accepted.as_ref() else {
+                        return Err(broken("build-completes", format!("{what} ended FabricPrimaryMoved, which no node command's stream carries")));
+                    };
                     stream = self
                         .estate
                         .nodes_obj()
                         .await
-                        .resume(stream.kind().clone(), &accepted)
+                        .resume(stream.kind().clone(), accepted)
                         .await
                         .map_err(|end| broken("build-completes", format!("the fabric-primary role moved to {fabric_primary:?} and the new role does not stream Build {} from attempt {}: {end}", accepted.build_id, accepted.attempt)))?;
                 }
@@ -1676,7 +1688,7 @@ impl Driver {
         }
         let spawn = after_build_in_progress(|| self.estate.create_node(&mesh, &r#type)).await.map_err(|end| refused(&format!("node.create {:?} in {mesh}", r#type), end))?;
         entry["regrow"] = accepted_json(spawn.accepted());
-        let build = spawn.accepted().build_id.to_string();
+        let build = spawn.accepted().expect("a create opens a Build").build_id.to_string();
         self.await_build(spawn).await?;
         Ok((build, (s(&n["node_id"]), s(&n["incarnation_id"]))))
     }

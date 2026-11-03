@@ -103,124 +103,66 @@ sequenceDiagram
 
 ## 2. One `node.stop` then `node.start` of an RPC node
 
-Calling `Nodes::stop` and `Nodes::start` on `mesh-quj7g8-1.broker.2` (`node_id="a845t0qjfzw7"`, `incarnation_id="h4471hxp31fq"`) stops the node in place and starts the same process and birth back to `Ready` ([`node.stop`](../architecture/lifecycles/node-stop.md), [`node.start`](../architecture/lifecycles/node-start.md)).
+Calling `Nodes::stop` and `Nodes::start` on `mesh1.node.1` (`node_id="zxt069pwwyf2"`, `incarnation_id="1re4n3czh40g"`) stops the node in place and starts the same process and birth back to `Ready` ([`node.stop`](../architecture/lifecycles/node-stop.md), [`node.start`](../architecture/lifecycles/node-start.md)). Each is a node command, never a Build: the caller sends NodeCommand `0x22` `StopNode` (then `StartNode`) to the node's mesh-primary, `mesh1.node-admin.1` (`mwqm432ae8n0`), which admits it and runs it as its own workflow, recording each step on the node record. Nothing is opened in the Build store and no attempt is claimed (`attempt="0"` on every span).
 
-### Step 1: `node.stop` admitted and `StopNode` (`0x22`) sent
+### Step 1: The mesh-primary admits the stop and sends `StopNode` (`0x22`) to the node
 
-When `Nodes::stop` submits `BuildChange::Stop` for `mesh-quj7g8-1.broker.2`, the fabric-primary (`mesh-quj7g8-1.admin.1`) opens attempt `4` (`reason="stop"`), fires `on_build_started` (`rdm.node_admin.build.update.via-on-build-started`), reconciles `node.stop:mesh-quj7g8-1.broker.2`, projects `Leaving` in its topology (`rdm.mesh.topology.update.from-command-admitted`, `rdm.node_admin.node.update.via-stop-admitted`), and opens `StopNode` (`0x22`) to `mesh-quj7g8-1.broker.2` ([`node.stop` — Steps](../architecture/lifecycles/node-stop.md#steps), [Fabric and node hooks — Notices](../architecture/fabric-node-hooks.md#notices)):
+`mesh1.node-admin.1` admits the caller's command (`rdm.node_admin.node.update.via-node-command`), projects `Leaving` in its topology (`rdm.mesh.topology.update.from-command-admitted`, `rdm.node_admin.node.update.via-stop-admitted`) and sends `StopNode` to the exact birth ([`node.stop` — Steps](../architecture/lifecycles/node-stop.md#steps)):
 
 ```json
-{"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-node-rpc","attributes":{"attempt":"4","build_id":"v9vwapsqgpsg","node":"mesh-quj7g8-1.broker.2","route":"build.create"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-on-build-started","attributes":{"attempt":"4","build_id":"bid_v9vw-apsq-gpsg","node":"mesh-quj7g8-1.admin.1","outcome":"sent","reason":"stop"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-reconcile","attributes":{"attempt":"4","build_id":"bid_v9vw-apsq-gpsg","executor":"mesh-quj7g8-1.admin.1","operations":"node.stop:mesh-quj7g8-1.broker.2","outcome":"converged","reason":"stop"}}
-{"service":"rshape-node-admin","name":"rdm.mesh.topology.update.from-command-admitted","attributes":{"attempt":"4","build_id":"v9vwapsqgpsg","incarnation_id":"h4471hxp31fq","node":"mesh-quj7g8-1.admin.1","node_id":"a845t0qjfzw7","operation":"node.stop:mesh-quj7g8-1.broker.2","prior":"Ready","status":"Leaving"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-stop-admitted","attributes":{"attempt":"4","build_id":"v9vwapsqgpsg","incarnation_id":"h4471hxp31fq","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.stop:mesh-quj7g8-1.broker.2"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-node-command","attributes":{"command":"stop-node","incarnation_id":"1re4n3czh40g","node_name":"1","node_path":"mesh1.node-admin","operation":"node.stop","operation_occurrence":"Some(OperationOccurrenceId(\"1zacaypy5cq4\"))","outcome":"node-stopped","subject_id":"zxt069pwwyf2","subject_name":"1","subject_path":"mesh1.node"}}
+{"service":"rdm-node-admin","name":"rdm.mesh.topology.update.from-command-admitted","attributes":{"attempt":"0","incarnation_id":"1re4n3czh40g","member_name":"1","member_path":"mesh1.node","node":"mwqm432ae8n0","node_id":"zxt069pwwyf2","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","prior":"Ready","status":"Leaving"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-stop-admitted","attributes":{"attempt":"0","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))"}}
 ```
 
 ### Step 2: The RPC node deletes its connections, leaves the mesh, and stops
 
-On `StopNode`, `mesh-quj7g8-1.broker.2` deletes its application connections (`rdm.node_admin.connection.delete.via-stop`), quiesces in-flight turns (`rdm.node_admin.node.update.via-stop-quiesce`), leaves `mesh-quj7g8-1` and stops its gossip channel (`rdm.node.mesh.update.via-leaving`, `rdm.mesh.connection.delete.via-channel-stopped`, `rdm.node.mesh.update.via-left`), cuts its non-primary transport connections (`rdm.node_admin.node.update.via-stop-transport-cut`), records its owed `Stopped` state (`rdm.node_rpc.status.update.via-owed-on-stop`), and answers `node-stopped` (`rdm.node_admin.status.update.via-stop-node`, `rdm.node_admin.status.update.via-command`; [`node.stop` — Steps](../architecture/lifecycles/node-stop.md#steps)):
+On `StopNode`, `mesh1.node.1` deletes its application connections (`rdm.node_admin.connection.delete.via-stop`), quiesces in-flight turns (`rdm.node_admin.node.update.via-stop-quiesce`), cuts its non-primary transport connections (`rdm.node_admin.node.update.via-stop-transport-cut`), leaves `mesh1` (`rdm.node.mesh.update.via-leaving`, `rdm.node.mesh.update.via-left`), records its owed `Stopped` state (`rdm.node_rpc.status.update.via-owed-on-stop`), and answers `node-stopped` (`rdm.node_admin.status.update.via-stop-node`, `rdm.node_admin.status.update.via-command`; [`node.stop` — Steps](../architecture/lifecycles/node-stop.md#steps)):
 
 ```json
-{"service":"rshape-broker","name":"rdm.node_admin.status.update.via-stop-node","attributes":{"attempt":"4","build_id":"v9vwapsqgpsg","commander":"n6mkmxhqp7s4","node":"mesh-quj7g8-1.broker.2","operation":"node.stop:mesh-quj7g8-1.broker.2","receipt":"established","state":"Stopped"}}
-{"service":"rshape-broker","name":"rdm.node_admin.connection.delete.via-stop","attributes":{"commander":"n6mkmxhqp7s4","node":"mesh-quj7g8-1.broker.2","operation":"node.stop:mesh-quj7g8-1.broker.2","outcome":"deleted"}}
-{"service":"rshape-broker","name":"rdm.node_admin.node.update.via-stop-quiesce","attributes":{"node":"mesh-quj7g8-1.broker.2","operation":"node.stop:mesh-quj7g8-1.broker.2","turns_in_progress":"0"}}
-{"service":"rshape-broker","name":"rdm.node_admin.node.update.via-stop-transport-cut","attributes":{"accepted":"2","mesh_primary_spared":"true","neighbours":"5","node":"mesh-quj7g8-1.broker.2","operation":"node.stop:mesh-quj7g8-1.broker.2","spared":"1"}}
-{"service":"rshape-broker","name":"rdm.node.mesh.update.via-leaving","attributes":{"mesh":"mesh-quj7g8-1","mesh_id":"6jxatzq1vv58","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.stop:mesh-quj7g8-1.broker.2"}}
-{"service":"rshape-broker","name":"rdm.mesh.connection.delete.via-channel-stopped","attributes":{"channel":"mesh:mesh-quj7g8-1","node":"mesh-quj7g8-1.broker.2"}}
-{"service":"rshape-broker","name":"rdm.node.mesh.update.via-left","attributes":{"mesh":"mesh-quj7g8-1","mesh_id":"6jxatzq1vv58","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","which":"own"}}
-{"service":"rshape-broker","name":"rdm.node_rpc.status.update.via-owed-on-stop","attributes":{"attempt":"4","build_id":"v9vwapsqgpsg","node":"mesh-quj7g8-1.broker.2","operation":"node.stop:mesh-quj7g8-1.broker.2","state":"Stopped"}}
-{"service":"rshape-broker","name":"rdm.node_admin.status.update.via-command","attributes":{"node":"mesh-quj7g8-1.broker.2","op":"stop-node","outcome":"node-stopped","sender":"mesh-quj7g8-1.admin.1"}}
+{"service":"rdm-rpc-node","name":"rdm.node_admin.status.update.via-stop-node","attributes":{"attempt":"0","commander":"mwqm432ae8n0","node":"zxt069pwwyf2","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","receipt":"established","state":"Stopped"}}
+{"service":"rdm-rpc-node","name":"rdm.node_admin.connection.delete.via-stop","attributes":{"commander":"mwqm432ae8n0","node":"zxt069pwwyf2","operation":"node.stop","outcome":"deleted"}}
+{"service":"rdm-rpc-node","name":"rdm.node_admin.node.update.via-stop-quiesce","attributes":{"node":"zxt069pwwyf2","operation":"node.stop","turns_in_progress":"0"}}
+{"service":"rdm-rpc-node","name":"rdm.node_admin.node.update.via-stop-transport-cut","attributes":{"accepted":"1","mesh_primary_spared":"true","neighbours":"4","node":"zxt069pwwyf2","operation":"node.stop","pooled":"1","spared":"1","turns_in_progress":"0"}}
+{"service":"rdm-rpc-node","name":"rdm.node.mesh.update.via-leaving","attributes":{"mesh":"mesh1","mesh_id":"e35tqdzjnvfd","node":"zxt069pwwyf2","node_id":"zxt069pwwyf2","operation":"node.stop"}}
+{"service":"rdm-rpc-node","name":"rdm.node.mesh.update.via-left","attributes":{"mesh":"mesh1","mesh_id":"e35tqdzjnvfd","node":"zxt069pwwyf2","node_id":"zxt069pwwyf2","which":"own"}}
+{"service":"rdm-rpc-node","name":"rdm.node_rpc.status.update.via-owed-on-stop","attributes":{"node":"zxt069pwwyf2","operation":"node.stop","operation_occurrence":"Some(OperationOccurrenceId(\"1zacaypy5cq4\"))","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","state":"Stopped"}}
+{"service":"rdm-rpc-node","name":"rdm.node_admin.status.update.via-command","attributes":{"node":"zxt069pwwyf2","op":"stop-node","outcome":"node-stopped","sender":"mwqm432ae8n0"}}
 ```
 
 ### Step 3: Command stream frames (`seq` 0..5) and `Stopped` recorded
 
-As `mesh-quj7g8-1.broker.2` advances through the stop phases, the mesh-primary (`mesh-quj7g8-1.admin.1`) receives the six `NodeCommand` stream frames (`command-accepted`, `connections-deleting`, `stop-connections-deleted`, `leaving`, `stop-mesh-left`, `node-stopped`), removes the stopped node from the live topology (`rdm.mesh.topology.remove.via-node-stopped`), records `Stopped` (`rdm.node_admin.node.update.via-node-stopped`, `rdm.node_admin.node.update.via-command-sent`), and finishes attempt `4` (`rdm.node_admin.build.update.via-on-build-ended`; [`node.stop` — Steps](../architecture/lifecycles/node-stop.md#steps), [`node.stop` — State transitions](../architecture/lifecycles/node-stop.md#state-transitions)):
+As `mesh1.node.1` advances through the stop, the mesh-primary receives the six `NodeCommand` stream frames (`command-accepted`, `connections-deleting`, `stop-connections-deleted`, `leaving`, `stop-mesh-left`, `node-stopped`), records `Stopped` on the node record (`rdm.node_admin.node.update.via-node-stopped`), removes the stopped node from the live topology (`rdm.mesh.topology.remove.via-node-stopped`) and ends the command (`rdm.node_admin.node.update.via-command-sent`; [`node.stop` — State transitions](../architecture/lifecycles/node-stop.md#state-transitions)):
 
 ```json
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"frame":"command-accepted","incarnation_id":"h4471hxp31fq","invocation_id":"n6mkmxhqp7s4/yw9m94ephg4q#344","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.stop:mesh-quj7g8-1.broker.2","seq":"0"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"frame":"connections-deleting","incarnation_id":"h4471hxp31fq","invocation_id":"n6mkmxhqp7s4/yw9m94ephg4q#344","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.stop:mesh-quj7g8-1.broker.2","seq":"1"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"frame":"stop-connections-deleted","incarnation_id":"h4471hxp31fq","invocation_id":"n6mkmxhqp7s4/yw9m94ephg4q#344","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.stop:mesh-quj7g8-1.broker.2","seq":"2"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"frame":"leaving","incarnation_id":"h4471hxp31fq","invocation_id":"n6mkmxhqp7s4/yw9m94ephg4q#344","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.stop:mesh-quj7g8-1.broker.2","seq":"3"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"frame":"stop-mesh-left","incarnation_id":"h4471hxp31fq","invocation_id":"n6mkmxhqp7s4/yw9m94ephg4q#344","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.stop:mesh-quj7g8-1.broker.2","seq":"4"}}
-{"service":"rshape-node-admin","name":"rdm.mesh.topology.remove.via-node-stopped","attributes":{"attempt":"4","build_id":"v9vwapsqgpsg","held_status":"Leaving","incarnation_id":"h4471hxp31fq","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","observer":"mesh-quj7g8-1.admin.1","operation":"node.stop:mesh-quj7g8-1.broker.2"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-node-stopped","attributes":{"attempt":"4","build_id":"v9vwapsqgpsg","incarnation_id":"h4471hxp31fq","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.stop:mesh-quj7g8-1.broker.2"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"frame":"node-stopped","incarnation_id":"h4471hxp31fq","invocation_id":"n6mkmxhqp7s4/yw9m94ephg4q#344","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.stop:mesh-quj7g8-1.broker.2","seq":"5"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-sent","attributes":{"admission":"stopped","attempt":"4","build_id":"v9vwapsqgpsg","code":"OK","command":"stop-node","node":"mesh-quj7g8-1.broker.2","operation":"node.stop:mesh-quj7g8-1.broker.2"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-on-build-ended","attributes":{"attempt":"4","build_id":"bid_v9vw-apsq-gpsg","node":"mesh-quj7g8-1.admin.1","outcome":"sent","reason":"stop","state":"complete"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"code":"OK","detail":"command-accepted","frame":"command-accepted","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","recorder_node_id":"mwqm432ae8n0","seq":"0"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"code":"OK","detail":"connections-deleting","frame":"connections-deleting","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","recorder_node_id":"mwqm432ae8n0","seq":"1"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"code":"OK","detail":"stop-connections-deleted","frame":"stop-connections-deleted","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","recorder_node_id":"mwqm432ae8n0","seq":"2"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"code":"OK","detail":"leaving","frame":"leaving","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","recorder_node_id":"mwqm432ae8n0","seq":"3"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"code":"OK","detail":"stop-mesh-left","frame":"stop-mesh-left","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","recorder_node_id":"mwqm432ae8n0","seq":"4"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"code":"OK","detail":"node-stopped","frame":"node-stopped","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","recorder_node_id":"mwqm432ae8n0","seq":"5"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-node-stopped","attributes":{"attempt":"0","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))"}}
+{"service":"rdm-node-admin","name":"rdm.mesh.topology.remove.via-node-stopped","attributes":{"attempt":"0","held_digest_seq":"3","held_status":"Leaving","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","observer":"mwqm432ae8n0","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","topology_version":"-1","was_held":"true"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-command-sent","attributes":{"admission":"stopped","attempt":"0","code":"OK","command":"stop-node","detail":"Stopped { receipt: Established { in_flight: 0, closed: [] } }","node_name":"1","node_path":"mesh1.node","operation":"node.stop","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))"}}
 ```
 
 ### Step 4: `node.start` (`0x22`), mesh rejoin, and `Ready`
 
-When `Nodes::start` submits `BuildChange::Start` for `mesh-quj7g8-1.broker.2`, `mesh-quj7g8-1.admin.1` opens attempt `5` (`reason="start"`) and sends `StartNode` (`0x22`) to the stopped birth (`node_id="a845t0qjfzw7"`, `incarnation_id="h4471hxp31fq"`). The node re-runs `node.mesh.join` (`rdm.node.mesh.update.via-joining`, `rdm.node_admin.node.update.via-join`, `rdm.node.mesh.update.via-joined`), checks its Build floor (`rdm.mesh.node.update.via-build-floor`), enters `Ready` (`rdm.mesh.node.update.via-ready`), and streams `command-accepted` (`seq="0"`), `node-joined` (`seq="1"`), and `node-started` (`seq="2"`) back to `mesh-quj7g8-1.admin.1`, which projects `Ready` (`rdm.mesh.topology.update.from-node-started`) and ends attempt `5` ([`node.start` — Steps](../architecture/lifecycles/node-start.md#steps), [`node.start` — State transitions](../architecture/lifecycles/node-start.md#state-transitions)):
+`Nodes::start` sends `StartNode` the same way: `mesh1.node-admin.1` admits it (`rdm.node_admin.node.update.via-node-command`) and sends `StartNode` to the stopped birth. The node re-runs `node.mesh.join` (`rdm.node.mesh.update.via-joining`, `rdm.node.mesh.update.via-joined`), enters `Ready` (`rdm.mesh.node.update.via-ready`), and streams `command-accepted` (`seq="0"`), `node-joined` (`seq="1"`) and `node-started` (`seq="2"`) back to `mesh1.node-admin.1`, which projects `Ready` (`rdm.mesh.topology.update.from-node-started`) and ends the command ([`node.start` — Steps](../architecture/lifecycles/node-start.md#steps), [`node.start` — State transitions](../architecture/lifecycles/node-start.md#state-transitions)):
 
 ```json
-{"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-node-rpc","attributes":{"attempt":"5","build_id":"v9vwapsqgpsg","node":"mesh-quj7g8-1.broker.2","route":"build.create"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-on-build-started","attributes":{"attempt":"5","build_id":"bid_v9vw-apsq-gpsg","node":"mesh-quj7g8-1.admin.1","outcome":"sent","reason":"start"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-reconcile","attributes":{"attempt":"5","build_id":"bid_v9vw-apsq-gpsg","executor":"mesh-quj7g8-1.admin.1","operations":"node.start:mesh-quj7g8-1.broker.2","outcome":"converged","reason":"start"}}
-{"service":"rshape-broker","name":"rdm.node_admin.status.update.via-start-node","attributes":{"attempt":"5","build_id":"v9vwapsqgpsg","commander":"n6mkmxhqp7s4","node":"mesh-quj7g8-1.broker.2","operation":"node.start:mesh-quj7g8-1.broker.2","outcome":"started"}}
-{"service":"rshape-broker","name":"rdm.mesh.node.update.via-start","attributes":{"incarnation_id":"h4471hxp31fq","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7"}}
-{"service":"rshape-broker","name":"rdm.node.mesh.update.via-joining","attributes":{"mesh":"mesh-quj7g8-1","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.start:mesh-quj7g8-1.broker.2"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-join","attributes":{"admitted_as":"mesh-quj7g8-1.broker.2","incarnation_id":"h4471hxp31fq","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","outcome":"installed","served_by":"mesh-quj7g8-1.admin.1"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"frame":"command-accepted","incarnation_id":"h4471hxp31fq","invocation_id":"n6mkmxhqp7s4/yw9m94ephg4q#348","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.start:mesh-quj7g8-1.broker.2","seq":"0"}}
-{"service":"rshape-broker","name":"rdm.node.mesh.update.via-joined","attributes":{"mesh":"mesh-quj7g8-1","mesh_id":"6jxatzq1vv58","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","which":"own"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"frame":"node-joined","incarnation_id":"h4471hxp31fq","invocation_id":"n6mkmxhqp7s4/yw9m94ephg4q#348","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.start:mesh-quj7g8-1.broker.2","seq":"1"}}
-{"service":"rshape-broker","name":"rdm.mesh.node.update.via-build-floor","attributes":{"node":"mesh-quj7g8-1.broker.2","owed":"none"}}
-{"service":"rshape-broker","name":"rdm.mesh.node.update.via-ready","attributes":{"fabric_id":"bt828feh1cc6","incarnation_id":"h4471hxp31fq","type":"broker","mesh_id":"6jxatzq1vv58","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7"}}
-{"service":"rshape-broker","name":"rdm.node_admin.status.update.via-command","attributes":{"node":"mesh-quj7g8-1.broker.2","op":"start-node","outcome":"node-started","sender":"mesh-quj7g8-1.admin.1"}}
-{"service":"rshape-node-admin","name":"rdm.mesh.topology.update.from-node-started","attributes":{"incarnation_id":"h4471hxp31fq","node":"mesh-quj7g8-1.admin.1","node_id":"a845t0qjfzw7","prior":"Pending","status":"Ready"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"frame":"node-started","incarnation_id":"h4471hxp31fq","invocation_id":"n6mkmxhqp7s4/yw9m94ephg4q#348","node":"mesh-quj7g8-1.broker.2","node_id":"a845t0qjfzw7","operation":"node.start:mesh-quj7g8-1.broker.2","seq":"2"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-command-sent","attributes":{"admission":"started","attempt":"5","build_id":"v9vwapsqgpsg","code":"OK","command":"start-node","detail":"Started","node":"mesh-quj7g8-1.broker.2","operation":"node.start:mesh-quj7g8-1.broker.2"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-on-build-ended","attributes":{"attempt":"5","build_id":"bid_v9vw-apsq-gpsg","node":"mesh-quj7g8-1.admin.1","outcome":"sent","reason":"start","state":"complete"}}
-```
-
-```mermaid
-sequenceDiagram
-    participant A1 as mesh-quj7g8-1.admin.1
-    participant B2 as mesh-quj7g8-1.broker.2
-
-    A1->>A1: rdm.node_admin.build.update.via-node-rpc (attempt="4", route="build.create")
-    A1->>A1: rdm.node_admin.build.update.via-on-build-started (attempt="4", reason="stop")
-    A1->>A1: rdm.node_admin.build.update.via-reconcile (operations="node.stop:mesh-quj7g8-1.broker.2")
-    A1->>A1: rdm.mesh.topology.update.from-command-admitted (prior="Ready", status="Leaving")
-    A1->>A1: rdm.node_admin.node.update.via-stop-admitted (node="mesh-quj7g8-1.broker.2")
-    A1->>B2: rdm.node_admin.status.update.via-stop-node (operation="node.stop:mesh-quj7g8-1.broker.2")
-    B2->>A1: rdm.node_admin.node.update.via-command-frame (seq="0", frame="command-accepted")
-    B2->>A1: rdm.node_admin.node.update.via-command-frame (seq="1", frame="connections-deleting")
-    B2->>B2: rdm.node_admin.connection.delete.via-stop (outcome="deleted")
-    B2->>B2: rdm.node_admin.node.update.via-stop-quiesce (turns_in_progress="0")
-    B2->>A1: rdm.node_admin.node.update.via-command-frame (seq="2", frame="stop-connections-deleted")
-    B2->>A1: rdm.node_admin.node.update.via-command-frame (seq="3", frame="leaving")
-    B2->>B2: rdm.node.mesh.update.via-leaving (mesh="mesh-quj7g8-1")
-    B2->>B2: rdm.mesh.connection.delete.via-channel-stopped (channel="mesh:mesh-quj7g8-1")
-    B2->>B2: rdm.node.mesh.update.via-left (which="own")
-    B2->>B2: rdm.node_admin.node.update.via-stop-transport-cut (mesh_primary_spared="true")
-    B2->>A1: rdm.node_admin.node.update.via-command-frame (seq="4", frame="stop-mesh-left")
-    A1->>A1: rdm.mesh.topology.remove.via-node-stopped (node="mesh-quj7g8-1.broker.2")
-    A1->>A1: rdm.node_admin.node.update.via-node-stopped (node="mesh-quj7g8-1.broker.2")
-    B2->>B2: rdm.node_rpc.status.update.via-owed-on-stop (state="Stopped")
-    B2->>A1: rdm.node_admin.status.update.via-command (op="stop-node", outcome="node-stopped")
-    B2->>A1: rdm.node_admin.node.update.via-command-frame (seq="5", frame="node-stopped")
-    A1->>A1: rdm.node_admin.node.update.via-command-sent (command="stop-node", admission="stopped")
-    A1->>A1: rdm.node_admin.build.update.via-on-build-ended (attempt="4", state="complete")
-
-    A1->>A1: rdm.node_admin.build.update.via-node-rpc (attempt="5", route="build.create")
-    A1->>A1: rdm.node_admin.build.update.via-on-build-started (attempt="5", reason="start")
-    A1->>A1: rdm.node_admin.build.update.via-reconcile (operations="node.start:mesh-quj7g8-1.broker.2")
-    A1->>B2: rdm.node_admin.status.update.via-start-node (operation="node.start:mesh-quj7g8-1.broker.2")
-    B2->>B2: rdm.mesh.node.update.via-start (node="mesh-quj7g8-1.broker.2")
-    B2->>A1: rdm.node_admin.node.update.via-command-frame (seq="0", frame="command-accepted")
-    B2->>A1: rdm.node.mesh.update.via-joining (mesh="mesh-quj7g8-1")
-    A1->>B2: rdm.node_admin.node.update.via-join (outcome="installed")
-    B2->>B2: rdm.node.mesh.update.via-joined (mesh="mesh-quj7g8-1")
-    B2->>A1: rdm.node_admin.node.update.via-command-frame (seq="1", frame="node-joined")
-    B2->>B2: rdm.mesh.node.update.via-build-floor (owed="none")
-    B2->>B2: rdm.mesh.node.update.via-ready (node="mesh-quj7g8-1.broker.2")
-    B2->>A1: rdm.node_admin.status.update.via-command (op="start-node", outcome="node-started")
-    A1->>A1: rdm.mesh.topology.update.from-node-started (prior="Pending", status="Ready")
-    B2->>A1: rdm.node_admin.node.update.via-command-frame (seq="2", frame="node-started")
-    A1->>A1: rdm.node_admin.node.update.via-command-sent (command="start-node", admission="started")
-    A1->>A1: rdm.node_admin.build.update.via-on-build-ended (attempt="5", state="complete")
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-node-command","attributes":{"command":"start-node","incarnation_id":"1re4n3czh40g","node_name":"1","node_path":"mesh1.node-admin","operation":"node.start","operation_occurrence":"Some(OperationOccurrenceId(\"hzbenxh4kpne\"))","outcome":"node-started","subject_id":"zxt069pwwyf2","subject_name":"1","subject_path":"mesh1.node"}}
+{"service":"rdm-rpc-node","name":"rdm.node_admin.status.update.via-start-node","attributes":{"attempt":"0","commander":"mwqm432ae8n0","node":"zxt069pwwyf2","operation":"node.start","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","outcome":"started"}}
+{"service":"rdm-rpc-node","name":"rdm.mesh.node.update.via-start","attributes":{"incarnation_id":"1re4n3czh40g","node":"zxt069pwwyf2","node_id":"zxt069pwwyf2"}}
+{"service":"rdm-rpc-node","name":"rdm.node.mesh.update.via-joining","attributes":{"mesh":"mesh1","node_id":"zxt069pwwyf2","node_name":"zxt069pwwyf2","node_path":"mesh1.node","operation":"node.start","operation_step":"None","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","primary":"6b69cccc24"}}
+{"service":"rdm-rpc-node","name":"rdm.node.mesh.update.via-joined","attributes":{"mesh":"mesh1","mesh_id":"e35tqdzjnvfd","node":"zxt069pwwyf2","node_id":"zxt069pwwyf2","which":"own"}}
+{"service":"rdm-rpc-node","name":"rdm.mesh.node.update.via-ready","attributes":{"deployment_id":"r9vx0v1ytgdf","fabric_id":"075dz8whz8s0","id_format":"crockford60","incarnation_id":"1re4n3czh40g","type":"rpc_node","mesh_id":"e35tqdzjnvfd","meshes":"1","node_id":"zxt069pwwyf2","provider":"process","provider_control_domain_fingerprint":"7a59b85b0929","runtime_locator_fingerprint":"6142bb7a4975","runtime_locator_kind":"process-pid-start","source":"self-published-topology"}}
+{"service":"rdm-rpc-node","name":"rdm.node_admin.status.update.via-command","attributes":{"node":"zxt069pwwyf2","op":"start-node","outcome":"node-started","sender":"mwqm432ae8n0"}}
+{"service":"rdm-node-admin","name":"rdm.mesh.topology.update.from-node-started","attributes":{"incarnation_id":"1re4n3czh40g","member_name":"1","member_path":"mesh1.node","node":"mwqm432ae8n0","node_id":"zxt069pwwyf2","prior":"Pending","status":"Ready"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"code":"OK","detail":"command-accepted","frame":"command-accepted","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","operation":"node.start","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","recorder_node_id":"mwqm432ae8n0","seq":"0"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"code":"OK","detail":"node-joined","frame":"node-joined","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","operation":"node.start","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","outcome":"already-applied","recorder_node_id":"mwqm432ae8n0","seq":"1"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-command-frame","attributes":{"code":"OK","detail":"node-started","frame":"node-started","incarnation_id":"1re4n3czh40g","node_id":"zxt069pwwyf2","node_name":"1","node_path":"mesh1.node","operation":"node.start","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))","recorder_node_id":"mwqm432ae8n0","seq":"2"}}
+{"service":"rdm-node-admin","name":"rdm.node_admin.node.update.via-command-sent","attributes":{"admission":"started","attempt":"0","code":"OK","command":"start-node","detail":"Started","node_name":"1","node_path":"mesh1.node","operation":"node.start","operation_subject":"Some(Node(NodeId(\"zxt069pwwyf2\")))"}}
 ```
 
 ---
@@ -253,20 +195,21 @@ The mesh-primary (`mesh-quj7g8-1.admin.1`) runs `node.investigation` on the sile
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.resolve.via-provider-inspection","attributes":{"incarnation_id":"0t7njf6wzf0q","inspector":"mesh-quj7g8-1.admin.1","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t","verdict":"exited"}}
 ```
 
-### Step 3: Recovery attempt deletes the exited birth and creates a new birth `Ready`
+### Step 3: The mesh-primary's recovery deletes the exited birth and creates a new birth `Ready`
 
-With `verdict="exited"`, `mesh-quj7g8-1.admin.1` opens a recovery attempt on the current Build (`v9vwapsqgpsg`, `rdm.node_admin.build.update.via-node-recovery`, `rdm.node_admin.build.update.via-recovery`) and reconciles `node.delete:mesh-quj7g8-1.broker.3,node.create:mesh-quj7g8-1.broker.3` (`reason="recovery"`): it deletes the exited birth `nrh2bq4bs63t` (`rdm.node_admin.node.delete.via-build`) and creates a new birth at the same `path.name` (`mesh-quj7g8-1.broker.3`) with a new `node.id` (`e7gafyzpt3dd`) and `incarnation_id` (`90jswd6qnan2`) inheriting the prior birth's `data_dir` (`rdm.node_admin.node.create.via-build`), which boots, joins `mesh-quj7g8-1`, and enters `Ready` ([`node.recovery` — Steps](../architecture/lifecycles/node-recovery.md#steps), [`node.recovery` — State transitions](../architecture/lifecycles/node-recovery.md#state-transitions)):
+With `verdict="exited"`, `mesh-quj7g8-1.admin.1`, the mesh-primary, recovers the birth itself, its own workflow and never a Build: no `build.create`, no Build record, nothing claimed. It writes the verdict as its `rdm.node.investigated` event (`rdm.node_admin.node.update.via-on-node-investigated`, `next="recreate"`), then runs the recovery on the node's work turn (`rdm.node_admin.node.update.via-node-recovery`, `route="node-recovery"`). The recovery deletes the exited birth `nrh2bq4bs63t` (`rdm.node_admin.node.delete.via-node-recovery`) and creates a new birth at the same path and name (`mesh-quj7g8-1.broker.3`) with a new `node.id` (`e7gafyzpt3dd`) and `incarnation_id` (`90jswd6qnan2`), inheriting the prior birth's `data_dir` (`rdm.node_admin.node.create.via-node-recovery`). Each step is recorded on the node record. The new birth boots, joins `mesh-quj7g8-1` and enters `Ready` ([`node.recovery` — Steps](../architecture/lifecycles/node-recovery.md#steps), [`node.recovery` — State transitions](../architecture/lifecycles/node-recovery.md#state-transitions)):
 
 ```json
-{"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-node-recovery","attributes":{"attempt":"1","build_id":"v9vwapsqgpsg","disposition":"created","incarnation_id":"0t7njf6wzf0q","mesh":"mesh-quj7g8-1","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t","outcome":"complete: attempt 1","submitter":"mesh-quj7g8-1.admin.1","verdict":"exited"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-recovery","attributes":{"attempt":"1","build_id":"v9vwapsqgpsg","executor":"mesh-quj7g8-1.admin.1","incarnation_id":"0t7njf6wzf0q","mesh":"mesh-quj7g8-1","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t","open_attempt":"opened-here","outcome":"admitted","route":"node-recovery"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.build.update.via-reconcile","attributes":{"attempt":"1","build_id":"bid_v9vw-apsq-gpsg","executor":"mesh-quj7g8-1.admin.1","operations":"node.delete:mesh-quj7g8-1.broker.3,node.create:mesh-quj7g8-1.broker.3","outcome":"converged","reason":"recovery"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.delete.via-build","attributes":{"attempt":"1","build_id":"bid_v9vw-apsq-gpsg","incarnation_id":"0t7njf6wzf0q","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.create.via-build","attributes":{"attempt":"1","build_id":"bid_v9vw-apsq-gpsg","incarnation_id":"0t7njf6wzf0q","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t"}}
+{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-node-recovery","attributes":{"incarnation_id":"0t7njf6wzf0q","mesh":"mesh-quj7g8-1","node_path":"mesh-quj7g8-1.broker","node_name":"3","node_id":"nrh2bq4bs63t","outcome":"complete","route":"node-recovery","submitter":"n6mkmxhqp7s4","verdict":"exited"}}
+{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-on-node-investigated","attributes":{"incarnation_id":"0t7njf6wzf0q","mesh":"mesh-quj7g8-1","next":"recreate","node_path":"mesh-quj7g8-1.broker","node_name":"3","node_id":"nrh2bq4bs63t","verdict":"exited"}}
+{"service":"rshape-node-admin","name":"rdm.node_admin.node.delete.via-node-recovery","attributes":{"incarnation_id":"0t7njf6wzf0q","node_path":"mesh-quj7g8-1.broker","node_name":"3","node_id":"nrh2bq4bs63t"}}
+{"service":"rshape-node-admin","name":"rdm.node_admin.node.create.via-node-recovery","attributes":{"incarnation_id":"0t7njf6wzf0q","node_path":"mesh-quj7g8-1.broker","node_name":"3","node_id":"nrh2bq4bs63t"}}
 {"service":"rshape-broker","name":"rdm.mesh.node.create.via-boot","attributes":{"incarnation_id":"90jswd6qnan2","type":"broker","node":"mesh-quj7g8-1.broker.3","node_id":"e7gafyzpt3dd"}}
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-join","attributes":{"admitted_as":"mesh-quj7g8-1.broker.3","incarnation_id":"90jswd6qnan2","node":"mesh-quj7g8-1.broker.3","node_id":"e7gafyzpt3dd","outcome":"installed","served_by":"mesh-quj7g8-1.admin.1"}}
 {"service":"rshape-broker","name":"rdm.mesh.node.update.via-ready","attributes":{"fabric_id":"bt828feh1cc6","incarnation_id":"90jswd6qnan2","type":"broker","mesh_id":"6jxatzq1vv58","node":"mesh-quj7g8-1.broker.3","node_id":"e7gafyzpt3dd"}}
 ```
+
+A lost mesh-primary is investigated and recovered the same way by the successor its election names, as any member of its mesh, once the successor has published its mesh's aggregate on the backbone naming itself mesh-primary (`rdm.mesh.backbone.update.via-primary-aggregate`). The fabric-primary investigates and recovers it only when that mesh's aggregate stays unheard past the staleness floor, so no successor took the role.
 
 ```mermaid
 sequenceDiagram
@@ -276,11 +219,10 @@ sequenceDiagram
 
     A1->>A1: rdm.mesh.topology.update.via-member-stale (silent_ms="30053", staleness_ms="30000")
     A1->>A1: rdm.node_admin.node.resolve.via-provider-inspection (verdict="exited")
-    A1->>A1: rdm.node_admin.build.update.via-node-recovery (verdict="exited", disposition="created")
-    A1->>A1: rdm.node_admin.build.update.via-recovery (outcome="admitted", route="node-recovery")
-    A1->>A1: rdm.node_admin.build.update.via-reconcile (operations="node.delete:...,node.create:...", reason="recovery")
-    A1->>B3_old: rdm.node_admin.node.delete.via-build (node_id="nrh2bq4bs63t")
-    A1->>B3_new: rdm.node_admin.node.create.via-build (node="mesh-quj7g8-1.broker.3")
+    A1->>A1: rdm.node_admin.node.update.via-node-recovery (verdict="exited", route="node-recovery")
+    A1->>A1: rdm.node_admin.node.update.via-on-node-investigated (verdict="exited", next="recreate")
+    A1->>B3_old: rdm.node_admin.node.delete.via-node-recovery (node_id="nrh2bq4bs63t")
+    A1->>B3_new: rdm.node_admin.node.create.via-node-recovery (node_path="mesh-quj7g8-1.broker", node_name="3")
     B3_new->>B3_new: rdm.mesh.node.create.via-boot (node_id="e7gafyzpt3dd", incarnation_id="90jswd6qnan2")
     B3_new->>A1: rdm.node_admin.node.update.via-join (node_id="e7gafyzpt3dd", outcome="installed")
     B3_new->>B3_new: rdm.mesh.node.update.via-ready (node_id="e7gafyzpt3dd")

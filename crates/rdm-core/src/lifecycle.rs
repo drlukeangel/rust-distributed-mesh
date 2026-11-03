@@ -50,6 +50,15 @@ pub struct LifecycleOp {
     pub tracestate: Option<String>,
 }
 
+impl LifecycleOp {
+    /// The `build_id` of an operation that belongs to no Build: a node command or a repair, the
+    /// primary's own work (Q342). The frames that carry it stay byte-identical (D44).
+    pub const NO_BUILD: &'static str = "";
+    /// The `attempt` of an operation that belongs to no Build: the field keeps its position with this
+    /// constant (D44; removal debt D17 removes it with a gossip change of its own).
+    pub const NO_ATTEMPT: u32 = 0;
+}
+
 impl PartialEq for LifecycleOp {
     fn eq(&self, other: &Self) -> bool {
         let Self { build_id, attempt, operation, node_id, incarnation, name, r#type, mesh, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;

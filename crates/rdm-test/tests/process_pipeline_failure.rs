@@ -81,7 +81,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
             timeouts: Timeouts { bind: Duration::from_secs(10), ..Timeouts::default() },
         };
         let err = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_err();
         assert_eq!(err.step, "WaitForBind");

@@ -50,14 +50,14 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
             timeouts: Timeouts::default(),
         };
         let node: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id, attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
         let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
         let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
 
         let delete_build = publish_build(&builds, add_node()).await; // the Build names the path: a node's meta is Ephemeral
         pipeline
-            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: delete_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
+            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: Some(delete_build.clone()), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
             .await
             .unwrap_or_else(|e| panic!("delete: {e}"));
 
@@ -141,7 +141,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         release.meshes.get_mut("mesh1").unwrap().set_spec(released).unwrap();
         let again_build = publish_build(&builds, release).await;
         pipeline
-            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(again.node).node_id), build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), unreached: false })
+            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(again.node).node_id), build_id: Some(again_build.clone()), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), unreached: false })
             .await
             .unwrap();
         assert!(matches!(provider.inspect(&again.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the delete ended the runtime");

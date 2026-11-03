@@ -77,13 +77,13 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
             timeouts: Timeouts::default(),
         };
         let first = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: publish_build(&builds, add_node()).await, attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(publish_build(&builds, add_node()).await), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
 
         let leave_build = publish_build(&builds, add_node()).await;
         let terminal = pipeline
-            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: leave_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
+            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: Some(leave_build.clone()), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
             .await
             .unwrap_or_else(|e| panic!("the member's node.delete: {e}"));
         assert!(matches!(provider.inspect(&first.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the member's runtime is proven exited");

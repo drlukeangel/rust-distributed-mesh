@@ -433,7 +433,7 @@ mod tests {
         );
         let m2_admin_id = view_with_m2_primary.nodes.last().unwrap().node_id.clone();
         let m2_admin_alloc = Allocation { predecessor: None,
-            build_id: opened.build_id.clone(),
+            build_id: Some(opened.build_id.clone()),
             operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()),
             incarnation: IncarnationId::mint(),
             deployment_id: crate::model::DeploymentId::mint(),
@@ -457,7 +457,7 @@ mod tests {
         );
         let m2_rpc_id = NodeId::mint();
         let m2_rpc_alloc = Allocation { predecessor: None,
-            build_id: opened.build_id.clone(),
+            build_id: Some(opened.build_id.clone()),
             operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.node", "1").unwrap()),
             incarnation: IncarnationId::mint(),
             deployment_id: crate::model::DeploymentId::mint(),
@@ -617,6 +617,7 @@ mod tests {
                 commands: Arc::new(crate::node_commands::CommandView::default()),
                 own: Arc::new(OnceLock::new()),
                 mesh_deleter: Arc::new(OnceLock::new()),
+                primary_commands: Default::default(),
                 storage_changes: Default::default(), hold_next_reply: Arc::new( std::sync::atomic::AtomicBool::new(false)),
                 wake: Default::default(),
                 fabric_states: Default::default(),

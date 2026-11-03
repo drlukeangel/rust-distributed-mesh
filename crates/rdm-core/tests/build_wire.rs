@@ -26,10 +26,6 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
         // positions 0, 1, 2 and 4 are reserved (the count forms): `a_request_at_a_reserved_count_position_is_an_unknown_variant`; position 6 (the removed restart): `a_request_at_the_removed_restart_position_is_an_unknown_variant`
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { node: rdm_core::PathName::new("m.node", "1").unwrap() }) }, "00 00 03 06 6d 2e 6e 6f 64 65 01 31"),
         (
-            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }) },
-            "00 00 0a 0a 6d657368312e6e6f64650131 0c 303132333435363738396162 0c 79727a34396a333033796834",
-        ),
-        (
             BuildRequest::Create {
                 submit: BuildSubmit::Change(BuildChange::Steps {
                     steps: vec![
@@ -386,15 +382,27 @@ fn a_request_at_the_removed_change_position_is_an_unknown_variant() {
 
 /// CONTRACT (Q183, Luke 2026-10-26: node.restart is removed; callers run node.stop then node.start):
 /// a request a caller of the removed restart sends (change position 6, its node after it) decodes as
-/// `UnknownVariant`, never a change, and so does the bare position; the changes after it keep their
-/// positions (`DeleteConnections` = 07, `Stop` = 08, `Start` = 09).
+/// `UnknownVariant`, never a change, and so does the bare position.
 #[test]
 fn a_request_at_the_removed_restart_position_is_an_unknown_variant() {
     assert_eq!(Build::decode_request(&bytes("00 00 06 0a 6d657368312e6e6f6465 01 31")), Err(DecodeFailure::UnknownVariant), "a node.restart of mesh1.node.1");
     assert_eq!(Build::decode_request(&bytes("00 00 06")), Err(DecodeFailure::UnknownVariant), "the bare position too");
-    assert!(matches!(Build::decode_request(&bytes("00 00 07 0a 6d657368312e6e6f6465 01 31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteConnections { .. }) })), "DeleteConnections keeps position 7");
-    assert!(matches!(Build::decode_request(&bytes("00 00 08 0a 6d657368312e6e6f6465 01 31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Stop { .. }) })), "Stop keeps position 8");
-    assert!(matches!(Build::decode_request(&bytes("00 00 09 0a 6d657368312e6e6f6465 01 31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Start { .. }) })), "Start keeps position 9");
+}
+
+/// CONTRACT (Q342, build.md §1: node.stop, node.start and node.connection.delete are node commands of
+/// the primary above the node, and a node recovery and the terminate of a deleted birth heard again
+/// are the primary's own workflow, never a Build or part of one): a request a caller of a removed
+/// change sends (`DeleteConnections` = 07, `Stop` = 08, `Start` = 09, `Recover` = 0a, `Terminate` =
+/// 0d, each with its node after it) decodes as `UnknownVariant`, never a change, and so does the bare
+/// position; the changes after them keep their positions (`Steps` = 0b, `DeleteFabric` = 0c,
+/// `Reconcile` = 0f).
+#[test]
+fn a_request_at_a_removed_node_command_or_repair_position_is_an_unknown_variant() {
+    for position in ["07", "08", "09", "0a", "0d"] {
+        assert_eq!(Build::decode_request(&bytes(&format!("00 00 {position} 09 6d657368312e727063 01 31"))), Err(DecodeFailure::UnknownVariant), "position {position} with its node");
+        assert_eq!(Build::decode_request(&bytes(&format!("00 00 {position}"))), Err(DecodeFailure::UnknownVariant), "the bare position {position}");
+    }
+    assert!(matches!(Build::decode_request(&bytes("00 00 0c")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteFabric) })), "DeleteFabric keeps position 12");
 }
 
 /// CONTRACT (proposal executable-bindings-at-create.md §3.10(a): "the count forms `ReconcileFabric`,

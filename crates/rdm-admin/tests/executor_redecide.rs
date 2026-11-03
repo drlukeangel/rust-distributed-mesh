@@ -317,7 +317,7 @@ async fn accepted_build(builds: &MemoryBuildStateAdapter) -> BuildId {
 }
 
 fn request(build_id: &BuildId, attempt: u32, node: &PathName) -> CreateRequest {
-    CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node)), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt, node: node.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None }
+    CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node)), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt, node: node.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None }
 }
 
 /// Attempt 1 by `lost`, killed at `dies`.

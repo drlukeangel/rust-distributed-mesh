@@ -147,6 +147,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
         commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
         own: Arc::new(std::sync::OnceLock::new()),
         mesh_deleter: Arc::new(std::sync::OnceLock::new()),
+        primary_commands: Default::default(),
         storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
         fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),

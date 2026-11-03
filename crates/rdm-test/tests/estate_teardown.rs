@@ -53,10 +53,9 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
     }
     estate.enter(&Estate::path("mesh1.node-admin", "2")).await;
     let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.node-admin", "1")).await.expect("node.stop of mesh1.node-admin.1");
-    let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
-        estate.resume(&accepted.build_id, accepted.attempt).await;
-    }
+    // A stop is a node command, never a Build (Q342): its stream ends with the stop's own completion.
+    let frames = Estate::frames_of(&mut stop).await;
+    assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "the stop completes: {frames:?}");
     estate.kill_bootstrap();
     for pid in admin_pids { estate.kill_pid(pid.try_into().expect("OS pid fits u32")); }
     estate.restart_admin_with(&data_dir, &[]);

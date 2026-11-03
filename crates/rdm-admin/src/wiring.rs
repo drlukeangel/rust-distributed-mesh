@@ -63,8 +63,7 @@ pub trait DeclarationSeam: Send + Sync {
     async fn before_declaration(&self, node_id: &rdm_core::NodeId, location: Option<&rdm_core::PathName>, state: rdm_core::status::NodeState);
 }
 
-/// Asked by the reconcile loop before each of its passes (the drift check, `reconcile_drift`, and the
-/// fabric-primary's pick-up of active Builds): a testkit cut holds the drift pass there, so a birth a
+/// Asked by the reconcile loop before each of its passes (the fabric-primary's pick-up of active Builds): a testkit cut holds the drift pass there, so a birth a
 /// failed Build left surplus is not removed until the release (i146 Q39). The loop awaits a hold outside
 /// every lock and before the pass's turn of the admin's stop gate, inside the pass's
 /// `rdm.node_admin.build.update.via-drift-held` span, which names what held it and lasts as long as the

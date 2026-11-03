@@ -111,10 +111,9 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter_by_id(&late.node_id).await;
     let mut stop = estate.nodes_obj().await.stop(&incumbent_admin).await.expect("node.stop of incumbent_admin");
-    let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
-        estate.resume(&accepted.build_id, accepted.attempt).await;
-    }
+    // A stop is a node command, never a Build (Q342): its stream ends with the stop's own completion.
+    let frames = Estate::frames_of(&mut stop).await;
+    assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "the stop completes: {frames:?}");
     estate.kill_bootstrap();
     estate.until_node(&late_name, "the late admin fills the mesh and the fabric roles", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     let unknown = estate.carrier().await.build(&a).await;

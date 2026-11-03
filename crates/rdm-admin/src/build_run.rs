@@ -435,14 +435,8 @@ impl BuildStateAdapter for FramedBuilds {
     async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.committed_facts(build).await
     }
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
-        self.inner.exits_owed(build_id, mesh).await
     }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
@@ -543,14 +537,8 @@ impl BuildStateAdapter for LaneBuilds {
     async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.committed_facts(build).await
     }
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
-        self.inner.exits_owed(build_id, mesh).await
     }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
@@ -950,146 +938,6 @@ impl RunDoor {
     }
 }
 
-/// What a mesh-primary's own recovery of its member came to (R-BI7; node-recovery.md as R-BI7 moves
-/// it: "the mesh-primary opens the recovery attempt of the current Build itself: claim on its mesh's
-/// rows, then run; no call to the fabric-primary").
-#[derive(Debug)]
-pub enum Recovered {
-    /// The recovery was opened and claimed at this admin's door and ran here to `terminal`
-    /// (`Complete`, or `Failed` naming the step).
-    Ran {
-        /// The attempt the recovery is.
-        opened: crate::control_plane::Opened,
-        /// The attempt's terminal frame.
-        terminal: BuildReply,
-    },
-    /// The exited birth was recovered already, by this attempt: nothing was opened or run.
-    AlreadyApplied(crate::control_plane::Opened),
-}
-
-/// Why a mesh-primary's own recovery did not run to a terminal.
-#[derive(Debug)]
-pub enum RecoveryNotRun {
-    /// This admin's door refused the open, by name.
-    Refused(crate::control_plane::Refusal),
-    /// The attempt was opened and claimed, and its run was refused, by name.
-    RunRefused {
-        /// The attempt.
-        opened: crate::control_plane::Opened,
-        /// The refusal.
-        reply: BuildReply,
-    },
-    /// The attempt's run ended without its terminal.
-    Broke {
-        /// The attempt.
-        opened: crate::control_plane::Opened,
-        /// Why.
-        why: String,
-    },
-}
-
-/// The mesh-primary's own recovery of the exited birth `(node_id, incarnation)` at `path` (R-BI7;
-/// node-recovery.md as R-BI7 moves it: "the mesh-primary opens the recovery attempt of the current
-/// Build itself: claim on its mesh's rows, then run; no call to the fabric-primary"): opened and
-/// claimed at `control` (this admin's door) on the mesh's rows, planned from the lane's receipts
-/// (only what is left of node.delete, then node.create), run through `door` (this admin's
-/// executor) in the mesh's lane and followed to its terminal. Its verdict is the executor's receipt,
-/// on the fabric's Build journal on the store root, where the fabric-primary reads it; at the verdict
-/// this admin, which took the mesh's in-flight row for the attempt, releases it (R-BI7 caveat 3:
-/// "one attempt in flight per mesh"). An attempt with no verdict (its run refused or broken) keeps
-/// the mesh held, named in the error.
-pub async fn run_recovery(
-    control: &crate::control_plane::ControlPlane,
-    door: &RunDoor,
-    route: &'static str,
-    path: PathName,
-    node_id: crate::model::NodeId,
-    incarnation: crate::model::IncarnationId,
-) -> Result<Recovered, RecoveryNotRun> {
-    match control
-        .open_recovery(route, path, node_id, incarnation)
-        .await
-    {
-        Ok(
-            crate::control_plane::Recovery::Opened(o)
-            | crate::control_plane::Recovery::Reported { opened: o, .. },
-        ) => run_opened_recovery(control, door, o).await,
-        Ok(crate::control_plane::Recovery::AlreadyApplied(o)) => Ok(Recovered::AlreadyApplied(o)),
-        Err(r) => Err(RecoveryNotRun::Refused(r)),
-    }
-}
-
-/// The run of the recovery attempt `opened`, which `control` opened and claimed in its mesh's lane, or
-/// in the fabric lane for a hung mesh-primary ([`run_recovery`] after the open): planned from the
-/// lane's receipts, run through `door`, followed to its terminal, and the mesh's in-flight row
-/// released at the verdict.
-pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, door: &RunDoor, opened: crate::control_plane::Opened) -> Result<Recovered, RecoveryNotRun> {
-    let me = door.held_name().await;
-    let me_id = &door.exec.executor.node_id;
-    let lane = opened.mesh.as_deref();
-    let p = match control.builds.read_build(&opened.build_id).await {
-        Ok(p) => p.in_lane(lane),
-        Err(e) => return Err(RecoveryNotRun::Broke { why: format!("node_id={me_id}: Build {} could not be read to plan attempt {} of {}'s lane: {e}; the attempt holds its mesh", opened.build_id, opened.attempt, lane.unwrap_or("the fabric")), opened }),
-    };
-    // A drift attempt acts in its lane's mesh. A fabric-lane recovery is an unheard mesh-primary's, which
-    // the fabric-primary opens (node-recovery.md "Execution"; its mesh's elected primary runs it): it acts
-    // in the mesh of the birth its open names.
-    let mesh = match (&opened.mesh, p.attempt_actions.get(&opened.attempt)) {
-        (Some(mesh), _) => mesh.clone(),
-        (None, Some(crate::accepted::AttemptAction::Recover { mesh, .. })) => mesh.clone(),
-        (None, _) => return Err(RecoveryNotRun::Broke { why: format!("node_id={me_id}: attempt {} of {} is a fabric-lane attempt that names no recovered birth: a recovery runs in its mesh's drift lane, or in the fabric lane for a hung mesh-primary", opened.attempt, opened.build_id), opened }),
-    };
-    // Read the exact attempt's committed claim before executing or deciding its release.
-    let claim = match crate::build_state::committed_claim(&*control.builds, &opened.build_id, lane, opened.attempt).await {
-        Ok(Some(claim)) => claim,
-        Ok(None) => return Err(RecoveryNotRun::Broke { why: "the recovery attempt has no committed claim".into(), opened }),
-        Err(e) => return Err(RecoveryNotRun::Broke { why: format!("the recovery claim could not be read: {e}"), opened }),
-    };
-    if p.attempt != opened.attempt || p.executor.as_ref() != Some(&claim.executor) {
-        return Err(RecoveryNotRun::Broke { why: "the recovery no longer holds the opened attempt's exact claim".into(), opened });
-    }
-    let (Some(claimant), Some(claimed_mesh)) = (claim.claimant.clone(), claim.claimed_mesh.clone()) else {
-        return Err(RecoveryNotRun::Broke { why: "the recovery has no committed claimant or claimed mesh".into(), opened });
-    };
-    let observed = control.topology.read().await.clone();
-    let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed).operations, hand_off_to: None };
-    // An unheard mesh-primary's recovery the fabric-primary opened and claimed for its mesh's elected
-    // primary (`ControlPlane::open_recovery`, node-recovery.md "Execution") is run by that primary, on
-    // the fabric-primary's build.attempt.run: nothing of it runs here, and its terminal is that run's.
-    if claim.executor != door.exec.executor {
-        let terminal = BuildReply::HandedOff { build_id: opened.build_id.to_string(), attempt: opened.attempt, to: claim.executor.node_id.clone() };
-        return Ok(Recovered::Ran { opened, terminal });
-    }
-    let context = crate::build_claim::current_context();
-    let terminal = match door.attempt_run_in(lane, &opened.build_id, opened.attempt, &door.exec.executor, &context, &plan).await {
-        Attached::Refused(reply) => return Err(RecoveryNotRun::RunRefused { opened, reply }),
-        Attached::Ended { terminal, .. } => terminal,
-        Attached::Live { mut reader, .. } => loop {
-            match reader.next().await {
-                Some(t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. })) => break t,
-                Some(_) => continue,
-                None => return Err(RecoveryNotRun::Broke { why: format!("node_id={me_id}: the run of attempt {} of {} in mesh {mesh}'s lane ended without its terminal; the attempt holds mesh {mesh}", opened.attempt, opened.build_id), opened }),
-            }
-        },
-    };
-    if let BuildReply::Failed { operation, step, reason, .. } = &terminal {
-        if is_attempt_publication_failure(operation, step) {
-            return Err(RecoveryNotRun::Broke { why: format!("the recovery verdict was not published: {reason}; its claim stays held"), opened });
-        }
-    }
-    let row = crate::mesh_claims::InFlight { build_id: opened.build_id.clone(), lane: opened.mesh.clone(), attempt: opened.attempt, claimant };
-    if let Err(e) = control.claims.release_in_flight(&claimed_mesh, &row).await {
-        tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %opened.build_id.log(), lane = %mesh, attempt = opened.attempt, mesh = %mesh, node_path = %me.path, node_name = %me.name, error = %e)
-            .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
-    }
-    // A mesh's drift attempt ended on this admin: the reconcile loop runs its next pass on it
-    // (`Woken::Submitted`), so a drive refused for this mesh's in-flight row (R-BI7) claims again
-    // now, never on whatever event happens next (the returned birth's termination, held behind this
-    // recovery, waited forever in the soak at 9244b8cf8).
-    control.build_submitted.notify_waiters();
-    Ok(Recovered::Ran { opened, terminal })
-}
-
 /// The terminal frame an attempt's end is: `Complete`, `Failed` naming the step, or `HandedOff`.
 pub fn terminal_of(build_id: &BuildId, r: &Reconciled, failed: Option<(rdm_core::OperationId, String, String)>) -> BuildReply {
     match r {
@@ -1225,14 +1073,8 @@ mod tests {
         async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
             self.0.committed_facts(build).await
         }
-        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-            self.0.recovery_of(path, node_id, incarnation).await
-        }
         async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
             self.0.mesh_deleted_of(node_id, incarnation).await
-        }
-        async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
-            self.0.exits_owed(build_id, mesh).await
         }
         async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
             self.0.forget(id).await
@@ -1280,39 +1122,12 @@ mod tests {
         async fn committed_facts(&self, _build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
             panic!("the Build storage was read for a lookup")
         }
-        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-            self.0.recovery_of(path, node_id, incarnation).await
-        }
         async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
             self.0.mesh_deleted_of(node_id, incarnation).await
-        }
-        async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
-            self.0.exits_owed(build_id, mesh).await
         }
         async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
             self.0.forget(id).await
         }
-    }
-
-    /// CONTRACT (CLAUDE.md read rule: a lookup is a point read through an index; node-recovery.md
-    /// "A repeat submit answers AlreadyApplied"): the recovery dedup of an exited birth is read by
-    /// its key `(node_id, incarnation)` through every decorator of the Build state, never by
-    /// scanning the fact log.
-    /// Must NOT happen: a decorator answering the lookup by reading every fact.
-    #[tokio::test]
-    async fn a_recovery_lookup_through_the_framed_builds_is_a_point_read_by_the_exited_birth() {
-        let memory = Arc::new(MemoryBuildStateAdapter::new());
-        let (path, node_id, incarnation): (crate::model::PathName, _, _) = (rdm_core::PathName::new("mesh1.node", "1").unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
-        let deleted = rdm_core::LifecycleOp { mesh: "mesh1".into(), r#type: "node".into(), build_id: id().to_string(), attempt: 2, operation: rdm_core::OperationId::node("node.delete", &node_id), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
-        for (operation, step, output) in [("node.delete", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("node.delete", "Complete", None)] {
-            memory
-                .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: id(), attempt: 2, operation: rdm_core::OperationId::node(operation, &node_id), step: step.into(), outcome: StepOutcome::Complete, output, executor: None })
-                .await
-                .unwrap();
-        }
-        let framed = FramedBuilds::new(Arc::new(NoScan(memory)), Arc::new(AttemptRuns::default()));
-        assert_eq!(framed.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((id(), None, 2, rdm_core::OperationId::node("node.delete", &node_id))), "the exited birth's deleting workflow, by its key");
-        assert_eq!(framed.recovery_of(&path, &node_id, &crate::model::IncarnationId::mint()).await.unwrap(), None, "another birth of the node was not recovered");
     }
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
@@ -1476,112 +1291,6 @@ mod tests {
         }
     }
 
-    /// CONTRACT: docs/architecture/build.md:289 "the mesh-primary of the member's mesh opens the next attempt of B123 on its mesh's rows, claims and runs it itself (R-BI7); the Build stays completed, and the fabric-primary reads the attempt's verdict from the Build journal"
-    #[tokio::test]
-    async fn mesh_self_heal_attempt_runs_in_mesh_scope_while_build_stays_completed() {
-        use crate::accepted::AttemptAction;
-        use crate::build_state::AttemptReason;
-
-        let (door, memory) = door(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", second_birth()).await;
-        accepted(&memory).await;
-        memory
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: Some(first_birth().node_id),
-                mesh: None,
-                build_id: id(),
-                attempt: 1,
-                executor: first_birth(),
-            })
-            .await
-            .unwrap();
-        memory
-            .append_attempt_receipt(&BuildAttemptReceipt {
-                mesh: None,
-                build_id: id(),
-                attempt: 1,
-                outcome: AttemptOutcome::Converged,
-            })
-            .await
-            .unwrap();
-
-        let victim_path: crate::model::PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
-        let victim_id = crate::model::NodeId::mint();
-        let victim_inc = crate::model::IncarnationId::mint();
-
-        // Mesh-primary opens and claims attempt 1 of mesh2 on the completed Build.
-        memory
-            .open_attempt(&AttemptOpened {
-                mesh: Some("mesh2".into()),
-                build_id: id(),
-                attempt: 1,
-                reason: AttemptReason::Recovery,
-                action: Some(AttemptAction::Recover { r#type: "node".into(), mesh: "mesh2".into(),
-                    path: victim_path.clone(),
-                    node_id: victim_id,
-                    from_incarnation: victim_inc,
-                    backbone: false,
-                }),
-                opened_by: rdm_core::NodeId::parse("300000000000").unwrap(),
-                opened_at_ms: 100,
-                context: None,
-            })
-            .await
-            .unwrap();
-        memory
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh2".into(),
-                claimant: Some(second_birth().node_id),
-                mesh: Some("mesh2".into()),
-                build_id: id(),
-                attempt: 1,
-                executor: second_birth(),
-            })
-            .await
-            .unwrap();
-
-        let while_running = memory.read_build(&id()).await.unwrap();
-        assert_eq!(
-            while_running.state,
-             crate::build_state::BuildState::Complete,
-            "the Build stays completed while the mesh recovery attempt is running"
-        );
-        assert_eq!(while_running.completed_at, Some(1));
-        assert_eq!(
-            while_running.lanes.get("mesh2").map(|l| (l.state, l.attempt)),
-            Some((crate::build_state::BuildState::Running, 1))
-        );
-
-        let ctx = CallContext::default();
-        let Attached::Live {
-            disposition,
-            mut reader,
-            ..
-        } = door
-            .attempt_run_in(
-                Some("mesh2"),
-                &id(),
-                1,
-                &second_birth(),
-                &ctx,
-                &RunPlan::default(),
-            )
-            .await
-        else {
-            panic!("mesh2.node-admin.1 starts its claimed mesh recovery attempt");
-        };
-        assert_eq!(disposition, Disposition::Started);
-        let mut last = None;
-        while let Some(f) = reader.next().await {
-            last = Some(f);
-        }
-        assert!(matches!(last, Some(BuildReply::Complete { attempt: 1, .. })));
-
-        let after = memory.read_build(&id()).await.unwrap();
-        assert_eq!(after.state, crate::build_state::BuildState::Complete);
-        assert_eq!(
-            after.lanes.get("mesh2").map(|l| (l.state, l.attempt)),
-            Some((crate::build_state::BuildState::Complete, 1))
-        );
-    }
 }
 
 
@@ -1618,14 +1327,6 @@ pub(crate) fn reported_receipt_matches(
         && receipt.operation == *operation && receipt.step == step
 }
 
-/// A report cannot migrate to a later claim, another birth, or a different committed claimant scope.
-pub(crate) fn same_running_claim(current: &crate::build_state::BuildProjection, admitted: &crate::build_state::BuildProjection) -> bool {
-    current.state == crate::build_state::BuildState::Running && admitted.state == crate::build_state::BuildState::Running
-        && current.build_id == admitted.build_id && current.attempt == admitted.attempt
-        && current.executor == admitted.executor && current.claimant == admitted.claimant
-        && current.attempt_claimed_meshes.get(&current.attempt) == admitted.attempt_claimed_meshes.get(&admitted.attempt)
-}
-
 #[cfg(test)]
 mod report_scope_tests {
     use super::*;
@@ -1648,29 +1349,6 @@ mod report_scope_tests {
         assert_eq!(log.last_failed_step(), Some((second, "DeployRuntime".into(), "failed".into())));
     }
 
-
-    #[test]
-    fn drift_reports_require_the_same_still_running_claim() {
-        use crate::build_state::{BuildAccepted, BuildFact, BuildState, fold};
-        let id = BuildId::mint();
-        let accepted = BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric", "mesh", rdm_core::MeshId::mint()), submitted_change: None, submitted_at_ms: 0 };
-        let mut admitted = fold(&[BuildFact::Accepted(accepted)]).remove(&id).unwrap();
-        admitted.state = BuildState::Running;
-        admitted.attempt = 3;
-        admitted.executor = Some(rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() });
-        admitted.claimant = Some(rdm_core::NodeId::mint());
-        admitted.attempt_claimed_meshes.insert(3, "mesh".into());
-        assert!(same_running_claim(&admitted, &admitted));
-        for state in [BuildState::Pending, BuildState::Complete, BuildState::Failed] {
-            let mut current = admitted.clone(); current.state = state;
-            assert!(!same_running_claim(&current, &admitted));
-        }
-        let mut current = admitted.clone(); current.executor.as_mut().unwrap().incarnation = rdm_core::IncarnationId::mint(); assert!(!same_running_claim(&current, &admitted));
-        let mut current = admitted.clone(); current.executor.as_mut().unwrap().node_id = rdm_core::NodeId::mint(); assert!(!same_running_claim(&current, &admitted));
-        let mut current = admitted.clone(); current.claimant = Some(rdm_core::NodeId::mint()); assert!(!same_running_claim(&current, &admitted));
-        let mut current = admitted.clone(); current.attempt_claimed_meshes.insert(3, "other".into()); assert!(!same_running_claim(&current, &admitted));
-        let mut current = admitted.clone(); current.attempt += 1; assert!(!same_running_claim(&current, &admitted));
-    }
 
 
     /// A receipt for another birth, step or execution must never become evidence for this run.

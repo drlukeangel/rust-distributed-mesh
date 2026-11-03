@@ -64,7 +64,6 @@ pub mod fetch_build;
 #[cfg(feature = "file-backend")]
 pub mod build_state;
 pub mod deployment;
-pub mod drift;
 pub mod election;
 pub mod executor;
 pub mod path_investigation;

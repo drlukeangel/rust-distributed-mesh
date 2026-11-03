@@ -63,7 +63,7 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
 
     estate.stop().await;
     let spans = estate.spans();
-    let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+    let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
         .filter(|sp| s(&sp["attributes"]["node_id"]) == victim.1.as_str())
         .collect();

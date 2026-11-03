@@ -26,7 +26,7 @@ neither scope touches them: a node that has had its connections deleted is still
 | Process | Running; no gossip cut, Node RPC pool cut, exit or identity release is implied |
 | Never closed | Control streams stay usable, and the call never closes its own reply path |
 | Drop records | Each closed connection's drop is written under the node's current name |
-| Wire | The typed-object row for `node.connection.get { node }` / `node.connection.delete` in the [envelope](../node-rpc-envelope.md#typed-object-contract). Two hops. The caller to the node's mesh-primary, direct or forwarded: [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm), request `DeleteConnections`, reply `ConnectionsDeleted`, or `RejectedConnectionScope` for a scope that names nothing the node can cut. The mesh-primary to the exact node: NodeCommand 0x22, server-streaming and never forwarded, replies `CommandAccepted`, `ConnectionsDeleting` (`All` only), then `ConnectionsDeleted`; a refusal is one frame. When the mesh-primary is its own subject, the frames and the records are the same |
+| Wire | The typed-object row for `node.connection.get { node }` / `node.connection.delete` in the [envelope](../node-rpc-envelope.md#typed-object-contract). Two hops. The caller to the node's mesh-primary, directly: NodeCommand 0x22 `DeleteConnections { node_id, incarnation, scope }` at the primary's door, refused by name with `Rejected { reason, detail }` (`node-not-live`, `last-admin`, `rejected-connection-scope` for a scope that names nothing the node can cut). The mesh-primary to the exact node: NodeCommand 0x22, server-streaming and never forwarded, replies `CommandAccepted`, `ConnectionsDeleting` (`All` only), then `ConnectionsDeleted`; a refusal is one frame. When the mesh-primary is its own subject, the frames and the records are the same |
 | Primary | A target that is a primary first runs node.primary.update (and node.fabric-primary.update when it is the fabric-primary), commanded from above; `All` runs once node.primary.updated is answered, under the new primary (step 0) |
 
 ## Command and completion messages
@@ -58,7 +58,7 @@ not complete this stream or replace its receipt.
 
 0. For `All` only: if the target is the fabric-primary or a mesh-primary, it first runs
    [node.primary.update](node-primary-update.md) (and node.fabric-primary.update when it is the
-   fabric-primary), commanded from above; the Build continues once node.primary.updated is answered, under the new
+   fabric-primary), commanded from above; the connections delete continues once node.primary.updated is answered, under the new
    primary. The fabric-primary's last admin has its connections deleted only inside a
    [mesh.delete](mesh-delete.md), after its node.fabric-primary.update step.
 1. Resolve the exact `(node.id, incarnation)` and call `node.connection.delete` with its scope.
@@ -84,7 +84,7 @@ not complete this stream or replace its receipt.
    connections still open. The node stays connections-deleting. A new `node.connection.delete`
    attempt, or [node.stop](node-stop.md), leaves that state; a stop may hard-cut, and its receipt
    keeps the deadline evidence.
-6. Record that exact step receipt. Do not infer stop, stopped, exit or node.deleted.
+6. Record that exact step on the node record. Do not infer stop, stopped, exit or node.deleted.
 
 While the node is connections-deleting the runtime refuses every new call except Status 0x1B, PrimaryUpdate 0x21 and NodeCommand 0x22 with typed
 `ConnectionsDeleting` ([Node RPC §35](../node-rpc.md#35-connections-deleting)). Control streams stay usable.

@@ -259,8 +259,6 @@ mod connections_writer;
 mod container_proof;
 mod container_unsupported;
 mod current_build;
-mod declared_types;
-mod drift_convergence;
 #[cfg(feature = "file-backend")]
 mod fabric_handover;
 mod fabric_delete_admission;
@@ -289,7 +287,6 @@ mod read_stream;
 mod readiness_gates;
 mod reconcile_variants;
 mod receipt_refusal;
-mod recovery_admission;
 mod start_join_order;
 mod pipeline_moves_no_primary;
 mod pipeline_step_io;

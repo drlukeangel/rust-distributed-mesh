@@ -59,8 +59,8 @@ terminate of an exited runtime removes what it left (a container and the address
 kept beside the data dir first; a process leaves nothing), and a runtime already removed terminates as
 done, so a re-run of the step succeeds (Q145). The one exception is fabric recovery's backbone arm, which terminates nothing in a mesh it is outside of ([fabric recovery](fabric-recovery.md) step 3). An unreachable provider leaves delete incomplete. A crashed node is
 [node investigation](node-investigation.md)'s verdict; lack of a reply never licenses deletion. The runtime-exit responsibility
-is owned here and is composed by [node recovery](node-recovery.md), the mesh-primary's
-drift reconciliation.
+is owned here and is composed by [node recovery](node-recovery.md), the primary's own workflow,
+never a Build.
 
 ## Mermaid sequence diagram
 

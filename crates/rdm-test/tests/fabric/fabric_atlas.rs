@@ -116,7 +116,7 @@ async fn a_stop_of_another_meshs_node_sent_the_moment_its_start_completes_is_adm
     let mut refused_stops = Vec::new();
     for before in &targets {
         let node = path_of(before);
-        let (_, _) = estate.stop_then_start(&node).await;
+        estate.stop_then_start(&node).await;
         // No wait: the second stop goes out on the start's Complete.
         match estate.nodes_obj().await.stop(&node).await {
             Ok(mut stop) => {

@@ -126,14 +126,8 @@ impl BuildStateAdapter for Pausing<'_> {
     async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
         self.inner.committed_facts(build).await
     }
-    async fn recovery_of(&self, path: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
-        self.inner.exits_owed(build_id, mesh).await
     }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
@@ -162,7 +156,7 @@ async fn killed_then_rerun(kill_at: KillAt) {
     let sink = Published::default();
     let reached = Arc::new(Notify::new());
     let process = Arc::new(ProcessDeploymentProvider::new());
-    let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+    let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
     // Attempt 1 dies at the kill point.
     let first = Killable {
@@ -274,7 +268,7 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
         let sink = Published::default();
         let reached = Arc::new(Notify::new());
         let process = Arc::new(ProcessDeploymentProvider::new());
-        let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
         // Attempt 1 dies after the join was admitted (WaitForBind's receipt is written) and before the
         // WaitForMeshJoin receipt.

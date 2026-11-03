@@ -125,7 +125,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let r = {
             use tracing::Instrument;
-            let req = DeleteRequest { operation: rdm_core::OperationId::node(if workflow == NodeCommand::Stop { "node.stop" } else { "node.connection.delete" }, &target_id), build_id: build_id.clone(), attempt: 1, node: target, handle, unreached: false };
+            let req = DeleteRequest { operation: rdm_core::OperationId::node(if workflow == NodeCommand::Stop { "node.stop" } else { "node.connection.delete" }, &target_id), build_id: Some(build_id.clone()), attempt: 1, node: target, handle, unreached: false };
             match workflow {
                 NodeCommand::Stop => pipeline.stop(&req).instrument(root).await,
                 _ => pipeline.delete_connections(&req).instrument(root).await,

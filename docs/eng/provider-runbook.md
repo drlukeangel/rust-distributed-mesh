@@ -62,7 +62,8 @@ a member recovered over a fresh dir still lists the loss it was recovered over.
 **Jaeger.**
 - `rdm.node_admin.node.update.via-data-dir-lost`, with `node`, `node_id`, `incarnation_id`, `path`
   and `since`.
-- Then the recovery submit, `rdm.node_admin.build.update.via-node-recovery`.
+- Then the primary's own recovery, `rdm.node_admin.node.update.via-node-recovery`, recorded on the node
+  record (never a Build).
 - The new birth starts with `inherited = false` (`RDM_INHERITED_DATA_DIR=0` in its environment).
 
 **What RDM does.** It waits `RDM_DATA_DIR_GONE_FLOORS` floors, to ride out a remount, then recovers the

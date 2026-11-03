@@ -150,14 +150,8 @@ impl BuildStateAdapter for WireBuilds {
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.0.forget(id).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.0.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.0.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
-        self.0.exits_owed(build_id, mesh).await
     }
 }
 
@@ -434,7 +428,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
             move |n: Node| async move {
                 let node_id = n.node_id.clone();
                 calls.lock().unwrap().push((attempt, node_id.to_string()));
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: (*build_id).clone(), attempt, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: Some((*build_id).clone()), attempt, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-delete-resume", build_id = %build_id.log(), operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.recipe_step, operation_occurrence = ?outer.occurrence);
@@ -585,7 +579,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
                 let node_id = n.node_id.clone();
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: Some((*build_id).clone()), attempt: 1, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         })
         .await;
@@ -677,7 +671,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
                 let node_id = n.node_id.clone();
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: Some((*build_id).clone()), attempt: 1, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         })
         .await
@@ -695,7 +689,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
         let completions = steps.iter().filter(|r| r.step == STEP_MESH_DELETED).count();
         let indexed = builds.mesh_deleted_of(&last_record.node_id, last_record.incarnation_id.as_ref().unwrap()).await.unwrap();
         // The final primary's own node.delete, a separate Build: the ordinary workflow, live target.
-        let req = rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(last_record).node_id), build_id: delete_build.clone(), attempt: 1, node: last_record.clone(), handle: handles[&final_admin.node_id].clone(), unreached: false };
+        let req = rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(last_record).node_id), build_id: Some(delete_build.clone()), attempt: 1, node: last_record.clone(), handle: handles[&final_admin.node_id].clone(), unreached: false };
         let mut fp_template = template.clone();
         fp_template.launcher = rdm_core::launch::Launcher { mesh: fp.mesh.clone(), name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() };
         let fp_pipeline = DeploymentPipeline { template: &fp_template, ..pipeline };
@@ -904,7 +898,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             move |n: Node| async move {
                 let node_id = n.node_id.clone();
                 calls.lock().unwrap().push((attempt, node_id.to_string()));
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: (*build_id).clone(), attempt, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: Some((*build_id).clone()), attempt, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-deleted-amended", build_id = %build_id.log(), operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.recipe_step, operation_occurrence = ?outer.occurrence);
@@ -956,7 +950,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         let mut fp_template = template.clone();
         fp_template.launcher = rdm_core::launch::Launcher { mesh: "mesh1".into(), name: PathName::new("mesh1.node-admin", "1").unwrap(), node_id: fp_birth.node_id.clone(), incarnation: fp_birth.incarnation.clone() };
         let fp_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &fp_template, timeouts: Timeouts::default() };
-        let terminal = fp_pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(last).node_id), build_id: delete_build, attempt: 1, node: last, handle: handles[&other_admin.node_id].clone(), unreached: false }).await.expect("the amended primary's node.delete proves its exit");
+        let terminal = fp_pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(last).node_id), build_id: Some(delete_build), attempt: 1, node: last, handle: handles[&other_admin.node_id].clone(), unreached: false }).await.expect("the amended primary's node.delete proves its exit");
         let steps = builds.read_build(&build_id).await.unwrap().steps;
         let mesh_left = completion_of(&steps, &outer).expect("a completion is recorded").map_err(|e| e.to_string()).and_then(|c| mesh_left_manifest(&c, &terminal));
         (applied, replayed, second_amendment, admitted, verdict, stale, (owner_resume(&steps, &outer), mesh_left), steps, trace_id)
@@ -1064,7 +1058,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
             async move {
                 let node_id = n.node_id.clone();
                 calls.lock().unwrap().push((1, node_id.to_string()));
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: Some((*build_id).clone()), attempt: 1, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let shutdown_2 = |n: Node| {
@@ -1072,7 +1066,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
             async move {
                 let node_id = n.node_id.clone();
                 calls.lock().unwrap().push((2, node_id.to_string()));
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: (*build_id).clone(), attempt: 2, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: Some((*build_id).clone()), attempt: 2, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-deleted-finished-under-lost", build_id = %build_id.log(), operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.recipe_step, operation_occurrence = ?outer.occurrence);
@@ -1877,14 +1871,8 @@ impl BuildStateAdapter for CutBuilds<'_> {
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(id).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.recovery_of(path, node_id, incarnation).await
-    }
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
-        self.inner.exits_owed(build_id, mesh).await
     }
 }
 
@@ -1971,7 +1959,7 @@ fn a_delete_cut_after_its_terminate_runtime_receipt_is_finished_by_the_resumed_a
             async move {
                 let node_id = n.node_id.clone();
                 calls.lock().unwrap().push((1, node_id.to_string()));
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: Some((*build_id).clone()), attempt: 1, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let shutdown_2 = |n: Node| {
@@ -1979,7 +1967,7 @@ fn a_delete_cut_after_its_terminate_runtime_receipt_is_finished_by_the_resumed_a
             async move {
                 let node_id = n.node_id.clone();
                 calls.lock().unwrap().push((2, node_id.to_string()));
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: (*build_id).clone(), attempt: 2, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: Some((*build_id).clone()), attempt: 2, node: n, handle: handles[&node_id].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-deleted-cut-delete", build_id = %build_id.log(), operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.recipe_step, operation_occurrence = ?outer.occurrence);
@@ -2268,7 +2256,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                 calls.lock().unwrap().push((1, node_id.to_string()));
                 pipeline
                     .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id),
-                        build_id: (*build_id).clone(),
+                        build_id: Some((*build_id).clone()),
                         attempt: 1,
                         node: n,
                         handle: handles[&node_id].clone(),
@@ -2367,7 +2355,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                 calls.lock().unwrap().push((2, node_id.to_string()));
                 pipeline
                     .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id),
-                        build_id: (*build_id).clone(),
+                        build_id: Some((*build_id).clone()),
                         attempt: 2,
                         node: n,
                         handle: handles[&node_id].clone(),
@@ -2410,7 +2398,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let fp_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &fp_template, timeouts: Timeouts::default() };
         let terminal = fp_pipeline
             .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(last).node_id),
-                build_id: delete_build,
+                build_id: Some(delete_build),
                 attempt: 1,
                 node: last,
                 handle: handles[&other_admin.node_id].clone(),
@@ -2671,7 +2659,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
             || async {
                 pipeline
                     .delete_explicit(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(lost_for_delete).node_id),
-                        build_id: build_id.clone(),
+                        build_id: Some(build_id.clone()),
                         attempt: 2,
                         node: lost_for_delete,
                         handle: handles[&final_admin.node_id].clone(),
@@ -2701,7 +2689,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
                 let node_id = n.node_id.clone();
                 pipeline
                     .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id),
-                        build_id: (*build_id).clone(),
+                        build_id: Some((*build_id).clone()),
                         attempt: 2,
                         node: n,
                         handle: handles[&node_id].clone(),
@@ -2746,7 +2734,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         });
         let terminal = pipeline
             .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(Node { stopped: true, ..survivor_node.clone() }).node_id),
-                build_id: delete_build.clone(),
+                build_id: Some(delete_build.clone()),
                 attempt: 1,
                 node: Node { stopped: true, ..survivor_node.clone() },
                 handle: handles[&other_admin.node_id].clone(),

@@ -342,7 +342,7 @@ async fn container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_pe
     assert_eq!(s(&fabric_after["build_id"]), build_id, "the current build_id is the Build it was: {fabric_after}");
     estate.stop().await;
     let spans = estate.spans();
-    let recoveries: Vec<Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+    let recoveries: Vec<Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
         .filter(|sp| start(sp) >= cut_at && isolated_names.iter().any(|n| at_location(sp, n)))
         .map(|sp| span_row(sp, &["node_path", "node_name", "node_id", "verdict", "submitter", "outcome"]))
@@ -354,7 +354,7 @@ async fn container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_pe
     // commanded back through node.mesh.join, never re-created: a fabric recovery whose verdict is
     // `reached` submits no re-create in its run.
     for run in named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| attr(sp, "verdict") == "reached") {
-        let recreated: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["trace_id"] == run["trace_id"]).collect();
+        let recreated: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["trace_id"] == run["trace_id"]).collect();
         assert!(recreated.is_empty(), "fabric recovery reached the lost fabric-primary and re-created it anyway: {run} {recreated:#?}");
     }
     let renewed: Vec<PathName> = converged.0.iter().filter(|(p, id)| pre_ids.get(*p) != Some(*id)).map(|(p, _)| p.clone()).collect();
@@ -540,7 +540,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         let spans = estate.spans();
         let after_cut = |name: &str| named(&spans, name).into_iter().filter(|sp| start(sp) >= cut_at).collect::<Vec<&Value>>();
         let inspections: Vec<&Value> = after_cut("rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(|sp| attr(sp, "node_id") == target_id && attr(sp, "caller").is_empty()).collect();
-        let submits: Vec<&Value> = after_cut("rdm.node_admin.build.update.via-node-recovery");
+        let submits: Vec<&Value> = after_cut("rdm.node_admin.node.update.via-node-recovery");
         let deletes: Vec<&Value> = after_cut("rdm.node_admin.node.delete.via-build");
         let creates: Vec<&Value> = after_cut("rdm.node_admin.node.create.via-build");
         let deleted_applied: Vec<&Value> = after_cut("rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| attr(sp, "node_id") == target_id).collect();
@@ -1543,7 +1543,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     // Ready in the view is the new birth's own digest; the recovery is done when its mesh-primary's
     // submit followed the recovery's operations to the attempt's terminal frame.
     wait_for("the node-admin's recovery is followed to its terminal", Duration::from_secs(60), || async {
-        named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().any(|sp| at_location(sp, &admin) && attr(sp, "outcome").starts_with("complete: attempt")).then_some(())
+        named(&estate.spans(), "rdm.node_admin.node.update.via-node-recovery").into_iter().any(|sp| at_location(sp, &admin) && attr(sp, "outcome").starts_with("complete: attempt")).then_some(())
     })
     .await;
     estate.settled_views(&[("mesh1", 3, 3)]).await;
@@ -1679,7 +1679,7 @@ async fn container_node_silenced_past_the_floor_is_terminated_and_re_created_at_
     let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &name) && attr(sp, "step") == "TerminateRuntime" && attr(sp, "outcome") == "complete").collect();
     assert_eq!(terminated.len(), 1, "{name:?}'s exact container is terminated once: {terminated:#?}");
     let after_ns = start(terminated[0]).saturating_sub(cut_at);
-    let recovery: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| at_location(sp, &name) && attr(sp, "node_id") == id && attr(sp, "outcome").starts_with("complete")).collect();
+    let recovery: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| at_location(sp, &name) && attr(sp, "node_id") == id && attr(sp, "outcome").starts_with("complete")).collect();
     assert_eq!(recovery.len(), 1, "one recovery of the silenced birth: {recovery:#?}");
     assert_eq!(attr(recovery[0], "verdict"), "running", "node investigation read the silenced container running: {:#}", recovery[0]["attributes"]);
     assert!(terminated[0]["trace_id"] == recovery[0]["trace_id"] && attr(terminated[0], "attempt") == attr(recovery[0], "attempt"), "the terminate is a step of the recovery's attempt: {:#} {:#}", terminated[0]["attributes"], recovery[0]["attributes"]);

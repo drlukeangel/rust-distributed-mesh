@@ -62,7 +62,7 @@ Allowed customer seams are:
 
 RDM retains Build compilation/reconciliation and attempts, the leadership election,
 executor selection, generic lifecycle eligibility/commit/receipts, readiness roots, recovery,
-drift, exact-runtime adoption/a sign the node is dead, provider-domain execution and connection mechanics.
+exact-runtime adoption/a sign the node is dead, provider-domain execution and connection mechanics.
 Customer seams supply policy or facts; they MUST NOT substitute a second implementation of
 those algorithms. Hooks are registered before the registry is built, idempotent and bounded, and report
 failure through the lifecycle receipt path. A hook requesting exact synchronous execution
@@ -99,7 +99,7 @@ Rafka imports these RDM packages at one exact revision:
 | `rdm-core` | the generic Mesh entity: exact-node identity, process incarnation, topology, endpoint freshness, RuntimeFact and connection projections |
 | `rdm-transport` | the gossip substrate on Iroh: the topology digest view, versioned cross-mesh topology snapshots and deltas, and the gossip frame codec |
 | `rdm-transport` | the Node RPC runtime over Iroh: exact-target client and server, pool, commit cut and admission |
-| `rdm-admin` | generic Fabric/Mesh/Node control: Build/Reconciler and drift trigger, the leadership election, the four storage interfaces, fabric, mesh, nodes and connections, on the fabric's shared store root, and the Build and events stores (`builds.storage`, `BuildStateAdapter`; `events.storage`, `EventsStorage`; on the fabric's shared store root per R-BI6) with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
+| `rdm-admin` | generic Fabric/Mesh/Node control: Build/Reconciler, the leadership election, the four storage interfaces, fabric, mesh, nodes and connections, on the fabric's shared store root, and the Build and events stores (`builds.storage`, `BuildStateAdapter`; `events.storage`, `EventsStorage`; on the fabric's shared store root per R-BI6) with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
 | `rdm-client` | the typed client and DTOs for the node-admin control API |
 | `rdm-test-scenario` | provider-neutral scenario, evidence and replay contracts |
 | `rdm-test` | the generic RPC test node, test protocols and probes |
@@ -170,11 +170,11 @@ The reconciler never later decides which node "count 2" meant. It diffs the stor
 
 The submitted change may remain on B' as audit/history for build.get, but it is never replayed as topology and is never read to decide reconciliation after B' exists.
 
-Exactly one current fabric-primary accepts topology-changing requests. A non-primary refuses by name. A second topology-changing request while the current Build is actively reconciling is refused with a named build-in-progress refusal naming the current Build; RDM does not implement Build supersession/cancellation. The one exception is fabric.delete, which may interrupt the Build in progress because its target is nothing. Its acceptance record is the durable intent: once written, the interrupted Build opens no further operation and is never resumed, and a successor fabric-primary reads the delete as the current Build and continues the teardown. Operations already admitted at an executor finish or fail within their existing bounds and their launch evidence is retained; a fabric state the fabric-primary is setting ends at the acceptance, its hook's future dropped. When every open attempt of the interrupted Build has ended, its run receives `Failed { step, reason }` naming the delete, and the teardown's steps open mesh by mesh under the one-attempt-per-mesh rule. An operation that fails to end within its bound fails the delete's attempt by name, the intent retained; nothing reconciles the interrupted Build again. No other Build ends another. One attempt is in flight per mesh, not per fabric: a topology Build's operation on mesh X and mesh X's drift attempt never both open; the loser is refused build-in-progress naming the open attempt (R-BI7).
+Exactly one current fabric-primary accepts topology-changing requests. A non-primary refuses by name. A second topology-changing request while the current Build is actively reconciling is refused with a named build-in-progress refusal naming the current Build; RDM does not implement Build supersession/cancellation. The one exception is fabric.delete, which may interrupt the Build in progress because its target is nothing. Its acceptance record is the durable intent: once written, the interrupted Build opens no further operation and is never resumed, and a successor fabric-primary reads the delete as the current Build and continues the teardown. Operations already admitted at an executor finish or fail within their existing bounds and their launch evidence is retained; a fabric state the fabric-primary is setting ends at the acceptance, its hook's future dropped. When every open attempt of the interrupted Build has ended, its run receives `Failed { step, reason }` naming the delete, and the teardown's steps open mesh by mesh under the one-attempt-per-mesh rule. An operation that fails to end within its bound fails the delete's attempt by name, the intent retained; nothing reconciles the interrupted Build again. No other Build ends another.
 
-Every change to the topology is its own Build, submitted through build.create with its own build_id: node.create, node.delete, Rafka's replace steps (one Build of node primitives, [node replace](lifecycles/node-replace.md)), mesh.delete and fabric.delete. node.stop, node.start, node recovery, a primary change and runtime drift leave the topology unchanged: each is an attempt of the current Build, never a new Build. One node.create is recovery, not a change to the shape: the node-admin node recovery re-creates into a live mesh that lost its node-admins (Q335) runs on the same accepted Build, as its next attempt, under the mesh's own MeshId ([node-recovery.md](lifecycles/node-recovery.md), [node-create.md](lifecycles/node-create.md#a-node-admin-created-into-a-live-mesh), [fabric-primary.md](fabric-primary.md#13-node-admin-storage-restart-and-recovery)).
+Every change to the topology is its own Build, submitted through build.create with its own build_id: node.create, node.delete, Rafka's replace steps (one Build of node primitives, [node replace](lifecycles/node-replace.md)), mesh.delete and fabric.delete. node.stop, node.start and node.connection.delete change no shape: each is a node command the primary above the node runs, recorded on the node record, never a Build or part of one. A repair (delete, then create at the same path and name) is not external: it is the primary's own workflow ([node recovery](lifecycles/node-recovery.md)), recorded on the node record, never a Build or part of one. Work on one node is serialized at its mesh-primary.
 
-Workflow input is execution state, not topology: node.stop and node.start on an exact birth (node id and incarnation) and node recovery (`node.delete` then `node.create` at the same path.name, keyed on the exited birth) carry the exact birth they act on, which fences them against a stale birth. They never change the accepted topology map.
+A node command and a repair carry the exact birth they act on (node id and incarnation), which refuses a stale birth by name. They never change the Build.
 
 Every execution attempt re-reads the accepted topology and current realized/observed state and computes remaining work. Completed step receipts prevent repeating already-satisfied work; a Build never resumes from a mutable instruction pointer. A step receipt is `(build_id, attempt, operation, step)` with its output; the exact birth it acted on is the attempt's fenced action. Each workflow's `AttemptOpened` starts a run; a resume after the executor is lost (R-BI4) continues that run; a receipt is reused only within its run. A later attempt of the same run replays a held Complete receipt for the same operation and step. A receipt of an earlier run at the same path.name satisfies nothing for a later run: a second recovery at the same name opens its own run and runs its own steps.
 
@@ -185,7 +185,7 @@ Forbidden:
 - any node-admin other than the current fabric-primary accepting a topology change;
 - treating BuildIntent/change-request data as the accepted topology;
 - storing only counts and letting each executor independently choose which logical path to add/remove;
-- minting a new Build for node.stop, node.start, node recovery, a primary change, or runtime drift against unchanged topology;
+- a Build for node.stop, node.start, node.connection.delete, node recovery or a primary change, or any of them run as part of a Build;
 - accepting a second topology mutation while the current Build is actively reconciling;
 - replaying the submitted change to reconstruct topology;
 - blindly replaying operations already satisfied in current state.
@@ -199,9 +199,9 @@ Rafka shape vocabulary may remain product-facing input. It compiles once into th
 RDM creates, drives, reads and deletes Builds only through the
 [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm), which defines build.create,
 build.attempt.run, build.get and build.delete, their direction, streams and refusals.
-node.create, node.stop, node.start and node.delete are submitted through
-build.create; §1 decides whether an input compiles a new Build or opens an attempt of
-the current one. Application bootstrap and fault injection are application work, not
+node.create and node.delete are submitted through build.create; §1 decides whether an input
+compiles a new Build or opens an attempt of the current one. node.stop, node.start and
+node.connection.delete are node commands, never Build calls (§1). Application bootstrap and fault injection are application work, not
 Build calls.
 
 ---
@@ -262,7 +262,7 @@ current executor/attempt evidence
 completed step receipts and outputs
 ```
 
-A primary or executor change during that active Build keeps the same `build_id`. A primary change is not a topology mutation and never mints a Build. An attempt lost with its executor (no terminal receipt, the executor unheard) leaves the Build in progress (`Running`), and a successor or drift pass claims the next attempt (`attempt + 1`); only an attempt that ends with a named terminal failure (`Failed { step, reason }`) makes the Build failed. An opening's first step is the fabric-primary's [`on_build_started`](fabric-node-hooks.md#on_build_started) notice, sent after the claim of the opening's first attempt is recorded; it writes no receipt and gates nothing. The ending's last step is the fabric-primary's [`on_build_ended`](fabric-node-hooks.md#on_build_ended) notice to the application, sent after the terminal (`Complete` or `Failed { step, reason }`) is recorded; it writes no receipt and gates nothing.
+A primary or executor change during that active Build keeps the same `build_id`. A primary change is not a topology mutation and never mints a Build. An attempt lost with its executor (no terminal receipt, the executor unheard) leaves the Build in progress (`Running`), and a successor claims the next attempt (`attempt + 1`); only an attempt that ends with a named terminal failure (`Failed { step, reason }`) makes the Build failed. An opening's first step is the fabric-primary's [`on_build_started`](fabric-node-hooks.md#on_build_started) notice, sent after the claim of the opening's first attempt is recorded; it writes no receipt and gates nothing. The ending's last step is the fabric-primary's [`on_build_ended`](fabric-node-hooks.md#on_build_ended) notice to the application, sent after the terminal (`Complete` or `Failed { step, reason }`) is recorded; it writes no receipt and gates nothing.
 
 ```text
 Build B123 in progress (the current Build)
@@ -278,23 +278,9 @@ recompute accepted - observed
 continue remaining work
 ```
 
-Later drift after B123 has already converged is an execution problem, not a topology change:
+A node lost after B123 completed is a repair, not a Build: the node's mesh-primary investigates it and re-creates it (a lost mesh-primary: the successor its election names; the fabric-primary only when no successor takes the role) at the same path and name ([node recovery](lifecycles/node-recovery.md)), recorded on the node record. B123 stays completed and is not written.
 
-```text
-Build B123 completed (the current Build)
-
-later exact runtime death of a node
-    -> node recovery: node.delete of the lost node, node.create at the same path.name
-    -> accepted topology unchanged
-    -> the mesh-primary of the member's mesh opens the next attempt of B123 on its mesh's rows, claims and runs it itself (R-BI7); the Build stays completed, and the fabric-primary reads the attempt's verdict from the Build journal
-    -> perform only unsatisfied work
-    -> append receipts to B123 in builds.storage
-    -> B123 converged again
-```
-
-[Node recovery](lifecycles/node-recovery.md) owns who detects the loss, proves the exit and submits the recovery.
-
-Each topology change is its own Build with its own build_id (§1). Proven runtime drift against an unchanged accepted topology opens a new attempt of the current Build; it never mints a new Build. A Build is the durable accepted topology plus the history of attempts to realize it.
+Each topology change is its own Build with its own build_id (§1). A Build is the durable accepted topology plus the history of attempts to realize it.
 
 ### 4.2 Hydration of the accepted topology
 
@@ -318,9 +304,11 @@ The accepted topology is the Build's; the observed topology follows the executor
 
 ### 4.4 The gates before an operation
 
-Every operation on the topology, a Build or a standalone node.stop, node.start,
-node.connection.delete or node.delete, passes the fabric-primary's gates in this order before
-anything runs. Each gate reads one source. A gate that fails refuses by name and nothing is written.
+Every operation on the topology, a Build or a standalone node.delete, passes the fabric-primary's
+gates in this order before anything runs. Each gate reads one source. A gate that fails refuses by
+name and nothing is written. A node command's checks are its own page's
+([node.stop](lifecycles/node-stop.md), [node.start](lifecycles/node-start.md),
+[node.connection.delete](lifecycles/node-connections-delete.md)).
 
 | Gate | Reads | Refusal |
 |---|---|---|
@@ -364,7 +352,6 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError>;
     async fn note_blocked(&self, build_id: &BuildId, mesh: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str);
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError>;
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError>;
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError>;
 }
@@ -622,7 +609,7 @@ mesh1's node-admins are all lost, its members live (mesh1 holds a node, so it is
     -> node.create of a node-admin into mesh1 under the same logical FabricId + MeshId
 ```
 
-[Node recovery](lifecycles/node-recovery.md) owns the sequence (Q335): the fabric-primary's node investigation of the lost mesh-primary ends in a verdict, and the recovery re-creates one node-admin under the mesh's MeshId and runs its work as attempts of the same Build (§4.1; [a node-admin created into a live mesh](lifecycles/node-create.md#a-node-admin-created-into-a-live-mesh)). The fabric-primary is not the local Build executor: the joining node-admin is the local executor for its own mesh, and while it is `Pending` it executes only work the fabric-primary dispatches for that mesh, never another mesh's or fabric-wide work ([Role-neutral execution](#role-neutral-execution-and-policy)). A surviving runtime in another provider control domain is handled by [deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain).
+[Node recovery](lifecycles/node-recovery.md) owns the sequence (Q335): the fabric-primary's node investigation of the lost mesh-primary ends in a verdict, and the recovery re-creates one node-admin under the mesh's MeshId, the fabric-primary's own workflow, never a Build ([a node-admin created into a live mesh](lifecycles/node-create.md#a-node-admin-created-into-a-live-mesh)). The fabric-primary is not the local Build executor: the joining node-admin is the local executor for its own mesh, and while it is `Pending` it executes only work the fabric-primary dispatches for that mesh, never another mesh's or fabric-wide work ([Role-neutral execution](#role-neutral-execution-and-policy)). A surviving runtime in another provider control domain is handled by [deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain).
 
 ### 12.3 Replace a mesh intentionally
 
@@ -673,7 +660,7 @@ Held-member repair is a generic topology mechanism owned by [gossip.md §6](goss
 
 Callers reach the current fabric-primary over Node RPC at the endpoint its digest carries. An application contact such as `admin_api_base` is application config on the node record.
 
-A fabric-primary lost mid-Build and runtime drift after a Build completed both continue the current Build (§4.1).
+A fabric-primary lost mid-Build continues the current Build (§4.1); a node lost after a Build completed is a repair, never part of the Build (§1).
 
 Leadership may recover before every application hook is complete. A resolved primary and Fabric Ready are distinct facts; election semantics are owned only by [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md).
 
@@ -685,7 +672,7 @@ The target dependency is deliberately one-way:
 
 ```text
 RDM rdm-admin
-    Build/Reconciler + drift trigger
+    Build/Reconciler
     RuntimeFact + current runtime metadata + provider-control-domain adoption contract
     the leadership election
     executor/attempt rules
@@ -709,7 +696,7 @@ Rafka protocol/domain consumers
 An import boundary is eligible when it shows:
 
 1. logical FabricId and transport EndpointId are distinct everywhere in target APIs;
-2. exactly one fabric-primary topology writer and one current Build exist, with one drift mechanism that opens attempts of the current Build, driven by the mesh-primary of the drifting mesh; no node-admin other than the fabric-primary accepts a topology change, and no desired topology stands beside the accepted Build, including imported generic desired-state/revision machinery promoted into Rafka's topology;
+2. exactly one fabric-primary topology writer and one current Build exist, and no node command or repair runs as part of a Build; no node-admin other than the fabric-primary accepts a topology change, and no desired topology stands beside the accepted Build, including imported generic desired-state/revision machinery promoted into Rafka's topology;
 3. one Build/Reconciler implementation exists; no active Rafka-local `nodes_to_reach_shape`/shape reconciliation competes with it;
 4. one election implementation exists; no Rafka-local comparator or primary ladder, and no product protocol recomputing a mesh/fabric primary, stands in for it;
 5. one current RuntimeFact + runtime-metadata publication/adoption contract exists; no Rafka-local runtime adoption depends on launcher-private completed Build receipts, and no launcher-private `data_dir`/runtime-management metadata keeps a successor from managing a current birth;

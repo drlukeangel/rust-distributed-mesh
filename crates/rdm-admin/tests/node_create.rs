@@ -433,7 +433,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
 
         // 1. A held name at `mesh1.node.1` is refused at PrepareStorage before DeployRuntime is called.
         let held_req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(held_path)), mesh: "mesh1".into(), r#type: "node".into(),
-            build_id: build_id.clone(),
+            build_id: Some(build_id.clone()),
             attempt: 1,
             node: held_path,
             spec: &NODE_SPEC,
@@ -482,7 +482,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             tags: std::collections::BTreeSet::from(["tier1".into()]),
         };
         let create_req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(new_path)), mesh: "mesh1".into(), r#type: "node".into(),
-            build_id: build_id.clone(),
+            build_id: Some(build_id.clone()),
             attempt: 1,
             node: new_path.clone(),
             spec: &NODE_SPEC,
@@ -915,7 +915,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         let pre_incarnation = IncarnationId::mint();
         let pre_deployment = rdm_admin::model::DeploymentId::mint();
         let allocated = rdm_admin::storage::Allocation { predecessor: None,
-            build_id: build_id.clone(),
+            build_id: Some(build_id.clone()),
             operation: rdm_core::OperationId::location("node.create", &cut_path),
             incarnation: pre_incarnation.clone(),
             deployment_id: pre_deployment.clone(),
@@ -937,7 +937,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         };
         let created_cut = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(cut_path)), mesh: "mesh1".into(), r#type: "node".into(),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 1,
                 node: cut_path.clone(),
                 spec: &NODE_SPEC,
@@ -960,7 +960,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         *provider.deliver_join_on_inspect.lock().unwrap() = false;
         let lost_reply_err = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), r#type: "node".into(),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 1,
                 node: fault_path.clone(),
                 spec: &NODE_SPEC,
@@ -989,7 +989,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Exited { code: Some(137) };
         let kill_bind_err = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), r#type: "node".into(),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 2,
                 node: fault_path.clone(),
                 spec: &NODE_SPEC,
@@ -1020,7 +1020,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         *observer.kill_on_first_ready_check.lock().unwrap() = Some(provider.clone());
         let kill_ready_err = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), r#type: "node".into(),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 3,
                 node: fault_path.clone(),
                 spec: &NODE_SPEC,
@@ -1054,7 +1054,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         *observer.ready_ok.lock().unwrap() = false;
         let entered = observer.ready_entered.notified();
         let req4 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), r#type: "node".into(),
-            build_id: build_id.clone(),
+            build_id: Some(build_id.clone()),
             attempt: 4,
             node: fault_path.clone(),
             spec: &NODE_SPEC,
@@ -1093,7 +1093,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         *observer.ready_ok.lock().unwrap() = true;
         let resumed_created = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), r#type: "node".into(),
-                build_id: build_id.clone(),
+                build_id: Some(build_id.clone()),
                 attempt: 5,
                 node: fault_path.clone(),
                 spec: &NODE_SPEC,

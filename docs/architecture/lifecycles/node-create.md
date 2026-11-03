@@ -109,13 +109,13 @@ sequenceDiagram
 ## A node-admin created into a live mesh
 
 A node-admin that [node recovery](node-recovery.md) re-creates into a mesh that lost its node-admins (Q335: the fabric-primary's node investigation of the lost mesh-primary, then recovery at its path.name) joins that mesh under the mesh's own MeshId and never mints another.
-The mesh is still in the accepted topology, so the attempt belongs to the SAME accepted Build. (A
+It is the fabric-primary's own workflow, never a Build or part of one (Q342). (A
 lost member of a mesh with a live mesh-primary is the same [node recovery](node-recovery.md), driven by that
 mesh-primary.) Op schemas are the envelope's: [JoinNode](../node-rpc-envelope.md#join-op-0x1d-rdm),
 [GetTopology](../node-rpc-envelope.md#topology-op-0x1e-rdm), [Ping](../node-rpc-envelope.md#ping-op-0x01-core),
 the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) and [Status](../node-rpc-envelope.md#status-op-0x1b-rdm).
 
-1. The recovery's node.create opens an attempt of the SAME accepted Build and deploys the mesh's
+1. The recovery's node.create deploys the mesh's
    first node-admin (its MeshId, seed and mesh-primary launch mode). It records the deployed birth;
    the node-admin binds port 0 and the OS assigns the port.
 2. The node-admin calls JoinNode on its MAKER, the fabric-primary, then GetTopology on that
@@ -138,10 +138,9 @@ the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) and [Status](../n
 5. Every node the sweep did not reach goes to [node recovery](node-recovery.md): the new
    mesh-primary's [node investigation](node-investigation.md), then recovery on its verdict.
    A missing Ping reply is the trigger, never the verdict.
-6. The fabric-primary claims the creation of the missing secondary node-admin on its own log
-   and calls the new mesh-primary with `build.attempt.run`; the executor adopts the won claim and
-   runs it as an attempt of that same Build. The secondary node-admin calls its maker, obtains
-   topology, joins the channel and becomes ready.
+6. Each other node-admin the mesh lost is a member like any other: the new mesh-primary recovers it
+   through [node recovery](node-recovery.md) (step 5). It calls its maker, obtains topology, joins
+   the channel and becomes ready.
 
 ```mermaid
 sequenceDiagram
@@ -150,7 +149,7 @@ sequenceDiagram
     participant L as Local mesh node
     participant D as Non-answering member
     participant P as Provider
-    FP->>FP: same Build attempt; node.create of a node-admin into the mesh's MeshId
+    FP->>FP: node recovery: node.create of a node-admin into the mesh's MeshId
     FP->>P: deploy first node-admin; no chosen port
     P->>A: start with the mesh's MeshId and deployed identity
     A->>A: bind port 0; OS assigns port
@@ -172,38 +171,35 @@ sequenceDiagram
     alt reached
         A->>D: node.mesh.join
     else any other verdict
-        A->>FP: one recovery attempt: node.delete D, node.create at the same path.name
+        A->>A: node recovery: node.delete D, node.create with D's path and name
     end
-    FP->>FP: claim secondary node-admin attempt of same Build
-    FP->>A: build.attempt.run (Won claim)
-    A->>P: node.create of the secondary node-admin
+    A->>P: node recovery of each other lost node-admin
 ```
 
 ### Telemetry chain
 
 | Actor | Channel/op | Payload / evidence | Span |
 |---|---|---|---|
-| Fabric-primary | accepted Build / node.create | same Build attempt; the mesh's MeshId | `rdm.node_admin.node.update.via-build`, `rdm.node_admin.deployment.update.via-pipeline` |
+| Fabric-primary | node recovery / node.create | its own workflow; the mesh's MeshId | `rdm.node_admin.deployment.update.via-pipeline` |
 | Joining node-admin → maker | JoinNode | [Join schema](../node-rpc-envelope.md#join-op-0x1d-rdm); exact deployed birth admitted | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.node_admin.node.update.via-join` |
 | Joining node-admin → maker / local node | GetTopology | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); complete meshes installed | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read-install` |
 | Mesh-primary → own members | Ping once | [Ping schema](../node-rpc-envelope.md#ping-op-0x01-core); exact-birth reply or non-answer | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct` |
-| Mesh-primary / provider | node recovery | node investigation, one recovery attempt on its verdict | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |
-| Fabric-primary → new mesh-primary | build.attempt.run | [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm); the fabric-primary claims on its own log, the executor adopts the won claim | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct` (op 0x20) |
+| Mesh-primary / provider | node recovery | node investigation, one recovery on its verdict | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |
 
 Call/serve ancestry follows the [runtime spans](../node-rpc-envelope.md#runtime-spans).
 
 ### Command, completion and gossip messages
 
-Joining composes deployment, topology reads, Ping, Build claims and readiness; it has no opcode of
+Joining composes deployment, topology reads, Ping and readiness; it has no opcode of
 its own. A provider creates the process.
 
 ```text
-fabric-primary                              same Build attempt: node.create of a node-admin, the mesh's MeshId
+fabric-primary                              node recovery: node.create of a node-admin, the mesh's MeshId
 joining node-admin → maker (fabric-primary) JoinNode            ← Joined | JoinMismatch | DeploymentAbandoned
 joining node-admin → maker                  GetTopology         ← Started, Snapshot chunks, End
 joining node-admin → local own-mesh node    GetTopology         ← Started, Snapshot chunks, End
 joining node-admin → each own-mesh member   Ping, once          ← Pong | no answer: node recovery
-fabric-primary → new mesh-primary           build.attempt.run   (Won claim) create the secondary node-admin
+new mesh-primary                            node recovery of each other lost node-admin
 ```
 
 Each body is its envelope schema, linked above. A JoinMismatch or DeploymentAbandoned grants
@@ -213,8 +209,8 @@ its status under
 [node status](node-status.md#node-status-declaration). Each node created while the node-admin
 joins publishes its own Digest under the [frame catalog](../gossip.md#31-frame-catalog).
 
-A member deleted while the node-admin joins is node recovery's Build node.delete: its NodeDeleted
-follows the step's receipt. It is not a mesh-death event; the mesh keeps its MeshId, and
+A member deleted while the node-admin joins is node recovery's node.delete: its NodeDeleted
+follows the step, recorded on the node record. It is not a mesh-death event; the mesh keeps its MeshId, and
 topology omission is never death.
 
 ## Failure and receipts

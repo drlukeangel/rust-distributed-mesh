@@ -48,14 +48,13 @@ async fn wait_for_blocked_frame(stream: &mut BuildStream) -> (String, String) {
     panic!("Build stream ended before Blocked frame");
 }
 
-/// Page: `docs/architecture/build.md:321`
-/// "Every operation on the topology, a Build or a standalone node.stop, node.start,
-/// node.connection.delete or node.delete, passes the fabric-primary's gates in this order before
-/// anything runs. Each gate reads one source. A gate that fails refuses by name and nothing is written.
-/// - The receiver is the fabric-primary -> `not-fabric-primary`, naming the fabric-primary
-/// - The current Build is settled -> `build-in-progress`, naming the Build
-/// - A node stands at the path -> `unknown-node`
-/// - The node's state admits the action: a start needs a stopped birth... -> `node-not-live`"
+/// CONTRACT (build.md §4.4; node-stop.md, node-start.md "Entry"/"Admission"; Q342, D40): a node command
+/// is never a Build, so it passes no Build gate. A caller's node.stop and node.start go to the node's
+/// mesh-primary, which admits them by name and writes nothing: a stop sent through a carrier that is
+/// not the fabric-primary reaches mesh1's primary all the same and is refused `no-secondary` there (the
+/// sole rpc node holds its type's role and no other rpc node can take it), never `not-fabric-primary`;
+/// a node at no path is `unknown-node`; a start of a ready birth is `node-not-live`. A Build while
+/// another is in progress is refused `build-in-progress`, naming it: that gate is the Build's own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_start_and_concurrent_build_over_node_rpc()
 {
@@ -76,55 +75,32 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
     read_to_complete(&mut stream).await;
     estate.settles_to(&SHAPE1, Duration::from_secs(90)).await;
 
-    // 1. Gate: The receiver is the fabric-primary -> `not-fabric-primary`, naming the fabric-primary,
-    //    which redirects the carrier to `mesh1.node-admin.1`, where Gate 7 (`A primary's stop, connections
-    //    delete or delete has a successor`) refuses stopping the sole node with `no-secondary`.
+    // 1. A stop through a carrier that is not the fabric-primary: the node command goes to the node's
+    //    mesh-primary, which refuses the sole rpc node's stop `no-secondary`; nothing answers
+    //    `not-fabric-primary`.
     let views = estate.node_views().await;
     let non_fp = views.iter().find(|n| n.r#type == "node-admin" && !n.is_fabric_primary).expect("other admin");
-    let fp = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
     let non_fp_carrier = estate.peers().await.carrier_for(non_fp.node_id.clone());
     assert_eq!(non_fp_carrier.target(), &rdm_transport::NodeTarget::ExactNode(non_fp.node_id.clone()));
-    let primary_stop_err = Nodes::new(non_fp_carrier)
-        .stop(&rdm_core::PathName::new("mesh1.node", "1").unwrap())
-        .await
-        .err()
-        .expect("stop of sole node must be refused");
-    match primary_stop_err {
-        CallEnd::Rejected { reason, .. } => {
-            assert_eq!(reason, "no-secondary");
-        }
-        other => panic!("expected no-secondary after redirect to mesh1.node-admin.1, got {other:?}"),
+    match Nodes::new(non_fp_carrier).stop(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await.err().expect("stop of sole rpc-node must be refused") {
+        CallEnd::Rejected { reason, .. } => assert_eq!(reason, "no-secondary"),
+        other => panic!("expected no-secondary from mesh1's primary, got {other:?}"),
     }
 
-    // 2. Gate: A node stands at the path -> `unknown-node`.
-    let unknown_err = Nodes::new(carrier.clone())
-        .stop(&rdm_core::PathName::new("mesh1.node", "99").unwrap())
-        .await
-        .err()
-        .expect("unknown node must be refused");
-    match unknown_err {
-        CallEnd::Rejected { reason, .. } => {
-            assert_eq!(reason, "unknown-node");
-        }
+    // 2. A node stands at the path -> `unknown-node`, answered by the caller's node.get, nothing sent.
+    match Nodes::new(carrier.clone()).stop(&rdm_core::PathName::new("mesh1.node", "99").unwrap()).await.err().expect("unknown node must be refused") {
+        CallEnd::Rejected { reason, .. } => assert_eq!(reason, "unknown-node"),
         other => panic!("expected unknown-node for mesh1.node.99, got {other:?}"),
     }
 
-    // 3. Gate: The node's state admits the action (a start needs a stopped birth) -> `node-not-live`.
-    let start_live_err = Nodes::new(carrier.clone())
-        .start(&rdm_core::PathName::new("mesh1.node", "1").unwrap())
-        .await
-        .err()
-        .expect("starting a Ready node must be refused");
-    match start_live_err {
-        CallEnd::Rejected { reason, .. } => {
-            assert_eq!(reason, "node-not-live");
-        }
+    // 3. The node's state admits the command (a start needs a stopped birth) -> `node-not-live`.
+    match Nodes::new(carrier.clone()).start(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await.err().expect("starting a Ready node must be refused") {
+        CallEnd::Rejected { reason, .. } => assert_eq!(reason, "node-not-live"),
         other => panic!("expected node-not-live when starting Ready mesh1.node.1, got {other:?}"),
     }
 
-    // 4. Gate: The current Build is settled -> `build-in-progress`, naming the Build.
-    rdm_test::write_pre_node_ready_knob(&estate.root, &rdm_core::PathName::new("mesh1.node", "2").unwrap(), "hold-for-gate-check")
-        .unwrap();
+    // 4. The current Build is settled -> `build-in-progress`, naming the Build: a second Build is refused.
+    rdm_test::write_pre_node_ready_knob(&estate.root, &rdm_core::PathName::new("mesh1.node", "2").unwrap(), "hold-for-gate-check").unwrap();
     let grown = FabricDesired {
         fabric: FABRIC.into(),
         meshes: SHAPE_GROWN
@@ -139,19 +115,9 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
     let active_build_id = active_stream.build_id().clone();
     let (blocked_step, _) = wait_for_blocked_frame(&mut active_stream).await;
     assert_eq!(blocked_step, "WaitForNodeReady");
-
-    let in_progress_err = Nodes::new(carrier.clone())
-        .stop(&rdm_core::PathName::new("mesh1.node", "1").unwrap())
-        .await
-        .err()
-        .expect("stop during active Build must be refused");
-    match in_progress_err {
-        CallEnd::BuildInProgress { current } => {
-            assert_eq!(
-                current, active_build_id,
-                "build-in-progress refusal must name the active Build id"
-            );
-        }
+    let again = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.err().expect("a second Build during the active one must be refused");
+    match again {
+        CallEnd::BuildInProgress { current } => assert_eq!(current, active_build_id, "build-in-progress refusal must name the active Build id"),
         other => panic!("expected BuildInProgress naming {active_build_id}, got {other:?}"),
     }
 
@@ -161,37 +127,15 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
     estate.stop().await;
 
     let spans = estate.spans();
-    let not_fp_spans = named(&spans, "rdm.node_admin.build.reject.via-not-fabric-primary");
-    assert!(
-        not_fp_spans.iter().any(|s| {
-            s["attributes"]["node_path"] == non_fp.name.path && s["attributes"]["node_name"] == non_fp.name.name
-                && s["attributes"]["fabric_primary"].as_str() == Some(fp.node_id.as_str())
-        }),
-        "expected rdm.node_admin.build.reject.via-not-fabric-primary on mesh1.node-admin.2 naming mesh1.node-admin.1"
-    );
+    assert!(named(&spans, "rdm.node_admin.build.reject.via-not-fabric-primary").is_empty(), "no node command is refused not-fabric-primary");
     let no_secondary_spans = named(&spans, "rdm.node_admin.build.reject.via-no-secondary");
-    assert!(
-        !no_secondary_spans.is_empty(),
-        "expected rdm.node_admin.build.reject.via-no-secondary span"
-    );
-    let unknown_spans = named(&spans, "rdm.node_admin.build.reject.via-unknown-node");
-    assert!(
-        !unknown_spans.is_empty(),
-        "expected rdm.node_admin.build.reject.via-unknown-node span"
-    );
+    assert!(!no_secondary_spans.is_empty(), "expected rdm.node_admin.build.reject.via-no-secondary span at mesh1's primary");
     let not_live_spans = named(&spans, "rdm.node_admin.node.reject.via-not-live");
-    assert!(
-        !not_live_spans.is_empty(),
-        "expected rdm.node_admin.node.reject.via-not-live span"
-    );
+    assert!(!not_live_spans.is_empty(), "expected rdm.node_admin.node.reject.via-not-live span");
     let in_progress_spans = named(&spans, "rdm.node_admin.build.reject.via-build-in-progress");
     assert!(
-        in_progress_spans
-            .iter()
-            .any(|s| s["attributes"]["build_id"].as_str() == Some(active_build_id.as_str())),
+        in_progress_spans.iter().any(|s| s["attributes"]["build_id"].as_str() == Some(active_build_id.as_str())),
         "expected rdm.node_admin.build.reject.via-build-in-progress span naming {active_build_id}"
     );
-    estate.record_trace_url(
-        in_progress_spans[0]["trace_id"].as_str().unwrap_or_default(),
-    );
+    estate.record_trace_url(no_secondary_spans[0]["trace_id"].as_str().unwrap_or_default());
 }

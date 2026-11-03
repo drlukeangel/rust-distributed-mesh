@@ -41,28 +41,29 @@ pub struct BuildAccepted {
     pub submitted_at_ms: u64,
 }
 
-/// Why an attempt of a Build was opened.
+/// Why an attempt of a Build was opened: what a caller asked for (build.md §1, Q342). A node command,
+/// a repair and drift are never a Build's attempt; their positions are reserved, so every later reason
+/// keeps its position on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AttemptReason {
     /// The first attempt: the Build was just accepted.
     Requested,
-    /// A birth the topology names was proven exited; the same Build repairs it.
-    ProvenDrift,
+    /// Reserved position: the removed drift repair's reason (Q342). Never opened.
+    Reserved1,
     /// Reserved position: the removed node.restart's reason (Q183; callers run node.stop then
     /// node.start). Never opened; kept so every later reason keeps its position.
     Reserved2,
-    /// The previous attempt's executor is gone; another admin continues the Build.
-    #[serde(rename = "authority-moved")] PrimaryMoved,
-    /// `POST /api/nodes/{name}/connections/delete`: node.connection.delete { All }.
-    DeleteConnections,
-    /// A standalone stop of an exact birth was requested (`node.stop:<path>`).
-    Stop,
-    /// A standalone start of a stopped birth was requested (`node.start:<path>`).
-    Start,
-    /// A mesh-primary proved a member's exact birth exited and submitted its recovery
-    /// (`node.delete:<path>`, then `node.create` with a structured location, node-recovery.md "Steps").
-    Recovery,
+    /// Reserved position: the removed primary-moved reason (Q342). Never opened.
+    Reserved3,
+    /// Reserved position: the removed connections delete's reason; it is a node command (Q342). Never opened.
+    Reserved4,
+    /// Reserved position: the removed stop's reason; it is a node command (Q342). Never opened.
+    Reserved5,
+    /// Reserved position: the removed start's reason; it is a node command (Q342). Never opened.
+    Reserved6,
+    /// Reserved position: the removed node recovery's reason; it is the primary's own workflow (Q342). Never opened.
+    Reserved7,
     /// The delete of a stopped birth at its retained predecessor location, or of a deleted mesh's last admin, was
     /// requested (`node.delete:<path>`, node.delete's one key).
     Delete,
@@ -70,11 +71,9 @@ pub enum AttemptReason {
     /// `recipe`, the name `builds.jsonl` already holds (Q211 renamed the variant only, as `roll` before it).
     #[serde(rename = "recipe")]
     Steps,
-    /// An adoption launch opened it (Q156; fabric-recovery.md "Nothing alive"): the fabric-recovery attempt
-    /// a node-admin a person launched at the lost fabric-primary's path and name claims, `node.delete:<path>`
-    /// then `node.create` with a structured location as a recovery's. Abandoned because a live admin answered, it owes no exit
-    /// (node-recovery.md "Failure and receipts", Q159).
-    Adoption,
+    /// Reserved position: the removed adoption launch's reason; it is fabric recovery, the primary's own
+    /// workflow (Q342). Never opened.
+    Reserved10,
 }
 
 impl AttemptReason {
@@ -82,17 +81,22 @@ impl AttemptReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Requested => "requested",
-            Self::ProvenDrift => "proven-drift",
+            Self::Reserved1 => "reserved-1",
             Self::Reserved2 => "reserved-2",
-            Self::PrimaryMoved => "primary-moved",
-            Self::DeleteConnections => "node.connection.delete",
-            Self::Stop => "stop",
-            Self::Start => "start",
-            Self::Recovery => "recovery",
+            Self::Reserved3 => "reserved-3",
+            Self::Reserved4 => "reserved-4",
+            Self::Reserved5 => "reserved-5",
+            Self::Reserved6 => "reserved-6",
+            Self::Reserved7 => "reserved-7",
             Self::Delete => "delete",
             Self::Steps => "steps",
-            Self::Adoption => "adoption",
+            Self::Reserved10 => "reserved-10",
         }
+    }
+
+    /// Whether the reason is a reserved position, which no attempt is opened with.
+    pub fn is_reserved(self) -> bool {
+        !matches!(self, Self::Requested | Self::Delete | Self::Steps)
     }
 }
 
@@ -451,7 +455,7 @@ impl BuildProjection {
             attempt: 0,
             executor: None,
             claimant: None,
-            reason: AttemptReason::Recovery,
+            reason: AttemptReason::Requested,
             action: None,
             opened: 0,
             last_failure: None,
@@ -1257,63 +1261,16 @@ pub trait BuildStateAdapter: Send + Sync {
     /// a fact, never durable. A state with no call attached to its runs
     /// has nobody to tell.
     async fn note_blocked(&self, _build_id: &BuildId, _lane: Option<&str>, _attempt: u32, _operation: &rdm_core::OperationId, _step: &str, _reason: &str) {}
-    /// The Build, lane (`None` the fabric lane, `Some(mesh)` that mesh's drift lane), attempt and
-    /// operation of the node workflow at `path` that deleted the exited birth `(node_id, incarnation)`
-    /// and completed: a recovery of that birth (its `node.delete:<path>`
-    /// in an attempt the recovery opened, answered at the attempt its last operation,
-    /// `node.create` with a structured location, completed), or a `node.delete:<path>` (the birth
-    /// exited inside that workflow, node-recovery.md "Failure and receipts", so it is no drift to
-    /// recover). Read from every
-    /// Build's step receipts in the log (a forgotten Build's receipts included: forgetting leaves
-    /// the views, never the receipts). The first such attempt. A point read by the exited birth:
-    /// every adapter answers it from its index (or delegates to the adapter it decorates), never by
-    /// reading the fact log.
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError>;
     /// The Build, attempt and operation of the mesh.delete whose completion receipt
     /// (`mesh_delete::STEP_MESH_DELETED`) names the exact birth `(node_id, incarnation)` its final
     /// primary: the mesh.delete that ended with that birth alive, whose mesh-left follows that birth's
     /// exited verdict. The first such attempt. A point read by the birth: every adapter answers it from
     /// its index (or delegates to the adapter it decorates), never by reading the fact log.
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError>;
-    /// The exited births of `mesh` whose node workflow in `build_id` stopped at a Failed attempt and
-    /// is not done (node-recovery.md "Failure and receipts": the mesh-primary submits each again):
-    /// for each birth an attempt of `build_id` was opened for with `AttemptAction::Recover`, the run
-    /// that its latest claimed such open began (up to the next attempt opened in the Build, whatever it
-    /// carries) ended with its last claimed attempt's verdict `Failed`, and
-    /// [`BuildStateAdapter::recovery_of`] does not answer the birth. An open no one claimed ran nothing
-    /// and ends no run: a resubmit whose opener was lost between its open and its claim leaves the
-    /// birth owed, and the submit claims that open attempt as it stands (build.md :365, claims are
-    /// insert-and-fail on the attempt). A run claimed with no verdict yet, or handed off, is not owed.
-    /// A point read by the Build: every adapter answers it from its index (or delegates to the adapter
-    /// it decorates), never by reading or folding the fact log.
-    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError>;
     /// The path name this admin's topology view holds (`Some` once its location view holds one).
     fn held_name(&self) -> Option<crate::model::PathName> {
         None
     }
-}
-
-/// An exited birth whose node workflow stopped at a Failed attempt and is not done
-/// ([`BuildStateAdapter::exits_owed`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OwedExit {
-    /// The exited birth's path and name.
-    pub path: crate::model::PathName,
-    /// The exited birth's node.id.
-    pub node_id: crate::model::NodeId,
-    /// The exited birth's incarnation.
-    pub incarnation: crate::model::IncarnationId,
-    /// The attempt whose `Failed` verdict ended the birth's run.
-    pub attempt: u32,
-    /// Why that attempt failed.
-    pub reason: String,
-}
-
-/// The birth a deleting workflow's (`retire-node`) `NodeDeleted`
-/// receipt names: its output is the lifecycle operation of the node.delete of that birth,
-/// `(path, node_id, incarnation)`.
-pub(crate) fn recovery_deleted(s: &BuildStepReceipt) -> Option<(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId)> {
-    delete_step_birth(s, "NodeDeleted")
 }
 
 /// The birth a deleting workflow's completed `step` receipt names, for the two steps whose output is
@@ -1346,29 +1303,24 @@ pub(crate) fn operation_reuse_boundary(receipts: &[&BuildStepReceipt], build_id:
 /// Returns the attempt that originally produced the acknowledgement.
 pub(crate) fn validate_carried_lifecycle(projection: &BuildProjection, receipt: &BuildStepReceipt, payload: &rdm_core::LifecycleOp, expected: (&crate::model::NodeId, &crate::model::IncarnationId)) -> Option<u32> {
     if &payload.node_id != expected.0 || &payload.incarnation != expected.1 { return None; }
-    let declaration = rdm_core::status::DeclaredOperation { build_id: payload.build_id.clone(), attempt: payload.attempt, operation: payload.operation.clone() };
-    validate_carried_declaration(projection, receipt, &declaration, expected)
-}
-
-/// Validate a node's stored acknowledgement using the same source-attempt evidence as a payload.
-pub(crate) fn validate_carried_declaration(projection: &BuildProjection, receipt: &BuildStepReceipt, declaration: &rdm_core::status::DeclaredOperation, expected: (&crate::model::NodeId, &crate::model::IncarnationId)) -> Option<u32> {
-    if receipt.build_id != projection.build_id || declaration.build_id != receipt.build_id.as_str() || declaration.operation != receipt.operation || declaration.attempt > receipt.attempt { return None; }
-    if declaration.attempt == receipt.attempt { return Some(declaration.attempt); }
+    if receipt.build_id != projection.build_id || payload.build_id != receipt.build_id.as_str() || payload.operation != receipt.operation || payload.attempt > receipt.attempt { return None; }
+    if payload.attempt == receipt.attempt { return Some(payload.attempt); }
     let receipts: Vec<_> = projection.steps.iter().collect();
     let ended = operation_reuse_boundary(&receipts, &receipt.build_id, &receipt.mesh, &receipt.operation, receipt.attempt);
-    if declaration.attempt <= ended { return None; }
+    if payload.attempt <= ended { return None; }
     projection.steps.iter().any(|source| {
-        if source.build_id != receipt.build_id || source.mesh != receipt.mesh || source.operation != receipt.operation || source.attempt != declaration.attempt || source.outcome != StepOutcome::Complete { return false; }
+        if source.build_id != receipt.build_id || source.mesh != receipt.mesh || source.operation != receipt.operation || source.attempt != payload.attempt || source.outcome != StepOutcome::Complete { return false; }
         let Some(value) = &source.output else { return false };
         let Ok(original) = serde_json::from_value::<rdm_core::LifecycleOp>(value.clone()) else { return false };
-        original.build_id == declaration.build_id && original.attempt == declaration.attempt && original.operation == declaration.operation
+        original.build_id == payload.build_id && original.attempt == payload.attempt && original.operation == payload.operation
             && &original.node_id == expected.0 && &original.incarnation == expected.1
-    }).then_some(declaration.attempt)
+    }).then_some(payload.attempt)
 }
 
-/// A completed deleting workflow or the create that ends a recovery.
-fn recovery_completed(s: &BuildStepReceipt) -> bool {
-    s.step == "Complete" && s.outcome == StepOutcome::Complete && matches!(s.operation.action.as_str(), "node.delete" | "node.create")
+/// Whether a node's stored acknowledgement names this receipt's operation: the declaration carries
+/// the operation alone (its identity), so it is matched on that.
+pub(crate) fn declaration_names_receipt(projection: &BuildProjection, receipt: &BuildStepReceipt, declaration: &rdm_core::status::DeclaredOperation) -> bool {
+    receipt.build_id == projection.build_id && declaration.operation == receipt.operation
 }
 
 /// The final primary a mesh.delete's completion receipt (`MeshDeleted`) names: its manifest's
@@ -1386,13 +1338,8 @@ fn mesh_deleted_final(s: &BuildStepReceipt) -> Option<(crate::model::NodeId, cra
 /// What an opened attempt carries, for a refusal: its reason, its action and who opened it.
 fn describe_open(o: &AttemptOpened) -> String {
     let action = match &o.action {
-        Some(crate::accepted::AttemptAction::DeleteConnections { mesh: mesh, path, node_id, from_incarnation, .. }) => format!("node.connection.delete of path {path_field:?}, name {name_field:?} from {node_id} at {from_incarnation}", path_field = &path.path, name_field = &path.name),
-        Some(crate::accepted::AttemptAction::Stop { mesh: mesh, path, node_id, from_incarnation, .. }) => format!("stop of path {path_field:?}, name {name_field:?} from {node_id} at {from_incarnation}", path_field = &path.path, name_field = &path.name),
-        Some(crate::accepted::AttemptAction::Start { mesh: mesh, path, node_id, from_incarnation, .. }) => format!("start of path {path_field:?}, name {name_field:?} from {node_id} at {from_incarnation}", path_field = &path.path, name_field = &path.name),
-        Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) => format!("recovery of path {path_field:?}, name {name_field:?} from exited {node_id} at {from_incarnation}", path_field = &path.path, name_field = &path.name),
-        Some(crate::accepted::AttemptAction::Delete { mesh: mesh, path, node_id, from_incarnation, .. }) => format!("delete of path {path_field:?}, name {name_field:?} from {node_id} at {from_incarnation}", path_field = &path.path, name_field = &path.name),
+        Some(crate::accepted::AttemptAction::Delete { path, node_id, from_incarnation, .. }) => format!("delete of path {path_field:?}, name {name_field:?} from {node_id} at {from_incarnation}", path_field = &path.path, name_field = &path.name),
         Some(crate::accepted::AttemptAction::Steps { steps, .. }) => format!("{} step(s): {:?}", steps.len(), steps.iter().map(crate::build::step_key).collect::<Vec<_>>()),
-        Some(crate::accepted::AttemptAction::Terminate { mesh: mesh, path, node_id, from_incarnation, .. }) => format!("termination of the deleted birth {node_id} at {from_incarnation} of path {path_field:?}, name {name_field:?}", path_field = &path.path, name_field = &path.name),
         None => "no targeted action".to_string(),
     };
     let lane = o.mesh.as_ref().map(|m| format!(", in {m}'s drift lane")).unwrap_or_default();
@@ -1421,51 +1368,17 @@ struct FactLog {
     by_build: std::collections::HashMap<BuildId, Vec<usize>>,
 }
 
-/// The indexes [`BuildStateAdapter::recovery_of`], [`BuildStateAdapter::mesh_deleted_of`],
-/// and [`BuildStateAdapter::exits_owed`] answer from,
-/// derived fact by fact in whatever order the facts arrive. Every adapter keeps one: RDM's file and
-/// memory adapters inside their log, an application's adapter beside its own store, filled by
-/// [`BirthIndex::index`] with every fact it appends, absorbs or reads back on open, so the four reads
-/// are point reads of it and never a fold of the fact log.
+/// The index [`BuildStateAdapter::mesh_deleted_of`] answers from, derived fact by fact in whatever order
+/// the facts arrive. Every adapter keeps one: RDM's file and memory adapters inside their log, an
+/// application's adapter beside its own store, filled by [`BirthIndex::index`] with every fact it
+/// appends, absorbs or reads back on open, so the read is a point read of it and never a fold of the
+/// fact log.
 #[derive(Debug, Default, Clone)]
 pub struct BirthIndex {
-    /// The recovery index, in three parts the facts fill in whatever order they arrive (gossip and
-    /// catch-up deliver in any order; once all three are held the answer is the same in every
-    /// order, while a log that holds a recovery's deletion and its `Complete` but not yet its
-    /// `Opened` answers it as a standalone delete's): every deleting workflow's (`retire-node`)
-    /// `NodeDeleted` by the birth `(node_id, incarnation)` it names, to its path, operation, Build
-    /// and attempt...
-    recovery_deletes: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(crate::model::PathName, rdm_core::OperationId, LaneOf, u32)>>,
-    /// ...the attempts of each `(Build, operation)` whose `Complete` is receipted, for the deleting
-    /// operations and a recovery's last (`create-node`)...
-    recovery_completes: std::collections::HashMap<(LaneOf, rdm_core::OperationId), std::collections::BTreeSet<u32>>,
-    /// ...and the attempts each recovery of a birth was opened at, by that birth, with its Build.
-    /// A birth is answered once its `NodeDeleted` and a `Complete` at that attempt or later are both
-    /// held: of the recovery's `node.create` with a structured location when a recovery of the birth was opened in that
-    /// Build at or before the deletion's attempt (its `retire-node` is the recovery's node.delete),
-    /// else of the deleting operation itself. Filled by [`BirthIndex::index`], the one place a fact
-    /// enters the log (own appends, absorbed facts and a journal's replay alike); forgetting a Build
-    /// leaves all three, as it leaves the receipts.
-    recoveries_opened: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(LaneOf, u32)>>,
     /// The mesh.delete completion index: every `MeshDeleted` receipt by the final primary its
     /// manifest names, to its Build, attempt and operation ([`BuildStateAdapter::mesh_deleted_of`]).
     mesh_deleted: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(BuildId, u32, rdm_core::OperationId)>>,
-    /// The index of [`BuildStateAdapter::exits_owed`], per Build, filled by [`BirthIndex::index`] in
-    /// whatever order the facts arrive: the exited birth each attempt opened with
-    /// `AttemptAction::Recover` names, by attempt (the first open of an attempt)...
-    exit_opens: std::collections::HashMap<LaneOf, BTreeMap<u32, (String, crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId)>>,
-    /// The recovery attempts of each lane an adoption launch opened (`AttemptReason::Adoption`).
-    adoption_opens: std::collections::HashMap<LaneOf, std::collections::BTreeSet<u32>>,
-    /// ...every attempt opened, whatever it carries (the next one ends the run of the one before)...
-    opens: std::collections::HashMap<LaneOf, std::collections::BTreeSet<u32>>,
-    /// ...and every attempt claimed or decided, with its verdict once one is held: the first
-    /// appended, as [`fold`] reads it.
-    verdicts: std::collections::HashMap<LaneOf, BTreeMap<u32, Option<AttemptOutcome>>>,
 }
-
-/// A lane of a Build, as the attempt-keyed indexes key it: the Build, and `None` for its fabric lane
-/// or `Some(mesh)` for that mesh's drift lane (R-BI7). One attempt number names one attempt per lane.
-type LaneOf = (BuildId, Option<String>);
 
 /// A derivation over the Build facts, run before any reader sees the facts a writer adds
 /// ([`LocalBuildLog::derive_on_every_fact`]): `derive` over the facts of the Builds it reads, never
@@ -1536,50 +1449,20 @@ impl FactLog {
 }
 
 /// Where an adapter that keeps no log in memory keeps a [`BirthEntry`] ([`BirthEntry::keys`]): under
-/// the birth it names, or under the lane it belongs to. A birth read reads the entries of one key.
+/// the birth it names. A birth read reads the entries of one key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BirthKey {
     /// A birth `(node_id, incarnation)`.
     Birth(crate::model::NodeId, crate::model::IncarnationId),
-    /// A lane of a Build: `None` for its fabric lane, `Some(mesh)` for that mesh's drift lane.
-    Lane(BuildId, Option<String>),
 }
 
 /// One entry of a [`BirthIndex`], derived from one fact ([`birth_entries`]). An adapter that keeps
 /// no log in memory keeps each entry under every key of [`BirthEntry::keys`], by its
 /// [`BirthEntry::slot`] within that key: the first entry written in a slot stands and a later one in
-/// the same slot is not written. The four birth reads then read those keys back ([`BirthRows`]) and
-/// answer from the same derivation ([`BirthIndex::recovery_of_rows`] and its three siblings).
+/// the same slot is not written. The birth read then reads those keys back ([`BirthRows`]) and
+/// answers from the same derivation ([`BirthIndex::mesh_deleted_of_rows`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BirthEntry {
-    /// A deleting workflow's `NodeDeleted` receipt, under the birth it names.
-    Deleted {
-        /// The node id of the birth the receipt names.
-        node_id: crate::model::NodeId,
-        /// The incarnation of the birth the receipt names.
-        incarnation: crate::model::IncarnationId,
-        /// The path and name it was deleted at.
-        path: crate::model::PathName,
-        /// The structured operation and its admitted subject.
-        operation: rdm_core::OperationId,
-        /// The Build the entry belongs to.
-        build_id: BuildId,
-        /// Its lane: `None` for the fabric lane, `Some(mesh)` for that mesh's drift lane.
-        mesh: Option<String>,
-        /// The attempt.
-        attempt: u32,
-    },
-    /// The `Complete` receipt of a deleting operation or of a recovery's last, under its lane.
-    Completed {
-        /// The Build the entry belongs to.
-        build_id: BuildId,
-        /// Its lane: `None` for the fabric lane, `Some(mesh)` for that mesh's drift lane.
-        mesh: Option<String>,
-        /// The structured operation and its admitted subject.
-        operation: rdm_core::OperationId,
-        /// The attempt.
-        attempt: u32,
-    },
     /// A `MeshDeleted` receipt, under the final primary its manifest names.
     MeshDeleted {
         /// The node id of the birth the manifest names its final primary.
@@ -1593,122 +1476,38 @@ pub enum BirthEntry {
         /// The structured operation and its admitted subject.
         operation: rdm_core::OperationId,
     },
-    /// An attempt opened with `AttemptAction::Recover`, under the exited birth and under its lane.
-    RecoveryOpened {
-        /// Explicit owner of the recovered subject, distinct from the attempt lane.
-        subject_mesh: String,
-        /// The node id of the birth the recovery is of.
-        node_id: crate::model::NodeId,
-        /// The incarnation of the birth the recovery is of.
-        incarnation: crate::model::IncarnationId,
-        /// The exited birth's path and name.
-        path: crate::model::PathName,
-        /// The Build the entry belongs to.
-        build_id: BuildId,
-        /// Its lane: `None` for the fabric lane, `Some(mesh)` for that mesh's drift lane.
-        mesh: Option<String>,
-        /// The attempt.
-        attempt: u32,
-        /// When the attempt was opened.
-        opened_at_ms: u64,
-        /// Whether an adoption launch opened it (`AttemptReason::Adoption`, Q156, Q159).
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        adoption: bool,
-    },
-    /// An attempt opened, whatever it carries, under its lane.
-    Opened {
-        /// The Build the entry belongs to.
-        build_id: BuildId,
-        /// Its lane: `None` for the fabric lane, `Some(mesh)` for that mesh's drift lane.
-        mesh: Option<String>,
-        /// The attempt.
-        attempt: u32,
-    },
-    /// An attempt claimed, under its lane.
-    Claimed {
-        /// The Build the entry belongs to.
-        build_id: BuildId,
-        /// Its lane: `None` for the fabric lane, `Some(mesh)` for that mesh's drift lane.
-        mesh: Option<String>,
-        /// The attempt.
-        attempt: u32,
-    },
-    /// An attempt's verdict, under its lane.
-    Decided {
-        /// The Build the entry belongs to.
-        build_id: BuildId,
-        /// Its lane: `None` for the fabric lane, `Some(mesh)` for that mesh's drift lane.
-        mesh: Option<String>,
-        /// The attempt.
-        attempt: u32,
-        /// The verdict.
-        outcome: AttemptOutcome,
-    },
 }
 
-/// A composite receipt-index slot. Operation identity and location remain structured fields.
+/// A composite receipt-index slot. Operation identity remains a structured field.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BirthSlot {
-    event: &'static str,
     build_id: BuildId,
-    mesh: Option<String>,
     attempt: u32,
-    operation: Option<rdm_core::OperationId>,
-    location: Option<crate::model::PathName>,
+    operation: rdm_core::OperationId,
 }
 
 impl BirthEntry {
     /// The keys the entry is kept under.
     pub fn keys(&self) -> Vec<BirthKey> {
-        let lane = |build_id: &BuildId, mesh: &Option<String>| BirthKey::Lane(build_id.clone(), mesh.clone());
         match self {
-            Self::Deleted { node_id, incarnation, .. } | Self::MeshDeleted { node_id, incarnation, .. } => vec![BirthKey::Birth(node_id.clone(), incarnation.clone())],
-            Self::RecoveryOpened { node_id, incarnation, build_id, mesh, .. } => vec![BirthKey::Birth(node_id.clone(), incarnation.clone()), lane(build_id, mesh)],
-            Self::Completed { build_id, mesh, .. } | Self::Opened { build_id, mesh, .. } | Self::Claimed { build_id, mesh, .. } | Self::Decided { build_id, mesh, .. } => vec![lane(build_id, mesh)],
+            Self::MeshDeleted { node_id, incarnation, .. } => vec![BirthKey::Birth(node_id.clone(), incarnation.clone())],
         }
     }
 
     /// The entry's slot within a key: two entries of one slot are one entry, the first written.
     pub fn slot(&self) -> BirthSlot {
-        let slot = |event, build_id: &BuildId, mesh: &Option<String>, attempt, operation, location| BirthSlot { event, build_id: build_id.clone(), mesh: mesh.clone(), attempt, operation, location };
         match self {
-            Self::Deleted { path, operation, build_id, mesh, attempt, .. } => slot("deleted", build_id, mesh, *attempt, Some(operation.clone()), Some(path.clone())),
-            Self::Completed { build_id, mesh, operation, attempt } => slot("completed", build_id, mesh, *attempt, Some(operation.clone()), None),
-            Self::MeshDeleted { build_id, attempt, operation, .. } => slot("mesh-deleted", build_id, &None, *attempt, Some(operation.clone()), None),
-            Self::RecoveryOpened { build_id, mesh, attempt, .. } => slot("recovery-opened", build_id, mesh, *attempt, None, None),
-            Self::Opened { build_id, mesh, attempt } => slot("opened", build_id, mesh, *attempt, None, None),
-            Self::Claimed { build_id, mesh, attempt } => slot("claimed", build_id, mesh, *attempt, None, None),
-            Self::Decided { build_id, mesh, attempt, .. } => slot("decided", build_id, mesh, *attempt, None, None),
+            Self::MeshDeleted { build_id, attempt, operation, .. } => BirthSlot { build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() },
         }
     }
-
 }
 
 /// The entries [`BirthIndex::index`] derives from `fact`: none for a fact no birth read answers from.
 pub fn birth_entries(fact: &BuildFact) -> Vec<BirthEntry> {
-    let mut out = Vec::new();
-    if let BuildFact::Step(s) = fact {
-        let (build_id, mesh, attempt) = (s.build_id.clone(), s.mesh.clone(), s.attempt);
-        if let Some((path, node_id, incarnation)) = recovery_deleted(s) {
-            out.push(BirthEntry::Deleted { node_id, incarnation, path, operation: s.operation.clone(), build_id, mesh, attempt });
-        } else if recovery_completed(s) {
-            out.push(BirthEntry::Completed { build_id, mesh, operation: s.operation.clone(), attempt });
-        } else if let Some((node_id, incarnation)) = mesh_deleted_final(s) {
-            out.push(BirthEntry::MeshDeleted { node_id, incarnation, build_id, attempt, operation: s.operation.clone() });
-        }
-    }
     match fact {
-        BuildFact::Opened(o) => {
-            if let Some(crate::accepted::AttemptAction::Recover { mesh: subject_mesh, path, node_id, from_incarnation, .. }) = &o.action {
-                out.push(BirthEntry::RecoveryOpened { subject_mesh: subject_mesh.clone(), node_id: node_id.clone(), incarnation: from_incarnation.clone(), path: path.clone(), build_id: o.build_id.clone(), mesh: o.mesh.clone(), attempt: o.attempt, opened_at_ms: o.opened_at_ms, adoption: o.reason == AttemptReason::Adoption });
-            }
-            out.push(BirthEntry::Opened { build_id: o.build_id.clone(), mesh: o.mesh.clone(), attempt: o.attempt });
-        }
-        BuildFact::Claim(c) => out.push(BirthEntry::Claimed { build_id: c.build_id.clone(), mesh: c.mesh.clone(), attempt: c.attempt }),
-        BuildFact::Attempt(a) => out.push(BirthEntry::Decided { build_id: a.build_id.clone(), mesh: a.mesh.clone(), attempt: a.attempt, outcome: a.outcome.clone() }),
-        _ => {}
+        BuildFact::Step(s) => mesh_deleted_final(s).map(|(node_id, incarnation)| BirthEntry::MeshDeleted { node_id, incarnation, build_id: s.build_id.clone(), attempt: s.attempt, operation: s.operation.clone() }).into_iter().collect(),
+        _ => Vec::new(),
     }
-    out
 }
 
 /// The entries an adapter keeps under a [`BirthKey`]: a read of that key's rows (a prefix read).
@@ -1731,62 +1530,18 @@ impl BirthIndex {
     /// slot ([`BirthEntry::slot`]) stands; an entry folded twice changes nothing.
     pub fn absorb(&mut self, entry: &BirthEntry) {
         match entry.clone() {
-            BirthEntry::Deleted { node_id, incarnation, path, operation, build_id, mesh, attempt } => {
-                let lane: LaneOf = (build_id, mesh);
-                let held = self.recovery_deletes.entry((node_id, incarnation)).or_default();
-                if !held.iter().any(|(p, o, l, a)| *p == path && *o == operation && *l == lane && *a == attempt) {
-                    held.push((path, operation, lane, attempt));
-                }
-            }
-            BirthEntry::Completed { build_id, mesh, operation, attempt } => {
-                self.recovery_completes.entry(((build_id, mesh), operation)).or_default().insert(attempt);
-            }
             BirthEntry::MeshDeleted { node_id, incarnation, build_id, attempt, operation } => {
                 let held = self.mesh_deleted.entry((node_id, incarnation)).or_default();
                 if !held.iter().any(|(b, a, o)| *b == build_id && *a == attempt && *o == operation) {
                     held.push((build_id, attempt, operation));
                 }
             }
-            BirthEntry::RecoveryOpened { subject_mesh, node_id, incarnation, path, build_id, mesh, attempt, adoption, .. } => {
-                let lane: LaneOf = (build_id, mesh);
-                if adoption {
-                    self.adoption_opens.entry(lane.clone()).or_default().insert(attempt);
-                }
-                let opened = self.recoveries_opened.entry((node_id.clone(), incarnation.clone())).or_default();
-                if !opened.contains(&(lane.clone(), attempt)) {
-                    opened.push((lane.clone(), attempt));
-                }
-                self.exit_opens.entry(lane).or_default().entry(attempt).or_insert((subject_mesh, path, node_id, incarnation));
-            }
-            BirthEntry::Opened { build_id, mesh, attempt } => {
-                self.opens.entry((build_id, mesh)).or_default().insert(attempt);
-            }
-            BirthEntry::Claimed { build_id, mesh, attempt } => {
-                self.verdicts.entry((build_id, mesh)).or_default().entry(attempt).or_insert(None);
-            }
-            BirthEntry::Decided { build_id, mesh, attempt, outcome } => {
-                let held = self.verdicts.entry((build_id, mesh)).or_default().entry(attempt).or_insert(None);
-                if held.is_none() {
-                    *held = Some(outcome);
-                }
-            }
         }
     }
 
-    /// The entries kept under the birth `(node_id, incarnation)` and under every lane they name.
+    /// The entries kept under the birth `(node_id, incarnation)`.
     async fn birth_rows(rows: &dyn BirthRows, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<BirthEntry>, BuildStateError> {
-        let mut out = rows.entries_at(&BirthKey::Birth(node_id.clone(), incarnation.clone())).await?;
-        let lanes: std::collections::BTreeSet<(BuildId, Option<String>)> = out
-            .iter()
-            .filter_map(|e| match e {
-                BirthEntry::Deleted { build_id, mesh, .. } | BirthEntry::RecoveryOpened { build_id, mesh, .. } => Some((build_id.clone(), mesh.clone())),
-                _ => None,
-            })
-            .collect();
-        for (build_id, mesh) in lanes {
-            out.extend(rows.entries_at(&BirthKey::Lane(build_id, mesh)).await?);
-        }
-        Ok(out)
+        rows.entries_at(&BirthKey::Birth(node_id.clone(), incarnation.clone())).await
     }
 
     /// The index of `entries`.
@@ -1803,111 +1558,14 @@ impl BirthIndex {
         Ok(Self::of(&Self::birth_rows(rows, node_id, incarnation).await?))
     }
 
-    /// [`BirthIndex::recovery_of`] over the entries `rows` keeps: the birth's, then its lanes'.
-    pub async fn recovery_of_rows(rows: &dyn BirthRows, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        Ok(Self::of_birth(rows, node_id, incarnation).await?.recovery_of(path, node_id, incarnation))
-    }
-
     /// [`BirthIndex::mesh_deleted_of`] over the entries `rows` keeps.
     pub async fn mesh_deleted_of_rows(rows: &dyn BirthRows, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         Ok(Self::of_birth(rows, node_id, incarnation).await?.mesh_deleted_of(node_id, incarnation))
     }
 
-    /// [`BirthIndex::exits_owed`] over the entries `rows` keeps: the Build's fabric lane and `mesh`'s
-    /// drift lane, then each exited birth they open a recovery of, with its lanes.
-    pub async fn exits_owed_rows(rows: &dyn BirthRows, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
-        let mut index = Self::default();
-        let mut births = std::collections::HashSet::new();
-        for lane in [None, Some(mesh.to_string())] {
-            for entry in rows.entries_at(&BirthKey::Lane(build_id.clone(), lane)).await? {
-                if let BirthEntry::RecoveryOpened { subject_mesh, node_id, incarnation, .. } = &entry {
-                    if subject_mesh == mesh {
-                        births.insert((node_id.clone(), incarnation.clone()));
-                    }
-                }
-                index.absorb(&entry);
-            }
-        }
-        for (node_id, incarnation) in births {
-            for entry in Self::birth_rows(rows, &node_id, &incarnation).await? {
-                index.absorb(&entry);
-            }
-        }
-        Ok(index.exits_owed(build_id, mesh))
-    }
-
-    /// The point read of [`BuildStateAdapter::recovery_of`]: the birth's `NodeDeleted` receipts at
-    /// `path`, each answered by the first `Complete` at its attempt or later of the operation that
-    /// ends its workflow: a recovery's `node.create` with a structured location when a recovery of the birth was opened in
-    /// that Build at or before the deletion's attempt, else the deleting operation itself. The first
-    /// such attempt, with the deleting operation.
-    pub fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, Option<String>, u32, rdm_core::OperationId)> {
-        let birth = (node_id.clone(), incarnation.clone());
-        let opened = self.recoveries_opened.get(&birth);
-        self.recovery_deletes
-            .get(&birth)?
-            .iter()
-            .filter(|(p, _, _, _)| p == path)
-            .filter_map(|(_, operation, lane, deleted)| {
-                // In the deletion's own lane: an attempt number names one attempt per lane.
-                let recovering = opened.is_some_and(|o| o.iter().any(|(l, at)| l == lane && at <= deleted));
-                let ends = if recovering { rdm_core::OperationId::location("node.create", path) } else { operation.clone() };
-                let completed = self.recovery_completes.get(&(lane.clone(), ends))?.range(*deleted..).next()?;
-                Some((lane.0.clone(), lane.1.clone(), *completed, operation.clone()))
-            })
-            .min_by_key(|(_, _, a, _)| *a)
-    }
-
     /// The point read of [`BuildStateAdapter::mesh_deleted_of`]: the first attempt's.
     pub fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, u32, rdm_core::OperationId)> {
         self.mesh_deleted.get(&(node_id.clone(), incarnation.clone()))?.iter().min_by_key(|(_, a, _)| *a).cloned()
-    }
-
-    /// The point read of [`BuildStateAdapter::exits_owed`]: per exited birth of `mesh`, the run its
-    /// latest claimed `Recover` open in `build_id` began, up to the next attempt opened in the Build;
-    /// owed when the run's last claimed attempt holds the verdict `Failed` and [`BirthIndex::recovery_of`]
-    /// does not answer the birth. An open with no claim (no entry in `verdicts`) starts no run.
-    pub fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Vec<OwedExit> {
-        // The fabric lane's recoveries of the mesh's births, and the mesh's own drift lane's.
-        let mut owed: Vec<OwedExit> = [None, Some(mesh.to_string())].into_iter().flat_map(|lane| self.exits_owed_in(&(build_id.clone(), lane), mesh)).collect();
-        owed.sort_by(|a, b| a.path.cmp(&b.path).then(a.attempt.cmp(&b.attempt)));
-        owed
-    }
-
-    /// [`BirthIndex::exits_owed`] in one lane of the Build.
-    fn exits_owed_in(&self, lane: &LaneOf, mesh: &str) -> Vec<OwedExit> {
-        let Some(exit_opens) = self.exit_opens.get(lane) else { return Vec::new() };
-        let claimed = |attempt: &u32| self.verdicts.get(lane).is_some_and(|v| v.contains_key(attempt));
-        // The latest claimed open per birth: the attempts ascend, so the last one seen stands. An open
-        // no one claimed ran nothing, so the run before it stands.
-        let mut latest: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), (u32, crate::model::PathName)> = std::collections::HashMap::new();
-        for (attempt, (subject_mesh, path, node_id, incarnation)) in exit_opens {
-            if subject_mesh == mesh && claimed(attempt) {
-                latest.insert((node_id.clone(), incarnation.clone()), (*attempt, path.clone()));
-            }
-        }
-        let mut owed: Vec<OwedExit> = latest
-            .into_iter()
-            .filter_map(|((node_id, incarnation), (from, path))| {
-                let until = self.opens.get(lane).and_then(|o| o.range(from + 1..).next().copied()).unwrap_or(u32::MAX);
-                let (attempt, verdict) = self.verdicts.get(lane)?.range(from..until).next_back()?;
-                let Some(AttemptOutcome::Failed { reason, code }) = verdict else { return None };
-                // An adoption abandoned because the birth or a live node-admin answered (an adoption
-                // launch's checks after its claim, Q156, NameHeld's code) owes no exit: the birth is
-                // alive. Only that: a recovery failed on any other name conflict owes it still
-                // (node-recovery.md "Failure and receipts", Q159).
-                let adopted = self.adoption_opens.get(lane).is_some_and(|a| a.contains(&from));
-                if adopted && *code == rdm_core::outcome::Code::AlreadyExists {
-                    return None;
-                }
-                if self.recovery_of(&path, &node_id, &incarnation).is_some() {
-                    return None;
-                }
-                Some(OwedExit { path, node_id, incarnation, attempt: *attempt, reason: reason.clone() })
-            })
-            .collect();
-        owed.sort_by(|a, b| a.path.cmp(&b.path).then(a.attempt.cmp(&b.attempt)));
-        owed
     }
 
 }
@@ -2420,16 +2078,8 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         committed_of(self.facts().await?, build)
     }
 
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        Ok(self.log.lock().unwrap().births.recovery_of(path, node_id, incarnation))
-    }
-
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         Ok(self.log.lock().unwrap().births.mesh_deleted_of(node_id, incarnation))
-    }
-
-    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
-        Ok(self.log.lock().unwrap().births.exits_owed(build_id, mesh))
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
@@ -3012,19 +2662,9 @@ impl BuildStateAdapter for FileJournal {
             .map_err(|e| BuildStateError::Io(format!("the read of the Build records did not finish: {e}")))?
     }
 
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.sync_for_read("recovery_of").await?;
-        Ok(self.log.lock().unwrap().births.recovery_of(path, node_id, incarnation))
-    }
-
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.sync_for_read("mesh_deleted_of").await?;
         Ok(self.log.lock().unwrap().births.mesh_deleted_of(node_id, incarnation))
-    }
-
-    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
-        self.sync_for_read("exits_owed").await?;
-        Ok(self.log.lock().unwrap().births.exits_owed(build_id, mesh))
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
@@ -3357,19 +2997,19 @@ mod tests {
         assert_eq!(m.claim_attempt(&claim("b1", 2, "100000000007", "mesh1")).await.unwrap(), ClaimOutcome::NotOpen { next: None });
         assert_eq!(m.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap().state, BuildState::Complete, "a stray claim does not reopen");
         // Two authorities proving the same drift open one attempt: the first opener wins.
-        m.open_attempt(&opened("b1", 2, AttemptReason::ProvenDrift)).await.unwrap();
-        let mut again = opened("b1", 2, AttemptReason::Stop);
+        m.open_attempt(&opened("b1", 2, AttemptReason::Delete)).await.unwrap();
+        let mut again = opened("b1", 2, AttemptReason::Delete);
         again.opened_by = rdm_core::NodeId::parse("100000000002").unwrap();
         m.open_attempt(&again).await.unwrap();
         let b = m.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap();
-        assert_eq!((b.state, b.attempt, b.reason, b.executor), (BuildState::Pending, 1, AttemptReason::ProvenDrift, None));
+        assert_eq!((b.state, b.attempt, b.reason, b.executor), (BuildState::Pending, 1, AttemptReason::Delete, None));
         assert_eq!(m.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(_))).count(), 1);
         assert_eq!(m.list_active().await.unwrap().len(), 1, "the reopened Build is active again");
         assert_eq!(m.claim_attempt(&claim("b1", 3, "100000000008", "mesh1")).await.unwrap(), ClaimOutcome::NotOpen { next: Some(2) }, "only the next attempt");
         assert_eq!(m.claim_attempt(&claim("b1", 2, "100000000008", "mesh1")).await.unwrap(), ClaimOutcome::Won);
         let b = m.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap();
         assert_eq!((b.state, b.attempt, b.executor.as_ref().map(|birth| birth.node_id.as_str())), (BuildState::Running, 2, Some("100000000008")));
-        assert_eq!(m.open_attempt(&opened("b9", 1, AttemptReason::Stop)).await, Err(BuildStateError::UnknownBuild(BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap())));
+        assert_eq!(m.open_attempt(&opened("b9", 1, AttemptReason::Delete)).await, Err(BuildStateError::UnknownBuild(BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap())));
     }
 
     /// Two openers that computed one attempt number from one settled Build: the first append holds it.
@@ -3383,26 +3023,26 @@ mod tests {
         m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         let (inc, other) = (crate::model::IncarnationId::mint(), crate::model::IncarnationId::mint());
         let node_id = crate::model::NodeId::mint();
-        let act = |path: rdm_core::PathName, from: &crate::model::IncarnationId| Some(AttemptAction::Stop { r#type: "node".into(), mesh: "mesh1".into(), path, node_id: node_id.clone(), from_incarnation: from.clone() });
-        let mut first = opened("b1", 2, AttemptReason::ProvenDrift);
+        let act = |path: rdm_core::PathName, from: &crate::model::IncarnationId| Some(AttemptAction::Delete { r#type: "node".into(), mesh: "mesh1".into(), path, node_id: node_id.clone(), from_incarnation: from.clone() });
+        let mut first = opened("b1", 2, AttemptReason::Delete);
         first.action = act(rdm_core::PathName::new("mesh1.node", "2").unwrap(), &inc);
         m.open_attempt(&first).await.unwrap();
-        let mut same = opened("b1", 2, AttemptReason::Stop);
+        let mut same = opened("b1", 2, AttemptReason::Delete);
         same.action = act(rdm_core::PathName::new("mesh1.node", "2").unwrap(), &inc);
         same.opened_by = rdm_core::NodeId::parse("100000000003").unwrap();
         m.open_attempt(&same).await.expect("the same action asked again is the same attempt");
-        let mut other_node = opened("b1", 2, AttemptReason::Stop);
-        other_node.action = Some(AttemptAction::Stop { r#type: "node".into(), mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: other.clone() });
+        let mut other_node = opened("b1", 2, AttemptReason::Delete);
+        other_node.action = Some(AttemptAction::Delete { r#type: "node".into(), mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: other.clone() });
         let err = m.open_attempt(&other_node).await.expect_err("another action asked for the held number");
         match &err {
             BuildStateError::AttemptTaken { build_id, attempt, held, wanted } => {
                 assert_eq!((build_id.to_string(), *attempt), (rdm_core::fixture_crockford60("b1"), 2));
-                assert!(held.contains("stop of path \"mesh1.node\", name \"2\"") && held.contains("proven-drift"), "the refusal names what holds the number: {held}");
-                assert!(wanted.contains("stop of path \"mesh2.node\", name \"1\""), "the refusal names what was asked: {wanted}");
+                assert!(held.contains("delete of path \"mesh1.node\", name \"2\"") && held.contains("delete ("), "the refusal names what holds the number: {held}");
+                assert!(wanted.contains("delete of path \"mesh2.node\", name \"1\""), "the refusal names what was asked: {wanted}");
             }
             other => panic!("not AttemptTaken: {other:?}"),
         }
-        let mut other_birth = opened("b1", 2, AttemptReason::Stop);
+        let mut other_birth = opened("b1", 2, AttemptReason::Delete);
         other_birth.action = act(rdm_core::PathName::new("mesh1.node", "2").unwrap(), &other);
         assert!(matches!(m.open_attempt(&other_birth).await, Err(BuildStateError::AttemptTaken { .. })), "the same path targeted to another birth is another action");
         assert_eq!(m.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(_))).count(), 1, "the refused opens appended nothing");
@@ -3652,14 +3292,14 @@ mod tests {
             assert_eq!(s.newest_accepted_at_ms().await.unwrap(), Some(20), "the index's head is the failed b1, whatever its state");
             // A stop of b0's birth is an attempt of it: in progress while it runs, and b0 stays the known
             // state when it fails.
-            s.open_attempt(&opened("b0", 2, AttemptReason::Stop)).await.unwrap();
+            s.open_attempt(&opened("b0", 2, AttemptReason::Delete)).await.unwrap();
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b0")));
             s.claim_attempt(&claim("b0", 2, "100000000007", "mesh1")).await.unwrap();
             s.append_attempt_receipt(&attempt("b0", 2, AttemptOutcome::Failed { reason: "stop failed".into() , code: rdm_core::outcome::Code::FailedPrecondition })).await.unwrap();
             assert_eq!(s.read_build(&id("b0")).await.unwrap().state, BuildState::Failed);
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")), "an attempt of an unchanged topology that failed never makes an older Build current");
             // The failed b1 resubmitted: its next attempt makes it the Build in progress.
-            s.open_attempt(&opened("b1", 2, AttemptReason::PrimaryMoved)).await.unwrap();
+            s.open_attempt(&opened("b1", 2, AttemptReason::Steps)).await.unwrap();
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b1")));
             s.claim_attempt(&claim("b1", 2, "100000000007", "mesh1")).await.unwrap();
             s.append_attempt_receipt(&attempt("b1", 2, AttemptOutcome::Converged)).await.unwrap();
@@ -3715,39 +3355,6 @@ mod tests {
         assert_eq!(p.run_of(p.attempt_to_drive()), 3, "attempt 4 continues run 3");
     }
 
-    /// CONTRACT (node-recovery.md "Failure and receipts", Q159: the no-retry exception is scoped to an
-    /// adoption abandoned because a live admin answered, never a generic name conflict): in mesh1's lane of
-    /// one Build, the recovery of mesh1.node.1's exited birth fails on a name conflict (NameHeld's code), and
-    /// an adoption launch's attempt for mesh1.node-admin.1's lost birth is abandoned because a live admin
-    /// answered (the same code). The recovery's exit is still owed, so the mesh-primary submits it again;
-    /// the abandoned adoption owes none. Must NOT happen: a recovery that failed on a name conflict dropped
-    /// from the owed exits, or the abandoned adoption retried against a live admin.
-    #[tokio::test]
-    async fn only_an_adoption_abandoned_because_a_live_admin_answered_owes_no_exit() {
-        let m = MemoryBuildStateAdapter::new();
-        let b1 = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
-        let (rpc, admin): (crate::model::PathName, crate::model::PathName) = (rdm_core::PathName::new("mesh1.node", "1").unwrap(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap());
-        let (rpc_birth, admin_birth) = ((crate::model::NodeId::mint(), crate::model::IncarnationId::mint()), (crate::model::NodeId::mint(), crate::model::IncarnationId::mint()));
-        let lane = || Some("mesh1".to_string());
-        let open = |attempt: u32, reason: AttemptReason, path: &crate::model::PathName, r#type: &str, birth: &(crate::model::NodeId, crate::model::IncarnationId)| {
-            BuildFact::Opened(AttemptOpened {
-                mesh: lane(),
-                build_id: b1.clone(),
-                attempt,
-                reason,
-                action: Some(crate::accepted::AttemptAction::Recover { r#type: r#type.to_string(), mesh: "mesh1".into(), path: path.clone(), node_id: birth.0.clone(), from_incarnation: birth.1.clone(), backbone: false }),
-                opened_by: rdm_core::NodeId::parse("200000000000").unwrap(),
-                opened_at_ms: 2,
-                context: None,
-            })
-        };
-        let claimed = |attempt: u32| BuildFact::Claim(BuildAttemptClaim { mesh: lane(), ..claim("b1", attempt, "100000000002", "mesh1") });
-        let name_held = |attempt: u32| BuildFact::Attempt(BuildAttemptReceipt { mesh: lane(), ..attempt_of("b1", attempt, AttemptOutcome::Failed { reason: "NameHeld".into(), code: rdm_core::outcome::Code::AlreadyExists }) });
-        m.absorb(&[BuildFact::Accepted(intent("b1")), open(1, AttemptReason::Recovery, &rpc, "node", &rpc_birth), claimed(1), name_held(1), open(2, AttemptReason::Adoption, &admin, "node-admin", &admin_birth), claimed(2), name_held(2)]).await;
-        let owed: Vec<(rdm_core::PathName, u32)> = m.exits_owed(&b1, "mesh1").await.unwrap().into_iter().map(|o| (o.path, o.attempt)).collect();
-        assert_eq!(owed, vec![(rdm_core::PathName::new("mesh1.node", "1").unwrap(), 1)], "the recovery failed on a name conflict is owed again; the abandoned adoption is not");
-    }
-
     /// CONTRACT (R-BI3: "a caller resubmits it"; one Build in flight): a failed Build may be driven
     /// again while it is newer than the current Build and the current Build is not in progress; a
     /// Build older than the current one, or any Build while another is in progress, is not.
@@ -3765,239 +3372,9 @@ mod tests {
         assert!(drivable(&s, &p("b1").await).await.unwrap(), "the current Build");
         assert!(drivable(&s, &p("b2").await).await.unwrap(), "a failed Build accepted after the current one");
         assert!(!drivable(&s, &p("b0").await).await.unwrap(), "a failed Build older than the current one");
-        s.open_attempt(&opened("b1", 2, AttemptReason::Stop)).await.unwrap();
+        s.open_attempt(&opened("b1", 2, AttemptReason::Delete)).await.unwrap();
         assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b1")));
         assert!(!drivable(&s, &p("b2").await).await.unwrap(), "one Build in flight: not while the current one is in progress");
-    }
-
-    /// CONTRACT (node-recovery.md "A repeat submit answers AlreadyApplied ... never a second
-    /// recovery"; "Steps"; proposal node-properties-own-commands.md §5 item 8: recovery is node.delete
-    /// then node.create, no step 6): a recovery's exited birth is answered by the recovery index once
-    /// the recovery's last operation, its node.create (`node.create` with a structured location), completed at or after
-    /// the deletion's attempt: its node.delete's `NodeDeleted` and `Complete` alone are not a
-    /// recovery, nor is a create's `Complete` from before the deletion. The index is folded wherever a
-    /// fact enters the log, so a restarted fabric-primary's journal replay and absorbed facts, in any
-    /// order, answer the point read as an own append does, and the first recovering attempt stays the
-    /// answer, naming the operation that deleted the birth.
-    /// Must NOT happen: a recovery answered before its create completed (a resubmit then answers
-    /// AlreadyApplied for a path no node was created at), a recovery left unanswered after its create
-    /// completed (waiting on a node.update no plan runs), or a restarted admin answering None for a
-    /// birth its journal holds recovered.
-    #[tokio::test]
-    async fn the_recovery_index_is_folded_on_append_replay_and_absorb() {
-        let (path, node_id, incarnation): (crate::model::PathName, _, _) = (rdm_core::PathName::new("mesh1.node", "1").unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
-        // A recovery's receipts as its two operations write them: the delete's NodeDeleted names
-        // the exited birth (its lifecycle operation), and each operation's Complete commits no output.
-        let receipt = |build: &str, attempt: u32, operation: &str, step: &str| BuildStepReceipt {
-            mesh: None,
-            build_id: BuildId::parse(&rdm_core::fixture_crockford60(build)).unwrap(),
-            attempt,
-            operation: if operation == "node.create" { rdm_core::OperationId::location(operation, &path) } else { rdm_core::OperationId::node(operation, &node_id) },
-            step: step.into(),
-            outcome: StepOutcome::Complete,
-            output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: rdm_core::fixture_crockford60(build), attempt, operation: if operation == "node.create" { rdm_core::OperationId::location(operation, &path) } else { rdm_core::OperationId::node(operation, &node_id) }, node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
-            }),
-            executor: Some(fixture_birth("100000000001")),
-        };
-        let opened = |build: &str, attempt: u32| AttemptOpened {
-            mesh: None,
-            build_id: BuildId::parse(&rdm_core::fixture_crockford60(build)).unwrap(),
-            attempt,
-            reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { r#type: "node".into(), mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: false }),
-            opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
-            opened_at_ms: 1,
-            context: None,
-        };
-        let deleted = rdm_core::OperationId::node("node.delete", &node_id);
-        let dir = tmp();
-        {
-            let j = open_at(&dir).await.unwrap();
-            j.publish_accepted(&intent("b1")).await.unwrap();
-            j.claim_attempt(&claim("b1", 1, "100000000001", "mesh1")).await.unwrap();
-            j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
-            j.open_attempt(&opened("b1", 2)).await.unwrap();
-            j.append_step_receipt(&receipt("b1", 2, "node.delete", "NodeDeleted")).await.unwrap();
-            j.append_step_receipt(&receipt("b1", 2, "node.delete", "Complete")).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "deleted, the create owed: not recovered");
-            j.append_step_receipt(&receipt("b1", 1, "node.create", "Complete")).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "the path's create from before the deletion: not recovered");
-            j.append_step_receipt(&receipt("b1", 3, "node.create", "Complete")).await.unwrap();
-            j.append_step_receipt(&receipt("b1", 4, "node.create", "Complete")).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "own append: the first attempt that completed the recovery");
-            assert_eq!(super::BirthIndex::recovery_of_rows(&rows_of(&j).await, &path, &node_id, &incarnation).await.unwrap(), j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), "kept as keyed rows and read back per birth and lane");
-        }
-        let j = open_at(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "journal replay");
-        assert_eq!(j.recovery_of(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), &node_id, &incarnation).await.unwrap(), None, "another path's operation");
-        let m = MemoryBuildStateAdapter::new();
-        // Gossip delivers in any order: the create's Complete heard first, the attempt's opening last.
-        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("b1", 2, "node.create", "Complete"))]).await;
-        assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "a Complete alone names no birth");
-        m.absorb(&[BuildFact::Step(receipt("b1", 2, "node.delete", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "node.delete", "Complete")), BuildFact::Opened(opened("b1", 2))]).await;
-        assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, deleted.clone())), "absorbed, in any order");
-        assert_eq!(super::BirthIndex::recovery_of_rows(&rows_of(&m).await, &path, &node_id, &incarnation).await.unwrap(), m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), "absorbed, kept as keyed rows");
-        // An application's adapter keeps its own index beside its store, fed every fact it holds.
-        let mut index = BirthIndex::default();
-        for fact in [BuildFact::Opened(opened("b1", 2)), BuildFact::Step(receipt("b1", 2, "node.delete", "Complete")), BuildFact::Step(receipt("b1", 2, "node.create", "Complete")), BuildFact::Step(receipt("b1", 2, "node.delete", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "node.delete", "NodeDeleted"))] {
-            index.index(&fact);
-        }
-        assert_eq!(index.recovery_of(&path, &node_id, &incarnation), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, deleted.clone())), "a standalone index, fed in any order and one fact twice, answers as the adapter does");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// CONTRACT (node-recovery.md "Failure and receipts": the mesh-primary submits again an exited
-    /// birth whose workflow ended Failed; CLAUDE.md read rule: a point read through the index its
-    /// caller uses, nothing held in memory between reads): `exits_owed(build, mesh)` answers an exited
-    /// birth of `mesh` once the run its latest `Recover` open began ends with its last claimed attempt
-    /// `Failed` and the birth is not done. A run in flight (opened and not claimed, or claimed with no
-    /// verdict) is not owed; the next open of another birth bounds the run before it; a birth of
-    /// another mesh or another Build is not answered; once the birth's `create-node`, the recovery's
-    /// last operation, completes it is owed no longer. Folded wherever a fact enters the log, so a restarted admin's journal replay
-    /// and facts absorbed in reverse order answer as own appends do. Must NOT happen: an owed exit
-    /// lost by a restart, a run in flight answered owed, or a done birth answered owed.
-    #[tokio::test]
-    async fn an_exit_whose_workflow_ended_failed_is_owed_until_it_is_done_on_append_replay_and_absorb() {
-        let birth = |path: rdm_core::PathName, mesh: &str| (path, crate::model::NodeId::mint(), crate::model::IncarnationId::mint(), mesh.to_owned());
-        let (r, q) = (birth(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2"), birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"));
-        let receipt = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId, String), attempt: u32, operation: &str, step: &str| BuildStepReceipt {
-            mesh: None,
-            build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
-            attempt,
-            operation: if operation == "node.create" { rdm_core::OperationId::location(operation, &b.0) } else { rdm_core::OperationId::node(operation, &b.1) },
-            step: step.into(),
-            outcome: StepOutcome::Complete,
-            output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { r#type: "node".into(), mesh: b.3.clone(), build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: if operation == "node.create" { rdm_core::OperationId::location(operation, &b.0) } else { rdm_core::OperationId::node(operation, &b.1) }, node_id: b.1.clone(), incarnation: b.2.clone(), name: b.0.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
-            }),
-            executor: Some(fixture_birth("100000000003")),
-        };
-        let open = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId, String), attempt: u32| AttemptOpened {
-            mesh: None,
-            build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
-            attempt,
-            reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { r#type: "node".into(), mesh: b.3.clone(), path: b.0.clone(), node_id: b.1.clone(), from_incarnation: b.2.clone(), backbone: false }),
-            opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
-            opened_at_ms: 1,
-            context: None,
-        };
-        let failed = |n: u32, why: &str| attempt("b1", n, AttemptOutcome::Failed { reason: why.into() , code: rdm_core::outcome::Code::FailedPrecondition });
-        let owed = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId, String), attempt: u32, reason: &str| OwedExit { path: b.0.clone(), node_id: b.1.clone(), incarnation: b.2.clone(), attempt, reason: reason.into() };
-        let b1 = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
-        let mut facts: Vec<BuildFact> = Vec::new();
-        let dir = tmp();
-        {
-            let j = open_at(&dir).await.unwrap();
-            let mut put = async |f: BuildFact| {
-                match &f {
-                    BuildFact::Accepted(a) => j.publish_accepted(a).await.unwrap(),
-                    BuildFact::Opened(o) => j.open_attempt(o).await.unwrap(),
-                    BuildFact::Claim(c) => assert_eq!(j.claim_attempt(c).await.unwrap(), ClaimOutcome::Won),
-                    BuildFact::Step(s) => j.append_step_receipt(s).await.unwrap(),
-                    BuildFact::Attempt(a) => j.append_attempt_receipt(a).await.unwrap(),
-                    BuildFact::Forget { .. } => unreachable!(),
-                }
-                facts.push(f);
-            };
-            for f in [BuildFact::Accepted(intent("b1")), BuildFact::Accepted(intent("b2")), BuildFact::Claim(claim("b1", 1, "100000000001", "mesh1")), BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::Converged)), BuildFact::Opened(open(&r, 2))] {
-                put(f).await;
-            }
-            assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![], "opened, not claimed: in flight");
-            put(BuildFact::Claim(claim("b1", 2, "100000000003", "mesh2"))).await;
-            put(BuildFact::Step(receipt(&r, 2, "node.delete", "NodeDeleted"))).await;
-            put(BuildFact::Step(receipt(&r, 2, "node.delete", "Complete"))).await;
-            assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![], "claimed, no verdict: in flight");
-            put(BuildFact::Attempt(failed(2, "node.create: PrepareStorage"))).await;
-            assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![owed(&r, 2, "node.create: PrepareStorage")], "deleted, its create failed: owed");
-            // Another mesh's birth opens the next attempt and fails: it bounds the run before it.
-            for f in [BuildFact::Opened(open(&q, 3)), BuildFact::Claim(claim("b1", 3, "100000000001", "mesh1")), BuildFact::Attempt(failed(3, "q's create"))] {
-                put(f).await;
-            }
-            assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![owed(&r, 2, "node.create: PrepareStorage")], "the next open bounds the run; the other mesh's birth is not answered");
-            assert_eq!(j.exits_owed(&b1, "mesh1").await.unwrap(), vec![owed(&q, 3, "q's create")], "the other mesh answers its own");
-            let rows = rows_of(&j).await;
-            assert_eq!(super::BirthIndex::exits_owed_rows(&rows, &b1, "mesh2").await.unwrap(), j.exits_owed(&b1, "mesh2").await.unwrap(), "mesh2's, kept as keyed rows");
-            assert_eq!(super::BirthIndex::exits_owed_rows(&rows, &b1, "mesh1").await.unwrap(), j.exits_owed(&b1, "mesh1").await.unwrap(), "mesh1's, kept as keyed rows");
-            assert_eq!(j.exits_owed(&BuildId::parse(&rdm_core::fixture_crockford60("b2")).unwrap(), "mesh2").await.unwrap(), vec![], "another Build holds none");
-            for f in [BuildFact::Opened(open(&r, 4)), BuildFact::Claim(claim("b1", 4, "100000000004", "mesh2"))] {
-                put(f).await;
-            }
-            assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![], "submitted again and claimed: in flight");
-            put(BuildFact::Attempt(failed(4, "node.create: PrepareStorage again"))).await;
-        }
-        let j = open_at(&dir).await.unwrap(); // the admin restarted, or another took the role
-        assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![owed(&r, 4, "node.create: PrepareStorage again")], "journal replay: the latest run's Failed attempt");
-        for f in [
-            BuildFact::Opened(open(&r, 5)),
-            BuildFact::Claim(claim("b1", 5, "100000000004", "mesh2")),
-            BuildFact::Step(receipt(&r, 5, "node.create", "Complete")),
-            BuildFact::Attempt(attempt("b1", 5, AttemptOutcome::Converged)),
-        ] {
-            match &f {
-                BuildFact::Opened(o) => j.open_attempt(o).await.unwrap(),
-                BuildFact::Claim(c) => assert_eq!(j.claim_attempt(c).await.unwrap(), ClaimOutcome::Won),
-                BuildFact::Step(s) => j.append_step_receipt(s).await.unwrap(),
-                BuildFact::Attempt(a) => j.append_attempt_receipt(a).await.unwrap(),
-                _ => unreachable!(),
-            }
-            facts.push(f);
-        }
-        assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![], "created: done, owed no longer");
-        assert_eq!(j.exits_owed(&b1, "mesh1").await.unwrap(), vec![owed(&q, 3, "q's create")], "the other mesh's run is untouched");
-        let m = MemoryBuildStateAdapter::new();
-        facts.reverse();
-        m.absorb(&facts).await;
-        assert_eq!(m.exits_owed(&b1, "mesh2").await.unwrap(), vec![], "absorbed in reverse order: done");
-        assert_eq!(m.exits_owed(&b1, "mesh1").await.unwrap(), vec![owed(&q, 3, "q's create")], "absorbed in reverse order: the other mesh's owed exit");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// CONTRACT (node-recovery.md:5-7, recovery is for "a member that exits outside any workflow";
-    /// "Failure and receipts": "An exit during a workflow belongs to that workflow"): a birth a
-    /// `retire-node` operation deleted (its `NodeDeleted` receipt names the exact
-    /// birth, and the operation's `Complete` at that attempt or later is held) is answered by the
-    /// recovery index as that workflow's attempt, folded on append, journal replay and absorb alike.
-    /// Must NOT happen: `None` for a birth a workflow deleted, which admits a recovery of it.
-    #[tokio::test]
-    async fn a_birth_a_delete_deleted_is_answered_by_that_workflow() {
-        let path: crate::model::PathName = rdm_core::PathName::new("mesh2.node", "2").unwrap();
-        let receipt = |kind: &str, attempt: u32, step: &str, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId| BuildStepReceipt {
-            mesh: None,
-            build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
-            attempt,
-            operation: rdm_core::OperationId::node(kind, node_id),
-            step: step.into(),
-            outcome: StepOutcome::Complete,
-            output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh2".to_owned(), build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: rdm_core::OperationId::node(kind, node_id), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
-            }),
-            executor: Some(fixture_birth("100000000003")),
-        };
-        let replaced = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
-        let deleted = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
-        let dir = tmp();
-        {
-            let j = open_at(&dir).await.unwrap();
-            j.publish_accepted(&intent("b1")).await.unwrap();
-            j.append_step_receipt(&receipt("node.delete", 2, "NodeDeleted", &replaced.0, &replaced.1)).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "deleted, the delete not complete: its next attempt finishes it");
-            j.append_step_receipt(&receipt("node.delete", 2, "Complete", &replaced.0, &replaced.1)).await.unwrap();
-            j.append_step_receipt(&receipt("node.delete", 3, "NodeDeleted", &deleted.0, &deleted.1)).await.unwrap();
-            j.append_step_receipt(&receipt("node.delete", 3, "Complete", &deleted.0, &deleted.1)).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, rdm_core::OperationId::node("node.delete", &replaced.0))), "own append: the first delete that deleted its birth");
-            assert_eq!(j.recovery_of(&path, &deleted.0, &deleted.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 3, rdm_core::OperationId::node("node.delete", &deleted.0))), "own append: the delete that deleted the birth");
-        }
-        let j = open_at(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, rdm_core::OperationId::node("node.delete", &replaced.0))), "journal replay");
-        assert_eq!(j.recovery_of(&rdm_core::PathName::new("mesh2.node", "1").unwrap(), &replaced.0, &replaced.1).await.unwrap(), None, "another path's operation");
-        let m = MemoryBuildStateAdapter::new();
-        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("node.delete", 2, "Complete", &replaced.0, &replaced.1))]).await;
-        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "a Complete alone names no birth");
-        m.absorb(&[BuildFact::Step(receipt("node.delete", 2, "NodeDeleted", &replaced.0, &replaced.1))]).await;
-        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, rdm_core::OperationId::node("node.delete", &replaced.0))), "absorbed, in either order");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// CONTRACT (Q28 A: "a mesh-audit ratchet for the store layout"; R-SR1, R-SR3): the store root's
@@ -4098,14 +3475,14 @@ mod tests {
         assert!(offenders.is_empty(), "only build_state.rs, the file backend's construction and store_root_boot's prepared store root may open a journal: {offenders:?}");
     }
 
-    /// An attempt of `id` opened on `mesh`'s drift lane (R-BI7): the recovery of `path`'s exited birth.
+    /// An attempt of `id` opened on `mesh`'s lane: the delete of a birth at `path`.
     fn lane_open(id: &str, mesh: &str, attempt: u32, path: rdm_core::PathName) -> AttemptOpened {
         AttemptOpened {
             mesh: Some(mesh.into()),
             build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(),
             attempt,
-            reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { r#type: "node".into(), mesh: mesh.into(), path, node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint(), backbone: false }),
+            reason: AttemptReason::Delete,
+            action: Some(crate::accepted::AttemptAction::Delete { r#type: "node".into(), mesh: mesh.into(), path, node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }),
             opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
             opened_at_ms: 6,
             context: None,

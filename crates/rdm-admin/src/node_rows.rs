@@ -660,9 +660,9 @@ impl NodeRows {
     /// row was written by that same operation of that same Build; any other row, or none, answers
     /// `None`. Nothing is written. A read that fails is named.
     /// Beside the answer, the row the read returned (`None`: none stands at `name`), whatever it holds.
-    pub async fn allocation_at(&self, name: &PathName, build_id: &crate::build::BuildId, operation: &rdm_core::OperationId) -> Result<(Option<(NodeId, Allocation)>, Option<NodeRow>), String> {
-        let row = record_at(&*self.storage, name).await.map_err(|e| format!("{}: the record at path {name_path:?}, name {name_name:?} could not be read for action {action}, subject {operation_subject:?}, step {operation_step:?} (Build {build_id}): {e}", self.me_id, name_path = &name.path, name_name = &name.name, action = &operation.action, operation_subject = &operation.subject, operation_step = operation.recipe_step))?;
-        let written = row.clone().filter(|r| r.status != NodeStatus::Deleted).and_then(|r| r.allocated.filter(|a| &a.build_id == build_id && a.operation == *operation).map(|a| (r.node_id, a)));
+    pub async fn allocation_at(&self, name: &PathName, build_id: Option<&crate::build::BuildId>, operation: &rdm_core::OperationId) -> Result<(Option<(NodeId, Allocation)>, Option<NodeRow>), String> {
+        let row = record_at(&*self.storage, name).await.map_err(|e| format!("{}: the record at path {name_path:?}, name {name_name:?} could not be read for action {action}, subject {operation_subject:?}, step {operation_step:?} (Build {build}): {e}", self.me_id, name_path = &name.path, name_name = &name.name, action = &operation.action, operation_subject = &operation.subject, operation_step = operation.recipe_step, build = crate::deployment::pipeline::build_log(build_id)))?;
+        let written = row.clone().filter(|r| r.status != NodeStatus::Deleted).and_then(|r| r.allocated.filter(|a| a.build_id.as_ref() == build_id && a.operation == *operation).map(|a| (r.node_id, a)));
         Ok((written, row))
     }
 
@@ -1624,7 +1624,7 @@ mod tests {
             if retained { old.replacement_from = Some(name.clone()); }
             storage.put_node(&old).await.unwrap();
             let id = NodeId::mint();
-            let allocation = Allocation { predecessor: Some(crate::storage::BirthRef { node_id: old.node_id.clone(), incarnation_id: incarnation }), build_id: rdm_core::BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &name), incarnation: IncarnationId::mint(), deployment_id: crate::model::DeploymentId::mint() };
+            let allocation = Allocation { predecessor: Some(crate::storage::BirthRef { node_id: old.node_id.clone(), incarnation_id: incarnation }), build_id: Some(rdm_core::BuildId::mint()), operation: rdm_core::OperationId::location("node.create", &name), incarnation: IncarnationId::mint(), deployment_id: crate::model::DeploymentId::mint() };
             let mut wrong = allocation.clone();
             wrong.predecessor.as_mut().unwrap().incarnation_id = IncarnationId::mint();
             assert!(seeded_put(&storage, &written, &name, &name, "mesh1", "node", &id, NodeStatus::Pending, &BTreeMap::new(), Some(&wrong), wrong.predecessor.as_ref(), None, &Default::default(), None, of, &tracing::Span::none(), "").await.is_err());
@@ -1732,7 +1732,7 @@ mod tests {
         };
         storage.put_properties(&own).await.unwrap();
         let new = NodeId::mint();
-        let allocated = Allocation { predecessor: Some(crate::storage::BirthRef { node_id: old.clone(), incarnation_id: old_incarnation.clone() }), build_id, operation: rdm_core::OperationId::location("node.create", &name), incarnation: IncarnationId::mint(), deployment_id: crate::model::DeploymentId::mint() };
+        let allocated = Allocation { predecessor: Some(crate::storage::BirthRef { node_id: old.clone(), incarnation_id: old_incarnation.clone() }), build_id: Some(build_id), operation: rdm_core::OperationId::location("node.create", &name), incarnation: IncarnationId::mint(), deployment_id: crate::model::DeploymentId::mint() };
         let empty_config = BTreeMap::new();
         let empty_tags = Default::default();
         let span = tracing::Span::none();

@@ -129,10 +129,8 @@ async fn command_mesh_join(
     // first join's row, and the birth would stay Pending.
     let operation = rdm_core::OperationId::new("node.mesh.join", rdm_core::OperationSubject::Birth { node_id: node.node_id.clone(), incarnation: incarnation.clone() })
         .in_occurrence(rdm_core::OperationOccurrenceId::mint());
-    let (build_id, attempt) = match builds.current().await {
-        Ok(Some(b)) => (b.build_id.to_string(), b.attempt),
-        _ => (String::new(), 0),
-    };
+    // A command back is the primary's own work, never a Build or part of one (Q342).
+    let (build_id, attempt) = (rdm_core::LifecycleOp::NO_BUILD.to_string(), rdm_core::LifecycleOp::NO_ATTEMPT);
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-mesh-join-commanded",
         node_path = %node.name.path, node_name = %node.name.name,
@@ -183,12 +181,13 @@ async fn command_mesh_join(
         if let Some(ids) = notice {
             crate::node_investigation::write_node_investigated(investigated, ids, node, incarnation, crate::wiring::NodeInvestigatedVerdict::Reached, crate::wiring::NodeInvestigatedNext::Rejoin).await;
         }
+        // The command carries this admin's held mesh-primary record of the birth's mesh, so a
+        // commanded node-admin runs its election over the same records (D57; Q335).
         let req = StatusRequest::JoinMesh {
             node_id: node.node_id.clone(),
             incarnation: incarnation.clone(),
-            build_id,
-            attempt,
             operation,
+            primary: digest_view.primaries.mesh(&node.mesh),
         };
         let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &CallOptions::default()).await;
         status_door.commands.close(&command);

@@ -70,7 +70,7 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         (ApplyNodeName { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap() }, "130c3031323334353637383961620c3977637072666777767468790a6d657368312e6e6f64650131"),
         // node_id | incarnation | name "1.old" (the name only, never its path)
         (UpdateName { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "1-old").unwrap() }, "140c3031323334353637383961620c3977637072666777767468790a6d657368312e6e6f646505312d6f6c64"),
-        (DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "150c3031323334353637383961620c39776370726667777674687901010c333132333435363738396162"),
+        (Reserved21 { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "150c3031323334353637383961620c39776370726667777674687901010c333132333435363738396162"),
         (GetNodes { select: NodeSelect::Mesh("mesh1".into()) }, "1601056d65736831"),
         (GetMeshes { mesh: Some("mesh1".into()) }, "1701056d65736831"),
         (GetFabric, "18"),
@@ -79,10 +79,10 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         (CreateTags { node_id: node(), incarnation: birth(), labels: ["red".to_string()].into() }, "1a0c3031323334353637383961620c3977637072666777767468790103726564"),
         // node_id | incarnation | scope Labels (1) (len 1: "red")
         (DeleteTags { node_id: node(), incarnation: birth(), scope: TagScope::Labels(["red".to_string()].into()) }, "1b0c3031323334353637383961620c397763707266677776746879010103726564"),
-        // node_id | incarnation | build_id | attempt 1 | operation "join-mesh:mesh1.node.1"
-        (JoinMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("join-mesh:mesh1.node.1") }, "1c0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201166a6f696e2d6d6573683a6d657368312e6e6f64652e31000000"),
+        // node_id | incarnation | operation "join-mesh:mesh1.node.1" (Q342: no Build, no attempt) | primary None (D57)
+        (JoinMesh { node_id: node(), incarnation: birth(), operation: rdm_core::OperationId::unscoped("join-mesh:mesh1.node.1"), primary: None }, "1c0c3031323334353637383961620c397763707266677776746879156a6f696e2d6d6573683a6d657368312e7270632e3100000000"),
         // node_id | incarnation | build_id | attempt 1 | operation "leave-mesh:mesh1.node.1"
-        (LeaveMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("leave-mesh:mesh1.node.1") }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201176c656176652d6d6573683a6d657368312e6e6f64652e31000000"),
+        (LeaveMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("leave-mesh:mesh1.node.1") }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201166c656176652d6d6573683a6d657368312e7270632e31000000"),
         // node_id | incarnation | cert (len 3) (i145 e3, node.cert.renew)
         (RenewCert { node_id: node(), incarnation: birth(), cert: vec![1, 2, 3] }, "1e0c3031323334353637383961620c39776370726667777674687903010203"),
         // node_id | incarnation | key "ab" | cert "cd" (node.issuer.update)
@@ -165,8 +165,8 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
         (NameHeld { path: "p".into(), name: "n".into(), by: node() }, "1c0170016e0c303132333435363738396162"),
         (NodeRowRefused { node: "n".into(), reason: "r".into() }, "1d016e0172"),
         (NameNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "1e016e01610172"),
-        (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![], receipt: None }, "1f010c333132333435363738396162000000"),
-        (RejectedConnectionScope { reason: "r".into() }, "200172"),
+        (Reserved31 { closed: vec![connection()], not_open: vec![], held: vec![], receipt: None }, "1f010c333132333435363738396162000000"),
+        (Reserved32 { reason: "r".into() }, "200172"),
         (
             Nodes { nodes: vec![node_view()] },
             concat!(
@@ -269,21 +269,6 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
     }
     assert_eq!(variants.len(), Status::REPLY_VARIANTS as usize);
     crate::outcome_codes::check_malformed::<Status>();
-}
-
-/// CONTRACT: a `ConnectionsDeleted` carries its `ConnectionsReceipt` in frozen bytes after the ids it
-/// closed, did not find open and still holds: absent for a list of ids, present for `All`.
-#[test]
-fn a_connections_deleted_reply_carries_its_receipt_in_frozen_bytes() {
-    use StatusReply::ConnectionsDeleted;
-    for (reply, hex) in [
-        (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![], receipt: None }, "1f010c333132333435363738396162000000"),
-        (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![], receipt: Some(ConnectionsReceipt::Established { in_flight: 0, closed: vec![connection()] }) }, "1f010c3331323334353637383961620000010000010c333132333435363738396162"),
-    ] {
-        let expected = bytes(hex);
-        assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");
-        assert_eq!(Status::decode_reply(&expected).unwrap(), reply);
-    }
 }
 
 /// CONTRACT: the `ConnectionsReceipt` a `Stopped` carries is frozen: `Established` is variant 0 with
@@ -391,10 +376,10 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
         (rdm_core::status::RootsPhase::Minted, "00"), (rdm_core::status::RootsPhase::Distributed, "01"),
         (rdm_core::status::RootsPhase::CaRotated, "02"), (rdm_core::status::RootsPhase::Updated, "03"),
     ] { golden(phase, expected); }
-    // DeclareNodeState's operation (i146 Q36): build_id | attempt | operation, and its Option.
-    let op = DeclaredOperation { build_id: "b".into(), attempt: 2, operation: rdm_core::OperationId::unscoped("node.stop:m") };
-    golden(op.clone(), "0162020b6e6f64652e73746f703a6d000000");
-    golden(Some(op), "010162020b6e6f64652e73746f703a6d000000");
+    // DeclareNodeState's operation (i146 Q36, Q342): the operation alone, and its Option.
+    let op = DeclaredOperation { operation: rdm_core::OperationId::unscoped("node.stop:m") };
+    golden(op.clone(), "0b6e6f64652e73746f703a6d000000");
+    golden(Some(op), "010b6e6f64652e73746f703a6d000000");
     golden(FabricEvent::Ready, "00");
     golden(NotPrimary::ReceiverNotPrimary { needed: "mesh-primary".into() }, "000c6d6573682d7072696d617279");
     golden(NotPrimary::SenderNotSubject { sender: "peer-path".into() }, "0109706565722d70617468");
@@ -448,4 +433,16 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
 #[test]
 fn every_reply_variant_of_status_classifies_to_one_code() {
     replies_match_the_frozen_sixty_six_variant_wire_schema();
+}
+
+/// CONTRACT (node-mesh-join.md Wire: "`primary` is the commander's held mesh-primary record of the node's
+/// mesh"): a JoinMesh carrying the commander's record encodes it after the operation as an `Option`'s
+/// `Some`, the record's mesh, node, incarnation and revision in order, and decodes to the same request.
+#[test]
+fn a_join_mesh_carrying_the_commanders_record_matches_its_frozen_bytes() {
+    use rdm_core::status::StatusRequest::JoinMesh;
+    let request = JoinMesh { node_id: node(), incarnation: birth(), operation: rdm_core::OperationId::unscoped("join-mesh:mesh1.rpc.1"), primary: Some(rdm_core::Primary { mesh: "m".into(), node_id: node(), incarnation: birth(), revision: 2 }) };
+    let expected = bytes("1c0c3031323334353637383961620c397763707266677776746879156a6f696e2d6d6573683a6d657368312e7270632e3100000001016d0c3031323334353637383961620c39776370726667777674687902");
+    assert_eq!(Status::encode_request(&request).unwrap(), expected, "{request:?}");
+    assert_eq!(Status::decode_request(&expected).unwrap(), request);
 }

@@ -213,8 +213,9 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
 
 /// CONTRACT (Luke Q9: "dispatch the request to its implementation; if this endpoint has no
 /// implementation for it, answer \"request not handled here\" ... A missing handler is not an
-/// authorization decision"): a Status `DeleteConnections { All }` that reaches a node whose Status door
-/// registers no handler for it performs no closure and records no state. The connection the node
+/// authorization decision"): Status position 21, reserved since the caller's connections delete went to
+/// NodeCommand 0x22 (D18), reaching a node whose Status door registers no handler for it performs no
+/// closure and records no state. The connection the node
 /// opened stays held in its connections log, no closure or connections-deleting span runs, no block on
 /// new application work is set (the node's next call to its admin is answered on the same entry), and
 /// the node's own `ConnectionsDeleted` is no answer to it. The same node closes that connection when the
@@ -222,8 +223,8 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
 /// `RequestNotHandled` naming the request, on its reject span
 /// `rdm.node.status.reject.via-request-not-handled` (R24, Luke Q11).
 #[test]
-fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_and_records_nothing() {
-    let cell = "a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_and_records_nothing";
+fn a_reserved_status_position_at_a_node_with_no_handler_for_it_closes_nothing_and_records_nothing() {
+    let cell = "a_reserved_status_position_at_a_node_with_no_handler_for_it_closes_nothing_and_records_nothing";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -246,12 +247,11 @@ fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_a
         let seq_at_call = digest_view.get(launch.node_id.as_str()).expect("the admin side hears the node").0.digest_seq;
         let mut digests = digest_view.digest_changes();
         digests.borrow_and_update();
-        let status = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
+        let status = StatusRequest::Reserved21 { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
         let reply = call_on(&admin, &target, &status, None).await;
-        assert!(!matches!(reply, StatusReply::ConnectionsDeleted { .. }), "no handler on the node's Status door performs a closure: {reply:?}");
-        assert_eq!(reply, StatusReply::RequestNotHandled { request: "delete-connections".into() }, "the node answers a request it has no handler for not handled here (R24)");
+        assert_eq!(reply, StatusReply::RequestNotHandled { request: "reserved-21".into() }, "the node answers a request it has no handler for not handled here (R24)");
         let rejected = fields_of(&spans, "rdm.node.status.reject.via-request-not-handled");
-        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("delete-connections".to_string()), Some(launch.node_id.to_string()))], "the node's reject span names the request and itself: {rejected:?}");
+        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("reserved-21".to_string()), Some(launch.node_id.to_string()))], "the node's reject span names the request and itself: {rejected:?}");
         assert_eq!(seams.connections.held_routes().await.into_iter().map(|r| r.id).collect::<Vec<_>>(), held, "the node's connection is still held");
         let again = ping_admin(&seams, &admin, &CallOptions::default()).await;
         assert!(matches!(again, RpcOutcome::Reply(_)), "no block on new application work is set: {again:?}");
@@ -361,7 +361,7 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         // under that name.
         let key = node::load_or_mint_key(&dir).unwrap();
         admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
-        let join = StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation, build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: rdm_core::OperationId::node("node.mesh.join", &node_id) };
+        let join = StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation, operation: rdm_core::OperationId::node("node.mesh.join", &node_id), primary: None };
         assert!(matches!(call_on(&admin, &target, &join, None).await, StatusReply::MeshJoined { .. }), "the node joins its mesh again");
         let after = ping_admin(&seams, &admin, &CallOptions::default()).await;
         assert!(matches!(after, RpcOutcome::Reply(_)), "once it joined its mesh again the node opens connections: {after:?}");
@@ -550,9 +550,8 @@ fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
         let join_req = StatusRequest::JoinMesh {
             node_id: node_id.clone(),
             incarnation: incarnation.clone(),
-            build_id: "4wd8hn3tqe6c".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.mesh.join", &node_id),
+            primary: None,
         };
         let joined_reply = call_on(&admin, &target, &join_req, None).await;
         assert_eq!(joined_reply, StatusReply::MeshJoined { node_id: node_id.clone(), incarnation: incarnation.clone(), joined: vec![WhichMesh::Own] });

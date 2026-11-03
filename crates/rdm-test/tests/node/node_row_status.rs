@@ -80,7 +80,7 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
 
     for (call, then) in [("node.connection.delete", "connections-deleted"), ("node.stop", "stopped"), ("node.start", "ready"), ("node.delete", "deleted")] {
         let stream = match call {
-            "node.connection.delete" => nodes.delete_connections(&path).await,
+            "node.connection.delete" => nodes.delete_connections(&path, &rdm_core::status::ConnectionScope::All).await,
             "node.stop" => nodes.stop(&path).await,
             "node.start" => nodes.start(&path).await,
             _ => nodes.delete(&path).await,

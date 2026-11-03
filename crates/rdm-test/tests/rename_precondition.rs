@@ -164,7 +164,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         // its peer again: the node's next entry names the name it holds.
         let key = node::load_or_mint_key(&renamed.data_dir).unwrap();
         admin.deployed_as(&renamed, &key, taken.clone(), Some(taken.clone()));
-        let join = StatusRequest::JoinMesh { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: rdm_core::OperationId::node("node.mesh.join", &renamed.node_id) };
+        let join = StatusRequest::JoinMesh { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), operation: rdm_core::OperationId::node("node.mesh.join", &renamed.node_id), primary: None };
         assert!(matches!(call(join).await, StatusReply::MeshJoined { .. }), "the node joins its mesh again");
         let _ = renamed_seams.client.call::<Ping>(&NodeTarget::ExactNode(peer.node_id.clone()), &PingRequest::Ping { payload: b"after the rename".to_vec() }, &CallOptions::default()).await;
         renamed_seams.connections.observations_landed().await;

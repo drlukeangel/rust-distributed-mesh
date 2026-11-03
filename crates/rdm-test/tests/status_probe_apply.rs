@@ -60,7 +60,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
             timeouts: Timeouts::default(),
         };
         let created = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.node", "1").unwrap())), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, node: rdm_core::PathName::new("mesh1.node", "1").unwrap(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .expect("the node is born");
         let node = created.node.clone();

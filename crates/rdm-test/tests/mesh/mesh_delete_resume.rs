@@ -207,7 +207,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     if let Some((path, _)) = &last {
         deleted = match estate.nodes_obj().await.delete(&path).await {
             Ok(mut stream) => {
-                let accepted = stream.accepted().clone();
+                let accepted = stream.accepted().cloned().expect("the call opened a Build");
                 let (mut frames, mut end) = (Vec::new(), None);
                 while let Some(f) = stream.next().await {
                     match f {
@@ -326,7 +326,7 @@ pub(crate) fn assert_resumed(run: &Run, next: &PathName, roster: usize) -> Value
     // An exit inside the mesh.delete belongs to it (node-recovery.md "Failure and receipts"): the
     // deleted mesh's final primary submits no recovery of a mesh2 birth, the lost primary included.
     let mesh2_ids: BTreeSet<String> = ids.iter().filter(|(at, _)| at.path.starts_with("mesh2.")).map(|(_, id)| id.clone()).chain([last_id.clone()]).collect();
-    let recoveries: Vec<String> = named(spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| mesh2_ids.contains(&s(&sp["attributes"]["submitter"]))).map(|sp| format!("{} by {}: {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["submitter"]), s(&sp["attributes"]["outcome"]))).collect();
+    let recoveries: Vec<String> = named(spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| mesh2_ids.contains(&s(&sp["attributes"]["submitter"]))).map(|sp| format!("{} by {}: {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["submitter"]), s(&sp["attributes"]["outcome"]))).collect();
     assert!(recoveries.is_empty(), "no recovery of a mesh2 birth is submitted by mesh2's primary: {} submissions, first {:?}", recoveries.len(), recoveries.first());
     // A desired change, not a recovery: no drift attempt replaces or restarts a mesh2 birth.
     let drift: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| mesh2_ids.iter().any(|id| s(&sp["attributes"]["scope"]).contains(id.as_str())) && sp["attributes"]["action"] != "none").collect();

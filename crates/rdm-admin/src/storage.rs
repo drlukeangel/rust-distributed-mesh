@@ -466,9 +466,9 @@ mod tests {
         };
         write(Box::new(|b| { b.declared.insert(NodeState::Ready); })).await;
         write(Box::new(|b| { b.declared.insert(NodeState::Pending); })).await;
-        let op = |attempt| rdm_core::status::DeclaredOperation { build_id: "b".into(), attempt, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()) };
-        write(Box::new(move |b| b.apply_operation(&op(1), NodeState::Stopped))).await;
-        write(Box::new(move |b| b.apply_operation(&op(2), NodeState::Stopped))).await;
+        let op = || rdm_core::status::DeclaredOperation { operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.node", "1").unwrap()).in_occurrence(rdm_core::OperationOccurrenceId::mint()) };
+        write(Box::new(move |b| b.apply_operation(&op(), NodeState::Stopped))).await;
+        write(Box::new(move |b| b.apply_operation(&op(), NodeState::Stopped))).await;
         write(Box::new(|b| b.data_dir_lost = Some(DataDirLost { path: "/d".into(), since: 1 }))).await;
         write(Box::new(|b| b.data_dir_unreadable = Some(DataDirUnreadable { path: "/d".into(), cause: "node-key: not hex".into() }))).await;
         let cert = |issued_at: u64| CertDates { issued_at, expires_at: issued_at + 10, issuer_expires_at: 100, renew_at: issued_at + 6 };
@@ -480,7 +480,7 @@ mod tests {
         let b = record.birth(&incarnation_id).expect("the birth's facts");
         assert_eq!(b.declared_state(), Some(NodeState::Ready), "a late Pending removes no Ready: the reader takes the greatest");
         assert_eq!(b.declared.len(), 2, "two states, both kept");
-        assert_eq!(b.operations.len(), 2, "two attempts' effects both stand");
+        assert_eq!(b.operations.len(), 2, "two occurrences' effects both stand");
         assert!(b.data_dir_lost.is_some() && b.data_dir_unreadable.is_some(), "a lost and an unreadable data dir both stand");
         assert_eq!(b.cert, Some(cert(20)), "the birth's cert dates are the last written");
         assert_eq!(store.nodes("mesh1").await.unwrap(), vec![record.clone()], "the record is its mesh's");
