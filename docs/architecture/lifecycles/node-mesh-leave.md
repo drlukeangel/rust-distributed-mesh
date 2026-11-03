@@ -63,7 +63,7 @@ The command, from the mesh-primary to a member whose connections are deleted, No
       "incarnation": "0000000000000008",
       "build_id": "3f9a1c7e5b2d",
       "attempt": 1,
-      "operation": "node.stop:mesh1.rpc.1"
+      "operation": "node.stop:mesh1.node.1"
     }
   }
 }

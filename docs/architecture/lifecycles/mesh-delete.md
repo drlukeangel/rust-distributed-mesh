@@ -158,7 +158,7 @@ The gossip frames, in order. The mesh's status at `mesh.deleting`, from the mesh
   "frame": "mesh-status",
   "mesh": "mesh2",
   "status": "deleting",
-  "publisher": "mesh2.admin.1",
+  "publisher": "mesh2.node-admin.1",
   "changed_at_rafka_ms": 1718290100000
 }
 ```
@@ -174,13 +174,13 @@ the [`MeshTopology` example](../gossip.md#examples) with `mesh2`, `digests` hold
   "frame": "mesh-status",
   "mesh": "mesh2",
   "status": "deleted",
-  "publisher": "mesh2.admin.1",
+  "publisher": "mesh2.node-admin.1",
   "changed_at_rafka_ms": 1718290160000
 }
 ```
 
-The separate node.delete's last frame is `mesh2.admin.1`'s final mesh topology: the same `MeshTopology` with
-`mesh2.admin.1` deleting under `operation` `node.delete:mesh2.admin.1`, and the mesh's status
+The separate node.delete's last frame is `mesh2.node-admin.1`'s final mesh topology: the same `MeshTopology` with
+`mesh2.node-admin.1` deleting under `operation` `node.delete:mesh2.node-admin.1`, and the mesh's status
 deleted. The fabric-primary publishes no `NodeStopped` or `NodeDeleted` for it, and no `MeshTopology`
 for `mesh2` follows.
 

@@ -62,7 +62,7 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
 | id | what it is | uniqueness | who sees it |
 |---|---|---|---|
 | **`endpoint_id`** | the node's iroh key (ed25519 public key, hex) — its identity on the FABRIC, the thing a dial resolves to. A FIELD of the node record | globally unique across every mesh | **THE TRANSPORT ONLY.** Never on a public interface — not a REST body, not a wire response, not an audit row, not a log line or span attribute NAMING a node (§9 rule 4). The one exception is a span whose SUBJECT is the routing key itself — a dial's target, the handshake, the identity load/mint before an id exists to log — never a narrative "which node did this" field. Exposing the routing id outside those is a security breach |
-| **`path`, `name`** | path is the node location in the tree and name is its name; they are separate stored fields, never concatenated or parsed as one identifier; the name has no dot, and both are free text the caller chooses at node.create (`<mesh>.<kind>.<name>` by convention, a name, never an ordinal); the node's type is its own field, `type` (§2), never read from the path | unique per (path, name), checked against the node records by their writer | what topic placement and `replica.targets` store (§2.2); a Build step key names its target by it (`node.create:<path.name>`) |
+| **`path`, `name`** | path is the node location in the tree and name is its name; they are separate stored fields, never concatenated or parsed as one identifier; the name has no dot, and both are free text the caller chooses at node.create (`<mesh>.<type>.<name>` by convention, a name, never an ordinal); the node's type is its own field, `type` (§2), never read from the path | unique per (path, name), checked against the node records by their writer | what topic placement and `replica.targets` store (§2.2); a Build step key names its target by it (`node.create:<path.name>`) |
 | **`id` — the node's minted id** | the node row's own id — minted once, 60 bits, 12 Crockford characters, bare internally | globally unique, by the same property every minted id in the platform has | **the PUBLIC, STORED and AUDIT identity.** It names one node instance: what the audit log names a node by (§2.4) and what REST and the wire render for a node. Its external form renders the type prefix from `type`; a client only ever names a BROKER, so **`brk_<crockford>` is the only form a client sees** |
 
 - **One minter, no second form.** The id is `mint_id()` like every other entity's — no short form,
@@ -245,7 +245,7 @@ reader actually reads — one flat list, one row per thing, typed `node`, `mesh`
   { "type": "mesh", "name": "mesh1", "path": "", "id": "cd123456789a", "channel": "<channel derived from the mesh id>",
     "status": "ready" },
   { "type": "broker", "name": "1", "path": "mesh1.broker", "id": "56789ab1234c", "status": "ready" },
-  { "type": "node-admin", "name": "1", "path": "mesh1.admin", "id": "5cd16789ab23",
+  { "type": "node-admin", "name": "1", "path": "mesh1.node-admin", "id": "5cd16789ab23",
     "status": "ready", "is_primary": true, "is_fabric_primary": true } ]
 ```
 

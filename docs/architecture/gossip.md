@@ -160,7 +160,7 @@ local Instant         silence and elapsed time                    (receiver-loca
 | `NodeDeleting { op: LifecycleOp, forwarded_by, publisher, topology_version }` | executor's own mesh channel; backbone MeshTopology.in_flight | the mesh executor, once its own journal holds the adopted won claim for the attempt that carries the operation; seeing the Build, a hand-off receipt naming the operation or being the mesh-primary does not start it | peer mesh primaries, onto their mesh channels, unchanged | `(type, build_id, attempt, operation)`; applied once however many copies arrive | not retained as a frame; the fact rides `MeshTopology.in_flight` until the operation completes | application routing stops selecting the node; the node stays `Found`. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
 | `NodeDeleted { op: LifecycleOp, forwarded_by }` | executor's own mesh channel; backbone MeshTopology.deleted | the mesh executor, after the provider's inspect answer that the runtime is terminal; none for a mesh's last admin after mesh.deleted, whose final mesh topology carries it deleting ([Mesh delete](#mesh-delete)) | same | `(type, build_id, attempt, operation)` | the deletion rides `MeshTopology.deleted` for the deleted retention | the birth is removed, its exact identity is held deleted, the resolver answers `Gone`, the current topology no longer lists it |
 
-`operation` is the lifecycle operation's idempotency key (`node.delete:mesh2.rpc.2`), not a
+`operation` is the lifecycle operation's idempotency key (`node.delete:mesh2.node.2`), not a
 deployment pipeline step: one node.delete runs many steps and publishes one `NodeDeleting` and one
 `NodeDeleted`. `(build_id, attempt, operation)` is the only operation identity and is carried on
 the operation's Step receipt; no other operation id is minted. Every removal has a Build, and an
@@ -337,15 +337,15 @@ node.delete:
   "op": {
     "build_id": "bld_1a2b3c4d",
     "attempt": 1,
-    "operation": "node.delete:mesh1.rpc.1",
+    "operation": "node.delete:mesh1.node.1",
     "node_id": "k8pag1qx95gw",
     "incarnation": "0000000000000008",
-    "name": "mesh1.rpc.1",
+    "name": "mesh1.node.1",
     "event_at_rafka_ms": 1718290000050
   },
   "forwarded_by": null,
   "publisher": {
-    "node": "mesh1.admin.1",
+    "node": "mesh1.node-admin.1",
     "incarnation": "0000000000000008"
   },
   "topology_version": 7
@@ -365,15 +365,15 @@ that node's matching stopped frame:
   "op": {
     "build_id": "bld_1a2b3c4d",
     "attempt": 1,
-    "operation": "node.stop:mesh1.rpc.1",
+    "operation": "node.stop:mesh1.node.1",
     "node_id": "k8pag1qx95gw",
     "incarnation": "0000000000000008",
-    "name": "mesh1.rpc.1",
+    "name": "mesh1.node.1",
     "event_at_rafka_ms": 1718290001050
   },
   "forwarded_by": null,
   "publisher": {
-    "node": "mesh1.admin.1",
+    "node": "mesh1.node-admin.1",
     "incarnation": "0000000000000008"
   },
   "topology_version": 7
@@ -392,7 +392,7 @@ removal in `in_flight`:
   "frame": "mesh-topology",
   "mesh": "mesh1",
   "publisher": {
-    "node": "mesh1.admin.1",
+    "node": "mesh1.node-admin.1",
     "incarnation": "0000000000000008"
   },
   "forwarded_by": null,
@@ -406,7 +406,7 @@ removal in `in_flight`:
       "fabric_id": "fabric1",
       "node": {
         "node_id": "k8pag1qx95gw",
-        "name": "mesh1.rpc.1",
+        "name": "mesh1.node.1",
         "endpoint_id": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
         "transport_addr": "127.0.0.1:54473",
         "incarnation": "0000000000000008",
@@ -428,10 +428,10 @@ removal in `in_flight`:
     {
       "build_id": "bld_1a2b3c4d",
       "attempt": 1,
-      "operation": "node.delete:mesh1.rpc.1",
+      "operation": "node.delete:mesh1.node.1",
       "node_id": "k8pag1qx95gw",
       "incarnation": "0000000000000008",
-      "name": "mesh1.rpc.1",
+      "name": "mesh1.node.1",
       "event_at_rafka_ms": 1718290000050
     }
   ],

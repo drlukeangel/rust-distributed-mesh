@@ -103,10 +103,10 @@ reads none, so a connections-deleting, connections-deleted, stopping or stopped 
 Deletion separately blocks the deleted identity in the peer-location view, where
 the resolver answers Gone. Silence and lack of an application route are not that evidence.
 
-What every node observes while a node.delete removes `mesh2.rpc.2`: the accepted topology
+What every node observes while a node.delete removes `mesh2.node.2`: the accepted topology
 changes first, the observed topology only as the executor acts.
 
-| moment | accepted topology | observed: mesh2.rpc.2 | resolver `ExactNode` | application routing |
+| moment | accepted topology | observed: mesh2.node.2 | resolver `ExactNode` | application routing |
 |---|---|---|---|---|
 | Build accepted | does not name it | current | Found | selects it |
 | executor claimed, `NodeDeleting` | does not name it | current, overlay `NodeDeleting` | Found | never selects it |

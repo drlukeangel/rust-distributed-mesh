@@ -99,14 +99,14 @@ The standalone command, from the mesh-primary to a node its tickle reached off i
       "incarnation": "0000000000000008",
       "build_id": "3f9a1c7e5b2d",
       "attempt": 3,
-      "operation": "node.mesh.join:mesh1.rpc.1"
+      "operation": "node.mesh.join:mesh1.node.1"
     }
   }
 }
 ```
 
 The node's report, its own call to its primary, op `0x1D` (29); here a first start of
-`mesh1.rpc.1`:
+`mesh1.node.1`:
 
 ```json
 {
@@ -123,7 +123,7 @@ The node's report, its own call to its primary, op `0x1D` (29); here a first sta
         "fabric_id": "fab4m8n2p6q1",
         "node": {
           "node_id": "k8pag1qx95gw",
-          "name": "mesh1.rpc.1",
+          "name": "mesh1.node.1",
           "endpoint_id": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
           "transport_addr": "127.0.0.1:54473",
           "incarnation": "0000000000000001",
@@ -134,7 +134,7 @@ The node's report, its own call to its primary, op `0x1D` (29); here a first sta
         "admin_api_base": null,
         "digest_seq": 1,
         "emitted_at_rafka_ms": 1718290000010,
-        "data_dir": "/var/lib/rdm/mesh1.rpc.1",
+        "data_dir": "/var/lib/rdm/mesh1.node.1",
         "mesh_id": "mesh1",
         "in_flight": null,
         "config": {},
@@ -153,7 +153,7 @@ The primary's unary reply, `Joined` with its answer decoded (on the wire `answer
 {
   "Joined": {
     "answer": {
-      "served_by": "mesh1.admin.1",
+      "served_by": "mesh1.node-admin.1",
       "control": {
         "provider": "process",
         "fabric": { "fabric_id": "fab4m8n2p6q1", "name": "lab" },
@@ -161,12 +161,12 @@ The primary's unary reply, `Joined` with its answer decoded (on the wire `answer
         "build": { "build_id": "3f9a1c7e5b2d", "attempt": 1 },
         "rafka_time_ms": 1718290000042,
         "member_cert": "<cert bytes, opaque to RDM>",
-        "name": "mesh1.rpc.1",
+        "name": "mesh1.node.1",
         "config": { "log_level": "info" }
       },
       "statuses": [
-        { "frame": "mesh-status", "mesh": "mesh1", "status": "ready", "publisher": "mesh1.admin.1", "changed_at_rafka_ms": 1718289990000 },
-        { "frame": "fabric-status", "fabric": "lab", "status": "ready", "publisher": "mesh1.admin.1", "changed_at_rafka_ms": 1718289990100 }
+        { "frame": "mesh-status", "mesh": "mesh1", "status": "ready", "publisher": "mesh1.node-admin.1", "changed_at_rafka_ms": 1718289990000 },
+        { "frame": "fabric-status", "fabric": "lab", "status": "ready", "publisher": "mesh1.node-admin.1", "changed_at_rafka_ms": 1718289990100 }
       ]
     }
   }
@@ -195,7 +195,7 @@ row's name and config from the answer:
     "fabric_id": "fab4m8n2p6q1",
     "node": {
       "node_id": "k8pag1qx95gw",
-      "name": "mesh1.rpc.1",
+      "name": "mesh1.node.1",
       "endpoint_id": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
       "transport_addr": "127.0.0.1:54473",
       "incarnation": "0000000000000001",
@@ -206,7 +206,7 @@ row's name and config from the answer:
     "admin_api_base": null,
     "digest_seq": 2,
     "emitted_at_rafka_ms": 1718290000090,
-    "data_dir": "/var/lib/rdm/mesh1.rpc.1",
+    "data_dir": "/var/lib/rdm/mesh1.node.1",
     "mesh_id": "mesh1",
     "in_flight": null,
     "config": { "log_level": "info" },

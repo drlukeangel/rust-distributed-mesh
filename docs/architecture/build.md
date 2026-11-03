@@ -150,20 +150,20 @@ Only a resize or a replacement puts the fabric back to pending ([states.md](life
 ~~~text
 B.topology:
   mesh1:
-    mesh1.admin.alpha
-    mesh1.admin.beta
-    mesh1.rpc.north
-    mesh1.rpc.south
-    mesh1.rpc.east
+    mesh1.node-admin.alpha
+    mesh1.node-admin.beta
+    mesh1.node.north
+    mesh1.node.south
+    mesh1.node.east
 
-submit: remove mesh1.rpc.south
+submit: remove mesh1.node.south
 
 B'.topology:
   mesh1:
-    mesh1.admin.alpha
-    mesh1.admin.beta
-    mesh1.rpc.north
-    mesh1.rpc.east
+    mesh1.node-admin.alpha
+    mesh1.node-admin.beta
+    mesh1.node.north
+    mesh1.node.east
 ~~~
 
 The reconciler never later decides which node "count 2" meant. It diffs the stored exact topology map against current realized/observed state.
@@ -638,12 +638,12 @@ mesh1 is deleted by `mesh.delete` and mesh3 comes into being with the `node.crea
 
 ```text
 fabric-primary accepts Build B21:
-    mesh2 {mesh2.rpc.north, mesh2.rpc.south} -> mesh2 {mesh2.rpc.north}
+    mesh2 {mesh2.node.north, mesh2.node.south} -> mesh2 {mesh2.node.north}
     B21 is the current Build
 ```
 
-The removal is the [node.delete](lifecycles/node-delete.md) of mesh2.rpc.south, which mesh2's primary
-executes under the fabric-primary's claim; the fabric-primary never commands mesh2.rpc.south and never
+The removal is the [node.delete](lifecycles/node-delete.md) of mesh2.node.south, which mesh2's primary
+executes under the fabric-primary's claim; the fabric-primary never commands mesh2.node.south and never
 publishes its events. A delete of mesh2's mesh-primary: it first runs
 [node.primary.update](lifecycles/node-primary-update.md), commanded by the fabric-primary; its successor,
 now mesh2's primary, executes the delete.
@@ -652,11 +652,11 @@ now mesh2's primary, executes the delete.
 
 ~~~text
 fabric-primary accepts Build B22:
-    mesh2.rpc.north: executable A -> executable B
+    mesh2.node.north: executable A -> executable B
     B22 is the current Build
 ~~~
 
-The topology names the same paths. mesh2.rpc.north's entry names executable B while its row records A,
+The topology names the same paths. mesh2.node.north's entry names executable B while its row records A,
 so the reconciler replaces it: [node.delete](lifecycles/node-delete.md) then [node.create](lifecycles/node-create.md)
 at the path, a new node.id, under mesh2's primary and the guards of [build-deployment.md §3](build-deployment.md).
 A primary of any type moves first. Nothing else in the fabric changes.

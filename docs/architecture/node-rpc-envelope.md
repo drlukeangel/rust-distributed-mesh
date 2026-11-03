@@ -482,7 +482,7 @@ postcard, not JSON): a StopNode on NodeCommand op `0x22` (34).
       "incarnation": "0000000000000008",
       "build_id": "3f9a1c7e5b2d",
       "attempt": 1,
-      "operation": "node.stop:mesh1.rpc.1"
+      "operation": "node.stop:mesh1.node.1"
     }
   }
 }
@@ -1522,7 +1522,7 @@ pub enum StepResult {
 pub struct StepReceipt {
     pub attempt: u32,
     /// A Build step key: an opaque string, op then colon then target, as in
-    /// `node.create:mesh1.rpc.1`. The dots before the colon do not collide with the dotted
+    /// `node.create:mesh1.node.1`. The dots before the colon do not collide with the dotted
     /// path.name after it.
     pub operation: String,
     pub step: String,
