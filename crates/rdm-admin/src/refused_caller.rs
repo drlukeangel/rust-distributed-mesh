@@ -14,7 +14,7 @@
 //! caller refused across a cut is decided once the fabric-primary enters the view. A caller deleted has its
 //! runtime terminated by the primary that decided it, its own workflow and never a Build
 //! (`RecoverySubmitter::terminate`, the returned-birth path; Q342); a caller re-admitted is commanded back through `node.mesh.join`
-//! (`crate::heard_again`). One decision in flight per birth.
+//! (`crate::heard_again`). One decision per birth: a birth deleted and terminated is decided once.
 //!
 //! Q217 (Luke, 2026-10-27): "delete a caller deletes the caller, not just from the record but
 //! literally as well: if they come back and they are deleted they get actually deleted." A caller whose
@@ -22,7 +22,7 @@
 //! path the current Build still needs is recovered by a re-create at that path and name, a new birth, by
 //! node recovery (the primary's own workflow, `RecoverySubmitter::submit_in`), never here.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::atlas::{CallerDecision, Atlas};
@@ -34,7 +34,10 @@ pub struct RefusedCallers {
     pub(crate) node_id: NodeId,
     pub(crate) recovery: crate::admin::RecoverySubmitter,
     pub(crate) heard_again: crate::heard_again::HeardAgainSlot,
-    in_flight: Mutex<BTreeSet<(String, String)>>,
+    /// Each refused birth's decision, by `(node_id, incarnation)`: `None` while it is being decided, the
+    /// decision and its outcome once the birth is deleted and its runtime terminated. A deleted birth
+    /// stays deleted (Q217): a later refusal of it, at any door, is answered by that one decision.
+    decided: Mutex<BTreeMap<(String, String), Option<(CallerDecision, String)>>>,
     /// Where the caller's record and the record at its `(path, name)` are read through (query.md §1).
     stores: crate::current_record::RecordStoresSource,
     /// The tick of this admin's installed view ([`Self::watch_views`]).
@@ -49,7 +52,7 @@ impl std::fmt::Debug for RefusedCallers {
 
 impl RefusedCallers {
     pub(crate) fn new(node_id: NodeId, recovery: crate::admin::RecoverySubmitter, heard_again: crate::heard_again::HeardAgainSlot, stores: crate::current_record::RecordStoresSource) -> Self {
-        Self { node_id, recovery, heard_again, in_flight: Mutex::default(), stores, views: Default::default() }
+        Self { node_id, recovery, heard_again, decided: Mutex::default(), stores, views: Default::default() }
     }
 
     /// Hold `views`, the tick of this admin's installed view.
@@ -58,13 +61,22 @@ impl RefusedCallers {
     }
 
     /// Decide the caller birth `(node_id, incarnation)` refused at `door` (`declaration`, `digest` or `join`)
-    /// and act on it, once per birth at a time: one `rdm.node_admin.node.update.via-refused-caller`
-    /// span naming the decision, whether the fabric-primary verified it, and what was done. The
-    /// decision, or `None` when one for the birth is already in flight.
+    /// and act on it, once per birth: one `rdm.node_admin.node.update.via-refused-caller` span naming the
+    /// decision, whether the fabric-primary verified it, and what was done. The decision; the one already
+    /// made, with no new span, for a birth deleted and terminated; `None` while one for the birth is in
+    /// flight. Any other end (a re-admission, a termination that failed, nothing done) is decided again
+    /// at the birth's next refusal.
     pub(crate) async fn decide(&self, atlas: &Atlas, door: &'static str, node_id: &NodeId, incarnation: &IncarnationId) -> Option<(CallerDecision, String)> {
         let key = (node_id.to_string(), incarnation.as_str().to_string());
-        if !self.in_flight.lock().unwrap().insert(key.clone()) {
-            return None;
+        {
+            let mut decided = self.decided.lock().unwrap();
+            match decided.get(&key) {
+                Some(Some(done)) => return Some(done.clone()),
+                Some(None) => return None,
+                None => {
+                    decided.insert(key.clone(), None);
+                }
+            }
         }
         let me = self.recovery.held_name();
         let span = tracing::info_span!(
@@ -75,7 +87,14 @@ impl RefusedCallers {
             needed = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
         );
         let decided = tracing::Instrument::instrument(self.decide_and_act(atlas, &span, node_id, incarnation), span.clone()).await;
-        self.in_flight.lock().unwrap().remove(&key);
+        {
+            let mut held = self.decided.lock().unwrap();
+            if decided.1 == "terminated" {
+                held.insert(key, Some(decided.clone()));
+            } else {
+                held.remove(&key);
+            }
+        }
         span.in_scope(|| tracing::info!("a caller birth this primary does not hold was decided by its (path, name) and the atlas"));
         Some(decided)
     }
@@ -174,6 +193,16 @@ impl RefusedCallers {
             }
         };
         let own = atlas.refused_caller(caller.as_ref(), at_path.as_ref(), incarnation, &planned);
+        // A birth this primary holds deleted, from its own recovery's verdict until its NodeDeleted and from
+        // the NodeDeleted on (node-recovery.md step 3: "A birth that comes back once its verdict is not
+        // `reached`, during its replacement's birth or after it, is a deleted birth"), is decided from what
+        // the primary holds, never from a record line the returned birth may have written since: it is
+        // never re-admitted (Q217).
+        let held_deleted = self.recovery.digest_view.is_recovering(node_id.as_str(), incarnation) || self.recovery.digest_view.is_deleted(node_id.as_str());
+        let own = match own {
+            CallerDecision::ReAdmit { path, name } if held_deleted => CallerDecision::DeleteDeletedBirth { path, name, needed: true },
+            other => other,
+        };
         span.record("own", own.name());
         if let Some(path) = own.path() {
             span.record("subject_path", path.path.as_str()).record("subject_name", path.name.as_str());
@@ -738,5 +767,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-
+    /// CONTRACT (node-recovery.md step 3: "A birth that comes back once its verdict is not `reached`,
+    /// during its replacement's birth or after it, is a deleted birth"; node-investigation.md; Q217;
+    /// rdm#304): a birth this primary's recovery holds deleted from its verdict, refused while its
+    /// replacement is born, is decided from what the primary holds: deleted, though its record still
+    /// reads live (the recovery's delete not yet written, or a line the returned birth wrote since) and
+    /// the topology still needs its path. The same records with no recovery held re-admit it. Must NOT
+    /// happen: the held birth re-admitted (the red: re-admitted at the declaration door, then deleted
+    /// 175 ms later once the NodeDeleted was applied).
+    #[tokio::test]
+    async fn a_birth_its_primarys_recovery_holds_deleted_is_decided_deleted_though_its_record_reads_live() {
+        let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-recovering").expect("the cell's evidence file can be created");
+        let mut admin = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin".to_string(), "node-admin");
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let caller = birth(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node".to_string(), "node");
+        let caller_inc = caller.incarnation_id.clone().unwrap();
+        let fabric_id = rdm_core::FabricId::mint();
+        let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process };
+        let mesh = crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: crate::model::ScopeStatus::Ready };
+        let planned = Topology { fabric: fabric.clone(), meshes: vec![mesh.clone()], nodes: vec![admin.clone(), caller.clone()] };
+        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap(), "mesh1").await.unwrap();
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: vec![mesh], nodes: vec![admin.clone()] }));
+        // Both records live: the caller's delete is not written.
+        let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
+        for n in [&admin, &caller] {
+            let mut r = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
+            rows.put_node(&r).await.unwrap();
+        }
+        let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, None).await;
+        // Not held: the live, needed caller is re-admitted (the rig has no heard-again door).
+        let (unheld, _) = callers.decide(&atlas, "declaration", &caller.node_id, &caller_inc).await.expect("decided");
+        assert_eq!(unheld.name(), "re-admit", "nothing held, its record live and needed: re-admitted (Q207)");
+        // Held deleted from its recovery's verdict: deleted, whatever its record reads.
+        callers.recovery.digest_view.hold_recovering(&caller.node_id, &caller_inc);
+        let (held, outcome) = callers.decide(&atlas, "declaration", &caller.node_id, &caller_inc).await.expect("decided");
+        assert_eq!(held.name(), "delete-deleted-birth", "a birth its primary's recovery holds deleted is deleted, never re-admitted: {outcome}");
+        let spans = capture.spans().expect("the cell's spans can be read");
+        let decisions: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.update.via-refused-caller").map(|s| &s["attributes"]).collect();
+        assert_eq!(decisions.len(), 2, "{decisions:?}");
+        assert_eq!((decisions[1]["own"].as_str(), decisions[1]["decision"].as_str(), decisions[1]["root"].as_str()), (Some("delete-deleted-birth"), Some("delete-deleted-birth"), Some("self")), "{:?}", decisions[1]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

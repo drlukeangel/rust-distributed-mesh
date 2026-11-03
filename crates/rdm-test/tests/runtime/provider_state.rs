@@ -264,3 +264,66 @@ fn a_member_the_kernel_is_killing_is_read_as_ended_by_its_terminate() {
     assert!(ended_by_its_terminate(&Some(('T', kill.clone(), none.clone(), 27))), "still stopped with the SIGKILL pending is being killed");
     assert!(ended_by_its_terminate(&Some(('S', kill.clone(), kill, 27))), "woken to die");
 }
+
+/// CONTRACT (node-investigation.md: "A node that comes back once its verdict is not `reached`, during its
+/// replacement's birth or after it, is such a caller: its recovery or its re-created birth holds its path
+/// and name, and it is deleted", and "A caller whose record is deleted is deleted, its runtime
+/// terminated, never re-admitted"; node-recovery.md step 3; Q207, Q217, Q342): mesh2's mesh-primary
+/// mesh2.node-admin.1 is held by the operating system (SIGSTOP, acknowledged `T`); its successor
+/// mesh2.node-admin.2 investigates it (`os-stopped`) and recovers it, its own workflow. Once the
+/// recovery's TerminateRuntime has read the held runtime `os-stopped` and left it, inside its
+/// replacement's birth, the runtime is resumed. The re-created birth holds the path and name, and the
+/// resumed birth, refused by name at the successor's doors, is decided once: deleted, its runtime
+/// terminated by the primary that decided it (`via-terminate-returned`). Must NOT happen: a decision
+/// `re-admit` of the resumed birth, or a second decision of it acted on (rdm#304: one birth re-admitted
+/// at the declaration door, then deleted 175 ms later).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_deleted() {
+    let test = "an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_deleted";
+    let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[]).await;
+    estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
+    estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let views = estate.node_views().await;
+    let mp = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
+    let successor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.node_id != mp.node_id).cloned().unwrap_or_else(|| panic!("mesh2's other node-admin: {views:#?}"));
+    assert!(!mp.is_fabric_primary, "mesh2's primary is not the fabric-primary: {mp:?}");
+    let path = mp.location();
+    let node_id = mp.node_id.to_string();
+    let dir = estate.data_dir(&path).await;
+    let rt = ExactRuntime::published(Path::new(&dir)).unwrap_or_else(|r| panic!("{path:?}: no exact runtime published in {dir}: {r:?}"));
+    let held = rt.apply(Fault::Stop).expect("the exact runtime is suspended");
+    assert_eq!(held.state_after, Some('T'), "the OS holds {path:?}: {held:?}");
+
+    // Resumed inside its replacement's birth: the recovery's TerminateRuntime read it os-stopped and left it.
+    wait_for("the recovery's TerminateRuntime reads the held runtime os-stopped", crate::node_recovery_due() * 2, || async {
+        named(&estate.spans(), "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().any(|sp| attr(sp, "node_id") == node_id && attr(sp, "caller") == "terminate" && attr(sp, "verdict") == "os-stopped").then_some(())
+    })
+    .await;
+    let resumed = rt.apply(Fault::Continue).expect("the held runtime is resumed");
+    assert_ne!(resumed.state_after, Some('T'), "{resumed:?}");
+    let recovered = node_where(&estate, &path, &format!("{path:?} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["status"] == "ready" && s(&n["node_id"]) != node_id).await;
+    wait_for("the resumed birth's runtime is terminated", crate::node_recovery_due() * 2, || async { rt.check().is_err().then_some(()) }).await;
+    // Its decision's span closes once the termination is answered: read before the estate stops.
+    wait_for("the resumed birth's decision closes", crate::node_recovery_due(), || async {
+        named(&estate.spans(), "rdm.node_admin.node.update.via-refused-caller").into_iter().any(|sp| attr(sp, "node_id") == node_id && attr(sp, "outcome") == "terminated").then_some(())
+    })
+    .await;
+    let at_path = estate.node_value(&path).await;
+    estate.stop().await;
+    let spans = estate.spans();
+
+    assert_eq!((s(&at_path["node_id"]), s(&at_path["status"])), (s(&recovered["node_id"]), "ready".to_string()), "the re-created birth holds {path:?}: {at_path}");
+    let decisions: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-refused-caller").into_iter().filter(|sp| attr(sp, "node_id") == node_id).collect();
+    assert!(decisions.iter().all(|d| attr(d, "decision") != "re-admit"), "a birth that comes back during its replacement's birth is never re-admitted: {decisions:#?}");
+    let acted: Vec<&&Value> = decisions.iter().filter(|d| attr(d, "outcome") == "terminated" || attr(d, "outcome").starts_with("mesh-join:")).collect();
+    assert_eq!(acted.len(), 1, "the resumed birth is decided once: {decisions:#?}");
+    let decided = acted[0];
+    assert!(at_node(decided, &successor.location()), "decided by mesh2's primary, its successor: {decided}");
+    assert!(["delete-deleted-birth", "delete-path-held"].contains(&attr(decided, "decision").as_str()), "deleted: {decided}");
+    let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-terminate-returned").into_iter().filter(|sp| attr(sp, "node_id") == node_id).collect();
+    assert_eq!(terminated.len(), 1, "its runtime is terminated once, by the primary that decided it: {terminated:#?}");
+    let trace = s(&decided["trace_id"]);
+    println!("the resumed birth decided {} at the {} door: http://192.168.68.99:16687/trace/{trace}", attr(decided, "decision"), attr(decided, "door"));
+    estate.record_trace_url(&trace);
+}
