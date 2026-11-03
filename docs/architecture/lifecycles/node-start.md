@@ -87,7 +87,11 @@ Failed { step: "node.join", reason: "…", code } (Terminal)
 ```
 
 No node.joined, node.started or downstream success follows that failure
-([caller execution](../node-rpc-envelope.md#caller-execution-and-certainty)). The process's
+([caller execution](../node-rpc-envelope.md#caller-execution-and-certainty)); an AfterStop start
+whose join failed is stopped again, as it was. A start that ends Failed at its `pre_node_ready` hook,
+FirstStart or AfterStop, answers `Failed { step: "node.pre-node-ready", reason, code }` and leaves the
+node rejoined and `Pending`, its process running and never stopped again; its probe answers
+`StartFailed` ([fabric-node-hooks.md](../fabric-node-hooks.md#outcomes-and-the-gate), Q350). The process's
 `digest_seq` continues across stop/start and no new incarnation is minted; digest ordering
 is the [frame catalog](../gossip.md#31-frame-catalog)'s.
 

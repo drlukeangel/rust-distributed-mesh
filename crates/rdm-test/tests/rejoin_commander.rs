@@ -408,7 +408,9 @@ fn a_start_whose_hook_answers_pending_on_every_attempt_answers_its_caller_start_
         let attempts: Vec<String> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.mesh.node.update.via-pre-node-ready-attempt").filter_map(|(_, _, f)| f.get("outcome").cloned()).collect();
         assert_eq!(attempts.iter().filter(|o| *o == "pending").count(), 3, "each of the three attempts answered Pending: {attempts:?}");
 
-        // A start whose hook answers Pending once, then Ok, is answered Started.
+        // The failed start left the node Pending (Q350); someone acts: it is stopped, then started again,
+        // and a start whose hook answers Pending once, then Ok, is answered Started.
+        assert!(matches!(call(&commander, &target, &stop).await, StatusReply::Stopped { .. }), "the node its failed start left Pending is stopped");
         commander.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
         let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
         pre_node_ready.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Pending { reason: "one more turn".into() } });

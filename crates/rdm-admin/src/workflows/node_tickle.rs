@@ -33,24 +33,26 @@ mod tests {
     ///  sent at once (R-SW1). It answers `reached`, with what the node said, or `unreached`. It never
     ///  answers dead: a failure, a deadline included, proves nothing, and only node.runtime.inspect proves
     ///  a runtime gone."
-    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:26
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:25
     /// "Target: One node, by `(node.id, incarnation)`; every probe names the same pair, and only that
     ///  pair's answer counts"
-    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:27
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:26
     /// "Probe: `ProbeNodeState { node_id, incarnation }` on 0x1B, a bounded call with a deadline;
-    ///  the node answers `Current { state }`, `CurrentStopped` or `Pending { reason }`"
-    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:28
+    ///  the node answers `Current { state }`, `CurrentStopped`, `Pending { reason }` or `StartFailed { step, reason }`"
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:27
     /// "Ladder: Direct first. On failure, the same probe carried by Forward through up to two
     ///  eligible live peers of the node's mesh, both at once; one failed peer probe does not cancel
     ///  the other"
-    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:29
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:28
     /// "Ends: Any answer from the node, under the probed incarnation, ends the ladder and cancels the
     ///  probes still running"
-    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:71
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:70
     /// "`{ \"Current\": { \"node_id\": \"k8pag1qx95gw\", \"incarnation\": \"0000000000000008\", \"state\": \"Ready\" } }`"
-    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:74
-    /// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node whose hook answered `Pending` answers
-    ///  `Pending { node_id, incarnation, reason }`. All three are `reached`."
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:73
+    /// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node held at its hook answers
+    ///  `Pending { node_id, incarnation, reason }`; a node whose start ended Failed at its hook answers
+    ///  `StartFailed { step: node.pre-node-ready, reason }`: it stays Pending, its process running [...]. All four
+    ///  are `reached`."
     #[tokio::test]
     async fn birth_answers_include_current_stopped_and_blocked_and_one_failed_peer_does_not_cancel_the_other()
     {
@@ -100,6 +102,17 @@ mod tests {
             &target_inc
         ));
         assert!(!birth_answered(None, &target_id, &target_inc));
+        // A node whose start ended Failed at its hook is reached: it stays Pending, its process running (Q350).
+        assert!(birth_answered(
+            Some(&StatusReply::StartFailed { step: crate::node_hooks::PRE_NODE_READY_STEP.into(), reason: "the hook failed".into() }),
+            &target_id,
+            &target_inc
+        ));
+        assert!(!birth_answered(
+            Some(&StatusReply::StartFailed { step: "node.topology".into(), reason: "unreached".into() }),
+            &target_id,
+            &target_inc
+        ));
 
         // 2. `eligible_carriers` picks Ready members of target's mesh other than target and caller, in path order.
         let view = Topology {

@@ -1489,19 +1489,18 @@ async fn a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped() {
     estate.record_trace_url(leaving[0]["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (node-start.md "If join fails after start": `CommandAccepted`, then `Failed { step, reason,
-/// code }`, nothing downstream; node-stop.md steps 2-4; node-mesh-leave.md): a stopped node's
-/// commanded start fails at a step (its `pre_node_ready` hook answers Failed). The birth is stopped again,
-/// as it was, through node.stop's own steps, each naming the start's operation: the whole
-/// `node.connection.delete { All }` (`via-stop`), its tasks held, `node.mesh.leave` (`via-leaving`,
-/// `via-stop-transport-cut`), and `Stopped` owed to its mesh-primary (`via-owed-on-stop`); the start is
-/// answered `StartFailed` at `node.pre-node-ready`, and the birth is stopped. Must NOT happen: the birth
-/// left with its connections deleted and its mesh left but no `Stopped` owed, a stop step naming no
-/// operation, or the start answered Started. In its own process: the cell holds process-wide state
-/// (the stop flag).
+/// CONTRACT (fabric-node-hooks.md "Outcomes and the gate", Q350: "A start that ends `Failed` leaves the
+/// node `Pending`, and nothing retries until someone acts"; node-start.md: a start that ends Failed at its
+/// hook leaves the node rejoined and `Pending`, its process running and never stopped again): a stopped
+/// node's commanded start fails at its `pre_node_ready` hook. The start is answered `StartFailed` at
+/// `node.pre-node-ready`, and the node's probe then answers `StartFailed` with the hook's reason: it is
+/// rejoined and Pending, not stopped. Must NOT happen: the node stopped again (a probe answering
+/// `CurrentStopped`), a stop step (`via-stop`, `via-leaving`, `via-stop-transport-cut`, `Stopped` owed)
+/// naming the start's operation, or the start answered Started. In its own process: the cell holds
+/// process-wide state (the stop flag).
 #[test]
-fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps() {
-    let cell = "a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps";
+fn a_commanded_start_whose_hook_fails_leaves_the_node_pending_and_never_stops_it_again() {
+    let cell = "a_commanded_start_whose_hook_fails_leaves_the_node_pending_and_never_stops_it_again";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -1514,7 +1513,7 @@ fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps()
         use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
         const NODE_START: &str = "node.start";
         let pre_node_ready = TestPreNodeReady::new(Mode::Local);
-        let Rig { primary: _primary, commander, _carried, running: _running, launch, key, dir, target, node_id, incarnation, .. } = rig_pre_node_ready("start-failed-stop", false, Some(pre_node_ready.clone())).await;
+        let Rig { primary: _primary, commander, _carried, running: _running, launch, key, dir, target, node_id, incarnation, .. } = rig_pre_node_ready("start-failed-pending", false, Some(pre_node_ready.clone())).await;
         let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k2v7m1q9t4xe".into(), operation: rdm_core::OperationId::node("node.stop", &node_id) };
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k2v7m1q9t4xe".into(), operation: rdm_core::OperationId::node(NODE_START, &node_id) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
@@ -1524,22 +1523,17 @@ fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps()
         pre_node_ready.set_mode(Mode::Fixed(HookOutcome::Failed { reason: "the rows of orders cannot be read".into() }));
         let reply = call(&commander, &target, &start).await;
         assert!(matches!(&reply, StatusReply::StartFailed { step, .. } if step == "node.pre-node-ready"), "the start is answered Failed at its hook: {reply:?}");
-        // The failed start left the birth stopped, as it was.
+        // The failed start left the node rejoined and Pending: its probe answers StartFailed, never CurrentStopped.
         let probed = call(&commander, &target, &probe).await;
-        assert!(matches!(probed, StatusReply::CurrentStopped { .. }), "the birth is stopped again: {probed:?}");
+        assert!(matches!(&probed, StatusReply::StartFailed { step, reason } if step == "node.pre-node-ready" && reason.contains("the rows of orders cannot be read")), "the node stays Pending, its probe answering StartFailed with the hook's reason: {probed:?}");
 
-        // The flame: the stop's steps, each naming the start's operation.
+        // The flame: the start served once, failed at its hook, and no stop step naming the start.
         let of = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans_of(&spans, name, node_id.as_str()).into_iter().filter(|f| f.get("operation").map(String::as_str) == Some(NODE_START)).collect() };
         let served = spans_of(&spans, "rdm.node_admin.status.update.via-start-node", node_id.as_str());
         assert!(served.iter().any(|f| f.get("outcome").map(String::as_str) == Some("start-failed") && f.get("failed_step").map(String::as_str) == Some("node.pre-node-ready")), "the start is served once, failed at node.pre-node-ready: {served:#?}");
-        let deleted = of("rdm.node_admin.connection.delete.via-stop");
-        assert_eq!(deleted.len(), 1, "the failed start ran node.connection.delete {{ All }} as the stop's, naming the start: {deleted:#?}");
-        let leaving = of("rdm.node.mesh.update.via-leaving");
-        assert_eq!(leaving.len(), 1, "the failed start left the mesh once, naming the start: {leaving:#?}");
-        let cut = of("rdm.node_admin.node.update.via-stop-transport-cut");
-        assert_eq!(cut.len(), 1, "the failed start cut the transport as the stop's step, naming the start: {cut:#?}");
-        let owed: Vec<_> = of("rdm.node_rpc.status.update.via-owed-on-stop").into_iter().filter(|f| f.get("state").map(String::as_str) == Some("Stopped")).collect();
-        assert_eq!(owed.len(), 1, "the failed start owed Stopped to the mesh-primary, naming the start: {owed:#?}");
+        for name in ["rdm.node_admin.connection.delete.via-stop", "rdm.node.mesh.update.via-leaving", "rdm.node_admin.node.update.via-stop-transport-cut", "rdm.node_rpc.status.update.via-owed-on-stop"] {
+            assert!(of(name).is_empty(), "the failed start ran no stop step: {name} named the start: {:#?}", of(name));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

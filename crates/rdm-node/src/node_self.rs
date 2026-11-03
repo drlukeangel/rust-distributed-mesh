@@ -1411,6 +1411,17 @@ impl NodeSelf {
                     process_stop().start();
                     StatusReply::Started
                 }
+                Err(failed) if failed.step == crate::node_hooks::PRE_NODE_READY_STEP => {
+                    // The start ended Failed at its hook (Q350; fabric-node-hooks.md "Outcomes and the
+                    // gate": a start that ends Failed leaves the node Pending, and nothing retries until
+                    // someone acts). The node is rejoined and stays Pending, its process running and
+                    // never stopped again: its probe answers StartFailed with the hook's last reason, and
+                    // a later node.stop or node.delete is what acts on it.
+                    *self.cycle.lock().unwrap() = Cycle::Live(Some(op.operation.clone()));
+                    process_stop().start();
+                    tracing::Span::current().record("failed_step", failed.step);
+                    rdm_core::reply::status::start_failed(failed.step.to_string(), failed.reason)
+                }
                 Err(failed) => {
                     // The start stopped at its step: the birth is stopped again, as it was, through
                     // node.stop's own steps ([`Self::stop_steps`]), the stop naming the start's

@@ -308,13 +308,16 @@ impl Cadence {
 // ---- node.tickle (node-tickle.md): the one reach ladder ----
 
 /// The birth's own answer on the probe (`docs/architecture/lifecycles/node-tickle.md` "Probe"):
-/// `Current`, `CurrentStopped` while it is stopped, or `Pending` while its hook answered `Pending`, naming
-/// the exact birth probed. A carrier's `InnerNotSent` (no reply reaches the ladder), a `NotReady`
-/// and any refusal are not answers.
+/// `Current`, `CurrentStopped` while it is stopped, `Pending` while its hook answered `Pending`, naming
+/// the exact birth probed, or `StartFailed` at the hook's step once its start ended Failed (Q350: the
+/// node stays Pending and its process keeps running; the probe server answers it only after it checked
+/// the exact incarnation, a wrong one answered stale). A carrier's `InnerNotSent` (no reply reaches the
+/// ladder), a `NotReady` and any refusal are not answers.
 pub fn birth_answered(reply: Option<&rdm_core::status::StatusReply>, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> bool {
     use rdm_core::status::StatusReply;
     match reply {
         Some(StatusReply::Current { node_id: n, incarnation: i, .. } | StatusReply::CurrentStopped { node_id: n, incarnation: i } | StatusReply::Pending { node_id: n, incarnation: i, .. }) => n == node_id && i == incarnation,
+        Some(StatusReply::StartFailed { step, .. }) => step == crate::node_hooks::PRE_NODE_READY_STEP,
         _ => false,
     }
 }

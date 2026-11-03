@@ -23,7 +23,7 @@ the primitive does not.
 |---|---|
 | Caller | The primary above the node: its mesh-primary for a member, the fabric-primary for a mesh-primary or another mesh's node-admin |
 | Target | One node, by `(node.id, incarnation)`; every probe names the same pair, and only that pair's answer counts |
-| Probe | `ProbeNodeState { node_id, incarnation }` on 0x1B, a bounded call with a deadline; the node answers `Current { state }`, `CurrentStopped` or `Blocked { reason, retry_on }` |
+| Probe | `ProbeNodeState { node_id, incarnation }` on 0x1B, a bounded call with a deadline; the node answers `Current { state }`, `CurrentStopped`, `Pending { reason }` or `StartFailed { step, reason }` |
 | Ladder | Direct first. On failure, the same probe carried by [Forward](../node-rpc-envelope.md#forward-op-0x1a-core) through up to two eligible live peers of the node's mesh, both at once; one failed peer probe does not cancel the other |
 | Ends | Any answer from the node, under the probed incarnation, ends the ladder and cancels the probes still running |
 | Result | `reached { answer }`: the node is alive and said what it is; `unreached`: nobody reached it within the ladder. Unreached is never death |
@@ -71,7 +71,9 @@ The node's unary reply when reached:
 ```
 
 A stopped node answers `CurrentStopped { node_id, incarnation }`; a node held at its hook answers
-`Blocked { node_id, incarnation, reason, retry_on }`. All three are `reached`.
+`Pending { node_id, incarnation, reason }`; a node whose start ended Failed at its hook answers
+`StartFailed { step: node.pre-node-ready, reason }`: it stays Pending, its process running
+([fabric-node-hooks.md](../fabric-node-hooks.md#outcomes-and-the-gate), Q350). All four are `reached`.
 
 The same probe carried through a peer, op `0x1A` (26): the inner bytes are the probe above, the
 peer makes one direct inner call and chooses no other target:
@@ -100,8 +102,8 @@ The carrier's reply is `Forwarded { inner }` with the node's answer inside, or `
 when the carrier could not reach it. The tickle has no gossip of its own: the caller publishes
 nothing for a probe, an answer or a failure. The probed node re-publishes its presence on the
 channel it is on, the check-in it owes its primary ([states.md](states.md#the-check-in-checklist)),
-and answers its current state; while its `pre_node_ready` hook is Blocked it answers `Blocked`
-and re-publishes nothing.
+and answers its current state; while its `pre_node_ready` hook answers `Pending` it answers `Pending`,
+and once its start ended Failed `StartFailed`, and re-publishes nothing.
 
 ## Mermaid sequence diagram
 
@@ -113,7 +115,7 @@ sequenceDiagram
     participant P2 as Peer 2
     C->>N: 2. ProbeNodeState (node_id, incarnation), direct, deadline
     alt the node answers
-        N-->>C: Current / CurrentStopped / Blocked — reached
+        N-->>C: Current / CurrentStopped / Pending / StartFailed — reached
     else no answer
         par peer 1
             C->>P1: 3. Forward(ProbeNodeState)
