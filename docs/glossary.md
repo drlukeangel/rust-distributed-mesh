@@ -20,12 +20,12 @@ Every term below links to the architecture pages that define it.
   workflows, and deployment providers.
 - **fabric-primary** ([Fabric primary](architecture/fabric-primary.md),
   [Elections](architecture/fabric-node-lifecycle-elections.md)): The one elected `node-admin` across
-  the fabric that accepts Builds, writes the fabric and mesh records, holds the fabric-wide atlas,
+  the fabric that accepts Builds, writes the fabric and mesh records and every Build record,
   and commands each mesh's `mesh-primary`.
 - **mesh-primary** ([Fabric primary](architecture/fabric-primary.md),
   [Elections](architecture/fabric-node-lifecycle-elections.md)): The elected primary of the
   `node-admin` nodes in one mesh. A `mesh-primary` commands its own mesh's nodes, writes their
-  rows in `nodes.storage`, holds its mesh's atlas, and announces their lifecycle status.
+  rows in `nodes.storage`, and announces their lifecycle status.
 - **node-type primary** ([Elections](architecture/fabric-node-lifecycle-elections.md)): The
   elected primary among the `Ready` nodes of one type in one mesh. A primary stays primary
   while it is heard; when unheard past the staleness floor (or when none is recorded), the eligible
@@ -60,8 +60,7 @@ Every term below links to the architecture pages that define it.
 - **lifecycle status (`MemberStatus`)** ([States](architecture/lifecycles/states.md)): The durable
   readiness state recorded on a node, mesh, or fabric row (`starting`, `pending`, `ready`,
   `connections-deleting`, `connections-deleted`, `stopping`, `stopped`, `deleting`, `deleted`). A
-  node's status is written only by its `mesh-primary` from the node's workflow reports and
-  receipts.
+  node's status is written only by its `mesh-primary` from the node's workflow reports.
 - **liveness (`NodeState`)** ([Node identity and state](architecture/node-identity-and-state.md)):
   What peers infer locally from gossip digests (`Alive`, `PendingReconnect`, `Dead`), separate from
   the durable `status` on the node row.
@@ -72,30 +71,33 @@ Every term below links to the architecture pages that define it.
 
 ## Builds and deployment
 
-- **Build** ([Build](architecture/build.md)): A durable, multi-step control-plane operation
-  accepted by the `fabric-primary` and recorded in `builds.storage` (`BuildStateAdapter`). The
-  newest accepted topology Build defines the fabric's accepted topology.
-- **attempt** ([Build](architecture/build.md)): One numbered execution pass of a Build (`attempt`
-  starts at `1` and increments when an incomplete Build is reopened or taken over by a successor
-  `fabric-primary`).
-- **claim** ([Build](architecture/build.md)): The record that opens an attempt of a Build. An
-  attempt lost with its executor leaves the Build `Running`, and a successor claims
-  the next attempt (`attempt + 1`).
+- **Build** ([Build](architecture/build.md)): An external request that adds or removes nodes:
+  `Create { meshes, nodes }`, `Delete { meshes, node_ids }` or `DeleteFabric`, accepted by the
+  `fabric-primary` and written once in `builds.storage` (`BuildStateAdapter`). Its progress is its
+  events. Node commands (stop, start, connections delete, name update) and repairs are never Builds.
+- **section** ([Build](architecture/build.md)): One mesh's part of a Build: one call from the
+  `fabric-primary` to that mesh's `mesh-primary`, which runs the section's steps. A step that ends
+  `failed` ends its section, never the Build.
+- **Build end** ([Build](architecture/build.md)): `complete` when every section finished;
+  `incomplete` when it ran and not every section finished (what ran stands, nothing is reverted);
+  `failed` only when it could not start. An incomplete Build is resubmitted by its `build_id`.
+- **attempt** ([Node RPC §43](architecture/node-rpc.md#43-send-delivery-is-the-runtimes)): One send of
+  a call under its `Send { attempts, TimeLimit }`; a call makes `attempts` sends in all (default 3).
 - **step** ([Build](architecture/build.md)): One unit of work inside a Build (for example,
   `node.create:<node_id>`), assigned by the
   `fabric-primary` to a mesh executor over the [Build carrier](architecture/node-rpc-envelope.md).
-- **receipt** ([Build](architecture/build.md)): The durable record written as a Build step reaches
-  an execution milestone or terminal outcome (`Complete` or `Failed`), allowing a successor
-  executor to resume without repeating completed work.
+- **step event** ([Build §5](architecture/build.md#5-buildstateadapter)): The `rdm.build.step` event
+  a step's run writes, ending `complete` or `failed { reason }`. A mesh's new mesh-primary, or a
+  resubmit, runs only the steps whose events did not end `complete`.
 - **Build floor** ([Node start](architecture/lifecycles/node-start.md),
   [Node mesh join](architecture/lifecycles/node-mesh-join.md),
-  [Gossip](architecture/gossip.md)): The minimum `(BuildId, attempt)` a joining or starting
+  [Gossip](architecture/gossip.md)): The minimum `BuildId` a joining or starting
   `node-admin` must hold in its local Build log before it can report `NodeStarted` and become
-  `Ready`, named by the accepting primary in its `JoinNode` (`0x1D`) answer and fetched when
+  `Ready`, named by the node-admin it reports to in its `JoinNode` (`0x1D`) answer and fetched when
   missing via `FetchCurrentBuild` or `FetchBuildFacts` (`0x1F`).
 - **checklist (planned-birth checklist)** ([States](architecture/lifecycles/states.md)): The
   per-primary list of planned exact births from the accepted Build that must complete their owed
-  check-in (`Budget::Owed`) for a state command before the primary reports the state's upward
+  check-in, delivered on its `Send`, for a state command before the primary reports the state's upward
   completion.
 - **hand-off (mesh state hand-off)** ([States](architecture/lifecycles/states.md),
   [Fabric primary §7](architecture/fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition)):
@@ -126,10 +128,9 @@ Every term below links to the architecture pages that define it.
   [Query](architecture/query.md)): A node's local in-memory projection of the latest gossiped
   digests, primaries, and mesh and fabric statuses it has heard, queryable locally inside the
   process via `TopologyView::nodes_get`, `meshes_get`, and `fabrics_get`.
-- **atlas** ([Query](architecture/query.md)): The in-memory table of node, mesh, and fabric records
-  held by a primary (`mesh-primary` for its own mesh; `fabric-primary` for every mesh), populated
-  from the stores at start or hand-over and updated on each write to answer external `fabrics.get`,
-  `meshes.get`, and `nodes.get` queries without scanning disk.
+- **atlas** ([Query](architecture/query.md)): The `fabric-primary`'s in-memory control state: its
+  Builds, accepted topology and in-flight facts. Node rows and property maps are not copied into it;
+  `node.get` reads the node records.
 - **hydration sync** ([Node start](architecture/lifecycles/node-start.md),
   [Node topology get](architecture/lifecycles/node-topology-get.md),
   [Query](architecture/query.md)): The [`node.topology.get`](architecture/lifecycles/node-topology-get.md)
@@ -155,7 +156,8 @@ Every term below links to the architecture pages that define it.
 - **`Direct` and `Proxy` connections** ([Connections](architecture/connections.md)): The two kinds
   of data-plane connection facts recorded in `connections.storage`. `Direct` is an open connection
   from the source node to the destination node; `Proxy` routes through an intermediate carrier node
-  while the source node's reconnect loop works to restore `Direct`.
+  until the destination dials the source or the Proxy is invalidated; every dial is a call on `Send`,
+  and nothing re-dials on its own (Q348).
 - **`forward`** ([Node RPC envelope](architecture/node-rpc-envelope.md)): The control plane's Node
   RPC op (`0x1A`) that carries a call through an intermediate node when the caller does not reach
   the destination directly. The data plane's word for the same idea is `proxy`.
@@ -211,4 +213,4 @@ Every term below links to the architecture pages that define it.
   [Node-admin lifecycle](architecture/node-admin-lifecycle.md)): A `node-admin` a person or a script
   starts at the lost `fabric-primary`'s `path` and `name`, with `RDM_FABRIC_ID`, `RDM_MESH` and
   `RDM_STORE_DIR` and no launcher, when no `node-admin` is alive. It mints its own `node.id` and no
-  fabric or mesh id, and its claim of the fabric-recovery attempt is its first recovery write.
+  fabric or mesh id, and takes no lock: its first write is its recovery's.

@@ -41,7 +41,7 @@ An op is one family: its request enum's variants are the calls. Take a code no l
 |---|---|
 | `0x00` | never: an op of zero refuses the process |
 | `0x01`, `0x1A` | RDM core (`ping`, `forward`; `0x11` `echo` reserved forever, never served) |
-| `0x1B`–`0x22` | RDM (`status`, `build-claim`, `join`, `topology`, `build-facts` (reserved, Q292), `build`, `node-primary-update`, `node-command`) |
+| `0x1B`–`0x22` | RDM (`status`, reserved, `join`, `topology`, `build-facts` (reserved, Q292), `build`, `node-primary-update`, `node-command`) |
 | `0x10`, `0x12`–`0x19` | product rows in `core_ledger()` (`0x16` `layout-reprovision` reserved forever, never served) |
 | `0x70`–`0x7F` | the testkit only (`0x70`–`0x75` allocated in `core_ledger()`): a non-testkit owner there refuses the process |
 
@@ -216,12 +216,12 @@ let (outcome, _evidence) = client
   - `Indeterminate(indeterminate)`: sent, answer unknown; retry only a `read_only` request;
   - `Unserved(unserved)`: the target does not serve the op (`421`);
   - `RejectedStale(stale)`: the caller's resolver stopped naming the node it dialled before the request went; never dispatched.
-- **`CallOptions`** carries the budget. Under every budget the runtime resends the same delivery,
-  with backoff, until it is acknowledged (the one delivery rule, node-rpc.md §43): never add a
-  delivery loop of your own. The default is `Budget::Overall(10 s)`, one deadline over resolve,
-  dial, send and reply. `Budget::Owed` removes the deadline, nothing else: the call ends only on its
-  reply, on the runtime's proof that the receiver is gone, or when you drop it; for a report or
-  completion you owe, never a default. The call waits for the reply, not for the ack.
+- **`CallOptions`** carries the call's `Send { attempts, time_limit }`, yours to set:
+  `Send::default()` is 3 attempts and 10 s. The runtime resends the same delivery on Send's schedule
+  until it is acknowledged or the attempts are spent ([node-rpc.md §43](../architecture/node-rpc.md#43-send-delivery-is-the-runtimes)):
+  never add a delivery loop of your own. A call whose attempts are spent ends to you by name
+  (`NotSent` or `Indeterminate`) and calls your `on_call_failed`. The call waits for the reply, not
+  for the ack.
 - **Trace context** rides the call's `CallContext`; your serve span is the caller's child
   ([telemetry.md §3](../architecture/telemetry.md)).
 
